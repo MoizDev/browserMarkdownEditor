@@ -55,7 +55,7 @@ When you scroll down a long document, the application remembers your position. I
 
 ---
 
-## 4. Images, Assets, and Trash
+## 4. Images, Assets, and Recently Deleted
 
 ### Managing Images
 You can seamlessly add images to your markdown notes:
@@ -72,8 +72,8 @@ When you paste or drop an image, the application does the following in the backg
 ### Opening Media
 If you click on \`.pdf\`, \`.jpg\`, \`.jpeg\`, or \`.png\` files directly within the file tree, they will automatically open in a new browser tab for viewing rather than attempting to load as text.
 
-### The Trash System
-To prevent accidental permanent data loss, deleting a file or folder does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Trash\` folder located in the same directory. You can manually recover these files using your computer's native file explorer (Finder or Windows Explorer) if needed.
+### The Recently Deleted System
+To prevent accidental permanent data loss, deleting a file or folder does not erase it from your hard drive. Instead, it moves the item into a hidden `.recently_deleted` folder located in the same directory. You can manually recover these files using your computer's native file explorer (Finder or Windows Explorer) if needed.
 
 ---
 

@@ -32,7 +32,7 @@ async function buildFileTree(dirHandle, path = '') {
     for await (const [name, handle] of dirHandle.entries()) {
         if (name === '.DS_Store') continue;
         // Hide standard system folders from the UI
-        if (handle.kind === 'directory' && (name === '.Assets' || name === '.Trash')) continue;
+        if (handle.kind === 'directory' && (name === '.Assets' || name === '.recently_deleted')) continue;
 
         const entryPath = path ? `${path}/${name}` : name;
 
@@ -261,13 +261,11 @@ export function FileSystemProvider({ children }) {
         if (!rootHandle || !node.parentHandle) return false;
 
         try {
-            // Attempt to get or create the Trash folder
-            const trashDir = await rootHandle.getDirectoryHandle('.Trash', { create: true });
+            // Attempt to get or create the recently deleted folder
+            const trashDir = await rootHandle.getDirectoryHandle('.recently_deleted', { create: true });
 
             if (node.kind === 'file') {
-                // Generate a unique safe filename to prevent overwriting files in the same trash folder
-                const safeName = `${Date.now()}-${node.path.replace(/\//g, '_')}`;
-                const newFileHandle = await trashDir.getFileHandle(safeName, { create: true });
+                const newFileHandle = await trashDir.getFileHandle(node.name, { create: true });
                 const writable = await newFileHandle.createWritable();
                 const file = await node.handle.getFile();
                 await writable.write(file);

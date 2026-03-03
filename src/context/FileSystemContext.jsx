@@ -265,7 +265,9 @@ export function FileSystemProvider({ children }) {
             const trashDir = await rootHandle.getDirectoryHandle('.Trash', { create: true });
 
             if (node.kind === 'file') {
-                const newFileHandle = await trashDir.getFileHandle(node.name, { create: true });
+                // Generate a unique safe filename to prevent overwriting files in the same trash folder
+                const safeName = `${Date.now()}-${node.path.replace(/\//g, '_')}`;
+                const newFileHandle = await trashDir.getFileHandle(safeName, { create: true });
                 const writable = await newFileHandle.createWritable();
                 const file = await node.handle.getFile();
                 await writable.write(file);

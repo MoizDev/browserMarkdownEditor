@@ -15,7 +15,7 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
             renameInputRef.current.focus();
             // Select text excluding extension if it's a file
             if (node.kind === 'file') {
-                const lastDotIdx = renameValue.lastIndexOf('.');
+                const lastDotIdx = node.name.lastIndexOf('.');
                 if (lastDotIdx > 0) {
                     renameInputRef.current.setSelectionRange(0, lastDotIdx);
                 } else {
@@ -25,7 +25,7 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
                 renameInputRef.current.select();
             }
         }
-    }, [isRenaming, node.kind, renameValue]);
+    }, [isRenaming, node.kind, node.name]);
 
     const handleRenameSubmit = async () => {
         const newName = renameValue.trim();

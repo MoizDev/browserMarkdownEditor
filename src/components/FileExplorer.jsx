@@ -13,7 +13,8 @@ export default function FileExplorer({
     onTrash,
     expandedPaths,
     onToggleExpand,
-    onMoveFile
+    onMoveFile,
+    onRenameFile
 }) {
     const [creatingInRoot, setCreatingInRoot] = useState(null); // 'file' | 'folder' | null
     const [rootDragOver, setRootDragOver] = useState(false);
@@ -159,6 +160,7 @@ export default function FileExplorer({
                         expandedPaths={expandedPaths}
                         onToggleExpand={onToggleExpand}
                         onMoveFile={onMoveFile}
+                        onRenameFile={onRenameFile}
                     />
                 ))}
             </div>

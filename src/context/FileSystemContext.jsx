@@ -323,6 +323,37 @@ export function FileSystemProvider({ children }) {
         }
     }, [rootHandle, refreshTree]);
 
+    /**
+     * Rename a file or folder within its parent directory.
+     */
+    const renameFile = useCallback(async (sourceNode, newName) => {
+        if (!sourceNode.parentHandle || !newName) return false;
+        if (sourceNode.name === newName) return true; // No change
+
+        try {
+            if (sourceNode.kind === 'file') {
+                // Copy file content to a new file with the new name
+                const file = await sourceNode.handle.getFile();
+                const newHandle = await sourceNode.parentHandle.getFileHandle(newName, { create: true });
+                const writable = await newHandle.createWritable();
+                await writable.write(file);
+                await writable.close();
+            } else {
+                // For folders: create a new folder and recursively copy contents
+                const newDir = await sourceNode.parentHandle.getDirectoryHandle(newName, { create: true });
+                await copyDirRecursive(sourceNode.handle, newDir);
+            }
+
+            // Remove original
+            await sourceNode.parentHandle.removeEntry(sourceNode.name, { recursive: sourceNode.kind === 'directory' });
+            await refreshTree(rootHandle);
+            return true;
+        } catch (err) {
+            console.error('Failed to rename item:', err);
+            return false;
+        }
+    }, [rootHandle, refreshTree]);
+
     const value = {
         rootHandle,
         fileTree,
@@ -338,6 +369,7 @@ export function FileSystemProvider({ children }) {
         restoreVault,
         moveToTrash,
         moveFile,
+        renameFile,
         refreshTree: () => refreshTree(rootHandle),
     };
 

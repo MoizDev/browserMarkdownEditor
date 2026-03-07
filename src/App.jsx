@@ -21,6 +21,7 @@ export default function App() {
     restoreVault,
     moveToTrash,
     moveFile,
+    renameFile,
   } = useFileSystem();
 
   const [activeFile, setActiveFile] = useState(null);
@@ -214,6 +215,32 @@ export default function App() {
     }
   }, [moveToTrash]);
 
+  const handleRenameFile = useCallback(async (node, newName) => {
+    const success = await renameFile(node, newName);
+    if (success && activeFileRef.current?.path === node.path) {
+      // Create a duplicate node with the new properties so the editor stays active
+      const originalPathSegments = node.path.split('/');
+      originalPathSegments.pop(); // Remove old name
+      originalPathSegments.push(newName); // Add new name
+      const newPath = originalPathSegments.join('/');
+
+      try {
+        const fileHandle = await node.parentHandle.getFileHandle(newName);
+        const renamedNode = {
+          ...node,
+          name: newName,
+          path: newPath,
+          handle: fileHandle,
+        };
+        setActiveFile(renamedNode);
+        // Force an immediate localStorage update to avoid race conditions on save
+        localStorage.setItem('lastFilePath', renamedNode.path);
+      } catch (err) {
+        console.error('Could not get handle for renamed active file', err);
+      }
+    }
+  }, [renameFile]);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e) => {
@@ -342,6 +369,7 @@ export default function App() {
           expandedPaths={expandedPaths}
           onToggleExpand={handleToggleExpand}
           onMoveFile={moveFile}
+          onRenameFile={handleRenameFile}
         />
         <div className="theme-toggle-container">
           <button

@@ -1,11 +1,54 @@
-import React, { useState } from 'react';
-import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2 } from './icons.jsx';
+import React, { useState, useRef, useEffect } from 'react';
+import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2 } from './icons.jsx';
 
-export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, expandedPaths, onToggleExpand, onMoveFile, depth = 0 }) {
+export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, depth = 0 }) {
     const isActive = node.kind === 'file' && node.path === activeFilePath;
     const paddingLeft = 12 + depth * 16;
     const expanded = expandedPaths.has(node.path);
     const [dragOver, setDragOver] = useState(false);
+    const [isRenaming, setIsRenaming] = useState(false);
+    const [renameValue, setRenameValue] = useState(node.name);
+    const renameInputRef = useRef(null);
+
+    useEffect(() => {
+        if (isRenaming && renameInputRef.current) {
+            renameInputRef.current.focus();
+            // Select text excluding extension if it's a file
+            if (node.kind === 'file') {
+                const lastDotIdx = renameValue.lastIndexOf('.');
+                if (lastDotIdx > 0) {
+                    renameInputRef.current.setSelectionRange(0, lastDotIdx);
+                } else {
+                    renameInputRef.current.select();
+                }
+            } else {
+                renameInputRef.current.select();
+            }
+        }
+    }, [isRenaming, node.kind, renameValue]);
+
+    const handleRenameSubmit = async () => {
+        const newName = renameValue.trim();
+        if (newName && newName !== node.name) {
+            await onRenameFile(node, newName);
+        } else {
+            setRenameValue(node.name); // Revert if empty or unchanged
+        }
+        setIsRenaming(false);
+    };
+
+    const handleRenameKeyDown = (e) => {
+        if (e.key === 'Enter') {
+            handleRenameSubmit();
+        } else if (e.key === 'Escape') {
+            setRenameValue(node.name);
+            setIsRenaming(false);
+        }
+    };
+
+    const handleRenameBlur = () => {
+        handleRenameSubmit();
+    };
 
     // ── Drag handlers ──
     const handleDragStart = (e) => {
@@ -57,24 +100,48 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
             <div
                 className={`tree-item tree-file${isActive ? ' is-active' : ''}`}
                 style={{ paddingLeft }}
-                onClick={() => onFileClick(node)}
-                draggable
-                onDragStart={handleDragStart}
-                onDragEnd={handleDragEnd}
+                onClick={() => { if (!isRenaming) onFileClick(node); }}
+                draggable={!isRenaming}
+                onDragStart={!isRenaming ? handleDragStart : undefined}
+                onDragEnd={!isRenaming ? handleDragEnd : undefined}
             >
                 <span className="tree-item-icon file-icon">
                     <FileText size={14} />
                 </span>
-                <span className="tree-item-label">{node.name}</span>
-                <span className="tree-item-actions">
-                    <button
-                        className="tree-action-btn trash-btn"
-                        title="Move to Trash"
-                        onClick={(e) => { e.stopPropagation(); onTrash(node); }}
-                    >
-                        <Trash2 size={13} />
-                    </button>
-                </span>
+                {isRenaming ? (
+                    <div className="tree-inline-input" style={{ flex: 1, paddingRight: 0 }}>
+                        <input
+                            ref={renameInputRef}
+                            className="inline-rename-input"
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={handleRenameKeyDown}
+                            onBlur={handleRenameBlur}
+                            onClick={(e) => e.stopPropagation()}
+                        />
+                    </div>
+                ) : (
+                    <span className="tree-item-label">{node.name}</span>
+                )}
+                {!isRenaming && (
+                    <span className="tree-item-actions">
+                        <button
+                            className="tree-action-btn"
+                            title="Rename"
+                            onClick={(e) => { e.stopPropagation(); setIsRenaming(true); }}
+                        >
+                            <Edit2 size={13} />
+                        </button>
+                        <button
+                            className="tree-action-btn trash-btn"
+                            title="Move to Trash"
+                            onClick={(e) => { e.stopPropagation(); onTrash(node); }}
+                        >
+                            <Trash2 size={13} />
+                        </button>
+                    </span>
+                )}
             </div>
         );
     }
@@ -84,10 +151,10 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
             <div
                 className={`tree-item tree-folder${dragOver ? ' drag-over' : ''}`}
                 style={{ paddingLeft }}
-                onClick={() => onToggleExpand(node.path)}
-                draggable
-                onDragStart={handleDragStart}
-                onDragEnd={handleDragEnd}
+                onClick={() => { if (!isRenaming) onToggleExpand(node.path); }}
+                draggable={!isRenaming}
+                onDragStart={!isRenaming ? handleDragStart : undefined}
+                onDragEnd={!isRenaming ? handleDragEnd : undefined}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
@@ -98,23 +165,54 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
                 <span className="tree-item-icon folder-icon">
                     <FolderIcon size={14} />
                 </span>
-                <span className="tree-item-label">{node.name}</span>
-                <span className="tree-item-actions">
-                    <button
-                        className="tree-action-btn"
-                        title="New file"
-                        onClick={(e) => { e.stopPropagation(); onCreateFile(node.handle, node.path); }}
-                    >
-                        <FilePlus size={14} />
-                    </button>
-                    <button
-                        className="tree-action-btn"
-                        title="New folder"
-                        onClick={(e) => { e.stopPropagation(); onCreateFolder(node.handle, node.path); }}
-                    >
-                        <FolderPlus size={14} />
-                    </button>
-                </span>
+                {isRenaming ? (
+                    <div className="tree-inline-input" style={{ flex: 1, paddingRight: 0 }}>
+                        <input
+                            ref={renameInputRef}
+                            className="inline-rename-input"
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={handleRenameKeyDown}
+                            onBlur={handleRenameBlur}
+                            onClick={(e) => e.stopPropagation()}
+                        />
+                    </div>
+                ) : (
+                    <span className="tree-item-label">{node.name}</span>
+                )}
+                {!isRenaming && (
+                    <span className="tree-item-actions">
+                        <button
+                            className="tree-action-btn"
+                            title="Rename folder"
+                            onClick={(e) => { e.stopPropagation(); setIsRenaming(true); }}
+                        >
+                            <Edit2 size={13} />
+                        </button>
+                        <button
+                            className="tree-action-btn"
+                            title="New file"
+                            onClick={(e) => { e.stopPropagation(); onCreateFile(node.handle, node.path); }}
+                        >
+                            <FilePlus size={14} />
+                        </button>
+                        <button
+                            className="tree-action-btn"
+                            title="New folder"
+                            onClick={(e) => { e.stopPropagation(); onCreateFolder(node.handle, node.path); }}
+                        >
+                            <FolderPlus size={14} />
+                        </button>
+                        <button
+                            className="tree-action-btn trash-btn"
+                            title="Move to Trash"
+                            onClick={(e) => { e.stopPropagation(); onTrash(node); }}
+                        >
+                            <Trash2 size={13} />
+                        </button>
+                    </span>
+                )}
             </div>
             {expanded && node.children && (
                 <div className="tree-children">
@@ -130,6 +228,7 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
                             expandedPaths={expandedPaths}
                             onToggleExpand={onToggleExpand}
                             onMoveFile={onMoveFile}
+                            onRenameFile={onRenameFile}
                             depth={depth + 1}
                         />
                     ))}

@@ -8,7 +8,7 @@ import { searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme.js';
 import { createLivePreviewPlugin } from '../editor/livePreview.js';
-import { markdownFormatKeymap } from '../editor/formatKeymap.js';
+import { markdownFormatExtension } from '../editor/formatKeymap.js';
 import { Compartment } from '@codemirror/state';
 import { useFileSystem } from '../context/FileSystemContext.jsx';
 import 'katex/dist/katex.min.css';
@@ -88,7 +88,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     ]),
                     readOnlyCompartmentRef.current.of(EditorView.editable.of(editorMode !== 'read')),
                     livePreviewCompartmentRef.current.of(createLivePreviewPlugin((fn) => boundGetAssetUrl.current(fn), editorMode)),
-                    markdownFormatKeymap,
+                    markdownFormatExtension,
                     updateListener,
                     EditorView.domEventHandlers({
                         paste(event, view) {

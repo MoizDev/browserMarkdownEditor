@@ -211,7 +211,7 @@ function buildDecorations(view, getAssetUrl, editorMode) {
             // === LIST ITEMS ===
             if (name === 'ListItem') {
                 const line = state.doc.lineAt(from);
-                if (editorMode !== 'read' && cursorOnLine(state, from, to)) return;
+                const cursorOnThisLine = editorMode !== 'read' && cursorOnLine(state, from, to);
 
                 // Calculate nesting depth by counting BulletList/OrderedList ancestors
                 let depth = 0;
@@ -224,34 +224,52 @@ function buildDecorations(view, getAssetUrl, editorMode) {
                 }
                 const indent = Math.max(0, depth - 1);
 
-                // Determine if this is an ordered or unordered list item
                 const isOrdered = node.node.parent?.name === 'OrderedList';
-
-                // Find and hide the ListMark (the `- `, `* `, or `1. `)
                 const lineText = line.text;
                 const markerMatch = lineText.match(/^(\s*)([-*]|\d+[.)]) /);
-                if (markerMatch) {
-                    const prefixLen = markerMatch[0].length;
-                    decorations.push(Decoration.replace({}).range(line.from, line.from + prefixLen));
-                }
 
-                // Apply the list line decoration with the nesting depth
-                if (isOrdered) {
-                    const numMatch = lineText.match(/^\s*(\d+)[.)] /);
-                    const num = numMatch ? numMatch[1] : '1';
+                if (cursorOnThisLine) {
+                    // Raw mode: keep the `- ` / `1. ` visible so the user edits real markdown,
+                    // but preserve the nested indent via padding so the line doesn't jump left.
+                    // Leading whitespace hides only when the cursor isn't inside it, so
+                    // dedent edits (Backspace/Shift-Tab) stay visible while in progress.
+                    if (markerMatch && markerMatch[1].length > 0) {
+                        const wsFrom = line.from;
+                        const wsTo = line.from + markerMatch[1].length;
+                        if (!cursorInRange(state, wsFrom, wsTo)) {
+                            decorations.push(Decoration.replace({}).range(wsFrom, wsTo));
+                        }
+                    }
                     decorations.push(
                         Decoration.line({
-                            class: 'cm-live-list-item cm-live-list-ordered',
-                            attributes: { 'data-marker': num + '.', style: `--list-indent: ${indent}` }
-                        }).range(line.from)
-                    );
-                } else {
-                    decorations.push(
-                        Decoration.line({
-                            class: 'cm-live-list-item cm-live-list-bullet',
+                            class: 'cm-live-list-item cm-live-list-raw',
                             attributes: { style: `--list-indent: ${indent}` }
                         }).range(line.from)
                     );
+                } else {
+                    // Rendered mode: hide the full marker and show the styled bullet/number.
+                    if (markerMatch) {
+                        const prefixLen = markerMatch[0].length;
+                        decorations.push(Decoration.replace({}).range(line.from, line.from + prefixLen));
+                    }
+
+                    if (isOrdered) {
+                        const numMatch = lineText.match(/^\s*(\d+)[.)] /);
+                        const num = numMatch ? numMatch[1] : '1';
+                        decorations.push(
+                            Decoration.line({
+                                class: 'cm-live-list-item cm-live-list-ordered',
+                                attributes: { 'data-marker': num + '.', style: `--list-indent: ${indent}` }
+                            }).range(line.from)
+                        );
+                    } else {
+                        decorations.push(
+                            Decoration.line({
+                                class: 'cm-live-list-item cm-live-list-bullet',
+                                attributes: { style: `--list-indent: ${indent}` }
+                            }).range(line.from)
+                        );
+                    }
                 }
 
                 // Don't return false — let children (emphasis, code, etc.) still be processed

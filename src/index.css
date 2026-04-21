@@ -862,6 +862,10 @@ body {
   line-height: inherit;
 }
 
+.cm-live-list-item.cm-live-list-raw {
+  padding-left: calc(16px + var(--list-indent, 0) * 28px) !important;
+}
+
 /* ── Blockquote ── */
 .cm-live-blockquote {
   border-left: 3px solid var(--interactive-accent);

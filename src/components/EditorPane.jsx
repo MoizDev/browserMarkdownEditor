@@ -13,7 +13,7 @@ import { Compartment } from '@codemirror/state';
 import { useFileSystem } from '../context/FileSystemContext.jsx';
 import 'katex/dist/katex.min.css';
 
-export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, onContentChange, onSave }) {
+export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, onContentChange, onSave, onOpenNote }) {
     const { getAssetUrl, saveAsset } = useFileSystem();
     const editorContainerRef = useRef(null);
     const viewRef = useRef(null);
@@ -22,6 +22,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     const livePreviewCompartmentRef = useRef(new Compartment());
     const onContentChangeRef = useRef(onContentChange);
     const activeFileRef = useRef(activeFile);
+    const onOpenNoteRef = useRef(onOpenNote);
     const saveScrollTimeoutRef = useRef(null);
 
     // Debounced scroll persistence
@@ -52,6 +53,10 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     useEffect(() => {
         activeFileRef.current = activeFile;
     }, [activeFile]);
+
+    useEffect(() => {
+        onOpenNoteRef.current = onOpenNote;
+    }, [onOpenNote]);
 
     // Create a bound version of getAssetUrl that includes the active file's parent handle
     const boundGetAssetUrl = useRef((fileName) => getAssetUrl(fileName, null));
@@ -142,6 +147,16 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                         },
                         scroll(event, view) {
                             handleScroll(view);
+                        },
+                        mousedown(event) {
+                            // Navigate when a rendered [[wikilink]] is clicked.
+                            const el = event.target.closest?.('.cm-wikilink');
+                            if (el && onOpenNoteRef.current) {
+                                event.preventDefault();
+                                onOpenNoteRef.current(el.getAttribute('data-wikilink'));
+                                return true;
+                            }
+                            return false;
                         }
                     })
                 ],

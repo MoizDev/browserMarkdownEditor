@@ -418,7 +418,8 @@ body {
 .editor-pane {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -902,4 +903,210 @@ body {
   color: #e06c75;
   font-family: var(--font-monospace);
   font-size: 0.85em;
+}
+/* =============================================================
+   Wikilinks ([[Note]]) — rendered in the editor / live preview
+   ============================================================= */
+.cm-wikilink {
+  color: var(--text-accent);
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.cm-wikilink:hover {
+  color: var(--interactive-accent-hover);
+  border-bottom-color: var(--interactive-accent-hover);
+}
+
+/* =============================================================
+   Neural Brain — Graph View
+   ============================================================= */
+.graph-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--background-primary);
+}
+
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--header-height);
+  padding: 0 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.graph-stats {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.graph-reset-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--interactive-normal);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.graph-reset-btn:hover {
+  background: var(--interactive-hover);
+  color: var(--text-normal);
+}
+
+.graph-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.graph-canvas-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.graph-hover-label {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  pointer-events: none;
+}
+
+.graph-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  padding: 24px;
+}
+
+.graph-empty-title {
+  font-size: 15px;
+  color: var(--text-normal);
+  margin: 0;
+}
+
+.graph-empty-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.graph-empty-hint code {
+  background: var(--background-secondary);
+  padding: 1px 5px;
+  border-radius: var(--radius-s);
+  font-family: var(--font-monospace);
+  font-size: 0.9em;
+}
+
+/* Active state for the sidebar Neural Brain toggle button */
+.sidebar-bottom-actions .settings-btn.active {
+  background: var(--background-modifier-hover);
+  color: var(--text-accent);
+}
+
+/* =============================================================
+   Backlinks Panel (editor footer)
+   ============================================================= */
+.backlinks-panel {
+  flex-shrink: 0;
+  max-height: 30%;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.backlinks-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  flex-shrink: 0;
+}
+
+.backlinks-header:hover {
+  color: var(--text-normal);
+}
+
+.backlinks-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.backlinks-count {
+  margin-left: auto;
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+  border-radius: 10px;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 18px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.backlinks-body {
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.backlinks-empty {
+  font-size: 12px;
+  color: var(--text-faint);
+  padding: 2px 6px 8px;
+  margin: 0;
+}
+
+.backlink-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.backlink-item:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.backlink-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

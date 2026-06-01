@@ -85,12 +85,22 @@ function buildDecorations(view, getAssetUrl, editorMode) {
                 return false;
             }
 
-            // NOTE: italic/bold styling for Emphasis / StrongEmphasis comes from the
-            // syntax highlight style (tags.emphasis / tags.strong). We intentionally do
-            // NOT add a mark spanning the whole node here — a mark covering [from, to]
-            // overlaps the EmphasisMark replace decorations below, which left the `_`/`*`
-            // markers visible. Letting iteration fall through reaches the EmphasisMark
-            // children, which hide the markers cleanly.
+            // === EMPHASIS / STRONG styling ===
+            // Style ONLY the inner text (between the markers), not the whole node.
+            // A mark spanning [from, to] would overlap the EmphasisMark replace
+            // decorations below and leave the `_` / `*` markers visible. By marking
+            // just the content we keep bold/italic working while the markers still
+            // hide cleanly. Iteration falls through to the EmphasisMark children,
+            // which perform the hiding.
+            if (name === 'Emphasis' || name === 'StrongEmphasis') {
+                const cls = name === 'StrongEmphasis' ? 'cm-live-bold' : 'cm-live-italic';
+                const innerFrom = node.node.firstChild ? node.node.firstChild.to : from;
+                const innerTo = node.node.lastChild ? node.node.lastChild.from : to;
+                if (innerTo > innerFrom) {
+                    decorations.push(Decoration.mark({ class: cls }).range(innerFrom, innerTo));
+                }
+                return;
+            }
 
             // === STRIKETHROUGH ===
             if (name === 'Strikethrough') {
@@ -450,5 +460,12 @@ export function createLivePreviewPlugin(getAssetUrl, editorMode) {
         }
     });
     return field;
+}
+
+// The CodeMirror EditorView is created once and caches this decoration logic, so
+// Vite's hot-update can't swap it in. Decline HMR for this module to force a full
+// page reload on edit (dev-only — `import.meta.hot` is undefined in production).
+if (import.meta.hot) {
+    import.meta.hot.decline();
 }
 

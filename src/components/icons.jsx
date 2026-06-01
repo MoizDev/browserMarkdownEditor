@@ -97,6 +97,28 @@ export function Settings({ size = 16, ...props }) {
     );
 }
 
+export function Network({ size = 16, ...props }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <circle cx="12" cy="5" r="2.5" />
+            <circle cx="5" cy="18" r="2.5" />
+            <circle cx="19" cy="18" r="2.5" />
+            <line x1="11" y1="7" x2="6.5" y2="15.8" />
+            <line x1="13" y1="7" x2="17.5" y2="15.8" />
+            <line x1="7.5" y1="18" x2="16.5" y2="18" />
+        </svg>
+    );
+}
+
+export function FileTextOutline({ size = 16, ...props }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+        </svg>
+    );
+}
+
 export function Edit2({ size = 16, className = "", ...props }) {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>

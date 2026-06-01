@@ -1,11 +1,14 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useFileSystem } from './context/FileSystemContext.jsx';
 import { HELP_DOC_CONTENT } from './utils/helpDoc.js';
+import { buildGraph, collectMarkdownFiles, baseName } from './utils/graph.js';
 import './index.css';
 import FileExplorer from './components/FileExplorer.jsx';
 import EditorPane from './components/EditorPane.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
-import { Settings, HelpCircle } from './components/icons.jsx';
+import GraphView from './components/GraphView.jsx';
+import BacklinksPanel from './components/BacklinksPanel.jsx';
+import { Settings, HelpCircle, Network, FileTextOutline } from './components/icons.jsx';
 
 export default function App() {
   const {
@@ -30,6 +33,12 @@ export default function App() {
 
   // Editor mode ('edit' or 'read')
   const [editorMode, setEditorMode] = useState('read');
+
+  // Main pane view ('editor' or 'graph' — the Neural Brain view)
+  const [mainView, setMainView] = useState('editor');
+
+  // The link graph powering the Neural Brain view and backlinks panel
+  const [graph, setGraph] = useState({ nodes: [], links: [], backlinks: {}, outlinks: {} });
 
   // The global light/dark theme state
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
@@ -130,6 +139,43 @@ export default function App() {
       console.error('Failed to read file:', err);
     }
   }, [readFile]);
+
+  // Flat index of markdown files for resolving wikilinks by note name
+  const mdFiles = useMemo(() => collectMarkdownFiles(fileTree), [fileTree]);
+
+  // Rebuild the link graph (reads every note). Re-runs when the tree changes.
+  const rebuildGraph = useCallback(async () => {
+    if (!fileTree || fileTree.length === 0) {
+      setGraph({ nodes: [], links: [], backlinks: {}, outlinks: {} });
+      return;
+    }
+    try {
+      const g = await buildGraph(fileTree, readFile);
+      setGraph(g);
+    } catch (err) {
+      console.error('Failed to build link graph:', err);
+    }
+  }, [fileTree, readFile]);
+
+  useEffect(() => { rebuildGraph(); }, [rebuildGraph]);
+
+  // Open a note by its name (used by [[wikilinks]], graph nodes, backlinks).
+  const openNoteByName = useCallback((name) => {
+    if (!name) return;
+    const key = baseName(name).toLowerCase();
+    const match = mdFiles.find(f => baseName(f.name).toLowerCase() === key);
+    if (match) {
+      handleFileClick(match);
+      setMainView('editor');
+    }
+  }, [mdFiles, handleFileClick]);
+
+  // Open a note given a graph node (skips unresolved placeholder nodes).
+  const handleOpenNode = useCallback((graphNode) => {
+    if (!graphNode || graphNode.unresolved || !graphNode.node) return;
+    handleFileClick(graphNode.node);
+    setMainView('editor');
+  }, [handleFileClick]);
 
   // Auto-restore the last opened file when the file tree loads
   useEffect(() => {
@@ -279,12 +325,14 @@ export default function App() {
         await writeFile(file.handle, content);
         setSaveStatus('Saved');
         setTimeout(() => setSaveStatus(''), 2000);
+        // Keep the link graph / backlinks in sync with the latest edits.
+        rebuildGraph();
       } catch (err) {
         console.error('Auto-save failed:', err);
       }
     }, 1000);
     return () => clearTimeout(timer);
-  }, [fileContent, activeFile, writeFile]);
+  }, [fileContent, activeFile, writeFile, rebuildGraph]);
 
   // Drag-to-resize sidebar
   const startResize = useCallback((e) => {
@@ -391,6 +439,14 @@ export default function App() {
         </div>
         <div className="sidebar-bottom-actions">
           <button
+            className={`theme-toggle-btn settings-btn${mainView === 'graph' ? ' active' : ''}`}
+            onClick={() => setMainView(v => (v === 'graph' ? 'editor' : 'graph'))}
+            title="Neural Brain — graph view"
+          >
+            {mainView === 'graph' ? <FileTextOutline size={16} /> : <Network size={16} />}
+            {mainView === 'graph' ? 'Editor' : 'Neural Brain'}
+          </button>
+          <button
             className="theme-toggle-btn settings-btn"
             onClick={handleHelpClick}
             title="Help & Guide"
@@ -410,15 +466,35 @@ export default function App() {
       </div>
       <div className="workspace-resize-handle" onMouseDown={startResize} />
       <div className="workspace-main">
-        <EditorPane
-          activeFile={activeFile}
-          fileContent={fileContent}
-          theme={theme}
-          editorMode={editorMode}
-          saveStatus={saveStatus}
-          onContentChange={setFileContent}
-          onSave={handleSave}
-        />
+        {mainView === 'graph' ? (
+          <GraphView
+            nodes={graph.nodes}
+            links={graph.links}
+            activeFilePath={activeFile?.path || null}
+            onOpenNode={handleOpenNode}
+            theme={theme}
+          />
+        ) : (
+          <>
+            <EditorPane
+              activeFile={activeFile}
+              fileContent={fileContent}
+              theme={theme}
+              editorMode={editorMode}
+              saveStatus={saveStatus}
+              onContentChange={setFileContent}
+              onSave={handleSave}
+              onOpenNote={openNoteByName}
+            />
+            {activeFile && !activeFile.isHelp && (
+              <BacklinksPanel
+                graph={graph}
+                activeFilePath={activeFile.path}
+                onOpenNode={handleOpenNode}
+              />
+            )}
+          </>
+        )}
       </div>
       {showSettings && (
         <SettingsPanel

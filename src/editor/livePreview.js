@@ -316,10 +316,12 @@ function buildDecorations(view, getAssetUrl, editorMode) {
     }
 
     // Inline math: $...$ (but not $$)
-    // Require non-whitespace immediately inside both delimiters and forbid an
-    // inner '$', so currency like "$725 billion ... $80B" is NOT treated as math
-    // (mirrors Obsidian/KaTeX rules). A leading '\' escapes the dollar sign.
-    const inlineMathRegex = /(?<![\\$])\$(?![\s$])([^\n$]*?[^\s$])\$(?!\$)/g;
+    // Currency-safe rules: the opening '$' must NOT be followed by whitespace, '$',
+    // or a DIGIT (so "$725", "$80B", "$5" — even wrapped in **bold** — are never
+    // treated as math), and the closing '$' must not be preceded by whitespace.
+    // Real inline math starts with a letter/backslash/operator, so "$E=mc^2$",
+    // "$a_1$", "$\frac{1}{2}$" still render. A leading '\' escapes the dollar sign.
+    const inlineMathRegex = /(?<![\\$])\$(?![\s$\d])([^\n$]*?[^\s$])\$(?!\$)/g;
     while ((match = inlineMathRegex.exec(doc)) !== null) {
         const from = match.index;
         const to = from + match[0].length;

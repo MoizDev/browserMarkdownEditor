@@ -369,6 +369,40 @@ function buildDecorations(view, getAssetUrl, editorMode) {
         );
     }
 
+    // === WIKILINKS (Obsidian Syntax) ===
+    // Matches: [[Note]], [[Note|alias]], [[Note#heading]]
+    // The leading (!?) lets us skip image embeds ![[file.png]] (handled above).
+    const wikiRegex = /(!?)\[\[([^\]\n]+?)\]\]/g;
+    while ((match = wikiRegex.exec(doc)) !== null) {
+        if (match[1] === '!') continue; // image embed, not a note link
+
+        const from = match.index;
+        const to = from + match[0].length;
+        const inner = match[2];
+        const pipeIndex = inner.indexOf('|');
+        const target = (pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner).split('#')[0].trim();
+
+        // While editing, reveal the raw syntax when the cursor is inside it.
+        if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
+
+        const innerStart = from + 2;
+        const innerEnd = to - 2;
+
+        // Hide the surrounding [[ and ]].
+        decorations.push(Decoration.replace({}).range(from, innerStart));
+        decorations.push(Decoration.replace({}).range(innerEnd, to));
+
+        const linkAttrs = { class: 'cm-wikilink', attributes: { 'data-wikilink': target } };
+        if (pipeIndex >= 0) {
+            // Hide "target|" and show only the alias text.
+            const pipePos = innerStart + pipeIndex;
+            decorations.push(Decoration.replace({}).range(innerStart, pipePos + 1));
+            decorations.push(Decoration.mark(linkAttrs).range(pipePos + 1, innerEnd));
+        } else {
+            decorations.push(Decoration.mark(linkAttrs).range(innerStart, innerEnd));
+        }
+    }
+
     // === TABLES (GFM-style) ===
     // Match consecutive lines starting and ending with | that include a separator row
     const tableRegex = /(^\|.+\|[ \t]*\n)(^\|[\s:|-]+\|[ \t]*\n)((?:^\|.+\|[ \t]*\n?)+)/gm;

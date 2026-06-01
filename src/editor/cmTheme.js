@@ -10,7 +10,7 @@ export const obsidianDarkTheme = EditorView.theme({
         backgroundColor: '#1e1e1e',
         color: '#dcddde',
         fontSize: 'var(--font-size-normal)',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "Roboto", sans-serif',
+        fontFamily: 'var(--font-text)',
         height: '100%',
     },
     '.cm-content': {
@@ -79,7 +79,9 @@ export const obsidianHighlightStyle = syntaxHighlighting(HighlightStyle.define([
     { tag: tags.list, color: '#dcddde' },
     { tag: tags.meta, color: '#666' },
     { tag: tags.comment, color: '#666' },
-    { tag: tags.processingInstruction, color: '#e06c75' },
+    // Formatting markers (e.g. the _ / * around emphasis) — kept faint like Obsidian
+    // rather than a loud red, since they're only revealed while editing.
+    { tag: tags.processingInstruction, color: '#7d828c' },
 ]));
 
 /**
@@ -90,7 +92,7 @@ export const obsidianLightTheme = EditorView.theme({
         backgroundColor: '#ffffff',
         color: '#2e3338',
         fontSize: 'var(--font-size-normal)',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "Roboto", sans-serif',
+        fontFamily: 'var(--font-text)',
         height: '100%',
     },
     '.cm-content': {
@@ -159,5 +161,6 @@ export const obsidianLightHighlightStyle = syntaxHighlighting(HighlightStyle.def
     { tag: tags.list, color: '#2e3338' },
     { tag: tags.meta, color: '#999' },
     { tag: tags.comment, color: '#999' },
-    { tag: tags.processingInstruction, color: '#d14' },
+    // Formatting markers — faint like Obsidian instead of a loud red.
+    { tag: tags.processingInstruction, color: '#a4a8b0' },
 ]));

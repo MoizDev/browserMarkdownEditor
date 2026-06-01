@@ -629,6 +629,62 @@ body {
   transform: scale(1.2);
 }
 
+.settings-font-row {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-text-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.settings-text-input:focus {
+  border-color: var(--interactive-accent);
+}
+
+.settings-apply-btn {
+  flex-shrink: 0;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.settings-apply-btn:hover {
+  background: var(--interactive-accent-hover);
+}
+
+.settings-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.settings-hint a {
+  color: var(--text-accent);
+  text-decoration: none;
+}
+
+.settings-hint a:hover {
+  text-decoration: underline;
+}
+
 .settings-reset-btn {
   width: 100%;
   margin-top: 12px;

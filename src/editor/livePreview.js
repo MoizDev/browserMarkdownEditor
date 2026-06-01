@@ -67,7 +67,9 @@ function buildDecorations(view, getAssetUrl, editorMode) {
                     );
                 }
 
-                return false; // Don't recurse into heading children
+                // Recurse into children so inline syntax inside the heading
+                // (emphasis, bold, code, links) is rendered rather than left raw.
+                return;
             }
 
             // === EMPHASIS / STRONG (Asterisks handling via EmphasisMark) ===
@@ -83,15 +85,12 @@ function buildDecorations(view, getAssetUrl, editorMode) {
                 return false;
             }
 
-            // Apply underlying styles to the containers themselves
-            if (name === 'Emphasis') {
-                decorations.push(Decoration.mark({ class: 'cm-live-italic' }).range(from, to));
-                return; // Let the iteration naturally reach the EmphasisMark children
-            }
-            if (name === 'StrongEmphasis') {
-                decorations.push(Decoration.mark({ class: 'cm-live-bold' }).range(from, to));
-                return;
-            }
+            // NOTE: italic/bold styling for Emphasis / StrongEmphasis comes from the
+            // syntax highlight style (tags.emphasis / tags.strong). We intentionally do
+            // NOT add a mark spanning the whole node here — a mark covering [from, to]
+            // overlaps the EmphasisMark replace decorations below, which left the `_`/`*`
+            // markers visible. Letting iteration fall through reaches the EmphasisMark
+            // children, which hide the markers cleanly.
 
             // === STRIKETHROUGH ===
             if (name === 'Strikethrough') {
@@ -307,7 +306,10 @@ function buildDecorations(view, getAssetUrl, editorMode) {
     }
 
     // Inline math: $...$ (but not $$)
-    const inlineMathRegex = /(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)/g;
+    // Require non-whitespace immediately inside both delimiters and forbid an
+    // inner '$', so currency like "$725 billion ... $80B" is NOT treated as math
+    // (mirrors Obsidian/KaTeX rules). A leading '\' escapes the dollar sign.
+    const inlineMathRegex = /(?<![\\$])\$(?![\s$])([^\n$]*?[^\s$])\$(?!\$)/g;
     while ((match = inlineMathRegex.exec(doc)) !== null) {
         const from = match.index;
         const to = from + match[0].length;
@@ -338,7 +340,6 @@ function buildDecorations(view, getAssetUrl, editorMode) {
     while ((match = highlightRegex.exec(doc)) !== null) {
         const from = match.index;
         const to = from + match[0].length;
-        const text = match[1];
 
         // Skip if overlaps with a math block or code block (simplified code checks to avoid parsing overlap)
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;

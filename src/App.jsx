@@ -49,6 +49,9 @@ export default function App() {
   const [editorPadding, setEditorPadding] = useState(() => parseInt(localStorage.getItem('editorPadding') || '6', 10));
   const [showSettings, setShowSettings] = useState(false);
 
+  // Custom font loaded from Google Fonts (empty string = use the default)
+  const [fontFamily, setFontFamily] = useState(() => localStorage.getItem('fontFamily') || '');
+
   // Keep HTML root data attribute in sync with state for global CSS variables
   useEffect(() => {
     if (theme === 'light') {
@@ -75,10 +78,35 @@ export default function App() {
     localStorage.setItem('editorPadding', editorPadding);
   }, [editorPadding]);
 
+  // Load a Google Font by name and apply it app-wide via --font-text.
+  useEffect(() => {
+    localStorage.setItem('fontFamily', fontFamily);
+    const linkId = 'google-font-link';
+    let link = document.getElementById(linkId);
+    const family = fontFamily.trim();
+    const fallback = '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "Roboto", sans-serif';
+
+    if (family) {
+      const href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@400;500;600;700&display=swap`;
+      if (!link) {
+        link = document.createElement('link');
+        link.id = linkId;
+        link.rel = 'stylesheet';
+        document.head.appendChild(link);
+      }
+      link.href = href;
+      document.documentElement.style.setProperty('--font-text', `"${family}", ${fallback}`);
+    } else {
+      if (link) link.remove();
+      document.documentElement.style.removeProperty('--font-text');
+    }
+  }, [fontFamily]);
+
   const handleResetDefaults = useCallback((defaults) => {
     setEditorFontSize(defaults.editorFontSize);
     setTreeFontSize(defaults.treeFontSize);
     setEditorPadding(defaults.editorPadding);
+    setFontFamily('');
   }, []);
 
   // Expanded folder paths (persisted via localStorage)
@@ -501,9 +529,11 @@ export default function App() {
           editorFontSize={editorFontSize}
           treeFontSize={treeFontSize}
           editorPadding={editorPadding}
+          fontFamily={fontFamily}
           onEditorFontSizeChange={setEditorFontSize}
           onTreeFontSizeChange={setTreeFontSize}
           onEditorPaddingChange={setEditorPadding}
+          onFontFamilyChange={setFontFamily}
           onResetDefaults={handleResetDefaults}
           onClose={() => setShowSettings(false)}
         />

@@ -1,8 +1,8 @@
 import React, { useRef } from 'react';
 
-const DEFAULTS = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6 };
+const DEFAULTS = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, caretStyle: 'line', caretThickness: 2, smoothCaret: false, caretSpeed: 80 };
 
-export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, fontFamily, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onFontFamilyChange, onResetDefaults, onClose }) {
+export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onResetDefaults, onClose }) {
     // Uncontrolled input (keyed on fontFamily) so we only load the Google Font
     // when the user commits the name, and it auto-resets on "Reset to Defaults".
     const fontInputRef = useRef(null);
@@ -86,6 +86,80 @@ export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadd
                             Type any font name from <a href="https://fonts.google.com" target="_blank" rel="noreferrer">Google Fonts</a>; it loads automatically. Leave blank for the default.
                         </p>
                     </div>
+                    <div className="settings-group">
+                        <label className="settings-label">Caret Style</label>
+                        <div className="settings-segmented">
+                            <button
+                                className={`settings-segment${caretStyle === 'line' ? ' active' : ''}`}
+                                onClick={() => onCaretStyleChange('line')}
+                            >
+                                Line
+                            </button>
+                            <button
+                                className={`settings-segment${caretStyle === 'block' ? ' active' : ''}`}
+                                onClick={() => onCaretStyleChange('block')}
+                            >
+                                Block
+                            </button>
+                        </div>
+                        <p className="settings-hint">
+                            “Block” gives a thick, terminal-style caret. “Line” is a thin bar.
+                        </p>
+                    </div>
+                    {caretStyle === 'line' && (
+                        <div className="settings-group">
+                            <label className="settings-label">
+                                Caret Thickness
+                                <span className="settings-value">{caretThickness}px</span>
+                            </label>
+                            <input
+                                type="range"
+                                min="1"
+                                max="6"
+                                step="1"
+                                value={caretThickness}
+                                onChange={(e) => onCaretThicknessChange(parseInt(e.target.value, 10))}
+                                className="settings-slider"
+                            />
+                        </div>
+                    )}
+                    <div className="settings-group">
+                        <label className="settings-label" htmlFor="smooth-caret-toggle">
+                            Smooth Caret Motion
+                            <button
+                                id="smooth-caret-toggle"
+                                role="switch"
+                                aria-checked={smoothCaret}
+                                className={`settings-toggle${smoothCaret ? ' on' : ''}`}
+                                onClick={() => onSmoothCaretChange(!smoothCaret)}
+                            >
+                                <span className="settings-toggle-knob" />
+                            </button>
+                        </label>
+                        <p className="settings-hint">
+                            Glides the caret between positions for a smooth, MS Word–like feel.
+                        </p>
+                    </div>
+                    {smoothCaret && (
+                        <div className="settings-group">
+                            <label className="settings-label">
+                                Caret Animation Speed
+                                <span className="settings-value">{caretSpeed}ms</span>
+                            </label>
+                            <input
+                                type="range"
+                                min="20"
+                                max="200"
+                                step="10"
+                                value={caretSpeed}
+                                onChange={(e) => onCaretSpeedChange(parseInt(e.target.value, 10))}
+                                className="settings-slider"
+                            />
+                            <p className="settings-hint">
+                                Higher is slower and more pronounced; lower is snappier.
+                            </p>
+                        </div>
+                    )}
                     <button
                         className="settings-reset-btn"
                         onClick={() => onResetDefaults(DEFAULTS)}

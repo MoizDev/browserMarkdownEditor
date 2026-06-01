@@ -19,7 +19,17 @@ export const obsidianDarkTheme = EditorView.theme({
         lineHeight: '1.65',
         fontFamily: 'inherit',
     },
-    '.cm-cursor, .cm-dropCursor': {
+    // Caret styling is driven by CSS variables (set from the Settings panel) so
+    // the line/block thickness and smooth-movement animation can change live.
+    '.cm-cursor': {
+        borderLeftColor: '#dcddde',
+        borderLeftWidth: 'var(--caret-line-width, 2px)',
+        width: 'var(--caret-block-width, 0px)',
+        backgroundColor: 'var(--caret-block-bg, transparent)',
+        borderRadius: 'var(--caret-radius, 0)',
+        transition: 'var(--caret-transition, none)',
+    },
+    '.cm-dropCursor': {
         borderLeftColor: '#dcddde',
         borderLeftWidth: '2px',
     },
@@ -101,7 +111,16 @@ export const obsidianLightTheme = EditorView.theme({
         lineHeight: '1.65',
         fontFamily: 'inherit',
     },
-    '.cm-cursor, .cm-dropCursor': {
+    // See the dark theme above — caret look is controlled via CSS variables.
+    '.cm-cursor': {
+        borderLeftColor: '#2e3338',
+        borderLeftWidth: 'var(--caret-line-width, 2px)',
+        width: 'var(--caret-block-width, 0px)',
+        backgroundColor: 'var(--caret-block-bg, transparent)',
+        borderRadius: 'var(--caret-radius, 0)',
+        transition: 'var(--caret-transition, none)',
+    },
+    '.cm-dropCursor': {
         borderLeftColor: '#2e3338',
         borderLeftWidth: '2px',
     },

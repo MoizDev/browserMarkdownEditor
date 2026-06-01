@@ -49,6 +49,15 @@ export default function App() {
   const [editorPadding, setEditorPadding] = useState(() => parseInt(localStorage.getItem('editorPadding') || '6', 10));
   const [showSettings, setShowSettings] = useState(false);
 
+  // Caret (text cursor) appearance settings — persisted via localStorage.
+  // caretStyle: 'line' (thin bar) or 'block' (thick terminal-style block).
+  // smoothCaret: glide the caret between positions like MS Word.
+  // caretSpeed: duration (ms) of that glide.
+  const [caretStyle, setCaretStyle] = useState(() => localStorage.getItem('caretStyle') || 'line');
+  const [caretThickness, setCaretThickness] = useState(() => parseInt(localStorage.getItem('caretThickness') || '2', 10));
+  const [smoothCaret, setSmoothCaret] = useState(() => localStorage.getItem('smoothCaret') === 'true');
+  const [caretSpeed, setCaretSpeed] = useState(() => parseInt(localStorage.getItem('caretSpeed') || '80', 10));
+
   // Custom font loaded from Google Fonts (empty string = use the default)
   const [fontFamily, setFontFamily] = useState(() => localStorage.getItem('fontFamily') || '');
 
@@ -78,6 +87,31 @@ export default function App() {
     localStorage.setItem('editorPadding', editorPadding);
   }, [editorPadding]);
 
+  // Translate the caret settings into CSS variables the CodeMirror theme reads.
+  useEffect(() => {
+    const root = document.documentElement.style;
+    const isBlock = caretStyle === 'block';
+
+    // A block caret fills ~0.6 character widths with a semi-transparent overlay
+    // so the glyph beneath stays readable; a line caret uses the thickness slider.
+    root.setProperty('--caret-line-width', isBlock ? '0px' : caretThickness + 'px');
+    root.setProperty('--caret-block-width', isBlock ? '0.6em' : '0px');
+    root.setProperty('--caret-block-bg', isBlock
+      ? (theme === 'light' ? 'rgba(46, 51, 56, 0.4)' : 'rgba(220, 221, 222, 0.45)')
+      : 'transparent');
+    root.setProperty('--caret-radius', isBlock ? '1px' : '0');
+
+    // The smooth glide that gives it the MS Word feel — animate position & height.
+    root.setProperty('--caret-transition', smoothCaret
+      ? `left ${caretSpeed}ms ease-out, top ${caretSpeed}ms ease-out, height ${caretSpeed}ms ease-out`
+      : 'none');
+
+    localStorage.setItem('caretStyle', caretStyle);
+    localStorage.setItem('caretThickness', caretThickness);
+    localStorage.setItem('smoothCaret', smoothCaret);
+    localStorage.setItem('caretSpeed', caretSpeed);
+  }, [caretStyle, caretThickness, smoothCaret, caretSpeed, theme]);
+
   // Load a Google Font by name and apply it app-wide via --font-text.
   useEffect(() => {
     localStorage.setItem('fontFamily', fontFamily);
@@ -106,6 +140,10 @@ export default function App() {
     setEditorFontSize(defaults.editorFontSize);
     setTreeFontSize(defaults.treeFontSize);
     setEditorPadding(defaults.editorPadding);
+    setCaretStyle(defaults.caretStyle);
+    setCaretThickness(defaults.caretThickness);
+    setSmoothCaret(defaults.smoothCaret);
+    setCaretSpeed(defaults.caretSpeed);
     setFontFamily('');
   }, []);
 
@@ -530,10 +568,18 @@ export default function App() {
           treeFontSize={treeFontSize}
           editorPadding={editorPadding}
           fontFamily={fontFamily}
+          caretStyle={caretStyle}
+          caretThickness={caretThickness}
+          smoothCaret={smoothCaret}
+          caretSpeed={caretSpeed}
           onEditorFontSizeChange={setEditorFontSize}
           onTreeFontSizeChange={setTreeFontSize}
           onEditorPaddingChange={setEditorPadding}
           onFontFamilyChange={setFontFamily}
+          onCaretStyleChange={setCaretStyle}
+          onCaretThicknessChange={setCaretThickness}
+          onSmoothCaretChange={setSmoothCaret}
+          onCaretSpeedChange={setCaretSpeed}
           onResetDefaults={handleResetDefaults}
           onClose={() => setShowSettings(false)}
         />

@@ -40,11 +40,11 @@
   --nav-item-size: 13px;
 
   /* ── Caret (set live from the Settings panel) ── */
-  --caret-line-width: 2px;
+  --caret-line-width: 10px;
   --caret-block-width: 0px;
   --caret-block-bg: transparent;
   --caret-radius: 0;
-  --caret-transition: none;
+  --caret-transition: left 80ms ease-out, top 80ms ease-out, height 80ms ease-out;
 
   /* ── Sizing ── */
   --nav-item-height: 28px;

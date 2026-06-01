@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 
-const DEFAULTS = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, caretStyle: 'line', caretThickness: 2, smoothCaret: false, caretSpeed: 80 };
+const DEFAULTS = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80 };
 
 export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onResetDefaults, onClose }) {
     // Uncontrolled input (keyed on fontFamily) so we only load the Google Font
@@ -115,7 +115,7 @@ export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadd
                             <input
                                 type="range"
                                 min="1"
-                                max="6"
+                                max="10"
                                 step="1"
                                 value={caretThickness}
                                 onChange={(e) => onCaretThicknessChange(parseInt(e.target.value, 10))}

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { EditorView, keymap } from '@codemirror/view';
+import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
@@ -78,6 +78,9 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 doc: fileContent || '',
                 extensions: [
                     EditorView.lineWrapping,
+                    // Draw a custom cursor element (.cm-cursor) instead of using the
+                    // native browser caret, so the caret style/animation settings apply.
+                    drawSelection(),
                     history(),
                     closeBrackets(),
                     markdown({ base: markdownLanguage, codeLanguages: languages }),

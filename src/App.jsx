@@ -54,8 +54,8 @@ export default function App() {
   // smoothCaret: glide the caret between positions like MS Word.
   // caretSpeed: duration (ms) of that glide.
   const [caretStyle, setCaretStyle] = useState(() => localStorage.getItem('caretStyle') || 'line');
-  const [caretThickness, setCaretThickness] = useState(() => parseInt(localStorage.getItem('caretThickness') || '2', 10));
-  const [smoothCaret, setSmoothCaret] = useState(() => localStorage.getItem('smoothCaret') === 'true');
+  const [caretThickness, setCaretThickness] = useState(() => parseInt(localStorage.getItem('caretThickness') || '10', 10));
+  const [smoothCaret, setSmoothCaret] = useState(() => (localStorage.getItem('smoothCaret') ?? 'true') === 'true');
   const [caretSpeed, setCaretSpeed] = useState(() => parseInt(localStorage.getItem('caretSpeed') || '80', 10));
 
   // Custom font loaded from Google Fonts (empty string = use the default)

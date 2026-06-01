@@ -14,7 +14,8 @@ export const obsidianDarkTheme = EditorView.theme({
         height: '100%',
     },
     '.cm-content': {
-        caretColor: '#dcddde',
+        // Hide the native caret; drawSelection() renders the styled .cm-cursor instead.
+        caretColor: 'transparent',
         padding: '24px 32px',
         lineHeight: '1.65',
         fontFamily: 'inherit',
@@ -106,7 +107,8 @@ export const obsidianLightTheme = EditorView.theme({
         height: '100%',
     },
     '.cm-content': {
-        caretColor: '#2e3338',
+        // Hide the native caret; drawSelection() renders the styled .cm-cursor instead.
+        caretColor: 'transparent',
         padding: '24px 32px',
         lineHeight: '1.65',
         fontFamily: 'inherit',

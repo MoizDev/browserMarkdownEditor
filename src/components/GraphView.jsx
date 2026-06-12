@@ -26,6 +26,9 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     const hoverRef = useRef(null);        // hovered node id
     const colorsRef = useRef({});
     const rafRef = useRef(0);
+    const alphaRef = useRef(1);          // simulation "temperature"; cools to rest
+    const activeRef = useRef(activeFilePath);
+    const dirtyRef = useRef(true);       // request a one-off redraw while at rest
 
     const [hoverName, setHoverName] = useState(null);
 
@@ -63,6 +66,9 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 i++;
             }
         }
+        // Re-energise the layout so it re-settles into the new topology, then rests.
+        alphaRef.current = 1;
+        dirtyRef.current = true;
     }, [nodes]);
 
     // Read theme colors from CSS variables whenever the theme flips.
@@ -78,7 +84,14 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             edge: theme === 'light' ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.10)',
             edgeHi: v('--interactive-accent', '#8a5cf6'),
         };
-    }, [theme, nodes]);
+        dirtyRef.current = true;
+    }, [theme]);
+
+    // Keep the highlighted node in a ref so changing it doesn't restart the loop.
+    useEffect(() => {
+        activeRef.current = activeFilePath;
+        dirtyRef.current = true;
+    }, [activeFilePath]);
 
     // Main render + physics loop.
     useEffect(() => {
@@ -96,6 +109,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             canvas.height = Math.max(1, Math.floor(height * dpr));
             canvas.style.width = width + 'px';
             canvas.style.height = height + 'px';
+            dirtyRef.current = true;
         };
         resize();
         const ro = new ResizeObserver(resize);
@@ -103,15 +117,29 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
 
         const nodeRadius = (n) => 4 + Math.min(10, Math.sqrt(n.degree || 0) * 2.2);
 
+        const ALPHA_DECAY = 0.0228;   // cools to rest in a few seconds (D3-style)
+        const ALPHA_MIN = 0.001;      // below this the layout is considered settled
+        const DRAG_ALPHA = 0.1;       // keep a little warmth so neighbours react while dragging
+        const MIN_D2 = 100;           // clamp repulsion denominator (>=10px) — no explosions
+        const MAX_V = 30;             // clamp per-frame speed — no Euler blow-ups
+
         const step = () => {
             const sim = simNodes.current;
+            const dragging = draggingRef.current;
+            let alpha = alphaRef.current;
+
+            // Once cooled (and not interacting) the layout is at rest — skip physics.
+            if (alpha < ALPHA_MIN && !dragging) return false;
+            if (dragging) alpha = Math.max(alpha, DRAG_ALPHA);
+
             const REPULSION = 1400;
             const SPRING = 0.02;
             const LINK_LEN = 70;
             const CENTER = 0.012;
             const DAMP = 0.82;
 
-            // Repulsion (O(n^2) — fine for typical vaults).
+            // Repulsion (O(n^2) — fine for typical vaults). Scaled by alpha and
+            // distance-clamped so crowded nodes can't fling each other off-screen.
             for (let a = 0; a < nodes.length; a++) {
                 const pa = sim.get(nodes[a].id);
                 if (!pa) continue;
@@ -123,7 +151,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     let d2 = dx * dx + dy * dy;
                     if (d2 < 0.01) { dx = (a - b) || 1; dy = 1; d2 = dx * dx + dy * dy; }
                     const dist = Math.sqrt(d2);
-                    const force = REPULSION / d2;
+                    const force = (REPULSION / Math.max(d2, MIN_D2)) * alpha;
                     const fx = (dx / dist) * force;
                     const fy = (dy / dist) * force;
                     pa.vx += fx; pa.vy += fy;
@@ -131,7 +159,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 }
             }
 
-            // Link springs.
+            // Link springs (also scaled by alpha).
             for (const l of links) {
                 const ps = sim.get(l.source);
                 const pt = sim.get(l.target);
@@ -139,28 +167,34 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 const dx = pt.x - ps.x;
                 const dy = pt.y - ps.y;
                 const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
-                const force = (dist - LINK_LEN) * SPRING;
+                const force = (dist - LINK_LEN) * SPRING * alpha;
                 const fx = (dx / dist) * force;
                 const fy = (dy / dist) * force;
                 ps.vx += fx; ps.vy += fy;
                 pt.vx -= fx; pt.vy -= fy;
             }
 
-            // Gravity toward center + integrate.
+            // Gravity toward center + integrate (friction + speed clamp).
             for (const n of nodes) {
                 const p = sim.get(n.id);
                 if (!p) continue;
-                if (draggingRef.current && draggingRef.current.id === n.id) {
+                if (dragging && dragging.id === n.id) {
                     p.vx = 0; p.vy = 0;
                     continue;
                 }
-                p.vx += -p.x * CENTER;
-                p.vy += -p.y * CENTER;
+                p.vx += -p.x * CENTER * alpha;
+                p.vy += -p.y * CENTER * alpha;
                 p.vx *= DAMP;
                 p.vy *= DAMP;
+                if (p.vx > MAX_V) p.vx = MAX_V; else if (p.vx < -MAX_V) p.vx = -MAX_V;
+                if (p.vy > MAX_V) p.vy = MAX_V; else if (p.vy < -MAX_V) p.vy = -MAX_V;
                 p.x += p.vx;
                 p.y += p.vy;
             }
+
+            // Cool toward rest (unless actively dragging, which holds it warm).
+            if (!dragging) alphaRef.current = alpha + (0 - alpha) * ALPHA_DECAY;
+            return true;
         };
 
         const draw = () => {
@@ -168,7 +202,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             const view = viewRef.current;
             const c = colorsRef.current;
             const hovered = hoverRef.current;
-            const highlight = hovered || activeFilePath;
+            const highlight = hovered || activeRef.current;
             const neighbours = highlight ? adjacency.get(highlight) : null;
 
             ctx.save();
@@ -205,7 +239,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 const x = tx(p.x), y = ty(p.y);
                 const r = nodeRadius(n) * Math.max(0.6, Math.min(1.6, view.scale));
 
-                const isActive = n.id === activeFilePath;
+                const isActive = n.id === activeRef.current;
                 const isHovered = n.id === hovered;
                 const isNeighbour = neighbours && neighbours.has(n.id);
                 const dim = highlight && !isActive && !isHovered && !isNeighbour && n.id !== highlight;
@@ -241,8 +275,12 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         };
 
         const loop = () => {
-            step();
-            draw();
+            const moved = step();
+            // Only repaint when something actually changed — a settled graph idles.
+            if (moved || dirtyRef.current) {
+                draw();
+                dirtyRef.current = false;
+            }
             rafRef.current = requestAnimationFrame(loop);
         };
         loop();
@@ -251,7 +289,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             cancelAnimationFrame(rafRef.current);
             ro.disconnect();
         };
-    }, [nodes, links, adjacency, activeFilePath]);
+    }, [nodes, links, adjacency]);
 
     // ── Pointer interaction ────────────────────────────────────────────────
     const screenToWorld = (clientX, clientY) => {
@@ -288,6 +326,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         const hit = hitTest(e.clientX, e.clientY);
         if (hit) {
             draggingRef.current = { id: hit.id };
+            alphaRef.current = Math.max(alphaRef.current, 0.3); // wake neighbours
         } else {
             panningRef.current = { x: e.clientX, y: e.clientY };
         }
@@ -300,6 +339,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             const w = screenToWorld(e.clientX, e.clientY);
             const p = simNodes.current.get(draggingRef.current.id);
             if (p) { p.x = w.x; p.y = w.y; p.vx = 0; p.vy = 0; }
+            dirtyRef.current = true;
             return;
         }
         if (panningRef.current) {
@@ -307,6 +347,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             view.offsetX += e.clientX - panningRef.current.x;
             view.offsetY += e.clientY - panningRef.current.y;
             panningRef.current = { x: e.clientX, y: e.clientY };
+            dirtyRef.current = true;
             return;
         }
         // Hover detection.
@@ -316,6 +357,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             hoverRef.current = id;
             setHoverName(hit ? hit.name : null);
             if (wrapRef.current) wrapRef.current.style.cursor = hit ? 'pointer' : 'grab';
+            dirtyRef.current = true;
         }
     };
 
@@ -341,10 +383,12 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         view.offsetX -= mx * (newScale / view.scale - 1);
         view.offsetY -= my * (newScale / view.scale - 1);
         view.scale = newScale;
+        dirtyRef.current = true;
     };
 
     const resetView = () => {
         viewRef.current = { scale: 1, offsetX: 0, offsetY: 0 };
+        dirtyRef.current = true;
     };
 
     if (!nodes.length) {
@@ -375,7 +419,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
-                onPointerLeave={() => { hoverRef.current = null; setHoverName(null); }}
+                onPointerLeave={() => { hoverRef.current = null; setHoverName(null); dirtyRef.current = true; }}
                 onWheel={onWheel}
             >
                 <canvas ref={canvasRef} />

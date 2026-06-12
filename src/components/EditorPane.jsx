@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
@@ -11,9 +11,12 @@ import { createLivePreviewPlugin } from '../editor/livePreview.js';
 import { markdownFormatExtension } from '../editor/formatKeymap.js';
 import { Compartment } from '@codemirror/state';
 import { useFileSystem } from '../context/FileSystemContext.jsx';
+import BacklinksPanel from './BacklinksPanel.jsx';
+import { Link } from './icons.jsx';
+import { getBacklinkNodes } from '../utils/graph.js';
 import 'katex/dist/katex.min.css';
 
-export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, onContentChange, onSave, onOpenNote }) {
+export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, onContentChange, onSave, onOpenNote, graph, onOpenNode }) {
     const { getAssetUrl, saveAsset } = useFileSystem();
     const editorContainerRef = useRef(null);
     const viewRef = useRef(null);
@@ -24,6 +27,51 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     const activeFileRef = useRef(activeFile);
     const onOpenNoteRef = useRef(onOpenNote);
     const saveScrollTimeoutRef = useRef(null);
+
+    // ── Linked mentions popover ────────────────────────────────────────────
+    const [showBacklinks, setShowBacklinks] = useState(false);
+    const [popoverPos, setPopoverPos] = useState(null);
+    const backlinksBtnRef = useRef(null);
+
+    const backlinkNodes = useMemo(
+        () => getBacklinkNodes(graph, activeFile?.path),
+        [graph, activeFile]
+    );
+
+    const closeBacklinks = useCallback(() => setShowBacklinks(false), []);
+
+    const toggleBacklinks = useCallback(() => {
+        setShowBacklinks(prev => {
+            const next = !prev;
+            if (next && backlinksBtnRef.current) {
+                const r = backlinksBtnRef.current.getBoundingClientRect();
+                setPopoverPos({
+                    top: Math.round(r.bottom + 6),
+                    right: Math.max(8, Math.round(window.innerWidth - r.right)),
+                });
+            }
+            return next;
+        });
+    }, []);
+
+    // Dismiss the popover on outside-click, Escape, or window resize.
+    useEffect(() => {
+        if (!showBacklinks) return;
+        const onPointerDown = (e) => {
+            if (e.target.closest('.backlinks-popover') || e.target.closest('.backlinks-toggle')) return;
+            setShowBacklinks(false);
+        };
+        const onKeyDown = (e) => { if (e.key === 'Escape') setShowBacklinks(false); };
+        const onResize = () => setShowBacklinks(false);
+        document.addEventListener('pointerdown', onPointerDown, true);
+        document.addEventListener('keydown', onKeyDown);
+        window.addEventListener('resize', onResize);
+        return () => {
+            document.removeEventListener('pointerdown', onPointerDown, true);
+            document.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('resize', onResize);
+        };
+    }, [showBacklinks]);
 
     // Debounced scroll persistence
     const handleScroll = (view) => {
@@ -262,6 +310,21 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     {activeFile.name} {editorMode === 'read' && <span style={{ opacity: 0.6, fontStyle: 'italic', marginLeft: 6 }}>(Read-Only)</span>}
                 </span>
                 {saveStatus && <span className="save-status">{saveStatus}</span>}
+                {!activeFile.isHelp && (
+                    <button
+                        ref={backlinksBtnRef}
+                        className={`view-header-action backlinks-toggle${showBacklinks ? ' active' : ''}`}
+                        onClick={toggleBacklinks}
+                        title="Linked mentions"
+                        aria-label="Linked mentions"
+                        aria-expanded={showBacklinks}
+                    >
+                        <Link size={15} />
+                        {backlinkNodes.length > 0 && (
+                            <span className="view-header-action-count">{backlinkNodes.length}</span>
+                        )}
+                    </button>
+                )}
             </div>
             <div
                 className="view-content"
@@ -288,6 +351,14 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     }
                 }}
             />
+            {showBacklinks && !activeFile.isHelp && (
+                <BacklinksPanel
+                    nodes={backlinkNodes}
+                    onOpenNode={onOpenNode}
+                    onClose={closeBacklinks}
+                    style={popoverPos ? { position: 'fixed', top: popoverPos.top, right: popoverPos.right } : undefined}
+                />
+            )}
         </div>
     );
 }

@@ -7,7 +7,6 @@ import FileExplorer from './components/FileExplorer.jsx';
 import EditorPane from './components/EditorPane.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
 import GraphView from './components/GraphView.jsx';
-import BacklinksPanel from './components/BacklinksPanel.jsx';
 import { Settings, HelpCircle, Network, FileTextOutline } from './components/icons.jsx';
 
 export default function App() {
@@ -541,25 +540,18 @@ export default function App() {
             theme={theme}
           />
         ) : (
-          <>
-            <EditorPane
-              activeFile={activeFile}
-              fileContent={fileContent}
-              theme={theme}
-              editorMode={editorMode}
-              saveStatus={saveStatus}
-              onContentChange={setFileContent}
-              onSave={handleSave}
-              onOpenNote={openNoteByName}
-            />
-            {activeFile && !activeFile.isHelp && (
-              <BacklinksPanel
-                graph={graph}
-                activeFilePath={activeFile.path}
-                onOpenNode={handleOpenNode}
-              />
-            )}
-          </>
+          <EditorPane
+            activeFile={activeFile}
+            fileContent={fileContent}
+            theme={theme}
+            editorMode={editorMode}
+            saveStatus={saveStatus}
+            onContentChange={setFileContent}
+            onSave={handleSave}
+            onOpenNote={openNoteByName}
+            graph={graph}
+            onOpenNode={handleOpenNode}
+          />
         )}
       </div>
       {showSettings && (

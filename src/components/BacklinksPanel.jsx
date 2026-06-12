@@ -1,55 +1,49 @@
-import React, { useState } from 'react';
-import { ChevronRight, ChevronDown, FileText } from './icons.jsx';
+import React from 'react';
+import { FileText } from './icons.jsx';
 import { baseName } from '../utils/graph.js';
 
 /**
- * BacklinksPanel — a collapsible footer showing every note that links to
- * the currently open note. Clicking a backlink opens that note.
+ * BacklinksPanel — a small dismissible popover listing every note that links to
+ * the currently open note ("Linked mentions"). It is rendered by EditorPane and
+ * anchored under the top-bar button; clicking a mention opens that note.
  *
- * @param graph          the graph object from buildGraph()
- * @param activeFilePath path of the note currently open
- * @param onOpenNode     (node) => void  — open a note by its graph node
+ * @param nodes       backlink graph nodes (from getBacklinkNodes)
+ * @param onOpenNode  (node) => void — open a note by its graph node
+ * @param onClose     () => void — dismiss the popover
+ * @param style       inline positioning (fixed top/right) from the anchor button
  */
-export default function BacklinksPanel({ graph, activeFilePath, onOpenNode }) {
-    const [collapsed, setCollapsed] = useState(false);
-
-    if (!activeFilePath) return null;
-
-    const sourceIds = (graph?.backlinks?.[activeFilePath]) || [];
-    const nodeById = new Map((graph?.nodes || []).map(n => [n.id, n]));
-    const backlinkNodes = sourceIds
-        .map(id => nodeById.get(id))
-        .filter(Boolean);
-
+export default function BacklinksPanel({ nodes = [], onOpenNode, onClose, style }) {
     return (
-        <div className="backlinks-panel">
-            <button
-                className="backlinks-header"
-                onClick={() => setCollapsed(c => !c)}
-            >
-                {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+        <div className="backlinks-popover" style={style} role="dialog" aria-label="Linked mentions">
+            <div className="backlinks-popover-header">
                 <span className="backlinks-title">Linked mentions</span>
-                <span className="backlinks-count">{backlinkNodes.length}</span>
-            </button>
-            {!collapsed && (
-                <div className="backlinks-body">
-                    {backlinkNodes.length === 0 ? (
-                        <p className="backlinks-empty">No backlinks to this note yet.</p>
-                    ) : (
-                        backlinkNodes.map(n => (
-                            <button
-                                key={n.id}
-                                className="backlink-item"
-                                onClick={() => !n.unresolved && onOpenNode(n)}
-                                title={n.label}
-                            >
-                                <FileText size={13} />
-                                <span className="backlink-name">{baseName(n.name)}</span>
-                            </button>
-                        ))
-                    )}
-                </div>
-            )}
+                <span className="backlinks-count">{nodes.length}</span>
+                <button
+                    className="backlinks-popover-close"
+                    onClick={onClose}
+                    title="Close"
+                    aria-label="Close linked mentions"
+                >
+                    ×
+                </button>
+            </div>
+            <div className="backlinks-body">
+                {nodes.length === 0 ? (
+                    <p className="backlinks-empty">No backlinks to this note yet.</p>
+                ) : (
+                    nodes.map(n => (
+                        <button
+                            key={n.id}
+                            className="backlink-item"
+                            onClick={() => { if (!n.unresolved) { onOpenNode(n); onClose(); } }}
+                            title={n.label}
+                        >
+                            <FileText size={13} />
+                            <span className="backlink-name">{baseName(n.name)}</span>
+                        </button>
+                    ))
+                )}
+            </div>
         </div>
     );
 }

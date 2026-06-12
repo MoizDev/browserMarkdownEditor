@@ -121,7 +121,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         const ALPHA_MIN = 0.001;      // below this the layout is considered settled
         const DRAG_ALPHA = 0.1;       // keep a little warmth so neighbours react while dragging
         const MIN_D2 = 100;           // clamp repulsion denominator (>=10px) — no explosions
-        const MAX_V = 30;             // clamp per-frame speed — no Euler blow-ups
+        const MAX_V = 8;              // clamp per-frame speed; low enough that a node can't
+                                      // overshoot its ~60px springs and fling off-screen
 
         const step = () => {
             const sim = simNodes.current;
@@ -132,11 +133,15 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             if (alpha < ALPHA_MIN && !dragging) return false;
             if (dragging) alpha = Math.max(alpha, DRAG_ALPHA);
 
-            const REPULSION = 1400;
-            const SPRING = 0.02;
-            const LINK_LEN = 70;
-            const CENTER = 0.012;
-            const DAMP = 0.82;
+            const REPULSION = 1200;
+            const SPRING = 0.045;      // tighter springs so linked notes cluster instead of drifting
+            const LINK_LEN = 60;
+            // Gravity scales with the node count (∝ √n) so a larger, more densely
+            // linked vault is reeled in proportionally rather than expanding without
+            // bound. This is what stops the graph "exploding" as you add more links.
+            const CENTER = 0.015 + 0.0016 * Math.sqrt(nodes.length);
+            const DAMP = 0.6;          // stronger friction — kills the velocity build-up that
+                                       // let dense graphs ride the speed clamp (was 0.82 ≈ 4.6× gain)
 
             // Repulsion (O(n^2) — fine for typical vaults). Scaled by alpha and
             // distance-clamped so crowded nodes can't fling each other off-screen.

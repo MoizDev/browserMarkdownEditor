@@ -13,13 +13,45 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
  *   - Mouse wheel       -> zoom
  *   - Hover             -> highlight node + its neighbours
  */
+/**
+ * Base (unzoomed) node radius from its connection count. Nodes with more
+ * references render noticeably larger, like Obsidian's graph — the √degree
+ * curve keeps hubs prominent without letting one node dwarf everything.
+ */
+function nodeBaseRadius(n, maxDegree) {
+    // Normalise against the most-linked note, then bias the curve upward (^1.7)
+    // so the top hubs balloon while ordinary notes stay small and similar — a
+    // modest lead in link count buys a big jump in size at the high end.
+    const t = maxDegree > 0 ? Math.min(1, (n.degree || 0) / maxDegree) : 0;
+    return 3 + 26 * Math.pow(t, 1.7);
+}
+
+/**
+ * Vibrant node palette in the spirit of Obsidian's graph. Each note gets a
+ * stable colour hashed from its id, so the graph is colourful and a given
+ * note keeps the same colour across renders.
+ */
+const NODE_PALETTE = [
+    '#a78bfa', '#8b5cf6', // violets
+    '#34d399', '#2dd4bf', // greens / teal
+    '#fbbf24', '#f59e0b', // ambers (the big hubs read orange)
+    '#fb7185', '#f472b6', '#ef4444', // rose / pink / red
+    '#60a5fa', '#22d3ee', // blue / cyan
+    '#a3e635', '#94a3b8', // lime / slate
+];
+function nodeColor(id) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+    return NODE_PALETTE[Math.abs(h) % NODE_PALETTE.length];
+}
+
 export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme }) {
     const canvasRef = useRef(null);
     const wrapRef = useRef(null);
 
     // Simulation state lives in refs so the animation loop never restarts.
     const simNodes = useRef(new Map());   // id -> { x, y, vx, vy }
-    const viewRef = useRef({ scale: 1, offsetX: 0, offsetY: 0 });
+    const viewRef = useRef({ scale: 2.5, offsetX: 0, offsetY: 0 });
     const draggingRef = useRef(null);     // { id } while dragging a node
     const panningRef = useRef(null);      // { x, y } while panning
     const movedRef = useRef(false);       // distinguish click vs drag
@@ -43,6 +75,12 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         }
         return adj;
     }, [links]);
+
+    // Most-linked note in the vault — drives the (normalised) node sizing.
+    const maxDegree = useMemo(
+        () => nodes.reduce((m, n) => Math.max(m, n.degree || 0), 0),
+        [nodes]
+    );
 
     // Seed positions for any new nodes; drop positions for removed nodes.
     useEffect(() => {
@@ -81,8 +119,9 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             nodeActive: v('--interactive-accent', '#8a5cf6'),
             text: v('--text-normal', '#dcddde'),
             faint: v('--text-faint', '#666'),
-            edge: theme === 'light' ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.10)',
-            edgeHi: v('--interactive-accent', '#8a5cf6'),
+            edge: theme === 'light' ? 'rgba(0,0,0,0.044)' : 'rgba(255,255,255,0.044)',
+            edgeHi: v('--interactive-accent', '#8a5cf6'),   // accent for a focused node's links
+            ring: theme === 'light' ? '#1e1e1e' : '#ffffff',
         };
         dirtyRef.current = true;
     }, [theme]);
@@ -115,7 +154,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         const ro = new ResizeObserver(resize);
         ro.observe(wrap);
 
-        const nodeRadius = (n) => 4 + Math.min(10, Math.sqrt(n.degree || 0) * 2.2);
+        const nodeRadius = (n) => nodeBaseRadius(n, maxDegree);
 
         const ALPHA_DECAY = 0.0228;   // cools to rest in a few seconds (D3-style)
         const ALPHA_MIN = 0.001;      // below this the layout is considered settled
@@ -133,13 +172,14 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             if (alpha < ALPHA_MIN && !dragging) return false;
             if (dragging) alpha = Math.max(alpha, DRAG_ALPHA);
 
-            const REPULSION = 1200;
-            const SPRING = 0.045;      // tighter springs so linked notes cluster instead of drifting
-            const LINK_LEN = 60;
-            // Gravity scales with the node count (∝ √n) so a larger, more densely
-            // linked vault is reeled in proportionally rather than expanding without
-            // bound. This is what stops the graph "exploding" as you add more links.
-            const CENTER = 0.015 + 0.0016 * Math.sqrt(nodes.length);
+            const REPULSION = 16000;   // strong node-to-node push so the graph breathes wide open,
+                                       // spacing nodes far enough apart to see the link mesh between them
+            const SPRING = 0.03;       // soft springs let links stretch to ~LINK_LEN without bunching
+            const LINK_LEN = 150;      // resting link distance — keeps linked notes clearly separated
+            // Gravity only needs to gently contain the layout. Kept weak (with a mild
+            // √n term) so the cloud spreads out instead of collapsing into a ball; the
+            // equilibrium radius grows ~∝ ∛n, so bigger vaults stay sparse but bounded.
+            const CENTER = 0.004 + 0.0006 * Math.sqrt(nodes.length);
             const DAMP = 0.6;          // stronger friction — kills the velocity build-up that
                                        // let dense graphs ride the speed clamp (was 0.82 ≈ 4.6× gain)
 
@@ -207,8 +247,10 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             const view = viewRef.current;
             const c = colorsRef.current;
             const hovered = hoverRef.current;
-            const highlight = hovered || activeRef.current;
-            const neighbours = highlight ? adjacency.get(highlight) : null;
+            const active = activeRef.current;
+            // Dimming/highlighting is driven by HOVER only — at rest every node
+            // and edge is fully visible. The active note just gets a ring + label.
+            const neighbours = hovered ? adjacency.get(hovered) : null;
 
             ctx.save();
             ctx.scale(dpr, dpr);
@@ -220,55 +262,69 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             const tx = (x) => cx + x * view.scale;
             const ty = (y) => cy + y * view.scale;
 
-            // Edges.
-            ctx.lineWidth = 1;
+            // Edges. When a node is focused its links glow blue and radiate out,
+            // while every other edge fades right back (the Obsidian focus look).
             for (const l of links) {
                 const ps = sim.get(l.source);
                 const pt = sim.get(l.target);
                 if (!ps || !pt) continue;
-                const isHi = highlight && (l.source === highlight || l.target === highlight);
-                ctx.strokeStyle = isHi ? c.edgeHi : c.edge;
-                ctx.globalAlpha = highlight && !isHi ? 0.25 : 1;
+                const isHi = hovered && (l.source === hovered || l.target === hovered);
+                if (isHi) {
+                    ctx.strokeStyle = c.edgeHi;
+                    ctx.globalAlpha = 1;
+                    ctx.lineWidth = 1.4;
+                } else {
+                    ctx.strokeStyle = c.edge;
+                    ctx.globalAlpha = hovered ? 0.12 : 1;
+                    ctx.lineWidth = 1;
+                }
                 ctx.beginPath();
                 ctx.moveTo(tx(ps.x), ty(ps.y));
                 ctx.lineTo(tx(pt.x), ty(pt.y));
                 ctx.stroke();
             }
             ctx.globalAlpha = 1;
+            ctx.lineWidth = 1;
 
-            // Nodes.
-            const showLabels = view.scale > 0.7;
+            // Nodes. Labels stay hidden at the default zoom (a clean colourful
+            // cloud) and only appear on hover, on the active note, or once you
+            // zoom in — so the graph never turns into a wall of text.
+            const showAllLabels = view.scale > 1.5;
             for (const n of nodes) {
                 const p = sim.get(n.id);
                 if (!p) continue;
                 const x = tx(p.x), y = ty(p.y);
                 const r = nodeRadius(n) * Math.max(0.6, Math.min(1.6, view.scale));
 
-                const isActive = n.id === activeRef.current;
-                const isHovered = n.id === hovered;
+                const isHovered = hovered && n.id === hovered;
+                const isActive = n.id === active;
                 const isNeighbour = neighbours && neighbours.has(n.id);
-                const dim = highlight && !isActive && !isHovered && !isNeighbour && n.id !== highlight;
+                // At rest every node is fully opaque. Only while hovering does the
+                // hovered node stay at 100% while the rest fade back.
+                let nodeAlpha = 1;
+                if (hovered && !isHovered) nodeAlpha = isNeighbour ? 0.5 : 0.12;
 
-                ctx.globalAlpha = dim ? 0.3 : 1;
+                ctx.globalAlpha = nodeAlpha;
                 ctx.beginPath();
                 ctx.arc(x, y, r, 0, Math.PI * 2);
-                if (isActive || isHovered) ctx.fillStyle = c.nodeActive;
-                else if (n.unresolved) ctx.fillStyle = c.faint;
-                else ctx.fillStyle = c.node;
+                ctx.fillStyle = n.unresolved ? c.faint : nodeColor(n.id);
                 ctx.fill();
 
-                if (isActive || isHovered) {
+                // Ring marks the hovered node, or the active note when not hovering.
+                const ringed = isHovered || (isActive && !hovered);
+                if (ringed) {
                     ctx.lineWidth = 2;
-                    ctx.strokeStyle = c.nodeActive;
-                    ctx.globalAlpha = (dim ? 0.3 : 1) * 0.4;
+                    ctx.strokeStyle = c.ring;
+                    ctx.globalAlpha = 0.9;
                     ctx.beginPath();
-                    ctx.arc(x, y, r + 4, 0, Math.PI * 2);
+                    ctx.arc(x, y, r + 3, 0, Math.PI * 2);
                     ctx.stroke();
-                    ctx.globalAlpha = dim ? 0.3 : 1;
+                    ctx.lineWidth = 1;
                 }
 
-                if (showLabels || isActive || isHovered || isNeighbour) {
-                    ctx.fillStyle = (isActive || isHovered) ? c.nodeActive : c.text;
+                if (showAllLabels || ringed) {
+                    ctx.globalAlpha = 1;
+                    ctx.fillStyle = c.text;
                     ctx.font = `${Math.max(9, 11 * Math.min(1.3, view.scale))}px var(--font-ui), sans-serif`;
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'top';
@@ -294,7 +350,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             cancelAnimationFrame(rafRef.current);
             ro.disconnect();
         };
-    }, [nodes, links, adjacency]);
+    }, [nodes, links, adjacency, maxDegree]);
 
     // ── Pointer interaction ────────────────────────────────────────────────
     const screenToWorld = (clientX, clientY) => {
@@ -319,7 +375,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             const dx = p.x - w.x;
             const dy = p.y - w.y;
             const d = dx * dx + dy * dy;
-            const r = (4 + Math.min(10, Math.sqrt(n.degree || 0) * 2.2)) + 6;
+            const r = nodeBaseRadius(n, maxDegree) + 6;
             if (d < r * r && d < bestD) { best = n; bestD = d; }
         }
         return best;
@@ -392,7 +448,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     };
 
     const resetView = () => {
-        viewRef.current = { scale: 1, offsetX: 0, offsetY: 0 };
+        viewRef.current = { scale: 2.5, offsetX: 0, offsetY: 0 };
         dirtyRef.current = true;
     };
 

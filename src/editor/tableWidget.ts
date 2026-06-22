@@ -4,16 +4,18 @@ import { WidgetType } from '@codemirror/view';
  * Parses a raw markdown table string and renders it as an HTML <table> element.
  */
 export class TableWidget extends WidgetType {
-    constructor(rawTable) {
+    rawTable: string;
+
+    constructor(rawTable: string) {
         super();
         this.rawTable = rawTable;
     }
 
-    eq(other) {
+    eq(other: TableWidget): boolean {
         return other.rawTable === this.rawTable;
     }
 
-    toDOM() {
+    toDOM(): HTMLElement {
         const container = document.createElement('div');
         container.className = 'cm-table-widget';
 
@@ -23,7 +25,7 @@ export class TableWidget extends WidgetType {
             return container;
         }
 
-        const parseRow = (line) => {
+        const parseRow = (line: string): string[] => {
             // Split by | but ignore leading/trailing empty cells from outer pipes
             const cells = line.split('|');
             // Trim the first and last element if they are empty (from leading/trailing |)
@@ -33,7 +35,7 @@ export class TableWidget extends WidgetType {
         };
 
         // Detect separator row (all cells match /^:?-+:?$/)
-        const isSeparator = (line) => {
+        const isSeparator = (line: string): boolean => {
             const cells = parseRow(line);
             return cells.length > 0 && cells.every(c => /^:?-{1,}:?$/.test(c));
         };
@@ -80,7 +82,7 @@ export class TableWidget extends WidgetType {
     /**
      * Minimal inline markdown renderer for cell contents: bold, italic, bold+italic, code
      */
-    renderInlineMarkdown(text) {
+    renderInlineMarkdown(text: string): string {
         return text
             // Bold+Italic: ***text*** or ___text___
             .replace(/\*{3}(.+?)\*{3}/g, '<strong><em>$1</em></strong>')

@@ -1,6 +1,15 @@
 import React from 'react';
-import { FileText } from './icons.jsx';
-import { baseName } from '../utils/graph.js';
+import { FileText } from './icons';
+import { baseName } from '../utils/graph';
+import type { CSSProperties } from 'react';
+import type { GraphNode, OpenNodeHandler } from '../types';
+
+interface BacklinksPanelProps {
+    nodes?: GraphNode[];          // default [] ; backlink graph nodes (from getBacklinkNodes)
+    onOpenNode: OpenNodeHandler;  // (node) => void — open a note by its graph node
+    onClose: () => void;          // () => void — dismiss the popover
+    style?: CSSProperties;        // inline positioning (fixed top/right) from the anchor button
+}
 
 /**
  * BacklinksPanel — a small dismissible popover listing every note that links to
@@ -12,7 +21,7 @@ import { baseName } from '../utils/graph.js';
  * @param onClose     () => void — dismiss the popover
  * @param style       inline positioning (fixed top/right) from the anchor button
  */
-export default function BacklinksPanel({ nodes = [], onOpenNode, onClose, style }) {
+export default function BacklinksPanel({ nodes = [], onOpenNode, onClose, style }: BacklinksPanelProps) {
     return (
         <div className="backlinks-popover" style={style} role="dialog" aria-label="Linked mentions">
             <div className="backlinks-popover-header">

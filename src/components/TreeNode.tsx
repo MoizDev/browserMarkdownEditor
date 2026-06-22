@@ -1,14 +1,38 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2 } from './icons.jsx';
+import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2 } from './icons';
+import type { FileTreeNode } from '../types';
 
-export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, depth = 0 }) {
+interface TreeNodeProps {
+    node: FileTreeNode;
+    activeFilePath: string | null;
+    onFileClick: (node: FileTreeNode) => void;
+    onCreateFile: (handle: FileSystemDirectoryHandle, path: string) => void;
+    onCreateFolder: (handle: FileSystemDirectoryHandle, path: string) => void;
+    onTrash: (node: FileTreeNode) => void;
+    expandedPaths: Set<string>;
+    onToggleExpand: (path: string) => void;
+    onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+    onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
+    depth?: number;
+}
+
+/**
+ * Shape of the module-level static drag-state stashed on the TreeNode function
+ * component (dataTransfer can't hold object references). Exported so FileExplorer
+ * (same bucket) reads/writes `TreeNode._draggedNode` through the same typed view.
+ */
+export interface TreeNodeStatic {
+    _draggedNode: FileTreeNode | null;
+}
+
+export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, depth = 0 }: TreeNodeProps) {
     const isActive = node.kind === 'file' && node.path === activeFilePath;
     const paddingLeft = 12 + depth * 16;
     const expanded = expandedPaths.has(node.path);
     const [dragOver, setDragOver] = useState(false);
     const [isRenaming, setIsRenaming] = useState(false);
     const [renameValue, setRenameValue] = useState(node.name);
-    const renameInputRef = useRef(null);
+    const renameInputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
         if (isRenaming && renameInputRef.current) {
@@ -37,7 +61,7 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
         setIsRenaming(false);
     };
 
-    const handleRenameKeyDown = (e) => {
+    const handleRenameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter') {
             handleRenameSubmit();
         } else if (e.key === 'Escape') {
@@ -51,15 +75,15 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
     };
 
     // ── Drag handlers ──
-    const handleDragStart = (e) => {
+    const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
         e.stopPropagation();
         e.dataTransfer.setData('text/plain', node.path);
         e.dataTransfer.effectAllowed = 'move';
         // Store the node in a module-level variable since dataTransfer can't hold objects
-        TreeNode._draggedNode = node;
+        (TreeNode as unknown as TreeNodeStatic)._draggedNode = node;
     };
 
-    const handleDragOver = (e) => {
+    const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
         if (node.kind !== 'directory') return;
         e.preventDefault();
         e.stopPropagation();
@@ -67,19 +91,19 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
         setDragOver(true);
     };
 
-    const handleDragLeave = (e) => {
+    const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
         e.stopPropagation();
         setDragOver(false);
     };
 
-    const handleDrop = async (e) => {
+    const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
         e.stopPropagation();
         setDragOver(false);
 
-        const draggedNode = TreeNode._draggedNode;
+        const draggedNode = (TreeNode as unknown as TreeNodeStatic)._draggedNode;
         if (!draggedNode) return;
-        TreeNode._draggedNode = null;
+        (TreeNode as unknown as TreeNodeStatic)._draggedNode = null;
 
         // Don't drop into itself or its own parent
         if (draggedNode.path === node.path) return;
@@ -87,12 +111,12 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
         if (node.path.startsWith(draggedNode.path + '/')) return;
 
         if (onMoveFile) {
-            await onMoveFile(draggedNode, node.handle);
+            await onMoveFile(draggedNode, node.handle as FileSystemDirectoryHandle);
         }
     };
 
     const handleDragEnd = () => {
-        TreeNode._draggedNode = null;
+        (TreeNode as unknown as TreeNodeStatic)._draggedNode = null;
     };
 
     if (node.kind === 'file') {
@@ -239,4 +263,4 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
 }
 
 // Module-level storage for the dragged node reference
-TreeNode._draggedNode = null;
+(TreeNode as unknown as TreeNodeStatic)._draggedNode = null;

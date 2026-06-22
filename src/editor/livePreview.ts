@@ -1,14 +1,23 @@
 import { EditorView, Decoration } from '@codemirror/view';
+import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { MathWidget } from './mathWidget.js';
-import { HorizontalRuleWidget } from './hrWidget.js';
-import { ImageWidget } from './imageWidget.js';
-import { TableWidget } from './tableWidget.js';
+import type { EditorState, Range, Transaction } from '@codemirror/state';
+import type { EditorMode } from '../types';
+import { MathWidget } from './mathWidget';
+import { HorizontalRuleWidget } from './hrWidget';
+import { ImageWidget } from './imageWidget';
+import { TableWidget } from './tableWidget';
+
+/** The single-argument, curried asset resolver the editor subsystem consumes. */
+type GetAssetUrl = (fileName: string) => Promise<string | null>;
+
+/** Structural shim for buildDecorations: the factory passes `{ state }`, not a full EditorView. */
+type StateView = { state: EditorState };
 
 /**
  * Check if the cursor (or any selection) overlaps the range [from, to].
  */
-function cursorInRange(state, from, to) {
+function cursorInRange(state: EditorState, from: number, to: number): boolean {
     for (const range of state.selection.ranges) {
         if (range.from <= to && range.to >= from) return true;
     }
@@ -18,7 +27,7 @@ function cursorInRange(state, from, to) {
 /**
  * Check if the cursor is on the same line as the given position range.
  */
-function cursorOnLine(state, from, to) {
+function cursorOnLine(state: EditorState, from: number, to: number): boolean {
     const lineFrom = state.doc.lineAt(from).number;
     const lineTo = state.doc.lineAt(to).number;
     for (const range of state.selection.ranges) {
@@ -32,9 +41,9 @@ function cursorOnLine(state, from, to) {
  * The Live Preview plugin — hides markdown syntax when cursor is away
  * and renders styled content, KaTeX math widgets, and Image widgets.
  */
-function buildDecorations(view, getAssetUrl, editorMode) {
+function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode: EditorMode): DecorationSet {
     const { state } = view;
-    const decorations = [];
+    const decorations: Range<Decoration>[] = [];
 
     syntaxTree(state).iterate({
         enter(node) {
@@ -302,7 +311,7 @@ function buildDecorations(view, getAssetUrl, editorMode) {
 
     // Block math: $$...$$
     const blockMathRegex = /\$\$([\s\S]+?)\$\$/g;
-    let match;
+    let match: RegExpExecArray | null;
     while ((match = blockMathRegex.exec(doc)) !== null) {
         const from = match.index;
         const to = from + match[0].length;
@@ -330,7 +339,7 @@ function buildDecorations(view, getAssetUrl, editorMode) {
         // Skip if overlapping with a block math range
         let overlapsBlock = false;
         const blockMathRegex2 = /\$\$([\s\S]+?)\$\$/g;
-        let bm;
+        let bm: RegExpExecArray | null;
         while ((bm = blockMathRegex2.exec(doc)) !== null) {
             if (from >= bm.index && to <= bm.index + bm[0].length) {
                 overlapsBlock = true;
@@ -444,20 +453,20 @@ function buildDecorations(view, getAssetUrl, editorMode) {
  */
 import { StateField } from '@codemirror/state';
 
-export function createLivePreviewPlugin(getAssetUrl, editorMode) {
-    const field = StateField.define({
-        create(state) {
+export function createLivePreviewPlugin(getAssetUrl: GetAssetUrl, editorMode: EditorMode): StateField<DecorationSet> {
+    const field = StateField.define<DecorationSet>({
+        create(state: EditorState) {
             const viewShim = { state };
             return buildDecorations(viewShim, getAssetUrl, editorMode);
         },
-        update(decorations, tr) {
+        update(decorations: DecorationSet, tr: Transaction) {
             if (tr.docChanged || tr.selection) {
                 const viewShim = { state: tr.state };
                 return buildDecorations(viewShim, getAssetUrl, editorMode);
             }
             return decorations;
         },
-        provide(field) {
+        provide(field: StateField<DecorationSet>) {
             return EditorView.decorations.from(field);
         }
     });
@@ -468,6 +477,9 @@ export function createLivePreviewPlugin(getAssetUrl, editorMode) {
 // Vite's hot-update can't swap it in. Decline HMR for this module to force a full
 // page reload on edit (dev-only — `import.meta.hot` is undefined in production).
 if (import.meta.hot) {
-    import.meta.hot.decline();
+    // `decline()` was removed from Vite's ViteHotContext type but remains a no-op
+    // method on the runtime hot-context object, so the cast is type-only and the
+    // emitted JS is unchanged.
+    (import.meta.hot as unknown as { decline(): void }).decline();
 }
 

@@ -1,11 +1,33 @@
 import React, { useRef } from 'react';
+import type { CaretStyle, SettingsDefaults } from '../types';
 
-const DEFAULTS = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80 };
+const DEFAULTS: SettingsDefaults = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80 };
 
-export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onResetDefaults, onClose }) {
+interface SettingsPanelProps {
+    editorFontSize: number;
+    treeFontSize: number;
+    editorPadding: number;
+    fontFamily: string;
+    caretStyle: CaretStyle;
+    caretThickness: number;
+    smoothCaret: boolean;
+    caretSpeed: number;
+    onEditorFontSizeChange: (v: number) => void;
+    onTreeFontSizeChange: (v: number) => void;
+    onEditorPaddingChange: (v: number) => void;
+    onFontFamilyChange: (v: string) => void;
+    onCaretStyleChange: (v: CaretStyle) => void;
+    onCaretThicknessChange: (v: number) => void;
+    onSmoothCaretChange: (v: boolean) => void;
+    onCaretSpeedChange: (v: number) => void;
+    onResetDefaults: (defaults: SettingsDefaults) => void;
+    onClose: () => void;
+}
+
+export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onResetDefaults, onClose }: SettingsPanelProps) {
     // Uncontrolled input (keyed on fontFamily) so we only load the Google Font
     // when the user commits the name, and it auto-resets on "Reset to Defaults".
-    const fontInputRef = useRef(null);
+    const fontInputRef = useRef<HTMLInputElement | null>(null);
     const applyFont = () => onFontFamilyChange((fontInputRef.current?.value || '').trim());
 
     return (

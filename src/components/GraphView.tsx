@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
+import type { GraphNode, GraphLink, OpenNodeHandler, Theme } from '../types';
 
 /**
  * GraphView — an Obsidian-style "Neural Brain" graph of the vault.
@@ -18,7 +19,7 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
  * references render noticeably larger, like Obsidian's graph — the √degree
  * curve keeps hubs prominent without letting one node dwarf everything.
  */
-function nodeBaseRadius(n, maxDegree) {
+function nodeBaseRadius(n: GraphNode, maxDegree: number): number {
     // Normalise against the most-linked note, then bias the curve upward (^1.7)
     // so the top hubs balloon while ordinary notes stay small and similar — a
     // modest lead in link count buys a big jump in size at the high end.
@@ -31,7 +32,7 @@ function nodeBaseRadius(n, maxDegree) {
  * stable colour hashed from its id, so the graph is colourful and a given
  * note keeps the same colour across renders.
  */
-const NODE_PALETTE = [
+const NODE_PALETTE: string[] = [
     '#a78bfa', '#8b5cf6', // violets
     '#34d399', '#2dd4bf', // greens / teal
     '#fbbf24', '#f59e0b', // ambers (the big hubs read orange)
@@ -39,39 +40,74 @@ const NODE_PALETTE = [
     '#60a5fa', '#22d3ee', // blue / cyan
     '#a3e635', '#94a3b8', // lime / slate
 ];
-function nodeColor(id) {
+function nodeColor(id: string): string {
     let h = 0;
     for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
     return NODE_PALETTE[Math.abs(h) % NODE_PALETTE.length];
 }
 
-export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme }) {
-    const canvasRef = useRef(null);
-    const wrapRef = useRef(null);
+interface GraphViewProps {
+    nodes: GraphNode[];
+    links: GraphLink[];
+    activeFilePath: string | null;
+    onOpenNode: OpenNodeHandler;
+    theme: Theme;
+}
+
+/** Per-node physics state held in the simulation map. */
+interface SimNode {
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+}
+
+/** Pan/zoom viewport state. */
+interface GraphViewport {
+    scale: number;
+    offsetX: number;
+    offsetY: number;
+}
+
+/** Resolved theme colors read from CSS variables. */
+interface GraphColors {
+    bg: string;
+    node: string;
+    nodeActive: string;
+    text: string;
+    faint: string;
+    edge: string;
+    edgeHi: string;
+    ring: string;
+}
+
+export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme }: GraphViewProps) {
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const wrapRef = useRef<HTMLDivElement | null>(null);
 
     // Simulation state lives in refs so the animation loop never restarts.
-    const simNodes = useRef(new Map());   // id -> { x, y, vx, vy }
-    const viewRef = useRef({ scale: 2.5, offsetX: 0, offsetY: 0 });
-    const draggingRef = useRef(null);     // { id } while dragging a node
-    const panningRef = useRef(null);      // { x, y } while panning
-    const movedRef = useRef(false);       // distinguish click vs drag
-    const hoverRef = useRef(null);        // hovered node id
-    const colorsRef = useRef({});
-    const rafRef = useRef(0);
-    const alphaRef = useRef(1);          // simulation "temperature"; cools to rest
-    const activeRef = useRef(activeFilePath);
-    const dirtyRef = useRef(true);       // request a one-off redraw while at rest
+    const simNodes = useRef<Map<string, SimNode>>(new Map());   // id -> { x, y, vx, vy }
+    const viewRef = useRef<GraphViewport>({ scale: 2.5, offsetX: 0, offsetY: 0 });
+    const draggingRef = useRef<{ id: string } | null>(null);     // { id } while dragging a node
+    const panningRef = useRef<{ x: number; y: number } | null>(null);      // { x, y } while panning
+    const movedRef = useRef<boolean>(false);       // distinguish click vs drag
+    const hoverRef = useRef<string | null>(null);        // hovered node id
+    const colorsRef = useRef<GraphColors>({} as GraphColors);
+    const rafRef = useRef<number>(0);
+    const alphaRef = useRef<number>(1);          // simulation "temperature"; cools to rest
+    const activeRef = useRef<string | null>(activeFilePath);
+    const dirtyRef = useRef<boolean>(true);       // request a one-off redraw while at rest
 
-    const [hoverName, setHoverName] = useState(null);
+    const [hoverName, setHoverName] = useState<string | null>(null);
 
     // Adjacency map for neighbour highlighting.
     const adjacency = useMemo(() => {
-        const adj = new Map();
+        const adj = new Map<string, Set<string>>();
         for (const l of links) {
             if (!adj.has(l.source)) adj.set(l.source, new Set());
             if (!adj.has(l.target)) adj.set(l.target, new Set());
-            adj.get(l.source).add(l.target);
-            adj.get(l.target).add(l.source);
+            adj.get(l.source)!.add(l.target);
+            adj.get(l.target)!.add(l.source);
         }
         return adj;
     }, [links]);
@@ -112,7 +148,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     // Read theme colors from CSS variables whenever the theme flips.
     useEffect(() => {
         const cs = getComputedStyle(document.documentElement);
-        const v = (name, fallback) => (cs.getPropertyValue(name).trim() || fallback);
+        const v = (name: string, fallback: string) => (cs.getPropertyValue(name).trim() || fallback);
         colorsRef.current = {
             bg: v('--background-primary', '#1e1e1e'),
             node: v('--text-muted', '#999'),
@@ -137,7 +173,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         const canvas = canvasRef.current;
         const wrap = wrapRef.current;
         if (!canvas || !wrap) return;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d')!;
 
         let width = 0, height = 0, dpr = 1;
         const resize = () => {
@@ -154,7 +190,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         const ro = new ResizeObserver(resize);
         ro.observe(wrap);
 
-        const nodeRadius = (n) => nodeBaseRadius(n, maxDegree);
+        const nodeRadius = (n: GraphNode) => nodeBaseRadius(n, maxDegree);
 
         const ALPHA_DECAY = 0.0228;   // cools to rest in a few seconds (D3-style)
         const ALPHA_MIN = 0.001;      // below this the layout is considered settled
@@ -259,8 +295,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             // World transform: center origin then apply pan/zoom.
             const cx = width / 2 + view.offsetX;
             const cy = height / 2 + view.offsetY;
-            const tx = (x) => cx + x * view.scale;
-            const ty = (y) => cy + y * view.scale;
+            const tx = (x: number) => cx + x * view.scale;
+            const ty = (y: number) => cy + y * view.scale;
 
             // Edges. When a node is focused its links glow blue and radiate out,
             // while every other edge fades right back (the Obsidian focus look).
@@ -353,10 +389,10 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     }, [nodes, links, adjacency, maxDegree]);
 
     // ── Pointer interaction ────────────────────────────────────────────────
-    const screenToWorld = (clientX, clientY) => {
+    const screenToWorld = (clientX: number, clientY: number) => {
         const wrap = wrapRef.current;
         const view = viewRef.current;
-        const rect = wrap.getBoundingClientRect();
+        const rect = wrap!.getBoundingClientRect();
         const x = clientX - rect.left;
         const y = clientY - rect.top;
         const cx = rect.width / 2 + view.offsetX;
@@ -364,10 +400,10 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         return { x: (x - cx) / view.scale, y: (y - cy) / view.scale };
     };
 
-    const hitTest = (clientX, clientY) => {
+    const hitTest = (clientX: number, clientY: number): GraphNode | null => {
         const sim = simNodes.current;
         const w = screenToWorld(clientX, clientY);
-        let best = null;
+        let best: GraphNode | null = null;
         let bestD = Infinity;
         for (const n of nodes) {
             const p = sim.get(n.id);
@@ -381,7 +417,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         return best;
     };
 
-    const onPointerDown = (e) => {
+    const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
         e.currentTarget.setPointerCapture?.(e.pointerId);
         movedRef.current = false;
         const hit = hitTest(e.clientX, e.clientY);
@@ -393,7 +429,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         }
     };
 
-    const onPointerMove = (e) => {
+    const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
         const view = viewRef.current;
         if (draggingRef.current) {
             movedRef.current = true;
@@ -424,18 +460,18 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
 
     const onPointerUp = () => {
         if (draggingRef.current && !movedRef.current) {
-            const node = nodes.find(n => n.id === draggingRef.current.id);
+            const node = nodes.find(n => n.id === draggingRef.current!.id);
             if (node && !node.unresolved && onOpenNode) onOpenNode(node);
         }
         draggingRef.current = null;
         panningRef.current = null;
     };
 
-    const onWheel = (e) => {
+    const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
         e.preventDefault();
         const view = viewRef.current;
         const wrap = wrapRef.current;
-        const rect = wrap.getBoundingClientRect();
+        const rect = wrap!.getBoundingClientRect();
         const mx = e.clientX - rect.left - (rect.width / 2 + view.offsetX);
         const my = e.clientY - rect.top - (rect.height / 2 + view.offsetY);
         const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;

@@ -1,11 +1,12 @@
 import { keymap, EditorView } from '@codemirror/view';
 import { Prec } from '@codemirror/state';
+import type { Extension } from '@codemirror/state';
 
 /**
  * Wraps the current selection with a delimiter (e.g., `**` for bold, `*` for italic).
  * If no selection, inserts the delimiters and places the cursor between them.
  */
-function wrapSelection(view, delimiter) {
+function wrapSelection(view: EditorView, delimiter: string): boolean {
     const { state } = view;
     const { from, to } = state.selection.main;
 
@@ -57,4 +58,4 @@ const formatKeydownFallback = EditorView.domEventHandlers({
     },
 });
 
-export const markdownFormatExtension = [Prec.highest(formatKeymap), formatKeydownFallback];
+export const markdownFormatExtension: Extension[] = [Prec.highest(formatKeymap), formatKeydownFallback];

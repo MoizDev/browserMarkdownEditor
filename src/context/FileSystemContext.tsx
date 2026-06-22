@@ -1,14 +1,16 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
+import type { FileTreeNode, FileSystemContextValue } from '../types';
 
-const FileSystemContext = createContext(null);
+const FileSystemContext = createContext<FileSystemContextValue | null>(null);
 
 const IDB_KEY = 'vault-directory-handle';
 
 /**
  * Recursively copies all entries from srcDir to destDir.
  */
-async function copyDirRecursive(srcDir, destDir) {
+async function copyDirRecursive(srcDir: FileSystemDirectoryHandle, destDir: FileSystemDirectoryHandle): Promise<void> {
     for await (const [name, handle] of srcDir.entries()) {
         if (handle.kind === 'file') {
             const file = await handle.getFile();
@@ -26,8 +28,8 @@ async function copyDirRecursive(srcDir, destDir) {
 /**
  * Recursively traverses a FileSystemDirectoryHandle and returns a nested tree.
  */
-async function buildFileTree(dirHandle, path = '') {
-    const children = [];
+async function buildFileTree(dirHandle: FileSystemDirectoryHandle, path = ''): Promise<FileTreeNode[]> {
+    const children: FileTreeNode[] = [];
 
     for await (const [name, handle] of dirHandle.entries()) {
         if (name === '.DS_Store') continue;
@@ -66,16 +68,16 @@ async function buildFileTree(dirHandle, path = '') {
     return children;
 }
 
-export function FileSystemProvider({ children }) {
-    const [rootHandle, setRootHandle] = useState(null);
-    const [fileTree, setFileTree] = useState([]);
+export function FileSystemProvider({ children }: { children: ReactNode }) {
+    const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
+    const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
-    const [previousVault, setPreviousVault] = useState(null);
+    const [previousVault, setPreviousVault] = useState<FileSystemDirectoryHandle | null>(null);
 
     /**
      * Refresh the file tree from the current root handle.
      */
-    const refreshTree = useCallback(async (handle) => {
+    const refreshTree = useCallback(async (handle: FileSystemDirectoryHandle | null | undefined) => {
         if (!handle) return;
         try {
             const tree = await buildFileTree(handle);
@@ -91,7 +93,7 @@ export function FileSystemProvider({ children }) {
     useEffect(() => {
         (async () => {
             try {
-                const storedHandle = await get(IDB_KEY);
+                const storedHandle = await get<FileSystemDirectoryHandle>(IDB_KEY);
                 if (storedHandle) {
                     // queryPermission does not require a user gesture, unlike requestPermission
                     const permission = await storedHandle.queryPermission({ mode: 'readwrite' });
@@ -131,7 +133,7 @@ export function FileSystemProvider({ children }) {
             await refreshTree(handle);
         } catch (err) {
             // User cancelled the picker
-            if (err.name !== 'AbortError') {
+            if ((err as DOMException).name !== 'AbortError') {
                 console.error('Error picking directory:', err);
             }
         }
@@ -140,7 +142,7 @@ export function FileSystemProvider({ children }) {
     /**
      * Read the text content of a file handle.
      */
-    const readFile = useCallback(async (fileHandle) => {
+    const readFile = useCallback(async (fileHandle: FileSystemFileHandle) => {
         const file = await fileHandle.getFile();
         return await file.text();
     }, []);
@@ -148,7 +150,7 @@ export function FileSystemProvider({ children }) {
     /**
      * Write text content to a file handle.
      */
-    const writeFile = useCallback(async (fileHandle, content) => {
+    const writeFile = useCallback(async (fileHandle: FileSystemFileHandle, content: string) => {
         const writable = await fileHandle.createWritable();
         await writable.write(content);
         await writable.close();
@@ -158,7 +160,7 @@ export function FileSystemProvider({ children }) {
      * Create a new file inside a directory handle.
      * Returns the new file handle.
      */
-    const createFile = useCallback(async (parentDirHandle, fileName) => {
+    const createFile = useCallback(async (parentDirHandle: FileSystemDirectoryHandle, fileName: string) => {
         const fileHandle = await parentDirHandle.getFileHandle(fileName, { create: true });
         // Write empty content to initialize
         const writable = await fileHandle.createWritable();
@@ -173,7 +175,7 @@ export function FileSystemProvider({ children }) {
      * Create a new folder inside a directory handle.
      * Returns the new directory handle.
      */
-    const createFolder = useCallback(async (parentDirHandle, folderName) => {
+    const createFolder = useCallback(async (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => {
         const dirHandle = await parentDirHandle.getDirectoryHandle(folderName, { create: true });
         // Refresh the tree to reflect the new folder
         await refreshTree(rootHandle);
@@ -185,7 +187,7 @@ export function FileSystemProvider({ children }) {
      * If parentDirHandle is provided, first look in parentDirHandle/Assets/,
      * then fall back to rootHandle/Assets/ for backwards compatibility.
      */
-    const getAssetUrl = useCallback(async (fileName, parentDirHandle) => {
+    const getAssetUrl = useCallback(async (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => {
         // Try the local Assets folder first (sibling of the .md file)
         if (parentDirHandle) {
             try {
@@ -215,7 +217,7 @@ export function FileSystemProvider({ children }) {
      * saves to parentDirHandle/Assets/. Otherwise falls back to rootHandle/Assets/.
      * Creates the Assets folder if it doesn't exist.
      */
-    const saveAsset = useCallback(async (fileName, blob, parentDirHandle) => {
+    const saveAsset = useCallback(async (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => {
         const targetDir = parentDirHandle || rootHandle;
         if (!targetDir) throw new Error('No vault open');
 
@@ -257,7 +259,7 @@ export function FileSystemProvider({ children }) {
     /**
      * Move a file or folder to the Trash directory inside the root vault.
      */
-    const moveToTrash = useCallback(async (node) => {
+    const moveToTrash = useCallback(async (node: FileTreeNode) => {
         if (!rootHandle || !node.parentHandle) return false;
 
         try {
@@ -294,7 +296,7 @@ export function FileSystemProvider({ children }) {
     /**
      * Move a file from its current parent to a target directory handle.
      */
-    const moveFile = useCallback(async (sourceNode, targetDirHandle) => {
+    const moveFile = useCallback(async (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => {
         if (!sourceNode.parentHandle || !targetDirHandle) return false;
         // Don't move into the same folder
         if (sourceNode.parentHandle === targetDirHandle) return false;
@@ -326,7 +328,7 @@ export function FileSystemProvider({ children }) {
     /**
      * Rename a file or folder within its parent directory.
      */
-    const renameFile = useCallback(async (sourceNode, newName) => {
+    const renameFile = useCallback(async (sourceNode: FileTreeNode, newName: string) => {
         if (!sourceNode.parentHandle || !newName) return false;
         if (sourceNode.name === newName) return true; // No change
 
@@ -354,7 +356,7 @@ export function FileSystemProvider({ children }) {
         }
     }, [rootHandle, refreshTree]);
 
-    const value = {
+    const value: FileSystemContextValue = {
         rootHandle,
         fileTree,
         isLoading,
@@ -380,7 +382,7 @@ export function FileSystemProvider({ children }) {
     );
 }
 
-export function useFileSystem() {
+export function useFileSystem(): FileSystemContextValue {
     const context = useContext(FileSystemContext);
     if (!context) {
         throw new Error('useFileSystem must be used within a FileSystemProvider');

@@ -1,13 +1,26 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { useFileSystem } from './context/FileSystemContext.jsx';
-import { HELP_DOC_CONTENT } from './utils/helpDoc.js';
-import { buildGraph, collectMarkdownFiles, baseName } from './utils/graph.js';
+import { useFileSystem } from './context/FileSystemContext';
+import { HELP_DOC_CONTENT } from './utils/helpDoc';
+import { buildGraph, collectMarkdownFiles, baseName } from './utils/graph';
 import './index.css';
-import FileExplorer from './components/FileExplorer.jsx';
-import EditorPane from './components/EditorPane.jsx';
-import SettingsPanel from './components/SettingsPanel.jsx';
-import GraphView from './components/GraphView.jsx';
-import { Settings, HelpCircle, Network, FileTextOutline } from './components/icons.jsx';
+import FileExplorer from './components/FileExplorer';
+import EditorPane from './components/EditorPane';
+import SettingsPanel from './components/SettingsPanel';
+import GraphView from './components/GraphView';
+import { Settings, HelpCircle, Network, FileTextOutline } from './components/icons';
+import type {
+  FileTreeNode,
+  FileTreeFileNode,
+  FileTreeDirNode,
+  ActiveFile,
+  GraphData,
+  GraphNode,
+  SettingsDefaults,
+  Theme,
+  EditorMode,
+  MainView,
+  CaretStyle,
+} from './types';
 
 export default function App() {
   const {
@@ -26,39 +39,39 @@ export default function App() {
     renameFile,
   } = useFileSystem();
 
-  const [activeFile, setActiveFile] = useState(null);
-  const [fileContent, setFileContent] = useState('');
-  const [saveStatus, setSaveStatus] = useState('');
+  const [activeFile, setActiveFile] = useState<ActiveFile | null>(null);
+  const [fileContent, setFileContent] = useState<string>('');
+  const [saveStatus, setSaveStatus] = useState<string>('');
 
   // Editor mode ('edit' or 'read')
-  const [editorMode, setEditorMode] = useState('read');
+  const [editorMode, setEditorMode] = useState<EditorMode>('read');
 
   // Main pane view ('editor' or 'graph' — the Neural Brain view)
-  const [mainView, setMainView] = useState('editor');
+  const [mainView, setMainView] = useState<MainView>('editor');
 
   // The link graph powering the Neural Brain view and backlinks panel
-  const [graph, setGraph] = useState({ nodes: [], links: [], backlinks: {}, outlinks: {} });
+  const [graph, setGraph] = useState<GraphData>({ nodes: [], links: [], backlinks: {}, outlinks: {} });
 
   // The global light/dark theme state
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
+  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'dark');
 
   // Font size and padding settings (persisted via localStorage)
-  const [editorFontSize, setEditorFontSize] = useState(() => parseInt(localStorage.getItem('editorFontSize') || '16', 10));
-  const [treeFontSize, setTreeFontSize] = useState(() => parseInt(localStorage.getItem('treeFontSize') || '13', 10));
-  const [editorPadding, setEditorPadding] = useState(() => parseInt(localStorage.getItem('editorPadding') || '6', 10));
-  const [showSettings, setShowSettings] = useState(false);
+  const [editorFontSize, setEditorFontSize] = useState<number>(() => parseInt(localStorage.getItem('editorFontSize') || '16', 10));
+  const [treeFontSize, setTreeFontSize] = useState<number>(() => parseInt(localStorage.getItem('treeFontSize') || '13', 10));
+  const [editorPadding, setEditorPadding] = useState<number>(() => parseInt(localStorage.getItem('editorPadding') || '6', 10));
+  const [showSettings, setShowSettings] = useState<boolean>(false);
 
   // Caret (text cursor) appearance settings — persisted via localStorage.
   // caretStyle: 'line' (thin bar) or 'block' (thick terminal-style block).
   // smoothCaret: glide the caret between positions like MS Word.
   // caretSpeed: duration (ms) of that glide.
-  const [caretStyle, setCaretStyle] = useState(() => localStorage.getItem('caretStyle') || 'line');
-  const [caretThickness, setCaretThickness] = useState(() => parseInt(localStorage.getItem('caretThickness') || '10', 10));
-  const [smoothCaret, setSmoothCaret] = useState(() => (localStorage.getItem('smoothCaret') ?? 'true') === 'true');
-  const [caretSpeed, setCaretSpeed] = useState(() => parseInt(localStorage.getItem('caretSpeed') || '80', 10));
+  const [caretStyle, setCaretStyle] = useState<CaretStyle>(() => (localStorage.getItem('caretStyle') as CaretStyle) || 'line');
+  const [caretThickness, setCaretThickness] = useState<number>(() => parseInt(localStorage.getItem('caretThickness') || '10', 10));
+  const [smoothCaret, setSmoothCaret] = useState<boolean>(() => (localStorage.getItem('smoothCaret') ?? 'true') === 'true');
+  const [caretSpeed, setCaretSpeed] = useState<number>(() => parseInt(localStorage.getItem('caretSpeed') || '80', 10));
 
   // Custom font loaded from Google Fonts (empty string = use the default)
-  const [fontFamily, setFontFamily] = useState(() => localStorage.getItem('fontFamily') || '');
+  const [fontFamily, setFontFamily] = useState<string>(() => localStorage.getItem('fontFamily') || '');
 
   // Keep HTML root data attribute in sync with state for global CSS variables
   useEffect(() => {
@@ -73,17 +86,17 @@ export default function App() {
   // Sync font sizes to CSS variables and localStorage
   useEffect(() => {
     document.documentElement.style.setProperty('--font-size-normal', editorFontSize + 'px');
-    localStorage.setItem('editorFontSize', editorFontSize);
+    localStorage.setItem('editorFontSize', String(editorFontSize));
   }, [editorFontSize]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--nav-item-size', treeFontSize + 'px');
-    localStorage.setItem('treeFontSize', treeFontSize);
+    localStorage.setItem('treeFontSize', String(treeFontSize));
   }, [treeFontSize]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--editor-padding', editorPadding + '%');
-    localStorage.setItem('editorPadding', editorPadding);
+    localStorage.setItem('editorPadding', String(editorPadding));
   }, [editorPadding]);
 
   // Translate the caret settings into CSS variables the CodeMirror theme reads.
@@ -106,16 +119,16 @@ export default function App() {
       : 'none');
 
     localStorage.setItem('caretStyle', caretStyle);
-    localStorage.setItem('caretThickness', caretThickness);
-    localStorage.setItem('smoothCaret', smoothCaret);
-    localStorage.setItem('caretSpeed', caretSpeed);
+    localStorage.setItem('caretThickness', String(caretThickness));
+    localStorage.setItem('smoothCaret', String(smoothCaret));
+    localStorage.setItem('caretSpeed', String(caretSpeed));
   }, [caretStyle, caretThickness, smoothCaret, caretSpeed, theme]);
 
   // Load a Google Font by name and apply it app-wide via --font-text.
   useEffect(() => {
     localStorage.setItem('fontFamily', fontFamily);
     const linkId = 'google-font-link';
-    let link = document.getElementById(linkId);
+    let link = document.getElementById(linkId) as HTMLLinkElement | null;
     const family = fontFamily.trim();
     const fallback = '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "Roboto", sans-serif';
 
@@ -135,7 +148,7 @@ export default function App() {
     }
   }, [fontFamily]);
 
-  const handleResetDefaults = useCallback((defaults) => {
+  const handleResetDefaults = useCallback((defaults: SettingsDefaults) => {
     setEditorFontSize(defaults.editorFontSize);
     setTreeFontSize(defaults.treeFontSize);
     setEditorPadding(defaults.editorPadding);
@@ -147,16 +160,16 @@ export default function App() {
   }, []);
 
   // Expanded folder paths (persisted via localStorage)
-  const [expandedPaths, setExpandedPaths] = useState(() => {
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => {
     try {
       const stored = localStorage.getItem('expandedPaths');
-      return stored ? new Set(JSON.parse(stored)) : new Set();
-    } catch { return new Set(); }
+      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
+    } catch { return new Set<string>(); }
   });
 
-  const handleToggleExpand = useCallback((path) => {
+  const handleToggleExpand = useCallback((path: string) => {
     setExpandedPaths(prev => {
-      const next = new Set(prev);
+      const next = new Set<string>(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
       localStorage.setItem('expandedPaths', JSON.stringify([...next]));
@@ -165,8 +178,8 @@ export default function App() {
   }, []);
 
   // Refs for debounced auto-save (avoid stale closures)
-  const fileContentRef = useRef(fileContent);
-  const activeFileRef = useRef(activeFile);
+  const fileContentRef = useRef<string>(fileContent);
+  const activeFileRef = useRef<ActiveFile | null>(activeFile);
   useEffect(() => { fileContentRef.current = fileContent; }, [fileContent]);
   useEffect(() => { activeFileRef.current = activeFile; }, [activeFile]);
 
@@ -178,24 +191,24 @@ export default function App() {
   }, [activeFile]);
 
   // Sidebar resizing
-  const [sidebarWidth, setSidebarWidth] = useState(260);
-  const isResizing = useRef(false);
-  const hasRestoredFile = useRef(false);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(260);
+  const isResizing = useRef<boolean>(false);
+  const hasRestoredFile = useRef<boolean>(false);
 
-  const handleFileClick = useCallback(async (node) => {
+  const handleFileClick = useCallback(async (node: FileTreeNode) => {
     try {
       const lowerName = node.name.toLowerCase();
       if (lowerName.endsWith('.pdf') ||
         lowerName.endsWith('.jpg') ||
         lowerName.endsWith('.jpeg') ||
         lowerName.endsWith('.png')) {
-        const file = await node.handle.getFile();
+        const file = await (node.handle as FileSystemFileHandle).getFile();
         const url = URL.createObjectURL(file);
         window.open(url, '_blank');
         return;
       }
 
-      const content = await readFile(node.handle);
+      const content = await readFile(node.handle as FileSystemFileHandle);
       setActiveFile(node);
       setFileContent(content);
       setSaveStatus('');
@@ -225,7 +238,7 @@ export default function App() {
   useEffect(() => { rebuildGraph(); }, [rebuildGraph]);
 
   // Open a note by its name (used by [[wikilinks]], graph nodes, backlinks).
-  const openNoteByName = useCallback((name) => {
+  const openNoteByName = useCallback((name: string | null) => {
     if (!name) return;
     const key = baseName(name).toLowerCase();
     const match = mdFiles.find(f => baseName(f.name).toLowerCase() === key);
@@ -236,7 +249,7 @@ export default function App() {
   }, [mdFiles, handleFileClick]);
 
   // Open a note given a graph node (skips unresolved placeholder nodes).
-  const handleOpenNode = useCallback((graphNode) => {
+  const handleOpenNode = useCallback((graphNode: GraphNode) => {
     if (!graphNode || graphNode.unresolved || !graphNode.node) return;
     handleFileClick(graphNode.node);
     setMainView('editor');
@@ -249,11 +262,11 @@ export default function App() {
     if (!lastPath) return;
 
     // Walk the tree to find the node matching lastPath
-    const findNode = (nodes) => {
+    const findNode = (nodes: FileTreeNode[]): FileTreeNode | null => {
       for (const node of nodes) {
         if (node.kind === 'file' && node.path === lastPath) return node;
-        if (node.children) {
-          const found = findNode(node.children);
+        if ((node as FileTreeDirNode).children) {
+          const found = findNode((node as FileTreeDirNode).children);
           if (found) return found;
         }
       }
@@ -277,7 +290,7 @@ export default function App() {
   const handleSave = useCallback(async () => {
     if (!activeFile || activeFile.isHelp) return;
     try {
-      await writeFile(activeFile.handle, fileContent);
+      await writeFile(activeFile.handle as FileSystemFileHandle, fileContent);
       setSaveStatus('Saved');
       setTimeout(() => setSaveStatus(''), 2000);
     } catch (err) {
@@ -286,15 +299,15 @@ export default function App() {
     }
   }, [activeFile, fileContent, writeFile]);
 
-  const handleCreateFile = useCallback(async (parentHandle, name) => {
+  const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string) => {
     try {
-      const newFileHandle = await createFile(parentHandle, name);
+      const newFileHandle = await createFile(parentHandle!, name);
       // Auto-open the newly created file and switch to edit mode
       if (newFileHandle) {
-        const newNode = {
+        const newNode: FileTreeFileNode = {
           name: name,
           handle: newFileHandle,
-          parentHandle: parentHandle,
+          parentHandle: parentHandle!,
           kind: 'file',
           path: parentHandle ? `${parentHandle.name}/${name}` : name
         };
@@ -306,15 +319,15 @@ export default function App() {
     }
   }, [createFile, handleFileClick]);
 
-  const handleCreateFolder = useCallback(async (parentHandle, name) => {
+  const handleCreateFolder = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string) => {
     try {
-      await createFolder(parentHandle, name);
+      await createFolder(parentHandle!, name);
     } catch (err) {
       console.error('Failed to create folder:', err);
     }
   }, [createFolder]);
 
-  const handleTrash = useCallback(async (node) => {
+  const handleTrash = useCallback(async (node: FileTreeNode) => {
     if (confirm(`Move "${node.name}" to Trash?`)) {
       const moved = await moveToTrash(node);
       if (moved && activeFileRef.current?.path === node.path) {
@@ -326,7 +339,7 @@ export default function App() {
     }
   }, [moveToTrash]);
 
-  const handleRenameFile = useCallback(async (node, newName) => {
+  const handleRenameFile = useCallback(async (node: FileTreeNode, newName: string) => {
     const success = await renameFile(node, newName);
     if (success && activeFileRef.current?.path === node.path) {
       // Create a duplicate node with the new properties so the editor stays active
@@ -343,7 +356,7 @@ export default function App() {
           path: newPath,
           handle: fileHandle,
         };
-        setActiveFile(renamedNode);
+        setActiveFile(renamedNode as ActiveFile);
         // Force an immediate localStorage update to avoid race conditions on save
         localStorage.setItem('lastFilePath', renamedNode.path);
       } catch (err) {
@@ -354,7 +367,7 @@ export default function App() {
 
   // Global keyboard shortcuts
   useEffect(() => {
-    const handler = (e) => {
+    const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
         handleSave();
@@ -387,7 +400,7 @@ export default function App() {
       const content = fileContentRef.current;
       if (!file || file.isHelp) return;
       try {
-        await writeFile(file.handle, content);
+        await writeFile(file.handle as FileSystemFileHandle, content);
         setSaveStatus('Saved');
         setTimeout(() => setSaveStatus(''), 2000);
         // Keep the link graph / backlinks in sync with the latest edits.
@@ -400,12 +413,12 @@ export default function App() {
   }, [fileContent, activeFile, writeFile, rebuildGraph]);
 
   // Drag-to-resize sidebar
-  const startResize = useCallback((e) => {
+  const startResize = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     isResizing.current = true;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
 
-    const onMouseMove = (e) => {
+    const onMouseMove = (e: MouseEvent) => {
       if (!isResizing.current) return;
       const newWidth = Math.max(180, Math.min(600, e.clientX));
       setSidebarWidth(newWidth);

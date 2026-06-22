@@ -1,11 +1,12 @@
 import { EditorView } from '@codemirror/view';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
+import type { Extension } from '@codemirror/state';
 
 /**
  * CodeMirror 6 theme matching Obsidian's default dark theme.
  */
-export const obsidianDarkTheme = EditorView.theme({
+export const obsidianDarkTheme: Extension = EditorView.theme({
     '&': {
         backgroundColor: '#1e1e1e',
         color: '#dcddde',
@@ -73,7 +74,7 @@ export const obsidianDarkTheme = EditorView.theme({
 /**
  * Syntax highlighting matching Obsidian's colors.
  */
-export const obsidianHighlightStyle = syntaxHighlighting(HighlightStyle.define([
+export const obsidianHighlightStyle: Extension = syntaxHighlighting(HighlightStyle.define([
     { tag: tags.heading1, fontWeight: '700', fontSize: '1.3em', color: '#dcddde' },
     { tag: tags.heading2, fontWeight: '600', fontSize: '1.2em', color: '#dcddde' },
     { tag: tags.heading3, fontWeight: '600', fontSize: '1.12em', color: '#dcddde' },
@@ -98,7 +99,7 @@ export const obsidianHighlightStyle = syntaxHighlighting(HighlightStyle.define([
 /**
  * CodeMirror 6 theme matching Obsidian's default light theme.
  */
-export const obsidianLightTheme = EditorView.theme({
+export const obsidianLightTheme: Extension = EditorView.theme({
     '&': {
         backgroundColor: '#ffffff',
         color: '#2e3338',
@@ -165,7 +166,7 @@ export const obsidianLightTheme = EditorView.theme({
 /**
  * Syntax highlighting matching Obsidian's light colors.
  */
-export const obsidianLightHighlightStyle = syntaxHighlighting(HighlightStyle.define([
+export const obsidianLightHighlightStyle: Extension = syntaxHighlighting(HighlightStyle.define([
     { tag: tags.heading1, fontWeight: '700', fontSize: '1.3em', color: '#2e3338' },
     { tag: tags.heading2, fontWeight: '600', fontSize: '1.2em', color: '#2e3338' },
     { tag: tags.heading3, fontWeight: '600', fontSize: '1.12em', color: '#2e3338' },

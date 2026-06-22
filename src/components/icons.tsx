@@ -1,6 +1,15 @@
 import React from 'react';
 
-export function ChevronRight({ size = 16, ...props }) {
+/**
+ * Shared props for every inline SVG icon. `size` sets both width & height
+ * (default 16); all other SVG attributes (className, style, aria-*, event
+ * handlers, …) are spread onto the underlying <svg>.
+ */
+interface IconProps extends React.SVGProps<SVGSVGElement> {
+    size?: number;
+}
+
+export function ChevronRight({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <polyline points="9 18 15 12 9 6" />
@@ -8,7 +17,7 @@ export function ChevronRight({ size = 16, ...props }) {
     );
 }
 
-export function HelpCircle({ size = 16, ...props }) {
+export function HelpCircle({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <circle cx="12" cy="12" r="10" />
@@ -18,7 +27,7 @@ export function HelpCircle({ size = 16, ...props }) {
     );
 }
 
-export function ChevronDown({ size = 16, ...props }) {
+export function ChevronDown({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <polyline points="6 9 12 15 18 9" />
@@ -26,7 +35,7 @@ export function ChevronDown({ size = 16, ...props }) {
     );
 }
 
-export function FileText({ size = 16, ...props }) {
+export function FileText({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -38,7 +47,7 @@ export function FileText({ size = 16, ...props }) {
     );
 }
 
-export function FolderIcon({ size = 16, ...props }) {
+export function FolderIcon({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -46,7 +55,7 @@ export function FolderIcon({ size = 16, ...props }) {
     );
 }
 
-export function FilePlus({ size = 16, ...props }) {
+export function FilePlus({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -57,7 +66,7 @@ export function FilePlus({ size = 16, ...props }) {
     );
 }
 
-export function FolderPlus({ size = 16, ...props }) {
+export function FolderPlus({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -67,7 +76,7 @@ export function FolderPlus({ size = 16, ...props }) {
     );
 }
 
-export function FolderOpen({ size = 16, ...props }) {
+export function FolderOpen({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <path d="M5 19a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4l2 3h9a2 2 0 0 1 2 2v1" />
@@ -76,7 +85,7 @@ export function FolderOpen({ size = 16, ...props }) {
     );
 }
 
-export function Trash2({ size = 16, className = "", ...props }) {
+export function Trash2({ size = 16, className = "", ...props }: IconProps) {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
             <path d="M3 6h18"></path>
@@ -88,7 +97,7 @@ export function Trash2({ size = 16, className = "", ...props }) {
     );
 }
 
-export function Settings({ size = 16, ...props }) {
+export function Settings({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <circle cx="12" cy="12" r="3"></circle>
@@ -97,7 +106,7 @@ export function Settings({ size = 16, ...props }) {
     );
 }
 
-export function Network({ size = 16, ...props }) {
+export function Network({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <circle cx="12" cy="5" r="2.5" />
@@ -110,7 +119,7 @@ export function Network({ size = 16, ...props }) {
     );
 }
 
-export function FileTextOutline({ size = 16, ...props }) {
+export function FileTextOutline({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -119,7 +128,7 @@ export function FileTextOutline({ size = 16, ...props }) {
     );
 }
 
-export function Link({ size = 16, ...props }) {
+export function Link({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
@@ -128,7 +137,7 @@ export function Link({ size = 16, ...props }) {
     );
 }
 
-export function Edit2({ size = 16, className = "", ...props }) {
+export function Edit2({ size = 16, className = "", ...props }: IconProps) {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
             <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>

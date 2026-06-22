@@ -1,6 +1,22 @@
 import React, { useState, useRef, useEffect } from 'react';
-import TreeNode from './TreeNode.jsx';
-import { FilePlus, FolderPlus, FolderOpen } from './icons.jsx';
+import TreeNode, { type TreeNodeStatic } from './TreeNode';
+import { FilePlus, FolderPlus, FolderOpen } from './icons';
+import type { FileTreeNode } from '../types';
+
+interface FileExplorerProps {
+    rootHandle: FileSystemDirectoryHandle | null;
+    fileTree: FileTreeNode[];
+    activeFilePath: string | null;
+    onFileClick: (node: FileTreeNode) => void;
+    onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string) => void | Promise<void>;
+    onCreateFolder: (parentHandle: FileSystemDirectoryHandle | null, name: string) => void | Promise<void>;
+    onChangeVault: () => void;
+    onTrash: (node: FileTreeNode) => void;
+    expandedPaths: Set<string>;
+    onToggleExpand: (path: string) => void;
+    onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+    onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
+}
 
 export default function FileExplorer({
     rootHandle,
@@ -15,10 +31,10 @@ export default function FileExplorer({
     onToggleExpand,
     onMoveFile,
     onRenameFile
-}) {
-    const [creatingInRoot, setCreatingInRoot] = useState(null); // 'file' | 'folder' | null
+}: FileExplorerProps) {
+    const [creatingInRoot, setCreatingInRoot] = useState<'file' | 'folder' | null>(null); // 'file' | 'folder' | null
     const [rootDragOver, setRootDragOver] = useState(false);
-    const inputRef = useRef(null);
+    const inputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
         if (creatingInRoot && inputRef.current) {
@@ -26,9 +42,9 @@ export default function FileExplorer({
         }
     }, [creatingInRoot]);
 
-    const handleRootCreate = async (e) => {
+    const handleRootCreate = async (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter') {
-            const name = e.target.value.trim();
+            const name = (e.target as HTMLInputElement).value.trim();
             if (!name) {
                 setCreatingInRoot(null);
                 return;
@@ -51,13 +67,13 @@ export default function FileExplorer({
     // Root-level drop handlers — use a counter to reliably track enter/leave
     const dragCounterRef = useRef(0);
 
-    const handleRootDragEnter = (e) => {
+    const handleRootDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
         dragCounterRef.current++;
         setRootDragOver(true);
     };
 
-    const handleRootDragOver = (e) => {
+    const handleRootDragOver = (e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
     };
@@ -70,13 +86,13 @@ export default function FileExplorer({
         }
     };
 
-    const handleRootDrop = async (e) => {
+    const handleRootDrop = async (e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
         dragCounterRef.current = 0;
         setRootDragOver(false);
-        const draggedNode = TreeNode._draggedNode;
+        const draggedNode = (TreeNode as unknown as TreeNodeStatic)._draggedNode;
         if (!draggedNode || !rootHandle) return;
-        TreeNode._draggedNode = null;
+        (TreeNode as unknown as TreeNodeStatic)._draggedNode = null;
         if (onMoveFile) {
             await onMoveFile(draggedNode, rootHandle);
         }

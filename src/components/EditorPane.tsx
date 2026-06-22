@@ -6,34 +6,54 @@ import { languages } from '@codemirror/language-data';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
-import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme.js';
-import { createLivePreviewPlugin } from '../editor/livePreview.js';
-import { markdownFormatExtension } from '../editor/formatKeymap.js';
+import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
+import { createLivePreviewPlugin } from '../editor/livePreview';
+import { markdownFormatExtension } from '../editor/formatKeymap';
 import { Compartment } from '@codemirror/state';
-import { useFileSystem } from '../context/FileSystemContext.jsx';
-import BacklinksPanel from './BacklinksPanel.jsx';
-import { Link } from './icons.jsx';
-import { getBacklinkNodes } from '../utils/graph.js';
+import { useFileSystem } from '../context/FileSystemContext';
+import BacklinksPanel from './BacklinksPanel';
+import { Link } from './icons';
+import { getBacklinkNodes } from '../utils/graph';
 import 'katex/dist/katex.min.css';
+import type { ActiveFile, GraphData, GraphNode, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler } from '../types';
 
-export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, onContentChange, onSave, onOpenNote, graph, onOpenNode }) {
+interface EditorPaneProps {
+    activeFile: ActiveFile | null;
+    fileContent: string;
+    theme: Theme;
+    editorMode: EditorMode;
+    saveStatus: string;
+    onContentChange: (value: string) => void;
+    onSave: () => void | Promise<void>;
+    onOpenNote: OpenNoteByNameHandler;
+    graph: GraphData;
+    onOpenNode: OpenNodeHandler;
+}
+
+/** Inline positioning for the linked-mentions popover (fixed top/right). */
+interface PopoverPos {
+    top: number;
+    right: number;
+}
+
+export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, onContentChange, onSave, onOpenNote, graph, onOpenNode }: EditorPaneProps) {
     const { getAssetUrl, saveAsset } = useFileSystem();
-    const editorContainerRef = useRef(null);
-    const viewRef = useRef(null);
-    const themeCompartmentRef = useRef(new Compartment());
-    const readOnlyCompartmentRef = useRef(new Compartment());
-    const livePreviewCompartmentRef = useRef(new Compartment());
+    const editorContainerRef = useRef<HTMLDivElement | null>(null);
+    const viewRef = useRef<EditorView | null>(null);
+    const themeCompartmentRef = useRef<Compartment>(new Compartment());
+    const readOnlyCompartmentRef = useRef<Compartment>(new Compartment());
+    const livePreviewCompartmentRef = useRef<Compartment>(new Compartment());
     const onContentChangeRef = useRef(onContentChange);
-    const activeFileRef = useRef(activeFile);
+    const activeFileRef = useRef<ActiveFile | null>(activeFile);
     const onOpenNoteRef = useRef(onOpenNote);
-    const saveScrollTimeoutRef = useRef(null);
+    const saveScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // ── Linked mentions popover ────────────────────────────────────────────
     const [showBacklinks, setShowBacklinks] = useState(false);
-    const [popoverPos, setPopoverPos] = useState(null);
-    const backlinksBtnRef = useRef(null);
+    const [popoverPos, setPopoverPos] = useState<PopoverPos | null>(null);
+    const backlinksBtnRef = useRef<HTMLButtonElement | null>(null);
 
-    const backlinkNodes = useMemo(
+    const backlinkNodes = useMemo<GraphNode[]>(
         () => getBacklinkNodes(graph, activeFile?.path),
         [graph, activeFile]
     );
@@ -57,11 +77,12 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     // Dismiss the popover on outside-click, Escape, or window resize.
     useEffect(() => {
         if (!showBacklinks) return;
-        const onPointerDown = (e) => {
-            if (e.target.closest('.backlinks-popover') || e.target.closest('.backlinks-toggle')) return;
+        const onPointerDown = (e: PointerEvent) => {
+            const target = e.target as HTMLElement;
+            if (target.closest('.backlinks-popover') || target.closest('.backlinks-toggle')) return;
             setShowBacklinks(false);
         };
-        const onKeyDown = (e) => { if (e.key === 'Escape') setShowBacklinks(false); };
+        const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowBacklinks(false); };
         const onResize = () => setShowBacklinks(false);
         document.addEventListener('pointerdown', onPointerDown, true);
         document.addEventListener('keydown', onKeyDown);
@@ -74,7 +95,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     }, [showBacklinks]);
 
     // Debounced scroll persistence
-    const handleScroll = (view) => {
+    const handleScroll = (view: EditorView) => {
         if (!activeFileRef.current) return;
         const path = activeFileRef.current.path;
         const scrollTop = view.scrollDOM.scrollTop;
@@ -107,13 +128,13 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     }, [onOpenNote]);
 
     // Create a bound version of getAssetUrl that includes the active file's parent handle
-    const boundGetAssetUrl = useRef((fileName) => getAssetUrl(fileName, null));
+    const boundGetAssetUrl = useRef<(fileName: string) => Promise<string | null>>((fileName) => getAssetUrl(fileName, null));
     useEffect(() => {
         boundGetAssetUrl.current = (fileName) => getAssetUrl(fileName, activeFile?.parentHandle || null);
     }, [activeFile, getAssetUrl]);
 
     // Use a callback ref to initialize CodeMirror as soon as the container is mounted in the DOM.
-    const setEditorContainer = (node) => {
+    const setEditorContainer = (node: HTMLDivElement | null) => {
         editorContainerRef.current = node;
         if (node && !viewRef.current) {
             const updateListener = EditorView.updateListener.of((update) => {
@@ -175,7 +196,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
 
                                     // Save the asset to the local .Assets folder (sibling of the active file)
                                     const parentHandle = activeFileRef.current?.parentHandle || null;
-                                    saveAsset(filename, blob, parentHandle).then(() => {
+                                    saveAsset(filename, blob!, parentHandle).then(() => {
                                         // Insert the markdown at cursor
                                         const insertText = `![[${filename}]]\n`;
                                         const ranges = view.state.selection.ranges;
@@ -201,10 +222,10 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                         },
                         mousedown(event) {
                             // Navigate when a rendered [[wikilink]] is clicked.
-                            const el = event.target.closest?.('.cm-wikilink');
+                            const el = (event.target as HTMLElement).closest?.('.cm-wikilink');
                             if (el && onOpenNoteRef.current) {
                                 event.preventDefault();
-                                onOpenNoteRef.current(el.getAttribute('data-wikilink'));
+                                onOpenNoteRef.current(el.getAttribute('data-wikilink') as string);
                                 return true;
                             }
                             return false;

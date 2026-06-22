@@ -1,14 +1,19 @@
 import { WidgetType } from '@codemirror/view';
+import type { AssetUrlResolver } from '../types';
 
 export class ImageWidget extends WidgetType {
-    constructor(filename, width, getAssetUrl) {
+    filename: string;
+    width: number | null;
+    getAssetUrl: AssetUrlResolver;
+
+    constructor(filename: string, width: number | null, getAssetUrl: AssetUrlResolver) {
         super();
         this.filename = filename;
         this.width = width;
         this.getAssetUrl = getAssetUrl;
     }
 
-    eq(other) {
+    eq(other: ImageWidget): boolean {
         return (
             other.filename === this.filename &&
             other.width === this.width &&
@@ -16,7 +21,7 @@ export class ImageWidget extends WidgetType {
         );
     }
 
-    toDOM() {
+    toDOM(): HTMLElement {
         const container = document.createElement('span');
         container.className = 'cm-image-widget';
 

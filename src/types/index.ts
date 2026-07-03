@@ -83,6 +83,22 @@ export interface ActiveFile {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
+ * OPEN TAB
+ * One entry in App's `tabs` array — a single open document. Generalizes the
+ * former single (activeFile + fileContent + editorMode) trio into a list, one
+ * per open file, identified by `file.path`. Content lives per tab in memory so
+ * switching tabs never re-reads disk or loses unsaved edits; `dirty` tracks
+ * unsaved changes (cleared once autosave flushes) and drives the tab's dot.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface OpenTab {
+  file: ActiveFile;        // the open doc's metadata (name, path, handle, isHelp…)
+  content: string;         // in-memory text, edited live
+  mode: EditorMode;        // 'read' | 'edit', remembered per tab
+  dirty: boolean;          // has unsaved edits since the last disk write
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
  * GRAPH MODEL
  * Built by buildGraph() (graph.js:71-142). Node objects are documented at
  * graph.js:66-69 and constructed at graph.js:82-89 (resolved) & 110-117

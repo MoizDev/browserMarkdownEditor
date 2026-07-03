@@ -8,13 +8,13 @@ interface FileExplorerProps {
     fileTree: FileTreeNode[];
     activeFilePath: string | null;
     onFileClick: (node: FileTreeNode) => void;
-    onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string) => void | Promise<void>;
+    onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath?: string) => void | Promise<void>;
     onCreateFolder: (parentHandle: FileSystemDirectoryHandle | null, name: string) => void | Promise<void>;
     onChangeVault: () => void;
     onTrash: (node: FileTreeNode) => void;
     expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
-    onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+    onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
     onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
 }
 
@@ -50,7 +50,7 @@ export default function FileExplorer({
                 return;
             }
             if (creatingInRoot === 'file') {
-                await onCreateFile(rootHandle, name);
+                await onCreateFile(rootHandle, name, '');
             } else {
                 await onCreateFolder(rootHandle, name);
             }
@@ -94,7 +94,7 @@ export default function FileExplorer({
         if (!draggedNode || !rootHandle) return;
         (TreeNode as unknown as TreeNodeStatic)._draggedNode = null;
         if (onMoveFile) {
-            await onMoveFile(draggedNode, rootHandle);
+            await onMoveFile(draggedNode, rootHandle, '');
         }
     };
 
@@ -164,9 +164,9 @@ export default function FileExplorer({
                         node={node}
                         activeFilePath={activeFilePath}
                         onFileClick={onFileClick}
-                        onCreateFile={(handle, _path) => {
+                        onCreateFile={(handle, path) => {
                             const name = prompt('Enter file name (e.g. "note.md"):');
-                            if (name) onCreateFile(handle, name);
+                            if (name) onCreateFile(handle, name, path);
                         }}
                         onCreateFolder={(handle, _path) => {
                             const name = prompt('Enter folder name:');

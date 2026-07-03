@@ -372,7 +372,6 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         moveToTrash,
         moveFile,
         renameFile,
-        refreshTree: () => refreshTree(rootHandle),
     };
 
     return (

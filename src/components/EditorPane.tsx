@@ -15,6 +15,7 @@ import BacklinksPanel from './BacklinksPanel';
 import TabBar from './TabBar';
 import { Link, Eye, Edit2 } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
+import { readJSON, writeJSON } from '../utils/storage';
 import 'katex/dist/katex.min.css';
 import type { ActiveFile, OpenTab, GraphData, GraphNode, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler } from '../types';
 
@@ -40,6 +41,13 @@ interface EditorPaneProps {
 interface PopoverPos {
     top: number;
     right: number;
+}
+
+/** The theme + syntax-highlight extension pair for the current app theme. */
+function themeExtensions(theme: Theme) {
+    return theme === 'light'
+        ? [obsidianLightTheme, obsidianLightHighlightStyle]
+        : [obsidianDarkTheme, obsidianHighlightStyle];
 }
 
 export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onOpenNote, graph, onOpenNode }: EditorPaneProps) {
@@ -119,14 +127,9 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         if (saveScrollTimeoutRef.current) clearTimeout(saveScrollTimeoutRef.current);
 
         saveScrollTimeoutRef.current = setTimeout(() => {
-            try {
-                const stored = localStorage.getItem('fileScrollPositions');
-                const positions = stored ? JSON.parse(stored) : {};
-                positions[path] = scrollTop;
-                localStorage.setItem('fileScrollPositions', JSON.stringify(positions));
-            } catch (err) {
-                console.error('Failed to save scroll position:', err);
-            }
+            const positions = readJSON<Record<string, number>>('fileScrollPositions', {});
+            positions[path] = scrollTop;
+            writeJSON('fileScrollPositions', positions);
         }, 300);
     };
 
@@ -170,10 +173,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 history(),
                 closeBrackets(),
                 markdown({ base: markdownLanguage, codeLanguages: languages }),
-                themeCompartmentRef.current.of([
-                    theme === 'light' ? obsidianLightTheme : obsidianDarkTheme,
-                    theme === 'light' ? obsidianLightHighlightStyle : obsidianHighlightStyle
-                ]),
+                themeCompartmentRef.current.of(themeExtensions(theme)),
                 keymap.of([
                     ...defaultKeymap,
                     ...historyKeymap,
@@ -295,10 +295,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
             // Cached states may hold a stale theme/mode → reconfigure for this tab.
             view.dispatch({
                 effects: [
-                    themeCompartmentRef.current.reconfigure([
-                        theme === 'light' ? obsidianLightTheme : obsidianDarkTheme,
-                        theme === 'light' ? obsidianLightHighlightStyle : obsidianHighlightStyle
-                    ]),
+                    themeCompartmentRef.current.reconfigure(themeExtensions(theme)),
                     readOnlyCompartmentRef.current.reconfigure(EditorView.editable.of(editorMode !== 'read')),
                     livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin((fn) => boundGetAssetUrl.current(fn), editorMode)),
                 ]
@@ -313,18 +310,13 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
 
         // Restore scroll position for the newly-active file.
         if (nextPath) {
-            try {
-                const stored = localStorage.getItem('fileScrollPositions');
-                const positions = stored ? JSON.parse(stored) : {};
-                const savedScrollTop = positions[nextPath];
-                requestAnimationFrame(() => {
-                    if (viewRef.current) {
-                        viewRef.current.scrollDOM.scrollTop = savedScrollTop !== undefined ? savedScrollTop : 0;
-                    }
-                });
-            } catch (err) {
-                console.error('Failed to restore scroll position:', err);
-            }
+            const positions = readJSON<Record<string, number>>('fileScrollPositions', {});
+            const savedScrollTop = positions[nextPath];
+            requestAnimationFrame(() => {
+                if (viewRef.current) {
+                    viewRef.current.scrollDOM.scrollTop = savedScrollTop !== undefined ? savedScrollTop : 0;
+                }
+            });
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeFile?.path]);
@@ -344,10 +336,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         const view = viewRef.current;
         if (view) {
             view.dispatch({
-                effects: themeCompartmentRef.current.reconfigure([
-                    theme === 'light' ? obsidianLightTheme : obsidianDarkTheme,
-                    theme === 'light' ? obsidianLightHighlightStyle : obsidianHighlightStyle
-                ])
+                effects: themeCompartmentRef.current.reconfigure(themeExtensions(theme))
             });
         }
     }, [theme]);
@@ -363,7 +352,9 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 ]
             });
         }
-    }, [editorMode, activeFile?.path]);
+        // Only editorMode: the tab-swap effect already reconfigures these on a
+        // path change, so this need not fire again on every switch.
+    }, [editorMode]);
 
     return (
         <div className="editor-pane">
@@ -377,29 +368,29 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 />
                 {saveStatus && <span className="save-status">{saveStatus}</span>}
                 {activeFile && !activeFile.isHelp && (
-                    <button
-                        className="view-header-action"
-                        onClick={() => onToggleMode(activeFile.path)}
-                        title={editorMode === 'read' ? 'Reading — switch to edit (⌘E)' : 'Editing — switch to reading (⌘E)'}
-                        aria-label="Toggle read/edit mode"
-                    >
-                        {editorMode === 'read' ? <Eye size={15} /> : <Edit2 size={15} />}
-                    </button>
-                )}
-                {activeFile && !activeFile.isHelp && (
-                    <button
-                        ref={backlinksBtnRef}
-                        className={`view-header-action backlinks-toggle${showBacklinks ? ' active' : ''}`}
-                        onClick={toggleBacklinks}
-                        title="Linked mentions"
-                        aria-label="Linked mentions"
-                        aria-expanded={showBacklinks}
-                    >
-                        <Link size={15} />
-                        {backlinkNodes.length > 0 && (
-                            <span className="view-header-action-count">{backlinkNodes.length}</span>
-                        )}
-                    </button>
+                    <>
+                        <button
+                            className="view-header-action"
+                            onClick={() => onToggleMode(activeFile.path)}
+                            title={editorMode === 'read' ? 'Reading — switch to edit (⌘E)' : 'Editing — switch to reading (⌘E)'}
+                            aria-label="Toggle read/edit mode"
+                        >
+                            {editorMode === 'read' ? <Eye size={15} /> : <Edit2 size={15} />}
+                        </button>
+                        <button
+                            ref={backlinksBtnRef}
+                            className={`view-header-action backlinks-toggle${showBacklinks ? ' active' : ''}`}
+                            onClick={toggleBacklinks}
+                            title="Linked mentions"
+                            aria-label="Linked mentions"
+                            aria-expanded={showBacklinks}
+                        >
+                            <Link size={15} />
+                            {backlinkNodes.length > 0 && (
+                                <span className="view-header-action-count">{backlinkNodes.length}</span>
+                            )}
+                        </button>
+                    </>
                 )}
             </div>
             <div

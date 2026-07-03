@@ -18,7 +18,7 @@ interface FileExplorerProps {
     onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
 }
 
-export default function FileExplorer({
+function FileExplorer({
     rootHandle,
     fileTree,
     activeFilePath,
@@ -183,3 +183,7 @@ export default function FileExplorer({
         </div>
     );
 }
+
+// Memoized: its props are referentially stable across editor keystrokes, so the
+// whole file tree stops re-rendering while the user types in a note.
+export default React.memo(FileExplorer);

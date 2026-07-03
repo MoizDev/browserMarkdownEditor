@@ -9,8 +9,6 @@
 // `declare global`. Because this module is part of the `tsconfig` `include`,
 // that augmentation is loaded globally for every other module.
 
-import type { ReactNode, CSSProperties } from 'react';
-
 /* ─────────────────────────────────────────────────────────────────────────
  * FILE TREE
  * Produced by buildFileTree() in FileSystemContext (FileSystemContext.jsx:29-67).
@@ -39,14 +37,6 @@ export interface FileTreeDirNode {
 /** The recursive file/folder tree node union. */
 export type FileTreeNode = FileTreeFileNode | FileTreeDirNode;
 
-// ── Aliases (so consumers using the Data-Flow naming resolve identically) ──
-/** Alias of FileTreeFileNode (Data-Flow dimension naming). */
-export type VaultFileNode = FileTreeFileNode;
-/** Alias of FileTreeDirNode (Data-Flow dimension naming). */
-export type VaultDirNode = FileTreeDirNode;
-/** Alias of FileTreeNode (Data-Flow / graph dimension naming). */
-export type FileNode = FileTreeNode;
-
 /* ─────────────────────────────────────────────────────────────────────────
  * ACTIVE FILE
  * App.activeFile (App.jsx:29) holds one of THREE differently-shaped values:
@@ -59,13 +49,6 @@ export type FileNode = FileTreeNode;
  * Model it as: a file-node-like shape with handles OPTIONAL and an isHelp flag,
  * so every existing guard/property read type-checks WITHOUT a runtime change.
  * ───────────────────────────────────────────────────────────────────────── */
-
-/** The synthetic "Help Guide" pseudo-file (App.jsx:271). No handle/parentHandle/kind/children. */
-export interface HelpNode {
-  name: string;          // 'Help Guide'
-  path: string;          // 'help-guide'
-  isHelp: true;          // discriminant
-}
 
 /**
  * What App's `activeFile` state can hold over time. A union-friendly superset:
@@ -129,12 +112,6 @@ export interface GraphData {
   backlinks: GraphAdjacency;             // graph.js:141  { [targetId]: sourceId[] }
   outlinks: GraphAdjacency;              // graph.js:141  { [sourceId]: targetId[] }
 }
-
-// ── Aliases for the graph object (different dimensions named it differently) ──
-/** Alias of GraphData (Data-Flow dimension naming). */
-export type Graph = GraphData;
-/** Alias of GraphData (Components dimension naming). */
-export type LinkGraph = GraphData;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * STRING-LITERAL UNIONS (app-level modes / themes / caret)
@@ -201,26 +178,16 @@ export interface FileSystemContextValue {
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
   moveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>; // :297
   renameFile: (sourceNode: FileTreeNode, newName: string) => Promise<boolean>; // :329
-  refreshTree: () => Promise<void>;                      // :373 — zero-arg public wrapper of the internal (handle) => Promise<void>
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
  * SHARED CALLBACK / PROP ALIASES (used across multiple buckets)
  * ───────────────────────────────────────────────────────────────────────── */
 
-/** Open a note from the tree (App.handleFileClick, App.jsx:185). */
-export type OpenFileHandler = (node: FileTreeNode) => void | Promise<void>;
-/** Open a note from a graph node, skipping unresolved (App.handleOpenNode, App.jsx:239). */
+/** Open a note from a graph node, skipping unresolved (App.handleOpenNode). */
 export type OpenNodeHandler = (graphNode: GraphNode) => void;
-/** Open a note by its (base)name (App.openNoteByName, App.jsx:228). Called with string | null. */
+/** Open a note by its (base)name (App.openNoteByName). Called with string | null. */
 export type OpenNoteByNameHandler = (name: string | null) => void;
-/** moveFile bound prop passed down the tree (App.jsx:484 -> FileExplorer -> TreeNode). */
-export type MoveFileHandler = (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
-/** renameFile wrapper passed down the tree (App.handleRenameFile, App.jsx:329). */
-export type RenameFileHandler = (node: FileTreeNode, newName: string) => void | Promise<void>;
-
-/** Re-export helpers so deep importers can `import type { CSSProperties } from '../types'` if desired. */
-export type { ReactNode, CSSProperties };
 
 /* ─────────────────────────────────────────────────────────────────────────
  * FILE SYSTEM ACCESS API — AMBIENT GLOBAL AUGMENTATION

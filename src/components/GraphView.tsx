@@ -267,8 +267,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 p.vy += -p.y * CENTER * alpha;
                 p.vx *= DAMP;
                 p.vy *= DAMP;
-                if (p.vx > MAX_V) p.vx = MAX_V; else if (p.vx < -MAX_V) p.vx = -MAX_V;
-                if (p.vy > MAX_V) p.vy = MAX_V; else if (p.vy < -MAX_V) p.vy = -MAX_V;
+                p.vx = Math.max(-MAX_V, Math.min(MAX_V, p.vx));
+                p.vy = Math.max(-MAX_V, Math.min(MAX_V, p.vy));
                 p.x += p.vx;
                 p.y += p.vy;
             }

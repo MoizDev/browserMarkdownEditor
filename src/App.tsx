@@ -2,6 +2,8 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useFileSystem } from './context/FileSystemContext';
 import { HELP_DOC_CONTENT } from './utils/helpDoc';
 import { buildGraph, collectMarkdownFiles, baseName } from './utils/graph';
+import { readJSON, writeJSON } from './utils/storage';
+import { joinVaultPath } from './utils/paths';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
 import EditorPane from './components/EditorPane';
@@ -171,19 +173,16 @@ export default function App() {
   }, []);
 
   // Expanded folder paths (persisted via localStorage)
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem('expandedPaths');
-      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
-    } catch { return new Set<string>(); }
-  });
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
+    () => new Set<string>(readJSON<string[]>('expandedPaths', []))
+  );
 
   const handleToggleExpand = useCallback((path: string) => {
     setExpandedPaths(prev => {
       const next = new Set<string>(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
-      localStorage.setItem('expandedPaths', JSON.stringify([...next]));
+      writeJSON('expandedPaths', [...next]);
       return next;
     });
   }, []);
@@ -203,7 +202,7 @@ export default function App() {
   const openTabPathsKey = tabs.map(t => t.file.path).join('\n');
   useEffect(() => {
     const paths = openTabPathsKey ? openTabPathsKey.split('\n') : [];
-    localStorage.setItem('openTabPaths', JSON.stringify(paths));
+    writeJSON('openTabPaths', paths);
     if (activeTabPath) {
       localStorage.setItem('activeTabPath', activeTabPath);
       localStorage.setItem('lastFilePath', activeTabPath); // back-compat
@@ -219,11 +218,7 @@ export default function App() {
 
   const handleFileClick = useCallback(async (node: FileTreeNode) => {
     try {
-      const lowerName = node.name.toLowerCase();
-      if (lowerName.endsWith('.pdf') ||
-        lowerName.endsWith('.jpg') ||
-        lowerName.endsWith('.jpeg') ||
-        lowerName.endsWith('.png')) {
+      if (/\.(pdf|jpe?g|png)$/i.test(node.name)) {
         const file = await (node.handle as FileSystemFileHandle).getFile();
         const url = URL.createObjectURL(file);
         window.open(url, '_blank');
@@ -284,8 +279,7 @@ export default function App() {
   // tab is removed from state (e.g. on close). Skips Help / handle-less tabs.
   const flushTab = useCallback(async (path: string | null, force = false) => {
     if (!path) return;
-    const pending = saveTimersRef.current.get(path);
-    if (pending) { clearTimeout(pending); saveTimersRef.current.delete(path); }
+    clearSaveTimer(path);
 
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || tab.file.isHelp || !tab.file.handle) return;
@@ -305,14 +299,12 @@ export default function App() {
     } catch (err) {
       console.error('Auto-save failed:', err);
     }
-  }, []);
+  }, [clearSaveTimer]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
-    saveTimersRef.current.set(path, setTimeout(() => {
-      saveTimersRef.current.delete(path);
-      flushTab(path);
-    }, 1000));
+    // flushTab clears the (now-fired) timer itself, so no delete needed here.
+    saveTimersRef.current.set(path, setTimeout(() => flushTab(path), 1000));
   }, [clearSaveTimer, flushTab]);
 
   // Wired to EditorPane's onContentChange. EditorPane always calls the latest
@@ -325,14 +317,12 @@ export default function App() {
   }, [scheduleSave]);
 
   const removeTab = useCallback((path: string, flush: boolean) => {
-    const list = tabsRef.current;
-    const tab = list.find(t => t.file.path === path);
-    // Persist unsaved edits before the tab leaves state (flushTab captures
-    // synchronously). Never flush Help / handle-less tabs.
-    if (flush && tab?.dirty && !tab.file.isHelp && tab.file.handle) flushTab(path);
-    else clearSaveTimer(path);
+    // flushTab captures the tab synchronously, clears the timer, and no-ops for
+    // non-dirty / Help / handle-less tabs, so calling it whenever we flush is safe.
+    if (flush) flushTab(path); else clearSaveTimer(path);
 
     if (activeTabPathRef.current === path) {
+      const list = tabsRef.current;
       const i = list.findIndex(t => t.file.path === path);
       setActiveTabPath(list[i + 1]?.file.path ?? list[i - 1]?.file.path ?? null);
     }
@@ -395,11 +385,7 @@ export default function App() {
       return null;
     };
 
-    let storedPaths: string[] = [];
-    try {
-      const raw = localStorage.getItem('openTabPaths');
-      storedPaths = raw ? JSON.parse(raw) : [];
-    } catch { storedPaths = []; }
+    let storedPaths = readJSON<string[]>('openTabPaths', []);
     if (!Array.isArray(storedPaths)) storedPaths = [];
     // Back-compat: the first run after upgrading only has a single lastFilePath.
     if (storedPaths.length === 0) {
@@ -457,7 +443,7 @@ export default function App() {
       // to match buildFileTree's convention (vault-root-relative, no vault-name
       // prefix) so the tab dedups / highlights / restores correctly.
       if (newFileHandle) {
-        const newPath = parentPath ? `${parentPath}/${name}` : name;
+        const newPath = joinVaultPath(parentPath, name);
         const newNode: FileTreeFileNode = {
           name,
           handle: newFileHandle,
@@ -524,7 +510,7 @@ export default function App() {
     const openTab = tabsRef.current.find(t => t.file.path === sourceNode.path);
     const success = await moveFile(sourceNode, targetDirHandle);
     if (success && openTab) {
-      const newPath = targetPath ? `${targetPath}/${sourceNode.name}` : sourceNode.name;
+      const newPath = joinVaultPath(targetPath, sourceNode.name);
       try {
         const newHandle = await targetDirHandle.getFileHandle(sourceNode.name);
         clearSaveTimer(sourceNode.path);

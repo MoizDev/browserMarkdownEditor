@@ -460,7 +460,10 @@ export function createLivePreviewPlugin(getAssetUrl: GetAssetUrl, editorMode: Ed
             return buildDecorations(viewShim, getAssetUrl, editorMode);
         },
         update(decorations: DecorationSet, tr: Transaction) {
-            if (tr.docChanged || tr.selection) {
+            // In read mode, decorations are a pure function of the document — every
+            // selection-dependent branch in buildDecorations is gated behind
+            // editorMode !== 'read' — so skip rebuilds from selection-only changes.
+            if (tr.docChanged || (tr.selection && editorMode !== 'read')) {
                 const viewShim = { state: tr.state };
                 return buildDecorations(viewShim, getAssetUrl, editorMode);
             }

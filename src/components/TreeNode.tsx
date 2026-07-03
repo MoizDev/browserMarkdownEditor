@@ -11,7 +11,7 @@ interface TreeNodeProps {
     onTrash: (node: FileTreeNode) => void;
     expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
-    onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+    onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
     onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
     depth?: number;
 }
@@ -111,7 +111,7 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
         if (node.path.startsWith(draggedNode.path + '/')) return;
 
         if (onMoveFile) {
-            await onMoveFile(draggedNode, node.handle as FileSystemDirectoryHandle);
+            await onMoveFile(draggedNode, node.handle as FileSystemDirectoryHandle, node.path);
         }
     };
 

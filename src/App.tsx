@@ -12,7 +12,7 @@ import type {
   FileTreeNode,
   FileTreeFileNode,
   FileTreeDirNode,
-  ActiveFile,
+  OpenTab,
   GraphData,
   GraphNode,
   SettingsDefaults,
@@ -39,12 +39,23 @@ export default function App() {
     renameFile,
   } = useFileSystem();
 
-  const [activeFile, setActiveFile] = useState<ActiveFile | null>(null);
-  const [fileContent, setFileContent] = useState<string>('');
+  // Open tabs (one per open document) + the path of the active tab. This
+  // replaces the former single (activeFile + fileContent + editorMode) trio;
+  // those three are now DERIVED from the active tab below and still fed to
+  // EditorPane, so most downstream code is unchanged.
+  const [tabs, setTabs] = useState<OpenTab[]>([]);
+  const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<string>('');
 
-  // Editor mode ('edit' or 'read')
-  const [editorMode, setEditorMode] = useState<EditorMode>('read');
+  const activeTab = useMemo(
+    () => tabs.find(t => t.file.path === activeTabPath) ?? null,
+    [tabs, activeTabPath]
+  );
+  // Keeping `t.file` identity stable across keystrokes (see updateActiveTabContent)
+  // means `activeFile` only changes on an actual tab switch, not on every edit.
+  const activeFile = activeTab?.file ?? null;
+  const fileContent = activeTab?.content ?? '';
+  const editorMode: EditorMode = activeTab?.mode ?? 'read';
 
   // Main pane view ('editor' or 'graph' — the Neural Brain view)
   const [mainView, setMainView] = useState<MainView>('editor');
@@ -177,18 +188,29 @@ export default function App() {
     });
   }, []);
 
-  // Refs for debounced auto-save (avoid stale closures)
-  const fileContentRef = useRef<string>(fileContent);
-  const activeFileRef = useRef<ActiveFile | null>(activeFile);
-  useEffect(() => { fileContentRef.current = fileContent; }, [fileContent]);
-  useEffect(() => { activeFileRef.current = activeFile; }, [activeFile]);
+  // Refs mirroring tab state for use inside stable callbacks / timers.
+  const tabsRef = useRef<OpenTab[]>(tabs);
+  const activeTabPathRef = useRef<string | null>(activeTabPath);
+  // Per-PATH debounced save timers, so switching or closing one tab never
+  // cancels another tab's pending write (fixes the old single-timer data loss).
+  const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  useEffect(() => { activeTabPathRef.current = activeTabPath; }, [activeTabPath]);
 
-  // Persist the active file path to localStorage
+  // Persist the open tabs + active tab so they can be restored on reload. Keyed
+  // on the joined path string (not `tabs`) so it does NOT run on every keystroke
+  // — only when the set/order of open files, or the active one, changes.
+  const openTabPathsKey = tabs.map(t => t.file.path).join('\n');
   useEffect(() => {
-    if (activeFile?.path) {
-      localStorage.setItem('lastFilePath', activeFile.path);
+    const paths = openTabPathsKey ? openTabPathsKey.split('\n') : [];
+    localStorage.setItem('openTabPaths', JSON.stringify(paths));
+    if (activeTabPath) {
+      localStorage.setItem('activeTabPath', activeTabPath);
+      localStorage.setItem('lastFilePath', activeTabPath); // back-compat
+    } else {
+      localStorage.removeItem('activeTabPath');
     }
-  }, [activeFile]);
+  }, [openTabPathsKey, activeTabPath]);
 
   // Sidebar resizing
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
@@ -208,11 +230,17 @@ export default function App() {
         return;
       }
 
+      // Already open? Just focus its tab — don't re-read (preserves the tab's
+      // unsaved edits and its own undo history).
+      if (tabsRef.current.some(t => t.file.path === node.path)) {
+        setActiveTabPath(node.path);
+        return;
+      }
+
       const content = await readFile(node.handle as FileSystemFileHandle);
-      setActiveFile(node);
-      setFileContent(content);
+      setTabs(prev => [...prev, { file: node, content, mode: 'read', dirty: false }]);
+      setActiveTabPath(node.path);
       setSaveStatus('');
-      setEditorMode('read');
     } catch (err) {
       console.error('Failed to read file:', err);
     }
@@ -237,6 +265,103 @@ export default function App() {
 
   useEffect(() => { rebuildGraph(); }, [rebuildGraph]);
 
+  // ── Per-tab autosave ────────────────────────────────────────────────────
+  // rebuildGraph/writeFile are read through refs so the save helpers keep a
+  // stable identity (no re-armed timers / re-subscribed listeners on every
+  // graph rebuild) while never going stale.
+  const rebuildGraphRef = useRef(rebuildGraph);
+  const writeFileRef = useRef(writeFile);
+  useEffect(() => { rebuildGraphRef.current = rebuildGraph; }, [rebuildGraph]);
+  useEffect(() => { writeFileRef.current = writeFile; }, [writeFile]);
+
+  const clearSaveTimer = useCallback((path: string) => {
+    const pending = saveTimersRef.current.get(path);
+    if (pending) { clearTimeout(pending); saveTimersRef.current.delete(path); }
+  }, []);
+
+  // Write one tab's buffered content to its OWN handle. The tab is captured
+  // synchronously (before the await), so this is safe to fire right before the
+  // tab is removed from state (e.g. on close). Skips Help / handle-less tabs.
+  const flushTab = useCallback(async (path: string | null, force = false) => {
+    if (!path) return;
+    const pending = saveTimersRef.current.get(path);
+    if (pending) { clearTimeout(pending); saveTimersRef.current.delete(path); }
+
+    const tab = tabsRef.current.find(t => t.file.path === path);
+    if (!tab || tab.file.isHelp || !tab.file.handle) return;
+    if (!tab.dirty && !force) return;
+    const snapshot = tab.content;
+
+    try {
+      await writeFileRef.current(tab.file.handle as FileSystemFileHandle, snapshot);
+      // Only clear `dirty` if the content hasn't changed since we snapshotted.
+      setTabs(prev => prev.map(t =>
+        t.file.path === path && t.content === snapshot ? { ...t, dirty: false } : t));
+      if (activeTabPathRef.current === path) {
+        setSaveStatus('Saved');
+        setTimeout(() => setSaveStatus(''), 2000);
+      }
+      rebuildGraphRef.current();
+    } catch (err) {
+      console.error('Auto-save failed:', err);
+    }
+  }, []);
+
+  const scheduleSave = useCallback((path: string) => {
+    clearSaveTimer(path);
+    saveTimersRef.current.set(path, setTimeout(() => {
+      saveTimersRef.current.delete(path);
+      flushTab(path);
+    }, 1000));
+  }, [clearSaveTimer, flushTab]);
+
+  // Wired to EditorPane's onContentChange. EditorPane always calls the latest
+  // via its own ref, so identity churn here is harmless.
+  const updateActiveTabContent = useCallback((content: string) => {
+    const path = activeTabPathRef.current;
+    if (!path) return;
+    setTabs(prev => prev.map(t => t.file.path === path ? { ...t, content, dirty: true } : t));
+    scheduleSave(path);
+  }, [scheduleSave]);
+
+  const removeTab = useCallback((path: string, flush: boolean) => {
+    const list = tabsRef.current;
+    const tab = list.find(t => t.file.path === path);
+    // Persist unsaved edits before the tab leaves state (flushTab captures
+    // synchronously). Never flush Help / handle-less tabs.
+    if (flush && tab?.dirty && !tab.file.isHelp && tab.file.handle) flushTab(path);
+    else clearSaveTimer(path);
+
+    if (activeTabPathRef.current === path) {
+      const i = list.findIndex(t => t.file.path === path);
+      setActiveTabPath(list[i + 1]?.file.path ?? list[i - 1]?.file.path ?? null);
+    }
+    setTabs(prev => prev.filter(t => t.file.path !== path));
+  }, [clearSaveTimer, flushTab]);
+
+  const closeTab = useCallback((path: string) => removeTab(path, true), [removeTab]);
+
+  const reorderTabs = useCallback((path: string, toIndex: number) => {
+    setTabs(prev => {
+      const from = prev.findIndex(t => t.file.path === path);
+      if (from === -1) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(from, 1);
+      // `toIndex` indexes the PRE-removal array; adjust when moving rightward.
+      const insertAt = toIndex > from ? toIndex - 1 : toIndex;
+      next.splice(insertAt, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const toggleTabMode = useCallback((path: string | null) => {
+    if (!path) return;
+    setTabs(prev => prev.map(t =>
+      t.file.path === path && !t.file.isHelp
+        ? { ...t, mode: t.mode === 'edit' ? 'read' : 'edit' }
+        : t));
+  }, []);
+
   // Open a note by its name (used by [[wikilinks]], graph nodes, backlinks).
   const openNoteByName = useCallback((name: string | null) => {
     if (!name) return;
@@ -255,64 +380,93 @@ export default function App() {
     setMainView('editor');
   }, [handleFileClick]);
 
-  // Auto-restore the last opened file when the file tree loads
+  // Auto-restore previously-open tabs once the file tree has loaded.
   useEffect(() => {
     if (hasRestoredFile.current || !fileTree || fileTree.length === 0) return;
-    const lastPath = localStorage.getItem('lastFilePath');
-    if (!lastPath) return;
 
-    // Walk the tree to find the node matching lastPath
-    const findNode = (nodes: FileTreeNode[]): FileTreeNode | null => {
+    const findNode = (nodes: FileTreeNode[], target: string): FileTreeFileNode | null => {
       for (const node of nodes) {
-        if (node.kind === 'file' && node.path === lastPath) return node;
+        if (node.kind === 'file' && node.path === target) return node;
         if ((node as FileTreeDirNode).children) {
-          const found = findNode((node as FileTreeDirNode).children);
+          const found = findNode((node as FileTreeDirNode).children, target);
           if (found) return found;
         }
       }
       return null;
     };
 
-    const node = findNode(fileTree);
-    if (node) {
-      hasRestoredFile.current = true;
-      handleFileClick(node);
+    let storedPaths: string[] = [];
+    try {
+      const raw = localStorage.getItem('openTabPaths');
+      storedPaths = raw ? JSON.parse(raw) : [];
+    } catch { storedPaths = []; }
+    if (!Array.isArray(storedPaths)) storedPaths = [];
+    // Back-compat: the first run after upgrading only has a single lastFilePath.
+    if (storedPaths.length === 0) {
+      const last = localStorage.getItem('lastFilePath');
+      if (last) storedPaths = [last];
     }
-  }, [fileTree, handleFileClick]);
+    if (storedPaths.length === 0) return;
+
+    hasRestoredFile.current = true;
+
+    (async () => {
+      const restored: OpenTab[] = [];
+      for (const path of storedPaths) {
+        if (path === 'help-guide') {
+          restored.push({ file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
+          continue;
+        }
+        const node = findNode(fileTree, path);
+        if (!node) continue; // file deleted/moved externally — skip it
+        try {
+          const content = await readFile(node.handle as FileSystemFileHandle);
+          restored.push({ file: node, content, mode: 'read', dirty: false });
+        } catch (err) {
+          console.error('Failed to restore tab:', path, err);
+        }
+      }
+      if (restored.length === 0) return;
+      setTabs(restored);
+      const wantActive = localStorage.getItem('activeTabPath');
+      const active = restored.some(t => t.file.path === wantActive) ? wantActive : restored[0].file.path;
+      setActiveTabPath(active);
+    })();
+  }, [fileTree, readFile]);
 
   const handleHelpClick = useCallback(() => {
-    setActiveFile({ name: 'Help Guide', isHelp: true, path: 'help-guide' });
-    setFileContent(HELP_DOC_CONTENT);
-    setEditorMode('read');
+    const path = 'help-guide';
+    if (tabsRef.current.some(t => t.file.path === path)) {
+      setActiveTabPath(path);
+      return;
+    }
+    setTabs(prev => [...prev, {
+      file: { name: 'Help Guide', isHelp: true, path },
+      content: HELP_DOC_CONTENT,
+      mode: 'read',
+      dirty: false,
+    }]);
+    setActiveTabPath(path);
     setSaveStatus('');
   }, []);
 
-  const handleSave = useCallback(async () => {
-    if (!activeFile || activeFile.isHelp) return;
-    try {
-      await writeFile(activeFile.handle as FileSystemFileHandle, fileContent);
-      setSaveStatus('Saved');
-      setTimeout(() => setSaveStatus(''), 2000);
-    } catch (err) {
-      console.error('Failed to save:', err);
-      setSaveStatus('Error saving');
-    }
-  }, [activeFile, fileContent, writeFile]);
-
-  const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string) => {
+  const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath = '') => {
     try {
       const newFileHandle = await createFile(parentHandle!, name);
-      // Auto-open the newly created file and switch to edit mode
+      // Auto-open the newly created file straight into edit mode. Build the path
+      // to match buildFileTree's convention (vault-root-relative, no vault-name
+      // prefix) so the tab dedups / highlights / restores correctly.
       if (newFileHandle) {
+        const newPath = parentPath ? `${parentPath}/${name}` : name;
         const newNode: FileTreeFileNode = {
-          name: name,
+          name,
           handle: newFileHandle,
           parentHandle: parentHandle!,
           kind: 'file',
-          path: parentHandle ? `${parentHandle.name}/${name}` : name
+          path: newPath,
         };
         await handleFileClick(newNode);
-        setEditorMode('edit');
+        setTabs(prev => prev.map(t => t.file.path === newPath ? { ...t, mode: 'edit' } : t));
       }
     } catch (err) {
       console.error('Failed to create file:', err);
@@ -330,87 +484,89 @@ export default function App() {
   const handleTrash = useCallback(async (node: FileTreeNode) => {
     if (confirm(`Move "${node.name}" to Trash?`)) {
       const moved = await moveToTrash(node);
-      if (moved && activeFileRef.current?.path === node.path) {
-        // If we deleted the file we are currently looking at, clear the editor
-        setActiveFile(null);
-        setFileContent('');
+      if (moved && tabsRef.current.some(t => t.file.path === node.path)) {
+        // Close the trashed file's tab WITHOUT flushing (its handle is gone).
+        removeTab(node.path, false);
         setSaveStatus('');
       }
     }
-  }, [moveToTrash]);
+  }, [moveToTrash, removeTab]);
 
   const handleRenameFile = useCallback(async (node: FileTreeNode, newName: string) => {
     const success = await renameFile(node, newName);
-    if (success && activeFileRef.current?.path === node.path) {
-      // Create a duplicate node with the new properties so the editor stays active
-      const originalPathSegments = node.path.split('/');
-      originalPathSegments.pop(); // Remove old name
-      originalPathSegments.push(newName); // Add new name
-      const newPath = originalPathSegments.join('/');
+    if (!success) return;
+    const openTab = tabsRef.current.find(t => t.file.path === node.path);
+    if (!openTab) return;
 
+    const segs = node.path.split('/');
+    segs.pop();
+    segs.push(newName);
+    const newPath = segs.join('/');
+
+    try {
+      const fileHandle = await node.parentHandle.getFileHandle(newName);
+      clearSaveTimer(node.path); // cancel any pending save against the OLD handle
+      setTabs(prev => prev.map(t => t.file.path === node.path
+        ? { ...t, file: { ...t.file, name: newName, path: newPath, handle: fileHandle } }
+        : t));
+      setActiveTabPath(prev => prev === node.path ? newPath : prev);
+      // Flush buffered edits to the NEW handle (never the old one).
+      if (openTab.dirty) scheduleSave(newPath);
+      localStorage.setItem('lastFilePath', newPath);
+    } catch (err) {
+      console.error('Could not get handle for renamed file', err);
+    }
+  }, [renameFile, clearSaveTimer, scheduleSave]);
+
+  // Wrap moveFile so a moved open file's tab tracks its new path/handle (also
+  // fixes the pre-existing stale-path-after-move for the active document).
+  const handleMoveFile = useCallback(async (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath = '') => {
+    const openTab = tabsRef.current.find(t => t.file.path === sourceNode.path);
+    const success = await moveFile(sourceNode, targetDirHandle);
+    if (success && openTab) {
+      const newPath = targetPath ? `${targetPath}/${sourceNode.name}` : sourceNode.name;
       try {
-        const fileHandle = await node.parentHandle.getFileHandle(newName);
-        const renamedNode = {
-          ...node,
-          name: newName,
-          path: newPath,
-          handle: fileHandle,
-        };
-        setActiveFile(renamedNode as ActiveFile);
-        // Force an immediate localStorage update to avoid race conditions on save
-        localStorage.setItem('lastFilePath', renamedNode.path);
+        const newHandle = await targetDirHandle.getFileHandle(sourceNode.name);
+        clearSaveTimer(sourceNode.path);
+        setTabs(prev => prev.map(t => t.file.path === sourceNode.path
+          ? { ...t, file: { ...t.file, path: newPath, handle: newHandle, parentHandle: targetDirHandle } }
+          : t));
+        setActiveTabPath(prev => prev === sourceNode.path ? newPath : prev);
+        if (openTab.dirty) scheduleSave(newPath);
       } catch (err) {
-        console.error('Could not get handle for renamed active file', err);
+        console.error('Could not update moved tab handle:', err);
       }
     }
-  }, [renameFile]);
+    return success;
+  }, [moveFile, clearSaveTimer, scheduleSave]);
 
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
-        handleSave();
+        flushTab(activeTabPathRef.current, true);
       }
       // Cmd+N — create new note in vault root
       if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
         e.preventDefault();
         if (rootHandle) {
           const name = prompt('New note name (e.g. "note.md"):');
-          if (name) handleCreateFile(rootHandle, name);
+          if (name) handleCreateFile(rootHandle, name, '');
         }
       }
-      // Cmd+E — toggle read/edit mode
+      // Cmd+E — toggle read/edit mode of the active tab
       if ((e.metaKey || e.ctrlKey) && e.key === 'e') {
         e.preventDefault();
-        if (!activeFileRef.current?.isHelp) {
-          setEditorMode(prev => prev === 'edit' ? 'read' : 'edit');
-        }
+        toggleTabMode(activeTabPathRef.current);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleSave, rootHandle, handleCreateFile, setEditorMode]);
+  }, [rootHandle, handleCreateFile, flushTab, toggleTabMode]);
 
-  // Debounced auto-save (1 second after last keystroke)
-  useEffect(() => {
-    if (!activeFile || activeFile.isHelp) return;
-    const timer = setTimeout(async () => {
-      const file = activeFileRef.current;
-      const content = fileContentRef.current;
-      if (!file || file.isHelp) return;
-      try {
-        await writeFile(file.handle as FileSystemFileHandle, content);
-        setSaveStatus('Saved');
-        setTimeout(() => setSaveStatus(''), 2000);
-        // Keep the link graph / backlinks in sync with the latest edits.
-        rebuildGraph();
-      } catch (err) {
-        console.error('Auto-save failed:', err);
-      }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [fileContent, activeFile, writeFile, rebuildGraph]);
+  // Auto-save is handled per-tab by scheduleSave/flushTab (see above), so edits
+  // to a background tab still persist even while another tab is active.
 
   // Drag-to-resize sidebar
   const startResize = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -494,7 +650,7 @@ export default function App() {
           onTrash={handleTrash}
           expandedPaths={expandedPaths}
           onToggleExpand={handleToggleExpand}
-          onMoveFile={moveFile}
+          onMoveFile={handleMoveFile}
           onRenameFile={handleRenameFile}
         />
         <div className="theme-toggle-container">
@@ -559,8 +715,13 @@ export default function App() {
             theme={theme}
             editorMode={editorMode}
             saveStatus={saveStatus}
-            onContentChange={setFileContent}
-            onSave={handleSave}
+            tabs={tabs}
+            activeTabPath={activeTabPath}
+            onSelectTab={(path) => setActiveTabPath(path)}
+            onCloseTab={closeTab}
+            onReorderTabs={reorderTabs}
+            onToggleMode={toggleTabMode}
+            onContentChange={updateActiveTabContent}
             onOpenNote={openNoteByName}
             graph={graph}
             onOpenNode={handleOpenNode}

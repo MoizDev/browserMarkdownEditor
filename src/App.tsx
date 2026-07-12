@@ -4,6 +4,8 @@ import { HELP_DOC_CONTENT } from './utils/helpDoc';
 import { buildGraph, collectMarkdownFiles, baseName } from './utils/graph';
 import { readJSON, writeJSON } from './utils/storage';
 import { joinVaultPath } from './utils/paths';
+import { collectFiles } from './utils/tree';
+import { isTextFile } from './utils/vaultSearch';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
 import EditorPane from './components/EditorPane';
@@ -13,7 +15,6 @@ import { Settings, HelpCircle, Network, FileTextOutline } from './components/ico
 import type {
   FileTreeNode,
   FileTreeFileNode,
-  FileTreeDirNode,
   OpenTab,
   GraphData,
   GraphNode,
@@ -22,6 +23,8 @@ import type {
   EditorMode,
   MainView,
   CaretStyle,
+  EditorRevealRequest,
+  TextRange,
 } from './types';
 
 export default function App() {
@@ -48,6 +51,10 @@ export default function App() {
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<string>('');
+  // Bumped after every completed save-flush. The vault-search index re-syncs
+  // on it, so a file that was edited, saved, and closed is re-read from disk
+  // (open tabs are already searched via their live buffers).
+  const [saveEpoch, setSaveEpoch] = useState(0);
 
   const activeTab = useMemo(
     () => tabs.find(t => t.file.path === activeTabPath) ?? null,
@@ -216,28 +223,35 @@ export default function App() {
   const isResizing = useRef<boolean>(false);
   const hasRestoredFile = useRef<boolean>(false);
 
-  const handleFileClick = useCallback(async (node: FileTreeNode) => {
+  // Returns whether the file was actually opened (as a tab or externally).
+  const handleFileClick = useCallback(async (node: FileTreeNode): Promise<boolean> => {
     try {
-      if (/\.(pdf|jpe?g|png)$/i.test(node.name)) {
+      if (!isTextFile(node.name)) {
         const file = await (node.handle as FileSystemFileHandle).getFile();
         const url = URL.createObjectURL(file);
         window.open(url, '_blank');
-        return;
+        return true;
       }
 
       // Already open? Just focus its tab — don't re-read (preserves the tab's
       // unsaved edits and its own undo history).
       if (tabsRef.current.some(t => t.file.path === node.path)) {
         setActiveTabPath(node.path);
-        return;
+        return true;
       }
 
       const content = await readFile(node.handle as FileSystemFileHandle);
-      setTabs(prev => [...prev, { file: node, content, mode: 'read', dirty: false }]);
+      // Re-check inside the updater: a second click can land while the first
+      // read is still in flight, and tabsRef only updates post-commit.
+      setTabs(prev => prev.some(t => t.file.path === node.path)
+        ? prev
+        : [...prev, { file: node, content, mode: 'read', dirty: false }]);
       setActiveTabPath(node.path);
       setSaveStatus('');
+      return true;
     } catch (err) {
       console.error('Failed to read file:', err);
+      return false;
     }
   }, [readFile]);
 
@@ -296,6 +310,7 @@ export default function App() {
         setTimeout(() => setSaveStatus(''), 2000);
       }
       rebuildGraphRef.current();
+      setSaveEpoch(e => e + 1);
     } catch (err) {
       console.error('Auto-save failed:', err);
     }
@@ -370,20 +385,34 @@ export default function App() {
     setMainView('editor');
   }, [handleFileClick]);
 
+  // ── Vault search → editor navigation ───────────────────────────────────
+  // A clicked search result opens the file and, for content matches, asks
+  // EditorPane to select + scroll to the matched range. Each click builds a
+  // fresh request object, so re-clicking the same match re-triggers.
+  const [pendingReveal, setPendingReveal] = useState<EditorRevealRequest | null>(null);
+
+  const handleOpenSearchResult = useCallback(async (node: FileTreeFileNode, range: TextRange | null) => {
+    const opened = await handleFileClick(node);
+    // Non-text files opened externally (pdf/image): no view switch, no reveal.
+    if (!opened || !isTextFile(node.name)) return;
+    setMainView('editor');
+    if (range) {
+      setPendingReveal({ path: node.path, from: range.from, to: range.to });
+    }
+  }, [handleFileClick]);
+
+  const handleRevealHandled = useCallback(() => setPendingReveal(null), []);
+
+  // Search reads open-tab buffers through this accessor (via tabsRef) so its
+  // results reflect unsaved edits without re-rendering the sidebar on typing.
+  const getOpenTabContent = useCallback(
+    (path: string) => tabsRef.current.find(t => t.file.path === path)?.content ?? null,
+    []
+  );
+
   // Auto-restore previously-open tabs once the file tree has loaded.
   useEffect(() => {
     if (hasRestoredFile.current || !fileTree || fileTree.length === 0) return;
-
-    const findNode = (nodes: FileTreeNode[], target: string): FileTreeFileNode | null => {
-      for (const node of nodes) {
-        if (node.kind === 'file' && node.path === target) return node;
-        if ((node as FileTreeDirNode).children) {
-          const found = findNode((node as FileTreeDirNode).children, target);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
 
     let storedPaths = readJSON<string[]>('openTabPaths', []);
     if (!Array.isArray(storedPaths)) storedPaths = [];
@@ -397,13 +426,14 @@ export default function App() {
     hasRestoredFile.current = true;
 
     (async () => {
+      const vaultFiles = collectFiles(fileTree);
       const restored: OpenTab[] = [];
       for (const path of storedPaths) {
         if (path === 'help-guide') {
           restored.push({ file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
           continue;
         }
-        const node = findNode(fileTree, path);
+        const node = vaultFiles.find(f => f.path === path);
         if (!node) continue; // file deleted/moved externally — skip it
         try {
           const content = await readFile(node.handle as FileSystemFileHandle);
@@ -638,6 +668,9 @@ export default function App() {
           onToggleExpand={handleToggleExpand}
           onMoveFile={handleMoveFile}
           onRenameFile={handleRenameFile}
+          onOpenSearchResult={handleOpenSearchResult}
+          getOpenTabContent={getOpenTabContent}
+          saveEpoch={saveEpoch}
         />
         <div className="theme-toggle-container">
           <button
@@ -711,6 +744,8 @@ export default function App() {
             onOpenNote={openNoteByName}
             graph={graph}
             onOpenNode={handleOpenNode}
+            revealRequest={pendingReveal}
+            onRevealHandled={handleRevealHandled}
           />
         )}
       </div>

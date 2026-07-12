@@ -140,11 +140,14 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, [refreshTree]);
 
     /**
-     * Read the text content of a file handle.
+     * Read the text content of a file handle. Line endings are normalized to
+     * \n — CodeMirror normalizes its document the same way, so this keeps tab
+     * buffers, saved output, and vault-search match offsets all in agreement
+     * even for CRLF-authored files.
      */
     const readFile = useCallback(async (fileHandle: FileSystemFileHandle) => {
         const file = await fileHandle.getFile();
-        return await file.text();
+        return (await file.text()).replace(/\r\n?/g, '\n');
     }, []);
 
     /**

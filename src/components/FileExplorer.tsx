@@ -1,7 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import TreeNode, { type TreeNodeStatic } from './TreeNode';
-import { FilePlus, FolderPlus, FolderOpen } from './icons';
-import type { FileTreeNode } from '../types';
+import SearchPanel from './SearchPanel';
+import { FilePlus, FolderPlus, FolderOpen, Search } from './icons';
+import { createVaultTextCache } from '../utils/vaultSearch';
+import type { VaultTextCache } from '../utils/vaultSearch';
+import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 
 interface FileExplorerProps {
     rootHandle: FileSystemDirectoryHandle | null;
@@ -16,6 +19,10 @@ interface FileExplorerProps {
     onToggleExpand: (path: string) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
     onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
+    onOpenSearchResult: (node: FileTreeFileNode, range: TextRange | null) => void;
+    getOpenTabContent: (path: string) => string | null;
+    /** Bumped after each completed save-flush; re-validates the search index. */
+    saveEpoch: number;
 }
 
 function FileExplorer({
@@ -30,17 +37,43 @@ function FileExplorer({
     expandedPaths,
     onToggleExpand,
     onMoveFile,
-    onRenameFile
+    onRenameFile,
+    onOpenSearchResult,
+    getOpenTabContent,
+    saveEpoch
 }: FileExplorerProps) {
     const [creatingInRoot, setCreatingInRoot] = useState<'file' | 'folder' | null>(null); // 'file' | 'folder' | null
     const [rootDragOver, setRootDragOver] = useState(false);
+    const [searchOpen, setSearchOpen] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
+
+    // The indexed vault text lives here (not in SearchPanel) so reopening
+    // search doesn't re-read unchanged files.
+    const searchCacheRef = useRef<VaultTextCache | null>(null);
+    const searchCache = (searchCacheRef.current ??= createVaultTextCache());
+
+    // A different vault may reuse paths — never serve the old vault's text.
+    useEffect(() => {
+        searchCache.clear();
+    }, [searchCache, rootHandle]);
 
     useEffect(() => {
         if (creatingInRoot && inputRef.current) {
             inputRef.current.focus();
         }
     }, [creatingInRoot]);
+
+    /** Open the inline "new file/folder" input, leaving search mode if needed
+     *  (the input lives in the tree view, which search temporarily replaces). */
+    const startCreateInRoot = (kind: 'file' | 'folder') => {
+        setSearchOpen(false);
+        setCreatingInRoot(kind);
+    };
+
+    const handleSearchResult = (node: FileTreeFileNode, range: TextRange | null) => {
+        onOpenSearchResult(node, range);
+        setSearchOpen(false); // picking a result returns the sidebar to the tree
+    };
 
     const handleRootCreate = async (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter') {
@@ -116,16 +149,24 @@ function FileExplorer({
                 </span>
                 <div className="nav-header-actions">
                     <button
+                        className={`nav-action-btn${searchOpen ? ' active' : ''}`}
+                        title="Search vault"
+                        aria-pressed={searchOpen}
+                        onClick={() => setSearchOpen(open => !open)}
+                    >
+                        <Search size={15} />
+                    </button>
+                    <button
                         className="nav-action-btn"
                         title="New note"
-                        onClick={() => setCreatingInRoot('file')}
+                        onClick={() => startCreateInRoot('file')}
                     >
                         <FilePlus size={15} />
                     </button>
                     <button
                         className="nav-action-btn"
                         title="New folder"
-                        onClick={() => setCreatingInRoot('folder')}
+                        onClick={() => startCreateInRoot('folder')}
                     >
                         <FolderPlus size={15} />
                     </button>
@@ -139,47 +180,58 @@ function FileExplorer({
                 </div>
             </div>
 
-            <div
-                className={`nav-files-container${rootDragOver ? ' drag-over-root' : ''}`}
-                onDragEnter={handleRootDragEnter}
-                onDragOver={handleRootDragOver}
-                onDragLeave={handleRootDragLeave}
-                onDrop={handleRootDrop}
-            >
-                {creatingInRoot && (
-                    <div className="tree-item tree-inline-input" style={{ paddingLeft: 12 }}>
-                        <input
-                            ref={inputRef}
-                            className="inline-rename-input"
-                            type="text"
-                            placeholder={creatingInRoot === 'file' ? 'Untitled.md' : 'New folder'}
-                            onKeyDown={handleRootCreate}
-                            onBlur={handleRootCreateBlur}
+            {searchOpen ? (
+                <SearchPanel
+                    fileTree={fileTree}
+                    cache={searchCache}
+                    getOpenTabContent={getOpenTabContent}
+                    saveEpoch={saveEpoch}
+                    onOpenResult={handleSearchResult}
+                    onClose={() => setSearchOpen(false)}
+                />
+            ) : (
+                <div
+                    className={`nav-files-container${rootDragOver ? ' drag-over-root' : ''}`}
+                    onDragEnter={handleRootDragEnter}
+                    onDragOver={handleRootDragOver}
+                    onDragLeave={handleRootDragLeave}
+                    onDrop={handleRootDrop}
+                >
+                    {creatingInRoot && (
+                        <div className="tree-item tree-inline-input" style={{ paddingLeft: 12 }}>
+                            <input
+                                ref={inputRef}
+                                className="inline-rename-input"
+                                type="text"
+                                placeholder={creatingInRoot === 'file' ? 'Untitled.md' : 'New folder'}
+                                onKeyDown={handleRootCreate}
+                                onBlur={handleRootCreateBlur}
+                            />
+                        </div>
+                    )}
+                    {fileTree.map((node) => (
+                        <TreeNode
+                            key={node.path}
+                            node={node}
+                            activeFilePath={activeFilePath}
+                            onFileClick={onFileClick}
+                            onCreateFile={(handle, path) => {
+                                const name = prompt('Enter file name (e.g. "note.md"):');
+                                if (name) onCreateFile(handle, name, path);
+                            }}
+                            onCreateFolder={(handle, _path) => {
+                                const name = prompt('Enter folder name:');
+                                if (name) onCreateFolder(handle, name);
+                            }}
+                            onTrash={onTrash}
+                            expandedPaths={expandedPaths}
+                            onToggleExpand={onToggleExpand}
+                            onMoveFile={onMoveFile}
+                            onRenameFile={onRenameFile}
                         />
-                    </div>
-                )}
-                {fileTree.map((node) => (
-                    <TreeNode
-                        key={node.path}
-                        node={node}
-                        activeFilePath={activeFilePath}
-                        onFileClick={onFileClick}
-                        onCreateFile={(handle, path) => {
-                            const name = prompt('Enter file name (e.g. "note.md"):');
-                            if (name) onCreateFile(handle, name, path);
-                        }}
-                        onCreateFolder={(handle, _path) => {
-                            const name = prompt('Enter folder name:');
-                            if (name) onCreateFolder(handle, name);
-                        }}
-                        onTrash={onTrash}
-                        expandedPaths={expandedPaths}
-                        onToggleExpand={onToggleExpand}
-                        onMoveFile={onMoveFile}
-                        onRenameFile={onRenameFile}
-                    />
-                ))}
-            </div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }

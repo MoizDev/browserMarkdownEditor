@@ -114,6 +114,25 @@ export interface GraphData {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
+ * TEXT RANGE / EDITOR REVEAL REQUEST
+ * TextRange is a half-open [from, to) character range in a document, shared
+ * by vault search (match offsets) and the reveal protocol. An
+ * EditorRevealRequest is a one-shot "select + scroll to this range" order,
+ * issued by App when a vault-search result is clicked and consumed by
+ * EditorPane once the target tab is active; each click builds a fresh object,
+ * whose identity re-triggers the consuming effect even for an identical range.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface TextRange {
+  from: number;
+  to: number;
+}
+
+export interface EditorRevealRequest extends TextRange {
+  path: string;   // vault-relative path of the file to reveal in
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
  * STRING-LITERAL UNIONS (app-level modes / themes / caret)
  * ───────────────────────────────────────────────────────────────────────── */
 

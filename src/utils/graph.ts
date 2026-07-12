@@ -10,10 +10,10 @@
  * Image embeds (![[file.png]]) are intentionally ignored.
  */
 
+import { collectFiles } from './tree';
 import type {
     FileTreeNode,
     FileTreeFileNode,
-    FileTreeDirNode,
     GraphNode,
     GraphLink,
     GraphAdjacency,
@@ -56,15 +56,7 @@ export function extractLinks(text: string): string[] {
 
 /** Flatten the file tree into a list of markdown file nodes. */
 export function collectMarkdownFiles(fileTree: FileTreeNode[]): FileTreeFileNode[] {
-    const files: FileTreeFileNode[] = [];
-    const walk = (nodes: FileTreeNode[] | undefined) => {
-        for (const n of nodes || []) {
-            if (n.kind === 'file' && /\.md$/i.test(n.name)) files.push(n);
-            else if ((n as FileTreeDirNode).children) walk((n as FileTreeDirNode).children);
-        }
-    };
-    walk(fileTree);
-    return files;
+    return collectFiles(fileTree).filter(f => /\.md$/i.test(f.name));
 }
 
 /**

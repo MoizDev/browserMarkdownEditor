@@ -9,6 +9,7 @@ import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
 import { createLivePreviewPlugin } from '../editor/livePreview';
 import { markdownFormatExtension } from '../editor/formatKeymap';
+import { revealHighlightField, setRevealHighlight } from '../editor/revealHighlight';
 import { Compartment } from '@codemirror/state';
 import { useFileSystem } from '../context/FileSystemContext';
 import BacklinksPanel from './BacklinksPanel';
@@ -17,7 +18,7 @@ import { Link, Eye, Edit2 } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
 import { readJSON, writeJSON } from '../utils/storage';
 import 'katex/dist/katex.min.css';
-import type { ActiveFile, OpenTab, GraphData, GraphNode, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler } from '../types';
+import type { ActiveFile, OpenTab, GraphData, GraphNode, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
 
 interface EditorPaneProps {
     activeFile: ActiveFile | null;
@@ -35,6 +36,9 @@ interface EditorPaneProps {
     onOpenNote: OpenNoteByNameHandler;
     graph: GraphData;
     onOpenNode: OpenNodeHandler;
+    /** One-shot select+scroll order from vault search (null = nothing pending). */
+    revealRequest: EditorRevealRequest | null;
+    onRevealHandled: () => void;
 }
 
 /** Inline positioning for the linked-mentions popover (fixed top/right). */
@@ -50,7 +54,7 @@ function themeExtensions(theme: Theme) {
         : [obsidianDarkTheme, obsidianHighlightStyle];
 }
 
-export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onOpenNote, graph, onOpenNode }: EditorPaneProps) {
+export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const { getAssetUrl, saveAsset } = useFileSystem();
     const editorContainerRef = useRef<HTMLDivElement | null>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -61,6 +65,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     const activeFileRef = useRef<ActiveFile | null>(activeFile);
     const onOpenNoteRef = useRef(onOpenNote);
     const saveScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const revealClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // ── Per-tab editor state ────────────────────────────────────────────────
     // One CodeMirror EditorView is reused across tabs; each tab's full state
@@ -183,6 +188,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 readOnlyCompartmentRef.current.of(EditorView.editable.of(mode !== 'read')),
                 livePreviewCompartmentRef.current.of(createLivePreviewPlugin((fn) => boundGetAssetUrl.current(fn), mode)),
                 markdownFormatExtension,
+                revealHighlightField,
                 updateListener,
                 EditorView.domEventHandlers({
                     paste(event, view) {
@@ -292,12 +298,14 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         if (nextPath) {
             const cached = stateCacheRef.current.get(nextPath);
             view.setState(cached ?? createTabState(fileContent, editorMode));
-            // Cached states may hold a stale theme/mode → reconfigure for this tab.
+            // Cached states may hold a stale theme/mode (or a leftover search
+            // reveal flash) → reconfigure/clear for this tab.
             view.dispatch({
                 effects: [
                     themeCompartmentRef.current.reconfigure(themeExtensions(theme)),
                     readOnlyCompartmentRef.current.reconfigure(EditorView.editable.of(editorMode !== 'read')),
                     livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin((fn) => boundGetAssetUrl.current(fn), editorMode)),
+                    setRevealHighlight.of(null),
                 ]
             });
         } else {
@@ -320,6 +328,48 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeFile?.path]);
+
+    // Jump to a search match once its tab is active: select it, scroll it to
+    // the vertical center, and flash a highlight decoration (visible even in
+    // read mode, where the view may refuse focus so the selection alone could
+    // be invisible). Declared AFTER the tab-swap effect so it sees the swapped
+    // state, and dispatched inside requestAnimationFrame so it runs after the
+    // swap effect's own scroll-position restore (rAFs fire in schedule order).
+    useEffect(() => {
+        if (!revealRequest || revealRequest.path !== activeFile?.path) return;
+        const { from, to } = revealRequest;
+        onRevealHandled();
+
+        requestAnimationFrame(() => {
+            const view = viewRef.current;
+            if (!view) return;
+            // The doc may be shorter than the searched text was (e.g. it
+            // changed on disk since indexing) — clamp rather than throw.
+            const docLen = view.state.doc.length;
+            const safeFrom = Math.min(from, docLen);
+            const safeTo = Math.min(to, docLen);
+            view.dispatch({
+                selection: { anchor: safeFrom, head: safeTo },
+                effects: [
+                    EditorView.scrollIntoView(safeFrom, { y: 'center' }),
+                    setRevealHighlight.of({ from: safeFrom, to: safeTo }),
+                ],
+            });
+            view.focus();
+        });
+
+        // Let the flash fade after a moment. An earlier reveal's pending
+        // fade is cancelled so it can't cut this one short. If the user
+        // switched tabs meanwhile, the clear no-ops (that state's field is
+        // already empty) and the tab swap clears leftovers on restore.
+        if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
+        revealClearTimerRef.current = setTimeout(() => {
+            viewRef.current?.dispatch({ effects: setRevealHighlight.of(null) });
+        }, 1600);
+        // No effect cleanup: it would cancel the pending fade when
+        // onRevealHandled() nulls the request and re-runs this effect. Both
+        // callbacks guard on viewRef; a redundant clear is harmless.
+    }, [revealRequest, activeFile?.path, onRevealHandled]);
 
     // Drop cached editor states for tabs that are no longer open. Keyed on the
     // joined path string so it doesn't run on every keystroke.

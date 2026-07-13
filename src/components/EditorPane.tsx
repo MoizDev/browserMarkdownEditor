@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
@@ -17,8 +17,14 @@ import TabBar from './TabBar';
 import { Link, Eye, Edit2 } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
 import { readJSON, writeJSON } from '../utils/storage';
+import { isDrawingFile } from '../utils/fileTypes';
 import 'katex/dist/katex.min.css';
 import type { ActiveFile, OpenTab, GraphData, GraphNode, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
+
+// tldraw is a heavy dependency (canvas engine + its own UI). Loading it lazily
+// keeps it out of the initial bundle, so a markdown-only session never pays for
+// it — the chunk is fetched the first time a .tldraw file is opened.
+const DrawingPane = lazy(() => import('./DrawingPane'));
 
 interface EditorPaneProps {
     activeFile: ActiveFile | null;
@@ -33,6 +39,10 @@ interface EditorPaneProps {
     onReorderTabs: (path: string, toIndex: number) => void;
     onToggleMode: (path: string) => void;
     onContentChange: (value: string) => void;
+    /** Path-explicit (unlike onContentChange, which targets the ACTIVE tab): a
+     *  drawing's debounced save can land after a tab switch, and must still be
+     *  written to its own file. */
+    onDrawingChange: (path: string, content: string) => void;
     onOpenNote: OpenNoteByNameHandler;
     graph: GraphData;
     onOpenNode: OpenNodeHandler;
@@ -54,8 +64,14 @@ function themeExtensions(theme: Theme) {
         : [obsidianDarkTheme, obsidianHighlightStyle];
 }
 
-export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onDrawingChange, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const { getAssetUrl, saveAsset } = useFileSystem();
+
+    // A drawing takes over the pane: the tldraw canvas is layered over the
+    // (hidden) CodeMirror view rather than replacing it, because the view is
+    // created once by a callback ref guarded on `!viewRef.current` — unmounting
+    // its container would orphan the view and never re-parent it on the way back.
+    const isDrawing = !!activeFile && !activeFile.isHelp && isDrawingFile(activeFile.name);
     const editorContainerRef = useRef<HTMLDivElement | null>(null);
     const viewRef = useRef<EditorView | null>(null);
     const themeCompartmentRef = useRef<Compartment>(new Compartment());
@@ -265,7 +281,8 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         editorContainerRef.current = node;
         if (node && !viewRef.current) {
             viewRef.current = new EditorView({
-                state: createTabState(fileContent, editorMode),
+                // A restored .tldraw tab must not seed CodeMirror with its JSON.
+                state: createTabState(isDrawing ? '' : fileContent, editorMode),
                 parent: node,
             });
             prevPathRef.current = activeFile?.path ?? null;
@@ -293,7 +310,20 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         if (nextPath === prevPathRef.current) return;
 
         isSwappingRef.current = true;
-        if (prevPathRef.current) stateCacheRef.current.set(prevPathRef.current, view.state);
+        // A drawing tab leaves CodeMirror parked on a blank doc — there's no
+        // text state worth caching for it (and caching would key that blank doc
+        // under the drawing's path).
+        const prevWasDrawing = prevPathRef.current ? isDrawingFile(prevPathRef.current) : false;
+        if (prevPathRef.current && !prevWasDrawing) stateCacheRef.current.set(prevPathRef.current, view.state);
+
+        if (isDrawing) {
+            // The canvas owns the pane. Park CodeMirror on an empty doc so it
+            // never holds — or autosaves — the drawing's JSON.
+            view.setState(createTabState('', 'read'));
+            isSwappingRef.current = false;
+            prevPathRef.current = nextPath;
+            return;
+        }
 
         if (nextPath) {
             const cached = stateCacheRef.current.get(nextPath);
@@ -417,7 +447,8 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     onReorderTabs={onReorderTabs}
                 />
                 {saveStatus && <span className="save-status">{saveStatus}</span>}
-                {activeFile && !activeFile.isHelp && (
+                {/* Read/edit and linked-mentions are markdown concepts — a canvas has neither. */}
+                {activeFile && !activeFile.isHelp && !isDrawing && (
                     <>
                         <button
                             className="view-header-action"
@@ -446,6 +477,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
             <div
                 className="view-content"
                 ref={setEditorContainer}
+                style={isDrawing ? { display: 'none' } : undefined}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={async (e) => {
                     e.preventDefault();
@@ -463,6 +495,19 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     }
                 }}
             />
+            {isDrawing && activeFile && (
+                <Suspense fallback={<div className="drawing-pane drawing-pane-loading">Loading whiteboard…</div>}>
+                    {/* Keyed on path: each drawing gets its own tldraw instance,
+                        loaded from its own snapshot. */}
+                    <DrawingPane
+                        key={activeFile.path}
+                        filePath={activeFile.path}
+                        content={fileContent}
+                        onContentChange={onDrawingChange}
+                        theme={theme}
+                    />
+                </Suspense>
+            )}
             {!activeFile && (
                 <div className="editor-empty-overlay">
                     <div className="editor-empty-inner">

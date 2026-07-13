@@ -6,6 +6,7 @@ import { readJSON, writeJSON } from './utils/storage';
 import { joinVaultPath } from './utils/paths';
 import { collectFiles } from './utils/tree';
 import { isTextFile } from './utils/vaultSearch';
+import { isDrawingFile } from './utils/fileTypes';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
 import EditorPane from './components/EditorPane';
@@ -322,14 +323,22 @@ export default function App() {
     saveTimersRef.current.set(path, setTimeout(() => flushTab(path), 1000));
   }, [clearSaveTimer, flushTab]);
 
-  // Wired to EditorPane's onContentChange. EditorPane always calls the latest
-  // via its own ref, so identity churn here is harmless.
-  const updateActiveTabContent = useCallback((content: string) => {
-    const path = activeTabPathRef.current;
-    if (!path) return;
+  // Buffer an edit against ONE named tab and schedule its save. Path-explicit
+  // on purpose: the drawing canvas serializes on a debounce that can fire after
+  // the user has switched tabs, and that JSON must land in the drawing's own
+  // buffer — never in whichever tab happens to be active by then.
+  const updateTabContent = useCallback((path: string, content: string) => {
     setTabs(prev => prev.map(t => t.file.path === path ? { ...t, content, dirty: true } : t));
     scheduleSave(path);
   }, [scheduleSave]);
+
+  // Wired to EditorPane's onContentChange. CodeMirror only ever edits the
+  // visible document, so "the active tab" is the right target there.
+  const updateActiveTabContent = useCallback((content: string) => {
+    const path = activeTabPathRef.current;
+    if (!path) return;
+    updateTabContent(path, content);
+  }, [updateTabContent]);
 
   const removeTab = useCallback((path: string, flush: boolean) => {
     // flushTab captures the tab synchronously, clears the timer, and no-ops for
@@ -396,7 +405,9 @@ export default function App() {
     // Non-text files opened externally (pdf/image): no view switch, no reveal.
     if (!opened || !isTextFile(node.name)) return;
     setMainView('editor');
-    if (range) {
+    // Drawings match by NAME only (their JSON isn't indexed), so there's no text
+    // range to reveal — and a char offset would be meaningless on a canvas.
+    if (range && !isDrawingFile(node.name)) {
       setPendingReveal({ path: node.path, from: range.from, to: range.to });
     }
   }, [handleFileClick]);
@@ -741,6 +752,7 @@ export default function App() {
             onReorderTabs={reorderTabs}
             onToggleMode={toggleTabMode}
             onContentChange={updateActiveTabContent}
+            onDrawingChange={updateTabContent}
             onOpenNote={openNoteByName}
             graph={graph}
             onOpenNode={handleOpenNode}

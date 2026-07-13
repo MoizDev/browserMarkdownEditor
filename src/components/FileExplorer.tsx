@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import TreeNode, { type TreeNodeStatic } from './TreeNode';
 import SearchPanel from './SearchPanel';
-import { FilePlus, FolderPlus, FolderOpen, Search } from './icons';
+import { FilePlus, FolderPlus, FolderOpen, Search, PenTool } from './icons';
+import { ensureDrawingExt } from '../utils/fileTypes';
 import { createVaultTextCache } from '../utils/vaultSearch';
 import type { VaultTextCache } from '../utils/vaultSearch';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
@@ -42,7 +43,9 @@ function FileExplorer({
     getOpenTabContent,
     saveEpoch
 }: FileExplorerProps) {
-    const [creatingInRoot, setCreatingInRoot] = useState<'file' | 'folder' | null>(null); // 'file' | 'folder' | null
+    // 'drawing' creates a .tldraw whiteboard; it differs from 'file' only in the
+    // extension it forces onto the typed name.
+    const [creatingInRoot, setCreatingInRoot] = useState<'file' | 'folder' | 'drawing' | null>(null);
     const [rootDragOver, setRootDragOver] = useState(false);
     const [searchOpen, setSearchOpen] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
@@ -65,7 +68,7 @@ function FileExplorer({
 
     /** Open the inline "new file/folder" input, leaving search mode if needed
      *  (the input lives in the tree view, which search temporarily replaces). */
-    const startCreateInRoot = (kind: 'file' | 'folder') => {
+    const startCreateInRoot = (kind: 'file' | 'folder' | 'drawing') => {
         setSearchOpen(false);
         setCreatingInRoot(kind);
     };
@@ -82,7 +85,9 @@ function FileExplorer({
                 setCreatingInRoot(null);
                 return;
             }
-            if (creatingInRoot === 'file') {
+            if (creatingInRoot === 'drawing') {
+                await onCreateFile(rootHandle, ensureDrawingExt(name), '');
+            } else if (creatingInRoot === 'file') {
                 await onCreateFile(rootHandle, name, '');
             } else {
                 await onCreateFolder(rootHandle, name);
@@ -165,6 +170,13 @@ function FileExplorer({
                     </button>
                     <button
                         className="nav-action-btn"
+                        title="New drawing"
+                        onClick={() => startCreateInRoot('drawing')}
+                    >
+                        <PenTool size={15} />
+                    </button>
+                    <button
+                        className="nav-action-btn"
                         title="New folder"
                         onClick={() => startCreateInRoot('folder')}
                     >
@@ -203,7 +215,11 @@ function FileExplorer({
                                 ref={inputRef}
                                 className="inline-rename-input"
                                 type="text"
-                                placeholder={creatingInRoot === 'file' ? 'Untitled.md' : 'New folder'}
+                                placeholder={
+                                    creatingInRoot === 'file' ? 'Untitled.md'
+                                        : creatingInRoot === 'drawing' ? 'Untitled.tldraw'
+                                            : 'New folder'
+                                }
                                 onKeyDown={handleRootCreate}
                                 onBlur={handleRootCreateBlur}
                             />

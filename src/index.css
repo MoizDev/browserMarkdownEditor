@@ -1067,6 +1067,33 @@ body {
   z-index: 5;
 }
 
+/* ── Drawing pane (.tldraw files) ──
+   Layered over the still-mounted CodeMirror view, same as the no-file overlay:
+   the editor view is created once by a callback ref, so unmounting its
+   container would orphan it. tldraw fills the box it's given. */
+.drawing-pane {
+  position: absolute;
+  top: var(--header-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  background: var(--background-primary);
+}
+
+.drawing-pane .tl-container {
+  width: 100%;
+  height: 100%;
+}
+
+.drawing-pane-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 /* =============================================================
    Live Preview — Styled Markdown Elements
    ============================================================= */

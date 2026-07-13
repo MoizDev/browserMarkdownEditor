@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2 } from './icons';
+import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool } from './icons';
+import { isDrawingFile } from '../utils/fileTypes';
 import type { FileTreeNode } from '../types';
 
 interface TreeNodeProps {
@@ -130,7 +131,7 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
                 onDragEnd={!isRenaming ? handleDragEnd : undefined}
             >
                 <span className="tree-item-icon file-icon">
-                    <FileText size={14} />
+                    {isDrawingFile(node.name) ? <PenTool size={14} /> : <FileText size={14} />}
                 </span>
                 {isRenaming ? (
                     <div className="tree-inline-input" style={{ flex: 1, paddingRight: 0 }}>

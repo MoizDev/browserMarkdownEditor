@@ -85,7 +85,10 @@ export const obsidianHighlightStyle: Extension = syntaxHighlighting(HighlightSty
     { tag: tags.strong, fontWeight: '700', color: '#dcddde' },
     { tag: tags.emphasis, fontStyle: 'italic', color: '#dcddde' },
     { tag: tags.strikethrough, textDecoration: 'line-through', color: '#999' },
-    { tag: tags.link, color: 'var(--text-accent)', textDecoration: 'underline' },
+    // No underline here: rendered links get theirs from .cm-live-link, and
+    // this tag also lands on [x](y) inside REVEALED MATH (the parser can't be
+    // told $…$ is LaTeX) — an inherited underline there is uncancelable.
+    { tag: tags.link, color: 'var(--text-accent)' },
     { tag: tags.url, color: 'var(--text-accent)' },
     // Font only: the pill background/accent ink live on .cm-live-code and
     // .cm-live-codeblock — fenced block text must stay plain here so its
@@ -196,7 +199,8 @@ export const obsidianLightHighlightStyle: Extension = syntaxHighlighting(Highlig
     { tag: tags.strong, fontWeight: '700', color: '#2e3338' },
     { tag: tags.emphasis, fontStyle: 'italic', color: '#2e3338' },
     { tag: tags.strikethrough, textDecoration: 'line-through', color: '#5c5f66' },
-    { tag: tags.link, color: 'var(--text-accent)', textDecoration: 'underline' },
+    // No underline — see the dark theme's note on tags.link.
+    { tag: tags.link, color: 'var(--text-accent)' },
     { tag: tags.url, color: 'var(--text-accent)' },
     // Font only — see the dark theme's note on tags.monospace.
     { tag: tags.monospace, fontFamily: '"SF Mono", Menlo, Monaco, monospace' },

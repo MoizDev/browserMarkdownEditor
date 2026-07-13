@@ -4,6 +4,7 @@ import { syntaxTree } from '@codemirror/language';
 import type { EditorState, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
+import { findMathRegions, latexSourceDecorations } from './latexSource';
 import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
 import { ImageWidget } from './imageWidget';
@@ -45,11 +46,34 @@ function cursorOnLine(state: EditorState, from: number, to: number): boolean {
 function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode: EditorMode): DecorationSet {
     const { state } = view;
     const decorations: Range<Decoration>[] = [];
+    const doc = state.doc.toString();
+
+    // Math is located BEFORE the markdown pass so formula innards can be
+    // exempted from markdown styling — "[x](y)" inside an equation is LaTeX,
+    // not a link. Code ranges come first: a $ inside code is literal.
+    const codeRanges: { from: number; to: number }[] = [];
+    syntaxTree(state).iterate({
+        enter(n) {
+            if (n.name === 'FencedCode' || n.name === 'CodeBlock' || n.name === 'InlineCode') {
+                codeRanges.push({ from: n.from, to: n.to });
+                return false;
+            }
+        },
+    });
+    const mathRegions = findMathRegions(doc, codeRanges);
+    const intersectsMath = (a: number, b: number) => mathRegions.some(r => a < r.to && b > r.from);
 
     syntaxTree(state).iterate({
         enter(node) {
             const { type, from, to } = node;
             const name = type.name;
+
+            // A markdown construct inside (or straddling) a math region is
+            // really LaTeX — skip it. Nodes that CONTAIN the whole region
+            // (paragraph, list item, heading line…) still process normally.
+            for (const r of mathRegions) {
+                if (from < r.to && to > r.from && !(from <= r.from && to >= r.to)) return false;
+            }
 
             // === HEADINGS ===
             // ATXHeading1 through ATXHeading6
@@ -323,53 +347,36 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
         },
     });
 
-    // === MATH (LaTeX) — regex-based since CM6 markdown parser doesn't natively parse $ ===
-    const doc = state.doc.toString();
-
-    // Block math: $$...$$
-    const blockMathRegex = /\$\$([\s\S]+?)\$\$/g;
+    // === MATH (LaTeX) ===
+    // Regions come from findMathRegions (computed above). Cursor outside →
+    // rendered KaTeX widget; cursor inside → the raw source stays visible and
+    // gets Obsidian-style LaTeX syntax highlighting in Fira Code.
     let match: RegExpExecArray | null;
-    while ((match = blockMathRegex.exec(doc)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
-        const latex = match[1].trim();
-
-        if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
-
+    for (const region of mathRegions) {
+        if (editorMode !== 'read' && cursorInRange(state, region.from, region.to)) {
+            decorations.push(...latexSourceDecorations(doc.slice(region.from, region.to), region.from));
+            continue;
+        }
         decorations.push(
-            Decoration.replace({ widget: new MathWidget(latex, true) }).range(from, to)
+            Decoration.replace({ widget: new MathWidget(region.latex, region.block) }).range(region.from, region.to)
         );
     }
 
-    // Inline math: $...$ (but not $$)
-    // Currency-safe rules: the opening '$' must NOT be followed by whitespace, '$',
-    // or a DIGIT (so "$725", "$80B", "$5" — even wrapped in **bold** — are never
-    // treated as math), and the closing '$' must not be preceded by whitespace.
-    // Real inline math starts with a letter/backslash/operator, so "$E=mc^2$",
-    // "$a_1$", "$\frac{1}{2}$" still render. A leading '\' escapes the dollar sign.
-    const inlineMathRegex = /(?<![\\$])\$(?![\s$\d])([^\n$]*?[^\s$])\$(?!\$)/g;
-    while ((match = inlineMathRegex.exec(doc)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
-        const latex = match[1];
-
-        // Skip if overlapping with a block math range
-        let overlapsBlock = false;
-        const blockMathRegex2 = /\$\$([\s\S]+?)\$\$/g;
-        let bm: RegExpExecArray | null;
-        while ((bm = blockMathRegex2.exec(doc)) !== null) {
-            if (from >= bm.index && to <= bm.index + bm[0].length) {
-                overlapsBlock = true;
-                break;
-            }
+    // Delimiter feedback while typing (Obsidian-style): a run of $s that isn't
+    // part of a real math region yet turns blue as soon as it can pair up
+    // ($$, $$$$ — even) and stays plain while unbalanced ($, $$$ — odd), so
+    // you can see whether the next keystroke lands inside math mode.
+    if (editorMode !== 'read') {
+        const dollarRunRegex = /\$+/g;
+        while ((match = dollarRunRegex.exec(doc)) !== null) {
+            const from = match.index;
+            const to = from + match[0].length;
+            if (match[0].length % 2 !== 0) continue;
+            if (doc[from - 1] === '\\') continue; // \$ — literal dollar
+            if (intersectsMath(from, to)) continue;
+            if (codeRanges.some(r => from < r.to && to > r.from)) continue;
+            decorations.push(Decoration.mark({ class: 'cm-latex-delim' }).range(from, to));
         }
-        if (overlapsBlock) continue;
-
-        if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
-
-        decorations.push(
-            Decoration.replace({ widget: new MathWidget(latex, false) }).range(from, to)
-        );
     }
 
     // === HIGHLIGHTS (==text==) ===
@@ -379,7 +386,7 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
         const from = match.index;
         const to = from + match[0].length;
 
-        // Skip if overlaps with a math block or code block (simplified code checks to avoid parsing overlap)
+        if (intersectsMath(from, to)) continue;
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 
         // Hide ==
@@ -401,6 +408,7 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
         const filename = match[1].trim();
         const width = match[2] ? parseInt(match[2].trim(), 10) : null;
 
+        if (intersectsMath(from, to)) continue;
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 
         decorations.push(
@@ -421,6 +429,7 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
         const pipeIndex = inner.indexOf('|');
         const target = (pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner).split('#')[0].trim();
 
+        if (intersectsMath(from, to)) continue;
         // While editing, reveal the raw syntax when the cursor is inside it.
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 

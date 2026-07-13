@@ -11,6 +11,7 @@ import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidian
 import { createLivePreviewPlugin } from '../editor/livePreview';
 import { markdownFormatExtension } from '../editor/formatKeymap';
 import { wikiLinkAutocomplete } from '../editor/wikiLinkComplete';
+import { mathEditingExtensions } from '../editor/latexSource';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import { revealHighlightField, setRevealHighlight } from '../editor/revealHighlight';
 import { Compartment } from '@codemirror/state';
@@ -214,6 +215,11 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 // native browser caret, so the caret style/animation settings apply.
                 drawSelection(),
                 history(),
+                // Before closeBrackets so LaTeX gets first claim on $ { ( [ —
+                // the stock handler doesn't know $ at all, and refuses to pair
+                // brackets before non-whitespace, which is every keystroke
+                // inside $…$.
+                mathEditingExtensions(),
                 closeBrackets(),
                 // The extra resolver matters: fence infostrings are often file
                 // extensions (```py, ```rs) which matchLanguageName ignores —

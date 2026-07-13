@@ -82,8 +82,11 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
                 snapshot={snapshot}
                 onMount={handleMount}
                 colorScheme={theme === 'light' ? 'light' : 'dark'}
-                // A free non-commercial license key from tldraw.dev goes here to
-                // drop the corner watermark: licenseKey="..."
+                // Required once deployed, not cosmetic: on a non-localhost HTTPS
+                // origin, tldraw with no key reports `unlicensed-production` and
+                // replaces the canvas with an empty gate 5s after load. Localhost
+                // counts as development, so a missing key only shows up in prod.
+                licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
             />
         </div>
     );

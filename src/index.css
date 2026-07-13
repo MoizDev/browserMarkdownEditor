@@ -1574,6 +1574,69 @@ li[aria-selected] .cm-completionMatchedText {
   font-family: var(--font-monospace);
   font-size: 0.85em;
 }
+
+/* ── LaTeX source (math revealed while editing) ──
+   Obsidian-style: Fira Code italics with per-token colors from the
+   tokenizer in latexSource.ts. */
+.cm-math-src {
+  font-family: 'Fira Code', var(--font-monospace);
+  font-style: italic;
+  font-size: 0.95em;
+  /* Medium weight — 400 reads too thin for math source at this size. */
+  font-weight: 500;
+  /* The markdown HIGHLIGHTER still tags [x](y) inside formulas as a link
+     (only the live-preview decorations are suppressed there) — strip its
+     underline so LaTeX source never inherits markdown looks. */
+  text-decoration: none !important;
+}
+
+/* Obsidian's own vibrant palette: blue $, red commands (braces read with
+   them), purple numbers/scripts, green operators, cyan variables/parens. */
+.cm-latex-delim {
+  color: #2b8eff;
+}
+
+.cm-latex-operator {
+  color: #44cf6e;
+}
+
+.cm-latex-command,
+.cm-latex-brace,
+.cm-latex-script {
+  color: #fb464c;
+}
+
+.cm-latex-number {
+  color: #a882ff;
+}
+
+.cm-latex-paren,
+.cm-latex-var {
+  color: #53dfdd;
+}
+
+:root[data-theme="light"] .cm-latex-delim {
+  color: #027aff;
+}
+
+:root[data-theme="light"] .cm-latex-operator {
+  color: #44a656;
+}
+
+:root[data-theme="light"] .cm-latex-command,
+:root[data-theme="light"] .cm-latex-brace,
+:root[data-theme="light"] .cm-latex-script {
+  color: #e93147;
+}
+
+:root[data-theme="light"] .cm-latex-number {
+  color: #7852ee;
+}
+
+:root[data-theme="light"] .cm-latex-paren,
+:root[data-theme="light"] .cm-latex-var {
+  color: #0e9db8;
+}
 /* =============================================================
    Wikilinks ([[Note]]) — rendered in the editor / live preview
    ============================================================= */

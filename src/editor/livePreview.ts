@@ -4,6 +4,7 @@ import { syntaxTree } from '@codemirror/language';
 import type { EditorState, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
+import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
 import { ImageWidget } from './imageWidget';
 import { TableWidget } from './tableWidget';
@@ -126,52 +127,68 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
 
             // === INLINE CODE ===
             if (name === 'InlineCode') {
-                if (editorMode !== 'read' && cursorInRange(state, from, to)) return;
-
                 // Find backtick boundaries
                 const content = state.doc.sliceString(from, to);
                 const openTicks = content.match(/^`+/)?.[0].length || 1;
                 const closeTicks = openTicks;
 
+                // The code styling is permanent — editing reveals just the
+                // backticks, instead of the whole thing flashing to plain text.
+                if (to - closeTicks > from + openTicks) {
+                    decorations.push(
+                        Decoration.mark({ class: 'cm-live-code' }).range(from + openTicks, to - closeTicks)
+                    );
+                }
+
+                if (editorMode !== 'read' && cursorInRange(state, from, to)) return false;
+
                 decorations.push(Decoration.replace({}).range(from, from + openTicks));
                 decorations.push(Decoration.replace({}).range(to - closeTicks, to));
-                decorations.push(
-                    Decoration.mark({ class: 'cm-live-code' }).range(from + openTicks, to - closeTicks)
-                );
 
                 return false;
             }
 
             // === FENCED CODE BLOCKS ===
             if (name === 'FencedCode') {
-                if (editorMode !== 'read' && cursorOnLine(state, from, to)) return;
-
-                // Hide the opening markers (e.g. ```javascript)
-                // In lezer-markdown, CodeMark is the ``` and CodeInfo is the language info.
-                // It's easiest to just hide the first line, and the last line.
                 const startLine = state.doc.lineAt(from);
                 const endLine = state.doc.lineAt(to);
+                const closed = endLine.number > startLine.number && endLine.text.trim().startsWith('```');
 
-                // Hide opening line completely if it starts with ```
+                // Copy button, pinned to the panel's top-right. The fence row
+                // hosts it in every state (hidden = padding row, revealed =
+                // the ``` line), so it never displaces code text.
+                const firstContent = startLine.number + 1;
+                const lastContent = closed ? endLine.number - 1 : endLine.number;
+                const code = firstContent <= lastContent
+                    ? state.doc.sliceString(state.doc.line(firstContent).from, state.doc.line(lastContent).to)
+                    : '';
+                decorations.push(
+                    Decoration.widget({ widget: new CopyCodeWidget(code), side: -1 }).range(startLine.from)
+                );
+
+                // The panel is permanent — every line gets it, fence lines
+                // included, so the block reads as ONE rectangle whose (hidden)
+                // fence rows double as top/bottom padding. Start/end classes
+                // round just the outer corners.
+                for (let i = startLine.number; i <= endLine.number; i++) {
+                    const line = state.doc.line(i);
+                    let cls = 'cm-live-codeblock';
+                    if (i === startLine.number) cls += ' cm-live-codeblock-start';
+                    if (i === endLine.number) cls += ' cm-live-codeblock-end';
+                    decorations.push(Decoration.line({ class: cls }).range(line.from));
+                }
+
+                // Editing anywhere in the block reveals the ``` fences (like a
+                // heading's `#`), but the panel above stays put.
+                if (editorMode !== 'read' && cursorOnLine(state, from, to)) return;
+
+                // Hide the fence lines outright: the opening one (e.g.
+                // ```javascript) and — only if the block is closed — the last.
                 if (startLine.text.trim().startsWith('```')) {
                     decorations.push(Decoration.replace({}).range(startLine.from, startLine.to));
                 }
-
-                // Hide closing line completely if it starts with ```
-                if (endLine.text.trim().startsWith('```')) {
+                if (closed) {
                     decorations.push(Decoration.replace({}).range(endLine.from, endLine.to));
-                }
-
-                // Apply codeblock styling to all lines within the block
-                for (let i = startLine.number; i <= endLine.number; i++) {
-                    const line = state.doc.line(i);
-                    // Don't style the marker lines if they are hidden anyway,
-                    // but we do style the inner contents.
-                    if (i > startLine.number && i < endLine.number) {
-                        decorations.push(
-                            Decoration.line({ class: 'cm-live-codeblock' }).range(line.from)
-                        );
-                    }
                 }
 
                 return false;

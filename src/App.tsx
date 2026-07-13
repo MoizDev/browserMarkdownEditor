@@ -12,7 +12,7 @@ import FileExplorer from './components/FileExplorer';
 import EditorPane from './components/EditorPane';
 import SettingsPanel from './components/SettingsPanel';
 import GraphView from './components/GraphView';
-import { Settings, HelpCircle, Network, FileTextOutline } from './components/icons';
+import { Settings, HelpCircle, Network, FileTextOutline, PanelLeft } from './components/icons';
 import type {
   FileTreeNode,
   FileTreeFileNode,
@@ -94,6 +94,12 @@ export default function App() {
   // Custom font loaded from Google Fonts (empty string = use the default)
   const [fontFamily, setFontFamily] = useState<string>(() => localStorage.getItem('fontFamily') || '');
 
+  // Custom accent color (empty string = each theme's default purple)
+  const [accentColor, setAccentColor] = useState<string>(() => localStorage.getItem('accentColor') || '');
+
+  // Base ink for language-less ``` blocks (empty string = follow the accent)
+  const [codeBlockColor, setCodeBlockColor] = useState<string>(() => localStorage.getItem('codeBlockColor') || '');
+
   // Keep HTML root data attribute in sync with state for global CSS variables
   useEffect(() => {
     if (theme === 'light') {
@@ -127,10 +133,12 @@ export default function App() {
 
     // A block caret fills ~0.6 character widths with a semi-transparent overlay
     // so the glyph beneath stays readable; a line caret uses the thickness slider.
+    // Both caret styles use a translucent accent (the line caret's equivalent
+    // lives in cmTheme), so they follow a custom accent in either app theme.
     root.setProperty('--caret-line-width', isBlock ? '0px' : caretThickness + 'px');
     root.setProperty('--caret-block-width', isBlock ? '0.6em' : '0px');
     root.setProperty('--caret-block-bg', isBlock
-      ? (theme === 'light' ? 'rgba(46, 51, 56, 0.4)' : 'rgba(220, 221, 222, 0.45)')
+      ? 'color-mix(in srgb, var(--interactive-accent) 40%, transparent)'
       : 'transparent');
     root.setProperty('--caret-radius', isBlock ? '1px' : '0');
 
@@ -143,7 +151,7 @@ export default function App() {
     localStorage.setItem('caretThickness', String(caretThickness));
     localStorage.setItem('smoothCaret', String(smoothCaret));
     localStorage.setItem('caretSpeed', String(caretSpeed));
-  }, [caretStyle, caretThickness, smoothCaret, caretSpeed, theme]);
+  }, [caretStyle, caretThickness, smoothCaret, caretSpeed]);
 
   // Load a Google Font by name and apply it app-wide via --font-text.
   useEffect(() => {
@@ -169,6 +177,36 @@ export default function App() {
     }
   }, [fontFamily]);
 
+  // One custom accent recolors links, code, buttons and highlights everywhere:
+  // an inline override on <html> outranks both theme blocks, so it holds across
+  // dark/light switches. The hover shade is derived rather than picked —
+  // color-mix is fine here, the app is Chromium-only anyway (File System API).
+  useEffect(() => {
+    const root = document.documentElement.style;
+    if (accentColor) {
+      root.setProperty('--text-accent', accentColor);
+      root.setProperty('--interactive-accent', accentColor);
+      root.setProperty('--interactive-accent-hover', `color-mix(in srgb, ${accentColor} 85%, black)`);
+    } else {
+      root.removeProperty('--text-accent');
+      root.removeProperty('--interactive-accent');
+      root.removeProperty('--interactive-accent-hover');
+    }
+    localStorage.setItem('accentColor', accentColor);
+  }, [accentColor]);
+
+  // Same override trick for the plain-code-block ink; its stylesheet default
+  // is var(--text-accent), so with no custom pick it tracks the accent.
+  useEffect(() => {
+    const root = document.documentElement.style;
+    if (codeBlockColor) {
+      root.setProperty('--code-block-color', codeBlockColor);
+    } else {
+      root.removeProperty('--code-block-color');
+    }
+    localStorage.setItem('codeBlockColor', codeBlockColor);
+  }, [codeBlockColor]);
+
   const handleResetDefaults = useCallback((defaults: SettingsDefaults) => {
     setEditorFontSize(defaults.editorFontSize);
     setTreeFontSize(defaults.treeFontSize);
@@ -178,6 +216,8 @@ export default function App() {
     setSmoothCaret(defaults.smoothCaret);
     setCaretSpeed(defaults.caretSpeed);
     setFontFamily('');
+    setAccentColor(defaults.accentColor);
+    setCodeBlockColor(defaults.codeBlockColor);
   }, []);
 
   // Expanded folder paths (persisted via localStorage)
@@ -221,6 +261,16 @@ export default function App() {
 
   // Sidebar resizing
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
+
+  // Sidebar collapse (Cmd+\, the explorer-header button, or the rail) —
+  // persisted, and collapsing leaves a thin rail so it can be re-expanded.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => localStorage.getItem('sidebarCollapsed') === 'true');
+  useEffect(() => {
+    localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
+  // Suppresses the collapse animation while drag-resizing, so the width
+  // tracks the pointer instead of easing 150ms behind it.
+  const [isDraggingSidebar, setIsDraggingSidebar] = useState<boolean>(false);
   const isResizing = useRef<boolean>(false);
   const hasRestoredFile = useRef<boolean>(false);
 
@@ -587,6 +637,11 @@ export default function App() {
         e.preventDefault();
         toggleTabMode(activeTabPathRef.current);
       }
+      // Cmd+\ — collapse/expand the sidebar (Cmd+B is taken by bold)
+      if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
+        e.preventDefault();
+        setSidebarCollapsed(c => !c);
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -598,6 +653,7 @@ export default function App() {
   // Drag-to-resize sidebar
   const startResize = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     isResizing.current = true;
+    setIsDraggingSidebar(true);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
 
@@ -609,6 +665,7 @@ export default function App() {
 
     const onMouseUp = () => {
       isResizing.current = false;
+      setIsDraggingSidebar(false);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       document.removeEventListener('mousemove', onMouseMove);
@@ -665,7 +722,22 @@ export default function App() {
 
   return (
     <div className="workspace">
-      <div className="workspace-sidebar" style={{ width: sidebarWidth }}>
+      {sidebarCollapsed && (
+        <div className="sidebar-rail">
+          <button
+            className="sidebar-rail-btn"
+            onClick={() => setSidebarCollapsed(false)}
+            title="Expand sidebar (⌘\)"
+            aria-label="Expand sidebar"
+          >
+            <PanelLeft size={16} />
+          </button>
+        </div>
+      )}
+      <div
+        className={`workspace-sidebar${sidebarCollapsed ? ' collapsed' : ''}${isDraggingSidebar ? ' resizing' : ''}`}
+        style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
+      >
         <FileExplorer
           rootHandle={rootHandle}
           fileTree={fileTree}
@@ -674,6 +746,7 @@ export default function App() {
           onCreateFile={handleCreateFile}
           onCreateFolder={handleCreateFolder}
           onChangeVault={pickDirectory}
+          onCollapse={() => setSidebarCollapsed(true)}
           onTrash={handleTrash}
           expandedPaths={expandedPaths}
           onToggleExpand={handleToggleExpand}
@@ -728,7 +801,7 @@ export default function App() {
           </button>
         </div>
       </div>
-      <div className="workspace-resize-handle" onMouseDown={startResize} />
+      {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
         {mainView === 'graph' ? (
           <GraphView
@@ -771,6 +844,8 @@ export default function App() {
           caretThickness={caretThickness}
           smoothCaret={smoothCaret}
           caretSpeed={caretSpeed}
+          accentColor={accentColor}
+          codeBlockColor={codeBlockColor}
           onEditorFontSizeChange={setEditorFontSize}
           onTreeFontSizeChange={setTreeFontSize}
           onEditorPaddingChange={setEditorPadding}
@@ -779,6 +854,8 @@ export default function App() {
           onCaretThicknessChange={setCaretThickness}
           onSmoothCaretChange={setSmoothCaret}
           onCaretSpeedChange={setCaretSpeed}
+          onAccentColorChange={setAccentColor}
+          onCodeBlockColorChange={setCodeBlockColor}
           onResetDefaults={handleResetDefaults}
           onClose={() => setShowSettings(false)}
         />

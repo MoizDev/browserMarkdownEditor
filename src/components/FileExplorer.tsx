@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import TreeNode, { type TreeNodeStatic } from './TreeNode';
 import SearchPanel from './SearchPanel';
-import { FilePlus, FolderPlus, FolderOpen, Search, PenTool } from './icons';
+import { FilePlus, FolderPlus, FolderOpen, Search, PenTool, PanelLeft } from './icons';
 import { ensureDrawingExt } from '../utils/fileTypes';
 import { createVaultTextCache } from '../utils/vaultSearch';
 import type { VaultTextCache } from '../utils/vaultSearch';
@@ -15,6 +15,7 @@ interface FileExplorerProps {
     onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath?: string) => void | Promise<void>;
     onCreateFolder: (parentHandle: FileSystemDirectoryHandle | null, name: string) => void | Promise<void>;
     onChangeVault: () => void;
+    onCollapse: () => void;
     onTrash: (node: FileTreeNode) => void;
     expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
@@ -34,6 +35,7 @@ function FileExplorer({
     onCreateFile,
     onCreateFolder,
     onChangeVault,
+    onCollapse,
     onTrash,
     expandedPaths,
     onToggleExpand,
@@ -188,6 +190,13 @@ function FileExplorer({
                         onClick={onChangeVault}
                     >
                         <FolderOpen size={15} />
+                    </button>
+                    <button
+                        className="nav-action-btn"
+                        title="Collapse sidebar (⌘\)"
+                        onClick={onCollapse}
+                    >
+                        <PanelLeft size={15} />
                     </button>
                 </div>
             </div>

@@ -157,6 +157,8 @@ export interface SettingsDefaults {
   caretThickness: number;                // (10)
   smoothCaret: boolean;                  // (true)
   caretSpeed: number;                    // (80)
+  accentColor: string;                   // ('' = per-theme default accent)
+  codeBlockColor: string;                // ('' = follow the accent color)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

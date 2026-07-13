@@ -15,22 +15,41 @@ interface DrawingPaneProps {
     theme: Theme;
 }
 
+/** The tool and style pickers (color, pen size, dash, fill…) live in tldraw's
+ *  instance state, which its document AND session snapshots both omit — so
+ *  they're persisted as an extra `ui` block in the file, and put back on open
+ *  exactly as the user left them. */
+interface SavedUiState {
+    toolId?: string;
+    stylesForNextShape?: Record<string, unknown>;
+}
+
 /** Drawing a single stroke fires a burst of store transactions; serializing the
  *  whole document on each one would be wasteful. Coalesce, then hand off to the
  *  app's own 1s save debounce. */
 const SERIALIZE_DEBOUNCE_MS = 400;
 
-function parseSnapshot(content: string): TLEditorSnapshot | undefined {
-    if (!content.trim()) return undefined; // new/empty file → blank canvas
+function parseDrawingFile(content: string): { snapshot?: TLEditorSnapshot; ui?: SavedUiState } {
+    if (!content.trim()) return {}; // new/empty file → blank canvas
     try {
-        return JSON.parse(content) as TLEditorSnapshot;
+        // Files written before the `ui` block existed are plain snapshots;
+        // destructuring just yields ui === undefined for those.
+        const { ui, ...snapshot } = JSON.parse(content) as TLEditorSnapshot & { ui?: SavedUiState };
+        return { snapshot, ui };
     } catch (err) {
         // Don't destroy an unreadable file: mounting blank would autosave over
         // it on the first stroke. Better to show an empty canvas and let the
         // user close the tab with the bytes still intact on disk.
         console.error('Could not parse drawing (leaving the file untouched):', err);
-        return undefined;
+        return {};
     }
+}
+
+function readUiState(editor: Editor): SavedUiState {
+    return {
+        toolId: editor.getCurrentToolId(),
+        stylesForNextShape: editor.getInstanceState().stylesForNextShape,
+    };
 }
 
 /**
@@ -48,25 +67,55 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
     // round-trip, but tldraw owns the document after mount, so re-reading it
     // would be pointless work (and could clobber in-progress edits).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    const snapshot = useMemo(() => parseSnapshot(content), [filePath]);
+    const { snapshot, ui } = useMemo(() => parseDrawingFile(content), [filePath]);
 
     const serializeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const handleMount = useCallback((editor: Editor) => {
+        // Restore the saved pickers BEFORE the listeners attach: these writes
+        // are indistinguishable from user edits, and a restore must not mark a
+        // just-opened file dirty.
+        if (ui) {
+            try {
+                if (ui.stylesForNextShape) {
+                    editor.updateInstanceState({ stylesForNextShape: ui.stylesForNextShape });
+                }
+                if (ui.toolId) editor.setCurrentTool(ui.toolId);
+            } catch (err) {
+                // A tool/style saved by a newer build than this one — the
+                // defaults are a fine fallback, the drawing itself is intact.
+                console.warn('Could not restore drawing UI state:', err);
+            }
+        }
+
+        let lastUi = JSON.stringify(readUiState(editor));
+
         const flush = () => {
             serializeTimerRef.current = null;
-            onContentChangeRef.current(filePath, JSON.stringify(getSnapshot(editor.store)));
+            const uiNow = readUiState(editor);
+            lastUi = JSON.stringify(uiNow);
+            onContentChangeRef.current(filePath, JSON.stringify({ ...getSnapshot(editor.store), ui: uiNow }));
+        };
+
+        const schedule = () => {
+            if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
+            serializeTimerRef.current = setTimeout(flush, SERIALIZE_DEBOUNCE_MS);
         };
 
         // source: 'user'     → a programmatic load never marks the file dirty.
         // scope: 'document'  → panning/zooming (session state) doesn't either.
-        const unlisten = editor.store.listen(() => {
-            if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
-            serializeTimerRef.current = setTimeout(flush, SERIALIZE_DEBOUNCE_MS);
-        }, { source: 'user', scope: 'document' });
+        const unlistenDoc = editor.store.listen(schedule, { source: 'user', scope: 'document' });
+
+        // The pickers live in session scope alongside camera/selection noise
+        // that must NOT dirty the file — so compare just the slice we persist
+        // and only save when THAT changed.
+        const unlistenSession = editor.store.listen(() => {
+            if (JSON.stringify(readUiState(editor)) !== lastUi) schedule();
+        }, { source: 'user', scope: 'session' });
 
         return () => {
-            unlisten();
+            unlistenDoc();
+            unlistenSession();
             // Unmounting mid-debounce (tab switch, tab close) must not drop the
             // last strokes — flush them synchronously while the editor is alive.
             if (serializeTimerRef.current) {
@@ -74,7 +123,7 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
                 flush();
             }
         };
-    }, [filePath]);
+    }, [filePath, ui]);
 
     return (
         <div className="drawing-pane">

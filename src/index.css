@@ -24,6 +24,11 @@
   /* ── Interactive / Accent ── */
   --interactive-accent: hsl(254, 80%, 68%);
   --interactive-accent-hover: hsl(254, 80%, 60%);
+
+  /* Base ink for language-less ``` blocks. Follows the accent (including a
+     custom one — var() resolves late) until the Settings picker overrides it
+     inline on <html>. */
+  --code-block-color: var(--text-accent);
   --interactive-normal: #2a2a2a;
   --interactive-hover: #353535;
 
@@ -199,6 +204,53 @@ body {
   flex-direction: column;
   overflow: hidden;
   border-right: 1px solid var(--background-modifier-border);
+  transition: width 0.15s ease;
+}
+
+/* While drag-resizing, the width must track the pointer, not ease after it. */
+.workspace-sidebar.resizing {
+  transition: none;
+}
+
+.workspace-sidebar.collapsed {
+  border-right: none;
+}
+
+/* Children keep their laid-out width while the drawer animates shut, instead
+   of reflowing narrower every frame. 180px = the resize clamp minimum. */
+.workspace-sidebar > * {
+  min-width: 180px;
+}
+
+/* Thin strip left behind by a collapsed sidebar; its button re-expands. */
+.sidebar-rail {
+  flex-shrink: 0;
+  width: 40px;
+  background: var(--background-secondary);
+  border-right: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 8px;
+}
+
+.sidebar-rail-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sidebar-rail-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
 .workspace-resize-handle {
@@ -787,12 +839,16 @@ body {
   backdrop-filter: blur(4px);
 }
 
+/* Obsidian-style modal: wide, capped to the viewport, header pinned and the
+   body scrolling — so however many settings accrue, nothing ever clips. */
 .settings-panel {
   background: var(--background-primary-alt);
   border: 1px solid var(--background-modifier-border);
   border-radius: 12px;
-  width: 380px;
-  max-width: 90vw;
+  width: min(860px, 92vw);
+  max-height: min(85vh, 860px);
+  display: flex;
+  flex-direction: column;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
   overflow: hidden;
 }
@@ -834,25 +890,83 @@ body {
 }
 
 .settings-body {
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 28px 20px;
 }
 
-.settings-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.settings-body::-webkit-scrollbar {
+  width: 8px;
 }
 
-.settings-label {
+.settings-body::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-bg);
+  border-radius: 4px;
+}
+
+.settings-section {
+  margin: 22px 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+/* One setting per row: name + description on the left, control on the right,
+   hairlines between rows (Obsidian's settings layout). */
+.setting-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 32px;
+  padding: 13px 0;
+}
+
+.setting-row + .setting-row {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.setting-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting-name {
   font-size: 13px;
   font-weight: 500;
   color: var(--text-normal);
+}
+
+.setting-info .settings-hint {
+  margin-top: 3px;
+}
+
+.setting-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.setting-control .settings-slider {
+  width: 190px;
+}
+
+.setting-control .settings-text-input {
+  width: 190px;
+  flex: none;
+}
+
+.setting-control .settings-segmented {
+  width: 190px;
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 18px 0 4px;
+  margin-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
 }
 
 .settings-value {
@@ -955,11 +1069,6 @@ body {
   transform: translateX(16px);
 }
 
-.settings-font-row {
-  display: flex;
-  gap: 8px;
-}
-
 .settings-text-input {
   flex: 1;
   min-width: 0;
@@ -976,6 +1085,32 @@ body {
 
 .settings-text-input:focus {
   border-color: var(--interactive-accent);
+}
+
+/* Native color input, restyled into a wide swatch that matches the text
+   inputs. The nested pseudo-elements are what actually paint the color. */
+.settings-color-input {
+  width: 64px;
+  height: 32px;
+  padding: 3px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.settings-color-input:hover {
+  border-color: var(--interactive-accent);
+}
+
+.settings-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.settings-color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
 }
 
 .settings-apply-btn {
@@ -1012,8 +1147,6 @@ body {
 }
 
 .settings-reset-btn {
-  width: 100%;
-  margin-top: 12px;
   padding: 8px 16px;
   border-radius: 6px;
   border: 1px solid var(--background-modifier-border);
@@ -1084,6 +1217,30 @@ body {
 .drawing-pane .tl-container {
   width: 100%;
   height: 100%;
+}
+
+/* tldraw's own dark canvas (hsl(240,5%,6.5%) ≈ #101011) reads as a hole next
+   to the app's #202020 chrome — pin it to the app palette. Dark only: the
+   light canvas already blends in. */
+.drawing-pane .tl-theme__dark {
+  --tl-color-background: var(--background-secondary);
+}
+
+/* tldraw ships 32px SVG-image cursors (chunky cross while drawing, cartoon
+   hand, etc.) and swaps them per tool by pointing --tl-cursor at these vars.
+   Remapping the vars — not `cursor` itself — keeps the override live through
+   tldraw's inline-style updates. Canvas tools all get the native arrow; UI
+   buttons and in-shape text editing keep their native equivalents. */
+.drawing-pane .tl-container {
+  --tl-cursor-default: default;
+  --tl-cursor-cross: default;
+  --tl-cursor-move: default;
+  --tl-cursor-grab: default;
+  --tl-cursor-grabbing: default;
+  --tl-cursor-zoom-in: default;
+  --tl-cursor-zoom-out: default;
+  --tl-cursor-pointer: pointer;
+  --tl-cursor-text: text;
 }
 
 .drawing-pane-loading {
@@ -1195,25 +1352,114 @@ body {
   background: var(--background-modifier-hover);
   border-radius: 3px;
   padding: 1px 4px;
-  color: #e06c75;
+  color: var(--text-accent);
 }
 
-/* ── Fenced Code Blocks ── */
-.cm-live-codeblock {
+/* ── Fenced Code Blocks ──
+   One continuous panel: every line of the block carries this class (the
+   hidden ``` fence rows too, doubling as top/bottom padding), and only the
+   outer corners of the first/last line are rounded. Longhand corner props so
+   a single-line block can be both start and end. */
+/* .cm-editor prefix is load-bearing: CodeMirror's own base theme sets line
+   padding via a scoped two-class selector (.ͼx .cm-line), which silently
+   beats a lone class here. */
+.cm-editor .cm-line.cm-live-codeblock {
   background-color: var(--background-modifier-hover);
   font-family: var(--font-monospace);
   font-size: 0.9em;
-  padding: 0 4px;
-  /* CM ensures line bounds, we just add slight visual distinction */
+  padding: 0 24px;
+  /* Base ink for code text (Obsidian-style; defaults to the accent, its own
+     Settings picker can split it off); embedded-language token colors still
+     win on their own spans. */
+  color: var(--code-block-color);
+  /* Anchor for the absolutely-positioned copy button on the first row. */
+  position: relative;
 }
 
-:root[data-theme="light"] .cm-live-code {
-  color: #d14;
+.cm-live-codeblock-start {
+  border-top-left-radius: var(--radius-m);
+  border-top-right-radius: var(--radius-m);
 }
 
-:root[data-theme="light"] .cm-live-codeblock {
-  color: #2e3338;
+.cm-live-codeblock-end {
+  border-bottom-left-radius: var(--radius-m);
+  border-bottom-right-radius: var(--radius-m);
 }
+
+/* ── Wikilink autocomplete dropdown ── */
+.cm-tooltip.cm-tooltip-autocomplete {
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.cm-tooltip-autocomplete > ul {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  max-height: 240px;
+}
+
+.cm-tooltip-autocomplete > ul > li {
+  padding: 5px 10px;
+  color: var(--text-normal);
+}
+
+.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.cm-completionDetail {
+  margin-left: 8px;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--text-muted);
+}
+
+li[aria-selected] .cm-completionDetail {
+  color: var(--text-on-accent);
+  opacity: 0.75;
+}
+
+.cm-completionMatchedText {
+  text-decoration: none;
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+li[aria-selected] .cm-completionMatchedText {
+  color: inherit;
+}
+
+/* ── Code block copy button ── */
+.cm-codeblock-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.cm-codeblock-copy:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-active);
+}
+
+.cm-codeblock-copy-done,
+.cm-codeblock-copy-done:hover {
+  color: var(--interactive-accent);
+  background: transparent;
+}
+
 
 /* ── Highlights ── */
 .cm-live-highlight {

@@ -23,8 +23,9 @@ export const obsidianDarkTheme: Extension = EditorView.theme({
     },
     // Caret styling is driven by CSS variables (set from the Settings panel) so
     // the line/block thickness and smooth-movement animation can change live.
+    // Its color is a translucent accent — tracks a custom accent automatically.
     '.cm-cursor': {
-        borderLeftColor: '#dcddde',
+        borderLeftColor: 'color-mix(in srgb, var(--interactive-accent) 55%, transparent)',
         borderLeftWidth: 'var(--caret-line-width, 2px)',
         width: 'var(--caret-block-width, 0px)',
         backgroundColor: 'var(--caret-block-bg, transparent)',
@@ -84,9 +85,12 @@ export const obsidianHighlightStyle: Extension = syntaxHighlighting(HighlightSty
     { tag: tags.strong, fontWeight: '700', color: '#dcddde' },
     { tag: tags.emphasis, fontStyle: 'italic', color: '#dcddde' },
     { tag: tags.strikethrough, textDecoration: 'line-through', color: '#999' },
-    { tag: tags.link, color: 'hsl(254, 80%, 68%)', textDecoration: 'underline' },
-    { tag: tags.url, color: 'hsl(254, 80%, 68%)' },
-    { tag: tags.monospace, fontFamily: '"SF Mono", Menlo, Monaco, monospace', color: '#e06c75', backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: '3px' },
+    { tag: tags.link, color: 'var(--text-accent)', textDecoration: 'underline' },
+    { tag: tags.url, color: 'var(--text-accent)' },
+    // Font only: the pill background/accent ink live on .cm-live-code and
+    // .cm-live-codeblock — fenced block text must stay plain here so its
+    // panel reads as one piece and embedded-language token colors show.
+    { tag: tags.monospace, fontFamily: '"SF Mono", Menlo, Monaco, monospace' },
     { tag: tags.quote, color: '#999', fontStyle: 'italic' },
     { tag: tags.list, color: '#dcddde' },
     { tag: tags.meta, color: '#666' },
@@ -94,6 +98,22 @@ export const obsidianHighlightStyle: Extension = syntaxHighlighting(HighlightSty
     // Formatting markers (e.g. the _ / * around emphasis) — kept faint like Obsidian
     // rather than a loud red, since they're only revealed while editing.
     { tag: tags.processingInstruction, color: '#7d828c' },
+
+    // ── Code tokens (embedded languages in fenced blocks) ──
+    // The full One Dark tag mapping (same rules as @codemirror/theme-one-dark,
+    // same order — the order resolves specificity ties), so real-world code is
+    // as colorful as Obsidian's. Markdown-owned tags (heading, strong, link,
+    // url, processingInstruction) are deliberately absent: those belong to the
+    // note styling above and must not be repainted by the code palette.
+    { tag: tags.keyword, color: '#c678dd' },
+    { tag: [tags.name, tags.deleted, tags.character, tags.propertyName, tags.macroName], color: '#e06c75' },
+    { tag: [tags.function(tags.variableName), tags.labelName], color: '#61afef' },
+    { tag: [tags.color, tags.constant(tags.name), tags.standard(tags.name)], color: '#d19a66' },
+    { tag: [tags.definition(tags.name), tags.separator, tags.punctuation, tags.bracket], color: '#abb2bf' },
+    { tag: [tags.typeName, tags.className, tags.number, tags.changed, tags.annotation, tags.modifier, tags.self, tags.namespace], color: '#e5c07b' },
+    { tag: [tags.operator, tags.operatorKeyword, tags.escape, tags.regexp, tags.special(tags.string)], color: '#56b6c2' },
+    { tag: [tags.atom, tags.bool, tags.special(tags.variableName)], color: '#d19a66' },
+    { tag: [tags.string, tags.inserted], color: '#98c379' },
 ]));
 
 /**
@@ -116,7 +136,7 @@ export const obsidianLightTheme: Extension = EditorView.theme({
     },
     // See the dark theme above — caret look is controlled via CSS variables.
     '.cm-cursor': {
-        borderLeftColor: '#2e3338',
+        borderLeftColor: 'color-mix(in srgb, var(--interactive-accent) 55%, transparent)',
         borderLeftWidth: 'var(--caret-line-width, 2px)',
         width: 'var(--caret-block-width, 0px)',
         backgroundColor: 'var(--caret-block-bg, transparent)',
@@ -176,13 +196,26 @@ export const obsidianLightHighlightStyle: Extension = syntaxHighlighting(Highlig
     { tag: tags.strong, fontWeight: '700', color: '#2e3338' },
     { tag: tags.emphasis, fontStyle: 'italic', color: '#2e3338' },
     { tag: tags.strikethrough, textDecoration: 'line-through', color: '#5c5f66' },
-    { tag: tags.link, color: 'hsl(254, 80%, 52%)', textDecoration: 'underline' },
-    { tag: tags.url, color: 'hsl(254, 80%, 52%)' },
-    { tag: tags.monospace, fontFamily: '"SF Mono", Menlo, Monaco, monospace', color: '#d14', backgroundColor: 'rgba(0,0,0,0.04)', borderRadius: '3px' },
+    { tag: tags.link, color: 'var(--text-accent)', textDecoration: 'underline' },
+    { tag: tags.url, color: 'var(--text-accent)' },
+    // Font only — see the dark theme's note on tags.monospace.
+    { tag: tags.monospace, fontFamily: '"SF Mono", Menlo, Monaco, monospace' },
     { tag: tags.quote, color: '#5c5f66', fontStyle: 'italic' },
     { tag: tags.list, color: '#2e3338' },
     { tag: tags.meta, color: '#999' },
     { tag: tags.comment, color: '#999' },
     // Formatting markers — faint like Obsidian instead of a loud red.
     { tag: tags.processingInstruction, color: '#a4a8b0' },
+
+    // ── Code tokens — One Light palette, mirroring the dark theme's One Dark
+    // rule set (same tags, same order; see that block's note).
+    { tag: tags.keyword, color: '#a626a4' },
+    { tag: [tags.name, tags.deleted, tags.character, tags.propertyName, tags.macroName], color: '#e45649' },
+    { tag: [tags.function(tags.variableName), tags.labelName], color: '#4078f2' },
+    { tag: [tags.color, tags.constant(tags.name), tags.standard(tags.name)], color: '#986801' },
+    { tag: [tags.definition(tags.name), tags.separator, tags.punctuation, tags.bracket], color: '#383a42' },
+    { tag: [tags.typeName, tags.className, tags.number, tags.changed, tags.annotation, tags.modifier, tags.self, tags.namespace], color: '#c18401' },
+    { tag: [tags.operator, tags.operatorKeyword, tags.escape, tags.regexp, tags.special(tags.string)], color: '#0184bc' },
+    { tag: [tags.atom, tags.bool, tags.special(tags.variableName)], color: '#986801' },
+    { tag: [tags.string, tags.inserted], color: '#50a14f' },
 ]));

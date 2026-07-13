@@ -3,12 +3,15 @@ import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
+import { LanguageDescription } from '@codemirror/language';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
 import { createLivePreviewPlugin } from '../editor/livePreview';
 import { markdownFormatExtension } from '../editor/formatKeymap';
+import { wikiLinkAutocomplete } from '../editor/wikiLinkComplete';
+import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import { revealHighlightField, setRevealHighlight } from '../editor/revealHighlight';
 import { Compartment } from '@codemirror/state';
 import { useFileSystem } from '../context/FileSystemContext';
@@ -167,6 +170,25 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         onOpenNoteRef.current = onOpenNote;
     }, [onOpenNote]);
 
+    // The [[ autocomplete reads targets through this ref so its (created-once)
+    // extension always sees the current vault, deduped by link name since
+    // wikilinks resolve by name, not path.
+    const graphRef = useRef<GraphData>(graph);
+    useEffect(() => {
+        graphRef.current = graph;
+    }, [graph]);
+    const getWikiLinkTargets = useRef(() => {
+        const seen = new Set<string>();
+        const targets: WikiLinkTarget[] = [];
+        for (const node of graphRef.current.nodes) {
+            const key = node.name.toLowerCase();
+            if (!node.name || seen.has(key)) continue;
+            seen.add(key);
+            targets.push({ name: node.name, unresolved: node.unresolved });
+        }
+        return targets;
+    });
+
     // Create a bound version of getAssetUrl that includes the active file's parent handle
     const boundGetAssetUrl = useRef<(fileName: string) => Promise<string | null>>((fileName) => getAssetUrl(fileName, null));
     useEffect(() => {
@@ -193,7 +215,16 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 drawSelection(),
                 history(),
                 closeBrackets(),
-                markdown({ base: markdownLanguage, codeLanguages: languages }),
+                // The extra resolver matters: fence infostrings are often file
+                // extensions (```py, ```rs) which matchLanguageName ignores —
+                // it only knows names and aliases — so fall back to matching
+                // them as if they were a filename's extension.
+                markdown({
+                    base: markdownLanguage,
+                    codeLanguages: (info: string) =>
+                        LanguageDescription.matchLanguageName(languages, info, true)
+                        ?? LanguageDescription.matchFilename(languages, `x.${info}`),
+                }),
                 themeCompartmentRef.current.of(themeExtensions(theme)),
                 keymap.of([
                     ...defaultKeymap,
@@ -202,6 +233,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     ...searchKeymap,
                 ]),
                 readOnlyCompartmentRef.current.of(EditorView.editable.of(mode !== 'read')),
+                wikiLinkAutocomplete(() => getWikiLinkTargets.current()),
                 livePreviewCompartmentRef.current.of(createLivePreviewPlugin((fn) => boundGetAssetUrl.current(fn), mode)),
                 markdownFormatExtension,
                 revealHighlightField,

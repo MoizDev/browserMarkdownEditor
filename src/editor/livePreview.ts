@@ -4,7 +4,7 @@ import { syntaxTree } from '@codemirror/language';
 import type { EditorState, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
-import { findMathRegions, latexSourceDecorations } from './latexSource';
+import { findMathRegions, latexSourceDecorations, collectCodeRanges } from './latexSource';
 import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
 import { ImageWidget } from './imageWidget';
@@ -51,15 +51,7 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
     // Math is located BEFORE the markdown pass so formula innards can be
     // exempted from markdown styling — "[x](y)" inside an equation is LaTeX,
     // not a link. Code ranges come first: a $ inside code is literal.
-    const codeRanges: { from: number; to: number }[] = [];
-    syntaxTree(state).iterate({
-        enter(n) {
-            if (n.name === 'FencedCode' || n.name === 'CodeBlock' || n.name === 'InlineCode') {
-                codeRanges.push({ from: n.from, to: n.to });
-                return false;
-            }
-        },
-    });
+    const codeRanges = collectCodeRanges(state);
     const mathRegions = findMathRegions(doc, codeRanges);
     const intersectsMath = (a: number, b: number) => mathRegions.some(r => a < r.to && b > r.from);
 

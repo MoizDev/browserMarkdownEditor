@@ -29,6 +29,10 @@ interface SavedUiState {
  *  app's own 1s save debounce. */
 const SERIALIZE_DEBOUNCE_MS = 400;
 
+/** Up to this many shapes on a page, zoomed-out strokes keep their full ink
+ *  rendering; past it, tldraw's low-zoom thin-line LOD applies as designed. */
+const FULL_INK_SHAPE_LIMIT = 1000;
+
 function parseDrawingFile(content: string): { snapshot?: TLEditorSnapshot; ui?: SavedUiState } {
     if (!content.trim()) return {}; // new/empty file → blank canvas
     try {
@@ -63,6 +67,18 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
     const onContentChangeRef = useRef(onContentChange);
     useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
 
+    // The colorScheme prop is only honored at mount (and a persisted tldraw
+    // user preference can override even that) — so the app theme is pushed
+    // into tldraw's user preferences on mount and on every toggle. Dark mode
+    // then picks up the custom canvas color via .tl-theme__dark CSS; light
+    // mode keeps tldraw's stock white.
+    const editorRef = useRef<Editor | null>(null);
+    const themeRef = useRef(theme);
+    useEffect(() => {
+        themeRef.current = theme;
+        editorRef.current?.user.updateUserPreferences({ colorScheme: theme === 'light' ? 'light' : 'dark' });
+    }, [theme]);
+
     // Parsed once per FILE, not per render: `content` changes on every save
     // round-trip, but tldraw owns the document after mount, so re-reading it
     // would be pointless work (and could clobber in-progress edits).
@@ -72,6 +88,23 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
     const serializeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const handleMount = useCallback((editor: Editor) => {
+        editorRef.current = editor;
+        editor.user.updateUserPreferences({ colorScheme: themeRef.current === 'light' ? 'light' : 'dark' });
+
+        // Below 50% zoom tldraw degrades draw-shapes to a thin solid
+        // centerline (an LOD for huge boards) — the sudden hairline look when
+        // zooming out. Fidelity beats that perf saving at this app's scale,
+        // so the "efficient" zoom that every LOD check reads is clamped at
+        // the 0.5 threshold; the real camera zoom is untouched. On genuinely
+        // huge pages the LOD gets its job back — repainting thousands of
+        // full-ink outlines mid-zoom is where it actually earns its keep.
+        // (Both reads are signal-backed, so LOD checks re-run on crossings.)
+        const realEfficientZoom = editor.getEfficientZoomLevel.bind(editor);
+        editor.getEfficientZoomLevel = () =>
+            editor.getCurrentPageShapeIds().size > FULL_INK_SHAPE_LIMIT
+                ? realEfficientZoom()
+                : Math.max(0.5, realEfficientZoom());
+
         // Restore the saved pickers BEFORE the listeners attach: these writes
         // are indistinguishable from user edits, and a restore must not mark a
         // just-opened file dirty.
@@ -114,6 +147,7 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
         }, { source: 'user', scope: 'session' });
 
         return () => {
+            editorRef.current = null;
             unlistenDoc();
             unlistenSession();
             // Unmounting mid-debounce (tab switch, tab close) must not drop the

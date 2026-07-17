@@ -190,6 +190,12 @@ export interface FileSystemContextValue {
   pickDirectory: () => Promise<void>;                    // FileSystemContext.jsx:118
   readFile: (fileHandle: FileSystemFileHandle) => Promise<string>;            // :143
   writeFile: (fileHandle: FileSystemFileHandle, content: string) => Promise<void>; // :151
+  // Binary IO — PDFs cannot ride the text path (UTF-8 decode + CRLF
+  // normalization would corrupt them).
+  readFileBytes: (fileHandle: FileSystemFileHandle) => Promise<Uint8Array>;
+  writeFileBytes: (fileHandle: FileSystemFileHandle, bytes: Uint8Array) => Promise<void>;
+  /** Copy OS-dragged files into the vault; returns the names actually written. */
+  importFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
   // createFile/createFolder accept the parent dir handle (non-null; guarded at call sites)
   createFile: (parentDirHandle: FileSystemDirectoryHandle, fileName: string) => Promise<FileSystemFileHandle>;   // :161
   createFolder: (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => Promise<FileSystemDirectoryHandle>; // :176

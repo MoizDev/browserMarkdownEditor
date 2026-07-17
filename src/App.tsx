@@ -6,7 +6,11 @@ import { readJSON, writeJSON } from './utils/storage';
 import { joinVaultPath } from './utils/paths';
 import { collectFiles } from './utils/tree';
 import { isTextFile } from './utils/vaultSearch';
-import { isDrawingFile } from './utils/fileTypes';
+import { isDrawingFile, isPdfFile, isAnnotatedPdf, annotatedNameFor } from './utils/fileTypes';
+// Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
+// (~1.3MB) into the main bundle, which a markdown-only session never needs.
+// The builder itself is import()ed at the two points that actually write a PDF.
+import { getPdfRenderData, clearPdfRenderData } from './utils/pdfRenderCache';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
 import EditorPane from './components/EditorPane';
@@ -14,6 +18,7 @@ import SettingsPanel from './components/SettingsPanel';
 import GraphView from './components/GraphView';
 import { Settings, HelpCircle, Network, FileTextOutline, PanelLeft } from './components/icons';
 import type {
+  ActiveFile,
   FileTreeNode,
   FileTreeFileNode,
   OpenTab,
@@ -37,6 +42,9 @@ export default function App() {
     pickDirectory,
     readFile,
     writeFile,
+    readFileBytes,
+    writeFileBytes,
+    importFiles,
     createFile,
     createFolder,
     restoreVault,
@@ -277,7 +285,9 @@ export default function App() {
   // Returns whether the file was actually opened (as a tab or externally).
   const handleFileClick = useCallback(async (node: FileTreeNode): Promise<boolean> => {
     try {
-      if (!isTextFile(node.name)) {
+      // PDFs open in a pane like any other file. Everything else non-textual
+      // (images, video, …) still hands off to the browser.
+      if (!isTextFile(node.name) && !isPdfFile(node.name)) {
         const file = await (node.handle as FileSystemFileHandle).getFile();
         const url = URL.createObjectURL(file);
         window.open(url, '_blank');
@@ -291,7 +301,10 @@ export default function App() {
         return true;
       }
 
-      const content = await readFile(node.handle as FileSystemFileHandle);
+      // A PDF's bytes are read by PdfPane itself; its tab buffer holds the
+      // tldraw snapshot instead (empty until the canvas loads and reports one).
+      // readFile() must not touch it — decoding a PDF as UTF-8 corrupts it.
+      const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
       // Re-check inside the updater: a second click can land while the first
       // read is still in flight, and tabsRef only updates post-commit.
       setTabs(prev => prev.some(t => t.file.path === node.path)
@@ -305,6 +318,52 @@ export default function App() {
       return false;
     }
   }, [readFile]);
+
+  /**
+   * Start annotating a plain PDF. Creates "<name> (annotated).pdf" beside it —
+   * a real PDF carrying the pristine original + an empty snapshot — then opens
+   * it in annotate mode. The source PDF is never modified.
+   *
+   * Re-annotating an existing annotated file just reopens it, so the button is
+   * safe to press twice and existing strokes are never blown away.
+   */
+  const handleAnnotatePdf = useCallback(async (file: ActiveFile) => {
+    if (!file.handle || !file.parentHandle) return;
+    const targetName = annotatedNameFor(file.name);
+    const dir = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : '';
+    const targetPath = joinVaultPath(dir, targetName);
+
+    try {
+      // Adopt an existing annotated file rather than overwriting it.
+      let handle: FileSystemFileHandle;
+      try {
+        handle = await file.parentHandle.getFileHandle(targetName);
+      } catch {
+        const original = await readFileBytes(file.handle as FileSystemFileHandle);
+        const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
+        const bytes = await buildAnnotatedPdfAsync(original, '', []);
+        // createFile refreshes the tree, so the new file shows up right away.
+        handle = await createFile(file.parentHandle, targetName);
+        await writeFileBytes(handle, bytes);
+      }
+
+      const node: ActiveFile = {
+        name: targetName,
+        path: targetPath,
+        kind: 'file',
+        handle,
+        parentHandle: file.parentHandle,
+      };
+      setTabs(prev => prev.some(t => t.file.path === targetPath)
+        ? prev
+        : [...prev, { file: node, content: '', mode: 'edit', dirty: false }]);
+      setActiveTabPath(targetPath);
+      setMainView('editor');
+    } catch (err) {
+      console.error('Could not create the annotated PDF:', err);
+      alert(`Could not create "${targetName}".`);
+    }
+  }, [createFile, readFileBytes, writeFileBytes]);
 
   // Flat index of markdown files for resolving wikilinks by note name
   const mdFiles = useMemo(() => collectMarkdownFiles(fileTree), [fileTree]);
@@ -331,8 +390,10 @@ export default function App() {
   // graph rebuild) while never going stale.
   const rebuildGraphRef = useRef(rebuildGraph);
   const writeFileRef = useRef(writeFile);
+  const writeFileBytesRef = useRef(writeFileBytes);
   useEffect(() => { rebuildGraphRef.current = rebuildGraph; }, [rebuildGraph]);
   useEffect(() => { writeFileRef.current = writeFile; }, [writeFile]);
+  useEffect(() => { writeFileBytesRef.current = writeFileBytes; }, [writeFileBytes]);
 
   const clearSaveTimer = useCallback((path: string) => {
     const pending = saveTimersRef.current.get(path);
@@ -342,17 +403,34 @@ export default function App() {
   // Write one tab's buffered content to its OWN handle. The tab is captured
   // synchronously (before the await), so this is safe to fire right before the
   // tab is removed from state (e.g. on close). Skips Help / handle-less tabs.
-  const flushTab = useCallback(async (path: string | null, force = false) => {
+  const flushTab = useCallback(async (path: string | null, force = false, contentOverride?: string) => {
     if (!path) return;
     clearSaveTimer(path);
 
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || tab.file.isHelp || !tab.file.handle) return;
     if (!tab.dirty && !force) return;
-    const snapshot = tab.content;
+    // contentOverride exists for callers who have fresher content than the tab
+    // does: setTabs is async, so a caller that just produced new content would
+    // otherwise race with React and write the previous buffer.
+    const snapshot = contentOverride ?? tab.content;
 
     try {
-      await writeFileRef.current(tab.file.handle as FileSystemFileHandle, snapshot);
+      if (isAnnotatedPdf(tab.file.name)) {
+        // An annotated PDF's buffer is a tldraw snapshot; the file on disk is a
+        // real PDF. Rebuild it from the pristine original + the overlays the
+        // canvas parked for us. No render data yet means the canvas hasn't
+        // reported a change, so there is nothing to write.
+        const data = getPdfRenderData(path);
+        if (!data) return;
+        // Off the main thread: stamping overlays costs ~150ms per annotated page
+        // (~4.2s at 30 pages), which would land as stutter under the pen.
+        const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
+        const bytes = await buildAnnotatedPdfAsync(data.original, snapshot, data.overlays);
+        await writeFileBytesRef.current(tab.file.handle as FileSystemFileHandle, bytes);
+      } else {
+        await writeFileRef.current(tab.file.handle as FileSystemFileHandle, snapshot);
+      }
       // Only clear `dirty` if the content hasn't changed since we snapshotted.
       setTabs(prev => prev.map(t =>
         t.file.path === path && t.content === snapshot ? { ...t, dirty: false } : t));
@@ -382,6 +460,21 @@ export default function App() {
     scheduleSave(path);
   }, [scheduleSave]);
 
+  /**
+   * Buffer an edit and write it NOW, skipping the save debounce.
+   *
+   * For the moment a PDF leaves annotate mode: the viewer is about to re-read
+   * the file, so waiting out the 1s debounce would show the pre-annotation PDF
+   * and only correct itself a second later.
+   *
+   * The content is passed explicitly rather than read back from the tab — the
+   * setTabs above hasn't committed yet when flushTab runs.
+   */
+  const flushTabNow = useCallback(async (path: string, content: string) => {
+    setTabs(prev => prev.map(t => t.file.path === path ? { ...t, content, dirty: true } : t));
+    await flushTab(path, true, content);
+  }, [flushTab]);
+
   // Wired to EditorPane's onContentChange. CodeMirror only ever edits the
   // visible document, so "the active tab" is the right target there.
   const updateActiveTabContent = useCallback((content: string) => {
@@ -394,6 +487,9 @@ export default function App() {
     // flushTab captures the tab synchronously, clears the timer, and no-ops for
     // non-dirty / Help / handle-less tabs, so calling it whenever we flush is safe.
     if (flush) flushTab(path); else clearSaveTimer(path);
+    // Safe to drop now: flushTab reads the render data synchronously, before its
+    // first await, so a flush already in flight has what it needs.
+    clearPdfRenderData(path);
 
     if (activeTabPathRef.current === path) {
       const list = tabsRef.current;
@@ -752,6 +848,7 @@ export default function App() {
           onToggleExpand={handleToggleExpand}
           onMoveFile={handleMoveFile}
           onRenameFile={handleRenameFile}
+          onImportFiles={importFiles}
           onOpenSearchResult={handleOpenSearchResult}
           getOpenTabContent={getOpenTabContent}
           saveEpoch={saveEpoch}
@@ -826,6 +923,9 @@ export default function App() {
             onToggleMode={toggleTabMode}
             onContentChange={updateActiveTabContent}
             onDrawingChange={updateTabContent}
+            onFlushNow={flushTabNow}
+            onAnnotatePdf={handleAnnotatePdf}
+            saveEpoch={saveEpoch}
             onOpenNote={openNoteByName}
             graph={graph}
             onOpenNode={handleOpenNode}

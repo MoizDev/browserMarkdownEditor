@@ -160,6 +160,72 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, []);
 
     /**
+     * Read a file's raw bytes. Binary formats (PDFs) can't ride readFile():
+     * decoding arbitrary bytes as UTF-8 and normalizing line endings corrupts
+     * them irreversibly.
+     */
+    const readFileBytes = useCallback(async (fileHandle: FileSystemFileHandle) => {
+        const file = await fileHandle.getFile();
+        return new Uint8Array(await file.arrayBuffer());
+    }, []);
+
+    /** Write raw bytes to a file handle. */
+    const writeFileBytes = useCallback(async (fileHandle: FileSystemFileHandle, bytes: Uint8Array) => {
+        const writable = await fileHandle.createWritable();
+        // Copy into a plain ArrayBuffer: a Uint8Array view over a larger or
+        // shared buffer would otherwise write the wrong byte range.
+        await writable.write(bytes.slice().buffer);
+        await writable.close();
+    }, []);
+
+    /**
+     * Copy files dragged in from the OS into the vault, as-is.
+     *
+     * Writes the Blob straight through rather than going via text, so binaries
+     * (PDFs, images) survive. Never overwrites: a colliding name gets " (1)",
+     * " (2)", … appended, because a silent overwrite of someone's PDF is not a
+     * recoverable mistake.
+     *
+     * Returns the names actually written.
+     */
+    const importFiles = useCallback(async (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => {
+        const written: string[] = [];
+        for (const file of Array.from(files)) {
+            // A dropped directory arrives as a File with no type and no size;
+            // reading it throws. Skip rather than write a 0-byte stub.
+            if (!file.size && !file.type) {
+                try { await file.slice(0, 1).arrayBuffer(); } catch { continue; }
+            }
+
+            const dot = file.name.lastIndexOf('.');
+            const stem = dot > 0 ? file.name.slice(0, dot) : file.name;
+            const ext = dot > 0 ? file.name.slice(dot) : '';
+
+            let name = file.name;
+            for (let n = 1; ; n++) {
+                try {
+                    await targetDir.getFileHandle(name);      // throws => free
+                    name = `${stem} (${n})${ext}`;
+                } catch {
+                    break;
+                }
+            }
+
+            try {
+                const handle = await targetDir.getFileHandle(name, { create: true });
+                const writable = await handle.createWritable();
+                await writable.write(file);
+                await writable.close();
+                written.push(name);
+            } catch (err) {
+                console.error(`Could not import "${file.name}":`, err);
+            }
+        }
+        if (written.length) await refreshTree(rootHandle);
+        return written;
+    }, [rootHandle, refreshTree]);
+
+    /**
      * Create a new file inside a directory handle.
      * Returns the new file handle.
      */
@@ -367,6 +433,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         pickDirectory,
         readFile,
         writeFile,
+        readFileBytes,
+        writeFileBytes,
+        importFiles,
         createFile,
         createFolder,
         getAssetUrl,

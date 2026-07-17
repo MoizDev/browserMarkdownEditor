@@ -18,10 +18,10 @@ import { Compartment } from '@codemirror/state';
 import { useFileSystem } from '../context/FileSystemContext';
 import BacklinksPanel from './BacklinksPanel';
 import TabBar from './TabBar';
-import { Link, Eye, Edit2 } from './icons';
+import { Link, Eye, Edit2, PenTool } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
 import { readJSON, writeJSON } from '../utils/storage';
-import { isDrawingFile } from '../utils/fileTypes';
+import { isDrawingFile, isPdfFile, isAnnotatedPdf } from '../utils/fileTypes';
 import 'katex/dist/katex.min.css';
 import type { ActiveFile, OpenTab, GraphData, GraphNode, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
 
@@ -29,6 +29,8 @@ import type { ActiveFile, OpenTab, GraphData, GraphNode, Theme, EditorMode, Open
 // keeps it out of the initial bundle, so a markdown-only session never pays for
 // it — the chunk is fetched the first time a .tldraw file is opened.
 const DrawingPane = lazy(() => import('./DrawingPane'));
+// Same reasoning: pdf.js + pdf-lib only load once a PDF is actually opened.
+const PdfPane = lazy(() => import('./PdfPane'));
 
 interface EditorPaneProps {
     activeFile: ActiveFile | null;
@@ -47,12 +49,18 @@ interface EditorPaneProps {
      *  drawing's debounced save can land after a tab switch, and must still be
      *  written to its own file. */
     onDrawingChange: (path: string, content: string) => void;
+    /** Buffer content and write it immediately, skipping the save debounce. */
+    onFlushNow: (path: string, content: string) => void;
+    /** Start annotating a plain PDF: creates "<name> (annotated).pdf" and opens it. */
+    onAnnotatePdf: (file: ActiveFile) => void;
     onOpenNote: OpenNoteByNameHandler;
     graph: GraphData;
     onOpenNode: OpenNodeHandler;
     /** One-shot select+scroll order from vault search (null = nothing pending). */
     revealRequest: EditorRevealRequest | null;
     onRevealHandled: () => void;
+    /** Bumped after every completed save; refreshes a PDF shown in view mode. */
+    saveEpoch: number;
 }
 
 /** Inline positioning for the linked-mentions popover (fixed top/right). */
@@ -68,7 +76,7 @@ function themeExtensions(theme: Theme) {
         : [obsidianDarkTheme, obsidianHighlightStyle];
 }
 
-export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onDrawingChange, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onDrawingChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled, saveEpoch }: EditorPaneProps) {
     const { getAssetUrl, saveAsset } = useFileSystem();
 
     // A drawing takes over the pane: the tldraw canvas is layered over the
@@ -76,6 +84,13 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     // created once by a callback ref guarded on `!viewRef.current` — unmounting
     // its container would orphan the view and never re-parent it on the way back.
     const isDrawing = !!activeFile && !activeFile.isHelp && isDrawingFile(activeFile.name);
+    // PDFs take over the pane the same way, for the same reason.
+    const isPdf = !!activeFile && !activeFile.isHelp && isPdfFile(activeFile.name);
+    // Only a file we wrote can be annotated in place; a plain PDF gets an
+    // "Annotate" action that spawns its annotated sibling instead.
+    const isAnnotatable = isPdf && !!activeFile && isAnnotatedPdf(activeFile.name);
+    /** True whenever a non-CodeMirror surface owns the pane. */
+    const isCanvas = isDrawing || isPdf;
     const editorContainerRef = useRef<HTMLDivElement | null>(null);
     const viewRef = useRef<EditorView | null>(null);
     const themeCompartmentRef = useRef<Compartment>(new Compartment());
@@ -319,8 +334,9 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         editorContainerRef.current = node;
         if (node && !viewRef.current) {
             viewRef.current = new EditorView({
-                // A restored .tldraw tab must not seed CodeMirror with its JSON.
-                state: createTabState(isDrawing ? '' : fileContent, editorMode),
+                // A restored canvas tab (.tldraw / .pdf) must not seed CodeMirror
+                // with its JSON.
+                state: createTabState(isCanvas ? '' : fileContent, editorMode),
                 parent: node,
             });
             prevPathRef.current = activeFile?.path ?? null;
@@ -348,15 +364,17 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         if (nextPath === prevPathRef.current) return;
 
         isSwappingRef.current = true;
-        // A drawing tab leaves CodeMirror parked on a blank doc — there's no
+        // A canvas tab leaves CodeMirror parked on a blank doc — there's no
         // text state worth caching for it (and caching would key that blank doc
-        // under the drawing's path).
-        const prevWasDrawing = prevPathRef.current ? isDrawingFile(prevPathRef.current) : false;
-        if (prevPathRef.current && !prevWasDrawing) stateCacheRef.current.set(prevPathRef.current, view.state);
+        // under the drawing's/PDF's path).
+        const prevWasCanvas = prevPathRef.current
+            ? isDrawingFile(prevPathRef.current) || isPdfFile(prevPathRef.current)
+            : false;
+        if (prevPathRef.current && !prevWasCanvas) stateCacheRef.current.set(prevPathRef.current, view.state);
 
-        if (isDrawing) {
+        if (isCanvas) {
             // The canvas owns the pane. Park CodeMirror on an empty doc so it
-            // never holds — or autosaves — the drawing's JSON.
+            // never holds — or autosaves — the canvas's JSON.
             view.setState(createTabState('', 'read'));
             isSwappingRef.current = false;
             prevPathRef.current = nextPath;
@@ -485,8 +503,33 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     onReorderTabs={onReorderTabs}
                 />
                 {saveStatus && <span className="save-status">{saveStatus}</span>}
+                {/* A plain PDF can't hold annotations, so this spawns its
+                    annotated sibling and switches to it. On an annotated file the
+                    View/Annotate toggle below takes over instead. */}
+                {isPdf && !isAnnotatable && activeFile && (
+                    <button
+                        className="view-header-action"
+                        onClick={() => onAnnotatePdf(activeFile)}
+                        title="Annotate — creates a copy with “(annotated)” in the name"
+                        aria-label="Annotate this PDF"
+                    >
+                        <PenTool size={15} />
+                    </button>
+                )}
+                {/* An annotated PDF reuses the per-tab mode: read = view the real
+                    PDF (text selectable), edit = draw on it. */}
+                {isAnnotatable && activeFile && (
+                    <button
+                        className="view-header-action"
+                        onClick={() => onToggleMode(activeFile.path)}
+                        title={editorMode === 'read' ? 'Viewing — switch to annotating (⌘E)' : 'Annotating — switch to viewing (⌘E)'}
+                        aria-label="Toggle view/annotate mode"
+                    >
+                        {editorMode === 'read' ? <PenTool size={15} /> : <Eye size={15} />}
+                    </button>
+                )}
                 {/* Read/edit and linked-mentions are markdown concepts — a canvas has neither. */}
-                {activeFile && !activeFile.isHelp && !isDrawing && (
+                {activeFile && !activeFile.isHelp && !isCanvas && (
                     <>
                         <button
                             className="view-header-action"
@@ -515,7 +558,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
             <div
                 className="view-content"
                 ref={setEditorContainer}
-                style={isDrawing ? { display: 'none' } : undefined}
+                style={isCanvas ? { display: 'none' } : undefined}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={async (e) => {
                     e.preventDefault();
@@ -543,6 +586,22 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                         content={fileContent}
                         onContentChange={onDrawingChange}
                         theme={theme}
+                    />
+                </Suspense>
+            )}
+            {isPdf && activeFile && (
+                <Suspense fallback={<div className="pdf-pane pdf-pane-message">Loading PDF…</div>}>
+                    {/* Keyed on path so switching PDFs remounts against the new file. */}
+                    <PdfPane
+                        key={activeFile.path}
+                        file={activeFile}
+                        mode={editorMode}
+                        content={fileContent}
+                        onContentChange={onDrawingChange}
+                        onFlushNow={onFlushNow}
+                        theme={theme}
+                        saveEpoch={saveEpoch}
+                        isDirty={!!tabs.find(t => t.file.path === activeFile.path)?.dirty}
                     />
                 </Suspense>
             )}

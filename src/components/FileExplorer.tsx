@@ -7,6 +7,15 @@ import { createVaultTextCache } from '../utils/vaultSearch';
 import type { VaultTextCache } from '../utils/vaultSearch';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 
+/**
+ * True when the drag carries OS files rather than a tree node being moved.
+ * `types` is readable during dragover (where `files` is deliberately empty for
+ * privacy), so it's the only reliable signal at that point.
+ */
+function isExternalFileDrag(e: React.DragEvent): boolean {
+    return Array.from(e.dataTransfer.types).includes('Files');
+}
+
 interface FileExplorerProps {
     rootHandle: FileSystemDirectoryHandle | null;
     fileTree: FileTreeNode[];
@@ -21,6 +30,8 @@ interface FileExplorerProps {
     onToggleExpand: (path: string) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
     onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
+    /** Copy files dragged in from the OS into `targetDir`. */
+    onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
     onOpenSearchResult: (node: FileTreeFileNode, range: TextRange | null) => void;
     getOpenTabContent: (path: string) => string | null;
     /** Bumped after each completed save-flush; re-validates the search index. */
@@ -41,6 +52,7 @@ function FileExplorer({
     onToggleExpand,
     onMoveFile,
     onRenameFile,
+    onImportFiles,
     onOpenSearchResult,
     getOpenTabContent,
     saveEpoch
@@ -115,7 +127,9 @@ function FileExplorer({
 
     const handleRootDragOver = (e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
+        // Files dragged from the OS are copied in, not moved out of the vault —
+        // showing 'move' would promise Explorer we're removing their original.
+        e.dataTransfer.dropEffect = isExternalFileDrag(e) ? 'copy' : 'move';
     };
 
     const handleRootDragLeave = () => {
@@ -130,6 +144,13 @@ function FileExplorer({
         e.preventDefault();
         dragCounterRef.current = 0;
         setRootDragOver(false);
+
+        // Dragged in from the OS (Explorer/Finder) — copy into the vault root.
+        if (isExternalFileDrag(e) && e.dataTransfer.files?.length && rootHandle) {
+            await onImportFiles(e.dataTransfer.files, rootHandle);
+            return;
+        }
+
         const draggedNode = (TreeNode as unknown as TreeNodeStatic)._draggedNode;
         if (!draggedNode || !rootHandle) return;
         (TreeNode as unknown as TreeNodeStatic)._draggedNode = null;
@@ -253,6 +274,7 @@ function FileExplorer({
                             onToggleExpand={onToggleExpand}
                             onMoveFile={onMoveFile}
                             onRenameFile={onRenameFile}
+                            onImportFiles={onImportFiles}
                         />
                     ))}
                 </div>

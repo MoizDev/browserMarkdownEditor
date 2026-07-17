@@ -14,6 +14,8 @@ interface TreeNodeProps {
     onToggleExpand: (path: string) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
     onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
+    /** Copy files dragged in from the OS into `targetDir`. */
+    onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
     depth?: number;
 }
 
@@ -26,7 +28,7 @@ export interface TreeNodeStatic {
     _draggedNode: FileTreeNode | null;
 }
 
-export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, depth = 0 }: TreeNodeProps) {
+export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
     const isActive = node.kind === 'file' && node.path === activeFilePath;
     const paddingLeft = 12 + depth * 16;
     const expanded = expandedPaths.has(node.path);
@@ -88,7 +90,9 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
         if (node.kind !== 'directory') return;
         e.preventDefault();
         e.stopPropagation();
-        e.dataTransfer.dropEffect = 'move';
+        // OS files are copied in; a tree node is moved. `types` is the only
+        // readable signal here — `files` is empty during dragover by design.
+        e.dataTransfer.dropEffect = Array.from(e.dataTransfer.types).includes('Files') ? 'copy' : 'move';
         setDragOver(true);
     };
 
@@ -101,6 +105,13 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
         e.preventDefault();
         e.stopPropagation();
         setDragOver(false);
+
+        // Dropped in from the OS — copy into this folder.
+        if (node.kind === 'directory' && e.dataTransfer.files?.length) {
+            await onImportFiles(e.dataTransfer.files, node.handle);
+            if (!expanded) onToggleExpand(node.path);   // reveal what just landed
+            return;
+        }
 
         const draggedNode = (TreeNode as unknown as TreeNodeStatic)._draggedNode;
         if (!draggedNode) return;
@@ -254,6 +265,7 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
                             onToggleExpand={onToggleExpand}
                             onMoveFile={onMoveFile}
                             onRenameFile={onRenameFile}
+                            onImportFiles={onImportFiles}
                             depth={depth + 1}
                         />
                     ))}

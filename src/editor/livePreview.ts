@@ -9,6 +9,7 @@ import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
 import { ImageWidget } from './imageWidget';
 import { TableWidget } from './tableWidget';
+import { MermaidWidget } from './mermaidWidget';
 
 /** The single-argument, curried asset resolver the editor subsystem consumes. */
 type GetAssetUrl = (fileName: string) => Promise<string | null>;
@@ -170,14 +171,28 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                 const endLine = state.doc.lineAt(to);
                 const closed = endLine.number > startLine.number && endLine.text.trim().startsWith('```');
 
-                // Copy button, pinned to the panel's top-right. The fence row
-                // hosts it in every state (hidden = padding row, revealed =
-                // the ``` line), so it never displaces code text.
                 const firstContent = startLine.number + 1;
                 const lastContent = closed ? endLine.number - 1 : endLine.number;
                 const code = firstContent <= lastContent
                     ? state.doc.sliceString(state.doc.line(firstContent).from, state.doc.line(lastContent).to)
                     : '';
+
+                // === MERMAID DIAGRAMS ===
+                // A closed ```mermaid block renders as a diagram widget while
+                // the cursor is elsewhere; editing anywhere in it falls back
+                // to the ordinary code panel so the source stays editable.
+                const lang = startLine.text.trim().match(/^(?:`{3,}|~{3,})\s*(\S*)/)?.[1]?.toLowerCase() ?? '';
+                if (lang === 'mermaid' && closed && code.trim() &&
+                    (editorMode === 'read' || !cursorOnLine(state, from, to))) {
+                    decorations.push(
+                        Decoration.replace({ widget: new MermaidWidget(code) }).range(startLine.from, endLine.to)
+                    );
+                    return false;
+                }
+
+                // Copy button, pinned to the panel's top-right. The fence row
+                // hosts it in every state (hidden = padding row, revealed =
+                // the ``` line), so it never displaces code text.
                 decorations.push(
                     Decoration.widget({ widget: new CopyCodeWidget(code), side: -1 }).range(startLine.from)
                 );

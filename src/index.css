@@ -1583,6 +1583,34 @@ li[aria-selected] .cm-completionMatchedText {
   margin: 16px 0;
 }
 
+/* ── Mermaid diagrams ── */
+.cm-mermaid-widget {
+  display: block;
+  text-align: center;
+  padding: 12px 8px;
+  overflow-x: auto;
+  cursor: default;
+}
+
+.cm-mermaid-widget svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.cm-mermaid-loading {
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 0.85em;
+}
+
+.cm-mermaid-error {
+  color: #e06c75;
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
 /* ── Math (KaTeX) ── */
 .cm-math-widget {
   color: var(--text-normal);

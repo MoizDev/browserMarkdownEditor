@@ -493,10 +493,17 @@ export function createLivePreviewPlugin(getAssetUrl: GetAssetUrl, editorMode: Ed
             return buildDecorations(viewShim, getAssetUrl, editorMode);
         },
         update(decorations: DecorationSet, tr: Transaction) {
+            // Markdown parses asynchronously: on a large document the tree only
+            // covers a prefix when the file opens, and the parser keeps advancing
+            // in idle time, dispatching otherwise-empty transactions as it goes.
+            // Tree-derived decorations (headings, emphasis, code fences, links)
+            // must rebuild on those, or everything past the initially-parsed
+            // prefix stays raw until some other rebuild happens to fire.
+            const treeAdvanced = syntaxTree(tr.state) !== syntaxTree(tr.startState);
             // In read mode, decorations are a pure function of the document — every
             // selection-dependent branch in buildDecorations is gated behind
             // editorMode !== 'read' — so skip rebuilds from selection-only changes.
-            if (tr.docChanged || (tr.selection && editorMode !== 'read')) {
+            if (tr.docChanged || treeAdvanced || (tr.selection && editorMode !== 'read')) {
                 const viewShim = { state: tr.state };
                 return buildDecorations(viewShim, getAssetUrl, editorMode);
             }

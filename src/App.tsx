@@ -252,11 +252,20 @@ export default function App() {
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
   useEffect(() => { activeTabPathRef.current = activeTabPath; }, [activeTabPath]);
 
+  // True once the restore pass below has consumed the stored session.
+  const hasRestoredTabs = useRef<boolean>(false);
+
   // Persist the open tabs + active tab so they can be restored on reload. Keyed
   // on the joined path string (not `tabs`) so it does NOT run on every keystroke
   // — only when the set/order of open files, or the active one, changes.
+  //
+  // GATED until the restore pass has run: this effect also fires on mount, with
+  // zero tabs, and writing that out would clobber the stored tab list moments
+  // before restore reads it — which is exactly what reduced every reload to
+  // "only the last-active file comes back" (via the lastFilePath fallback).
   const openTabPathsKey = tabs.map(t => t.file.path).join('\n');
   useEffect(() => {
+    if (!hasRestoredTabs.current) return;
     const paths = openTabPathsKey ? openTabPathsKey.split('\n') : [];
     writeJSON('openTabPaths', paths);
     if (activeTabPath) {
@@ -280,7 +289,6 @@ export default function App() {
   // tracks the pointer instead of easing 150ms behind it.
   const [isDraggingSidebar, setIsDraggingSidebar] = useState<boolean>(false);
   const isResizing = useRef<boolean>(false);
-  const hasRestoredFile = useRef<boolean>(false);
 
   // Returns whether the file was actually opened (as a tab or externally).
   const handleFileClick = useCallback(async (node: FileTreeNode): Promise<boolean> => {
@@ -569,18 +577,21 @@ export default function App() {
 
   // Auto-restore previously-open tabs once the file tree has loaded.
   useEffect(() => {
-    if (hasRestoredFile.current || !fileTree || fileTree.length === 0) return;
+    if (hasRestoredTabs.current || !fileTree || fileTree.length === 0) return;
+    // Consume the stored session exactly once per app load — and flip the flag
+    // BEFORE any early return, because persistence stays gated until this pass
+    // has run and a fresh profile with nothing stored must still un-gate it.
+    hasRestoredTabs.current = true;
 
-    let storedPaths = readJSON<string[]>('openTabPaths', []);
-    if (!Array.isArray(storedPaths)) storedPaths = [];
-    // Back-compat: the first run after upgrading only has a single lastFilePath.
-    if (storedPaths.length === 0) {
+    // A missing key (pre-tab-era profile) falls back to its single
+    // lastFilePath; a present-but-empty list means the last session really
+    // ended with no tabs open, so nothing should be restored.
+    let storedPaths = readJSON<string[] | null>('openTabPaths', null);
+    if (!Array.isArray(storedPaths)) {
       const last = localStorage.getItem('lastFilePath');
-      if (last) storedPaths = [last];
+      storedPaths = last ? [last] : [];
     }
     if (storedPaths.length === 0) return;
-
-    hasRestoredFile.current = true;
 
     (async () => {
       const vaultFiles = collectFiles(fileTree);
@@ -593,13 +604,19 @@ export default function App() {
         const node = vaultFiles.find(f => f.path === path);
         if (!node) continue; // file deleted/moved externally — skip it
         try {
-          const content = await readFile(node.handle as FileSystemFileHandle);
+          // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
+          // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
+          // fill the buffer with garbage.
+          const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
           restored.push({ file: node, content, mode: 'read', dirty: false });
         } catch (err) {
           console.error('Failed to restore tab:', path, err);
         }
       }
       if (restored.length === 0) return;
+      // The reads above yield to the event loop; if the user opened something
+      // in the meantime, leave their workspace alone rather than clobber it.
+      if (tabsRef.current.length > 0) return;
       setTabs(restored);
       const wantActive = localStorage.getItem('activeTabPath');
       const active = restored.some(t => t.file.path === wantActive) ? wantActive : restored[0].file.path;
@@ -925,7 +942,6 @@ export default function App() {
             onDrawingChange={updateTabContent}
             onFlushNow={flushTabNow}
             onAnnotatePdf={handleAnnotatePdf}
-            saveEpoch={saveEpoch}
             onOpenNote={openNoteByName}
             graph={graph}
             onOpenNode={handleOpenNode}

@@ -59,8 +59,6 @@ interface EditorPaneProps {
     /** One-shot select+scroll order from vault search (null = nothing pending). */
     revealRequest: EditorRevealRequest | null;
     onRevealHandled: () => void;
-    /** Bumped after every completed save; refreshes a PDF shown in view mode. */
-    saveEpoch: number;
 }
 
 /** Inline positioning for the linked-mentions popover (fixed top/right). */
@@ -76,7 +74,7 @@ function themeExtensions(theme: Theme) {
         : [obsidianDarkTheme, obsidianHighlightStyle];
 }
 
-export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onDrawingChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled, saveEpoch }: EditorPaneProps) {
+export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onDrawingChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const { getAssetUrl, saveAsset } = useFileSystem();
 
     // A drawing takes over the pane: the tldraw canvas is layered over the
@@ -589,22 +587,30 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     />
                 </Suspense>
             )}
-            {isPdf && activeFile && (
-                <Suspense fallback={<div className="pdf-pane pdf-pane-message">Loading PDF…</div>}>
-                    {/* Keyed on path so switching PDFs remounts against the new file. */}
-                    <PdfPane
-                        key={activeFile.path}
-                        file={activeFile}
-                        mode={editorMode}
-                        content={fileContent}
-                        onContentChange={onDrawingChange}
-                        onFlushNow={onFlushNow}
-                        theme={theme}
-                        saveEpoch={saveEpoch}
-                        isDirty={!!tabs.find(t => t.file.path === activeFile.path)?.dirty}
-                    />
-                </Suspense>
-            )}
+            {/* One pane per OPEN PDF tab — kept mounted and merely hidden while
+                inactive, so switching tabs never reloads the document or loses
+                the reading position. Each pane defers its disk/pdf.js work
+                until its tab is first activated. */}
+            {tabs.filter(t => !t.file.isHelp && isPdfFile(t.file.name)).map(tab => {
+                const active = tab.file.path === activeTabPath;
+                return (
+                    <Suspense
+                        key={tab.file.path}
+                        fallback={active ? <div className="pdf-pane pdf-pane-message">Loading PDF…</div> : null}
+                    >
+                        <PdfPane
+                            file={tab.file}
+                            isActive={active}
+                            mode={tab.mode}
+                            content={tab.content}
+                            onContentChange={onDrawingChange}
+                            onFlushNow={onFlushNow}
+                            theme={theme}
+                            isDirty={tab.dirty}
+                        />
+                    </Suspense>
+                );
+            })}
             {!activeFile && (
                 <div className="editor-empty-overlay">
                     <div className="editor-empty-inner">

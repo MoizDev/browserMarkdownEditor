@@ -1220,7 +1220,9 @@ body {
 }
 
 /* A PDF overlays the (hidden) CodeMirror view, same as .drawing-pane, because
-   the EditorView is created once and must never be unmounted. */
+   the EditorView is created once and must never be unmounted. One pane exists
+   per OPEN PDF tab; inactive ones are hidden, not unmounted, so their document
+   and reading position survive tab switches. */
 .pdf-pane {
   position: absolute;
   top: var(--header-height);
@@ -1231,13 +1233,14 @@ body {
   background: var(--background-primary);
 }
 
-/* View mode is the browser's own PDF viewer: real scrolling, text selection,
-   copy and find, none of which a rasterized canvas can offer. */
-.pdf-pane-frame {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  display: block;
+.pdf-pane-hidden {
+  visibility: hidden;
+}
+
+/* The annotate canvas nests inside the pane, which already sits below the
+   header — without this it would offset itself below the header twice. */
+.pdf-pane .drawing-pane {
+  top: 0;
 }
 
 .pdf-pane-message {
@@ -1248,6 +1251,150 @@ body {
   font-size: 13px;
   padding: 24px;
   text-align: center;
+}
+
+/* Status messages nested inside a pane must fill it to center properly (the
+   combined .pdf-pane.pdf-pane-message form is sized by its own absolute box). */
+.pdf-pane .pdf-pane-message {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── PDF view mode (pdf.js) ──
+   A continuous scroll of canvas-rendered pages with a selectable text layer.
+   Replaced the browser's viewer in an <iframe> because that viewer can't be
+   asked what page it's on — which is what page persistence needs. */
+.pdf-viewer {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.pdf-viewer-scroll {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  outline: none;
+  overscroll-behavior: contain;
+}
+
+/* The CSS-variable contract pdf.js text layers size themselves by:
+   --scale-factor is set inline to the live render scale; the rest are the
+   companion defaults the library's own viewer defines. */
+.pdf-viewer-inner {
+  --scale-factor: 1;
+  --user-unit: 1;
+  --total-scale-factor: calc(var(--scale-factor) * var(--user-unit));
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  box-sizing: border-box;
+  width: fit-content;
+  min-width: 100%;
+  margin: 0 auto;
+}
+
+.pdf-viewer-page {
+  position: relative;
+  margin-left: auto;
+  margin-right: auto;
+  background: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
+}
+
+.pdf-viewer-page > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Selectable-text overlay, trimmed from pdf.js's own text_layer styles.
+   Span geometry is emitted by the library (percent positions + CSS-variable
+   font sizing), so these rules are load-bearing for selection accuracy. */
+.textLayer {
+  color-scheme: only light;
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 2;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.textLayer .markedContent {
+  display: contents;
+}
+
+.textLayer span[role='img'] {
+  user-select: none;
+  cursor: default;
+}
+
+.textLayer ::selection {
+  background: color-mix(in srgb, var(--interactive-accent) 45%, transparent);
+  color: transparent;
+}
+
+.pdf-viewer-zoom {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  z-index: 6;
+}
+
+.pdf-viewer-zoom button {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.pdf-viewer-zoom button:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
 /* tldraw's own dark canvas (hsl(240,5%,6.5%) ≈ #101011) reads as a hole next

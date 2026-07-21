@@ -18,7 +18,7 @@ npm run lint       # eslint .      (flat config, loaded via jiti)
 npm run preview    # serve a production build
 ```
 
-**There is no test suite / test runner.** Changes are verified by driving the running app headlessly — see the `verify` skill (`.claude/skills/verify/SKILL.md`): it launches `npm run dev -- --port 5199` and drives the GUI with Playwright, stubbing `showDirectoryPicker` with OPFS (the native picker can't open headless). Files open in **Reading mode** by default — press `⌘E` to edit before testing cursor/typing behavior.
+**There is no test suite / test runner.** Changes are verified by driving the running app headlessly — see the `verify` skill (`.agents/skills/verify/SKILL.md`): it launches `npm run dev -- --port 5199` and drives the GUI with Playwright, stubbing `showDirectoryPicker` with OPFS (the native picker can't open headless). Files open in **Reading mode** by default — press `⌘E` to edit before testing cursor/typing behavior.
 
 **Env:** `VITE_TLDRAW_LICENSE_KEY` — required in production only. Without it, tldraw (drawings + PDF annotate) replaces the canvas with an empty gate 5s after load on any non-localhost HTTPS origin. Localhost counts as development, so a missing key never shows up in `npm run dev`.
 

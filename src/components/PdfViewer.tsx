@@ -40,6 +40,10 @@ interface PdfViewerProps {
     filePath: string;
     /** The PDF bytes to display. A new array identity reloads the document. */
     data: Uint8Array;
+    /** True while this viewer's tab is in front. Gates the +/- zoom keys —
+     *  several viewers stay mounted (hidden) at once, and only the visible
+     *  one may respond to the keyboard. */
+    isActive: boolean;
 }
 
 interface PdfViewPos {
@@ -109,7 +113,22 @@ interface ZoomAnchor {
     vx: number;
 }
 
-function PdfViewer({ filePath, data }: PdfViewerProps) {
+/** A pinch (ctrl+wheel burst) in flight. While it lasts, zoom is a pure CSS
+ *  transform on the page column — compositor work, no relayout — and only
+ *  when it settles does the accumulated factor commit to a real layout. */
+interface PinchGesture {
+    /** Accumulated scale factor relative to the committed layout. */
+    k: number;
+    /** The pinned point in content coordinates (= the transform-origin). */
+    originX: number;
+    originY: number;
+    /** Where that point sits in the viewport (scroller-relative). */
+    vx: number;
+    vy: number;
+    timer: number | null;
+}
+
+function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     // Read once per mount: where this file was last left, and at what zoom.
     const [saved] = useState<PdfViewPos | undefined>(
         () => readJSON<Record<string, PdfViewPos>>(STORAGE_KEY, {})[filePath]
@@ -121,7 +140,9 @@ function PdfViewer({ filePath, data }: PdfViewerProps) {
 
     const rootRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
+    const innerRef = useRef<HTMLDivElement | null>(null);
     const zoomAnchorRef = useRef<ZoomAnchor | null>(null);
+    const gestureRef = useRef<PinchGesture | null>(null);
     const canvasElsRef = useRef<Array<HTMLCanvasElement | null>>([]);
     const textElsRef = useRef<Array<HTMLDivElement | null>>([]);
     const pageStatesRef = useRef<Map<number, PageState>>(new Map());
@@ -441,6 +462,19 @@ function PdfViewer({ filePath, data }: PdfViewerProps) {
     useLayoutEffect(() => {
         layoutRef.current = layout;
         const el = scrollRef.current;
+        // A pinch commit's transform is cleared HERE, pre-paint and in the same
+        // frame the new layout lands, so there is never a visible snap between
+        // the transformed old layout and the committed new one. Any gesture
+        // still marked in-flight at this point was overtaken by another layout
+        // change (pill click, resize) — drop it.
+        if (innerRef.current) {
+            innerRef.current.style.transform = '';
+            innerRef.current.style.transformOrigin = '';
+        }
+        if (gestureRef.current) {
+            if (gestureRef.current.timer !== null) clearTimeout(gestureRef.current.timer);
+            gestureRef.current = null;
+        }
         if (!layout || !el) return;
         const n = layout.pages.length;
         const anchor = zoomAnchorRef.current;
@@ -461,43 +495,125 @@ function PdfViewer({ filePath, data }: PdfViewerProps) {
         updateWindow();
     }, [layout, updateWindow]);
 
+    /** One zoom step, anchored at the viewport top edge — the pill buttons and
+     *  the +/- keys share this so they behave identically. */
+    const nudgeZoom = useCallback((factor: number) => {
+        setZoom(z => clampZoom(z * factor));
+    }, []);
+
+    /** Land the accumulated pinch factor as a real zoom commit: one relayout,
+     *  one window re-render — instead of one per wheel event, which is what
+     *  made pinching stutter (every tick relaid out every page, restyled every
+     *  text-layer span and restarted the visible pdf.js rasterizations). */
+    const commitGesture = useCallback(() => {
+        const g = gestureRef.current;
+        gestureRef.current = null;
+        if (!g) return;
+        if (g.timer !== null) clearTimeout(g.timer);
+        const el = scrollRef.current;
+        const L = layoutRef.current;
+        const inner = innerRef.current;
+        // Nothing to commit (or nowhere to commit it): drop the transform now.
+        if (!el || !L || !inner || Math.abs(g.k - 1) < 0.001) {
+            if (inner) {
+                inner.style.transform = '';
+                inner.style.transformOrigin = '';
+            }
+            return;
+        }
+        // Whatever now sits under the gesture's viewport point must stay there
+        // after the commit. Under transform scale(k) with origin O, the visual
+        // position of content point q is O + (q − O)·k − scroll, so invert:
+        const qY = g.originY + (el.scrollTop + g.vy - g.originY) / g.k;
+        const qX = g.originX + (el.scrollLeft + g.vx - g.originX) / g.k;
+        const n = L.pages.length;
+        let page = 0;
+        while (page < n - 1 && L.tops[page] + L.pages[page].h + PAGE_GAP <= qY) page++;
+        const frac = (qY - L.tops[page]) / L.pages[page].h;
+        const innerW = Math.max(el.clientWidth, L.maxPageW);
+        const pageLeft = (innerW - L.pages[page].w) / 2;
+        const fracX = (qX - pageLeft) / L.pages[page].w;
+        zoomAnchorRef.current = { page, frac, vy: g.vy, fracX, vx: g.vx };
+        // The layout effect clears the transform in the same pre-paint pass
+        // that applies the new sizes, so the handoff never flashes.
+        setZoom(z => clampZoom(z * g.k));
+    }, []);
+
     // Trackpad pinches arrive as wheel events with ctrlKey set (the browser
     // convention, also produced by ctrl/⌃ + a mouse wheel). Zoom the DOCUMENT,
     // not the app: preventDefault stops the browser's own page zoom, which
     // needs a NATIVE non-passive listener — React's synthetic onWheel can't
     // guarantee that. Plain (ctrl-less) wheels fall through to normal scrolling.
+    //
+    // While the pinch is in flight the zoom is only a CSS transform pinned at
+    // the cursor (transform-origin = the point under it), which the compositor
+    // applies for free; the expensive relayout + re-rasterization happens once,
+    // when the burst goes quiet for SETTLE_MS.
     useEffect(() => {
         const root = rootRef.current;
         if (!root) return;
+        const SETTLE_MS = 180;
         const onWheel = (e: WheelEvent) => {
             if (!e.ctrlKey) return;
             e.preventDefault();
             const el = scrollRef.current;
             const L = layoutRef.current;
-            if (!el || !L || L.pages.length === 0) return;
+            const inner = innerRef.current;
+            if (!el || !L || !inner || L.pages.length === 0) return;
 
-            // Record the document point under the cursor for the re-anchor.
-            const rect = el.getBoundingClientRect();
-            const vy = e.clientY - rect.top;
-            const vx = e.clientX - rect.left;
-            const docY = el.scrollTop + vy;
-            const n = L.pages.length;
-            let page = 0;
-            while (page < n - 1 && L.tops[page] + L.pages[page].h + PAGE_GAP <= docY) page++;
-            const frac = (docY - L.tops[page]) / L.pages[page].h;
-            const innerW = Math.max(el.clientWidth, L.maxPageW);
-            const pageLeft = (innerW - L.pages[page].w) / 2;
-            const fracX = (el.scrollLeft + vx - pageLeft) / L.pages[page].w;
-            zoomAnchorRef.current = { page, frac, vy, fracX, vx };
+            let g = gestureRef.current;
+            if (!g) {
+                // Pin the content point under the cursor for the whole gesture
+                // (moving the origin mid-gesture would make the view jump).
+                const rect = el.getBoundingClientRect();
+                const vx = e.clientX - rect.left;
+                const vy = e.clientY - rect.top;
+                g = gestureRef.current = {
+                    k: 1,
+                    originX: el.scrollLeft + vx,
+                    originY: el.scrollTop + vy,
+                    vx,
+                    vy,
+                    timer: null,
+                };
+                inner.style.transformOrigin = `${g.originX}px ${g.originY}px`;
+            }
 
             // Pinch deltas are small pixel increments; a discrete mouse-wheel
-            // notch is ±100+. Clamp so one notch can't triple the scale.
+            // notch is ±100+. Clamp so one notch can't triple the scale, and
+            // clamp the TARGET so the transform never overshoots MIN/MAX zoom.
             const d = Math.max(-50, Math.min(50, e.deltaY));
-            setZoom(z => clampZoom(z * Math.exp(-d * 0.01)));
+            const target = clampZoom(zoomRef.current * g.k * Math.exp(-d * 0.01));
+            g.k = target / zoomRef.current;
+            inner.style.transform = `scale(${g.k})`;
+
+            if (g.timer !== null) clearTimeout(g.timer);
+            g.timer = window.setTimeout(commitGesture, SETTLE_MS);
         };
         root.addEventListener('wheel', onWheel, { passive: false });
         return () => root.removeEventListener('wheel', onWheel);
-    }, []);
+    }, [commitGesture]);
+
+    // +/- (and =, its unshifted key) step the zoom exactly like the pill
+    // buttons — but only for the front tab's viewer, never while typing in an
+    // input/editor, and never with modifiers held (⌘± stays browser zoom).
+    useEffect(() => {
+        if (!isActive) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.metaKey || e.ctrlKey || e.altKey) return;
+            const t = e.target as HTMLElement | null;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+            if (e.key === '+' || e.key === '=') {
+                e.preventDefault();
+                nudgeZoom(1.2);
+            } else if (e.key === '-') {
+                e.preventDefault();
+                nudgeZoom(1 / 1.2);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isActive, nudgeZoom]);
 
     // Build text layers for the whole document (bounded), so ⌘F finds matches
     // on pages that were never scrolled into view. Sequential, with a yield
@@ -532,6 +648,7 @@ function PdfViewer({ filePath, data }: PdfViewerProps) {
             >
                 {layout && docState ? (
                     <div
+                        ref={innerRef}
                         className="pdf-viewer-inner"
                         style={{
                             padding: `${PAD_V}px 0`,
@@ -557,11 +674,11 @@ function PdfViewer({ filePath, data }: PdfViewerProps) {
             </div>
             {layout && (
                 <div className="pdf-viewer-zoom">
-                    <button onClick={() => setZoom(z => clampZoom(z / 1.2))} title="Zoom out" aria-label="Zoom out">−</button>
+                    <button onClick={() => nudgeZoom(1 / 1.2)} title="Zoom out (-)" aria-label="Zoom out">−</button>
                     <button onClick={() => setZoom(clampZoom(1))} title="Reset to fit width" aria-label="Reset zoom">
                         {Math.round(zoom * 100)}%
                     </button>
-                    <button onClick={() => setZoom(z => clampZoom(z * 1.2))} title="Zoom in" aria-label="Zoom in">+</button>
+                    <button onClick={() => nudgeZoom(1.2)} title="Zoom in (+)" aria-label="Zoom in">+</button>
                 </div>
             )}
         </div>

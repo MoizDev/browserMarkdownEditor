@@ -184,7 +184,7 @@ export default function PdfPane({ file, isActive, mode, content, onContentChange
         } else if (!viewBytes) {
             body = <div className="pdf-pane-message">Loading PDF…</div>;
         } else {
-            body = <PdfViewer filePath={file.path} data={viewBytes} />;
+            body = <PdfViewer filePath={file.path} data={viewBytes} isActive={isActive} />;
         }
     }
 

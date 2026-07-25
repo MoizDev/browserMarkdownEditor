@@ -94,7 +94,20 @@ const TEXT_EAGER_LIMIT = 300;
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 4;
 
-const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100));
+// Rounded finely (not to 2dp): a pinch step near MIN_ZOOM is ~0.4%, and a
+// coarser rounding would swallow it and leave the gesture stuck.
+const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 10000) / 10000));
+
+/** One-shot scroll anchor for a zoom step: keep the document point
+ *  {page, frac, fracX} under the same viewport point {vx, vy} — i.e. the spot
+ *  under the cursor stays put while everything scales around it. */
+interface ZoomAnchor {
+    page: number;
+    frac: number;
+    vy: number;
+    fracX: number;
+    vx: number;
+}
 
 function PdfViewer({ filePath, data }: PdfViewerProps) {
     // Read once per mount: where this file was last left, and at what zoom.
@@ -106,7 +119,9 @@ function PdfViewer({ filePath, data }: PdfViewerProps) {
     const [error, setError] = useState<string | null>(null);
     const [containerWidth, setContainerWidth] = useState(0);
 
+    const rootRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
+    const zoomAnchorRef = useRef<ZoomAnchor | null>(null);
     const canvasElsRef = useRef<Array<HTMLCanvasElement | null>>([]);
     const textElsRef = useRef<Array<HTMLDivElement | null>>([]);
     const pageStatesRef = useRef<Map<number, PageState>>(new Map());
@@ -230,7 +245,7 @@ function PdfViewer({ filePath, data }: PdfViewerProps) {
             tops.push(y);
             y += p.h + PAGE_GAP;
         }
-        return { gen: docState.gen, scale, pages, tops };
+        return { gen: docState.gen, scale, pages, tops, maxPageW: maxW * scale };
     }, [docState, containerWidth, zoom]);
     const layoutRef = useRef<typeof layout>(null);
 
@@ -421,17 +436,68 @@ function PdfViewer({ filePath, data }: PdfViewerProps) {
     // Re-anchor whenever geometry changes (first layout, zoom, resize, reload):
     // put the remembered {page, offset} back under the viewport's top edge,
     // then render around it. Layout effect so the restored position paints
-    // first — no flash of page 1.
+    // first — no flash of page 1. A pinch/ctrl-wheel zoom leaves a one-shot
+    // cursor anchor instead, so the point under the pointer stays put.
     useLayoutEffect(() => {
         layoutRef.current = layout;
         const el = scrollRef.current;
         if (!layout || !el) return;
         const n = layout.pages.length;
-        const pos = currentPosRef.current;
-        const page = Math.min(Math.max(0, Math.floor(pos.page)), n - 1);
-        el.scrollTop = layout.tops[page] + pos.offset * layout.pages[page].h;
+        const anchor = zoomAnchorRef.current;
+        zoomAnchorRef.current = null;
+        if (anchor) {
+            const page = Math.min(Math.max(0, anchor.page), n - 1);
+            el.scrollTop = layout.tops[page] + anchor.frac * layout.pages[page].h - anchor.vy;
+            // Pages are centered in the inner column; anchor horizontally too
+            // so zooming into a page edge doesn't slide it away.
+            const innerW = Math.max(el.clientWidth, layout.maxPageW);
+            const pageLeft = (innerW - layout.pages[page].w) / 2;
+            el.scrollLeft = pageLeft + anchor.fracX * layout.pages[page].w - anchor.vx;
+        } else {
+            const pos = currentPosRef.current;
+            const page = Math.min(Math.max(0, Math.floor(pos.page)), n - 1);
+            el.scrollTop = layout.tops[page] + pos.offset * layout.pages[page].h;
+        }
         updateWindow();
     }, [layout, updateWindow]);
+
+    // Trackpad pinches arrive as wheel events with ctrlKey set (the browser
+    // convention, also produced by ctrl/⌃ + a mouse wheel). Zoom the DOCUMENT,
+    // not the app: preventDefault stops the browser's own page zoom, which
+    // needs a NATIVE non-passive listener — React's synthetic onWheel can't
+    // guarantee that. Plain (ctrl-less) wheels fall through to normal scrolling.
+    useEffect(() => {
+        const root = rootRef.current;
+        if (!root) return;
+        const onWheel = (e: WheelEvent) => {
+            if (!e.ctrlKey) return;
+            e.preventDefault();
+            const el = scrollRef.current;
+            const L = layoutRef.current;
+            if (!el || !L || L.pages.length === 0) return;
+
+            // Record the document point under the cursor for the re-anchor.
+            const rect = el.getBoundingClientRect();
+            const vy = e.clientY - rect.top;
+            const vx = e.clientX - rect.left;
+            const docY = el.scrollTop + vy;
+            const n = L.pages.length;
+            let page = 0;
+            while (page < n - 1 && L.tops[page] + L.pages[page].h + PAGE_GAP <= docY) page++;
+            const frac = (docY - L.tops[page]) / L.pages[page].h;
+            const innerW = Math.max(el.clientWidth, L.maxPageW);
+            const pageLeft = (innerW - L.pages[page].w) / 2;
+            const fracX = (el.scrollLeft + vx - pageLeft) / L.pages[page].w;
+            zoomAnchorRef.current = { page, frac, vy, fracX, vx };
+
+            // Pinch deltas are small pixel increments; a discrete mouse-wheel
+            // notch is ±100+. Clamp so one notch can't triple the scale.
+            const d = Math.max(-50, Math.min(50, e.deltaY));
+            setZoom(z => clampZoom(z * Math.exp(-d * 0.01)));
+        };
+        root.addEventListener('wheel', onWheel, { passive: false });
+        return () => root.removeEventListener('wheel', onWheel);
+    }, []);
 
     // Build text layers for the whole document (bounded), so ⌘F finds matches
     // on pages that were never scrolled into view. Sequential, with a yield
@@ -449,11 +515,15 @@ function PdfViewer({ filePath, data }: PdfViewerProps) {
     }, [docState, layout, ensureText]);
 
     if (error) {
-        return <div className="pdf-pane-message">Could not display this PDF: {error}</div>;
+        return (
+            <div className="pdf-viewer" ref={rootRef}>
+                <div className="pdf-pane-message">Could not display this PDF: {error}</div>
+            </div>
+        );
     }
 
     return (
-        <div className="pdf-viewer">
+        <div className="pdf-viewer" ref={rootRef}>
             <div
                 className="pdf-viewer-scroll"
                 ref={scrollRef}

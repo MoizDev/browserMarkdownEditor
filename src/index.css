@@ -1365,10 +1365,74 @@ body {
   color: transparent;
 }
 
-.pdf-viewer-zoom {
+/* pdf.js sizes a text layer from the page's UNROTATED box and records the
+   page's /Rotate on the container, leaving the turn itself to the host's CSS
+   (its own viewer carries these same three rules). Without them a page with
+   /Rotate 90 gets a portrait text layer over a landscape page, so selection
+   lands nowhere near the glyphs. The link layer needs no equivalent: its
+   percentages already come out of the rotated viewport. */
+.pdf-viewer-page .textLayer[data-main-rotation="90"] {
+  transform: rotate(90deg) translateY(-100%);
+}
+
+.pdf-viewer-page .textLayer[data-main-rotation="180"] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+
+.pdf-viewer-page .textLayer[data-main-rotation="270"] {
+  transform: rotate(270deg) translateX(-100%);
+}
+
+/* ── The PDF's own links ──
+   Above the text layer, or the transparent glyph spans would swallow every
+   click. Only the link boxes themselves take pointer events, so selecting
+   ordinary text is unaffected. */
+.pdf-link-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* Both an <a> (external URL) and a <button> (in-document jump) wear this, so
+   it resets the chrome of each down to a plain transparent box. */
+.pdf-link {
+  position: absolute;
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 90ms ease-out;
+}
+
+.pdf-link:hover,
+.pdf-link:focus-visible {
+  background: color-mix(in srgb, var(--interactive-accent) 25%, transparent);
+  outline: none;
+}
+
+/* Set for the duration of a text-selection drag: the links stand aside so the
+   selection can sweep across them (see PdfViewer's pointerdown handler). */
+.pdf-viewer-scroll.pdf-selecting .pdf-link {
+  pointer-events: none;
+}
+
+/* ── Bottom-right controls: page number, then zoom ── */
+.pdf-viewer-controls {
   position: absolute;
   right: 16px;
   bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 6;
+}
+
+.pdf-viewer-pill {
   display: flex;
   align-items: center;
   gap: 2px;
@@ -1377,7 +1441,6 @@ body {
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
-  z-index: 6;
 }
 
 .pdf-viewer-zoom button {
@@ -1395,6 +1458,51 @@ body {
 .pdf-viewer-zoom button:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
+}
+
+/* Padding/font/line-height match .pdf-viewer-zoom button exactly so both pills
+   come out the same height. The input's width is set inline from the page
+   count; everything else is shared. */
+.pdf-viewer-pages {
+  padding-right: 8px;
+}
+
+.pdf-viewer-page-input {
+  border: 0;
+  background: transparent;
+  color: var(--text-normal);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 6px;
+  border-radius: 5px;
+  text-align: center;
+  cursor: text;
+  /* Overrides the global border-box reset ON PURPOSE: the inline width is "room
+     for N digits" in `ch`, and under border-box the padding would eat it — at
+     two digits that leaves a 4px-wide box and the number is clipped away. */
+  box-sizing: content-box;
+  /* An input's default min-width would otherwise win over that width. */
+  min-width: 0;
+}
+
+.pdf-viewer-page-input:hover {
+  background: var(--background-modifier-hover);
+}
+
+.pdf-viewer-page-input:focus {
+  background: var(--background-modifier-hover);
+  /* An outline, not a border: it doesn't take part in layout, so focusing
+     can't nudge the pill's width. */
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+.pdf-viewer-page-total {
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1;
+  user-select: none;
 }
 
 /* tldraw's own dark canvas (hsl(240,5%,6.5%) ≈ #101011) reads as a hole next

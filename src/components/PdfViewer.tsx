@@ -3,6 +3,8 @@ import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { readJSON, writeJSON } from '../utils/storage';
+import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
+import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
 
 // Same assignment as utils/pdfAnnotation.ts — whichever module loads first
 // wins, and both hand pdf.js the identical bundled worker URL.
@@ -24,10 +26,14 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
  * - Scrolling is a real DOM scroller (wheel, trackpad, PgUp/PgDn, arrows).
  * - Fit-width by default, plus simple zoom controls.
  *
+ * - The PDF's own links work: a table of contents jumps to its chapter, an
+ *   external URL opens in a new tab (see utils/pdfLinks.ts).
+ * - The current page is shown, and can be typed into to jump.
+ *
  * Memory discipline: canvas BITMAPS are the expensive part (a page at 2x DPR is
  * ~10MB), so only pages near the viewport hold one — scrolled-away canvases are
- * freed (width=0) and re-rendered on approach. Text layers are cheap DOM and are
- * kept once built.
+ * freed (width=0) and re-rendered on approach. Text and link layers are cheap
+ * DOM and are kept once built.
  *
  * The current position is tracked as {page, offset-within-page}, which survives
  * zoom, container resizes and reloads of the underlying bytes (an annotated
@@ -78,6 +84,8 @@ interface PageState {
     busy?: boolean;
     textStarted?: boolean;
     textPromise?: Promise<void>;
+    linksStarted?: boolean;
+    linksPromise?: Promise<void>;
 }
 
 const STORAGE_KEY = 'pdfViewPositions';
@@ -145,6 +153,19 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     const gestureRef = useRef<PinchGesture | null>(null);
     const canvasElsRef = useRef<Array<HTMLCanvasElement | null>>([]);
     const textElsRef = useRef<Array<HTMLDivElement | null>>([]);
+    const linkElsRef = useRef<Array<HTMLDivElement | null>>([]);
+    /** Uncontrolled on purpose: the page number is written straight into the
+     *  input on every scroll pass. Holding it in React state would re-render the
+     *  whole page column each time the top edge crossed a page boundary. */
+    const pageInputRef = useRef<HTMLInputElement | null>(null);
+    /** What the box read the moment it took focus. While it is focused the
+     *  scroll pass deliberately leaves it alone, so its number goes stale as
+     *  soon as the user scrolls — and the blur path must not treat that stale
+     *  number as something they asked for. */
+    const pageInputFocusValueRef = useRef('');
+    /** The 0-based page the box is displaying. Usually the page under the top
+     *  edge, but not at the document's bottom — see updateWindow. */
+    const shownPageRef = useRef(0);
     const pageStatesRef = useRef<Map<number, PageState>>(new Map());
     const textLayersRef = useRef<Set<InstanceType<typeof pdfjs.TextLayer>>>(new Set());
     const docStateRef = useRef<DocState | null>(null);
@@ -218,6 +239,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
                 docStateRef.current = ds;
                 canvasElsRef.current = [];
                 textElsRef.current = [];
+                linkElsRef.current = [];
                 setDocState(ds);
             } catch (err) {
                 if (!cancelled) {
@@ -330,6 +352,114 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         return st.textPromise;
     }, [getState, getPage]);
 
+    /**
+     * Put a page under the viewport's top edge — the one way to move to a page,
+     * shared by the page-number box and by link destinations.
+     *
+     * @param offset how far into the page to land, in scale-1 page units.
+     *
+     * Deliberately does NOT call updateWindow: the scroll it causes fires the
+     * container's own handler a frame later, which renders the newly-visible
+     * pages and refreshes the page number. Calling it here instead would make
+     * this depend on updateWindow — and updateWindow already (transitively)
+     * depends on the link layer, which depends on this.
+     */
+    const scrollToPage = useCallback((pageIndex: number, offset = 0) => {
+        const el = scrollRef.current;
+        const L = layoutRef.current;
+        if (!el || !L || L.pages.length === 0) return;
+        const i = Math.min(Math.max(0, pageIndex), L.pages.length - 1);
+        // ROUNDED UP, and never down. Page tops are fractional (page height ×
+        // a fit-width scale) but the browser snaps scrollTop to whole device
+        // pixels — so asking for tops[i] can land a fraction of a pixel ABOVE
+        // page i, where "which page is under the top edge" still answers i-1.
+        // Jumping to page 9 would then leave the box reading 8.
+        el.scrollTop = Math.ceil(L.tops[i] + offset * L.scale);
+    }, []);
+
+    /** Act on a clicked link: jump to its destination, or run its named action.
+     *  External URLs are excluded by the type — those are plain <a href>
+     *  elements, and the browser opens them without our help. */
+    const followLink = useCallback(async (target: Exclude<PdfLinkTarget, { kind: 'url' }>) => {
+        const doc = docStateRef.current?.doc;
+        const L = layoutRef.current;
+        if (!doc || !L) return;
+        try {
+            if (target.kind === 'action') {
+                const page = currentPosRef.current.page;
+                switch (target.action) {
+                    case 'FirstPage': scrollToPage(0); break;
+                    case 'LastPage': scrollToPage(L.pages.length - 1); break;
+                    case 'NextPage': scrollToPage(page + 1); break;
+                    case 'PrevPage': scrollToPage(page - 1); break;
+                    // GoBack/GoForward and the rest are viewer-history actions
+                    // this viewer has no equivalent for — ignore rather than
+                    // guess at something surprising.
+                    default: break;
+                }
+                return;
+            }
+            const dest = await resolveDestination(doc, target.dest, getPage);
+            if (dest) scrollToPage(dest.pageIndex, dest.offset);
+        } catch (err) {
+            console.error('Could not follow this PDF link:', err);
+        }
+    }, [getPage, scrollToPage]);
+
+    /** One clickable element for one link box. An external URL is a real <a> so
+     *  it gets the browser's own affordances (middle-click, copy link address);
+     *  an in-document jump is a <button>, which is focusable and keyboard-
+     *  activatable without inventing a URL for a destination that has none. */
+    const createLinkElement = useCallback((link: PdfLink): HTMLElement => {
+        let el: HTMLElement;
+        if (link.target.kind === 'url') {
+            const anchor = document.createElement('a');
+            anchor.href = link.target.url;
+            anchor.target = '_blank';
+            anchor.rel = 'noopener noreferrer';
+            el = anchor;
+        } else {
+            const button = document.createElement('button');
+            button.type = 'button';
+            // The box is empty (the words it covers belong to the text layer),
+            // so without this it reads as an unnamed button. Not `title`: a
+            // tooltip on every entry of a table of contents is just noise.
+            button.setAttribute('aria-label', 'Follow link');
+            const { target } = link;
+            button.addEventListener('click', () => { void followLink(target); });
+            el = button;
+        }
+        el.className = 'pdf-link';
+        if (link.title) el.title = link.title;
+        el.style.left = `${link.left}%`;
+        el.style.top = `${link.top}%`;
+        el.style.width = `${link.width}%`;
+        el.style.height = `${link.height}%`;
+        return el;
+    }, [followLink]);
+
+    /** Build the clickable-link overlay for one page. Like the text layer, the
+     *  geometry is in page-percentages, so it is built ONCE per page and every
+     *  zoom rescales it for free. */
+    const ensureLinks = useCallback((i: number): Promise<void> => {
+        const st = getState(i);
+        if (st.linksStarted) return st.linksPromise ?? Promise.resolve();
+        const container = linkElsRef.current[i];
+        if (!container || !docStateRef.current) return Promise.resolve();
+        st.linksStarted = true;
+        const gen = docGenRef.current;
+        st.linksPromise = (async () => {
+            try {
+                const links = await readPageLinks(await getPage(i));
+                if (docGenRef.current !== gen || linkElsRef.current[i] !== container) return;
+                for (const link of links) container.append(createLinkElement(link));
+            } catch (err) {
+                console.error(`Could not read the links on PDF page ${i + 1}:`, err);
+            }
+        })();
+        return st.linksPromise;
+    }, [getState, getPage, createLinkElement]);
+
     /** Render one page's canvas, chasing wantScale until it matches (a zoom
      *  mid-render cancels the task and the loop goes again at the new scale). */
     const renderLoop = useCallback(async (i: number, st: PageState) => {
@@ -372,6 +502,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
                 if (docGenRef.current !== gen) return;
             }
             void ensureText(i);
+            void ensureLinks(i);
         } catch (err) {
             console.error(`Could not render PDF page ${i + 1}:`, err);
         } finally {
@@ -381,7 +512,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
                 st.renderedScale = undefined;
             }
         }
-    }, [getPage, ensureText, clearCanvas]);
+    }, [getPage, ensureText, ensureLinks, clearCanvas]);
 
     const ensurePage = useCallback((i: number) => {
         const L = layoutRef.current;
@@ -397,10 +528,11 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         }
         if (st.renderedScale === st.wantScale) {
             void ensureText(i);
+            void ensureLinks(i);
             return;
         }
         void renderLoop(i, st);
-    }, [getState, renderLoop, ensureText]);
+    }, [getState, renderLoop, ensureText, ensureLinks]);
 
     const evictPage = useCallback((i: number) => {
         const st = pageStatesRef.current.get(i);
@@ -441,6 +573,18 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         // The position anchor is the top edge: restore sets scrollTop so that
         // the same fraction of the same page sits under it again.
         currentPosRef.current = { page: first, offset: (top - L.tops[first]) / L.pages[first].h };
+        // The page SHOWN is the one under the top edge, except at the very
+        // bottom of the document: a short final page plus padding may not fill
+        // the viewport, so its top can never reach the top edge. Without this,
+        // typing the last page number scrolls as far as it can and the box then
+        // snaps back to the page before it.
+        const maxScroll = el.scrollHeight - el.clientHeight;
+        const shown = maxScroll > 1 && top >= maxScroll - 1 ? last : first;
+        shownPageRef.current = shown;
+        // Written straight to the DOM rather than through state — see
+        // pageInputRef. Never while it's focused: that would fight the typing.
+        const input = pageInputRef.current;
+        if (input && document.activeElement !== input) input.value = String(shown + 1);
         schedulePersist();
     }, [ensurePage, evictPage, schedulePersist]);
 
@@ -490,7 +634,10 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         } else {
             const pos = currentPosRef.current;
             const page = Math.min(Math.max(0, Math.floor(pos.page)), n - 1);
-            el.scrollTop = layout.tops[page] + pos.offset * layout.pages[page].h;
+            // Rounded up for the same reason as scrollToPage: landing a
+            // fraction of a pixel short would re-read as the previous page,
+            // and that reading is what gets persisted for next time.
+            el.scrollTop = Math.ceil(layout.tops[page] + pos.offset * layout.pages[page].h);
         }
         updateWindow();
     }, [layout, updateWindow]);
@@ -500,6 +647,71 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     const nudgeZoom = useCallback((factor: number) => {
         setZoom(z => clampZoom(z * factor));
     }, []);
+
+    /** Show whatever page the document is actually on — used to undo a typed
+     *  number that was abandoned or nonsense. */
+    const resetPageInput = useCallback(() => {
+        const input = pageInputRef.current;
+        if (input) input.value = String(shownPageRef.current + 1);
+    }, []);
+
+    /**
+     * Jump to the typed page. Out-of-range numbers are clamped rather than
+     * rejected — "999" in a 40-page document plainly means "the end".
+     *
+     * @param onlyIfChanged for the blur path. Clicking into the box and back
+     *        out must leave the view alone — and "unchanged" is measured
+     *        against what the box read when it took focus, NOT against the page
+     *        currently on screen: scrolling while the box is focused leaves it
+     *        showing a stale number, and committing that would yank the view
+     *        back to wherever the user was when they clicked in. Enter passes
+     *        false, so re-typing the current page IS a way to jump to its top.
+     */
+    const commitPageInput = useCallback((onlyIfChanged = false) => {
+        const input = pageInputRef.current;
+        const total = layoutRef.current?.pages.length ?? 0;
+        if (!input || total === 0) return;
+        if (onlyIfChanged && input.value === pageInputFocusValueRef.current) {
+            resetPageInput();       // nothing was typed — just re-sync the box
+            return;
+        }
+        const typed = parseInt(input.value.trim(), 10);
+        if (!Number.isFinite(typed)) {
+            resetPageInput();
+            return;
+        }
+        const page = Math.min(Math.max(1, typed), total);
+        if (onlyIfChanged && page === shownPageRef.current + 1) {
+            resetPageInput();       // undoes a clamp the user can't have meant
+            return;
+        }
+        scrollToPage(page - 1);
+        // Record the DISPLAYED page now rather than waiting for the scroll pass
+        // a frame later: a blur landing in between (Enter blurs the box itself)
+        // would otherwise redisplay the page we just left. Only this ref, never
+        // currentPosRef — that one anchors persistence and is written from the
+        // scroll we actually got, which is not always the one we asked for (the
+        // browser clamps at the end of the document).
+        shownPageRef.current = page - 1;
+        input.value = String(page);
+        pageInputFocusValueRef.current = input.value;
+    }, [scrollToPage, resetPageInput]);
+
+    const handlePageInputBlur = useCallback(() => commitPageInput(true), [commitPageInput]);
+
+    const handlePageInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+        // Never let a page number reach the app's shortcuts (or this viewer's
+        // own +/- zoom keys, which ignore inputs but not every key does).
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+            commitPageInput();
+            // Hand the keyboard back so scrolling and the zoom keys work again.
+            e.currentTarget.blur();
+        } else if (e.key === 'Escape') {
+            resetPageInput();
+            e.currentTarget.blur();
+        }
+    }, [commitPageInput, resetPageInput]);
 
     /** Land the accumulated pinch factor as a real zoom commit: one relayout,
      *  one window re-render — instead of one per wheel event, which is what
@@ -615,6 +827,30 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         return () => window.removeEventListener('keydown', onKey);
     }, [isActive, nudgeZoom]);
 
+    // A drag that starts on the page is a text selection, and must be able to
+    // sweep straight across a link instead of stopping dead at its edge. Links
+    // sit above the text layer (they'd never be clickable otherwise), so the
+    // drag has to switch them off for its duration — the same trick pdf.js's
+    // own viewer uses. A drag that STARTS on a link is a click, and is left
+    // alone. Plain DOM listeners: this must not re-render anything.
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        const onPointerDown = (e: PointerEvent) => {
+            if (!(e.target as Element | null)?.closest?.('.pdf-link')) el.classList.add('pdf-selecting');
+        };
+        const onPointerUp = () => el.classList.remove('pdf-selecting');
+        el.addEventListener('pointerdown', onPointerDown);
+        // On the window, not the container: a drag routinely ends outside it.
+        window.addEventListener('pointerup', onPointerUp);
+        window.addEventListener('pointercancel', onPointerUp);
+        return () => {
+            el.removeEventListener('pointerdown', onPointerDown);
+            window.removeEventListener('pointerup', onPointerUp);
+            window.removeEventListener('pointercancel', onPointerUp);
+        };
+    }, []);
+
     // Build text layers for the whole document (bounded), so ⌘F finds matches
     // on pages that were never scrolled into view. Sequential, with a yield
     // between pages, so it never competes with the visible-page renders.
@@ -665,6 +901,9 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
                             >
                                 <canvas width={0} height={0} ref={el => { canvasElsRef.current[i] = el; }} />
                                 <div className="textLayer" ref={el => { textElsRef.current[i] = el; }} />
+                                {/* Above the text layer, or its links could
+                                    never be clicked; see .pdf-selecting. */}
+                                <div className="pdf-link-layer" ref={el => { linkElsRef.current[i] = el; }} />
                             </div>
                         ))}
                     </div>
@@ -673,12 +912,41 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
                 )}
             </div>
             {layout && (
-                <div className="pdf-viewer-zoom">
-                    <button onClick={() => nudgeZoom(1 / 1.2)} title="Zoom out (-)" aria-label="Zoom out">−</button>
-                    <button onClick={() => setZoom(clampZoom(1))} title="Reset to fit width" aria-label="Reset zoom">
-                        {Math.round(zoom * 100)}%
-                    </button>
-                    <button onClick={() => nudgeZoom(1.2)} title="Zoom in (+)" aria-label="Zoom in">+</button>
+                <div className="pdf-viewer-controls">
+                    <div className="pdf-viewer-pill pdf-viewer-pages">
+                        <input
+                            ref={pageInputRef}
+                            className="pdf-viewer-page-input"
+                            // Not type="number": the spinner arrows are far too
+                            // heavy for a control this size. inputMode still
+                            // gets the numeric keypad on touch.
+                            type="text"
+                            inputMode="numeric"
+                            autoComplete="off"
+                            spellCheck={false}
+                            // Sized to the document's widest page number, so the
+                            // pill never resizes as you scroll past page 9 —
+                            // but never below two digits, or a short document
+                            // would give you a slot too cramped to type in.
+                            style={{ width: `${Math.max(2, String(layout.pages.length).length)}ch` }}
+                            title="Current page — type a number and press Enter to jump"
+                            aria-label="Page number"
+                            onFocus={e => {
+                                pageInputFocusValueRef.current = e.currentTarget.value;
+                                e.currentTarget.select();
+                            }}
+                            onKeyDown={handlePageInputKeyDown}
+                            onBlur={handlePageInputBlur}
+                        />
+                        <span className="pdf-viewer-page-total">/ {layout.pages.length}</span>
+                    </div>
+                    <div className="pdf-viewer-pill pdf-viewer-zoom">
+                        <button onClick={() => nudgeZoom(1 / 1.2)} title="Zoom out (-)" aria-label="Zoom out">−</button>
+                        <button onClick={() => setZoom(clampZoom(1))} title="Reset to fit width" aria-label="Reset zoom">
+                            {Math.round(zoom * 100)}%
+                        </button>
+                        <button onClick={() => nudgeZoom(1.2)} title="Zoom in (+)" aria-label="Zoom in">+</button>
+                    </div>
                 </div>
             )}
         </div>

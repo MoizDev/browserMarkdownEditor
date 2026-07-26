@@ -96,6 +96,7 @@ A `.tldraw` file is a tldraw snapshot **plus an extra `ui` block** (current tool
 - **File System Access API types** (`showDirectoryPicker`, `queryPermission`, `requestPermission`) are not in stock `lib.dom` — they're augmented via `declare global` at the bottom of `src/types/index.ts`.
 - **`React.StrictMode` is on** (`main.tsx`), so effects run twice in dev — write effects to tolerate it.
 - **ESLint config carries intentional relaxations** (`eslint.config.ts`): `no-unused-vars` ignores PascalCase/UPPER vars, all args, and catch bindings; `react-hooks/set-state-in-effect` is off (the app deliberately sets state in effects to rebuild the graph / restore the last file); `react-refresh/only-export-components` is off for the context module (it exports the Provider alongside `useFileSystem`). These preserve existing patterns — don't "fix" them into failures.
+- **Agent assets are single-sourced under `.agents/`.** The real files live in `.agents/skills/`; `.claude/skills` is a *relative* symlink (`../.agents/skills`, git mode `120000`) so every tool reads one copy and edits can't drift between vendors. `.claude/` still holds genuinely Claude-only files (`settings.local.json`, gitignored via `*.local`). New agent assets go under `.agents/<type>/` with the vendor path symlinked at them — never copy the files back into `.claude/`, and keep the link relative so it survives a fresh clone.
 
 ---
 

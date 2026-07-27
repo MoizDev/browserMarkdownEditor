@@ -1,16 +1,17 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useFileSystem } from './context/FileSystemContext';
 import { HELP_DOC_CONTENT } from './utils/helpDoc';
-import { buildGraph, collectMarkdownFiles, baseName } from './utils/graph';
+import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache } from './utils/graph';
 import { readJSON, writeJSON } from './utils/storage';
 import { joinVaultPath } from './utils/paths';
 import { collectFiles } from './utils/tree';
+import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
 import { isDrawingFile, isPdfFile, isAnnotatedPdf, annotatedNameFor } from './utils/fileTypes';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
 // (~1.3MB) into the main bundle, which a markdown-only session never needs.
 // The builder itself is import()ed at the two points that actually write a PDF.
-import { getPdfRenderData, clearPdfRenderData } from './utils/pdfRenderCache';
+import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
 import EditorPane from './components/EditorPane';
@@ -32,6 +33,55 @@ import type {
   EditorRevealRequest,
   TextRange,
 } from './types';
+
+/**
+ * Object URLs handed to `window.open` for files this app doesn't edit (images,
+ * video, archives), one per file VERSION.
+ *
+ * These were previously minted fresh on every open and never revoked, so a
+ * session of browsing media left a permanent registry entry — and a pinned file
+ * reference — behind for each click. Reusing the URL bounds that to the number
+ * of distinct files opened.
+ *
+ * Deliberately NOT a timed revoke: the tab we opened may re-request the URL
+ * later (a <video> seeking, a reload), and any timeout is a guess about the
+ * user's session. Replacing an entry only when the file itself changed is
+ * unambiguously safe.
+ */
+const externalUrls = new Map<string, { url: string; mtime: number; size: number }>();
+
+function externalOpenUrl(path: string, file: File): string {
+  const cached = externalUrls.get(path);
+  if (cached && cached.mtime === file.lastModified && cached.size === file.size) return cached.url;
+  if (cached) URL.revokeObjectURL(cached.url);
+  const url = URL.createObjectURL(file);
+  externalUrls.set(path, { url, mtime: file.lastModified, size: file.size });
+  return url;
+}
+
+/**
+ * Structural equality for two link graphs.
+ *
+ * buildGraph is deterministic for a given vault — nodes follow the file list and
+ * links follow document order — so an element-wise walk is exact, and it lets a
+ * rebuild that found nothing new keep the previous object identity instead of
+ * cascading a re-render (and a graph re-simulation) through the app.
+ */
+const EMPTY_GRAPH: GraphData = { nodes: [], links: [], backlinks: {}, outlinks: {} };
+
+function sameGraph(a: GraphData, b: GraphData): boolean {
+  if (a.nodes.length !== b.nodes.length || a.links.length !== b.links.length) return false;
+  for (let i = 0; i < a.nodes.length; i++) {
+    const x = a.nodes[i], y = b.nodes[i];
+    // `node` too: a tree refresh hands out fresh handles, and the graph's nodes
+    // are what the graph view and backlinks open files through.
+    if (x.id !== y.id || x.degree !== y.degree || x.unresolved !== y.unresolved || x.node !== y.node) return false;
+  }
+  for (let i = 0; i < a.links.length; i++) {
+    if (a.links[i].source !== b.links[i].source || a.links[i].target !== b.links[i].target) return false;
+  }
+  return true;
+}
 
 export default function App() {
   const {
@@ -60,10 +110,6 @@ export default function App() {
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<string>('');
-  // Bumped after every completed save-flush. The vault-search index re-syncs
-  // on it, so a file that was edited, saved, and closed is re-read from disk
-  // (open tabs are already searched via their live buffers).
-  const [saveEpoch, setSaveEpoch] = useState(0);
 
   const activeTab = useMemo(
     () => tabs.find(t => t.file.path === activeTabPath) ?? null,
@@ -79,7 +125,7 @@ export default function App() {
   const [mainView, setMainView] = useState<MainView>('editor');
 
   // The link graph powering the Neural Brain view and backlinks panel
-  const [graph, setGraph] = useState<GraphData>({ nodes: [], links: [], backlinks: {}, outlinks: {} });
+  const [graph, setGraph] = useState<GraphData>(EMPTY_GRAPH);
 
   // The global light/dark theme state
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'dark');
@@ -249,6 +295,7 @@ export default function App() {
   // Per-PATH debounced save timers, so switching or closing one tab never
   // cancels another tab's pending write (fixes the old single-timer data loss).
   const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const saveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
   useEffect(() => { activeTabPathRef.current = activeTabPath; }, [activeTabPath]);
 
@@ -297,8 +344,7 @@ export default function App() {
       // (images, video, …) still hands off to the browser.
       if (!isTextFile(node.name) && !isPdfFile(node.name)) {
         const file = await (node.handle as FileSystemFileHandle).getFile();
-        const url = URL.createObjectURL(file);
-        window.open(url, '_blank');
+        window.open(externalOpenUrl(node.path, file), '_blank');
         return true;
       }
 
@@ -376,19 +422,39 @@ export default function App() {
   // Flat index of markdown files for resolving wikilinks by note name
   const mdFiles = useMemo(() => collectMarkdownFiles(fileTree), [fileTree]);
 
-  // Rebuild the link graph (reads every note). Re-runs when the tree changes.
+  // A different vault may reuse paths — never resolve links from the old one's
+  // cached extractions (mirrors FileExplorer clearing the search cache).
+  useEffect(() => { clearLinkCache(); }, [rootHandle]);
+
+  // Same reasoning for the window.open blob URLs: a different vault can hold the
+  // same path, and (mtime, size) alone could match, so drop them with the vault
+  // rather than risk serving the old file's bytes (and pinning them all session).
+  useEffect(() => () => {
+    for (const { url } of externalUrls.values()) URL.revokeObjectURL(url);
+    externalUrls.clear();
+  }, [rootHandle]);
+
+  // Rebuild the link graph. Re-runs when the tree changes and after every save;
+  // buildGraph itself only re-reads files whose (mtime, size) moved.
   const rebuildGraph = useCallback(async () => {
     if (!fileTree || fileTree.length === 0) {
-      setGraph({ nodes: [], links: [], backlinks: {}, outlinks: {} });
+      // Through the same identity guard as the built graph below: a fresh empty
+      // object here would re-seed GraphView on every tree change just as surely.
+      setGraph(prev => sameGraph(prev, EMPTY_GRAPH) ? prev : EMPTY_GRAPH);
       return;
     }
     try {
-      const g = await buildGraph(fileTree, readFile);
-      setGraph(g);
+      const g = await buildGraph(fileTree);
+      // Keep the OLD object when nothing about the graph changed. A fresh
+      // identity on every save propagates all the way into GraphView's effects,
+      // which re-seed the simulation (alpha = 1) and tear down and rebuild the
+      // RAF loop and ResizeObserver — so an unrelated tab autosaving used to
+      // visibly re-heat the Neural Brain view while the user was looking at it.
+      setGraph(prev => sameGraph(prev, g) ? prev : g);
     } catch (err) {
       console.error('Failed to build link graph:', err);
     }
-  }, [fileTree, readFile]);
+  }, [fileTree]);
 
   useEffect(() => { rebuildGraph(); }, [rebuildGraph]);
 
@@ -444,10 +510,16 @@ export default function App() {
         t.file.path === path && t.content === snapshot ? { ...t, dirty: false } : t));
       if (activeTabPathRef.current === path) {
         setSaveStatus('Saved');
-        setTimeout(() => setSaveStatus(''), 2000);
+        // Re-armed, not stacked: rapid saves used to leave a handful of live
+        // timers all racing to clear the same message.
+        if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
+        saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 2000);
       }
       rebuildGraphRef.current();
-      setSaveEpoch(e => e + 1);
+      // Notifies the vault-search index (see utils/saveEpoch.ts) so a file that
+      // was edited, saved and then closed is re-read from disk. Deliberately not
+      // React state: as a prop it re-rendered the whole file tree every save.
+      bumpSaveEpoch();
     } catch (err) {
       console.error('Auto-save failed:', err);
     }
@@ -696,6 +768,9 @@ export default function App() {
     try {
       const fileHandle = await node.parentHandle.getFileHandle(newName);
       clearSaveTimer(node.path); // cancel any pending save against the OLD handle
+      // An annotated PDF's parked original + overlays are keyed by path; re-key
+      // them or the next save finds nothing and silently writes nothing.
+      movePdfRenderData(node.path, newPath);
       setTabs(prev => prev.map(t => t.file.path === node.path
         ? { ...t, file: { ...t.file, name: newName, path: newPath, handle: fileHandle } }
         : t));
@@ -718,6 +793,7 @@ export default function App() {
       try {
         const newHandle = await targetDirHandle.getFileHandle(sourceNode.name);
         clearSaveTimer(sourceNode.path);
+        movePdfRenderData(sourceNode.path, newPath);   // see handleRenameFile
         setTabs(prev => prev.map(t => t.file.path === sourceNode.path
           ? { ...t, file: { ...t.file, path: newPath, handle: newHandle, parentHandle: targetDirHandle } }
           : t));
@@ -868,7 +944,6 @@ export default function App() {
           onImportFiles={importFiles}
           onOpenSearchResult={handleOpenSearchResult}
           getOpenTabContent={getOpenTabContent}
-          saveEpoch={saveEpoch}
         />
         <div className="theme-toggle-container">
           <button

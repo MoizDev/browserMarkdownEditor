@@ -20,7 +20,7 @@ import BacklinksPanel from './BacklinksPanel';
 import TabBar from './TabBar';
 import { Link, Eye, Edit2, PenTool } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
-import { readJSON, writeJSON } from '../utils/storage';
+import { readRecord, flushRecord } from '../utils/storage';
 import { isDrawingFile, isPdfFile, isAnnotatedPdf } from '../utils/fileTypes';
 import 'katex/dist/katex.min.css';
 import type { ActiveFile, OpenTab, GraphData, GraphNode, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
@@ -60,6 +60,9 @@ interface EditorPaneProps {
     revealRequest: EditorRevealRequest | null;
     onRevealHandled: () => void;
 }
+
+/** localStorage key: per-file editor scroll offsets. */
+const SCROLL_POSITIONS_KEY = 'fileScrollPositions';
 
 /** Inline positioning for the linked-mentions popover (fixed top/right). */
 interface PopoverPos {
@@ -165,9 +168,9 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         if (saveScrollTimeoutRef.current) clearTimeout(saveScrollTimeoutRef.current);
 
         saveScrollTimeoutRef.current = setTimeout(() => {
-            const positions = readJSON<Record<string, number>>('fileScrollPositions', {});
-            positions[path] = scrollTop;
-            writeJSON('fileScrollPositions', positions);
+            // Held parsed in memory — mutate and write, no full re-parse per tick.
+            readRecord<number>(SCROLL_POSITIONS_KEY)[path] = scrollTop;
+            flushRecord(SCROLL_POSITIONS_KEY);
         }, 300);
     };
 
@@ -208,6 +211,18 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     useEffect(() => {
         boundGetAssetUrl.current = (fileName) => getAssetUrl(fileName, activeFile?.parentHandle || null);
     }, [activeFile, getAssetUrl]);
+
+    // ONE stable identity for the whole life of the pane, passed to every
+    // createLivePreviewPlugin call below.
+    //
+    // ImageWidget.eq() compares its resolver by identity, so a fresh closure per
+    // call site made every image widget compare unequal after any compartment
+    // reconfigure — i.e. on every ⌘E and every tab switch CodeMirror tore down
+    // and rebuilt all their DOM, re-resolved every asset, and flashed each
+    // image back through its "Loading …" placeholder. Reading the live bound
+    // resolver through the ref keeps the current parent handle without ever
+    // changing this function's identity.
+    const stableGetAssetUrl = useRef((fileName: string) => boundGetAssetUrl.current(fileName)).current;
 
     // Build the full extension list for a document. Shared by the initial view
     // and every fresh per-tab state, so all tabs behave identically. All the
@@ -253,7 +268,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 ]),
                 readOnlyCompartmentRef.current.of(EditorView.editable.of(mode !== 'read')),
                 wikiLinkAutocomplete(() => getWikiLinkTargets.current()),
-                livePreviewCompartmentRef.current.of(createLivePreviewPlugin((fn) => boundGetAssetUrl.current(fn), mode)),
+                livePreviewCompartmentRef.current.of(createLivePreviewPlugin(stableGetAssetUrl, mode)),
                 markdownFormatExtension,
                 revealHighlightField,
                 updateListener,
@@ -388,7 +403,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 effects: [
                     themeCompartmentRef.current.reconfigure(themeExtensions(theme)),
                     readOnlyCompartmentRef.current.reconfigure(EditorView.editable.of(editorMode !== 'read')),
-                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin((fn) => boundGetAssetUrl.current(fn), editorMode)),
+                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, editorMode)),
                     setRevealHighlight.of(null),
                 ]
             });
@@ -402,8 +417,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
 
         // Restore scroll position for the newly-active file.
         if (nextPath) {
-            const positions = readJSON<Record<string, number>>('fileScrollPositions', {});
-            const savedScrollTop = positions[nextPath];
+            const savedScrollTop = readRecord<number>(SCROLL_POSITIONS_KEY)[nextPath];
             requestAnimationFrame(() => {
                 if (viewRef.current) {
                     viewRef.current.scrollDOM.scrollTop = savedScrollTop !== undefined ? savedScrollTop : 0;
@@ -482,13 +496,15 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
             view.dispatch({
                 effects: [
                     readOnlyCompartmentRef.current.reconfigure(EditorView.editable.of(editorMode !== 'read')),
-                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin((fn) => boundGetAssetUrl.current(fn), editorMode))
+                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, editorMode))
                 ]
             });
         }
-        // Only editorMode: the tab-swap effect already reconfigures these on a
-        // path change, so this need not fire again on every switch.
-    }, [editorMode]);
+        // Only editorMode drives this: the tab-swap effect already reconfigures
+        // these on a path change, so it need not fire again on every switch.
+        // (stableGetAssetUrl is a useRef().current — constant for the pane's
+        // life — so listing it satisfies the linter without re-arming anything.)
+    }, [editorMode, stableGetAssetUrl]);
 
     return (
         <div className="editor-pane">

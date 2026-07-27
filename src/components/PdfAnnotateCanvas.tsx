@@ -257,13 +257,28 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             const annotations = editor.getCurrentPageShapes()
                 .filter(s => !pageShapeIdsRef.current.has(s.id));
 
+            // Bucket the shapes by page ONCE, rather than re-filtering the whole
+            // annotation set per page. The old form called getShapePageBounds
+            // for every shape on every page — pages x shapes lookups (600k on a
+            // 300-page document with 2000 strokes) on the same main thread the
+            // pen draws on, every 1.5s while annotating.
+            const shapesByPage: Array<typeof annotations> = boxes.map(() => []);
+            for (const shape of annotations) {
+                const b = editor.getShapePageBounds(shape.id);
+                if (!b) continue;
+                for (let i = 0; i < boxes.length; i++) {
+                    const box = boxes[i];
+                    // Pages are stacked downward, so once a box starts below the
+                    // shape's bottom edge no later box can overlap it either.
+                    if (box.y >= b.maxY) break;
+                    if (b.minY < box.y + box.height) shapesByPage[i].push(shape);
+                }
+            }
+
             const overlays: Array<Uint8Array | undefined> = [];
             for (let i = 0; i < boxes.length; i++) {
                 const box = boxes[i];
-                const onThisPage = annotations.filter(s => {
-                    const b = editor.getShapePageBounds(s.id);
-                    return b && b.maxY > box.y && b.minY < box.y + box.height;
-                });
+                const onThisPage = shapesByPage[i];
 
                 // Re-render a page only when its own annotations actually changed.
                 // Rasterizing is main-thread work (it needs the DOM, so unlike the

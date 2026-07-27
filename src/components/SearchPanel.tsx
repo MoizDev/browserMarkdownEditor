@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, useRef, useSyncExternalStore } from 'react';
+import { subscribeSaveEpoch, getSaveEpoch } from '../utils/saveEpoch';
 import { FileText, X } from './icons';
 import { collectFiles } from '../utils/tree';
 import { searchVault, isTextFile } from '../utils/vaultSearch';
@@ -12,8 +13,6 @@ interface SearchPanelProps {
     cache: VaultTextCache;
     /** Latest in-memory content of an open tab (may be newer than disk). */
     getOpenTabContent: (path: string) => string | null;
-    /** Bumped after each completed save-flush → re-validate the disk index. */
-    saveEpoch: number;
     onOpenResult: (node: FileTreeFileNode, range: TextRange | null) => void;
     onClose: () => void;
 }
@@ -45,7 +44,11 @@ function rowKeyHandler(activate: () => void) {
  * tree in the sidebar. Matches file names and file contents (VSCode-style),
  * grouped per file; clicking a row opens the file (and jumps to the match).
  */
-export default function SearchPanel({ fileTree, cache, getOpenTabContent, saveEpoch, onOpenResult, onClose }: SearchPanelProps) {
+export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpenResult, onClose }: SearchPanelProps) {
+    // Subscribed rather than passed down: routing this through the memoized
+    // FileExplorer re-rendered the entire file tree after every save (see
+    // utils/saveEpoch.ts). Only this component, only while search is open.
+    const saveEpoch = useSyncExternalStore(subscribeSaveEpoch, getSaveEpoch);
     const [query, setQuery] = useState('');
     // Results are computed from the deferred value so typing stays instant
     // even while a large vault is being scanned.

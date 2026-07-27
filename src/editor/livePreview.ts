@@ -4,12 +4,85 @@ import { syntaxTree } from '@codemirror/language';
 import type { EditorState, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
-import { findMathRegions, latexSourceDecorations, collectCodeRanges } from './latexSource';
+import { analyzeDoc, firstMathFrom, overlapsMath, latexSourceDecorations } from './latexSource';
 import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
 import { ImageWidget } from './imageWidget';
 import { TableWidget } from './tableWidget';
 import { MermaidWidget } from './mermaidWidget';
+
+/* ── Shared decoration values ──
+   A Decoration is positionless and immutable — .range() produces the positioned
+   value — so one instance can back every occurrence. Building them per call site
+   per rebuild allocated a fresh spec object AND a fresh Decoration for each of
+   ~10k-39k decorations per rebuild (measured), i.e. megabytes of identical
+   garbage per keystroke. Sharing also lets CodeMirror's decoration diff
+   short-circuit on instance identity, so it does less DOM work too. */
+const HIDE = Decoration.replace({});
+const BOLD = Decoration.mark({ class: 'cm-live-bold' });
+const ITALIC = Decoration.mark({ class: 'cm-live-italic' });
+const STRIKE = Decoration.mark({ class: 'cm-live-strikethrough' });
+const INLINE_CODE = Decoration.mark({ class: 'cm-live-code' });
+const LINK_MARK = Decoration.mark({ class: 'cm-live-link' });
+const HIGHLIGHT = Decoration.mark({ class: 'cm-live-highlight' });
+const LATEX_DELIM = Decoration.mark({ class: 'cm-latex-delim' });
+const BLOCKQUOTE_LINE = Decoration.line({ class: 'cm-live-blockquote' });
+const HR_REPLACE = Decoration.replace({ widget: new HorizontalRuleWidget() });
+/** Indexed by heading level 1-6 (index 0 unused). */
+const HEADING_LINE = [null, 1, 2, 3, 4, 5, 6].map(l =>
+    l === null ? null : Decoration.line({ class: `cm-live-heading cm-live-heading-${l}` }));
+/** Indexed by (isStart | isEnd << 1) — a one-line block is both. */
+const CODEBLOCK_LINE = [0, 1, 2, 3].map(bits => Decoration.line({
+    class: 'cm-live-codeblock'
+        + (bits & 1 ? ' cm-live-codeblock-start' : '')
+        + (bits & 2 ? ' cm-live-codeblock-end' : ''),
+}));
+
+/* The remaining decorations carry per-occurrence attributes, so they are cached
+   by the value that varies. All three key spaces are small and repeat heavily
+   within a document (indent is a small integer; markers and link targets recur).
+
+   BOUNDED, like the mermaid SVG cache: the key spaces are small per document but
+   accumulate across every document opened in a session — an ordered marker is
+   "<n>." for every list position ever rendered, and a wikilink key is every
+   distinct link target in the vault. A cache kept for its own sake in a memory
+   pass should not itself be the thing that grows without limit; on overflow the
+   whole map is dropped (these are cheap to rebuild, and a rebuild is one pass). */
+const DEC_CACHE_MAX = 512;
+function cachePut(cache: Map<string, Decoration>, key: string, dec: Decoration): Decoration {
+    if (cache.size >= DEC_CACHE_MAX) cache.clear();
+    cache.set(key, dec);
+    return dec;
+}
+
+const listLineCache = new Map<string, Decoration>();
+function listLine(kind: 'raw' | 'bullet' | 'ordered', indent: number, marker?: string): Decoration {
+    const key = `${kind}\n${indent}\n${marker ?? ''}`;
+    let dec = listLineCache.get(key);
+    if (!dec) {
+        const style = `--list-indent: ${indent}`;
+        dec = kind === 'raw'
+            ? Decoration.line({ class: 'cm-live-list-item cm-live-list-raw', attributes: { style } })
+            : kind === 'ordered'
+                ? Decoration.line({
+                    class: 'cm-live-list-item cm-live-list-ordered',
+                    attributes: { 'data-marker': marker!, style },
+                })
+                : Decoration.line({ class: 'cm-live-list-item cm-live-list-bullet', attributes: { style } });
+        cachePut(listLineCache, key, dec);
+    }
+    return dec;
+}
+
+const wikiLinkCache = new Map<string, Decoration>();
+function wikiLinkMark(target: string): Decoration {
+    let dec = wikiLinkCache.get(target);
+    if (!dec) {
+        dec = Decoration.mark({ class: 'cm-wikilink', attributes: { 'data-wikilink': target } });
+        cachePut(wikiLinkCache, target, dec);
+    }
+    return dec;
+}
 
 /** The single-argument, curried asset resolver the editor subsystem consumes. */
 type GetAssetUrl = (fileName: string) => Promise<string | null>;
@@ -47,14 +120,17 @@ function cursorOnLine(state: EditorState, from: number, to: number): boolean {
 function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode: EditorMode): DecorationSet {
     const { state } = view;
     const decorations: Range<Decoration>[] = [];
-    const doc = state.doc.toString();
 
     // Math is located BEFORE the markdown pass so formula innards can be
     // exempted from markdown styling — "[x](y)" inside an equation is LaTeX,
     // not a link. Code ranges come first: a $ inside code is literal.
-    const codeRanges = collectCodeRanges(state);
-    const mathRegions = findMathRegions(doc, codeRanges);
-    const intersectsMath = (a: number, b: number) => mathRegions.some(r => a < r.to && b > r.from);
+    //
+    // All three derivations are memoized on (doc, tree) identity, so a
+    // selection-only rebuild — which is every arrow key and click in edit mode
+    // — reuses them instead of re-flattening the document and re-scanning it.
+    const analysis = analyzeDoc(state);
+    const { doc, codeRanges, mathRegions } = analysis;
+    const intersectsMath = (a: number, b: number) => overlapsMath(analysis, a, b);
 
     syntaxTree(state).iterate({
         enter(node) {
@@ -64,8 +140,14 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
             // A markdown construct inside (or straddling) a math region is
             // really LaTeX — skip it. Nodes that CONTAIN the whole region
             // (paragraph, list item, heading line…) still process normally.
-            for (const r of mathRegions) {
-                if (from < r.to && to > r.from && !(from <= r.from && to >= r.to)) return false;
+            //
+            // Binary-searched rather than scanned: this runs for EVERY node of
+            // the whole tree, so a linear scan made it O(nodes x regions) —
+            // ~186M comparisons and ~138ms per keystroke on a large math note.
+            for (let i = firstMathFrom(analysis, from); i < mathRegions.length; i++) {
+                const r = mathRegions[i];
+                if (r.from >= to) break;
+                if (!(from <= r.from && to >= r.to)) return false;
             }
 
             // === HEADINGS ===
@@ -77,9 +159,7 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                 const line = state.doc.lineAt(from);
 
                 // Always style the entire heading line so it retains its size
-                decorations.push(
-                    Decoration.line({ class: `cm-live-heading cm-live-heading-${level}` }).range(line.from)
-                );
+                decorations.push(HEADING_LINE[level]!.range(line.from));
 
                 // If editing and cursor is on the line, let the raw prefix `# ` show
                 if (editorMode !== 'read' && cursorOnLine(state, from, to)) return;
@@ -89,9 +169,7 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
 
                 if (hashEnd > 0) {
                     // Hide the "# " prefix
-                    decorations.push(
-                        Decoration.replace({}).range(line.from, line.from + hashEnd)
-                    );
+                    decorations.push(HIDE.range(line.from, line.from + hashEnd));
                 }
 
                 // Recurse into children so inline syntax inside the heading
@@ -108,7 +186,7 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                 if (editorMode !== 'read' && cursorInRange(state, parent.from, parent.to)) return;
 
                 // If not, hide the markdown tokens entirely
-                decorations.push(Decoration.replace({}).range(from, to));
+                decorations.push(HIDE.range(from, to));
                 return false;
             }
 
@@ -120,11 +198,11 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
             // hide cleanly. Iteration falls through to the EmphasisMark children,
             // which perform the hiding.
             if (name === 'Emphasis' || name === 'StrongEmphasis') {
-                const cls = name === 'StrongEmphasis' ? 'cm-live-bold' : 'cm-live-italic';
+                const mark = name === 'StrongEmphasis' ? BOLD : ITALIC;
                 const innerFrom = node.node.firstChild ? node.node.firstChild.to : from;
                 const innerTo = node.node.lastChild ? node.node.lastChild.from : to;
                 if (innerTo > innerFrom) {
-                    decorations.push(Decoration.mark({ class: cls }).range(innerFrom, innerTo));
+                    decorations.push(mark.range(innerFrom, innerTo));
                 }
                 return;
             }
@@ -133,11 +211,9 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
             if (name === 'Strikethrough') {
                 if (editorMode !== 'read' && cursorInRange(state, from, to)) return;
 
-                decorations.push(Decoration.replace({}).range(from, from + 2));
-                decorations.push(Decoration.replace({}).range(to - 2, to));
-                decorations.push(
-                    Decoration.mark({ class: 'cm-live-strikethrough' }).range(from + 2, to - 2)
-                );
+                decorations.push(HIDE.range(from, from + 2));
+                decorations.push(HIDE.range(to - 2, to));
+                decorations.push(STRIKE.range(from + 2, to - 2));
 
                 return false;
             }
@@ -152,15 +228,13 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                 // The code styling is permanent — editing reveals just the
                 // backticks, instead of the whole thing flashing to plain text.
                 if (to - closeTicks > from + openTicks) {
-                    decorations.push(
-                        Decoration.mark({ class: 'cm-live-code' }).range(from + openTicks, to - closeTicks)
-                    );
+                    decorations.push(INLINE_CODE.range(from + openTicks, to - closeTicks));
                 }
 
                 if (editorMode !== 'read' && cursorInRange(state, from, to)) return false;
 
-                decorations.push(Decoration.replace({}).range(from, from + openTicks));
-                decorations.push(Decoration.replace({}).range(to - closeTicks, to));
+                decorations.push(HIDE.range(from, from + openTicks));
+                decorations.push(HIDE.range(to - closeTicks, to));
 
                 return false;
             }
@@ -203,10 +277,8 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                 // round just the outer corners.
                 for (let i = startLine.number; i <= endLine.number; i++) {
                     const line = state.doc.line(i);
-                    let cls = 'cm-live-codeblock';
-                    if (i === startLine.number) cls += ' cm-live-codeblock-start';
-                    if (i === endLine.number) cls += ' cm-live-codeblock-end';
-                    decorations.push(Decoration.line({ class: cls }).range(line.from));
+                    const bits = (i === startLine.number ? 1 : 0) | (i === endLine.number ? 2 : 0);
+                    decorations.push(CODEBLOCK_LINE[bits].range(line.from));
                 }
 
                 // Editing anywhere in the block reveals the ``` fences (like a
@@ -216,10 +288,10 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                 // Hide the fence lines outright: the opening one (e.g.
                 // ```javascript) and — only if the block is closed — the last.
                 if (startLine.text.trim().startsWith('```')) {
-                    decorations.push(Decoration.replace({}).range(startLine.from, startLine.to));
+                    decorations.push(HIDE.range(startLine.from, startLine.to));
                 }
                 if (closed) {
-                    decorations.push(Decoration.replace({}).range(endLine.from, endLine.to));
+                    decorations.push(HIDE.range(endLine.from, endLine.to));
                 }
 
                 return false;
@@ -238,13 +310,11 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                 const linkTextEnd = linkTextStart + linkText.length;
 
                 // Hide [
-                decorations.push(Decoration.replace({}).range(from, from + 1));
+                decorations.push(HIDE.range(from, from + 1));
                 // Hide ](url)
-                decorations.push(Decoration.replace({}).range(linkTextEnd, to));
+                decorations.push(HIDE.range(linkTextEnd, to));
                 // Style link text
-                decorations.push(
-                    Decoration.mark({ class: 'cm-live-link' }).range(linkTextStart, linkTextEnd)
-                );
+                decorations.push(LINK_MARK.range(linkTextStart, linkTextEnd));
 
                 return false;
             }
@@ -263,12 +333,10 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                     const quotePrefix = lineText.match(/^>\s?/);
                     if (quotePrefix) {
                         // Hide "> " prefix
-                        decorations.push(Decoration.replace({}).range(line.from, line.from + quotePrefix[0].length));
+                        decorations.push(HIDE.range(line.from, line.from + quotePrefix[0].length));
                     }
                     // Style the line
-                    decorations.push(
-                        Decoration.line({ class: 'cm-live-blockquote' }).range(line.from)
-                    );
+                    decorations.push(BLOCKQUOTE_LINE.range(line.from));
                 }
 
                 // Don't return false — let children (emphasis, code, etc.) still be processed
@@ -303,38 +371,23 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                         const wsFrom = line.from;
                         const wsTo = line.from + markerMatch[1].length;
                         if (!cursorInRange(state, wsFrom, wsTo)) {
-                            decorations.push(Decoration.replace({}).range(wsFrom, wsTo));
+                            decorations.push(HIDE.range(wsFrom, wsTo));
                         }
                     }
-                    decorations.push(
-                        Decoration.line({
-                            class: 'cm-live-list-item cm-live-list-raw',
-                            attributes: { style: `--list-indent: ${indent}` }
-                        }).range(line.from)
-                    );
+                    decorations.push(listLine('raw', indent).range(line.from));
                 } else {
                     // Rendered mode: hide the full marker and show the styled bullet/number.
                     if (markerMatch) {
                         const prefixLen = markerMatch[0].length;
-                        decorations.push(Decoration.replace({}).range(line.from, line.from + prefixLen));
+                        decorations.push(HIDE.range(line.from, line.from + prefixLen));
                     }
 
                     if (isOrdered) {
                         const numMatch = lineText.match(/^\s*(\d+)[.)] /);
                         const num = numMatch ? numMatch[1] : '1';
-                        decorations.push(
-                            Decoration.line({
-                                class: 'cm-live-list-item cm-live-list-ordered',
-                                attributes: { 'data-marker': num + '.', style: `--list-indent: ${indent}` }
-                            }).range(line.from)
-                        );
+                        decorations.push(listLine('ordered', indent, num + '.').range(line.from));
                     } else {
-                        decorations.push(
-                            Decoration.line({
-                                class: 'cm-live-list-item cm-live-list-bullet',
-                                attributes: { style: `--list-indent: ${indent}` }
-                            }).range(line.from)
-                        );
+                        decorations.push(listLine('bullet', indent).range(line.from));
                     }
                 }
 
@@ -345,9 +398,9 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
             if (name === 'HorizontalRule') {
                 if (editorMode !== 'read' && cursorOnLine(state, from, to)) return;
 
-                decorations.push(
-                    Decoration.replace({ widget: new HorizontalRuleWidget() }).range(from, to)
-                );
+                // One shared widget: HorizontalRuleWidget.eq() is unconditionally
+                // true, so every instance was already interchangeable.
+                decorations.push(HR_REPLACE.range(from, to));
 
                 return false;
             }
@@ -382,7 +435,7 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
             if (doc[from - 1] === '\\') continue; // \$ — literal dollar
             if (intersectsMath(from, to)) continue;
             if (codeRanges.some(r => from < r.to && to > r.from)) continue;
-            decorations.push(Decoration.mark({ class: 'cm-latex-delim' }).range(from, to));
+            decorations.push(LATEX_DELIM.range(from, to));
         }
     }
 
@@ -397,12 +450,10 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 
         // Hide ==
-        decorations.push(Decoration.replace({}).range(from, from + 2));
-        decorations.push(Decoration.replace({}).range(to - 2, to));
+        decorations.push(HIDE.range(from, from + 2));
+        decorations.push(HIDE.range(to - 2, to));
         // Style inner content
-        decorations.push(
-            Decoration.mark({ class: 'cm-live-highlight' }).range(from + 2, to - 2)
-        );
+        decorations.push(HIGHLIGHT.range(from + 2, to - 2));
     }
 
     // === IMAGES (Obsidian Syntax) ===
@@ -444,17 +495,17 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
         const innerEnd = to - 2;
 
         // Hide the surrounding [[ and ]].
-        decorations.push(Decoration.replace({}).range(from, innerStart));
-        decorations.push(Decoration.replace({}).range(innerEnd, to));
+        decorations.push(HIDE.range(from, innerStart));
+        decorations.push(HIDE.range(innerEnd, to));
 
-        const linkAttrs = { class: 'cm-wikilink', attributes: { 'data-wikilink': target } };
+        const linkMark = wikiLinkMark(target);
         if (pipeIndex >= 0) {
             // Hide "target|" and show only the alias text.
             const pipePos = innerStart + pipeIndex;
-            decorations.push(Decoration.replace({}).range(innerStart, pipePos + 1));
-            decorations.push(Decoration.mark(linkAttrs).range(pipePos + 1, innerEnd));
+            decorations.push(HIDE.range(innerStart, pipePos + 1));
+            decorations.push(linkMark.range(pipePos + 1, innerEnd));
         } else {
-            decorations.push(Decoration.mark(linkAttrs).range(innerStart, innerEnd));
+            decorations.push(linkMark.range(innerStart, innerEnd));
         }
     }
 

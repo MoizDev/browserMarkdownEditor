@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool } from './icons';
 import { isDrawingFile } from '../utils/fileTypes';
+import { setDraggedNode, takeDraggedNode } from '../utils/treeDrag';
 import type { FileTreeNode } from '../types';
 
 interface TreeNodeProps {
@@ -19,16 +20,8 @@ interface TreeNodeProps {
     depth?: number;
 }
 
-/**
- * Shape of the module-level static drag-state stashed on the TreeNode function
- * component (dataTransfer can't hold object references). Exported so FileExplorer
- * (same bucket) reads/writes `TreeNode._draggedNode` through the same typed view.
- */
-export interface TreeNodeStatic {
-    _draggedNode: FileTreeNode | null;
-}
 
-export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
+function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
     const isActive = node.kind === 'file' && node.path === activeFilePath;
     const paddingLeft = 12 + depth * 16;
     const expanded = expandedPaths.has(node.path);
@@ -83,7 +76,7 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
         e.dataTransfer.setData('text/plain', node.path);
         e.dataTransfer.effectAllowed = 'move';
         // Store the node in a module-level variable since dataTransfer can't hold objects
-        (TreeNode as unknown as TreeNodeStatic)._draggedNode = node;
+        setDraggedNode(node);
     };
 
     const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -113,9 +106,8 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
             return;
         }
 
-        const draggedNode = (TreeNode as unknown as TreeNodeStatic)._draggedNode;
+        const draggedNode = takeDraggedNode();
         if (!draggedNode) return;
-        (TreeNode as unknown as TreeNodeStatic)._draggedNode = null;
 
         // Don't drop into itself or its own parent
         if (draggedNode.path === node.path) return;
@@ -128,7 +120,7 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
     };
 
     const handleDragEnd = () => {
-        (TreeNode as unknown as TreeNodeStatic)._draggedNode = null;
+        setDraggedNode(null);
     };
 
     if (node.kind === 'file') {
@@ -253,7 +245,9 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
             {expanded && node.children && (
                 <div className="tree-children">
                     {node.children.map((child) => (
-                        <TreeNode
+                        // The MEMO wrapper, not the bare function — otherwise
+                        // recursion would re-render the whole subtree anyway.
+                        <MemoTreeNode
                             key={child.path}
                             node={child}
                             activeFilePath={activeFilePath}
@@ -275,5 +269,8 @@ export default function TreeNode({ node, activeFilePath, onFileClick, onCreateFi
     );
 }
 
-// Module-level storage for the dragged node reference
-(TreeNode as unknown as TreeNodeStatic)._draggedNode = null;
+// Memoized: a save (or any other re-render of the explorer) used to reconcile
+// every visible row recursively, since all its props are already stable and
+// only the parent's identity churned. Local rename state is untouched by this.
+const MemoTreeNode = React.memo(TreeNode);
+export default MemoTreeNode;

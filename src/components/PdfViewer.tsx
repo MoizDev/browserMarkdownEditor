@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { readJSON, writeJSON } from '../utils/storage';
+import { readRecord, flushRecord } from '../utils/storage';
 import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
 
@@ -82,6 +82,9 @@ interface PageState {
     wantRender?: boolean;
     /** A render loop is currently running for this page. */
     busy?: boolean;
+    /** True once this page's pdf.js state has been released (see cleanupPage);
+     *  cleared when it re-enters the render window. */
+    cleaned?: boolean;
     textStarted?: boolean;
     textPromise?: Promise<void>;
     linksStarted?: boolean;
@@ -99,6 +102,17 @@ const SIDE_GUTTER = 28;
 const RENDER_AHEAD = 1;
 /** Keep already-rendered canvases until this many pages out of view. */
 const EVICT_BEYOND = 3;
+/**
+ * Release a page's pdf.js state (parsed operator list + decoded images) once it
+ * is this far out of view.
+ *
+ * Deliberately much wider than EVICT_BEYOND. Freeing the canvas is cheap to
+ * undo — the bitmap is redrawn from an operator list pdf.js still holds — but
+ * cleanup() throws that list away too, so coming back costs a worker round-trip
+ * to re-parse the page. At 3 pages that would tax ordinary back-scrolling; at 12
+ * it only touches pages the reader has genuinely left behind.
+ */
+const CLEANUP_BEYOND = 12;
 /** Build text layers for the whole document up to this page count, so ⌘F can
  *  find text anywhere. Beyond it (rare, book-sized), text follows the canvas
  *  window instead of bloating the DOM with hundreds of thousands of spans. */
@@ -139,7 +153,7 @@ interface PinchGesture {
 function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     // Read once per mount: where this file was last left, and at what zoom.
     const [saved] = useState<PdfViewPos | undefined>(
-        () => readJSON<Record<string, PdfViewPos>>(STORAGE_KEY, {})[filePath]
+        () => readRecord<PdfViewPos>(STORAGE_KEY)[filePath]
     );
     const [zoom, setZoom] = useState<number>(() => clampZoom(saved?.zoom ?? 1));
     const [docState, setDocState] = useState<DocState | null>(null);
@@ -184,10 +198,11 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     const persistTimerRef = useRef<number | null>(null);
     const persistNow = useCallback(() => {
         persistTimerRef.current = null;
-        const all = readJSON<Record<string, PdfViewPos>>(STORAGE_KEY, {});
+        // The record is held parsed in memory — mutate and write, no re-parse.
+        const all = readRecord<PdfViewPos>(STORAGE_KEY);
         const { page, offset } = currentPosRef.current;
         all[filePath] = { page, offset: Math.round(offset * 1000) / 1000, zoom: zoomRef.current };
-        writeJSON(STORAGE_KEY, all);
+        flushRecord(STORAGE_KEY);
     }, [filePath]);
 
     const schedulePersist = useCallback(() => {
@@ -520,6 +535,8 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         const st = getState(i);
         st.wantScale = L.scale;
         st.wantRender = true;
+        // Back in the window — eligible to be released again once it leaves.
+        st.cleaned = false;
         if (st.busy) {
             // Already rendering: if it's producing a stale scale, cancel so the
             // loop re-runs at the right one.
@@ -545,6 +562,31 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         }
     }, [clearCanvas]);
 
+    /**
+     * Hand a far-away page's memory back to pdf.js.
+     *
+     * Freeing the canvas is only half of what a page costs: the PDFPageProxy
+     * keeps its parsed operator list and its decoded images (a full-page scan is
+     * tens of MB) until asked, and every page ever scrolled past kept both for
+     * the life of the document. This is exactly what pdf.js's own viewer does in
+     * PDFPageView.destroy().
+     *
+     * cleanup() self-guards — it no-ops while a render task is live or the
+     * operator list is still streaming — so it can't interrupt a paint, and it
+     * touches nothing the already-built text or link layers depend on.
+     */
+    const cleanupPage = useCallback((i: number) => {
+        const st = pageStatesRef.current.get(i);
+        if (!st || !st.pagePromise || st.cleaned || st.busy || st.wantRender) return;
+        const gen = docGenRef.current;
+        st.cleaned = true;
+        void st.pagePromise.then(page => {
+            // The window pass may have asked for this page back while we awaited.
+            if (docGenRef.current !== gen || st.busy || st.wantRender) return;
+            page.cleanup();
+        }).catch(() => { /* teardown races — nothing to release */ });
+    }, []);
+
     /** One pass over the viewport: render pages near it, free pages far from
      *  it, and record the current {page, offset} for persistence. */
     const updateWindow = useCallback(() => {
@@ -565,9 +607,14 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         const renderTo = Math.min(n - 1, last + RENDER_AHEAD);
         const keepFrom = Math.max(0, first - EVICT_BEYOND);
         const keepTo = Math.min(n - 1, last + EVICT_BEYOND);
+        const cleanFrom = Math.max(0, first - CLEANUP_BEYOND);
+        const cleanTo = Math.min(n - 1, last + CLEANUP_BEYOND);
         for (let i = 0; i < n; i++) {
             if (i >= renderFrom && i <= renderTo) ensurePage(i);
-            else if (i < keepFrom || i > keepTo) evictPage(i);
+            else {
+                if (i < keepFrom || i > keepTo) evictPage(i);
+                if (i < cleanFrom || i > cleanTo) cleanupPage(i);
+            }
         }
 
         // The position anchor is the top edge: restore sets scrollTop so that
@@ -586,7 +633,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         const input = pageInputRef.current;
         if (input && document.activeElement !== input) input.value = String(shown + 1);
         schedulePersist();
-    }, [ensurePage, evictPage, schedulePersist]);
+    }, [ensurePage, evictPage, cleanupPage, schedulePersist]);
 
     const scrollRafRef = useRef(0);
     const scheduleWindowUpdate = useCallback(() => {
@@ -854,8 +901,15 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     // Build text layers for the whole document (bounded), so ⌘F finds matches
     // on pages that were never scrolled into view. Sequential, with a yield
     // between pages, so it never competes with the visible-page renders.
+    // Keyed on WHETHER a layout exists, never on the layout itself: `layout` is a
+    // fresh object on every zoom step and every container resize, which cancelled
+    // and restarted this 300-iteration pass (and its 300 setTimeout yields) each
+    // time. ensureText is idempotent so nothing was rebuilt, but a single pinch
+    // commit scheduled hundreds of pointless macrotasks. This boolean flips false
+    // → true once per document and then stays put.
+    const hasLayout = layout !== null;
     useEffect(() => {
-        if (!docState || !layout || docState.dims.length > TEXT_EAGER_LIMIT) return;
+        if (!docState || !hasLayout || docState.dims.length > TEXT_EAGER_LIMIT) return;
         let cancelled = false;
         (async () => {
             for (let i = 0; i < docState.dims.length && !cancelled; i++) {
@@ -864,7 +918,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
             }
         })();
         return () => { cancelled = true; };
-    }, [docState, layout, ensureText]);
+    }, [docState, hasLayout, ensureText]);
 
     if (error) {
         return (

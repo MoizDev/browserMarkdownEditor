@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readAnnotatedPdf } from '../utils/pdfAnnotation';
@@ -52,11 +52,19 @@ interface PdfSource {
  * modes rather than one blended view because a rasterized page has no text to
  * select — the pixels are all that's left. See utils/pdfAnnotation.ts.
  */
-export default function PdfPane({ file, isActive, mode, content, onContentChange, onFlushNow, theme, isDirty }: PdfPaneProps) {
+function PdfPane({ file, isActive, mode, content, onContentChange, onFlushNow, theme, isDirty }: PdfPaneProps) {
     const { readFileBytes } = useFileSystem();
     const [source, setSource] = useState<PdfSource | null>(null);
     const [viewBytes, setViewBytes] = useState<Uint8Array | null>(null);
-    const [error, setError] = useState<string | null>(null);
+    // Two failures, tracked separately because they clear on different events:
+    // opening the file (and, for an annotated one, reading its attachments)
+    // fails once per file, while the viewer's byte read is retried after every
+    // save. One shared slot let a later successful view read wipe a source
+    // failure, leaving the pane stuck on "Loading PDF…" with no source and no
+    // error to show for it.
+    const [sourceError, setSourceError] = useState<string | null>(null);
+    const [viewError, setViewError] = useState<string | null>(null);
+    const error = sourceError ?? viewError;
 
     // Panes for background tabs mount hidden at session restore; don't touch
     // the disk (or pdf.js) until the tab is first brought to the front.
@@ -101,17 +109,23 @@ export default function PdfPane({ file, isActive, mode, content, onContentChange
         if (!activated) return;
         let cancelled = false;
         setSource(null);
-        setError(null);
+        setSourceError(null);
 
         (async () => {
             try {
                 if (!file.handle) return;
-                const bytes = await readFileBytes(file.handle as FileSystemFileHandle);
 
                 // Trust the file's contents, not its name: a file named
                 // "… (annotated).pdf" that we didn't write has no attachments and
                 // must be treated as a plain PDF rather than crashing.
-                const annotated = isAnnotatedPdf(file.name) ? await readAnnotatedPdf(bytes) : null;
+                //
+                // The read is INSIDE the branch: a plain PDF has no attachments
+                // to extract, so pulling its whole file into memory here only to
+                // discard it was a wasted N-MB allocation and a wasted disk read
+                // on every plain PDF opened. (The viewer does its own read below.)
+                const annotated = isAnnotatedPdf(file.name)
+                    ? await readAnnotatedPdf(await readFileBytes(file.handle as FileSystemFileHandle))
+                    : null;
 
                 if (cancelled) return;
                 setSource({
@@ -120,7 +134,7 @@ export default function PdfPane({ file, isActive, mode, content, onContentChange
                 });
             } catch (err) {
                 console.error('Could not open PDF:', err);
-                if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+                if (!cancelled) setSourceError(err instanceof Error ? err.message : String(err));
             }
         })();
 
@@ -140,9 +154,15 @@ export default function PdfPane({ file, isActive, mode, content, onContentChange
                 const bytes = await readFileBytes(file.handle as FileSystemFileHandle);
                 if (cancelled) return;
                 viewStaleRef.current = false;
+                setViewError(null);   // a later read succeeded — clear ITS stale failure
                 setViewBytes(bytes);
             } catch (err) {
+                // Surfaced, not just logged: this is now the ONLY read a plain
+                // PDF does (the attachment read above is skipped for it), so a
+                // file that has gone away underneath us would otherwise leave
+                // the pane on "Loading PDF…" for the rest of the session.
                 console.error('Could not refresh the PDF view:', err);
+                if (!cancelled) setViewError(err instanceof Error ? err.message : String(err));
             }
         })();
 
@@ -196,3 +216,9 @@ export default function PdfPane({ file, isActive, mode, content, onContentChange
         </div>
     );
 }
+
+// Memoized: EditorPane re-renders on every keystroke anywhere in the app and
+// maps over every open PDF tab, so without this each mounted pane re-ran on
+// every character typed in an unrelated note. Its props only change when this
+// tab's own mode/content/dirty state does.
+export default React.memo(PdfPane);

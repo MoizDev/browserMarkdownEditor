@@ -64,17 +64,35 @@ export async function buildAnnotatedPdf(
     snapshot: string,
     overlays: Array<Uint8Array | undefined> = [],
 ): Promise<Uint8Array> {
-    const doc = await PDFDocument.load(original.slice());
+    // No defensive copy of `original`, on two independent grounds:
+    //
+    //  1. OWNERSHIP. This module is imported ONLY by pdfBuild.worker.ts, and the
+    //     worker received `original` as a structured clone — nothing outside
+    //     this thread can see it. The main thread's copy lives untouched in
+    //     pdfRenderCache and is what every subsequent save rebuilds from.
+    //  2. pdf-lib DOES NOT MUTATE IT (verified against 1.17.1): load() hands the
+    //     array straight to a parser whose only reader, ByteStream, indexes it
+    //     read-only and copies out with Uint8Array.slice; attach() stores the
+    //     reference in a FileEmbedder that deflates from it at save time.
+    //
+    // Re-check both if this is ever called from the main thread, or on a pdf-lib
+    // upgrade. The two .slice()s this replaces cost a full extra copy of the
+    // document EACH, on a path that runs every ~2.5s while annotating.
+    const doc = await PDFDocument.load(original);
     const pages = doc.getPages();
 
     for (let i = 0; i < pages.length; i++) {
         const overlay = overlays[i];
         if (!overlay?.length) continue;
+        // This copy STAYS. The ownership + non-mutation argument above was
+        // established for load() and attach() by reading their code; pdf-lib's
+        // PNG decode path has not been audited the same way, and an overlay is
+        // small next to the document. Don't drop it without doing that reading.
         const png = await doc.embedPng(overlay.slice());
         stampOverlay(pages[i], png);
     }
 
-    doc.attach(original.slice(), ORIGINAL_ATTACHMENT, {
+    doc.attach(original, ORIGINAL_ATTACHMENT, {
         mimeType: 'application/pdf',
         description: 'Unannotated source. Every save rebuilds from this, so strokes never compound.',
     });

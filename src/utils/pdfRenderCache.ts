@@ -35,3 +35,18 @@ export function getPdfRenderData(path: string): PdfRenderData | undefined {
 export function clearPdfRenderData(path: string): void {
     renderCache.delete(path);
 }
+
+/**
+ * Follow a rename or a move.
+ *
+ * Without this the old key kept the original + every overlay alive for the rest
+ * of the session — and, worse, the tab's next save looked under its NEW path,
+ * found nothing, and silently returned without writing (see flushTab), dropping
+ * any strokes that were pending at the moment of the rename.
+ */
+export function movePdfRenderData(from: string, to: string): void {
+    const data = renderCache.get(from);
+    if (!data) return;
+    renderCache.delete(from);
+    renderCache.set(to, data);
+}

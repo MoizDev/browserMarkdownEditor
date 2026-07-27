@@ -2,6 +2,7 @@ import { Decoration, EditorView, keymap } from '@codemirror/view';
 import { EditorSelection, Prec } from '@codemirror/state';
 import type { EditorState, Extension, Range } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
+import { docString } from './docCache';
 
 /** One $…$ / $$…$$ span. `latex` is the inner source, delimiters excluded. */
 export interface MathRegion {
@@ -68,6 +69,84 @@ export function findMathRegions(doc: string, codeRanges: CharRange[]): MathRegio
     return regions.sort((a, b) => a.from - b.from);
 }
 
+/* ── Whole-document analysis, computed once per (document, syntax tree) ──
+   The three expensive whole-document derivations — flattening the doc, walking
+   the tree for code ranges, and the two regex sweeps that locate math — are all
+   PURELY a function of the document and its parse. None of them depends on the
+   selection.
+
+   Without this, a single arrow keypress in edit mode redid all of it (the live
+   preview rebuilds on selection changes so it can reveal syntax under the
+   cursor), and every bracket keystroke redid it again inside isInMathContext
+   before the transaction even dispatched.
+
+   Text and Tree are immutable and persistent, so object identity is an EXACT
+   validity test rather than a heuristic — and keying on the tree (not just the
+   doc) is what keeps this from defeating livePreview's deliberate rebuild when
+   the markdown parser advances over a large file. One slot: the entry it holds
+   is the live document's, which is retained anyway. */
+
+/** Everything about a document that the math + code passes need, memoized. */
+export interface DocAnalysis {
+    /** The flattened document (shared with docCache — not a second copy). */
+    doc: string;
+    codeRanges: CharRange[];
+    /** Sorted by `from`, and disjoint by construction (see mathEnds). */
+    mathRegions: MathRegion[];
+    /** Each region's `to`, ascending — the search key for overlapsMath. */
+    mathEnds: number[];
+}
+
+let memo: { doc: unknown; tree: unknown; value: DocAnalysis } | null = null;
+
+export function analyzeDoc(state: EditorState): DocAnalysis {
+    const tree = syntaxTree(state);
+    if (memo && memo.doc === state.doc && memo.tree === tree) return memo.value;
+
+    const doc = docString(state.doc);
+    const codeRanges = collectCodeRanges(state);
+    const mathRegions = findMathRegions(doc, codeRanges);
+    const value: DocAnalysis = {
+        doc,
+        codeRanges,
+        mathRegions,
+        mathEnds: mathRegions.map(r => r.to),
+    };
+    memo = { doc: state.doc, tree, value };
+    return value;
+}
+
+/**
+ * Index of the first math region that could overlap a range starting at `from`.
+ *
+ * findMathRegions returns regions sorted by `from` and DISJOINT: a block regex
+ * consumes its match so blocks cannot nest or overlap, inline regions
+ * overlapping a block are dropped, and inline matches likewise consume. Sorted
+ * and disjoint implies also sorted by `to`, so a binary search over `mathEnds`
+ * is exact.
+ *
+ * This replaced a linear scan over every region, run for every node of the
+ * whole syntax tree — an O(nodes x regions) product that dominated the rebuild
+ * on math-heavy notes (measured ~186 million comparisons, ~138ms per keystroke
+ * on a 400KB note, versus ~3ms for the bare tree walk).
+ */
+export function firstMathFrom(analysis: DocAnalysis, from: number): number {
+    const ends = analysis.mathEnds;
+    let lo = 0, hi = ends.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (ends[mid] <= from) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+/** True when [from, to) overlaps any math region. */
+export function overlapsMath(analysis: DocAnalysis, from: number, to: number): boolean {
+    const i = firstMathFrom(analysis, from);
+    return i < analysis.mathRegions.length && analysis.mathRegions[i].from < to;
+}
+
 /* ── Source highlighting (revealed math) ──
    A lightweight LaTeX tokenizer, matched Obsidian's editor look: green $
    delimiters, coral \commands, purple numbers and ^/_ scripts, green
@@ -97,6 +176,13 @@ const GROUP_CLASS = [
     'cm-latex-var',
 ];
 
+/** One Decoration per token class, built once. A Decoration is positionless and
+ *  immutable — .range() makes the positioned value — so sharing instances is the
+ *  supported pattern, and it stops latexSourceDecorations allocating a fresh
+ *  Decoration for every LaTeX token on every rebuild. */
+const GROUP_MARK = GROUP_CLASS.map(cls => (cls ? Decoration.mark({ class: cls }) : null));
+const MATH_SRC_MARK = Decoration.mark({ class: 'cm-math-src' });
+
 /* ── Code-editor bracket behavior inside math ──
    The stock closeBrackets extension only auto-closes when the NEXT character
    is whitespace or one of ")]}:;>" — inside $…$ the next character is usually
@@ -107,8 +193,12 @@ const GROUP_CLASS = [
  *  being composed (no closing $ yet), when an odd number of unescaped $s
  *  appear earlier on the same line (an opener is pending). */
 export function isInMathContext(state: EditorState, pos: number): boolean {
-    const doc = state.doc.toString();
-    for (const r of findMathRegions(doc, collectCodeRanges(state))) {
+    // Through the memo: this runs synchronously INSIDE the keystroke, before
+    // the transaction dispatches, so it is input latency and not merely
+    // garbage. It essentially always follows a buildDecorations pass on the
+    // same state, so it is a cache hit.
+    const { doc, mathRegions } = analyzeDoc(state);
+    for (const r of mathRegions) {
         if (pos > r.from && pos < r.to) return true;
     }
     const line = state.doc.lineAt(pos);
@@ -120,7 +210,8 @@ const BRACKET_PAIRS: Record<string, string> = { '{': '}', '(': ')', '[': ']' };
 const CLOSERS = new Set(Object.values(BRACKET_PAIRS));
 
 function inCodeRange(state: EditorState, pos: number): boolean {
-    return collectCodeRanges(state).some(r => pos > r.from && pos < r.to);
+    // Memoized: this used to walk the whole syntax tree afresh on every `$`.
+    return analyzeDoc(state).codeRanges.some(r => pos > r.from && pos < r.to);
 }
 
 /**
@@ -240,17 +331,14 @@ export function mathEditingExtensions(): Extension {
  */
 export function latexSourceDecorations(source: string, offset: number): Range<Decoration>[] {
     const out: Range<Decoration>[] = [];
-    out.push(Decoration.mark({ class: 'cm-math-src' }).range(offset, offset + source.length));
+    out.push(MATH_SRC_MARK.range(offset, offset + source.length));
 
     TOKEN_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = TOKEN_RE.exec(source)) !== null) {
-        for (let g = 1; g < GROUP_CLASS.length; g++) {
+        for (let g = 1; g < GROUP_MARK.length; g++) {
             if (m[g] !== undefined) {
-                out.push(
-                    Decoration.mark({ class: GROUP_CLASS[g] })
-                        .range(offset + m.index, offset + m.index + m[0].length)
-                );
+                out.push(GROUP_MARK[g]!.range(offset + m.index, offset + m.index + m[0].length));
                 break;
             }
         }

@@ -97,7 +97,12 @@ export async function readAnnotatedPdf(bytes: Uint8Array): Promise<AnnotatedPdfC
             const raw = await doc.getAttachmentContent(SNAPSHOT_ATTACHMENT);
             if (raw) snapshot = new TextDecoder().decode(raw);
         }
-        return { original: new Uint8Array(original), snapshot };
+        // getAttachmentContent already hands back a fresh array, structured-cloned
+        // out of the worker — copying it again duplicated the whole document for
+        // nothing. Only re-wrap in the case the copy actually guards against: a
+        // view onto a larger buffer, where the extra bytes would travel with it.
+        const tight = original.byteOffset === 0 && original.byteLength === original.buffer.byteLength;
+        return { original: tight ? original : new Uint8Array(original), snapshot };
     });
 }
 

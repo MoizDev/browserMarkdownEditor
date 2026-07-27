@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
-import TreeNode, { type TreeNodeStatic } from './TreeNode';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import TreeNode from './TreeNode';
+import { takeDraggedNode } from '../utils/treeDrag';
 import SearchPanel from './SearchPanel';
 import { FilePlus, FolderPlus, FolderOpen, Search, PenTool, PanelLeft } from './icons';
 import { ensureDrawingExt } from '../utils/fileTypes';
@@ -34,8 +35,6 @@ interface FileExplorerProps {
     onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
     onOpenSearchResult: (node: FileTreeFileNode, range: TextRange | null) => void;
     getOpenTabContent: (path: string) => string | null;
-    /** Bumped after each completed save-flush; re-validates the search index. */
-    saveEpoch: number;
 }
 
 function FileExplorer({
@@ -55,7 +54,6 @@ function FileExplorer({
     onImportFiles,
     onOpenSearchResult,
     getOpenTabContent,
-    saveEpoch
 }: FileExplorerProps) {
     // 'drawing' creates a .tldraw whiteboard; it differs from 'file' only in the
     // extension it forces onto the typed name.
@@ -116,6 +114,19 @@ function FileExplorer({
         setCreatingInRoot(null);
     };
 
+    // Stable identities: these are passed to every TreeNode, so an inline arrow
+    // here would give each row a fresh prop on every explorer render and defeat
+    // TreeNode's memo entirely.
+    const promptCreateFile = useCallback((handle: FileSystemDirectoryHandle, path: string) => {
+        const name = prompt('Enter file name (e.g. "note.md"):');
+        if (name) onCreateFile(handle, name, path);
+    }, [onCreateFile]);
+
+    const promptCreateFolder = useCallback((handle: FileSystemDirectoryHandle) => {
+        const name = prompt('Enter folder name:');
+        if (name) onCreateFolder(handle, name);
+    }, [onCreateFolder]);
+
     // Root-level drop handlers — use a counter to reliably track enter/leave
     const dragCounterRef = useRef(0);
 
@@ -151,9 +162,8 @@ function FileExplorer({
             return;
         }
 
-        const draggedNode = (TreeNode as unknown as TreeNodeStatic)._draggedNode;
+        const draggedNode = takeDraggedNode();
         if (!draggedNode || !rootHandle) return;
-        (TreeNode as unknown as TreeNodeStatic)._draggedNode = null;
         if (onMoveFile) {
             await onMoveFile(draggedNode, rootHandle, '');
         }
@@ -227,7 +237,6 @@ function FileExplorer({
                     fileTree={fileTree}
                     cache={searchCache}
                     getOpenTabContent={getOpenTabContent}
-                    saveEpoch={saveEpoch}
                     onOpenResult={handleSearchResult}
                     onClose={() => setSearchOpen(false)}
                 />
@@ -261,14 +270,8 @@ function FileExplorer({
                             node={node}
                             activeFilePath={activeFilePath}
                             onFileClick={onFileClick}
-                            onCreateFile={(handle, path) => {
-                                const name = prompt('Enter file name (e.g. "note.md"):');
-                                if (name) onCreateFile(handle, name, path);
-                            }}
-                            onCreateFolder={(handle, _path) => {
-                                const name = prompt('Enter folder name:');
-                                if (name) onCreateFolder(handle, name);
-                            }}
+                            onCreateFile={promptCreateFile}
+                            onCreateFolder={promptCreateFolder}
                             onTrash={onTrash}
                             expandedPaths={expandedPaths}
                             onToggleExpand={onToggleExpand}

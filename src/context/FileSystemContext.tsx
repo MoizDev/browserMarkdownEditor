@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
 import type { FileTreeNode, FileSystemContextValue } from '../types';
@@ -172,9 +172,18 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     /** Write raw bytes to a file handle. */
     const writeFileBytes = useCallback(async (fileHandle: FileSystemFileHandle, bytes: Uint8Array) => {
         const writable = await fileHandle.createWritable();
-        // Copy into a plain ArrayBuffer: a Uint8Array view over a larger or
-        // shared buffer would otherwise write the wrong byte range.
-        await writable.write(bytes.slice().buffer);
+        // Hand over the VIEW, not `.buffer`. write() takes a BufferSource and
+        // honours a typed array's byteOffset/byteLength, so the view already
+        // denotes exactly the right range — it is `.buffer` that would ignore
+        // the view and write the whole underlying buffer. The defensive
+        // .slice() this replaces copied the entire document (tens of MB for a
+        // large annotated PDF) on every single save.
+        //
+        // The cast only rules out a SharedArrayBuffer-backed view, which write()
+        // does not accept. Nothing in this app allocates one (the PDF bytes come
+        // from a File read or a transferred worker buffer), and cross-origin
+        // isolation — required before SharedArrayBuffer even exists — is off.
+        await writable.write(bytes as Uint8Array<ArrayBuffer>);
         await writable.close();
     }, []);
 
@@ -252,6 +261,70 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, [rootHandle, refreshTree]);
 
     /**
+     * Object URLs handed out by getAssetUrl, keyed by "<scope> <fileName>" and
+     * validated by the file's (lastModified, size) — the same staleness signal
+     * the vault-search index already trusts.
+     *
+     * Without this, every call minted a BRAND-NEW url and nothing ever revoked
+     * one: an image re-resolved on every scroll-past and every widget rebuild,
+     * so the blob registry grew without bound for the session. Worse, a fresh
+     * URL is a fresh cache key, so Chrome could not reuse the decoded bitmap
+     * and re-decoded the picture every time (and the widget visibly flashed
+     * back through its "Loading …" placeholder).
+     *
+     * Reusing one URL per file VERSION makes growth bounded by the number of
+     * distinct assets displayed, keeps the image cache warm, and still picks up
+     * an externally-edited image because the (mtime, size) check replaces the
+     * entry — revoking the old URL as it goes.
+     */
+    const assetUrlsRef = useRef<Map<string, { url: string; mtime: number; size: number }>>(new Map());
+
+    /**
+     * Vault-relative path of a directory handle, memoized per handle object.
+     *
+     * The cache key has to distinguish two folders that share a NAME but not a
+     * location, or an asset in one could be served for the other. resolve() is
+     * the only thing that answers that; the WeakMap keeps it to one call per
+     * handle, and because it yields a stable PATH the url cache still hits
+     * after refreshTree hands out fresh handle objects for the same folders.
+     */
+    const dirPathsRef = useRef<WeakMap<FileSystemDirectoryHandle, Promise<string>>>(new WeakMap());
+
+    const dirPath = useCallback(async (dir: FileSystemDirectoryHandle) => {
+        let p = dirPathsRef.current.get(dir);
+        if (!p) {
+            p = (rootHandle
+                ? rootHandle.resolve(dir).then(segs => segs?.join('/') ?? `?${dir.name}`)
+                : Promise.resolve(`?${dir.name}`)
+            ).catch(() => `?${dir.name}`);
+            dirPathsRef.current.set(dir, p);
+        }
+        return p;
+    }, [rootHandle]);
+
+    const assetUrlFor = useCallback(async (key: string, fileHandle: FileSystemFileHandle) => {
+        const file = await fileHandle.getFile();       // a stat + handle, not a read
+        const cached = assetUrlsRef.current.get(key);
+        if (cached && cached.mtime === file.lastModified && cached.size === file.size) {
+            return cached.url;
+        }
+        if (cached) URL.revokeObjectURL(cached.url);   // the file changed on disk
+        const url = URL.createObjectURL(file);
+        assetUrlsRef.current.set(key, { url, mtime: file.lastModified, size: file.size });
+        return url;
+    }, []);
+
+    // A different vault can reuse the same asset names — never serve the old
+    // vault's bytes, and let its URLs go rather than pinning them for the session.
+    useEffect(() => {
+        const urls = assetUrlsRef.current;
+        return () => {
+            for (const { url } of urls.values()) URL.revokeObjectURL(url);
+            urls.clear();
+        };
+    }, [rootHandle]);
+
+    /**
      * Look for a file in an 'Assets' folder.
      * If parentDirHandle is provided, first look in parentDirHandle/Assets/,
      * then fall back to rootHandle/Assets/ for backwards compatibility.
@@ -262,8 +335,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             try {
                 const localAssets = await parentDirHandle.getDirectoryHandle('.Assets');
                 const fileHandle = await localAssets.getFileHandle(fileName);
-                const file = await fileHandle.getFile();
-                return URL.createObjectURL(file);
+                // Scoped by the folder's vault path, so two folders holding an
+                // identically-named asset never collide in the cache.
+                return await assetUrlFor(`${await dirPath(parentDirHandle)}/.Assets/${fileName}`, fileHandle);
             } catch (err) {
                 // Not found locally, fall through to root
             }
@@ -274,12 +348,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         try {
             const assetsDir = await rootHandle.getDirectoryHandle('.Assets');
             const fileHandle = await assetsDir.getFileHandle(fileName);
-            const file = await fileHandle.getFile();
-            return URL.createObjectURL(file);
+            return await assetUrlFor(`.Assets/${fileName}`, fileHandle);
         } catch (err) {
             return null;
         }
-    }, [rootHandle]);
+    }, [rootHandle, assetUrlFor, dirPath]);
 
     /**
      * Save a Blob to an 'Assets' folder. If parentDirHandle is provided,

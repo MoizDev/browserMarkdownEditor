@@ -1,7 +1,7 @@
 import React, { useRef } from 'react';
 import type { CaretStyle, SettingsDefaults } from '../types';
 
-const DEFAULTS: SettingsDefaults = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '' };
+const DEFAULTS: SettingsDefaults = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '' };
 
 /** What the swatch shows while no custom accent is set ('') — the dark theme's
  *  default purple. Purely cosmetic; '' still means "theme default". */
@@ -11,6 +11,8 @@ interface SettingsPanelProps {
     editorFontSize: number;
     treeFontSize: number;
     editorPadding: number;
+    /** Spaces a Tab inserts — and how far Tab indents a list item. */
+    tabSize: number;
     fontFamily: string;
     caretStyle: CaretStyle;
     caretThickness: number;
@@ -23,6 +25,7 @@ interface SettingsPanelProps {
     onEditorFontSizeChange: (v: number) => void;
     onTreeFontSizeChange: (v: number) => void;
     onEditorPaddingChange: (v: number) => void;
+    onTabSizeChange: (v: number) => void;
     onFontFamilyChange: (v: string) => void;
     onCaretStyleChange: (v: CaretStyle) => void;
     onCaretThicknessChange: (v: number) => void;
@@ -34,7 +37,7 @@ interface SettingsPanelProps {
     onClose: () => void;
 }
 
-export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, accentColor, codeBlockColor, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onAccentColorChange, onCodeBlockColorChange, onResetDefaults, onClose }: SettingsPanelProps) {
+export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, tabSize, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, accentColor, codeBlockColor, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onTabSizeChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onAccentColorChange, onCodeBlockColorChange, onResetDefaults, onClose }: SettingsPanelProps) {
     // Uncontrolled input (keyed on fontFamily) so we only load the Google Font
     // when the user commits the name, and it auto-resets on "Reset to Defaults".
     const fontInputRef = useRef<HTMLInputElement | null>(null);
@@ -126,6 +129,30 @@ export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadd
                                 autoCorrect="off"
                             />
                             <button className="settings-apply-btn" onClick={applyFont}>Apply</button>
+                        </div>
+                    </div>
+
+                    <h4 className="settings-section">Editing</h4>
+
+                    <div className="setting-row">
+                        <div className="setting-info">
+                            <div className="setting-name">Tab size</div>
+                            <div className="settings-hint">
+                                Spaces a Tab inserts — and how far it indents a list item.
+                            </div>
+                        </div>
+                        <div className="setting-control">
+                            <span className="settings-value">{tabSize} spaces</span>
+                            <input
+                                id="tab-size-input"
+                                type="range"
+                                min="1"
+                                max="8"
+                                step="1"
+                                value={tabSize}
+                                onChange={(e) => onTabSizeChange(parseInt(e.target.value, 10))}
+                                className="settings-slider"
+                            />
                         </div>
                     </div>
 

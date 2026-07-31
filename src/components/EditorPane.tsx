@@ -10,6 +10,7 @@ import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
 import { createLivePreviewPlugin } from '../editor/livePreview';
 import { markdownFormatExtension } from '../editor/formatKeymap';
+import { indentSettings, listIndentKeymap } from '../editor/lists';
 import { wikiLinkAutocomplete } from '../editor/wikiLinkComplete';
 import { mathEditingExtensions } from '../editor/latexSource';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
@@ -37,6 +38,8 @@ interface EditorPaneProps {
     fileContent: string;
     theme: Theme;
     editorMode: EditorMode;
+    /** Spaces a Tab inserts — and how far Tab indents a list item. */
+    tabSize: number;
     saveStatus: string;
     tabs: OpenTab[];
     activeTabPath: string | null;
@@ -77,7 +80,7 @@ function themeExtensions(theme: Theme) {
         : [obsidianDarkTheme, obsidianHighlightStyle];
 }
 
-export default function EditorPane({ activeFile, fileContent, theme, editorMode, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onDrawingChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ activeFile, fileContent, theme, editorMode, tabSize, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onDrawingChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const { getAssetUrl, saveAsset } = useFileSystem();
 
     // A drawing takes over the pane: the tldraw canvas is layered over the
@@ -97,6 +100,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
     const themeCompartmentRef = useRef<Compartment>(new Compartment());
     const readOnlyCompartmentRef = useRef<Compartment>(new Compartment());
     const livePreviewCompartmentRef = useRef<Compartment>(new Compartment());
+    const indentCompartmentRef = useRef<Compartment>(new Compartment());
     const onContentChangeRef = useRef(onContentChange);
     const activeFileRef = useRef<ActiveFile | null>(activeFile);
     const onOpenNoteRef = useRef(onOpenNote);
@@ -260,6 +264,10 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                         ?? LanguageDescription.matchFilename(languages, `x.${info}`),
                 }),
                 themeCompartmentRef.current.of(themeExtensions(theme)),
+                indentCompartmentRef.current.of(indentSettings(tabSize)),
+                // Above the default keymap, which deliberately leaves Tab to the
+                // browser — here it indents (and re-nests list items) instead.
+                listIndentKeymap,
                 keymap.of([
                     ...defaultKeymap,
                     ...historyKeymap,
@@ -397,13 +405,14 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         if (nextPath) {
             const cached = stateCacheRef.current.get(nextPath);
             view.setState(cached ?? createTabState(fileContent, editorMode));
-            // Cached states may hold a stale theme/mode (or a leftover search
-            // reveal flash) → reconfigure/clear for this tab.
+            // Cached states may hold a stale theme/mode/tab size (or a leftover
+            // search reveal flash) → reconfigure/clear for this tab.
             view.dispatch({
                 effects: [
                     themeCompartmentRef.current.reconfigure(themeExtensions(theme)),
                     readOnlyCompartmentRef.current.reconfigure(EditorView.editable.of(editorMode !== 'read')),
                     livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, editorMode)),
+                    indentCompartmentRef.current.reconfigure(indentSettings(tabSize)),
                     setRevealHighlight.of(null),
                 ]
             });
@@ -488,6 +497,14 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
             });
         }
     }, [theme]);
+
+    // Apply a changed Tab size to the live view (cached per-tab states get it
+    // from the tab-swap effect above, like the theme).
+    useEffect(() => {
+        viewRef.current?.dispatch({
+            effects: indentCompartmentRef.current.reconfigure(indentSettings(tabSize)),
+        });
+    }, [tabSize]);
 
     // Update read-only & live-preview rules when mode or active file changes
     useEffect(() => {

@@ -5,6 +5,8 @@ import type { EditorState, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
 import { analyzeDoc, firstMathFrom, overlapsMath, latexSourceDecorations } from './latexSource';
+import { parseListMarker } from './lists';
+import type { ListMarker } from './lists';
 import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
 import { ImageWidget } from './imageWidget';
@@ -55,20 +57,48 @@ function cachePut(cache: Map<string, Decoration>, key: string, dec: Decoration):
     return dec;
 }
 
+/* The looks a list line can have. `bullet`/`ordered` are rendered; the `raw-*`
+   trio is the editing look, where the real `- ` / `1. ` shows instead of a drawn
+   bullet. All three lift that revealed syntax OUT of the text flow (see
+   .cm-live-list-marker) so the line keeps the rendered padding and the item's
+   text never moves:
+     raw-lift          — the marker sits in the drawn bullet's slot;
+     raw-lift-ordered  — same, in the drawn number's (slightly wider) slot;
+     raw-lift-start    — the cursor is inside the leading indentation, so that
+                         shows too and the whole prefix is lifted as one, ending
+                         where the content starts.
+   `raw` is the fallback for a ListItem whose line has no parsable marker: it
+   flows, so the line takes the narrow padding. */
+type ListLook = 'raw' | 'raw-lift' | 'raw-lift-ordered' | 'raw-lift-start' | 'bullet' | 'ordered';
+
+const LIST_LOOK_CLASS: Record<ListLook, string> = {
+    raw: 'cm-live-list-item cm-live-list-raw',
+    'raw-lift': 'cm-live-list-item cm-live-list-lift',
+    'raw-lift-ordered': 'cm-live-list-item cm-live-list-lift cm-live-list-lift-ordered',
+    'raw-lift-start': 'cm-live-list-item cm-live-list-lift cm-live-list-lift-start',
+    bullet: 'cm-live-list-item cm-live-list-bullet',
+    ordered: 'cm-live-list-item cm-live-list-ordered',
+};
+
+function rawLook(marker: ListMarker | null, wsRevealed: boolean): ListLook {
+    if (!marker) return 'raw';
+    if (wsRevealed) return 'raw-lift-start';
+    return marker.ordered ? 'raw-lift-ordered' : 'raw-lift';
+}
+
+/** The revealed `- ` / `1. `, lifted into the gutter by CSS. */
+const LIST_MARKER = Decoration.mark({ class: 'cm-live-list-marker' });
+
 const listLineCache = new Map<string, Decoration>();
-function listLine(kind: 'raw' | 'bullet' | 'ordered', indent: number, marker?: string): Decoration {
-    const key = `${kind}\n${indent}\n${marker ?? ''}`;
+function listLine(look: ListLook, indent: number, marker?: string): Decoration {
+    const key = `${look}\n${indent}\n${marker ?? ''}`;
     let dec = listLineCache.get(key);
     if (!dec) {
         const style = `--list-indent: ${indent}`;
-        dec = kind === 'raw'
-            ? Decoration.line({ class: 'cm-live-list-item cm-live-list-raw', attributes: { style } })
-            : kind === 'ordered'
-                ? Decoration.line({
-                    class: 'cm-live-list-item cm-live-list-ordered',
-                    attributes: { 'data-marker': marker!, style },
-                })
-                : Decoration.line({ class: 'cm-live-list-item cm-live-list-bullet', attributes: { style } });
+        const cls = LIST_LOOK_CLASS[look];
+        dec = look === 'ordered'
+            ? Decoration.line({ class: cls, attributes: { 'data-marker': marker!, style } })
+            : Decoration.line({ class: cls, attributes: { style } });
         cachePut(listLineCache, key, dec);
     }
     return dec;
@@ -345,7 +375,20 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
             // === LIST ITEMS ===
             if (name === 'ListItem') {
                 const line = state.doc.lineAt(from);
-                const cursorOnThisLine = editorMode !== 'read' && cursorOnLine(state, from, to);
+
+                // A ListItem's range covers its NESTED items too. Revealing this
+                // item's syntax because the cursor sits on a sub-point would
+                // de-render a line the user isn't editing, so only the item's own
+                // lines — everything before its first sub-list — count as "here".
+                let ownTo = to;
+                for (let child = node.node.firstChild; child; child = child.nextSibling) {
+                    if (child.name === 'BulletList' || child.name === 'OrderedList') {
+                        const subLine = state.doc.lineAt(child.from).number;
+                        ownTo = subLine > line.number ? state.doc.line(subLine - 1).to : line.to;
+                        break;
+                    }
+                }
+                const cursorOnThisLine = editorMode !== 'read' && cursorOnLine(state, from, ownTo);
 
                 // Calculate nesting depth by counting BulletList/OrderedList ancestors
                 let depth = 0;
@@ -358,37 +401,41 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
                 }
                 const indent = Math.max(0, depth - 1);
 
-                const isOrdered = node.node.parent?.name === 'OrderedList';
-                const lineText = line.text;
-                const markerMatch = lineText.match(/^(\s*)([-*]|\d+[.)]) /);
+                // Same parse the Tab/Shift-Tab commands use, so a line that
+                // renders as a bullet is exactly a line they will re-nest.
+                const marker = parseListMarker(line.text);
 
                 if (cursorOnThisLine) {
-                    // Raw mode: keep the `- ` / `1. ` visible so the user edits real markdown,
-                    // but preserve the nested indent via padding so the line doesn't jump left.
-                    // Leading whitespace hides only when the cursor isn't inside it, so
-                    // dedent edits (Backspace/Shift-Tab) stay visible while in progress.
-                    if (markerMatch && markerMatch[1].length > 0) {
-                        const wsFrom = line.from;
-                        const wsTo = line.from + markerMatch[1].length;
-                        if (!cursorInRange(state, wsFrom, wsTo)) {
-                            decorations.push(HIDE.range(wsFrom, wsTo));
-                        }
+                    // Editing: keep the `- ` / `1. ` visible so the user edits real
+                    // markdown. The revealed syntax is LIFTED out of the text flow
+                    // into the slot the drawn bullet occupied, so it costs the item
+                    // no indentation and moves none of its text (wrapped rows
+                    // included) — only the glyph in the gutter changes.
+                    // The leading indentation hides unless the cursor is inside it,
+                    // so Backspacing through it stays visible; that case lifts the
+                    // whole prefix instead, ending it where the content starts.
+                    const wsLen = marker ? marker.ws.length : 0;
+                    const wsRevealed = wsLen > 0 && cursorInRange(state, line.from, line.from + wsLen);
+                    if (marker) {
+                        if (wsLen > 0 && !wsRevealed) decorations.push(HIDE.range(line.from, line.from + wsLen));
+                        decorations.push(LIST_MARKER
+                            .range(wsRevealed ? line.from : line.from + wsLen, line.from + marker.prefixLen));
                     }
-                    decorations.push(listLine('raw', indent).range(line.from));
-                } else {
+                    decorations.push(listLine(rawLook(marker, wsRevealed), indent).range(line.from));
+                } else if (marker) {
                     // Rendered mode: hide the full marker and show the styled bullet/number.
-                    if (markerMatch) {
-                        const prefixLen = markerMatch[0].length;
-                        decorations.push(HIDE.range(line.from, line.from + prefixLen));
-                    }
-
-                    if (isOrdered) {
-                        const numMatch = lineText.match(/^\s*(\d+)[.)] /);
-                        const num = numMatch ? numMatch[1] : '1';
-                        decorations.push(listLine('ordered', indent, num + '.').range(line.from));
-                    } else {
-                        decorations.push(listLine('bullet', indent).range(line.from));
-                    }
+                    decorations.push(HIDE.range(line.from, line.from + marker.prefixLen));
+                    decorations.push(marker.ordered
+                        // The source marker verbatim, so `3)` renders as "3)".
+                        ? listLine('ordered', indent, marker.marker).range(line.from)
+                        : listLine('bullet', indent).range(line.from));
+                } else {
+                    // A ListItem whose line has no marker to hide (a list inside
+                    // a blockquote: `> - x`). Drawing a bullet would just add a
+                    // SECOND marker beside the still-visible source one, so use
+                    // the same flowing look the editing branch falls back to —
+                    // which also means the line looks identical either way.
+                    decorations.push(listLine('raw', indent).range(line.from));
                 }
 
                 // Don't return false — let children (emphasis, code, etc.) still be processed

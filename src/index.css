@@ -1810,15 +1810,57 @@ li[aria-selected] .cm-completionMatchedText {
   line-height: inherit;
 }
 
+/* A number's width grows with the number, so it is anchored by its END, a few
+   px short of the content column, and grows leftwards into the gutter — the way
+   a real <ol> lays its markers out. Anchoring the start instead gave every
+   marker the same 24px slot, and "100." overflowed it into the item's text. */
 .cm-live-list-ordered::before {
   content: attr(data-marker);
   position: absolute;
-  left: calc(12px + var(--list-indent, 0) * 28px);
+  right: calc(100% - 32px - var(--list-indent, 0) * 28px);
   color: var(--text-muted);
   font-size: 0.9em;
   line-height: inherit;
+  white-space: pre;
 }
 
+/* Editing a list item reveals its real `- ` / `1. `. The marker is lifted out
+   of the text flow into the slot the drawn bullet occupied, so the line keeps
+   the padding above — the item's text (and its wrapped rows) stay exactly
+   where they were rendered instead of sliding left as the syntax appears.
+   `pre` matters: it makes the run un-wrappable, which is what lets the
+   right-anchored variants below overhang their slot instead of folding onto a
+   second row on top of the neighbouring line. */
+.cm-live-list-lift .cm-live-list-marker {
+  position: absolute;
+  left: calc(16px + var(--list-indent, 0) * 28px);
+  white-space: pre;
+}
+
+/* Lifting the marker can leave a line with NOTHING in flow — `- ` and `1. ` are
+   whole lines in themselves, and one is exactly what Enter leaves behind on a
+   list item. A block whose only content is out of flow generates no line box
+   and is zero pixels tall, so the line would collapse and the document below
+   jump up over it. This strut is in flow and atomic, so the line box (and its
+   height) always exists; it is zero-width, so it shows up nowhere else. */
+.cm-live-list-lift::after {
+  content: '';
+  display: inline-block;
+}
+
+/* Two prefixes have no width this stylesheet can know: an ordered marker (`1. `
+   through `100. `) and a revealed indentation run. Anchor their END at the
+   content column instead of their start — the item's text then never moves and
+   a wide prefix grows leftwards into the gutter rather than over the text.
+   Must follow the rule above to win the specificity tie. */
+.cm-live-list-lift-ordered .cm-live-list-marker,
+.cm-live-list-lift-start .cm-live-list-marker {
+  left: auto;
+  right: calc(100% - 36px - var(--list-indent, 0) * 28px);
+}
+
+/* Fallback for a list item whose line has no marker to lift (the parser and the
+   marker regex disagreeing): the whole line flows, so it takes a narrow gutter. */
 .cm-live-list-item.cm-live-list-raw {
   padding-left: calc(16px + var(--list-indent, 0) * 28px) !important;
 }

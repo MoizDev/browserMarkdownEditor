@@ -8,6 +8,7 @@ import { collectFiles } from './utils/tree';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
 import { isDrawingFile, isPdfFile, isAnnotatedPdf, annotatedNameFor } from './utils/fileTypes';
+import { clampTabSize } from './editor/lists';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
 // (~1.3MB) into the main bundle, which a markdown-only session never needs.
 // The builder itself is import()ed at the two points that actually write a PDF.
@@ -136,6 +137,10 @@ export default function App() {
   const [editorPadding, setEditorPadding] = useState<number>(() => parseInt(localStorage.getItem('editorPadding') || '6', 10));
   const [showSettings, setShowSettings] = useState<boolean>(false);
 
+  // Spaces a Tab inserts — and how far Tab indents a list item. Clamped on the
+  // way in: localStorage is user-editable and a NaN would reach CodeMirror.
+  const [tabSize, setTabSize] = useState<number>(() => clampTabSize(parseInt(localStorage.getItem('tabSize') || '4', 10)));
+
   // Caret (text cursor) appearance settings — persisted via localStorage.
   // caretStyle: 'line' (thin bar) or 'block' (thick terminal-style block).
   // smoothCaret: glide the caret between positions like MS Word.
@@ -179,6 +184,10 @@ export default function App() {
     document.documentElement.style.setProperty('--editor-padding', editorPadding + '%');
     localStorage.setItem('editorPadding', String(editorPadding));
   }, [editorPadding]);
+
+  useEffect(() => {
+    localStorage.setItem('tabSize', String(tabSize));
+  }, [tabSize]);
 
   // Translate the caret settings into CSS variables the CodeMirror theme reads.
   useEffect(() => {
@@ -265,6 +274,7 @@ export default function App() {
     setEditorFontSize(defaults.editorFontSize);
     setTreeFontSize(defaults.treeFontSize);
     setEditorPadding(defaults.editorPadding);
+    setTabSize(defaults.tabSize);
     setCaretStyle(defaults.caretStyle);
     setCaretThickness(defaults.caretThickness);
     setSmoothCaret(defaults.smoothCaret);
@@ -1006,6 +1016,7 @@ export default function App() {
             fileContent={fileContent}
             theme={theme}
             editorMode={editorMode}
+            tabSize={tabSize}
             saveStatus={saveStatus}
             tabs={tabs}
             activeTabPath={activeTabPath}
@@ -1030,6 +1041,7 @@ export default function App() {
           editorFontSize={editorFontSize}
           treeFontSize={treeFontSize}
           editorPadding={editorPadding}
+          tabSize={tabSize}
           fontFamily={fontFamily}
           caretStyle={caretStyle}
           caretThickness={caretThickness}
@@ -1040,6 +1052,7 @@ export default function App() {
           onEditorFontSizeChange={setEditorFontSize}
           onTreeFontSizeChange={setTreeFontSize}
           onEditorPaddingChange={setEditorPadding}
+          onTabSizeChange={setTabSize}
           onFontFamilyChange={setFontFamily}
           onCaretStyleChange={setCaretStyle}
           onCaretThicknessChange={setCaretThickness}

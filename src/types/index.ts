@@ -153,6 +153,7 @@ export interface SettingsDefaults {
   editorFontSize: number;                // SettingsPanel.jsx:3 (16)
   treeFontSize: number;                  // (13)
   editorPadding: number;                 // (6)
+  tabSize: number;                       // (4) spaces per Tab / per list level
   caretStyle: CaretStyle;                // ('line')
   caretThickness: number;                // (10)
   smoothCaret: boolean;                  // (true)

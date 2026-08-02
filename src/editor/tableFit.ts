@@ -1,3 +1,5 @@
+import type { EditorView } from '@codemirror/view';
+
 /* ─────────────────────────────────────────────────────────────────────────
  * FITTING A RENDERED TABLE TO THE NOTE'S TEXT WIDTH
  *
@@ -86,8 +88,67 @@ const FIT_EPSILON = 0.002;
 /** Sample text for the font sensor — mixed widths, so any metric change moves it. */
 const FONT_PROBE_TEXT = 'MWmw0123456789iIlL';
 
+/**
+ * The last fit applied to a given table's source, so that a table which is
+ * RE-created — the caret leaving it, ⌘E, a tab switch, scrolling back to it —
+ * comes back already fitted instead of being laid out once at its natural size
+ * and corrected a moment later.
+ *
+ * That correction is invisible in itself (resize observations are delivered
+ * before paint) but it is not free, because CodeMirror measures the line in the
+ * animation frame BEFORE it. So CM draws the caret against the unfitted, taller
+ * table — and then has no way to learn better: it only re-reads line heights
+ * when its own content box changes, which on a document shorter than the
+ * viewport it never does. The symptom was a caret stranded a few hundred pixels
+ * below the click that placed it, snapping back only on the next keystroke.
+ * Rendering the table pre-fitted removes the height change, and with it the
+ * problem — there is nothing to correct.
+ *
+ * Keyed by the table's source, which is exactly the widget's identity (see
+ * TableWidget.eq), and carrying the two inputs it was computed from so a stale
+ * entry is never trusted: a different width or font just re-fits. Bounded, like
+ * the mermaid SVG cache, since the keys accumulate across a session.
+ */
+interface AppliedFit {
+    avail: number;
+    font: number;
+    /** Column widths as percentage strings, and which columns may break. */
+    widths: string[];
+    breaks: boolean[];
+    /** `font-size` for the table, '' at full size. */
+    fontSize: string;
+    /** The editor metrics this was computed against — see editorMetrics. */
+    at: { avail: number; font: string };
+}
+const lastFit = new Map<string, AppliedFit>();
+const FIT_CACHE_MAX = 32;
+
+/**
+ * The text width and font a widget is about to be built into, read from the
+ * editor rather than remembered — a remembered value goes stale exactly when it
+ * matters, because the editor can be resized while a table is showing its
+ * source and so not being fitted by anything.
+ *
+ * The width is `.cm-content`'s content box, which is what a widget's probe
+ * spans; the font is the computed shorthand, which moves whenever the metrics
+ * the fit was computed against do.
+ */
+function editorMetrics(view: EditorView): { avail: number; font: string } {
+    const dom = view.contentDOM;
+    const cs = getComputedStyle(dom);
+    return {
+        avail: dom.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+        font: `${cs.fontSize} ${cs.fontFamily} ${cs.fontWeight}`,
+    };
+}
+
 /** One rendered table being kept fitted to its container. */
 export interface TableFit {
+    /** The table's markdown source — the widget's identity, and the fit cache's key. */
+    key: string;
+    /** The editor holding this table — see the end of a fit, which is where a
+     *  height change has to be announced or the caret is left behind by it. */
+    view: EditorView;
     /** `.cm-table-widget` — the widget's outer box. */
     container: HTMLElement;
     /** Zero-height block whose width IS the available text width. */
@@ -102,6 +163,8 @@ export interface TableFit {
     /** Which columns were last allowed to break, so the per-cell style only
      *  gets rewritten when that set actually changes. */
     lastBreaks: string;
+    /** Whether this widget has been fitted since it was built. */
+    fitted: boolean;
 }
 
 /* Keyed by all three elements: a notification arrives on one of the probes and
@@ -140,8 +203,32 @@ const observer = new ResizeObserver(entries => {
     for (const fit of pending) applyFit(fit);
 });
 
+/** Write a remembered fit onto a table that has not been laid out yet, so its
+ *  FIRST layout is its final one. See AppliedFit. */
+function restoreFit(fit: TableFit): void {
+    const done = lastFit.get(fit.key);
+    if (!done || done.widths.length !== fit.cols.length) return;
+    // Only if the editor is still the width and font it was fitted at.
+    const now = editorMetrics(fit.view);
+    if (Math.abs(done.at.avail - now.avail) > 0.5 || done.at.font !== now.font) return;
+    fit.table.style.tableLayout = 'fixed';
+    fit.table.style.fontSize = done.fontSize;
+    for (let i = 0; i < fit.cols.length; i++) fit.cols[i].style.width = done.widths[i];
+    for (const row of fit.table.rows) {
+        for (let i = 0; i < fit.cols.length; i++) {
+            if (row.cells[i]) row.cells[i].style.overflowWrap = done.breaks[i] ? 'break-word' : '';
+        }
+    }
+    // Adopt the inputs too: if the table is still at that width and font, the
+    // first notification then has nothing to do, and if it isn't, it re-fits.
+    fit.lastAvail = done.avail;
+    fit.lastFont = done.font;
+    fit.lastBreaks = done.breaks.map((b, i) => (b ? `${i},` : '')).join('');
+}
+
 /** Start keeping `fit`'s table sized to its container. */
 export function observeTableFit(fit: TableFit): void {
+    restoreFit(fit);
     tracked.set(fit.container, fit);
     tracked.set(fit.widthProbe, fit);
     tracked.set(fit.fontProbe, fit);
@@ -243,6 +330,7 @@ function applyFit(fit: TableFit): void {
     // widths below.
     const avail = fit.widthProbe.getBoundingClientRect().width;
     const fontWidth = fit.fontProbe.getBoundingClientRect().width;
+    const heightBefore = container.getBoundingClientRect().height;
     // A hidden pane (EditorPane hides .view-content with display:none while a
     // drawing or PDF owns the pane) measures zero — keep whatever fit the table
     // already has and wait to be shown. Deliberately BEFORE the inputs are
@@ -340,11 +428,11 @@ function applyFit(fit: TableFit): void {
 
     let sum = 0;
     for (const w of widths) sum += w;
+    const pcts = widths.map(w => `${(w / (sum || 1) * 100).toFixed(4)}%`);
+    const fontSize = scale < 1 ? `${scale.toFixed(4)}em` : '';
     table.style.tableLayout = 'fixed';
-    for (let i = 0; i < count; i++) {
-        cols[i].style.width = `${(widths[i] / (sum || 1) * 100).toFixed(4)}%`;
-    }
-    table.style.fontSize = scale < 1 ? `${scale.toFixed(4)}em` : '';
+    for (let i = 0; i < count; i++) cols[i].style.width = pcts[i];
+    table.style.fontSize = fontSize;
 
     // ── the last resort, column by column ──
     // A column whose longest unbreakable run is wider than the room it ended up
@@ -376,6 +464,46 @@ function applyFit(fit: TableFit): void {
     // retries, rather than the guard above wedging this table forever.
     fit.lastAvail = avail;
     fit.lastFont = fontWidth;
+    const firstFitOfThisWidget = !fit.fitted;
+    fit.fitted = true;
+
+    // Remember it, so the next time this table is built it arrives at this size
+    // rather than being laid out large and corrected — see AppliedFit.
+    if (lastFit.size >= FIT_CACHE_MAX) {
+        const oldest = lastFit.keys().next().value;
+        if (oldest !== undefined) lastFit.delete(oldest);
+    }
+    lastFit.delete(fit.key);          // re-insert, so this is the newest entry
+    lastFit.set(fit.key, {
+        avail, font: fontWidth, widths: pcts, breaks, fontSize, at: editorMetrics(fit.view),
+    });
+
+    /* ── Announce a height change, or the caret is left behind by it ──
+       CodeMirror measured this line in the animation frame BEFORE this
+       callback — resize observations are delivered after rAF — so a fit that
+       changes the table's height leaves its height map, and the caret the
+       selection layer has already drawn from it, describing the taller table
+       on the way in. Nothing puts that right on its own: CM re-reads line
+       heights only when its own content box changes, and on a document shorter
+       than the viewport that never happens. The symptom was a caret stranded a
+       few hundred pixels below the click that placed it, snapping back only
+       once a keystroke moved it.
+
+       restoreFit is what avoids this in the ordinary case, by making a
+       re-created table's first layout its final one. This is for the case it
+       can't cover — the first fit of a table at a width it has never been
+       fitted at — where the height genuinely does change under CM. Re-stating
+       the selection is the one public lever that reaches the selection layer
+       (it re-measures on `selectionSet`); requestMeasure alone only refreshes
+       the height map, and only when the content box moved.
+
+       Deliberately restricted to a widget's FIRST fit. Later ones are resizes,
+       where the editor's own geometry changed too, so CM re-measures anyway —
+       and a transaction per frame of a resize drag is not worth paying. */
+    if (Math.abs(container.getBoundingClientRect().height - heightBefore) > 0.5) {
+        fit.view.requestMeasure();
+        if (firstFitOfThisWidget) fit.view.dispatch({ selection: fit.view.state.selection });
+    }
 }
 
 /** The hidden sensors a fitted table carries; see TableFit. */

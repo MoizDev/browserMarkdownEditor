@@ -1587,6 +1587,16 @@ body {
    things here are load-bearing for that. */
 .cm-table-widget {
   margin: 8px 0;
+  /* The table's own intrinsic width must never reach the editor. Restoring
+     `overflow-wrap: normal` above gives the table a real min-content again,
+     and while it is still browser-laid-out that min-content propagates up and
+     can push .cm-content WIDER than its scroller — so the first fit measures
+     an inflated text width, produces a too-generous fit, and a second fit has
+     to correct it a frame later. Containment makes this box's inline size a
+     function of its container alone, so the width the fitter reads is stable
+     and one fit is enough. */
+  contain: inline-size;
+
   /* For the frames the fitter hasn't sized yet. A fitted table is pinned to
      exactly the text width and cannot overflow, but before the first fit — and
      on the paths where the fitter bails, such as a pane that measures zero —

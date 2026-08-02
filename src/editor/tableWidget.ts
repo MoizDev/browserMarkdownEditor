@@ -1,4 +1,5 @@
 import { WidgetType } from '@codemirror/view';
+import type { EditorView } from '@codemirror/view';
 import { createFitProbes, observeTableFit, releaseTableFit } from './tableFit';
 
 /** One parsed table: header rows, body rows, and the column count they share. */
@@ -160,7 +161,7 @@ export class TableWidget extends WidgetType {
         return other.rawTable === this.rawTable;
     }
 
-    toDOM(): HTMLElement {
+    toDOM(view: EditorView): HTMLElement {
         const container = document.createElement('div');
         container.className = 'cm-table-widget';
 
@@ -201,8 +202,8 @@ export class TableWidget extends WidgetType {
         container.appendChild(table);
 
         observeTableFit({
-            container, widthProbe: probe, fontProbe, table, cols,
-            lastAvail: -1, lastFont: -1, lastBreaks: '',
+            key: this.rawTable, view, container, widthProbe: probe, fontProbe, table, cols,
+            lastAvail: -1, lastFont: -1, lastBreaks: '', fitted: false,
         });
 
         return container;

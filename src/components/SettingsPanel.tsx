@@ -1,7 +1,8 @@
 import React, { useRef } from 'react';
+import { DEFAULT_RECENT_VAULT_LIMIT, MAX_STORED_VAULTS } from '../utils/recentVaults';
 import type { CaretStyle, SettingsDefaults } from '../types';
 
-const DEFAULTS: SettingsDefaults = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '' };
+const DEFAULTS: SettingsDefaults = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT };
 
 /** What the swatch shows while no custom accent is set ('') — the dark theme's
  *  default purple. Purely cosmetic; '' still means "theme default". */
@@ -22,6 +23,8 @@ interface SettingsPanelProps {
     accentColor: string;
     /** Ink for language-less ``` blocks as #rrggbb, or '' to follow the accent. */
     codeBlockColor: string;
+    /** How many recently opened vaults the vault button's menu lists. */
+    recentVaultLimit: number;
     onEditorFontSizeChange: (v: number) => void;
     onTreeFontSizeChange: (v: number) => void;
     onEditorPaddingChange: (v: number) => void;
@@ -33,11 +36,12 @@ interface SettingsPanelProps {
     onCaretSpeedChange: (v: number) => void;
     onAccentColorChange: (v: string) => void;
     onCodeBlockColorChange: (v: string) => void;
+    onRecentVaultLimitChange: (v: number) => void;
     onResetDefaults: (defaults: SettingsDefaults) => void;
     onClose: () => void;
 }
 
-export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, tabSize, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, accentColor, codeBlockColor, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onTabSizeChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onAccentColorChange, onCodeBlockColorChange, onResetDefaults, onClose }: SettingsPanelProps) {
+export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, tabSize, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, accentColor, codeBlockColor, recentVaultLimit, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onTabSizeChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onAccentColorChange, onCodeBlockColorChange, onRecentVaultLimitChange, onResetDefaults, onClose }: SettingsPanelProps) {
     // Uncontrolled input (keyed on fontFamily) so we only load the Google Font
     // when the user commits the name, and it auto-resets on "Reset to Defaults".
     const fontInputRef = useRef<HTMLInputElement | null>(null);
@@ -151,6 +155,31 @@ export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadd
                                 step="1"
                                 value={tabSize}
                                 onChange={(e) => onTabSizeChange(parseInt(e.target.value, 10))}
+                                className="settings-slider"
+                            />
+                        </div>
+                    </div>
+
+                    <h4 className="settings-section">Vault</h4>
+
+                    <div className="setting-row">
+                        <div className="setting-info">
+                            <div className="setting-name">Recent vaults shown</div>
+                            <div className="settings-hint">
+                                How many recently opened vaults the file tree's vault button lists.
+                                Double-click that button to browse for a folder instead.
+                            </div>
+                        </div>
+                        <div className="setting-control">
+                            <span className="settings-value">{recentVaultLimit}</span>
+                            <input
+                                id="recent-vault-limit-input"
+                                type="range"
+                                min="1"
+                                max={MAX_STORED_VAULTS}
+                                step="1"
+                                value={recentVaultLimit}
+                                onChange={(e) => onRecentVaultLimitChange(parseInt(e.target.value, 10))}
                                 className="settings-slider"
                             />
                         </div>

@@ -13,8 +13,18 @@ Here is everything you need to know about using the application.
 ### What is a Vault?
 A "Vault" is simply any folder on your computer that you choose to open with this application. When you click "Open local folder (Vault)", the browser asks for your permission to read and write to that specific directory.
 
+### Switching Vaults
+The folder icon at the top of the file tree remembers every folder you have opened as a vault:
+- **Click** it to drop down your recent vaults and pick one — no file dialog involved.
+- **Double-click** it to browse for a folder instead (or choose "Open folder…" at the bottom of that list). Anything you open this way joins the list.
+- Vaults are listed newest first, by folder name alone; two vaults whose folders share a name show the parent folder too. Settings → Vault controls how many are listed.
+
+Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`.
+
+Switching vaults closes the notes you had open (saving anything unsaved first), since those files belong to the vault you just left.
+
 ### Security & Permissions
-Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive. 
+Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
 
 ---
 

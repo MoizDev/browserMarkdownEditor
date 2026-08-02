@@ -337,6 +337,97 @@ body {
   padding: 4px 0;
 }
 
+/* ── Recent vaults menu (drops out of the explorer's vault button) ──
+   Fixed, not absolute: the sidebar clips its overflow and can be resized
+   narrower than this menu. Position AND width both come from the button's rect
+   (see FileExplorer): the menu hangs from the button's right edge, so how wide
+   it may grow is a function of how far that edge is from the left of the
+   screen — a content-sized menu would otherwise run off it. */
+.vault-menu {
+  position: fixed;
+  z-index: 900;
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+/* A raised surface should read as brighter than what it covers, and in the light
+   theme --background-primary-alt is the sidebar's own colour — the menu would
+   sit on it as one flat sheet, told apart only by its 1px border. */
+:root[data-theme="light"] .vault-menu {
+  background: var(--background-primary);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+.vault-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--nav-item-size);
+  text-align: left;
+  cursor: pointer;
+}
+
+.vault-menu-item:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* Mirrors the search result rows' keyboard treatment. */
+.vault-menu-item:focus-visible {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+.vault-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The vault already open reads as "you are here" without needing the tick. */
+.vault-menu-item[aria-current] {
+  color: var(--text-normal);
+}
+
+.vault-menu-check {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-accent);
+}
+
+.vault-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--background-modifier-border);
+}
+
+/* Flush with the rows above it, but on the border tint rather than the hover
+   tint — sharing hover's grey made the notice merge into whichever row the
+   pointer happened to be resting on. */
+.vault-menu-error {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-border);
+  color: var(--text-normal);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 /* =============================================================
    Tree Items
    ============================================================= */

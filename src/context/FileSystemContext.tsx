@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
-import type { FileTreeNode, FileSystemContextValue } from '../types';
+import { forgetVault, labelVaults, loadRecentVaults, rememberVault } from '../utils/recentVaults';
+import type { FileTreeNode, FileSystemContextValue, RecentVault, VaultOpenResult } from '../types';
 
 const FileSystemContext = createContext<FileSystemContextValue | null>(null);
 
@@ -73,6 +74,37 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [previousVault, setPreviousVault] = useState<FileSystemDirectoryHandle | null>(null);
+    const [recentVaults, setRecentVaults] = useState<RecentVault[]>([]);
+    const [currentVaultId, setCurrentVaultId] = useState<string | null>(null);
+
+    // The open vault, readable from the stable callbacks below without making
+    // them depend on it (they are props of the memoized FileExplorer).
+    const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
+    useEffect(() => { rootHandleRef.current = rootHandle; }, [rootHandle]);
+
+    // True while a native folder picker is up (see pickDirectory).
+    const pickerOpenRef = useRef(false);
+
+    /**
+     * True when `handle` names the folder that is already open, whatever object
+     * it happens to be.
+     *
+     * Re-opening the CURRENT vault must not look like a switch: App.tsx compares
+     * root handles by object identity and empties the workspace when they
+     * differ, while the picker mints a fresh handle for the same folder every
+     * time — so picking the folder you already have open would otherwise close
+     * every tab. `isSameEntry` is the only identity test the platform offers
+     * (see utils/recentVaults.ts).
+     */
+    const isCurrentVault = useCallback(async (handle: FileSystemDirectoryHandle) => {
+        const current = rootHandleRef.current;
+        if (!current) return false;
+        try {
+            return await current.isSameEntry(handle);
+        } catch {
+            return false;
+        }
+    }, []);
 
     /**
      * Refresh the file tree from the current root handle.
@@ -88,6 +120,22 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, []);
 
     /**
+     * Note a vault as just-opened: it moves to the head of the recent list and
+     * becomes the one the vault menu marks as current. Every path that changes
+     * `rootHandle` goes through here, including the silent restore on mount —
+     * the list would otherwise be missing the vault the user is looking at.
+     */
+    const recordVault = useCallback(async (handle: FileSystemDirectoryHandle) => {
+        try {
+            const { list, id } = await rememberVault(handle);
+            setCurrentVaultId(id);
+            setRecentVaults(await labelVaults(list));
+        } catch (err) {
+            console.warn('Could not record the opened vault:', err);
+        }
+    }, []);
+
+    /**
      * On mount, try to restore the previously saved directory handle from IndexedDB.
      */
     useEffect(() => {
@@ -99,6 +147,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     const permission = await storedHandle.queryPermission({ mode: 'readwrite' });
                     if (permission === 'granted') {
                         setRootHandle(storedHandle);
+                        // Before the tree walk, so the vault menu is already
+                        // right on the first render that has a vault to show.
+                        await recordVault(storedHandle);
                         await refreshTree(storedHandle);
                         setIsLoading(false); // Fix: Ensure loading state is turned off
                         return;
@@ -110,9 +161,16 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             } catch (err) {
                 console.warn('Could not restore directory handle:', err);
             }
+            // No vault restored — the list still loads, so whatever the user
+            // opens next lands on top of a complete history.
+            try {
+                setRecentVaults(await labelVaults(await loadRecentVaults()));
+            } catch (err) {
+                console.warn('Could not load the recent vault list:', err);
+            }
             setIsLoading(false);
         })();
-    }, [refreshTree]);
+    }, [refreshTree, recordVault]);
 
     /**
      * Prompt the user to pick a directory, store its handle, and scan it.
@@ -125,19 +183,87 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             );
             return;
         }
+        // One picker at a time: browsing for a vault is a DOUBLE-click on the
+        // explorer's vault button, and with nothing in the recent list the first
+        // of those two clicks already opens the picker. A second call while one
+        // is up rejects with NotAllowedError ("File picker already active").
+        if (pickerOpenRef.current) return;
+        pickerOpenRef.current = true;
 
         try {
             const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+            // Picking the folder already open is a no-op, not a vault switch —
+            // keep the handle the app (and every open tab) is already using.
+            if (await isCurrentVault(handle)) {
+                await refreshTree(rootHandleRef.current);
+                return;
+            }
             await set(IDB_KEY, handle);
+            setPreviousVault(null);
             setRootHandle(handle);
+            await recordVault(handle);
             await refreshTree(handle);
         } catch (err) {
             // User cancelled the picker
             if ((err as DOMException).name !== 'AbortError') {
                 console.error('Error picking directory:', err);
             }
+        } finally {
+            pickerOpenRef.current = false;
         }
-    }, [refreshTree]);
+    }, [refreshTree, recordVault, isCurrentVault]);
+
+    /**
+     * Switch to a vault the user has opened before, straight from its stored
+     * handle — no picker, because the point of the recent list is not having to
+     * find the folder again.
+     *
+     * Permission is re-requested when Chrome has let the grant lapse (a new
+     * session, usually); that call is legal here only because opening a vault
+     * is always a click. Returns why it didn't happen when it didn't, so the
+     * menu can say so instead of appearing to do nothing.
+     */
+    const openRecentVault = useCallback(async (vault: RecentVault): Promise<VaultOpenResult> => {
+        try {
+            let permission = await vault.handle.queryPermission({ mode: 'readwrite' });
+            if (permission !== 'granted') {
+                permission = await vault.handle.requestPermission({ mode: 'readwrite' });
+            }
+            if (permission !== 'granted') return 'denied';
+
+            // Already here. The menu marks the current vault and makes its row
+            // inert, but that guard is by id and the id is absent whenever
+            // recording the vault failed — and a stored handle is a different
+            // OBJECT from the open one for the same folder, so letting it
+            // through would read as a switch and close every tab.
+            if (await isCurrentVault(vault.handle)) return 'ok';
+
+            // Touch the folder before committing the app to it: one that has
+            // been deleted or moved since throws here, whereas swapping the
+            // tree first would just blank the sidebar with no explanation.
+            await vault.handle.entries().next();
+
+            await set(IDB_KEY, vault.handle);
+            setPreviousVault(null);
+            setRootHandle(vault.handle);
+            await recordVault(vault.handle);
+            await refreshTree(vault.handle);
+            return 'ok';
+        } catch (err) {
+            if ((err as DOMException)?.name === 'NotFoundError') {
+                // The folder is gone; keeping a row that can never open again
+                // would just be a trap.
+                try {
+                    setRecentVaults(await labelVaults(await forgetVault(vault.id)));
+                } catch (dropErr) {
+                    console.warn('Could not drop the missing vault:', dropErr);
+                }
+                return 'missing';
+            }
+            console.error('Could not open the vault:', err);
+            return 'error';
+        }
+    }, [refreshTree, recordVault, isCurrentVault]);
 
     /**
      * Read the text content of a file handle. Line endings are normalized to
@@ -389,6 +515,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             if (permission === 'granted') {
                 setRootHandle(previousVault);
                 setIsLoading(true);
+                await recordVault(previousVault);
                 await refreshTree(previousVault);
                 setPreviousVault(null);
                 setIsLoading(false);
@@ -396,7 +523,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } catch (err) {
             console.error('Error restoring vault permission:', err);
         }
-    }, [previousVault, refreshTree]);
+    }, [previousVault, refreshTree, recordVault]);
 
     /**
      * Move a file or folder to the Trash directory inside the root vault.
@@ -503,7 +630,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         fileTree,
         isLoading,
         previousVault,
+        recentVaults,
+        currentVaultId,
         pickDirectory,
+        openRecentVault,
         readFile,
         writeFile,
         readFileBytes,

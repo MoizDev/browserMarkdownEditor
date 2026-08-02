@@ -8,6 +8,7 @@ import { collectFiles } from './utils/tree';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
 import { isDrawingFile, isPdfFile, isAnnotatedPdf, annotatedNameFor } from './utils/fileTypes';
+import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import { clampTabSize } from './editor/lists';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
 // (~1.3MB) into the main bundle, which a markdown-only session never needs.
@@ -90,7 +91,10 @@ export default function App() {
     fileTree,
     isLoading,
     previousVault,
+    recentVaults,
+    currentVaultId,
     pickDirectory,
+    openRecentVault,
     readFile,
     writeFile,
     readFileBytes,
@@ -141,6 +145,12 @@ export default function App() {
   // way in: localStorage is user-editable and a NaN would reach CodeMirror.
   const [tabSize, setTabSize] = useState<number>(() => clampTabSize(parseInt(localStorage.getItem('tabSize') || '4', 10)));
 
+  // How many recently opened vaults the vault button's menu lists. Clamped for
+  // the same reason as tabSize — this one ends up in Array.slice.
+  const [recentVaultLimit, setRecentVaultLimit] = useState<number>(
+    () => clampRecentVaultLimit(parseInt(localStorage.getItem('recentVaultLimit') || String(DEFAULT_RECENT_VAULT_LIMIT), 10))
+  );
+
   // Caret (text cursor) appearance settings — persisted via localStorage.
   // caretStyle: 'line' (thin bar) or 'block' (thick terminal-style block).
   // smoothCaret: glide the caret between positions like MS Word.
@@ -188,6 +198,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('tabSize', String(tabSize));
   }, [tabSize]);
+
+  useEffect(() => {
+    localStorage.setItem('recentVaultLimit', String(recentVaultLimit));
+  }, [recentVaultLimit]);
 
   // Translate the caret settings into CSS variables the CodeMirror theme reads.
   useEffect(() => {
@@ -282,6 +296,7 @@ export default function App() {
     setFontFamily('');
     setAccentColor(defaults.accentColor);
     setCodeBlockColor(defaults.codeBlockColor);
+    setRecentVaultLimit(defaults.recentVaultLimit);
   }, []);
 
   // Expanded folder paths (persisted via localStorage)
@@ -312,6 +327,10 @@ export default function App() {
   // True once the restore pass below has consumed the stored session.
   const hasRestoredTabs = useRef<boolean>(false);
 
+  // The open vault, for the async restore pass to re-check after its awaits.
+  const currentVaultIdRef = useRef<string | null>(currentVaultId);
+  useEffect(() => { currentVaultIdRef.current = currentVaultId; }, [currentVaultId]);
+
   // Persist the open tabs + active tab so they can be restored on reload. Keyed
   // on the joined path string (not `tabs`) so it does NOT run on every keystroke
   // — only when the set/order of open files, or the active one, changes.
@@ -325,13 +344,17 @@ export default function App() {
     if (!hasRestoredTabs.current) return;
     const paths = openTabPathsKey ? openTabPathsKey.split('\n') : [];
     writeJSON('openTabPaths', paths);
+    // Which vault this session belongs to. These paths index ONE vault's tree,
+    // so the restore pass below has to know whether it is looking at that vault
+    // (see there) — a session with no vault stamped on it predates this.
+    if (currentVaultId) localStorage.setItem('openTabsVaultId', currentVaultId);
     if (activeTabPath) {
       localStorage.setItem('activeTabPath', activeTabPath);
       localStorage.setItem('lastFilePath', activeTabPath); // back-compat
     } else {
       localStorage.removeItem('activeTabPath');
     }
-  }, [openTabPathsKey, activeTabPath]);
+  }, [openTabPathsKey, activeTabPath, currentVaultId]);
 
   // Sidebar resizing
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
@@ -650,6 +673,34 @@ export default function App() {
 
   const handleRevealHandled = useCallback(() => setPendingReveal(null), []);
 
+  // ── Vault switch ────────────────────────────────────────────────────────
+  // A tab is only meaningful inside the vault it was opened from: its path
+  // indexes that vault's tree, its handle writes into that vault's folder, and
+  // EditorPane's cached editor states are keyed by path alone. Carrying the set
+  // across a switch leaves the previous vault's notes on screen — and still
+  // autosaving into it — behind the new vault's file tree, and a path the two
+  // vaults happen to share would serve the old vault's buffer for the new
+  // vault's file. So flush what's pending (those handles are still good) and
+  // hand the new vault an empty workspace.
+  //
+  // Only fires on a REAL switch: the null → vault assignment at startup must not
+  // clear the tabs the restore pass below is about to bring back.
+  const prevRootRef = useRef<FileSystemDirectoryHandle | null>(null);
+  useEffect(() => {
+    const previous = prevRootRef.current;
+    prevRootRef.current = rootHandle;
+    if (!previous || previous === rootHandle) return;
+
+    for (const tab of tabsRef.current) {
+      flushTab(tab.file.path);           // no-ops unless dirty; captures synchronously
+      clearPdfRenderData(tab.file.path);
+    }
+    setTabs([]);
+    setActiveTabPath(null);
+    setSaveStatus('');
+    setPendingReveal(null);
+  }, [rootHandle, flushTab]);
+
   // Search reads open-tab buffers through this accessor (via tabsRef) so its
   // results reflect unsaved edits without re-rendering the sidebar on typing.
   const getOpenTabContent = useCallback(
@@ -664,6 +715,17 @@ export default function App() {
     // BEFORE any early return, because persistence stays gated until this pass
     // has run and a fresh profile with nothing stored must still un-gate it.
     hasRestoredTabs.current = true;
+
+    // The stored session belongs to ONE vault: its paths index that vault's
+    // tree, and nothing else about them says so. A cold start can land on a
+    // DIFFERENT vault — the last one's permission lapsed, or the user opened
+    // another from the vault menu before this pass ran — and restoring then
+    // opens whichever of the new vault's files happen to sit at those paths.
+    // That is precisely what the vault-switch effect above exists to prevent,
+    // arriving by another road. A session with no vault stamped on it was
+    // written by an older build; restore it as before rather than discard it.
+    const sessionVaultId = localStorage.getItem('openTabsVaultId');
+    if (sessionVaultId && currentVaultId && sessionVaultId !== currentVaultId) return;
 
     // A missing key (pre-tab-era profile) falls back to its single
     // lastFilePath; a present-but-empty list means the last session really
@@ -699,12 +761,16 @@ export default function App() {
       // The reads above yield to the event loop; if the user opened something
       // in the meantime, leave their workspace alone rather than clobber it.
       if (tabsRef.current.length > 0) return;
+      // Or switched vaults in the meantime — the switch effect empties the tab
+      // set, so the check above would wave these through and drop the OLD
+      // vault's notes (handles and all) into the new vault's workspace.
+      if (currentVaultIdRef.current !== currentVaultId) return;
       setTabs(restored);
       const wantActive = localStorage.getItem('activeTabPath');
       const active = restored.some(t => t.file.path === wantActive) ? wantActive : restored[0].file.path;
       setActiveTabPath(active);
     })();
-  }, [fileTree, readFile]);
+  }, [fileTree, readFile, currentVaultId]);
 
   const handleHelpClick = useCallback(() => {
     const path = 'help-guide';
@@ -945,6 +1011,10 @@ export default function App() {
           onCreateFile={handleCreateFile}
           onCreateFolder={handleCreateFolder}
           onChangeVault={pickDirectory}
+          recentVaults={recentVaults}
+          currentVaultId={currentVaultId}
+          recentVaultLimit={recentVaultLimit}
+          onOpenRecentVault={openRecentVault}
           onCollapse={() => setSidebarCollapsed(true)}
           onTrash={handleTrash}
           expandedPaths={expandedPaths}
@@ -1049,6 +1119,7 @@ export default function App() {
           caretSpeed={caretSpeed}
           accentColor={accentColor}
           codeBlockColor={codeBlockColor}
+          recentVaultLimit={recentVaultLimit}
           onEditorFontSizeChange={setEditorFontSize}
           onTreeFontSizeChange={setTreeFontSize}
           onEditorPaddingChange={setEditorPadding}
@@ -1060,6 +1131,7 @@ export default function App() {
           onCaretSpeedChange={setCaretSpeed}
           onAccentColorChange={setAccentColor}
           onCodeBlockColorChange={setCodeBlockColor}
+          onRecentVaultLimitChange={setRecentVaultLimit}
           onResetDefaults={handleResetDefaults}
           onClose={() => setShowSettings(false)}
         />

@@ -142,6 +142,31 @@ export type EditorMode = 'edit' | 'read';       // App.jsx:34 ; toggled App.jsx:
 export type MainView = 'editor' | 'graph';      // App.jsx:37,508
 
 /* ─────────────────────────────────────────────────────────────────────────
+ * RECENT VAULTS
+ * The folders the user has opened as vaults, persisted (handle and all) in
+ * IndexedDB by utils/recentVaults.ts and listed by the vault menu. See that
+ * module for why identity is isSameEntry and why `label` has to be derived.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** One recorded vault, exactly as it is stored in IndexedDB. */
+export interface StoredVault {
+  id: string;                            // stable across re-opens; the React key
+  name: string;                          // the folder's own name (handle.name)
+  handle: FileSystemDirectoryHandle;     // structured-cloned into IndexedDB
+  openedAt: number;                      // ms epoch; the list is sorted by it
+}
+
+/** A stored vault plus what the menu prints for it — the folder name, or
+ *  "parent/name" when another listed vault has the same folder name. */
+export interface RecentVault extends StoredVault {
+  label: string;
+}
+
+/** Why opening a recent vault did or didn't take effect. 'missing' also drops
+ *  the entry from the list — its folder is gone from disk. */
+export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error';
+
+/* ─────────────────────────────────────────────────────────────────────────
  * SETTINGS
  * The DEFAULTS object is the canonical shape (SettingsPanel.jsx:3) and is what
  * onResetDefaults receives (App.jsx:138 handleResetDefaults). Each field also
@@ -160,6 +185,7 @@ export interface SettingsDefaults {
   caretSpeed: number;                    // (80)
   accentColor: string;                   // ('' = per-theme default accent)
   codeBlockColor: string;                // ('' = follow the accent color)
+  recentVaultLimit: number;              // (10) vaults the vault menu lists
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -186,9 +212,15 @@ export interface FileSystemContextValue {
   fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
   isLoading: boolean;                                     // FileSystemContext.jsx:72
   previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73
+  /** Folders opened as vaults, newest first, each already labelled. */
+  recentVaults: RecentVault[];
+  /** Which of those is open right now (null until one is). */
+  currentVaultId: string | null;
 
   // ── actions ──
   pickDirectory: () => Promise<void>;                    // FileSystemContext.jsx:118
+  /** Switch to an already-known vault, re-requesting permission if needed. */
+  openRecentVault: (vault: RecentVault) => Promise<VaultOpenResult>;
   readFile: (fileHandle: FileSystemFileHandle) => Promise<string>;            // :143
   writeFile: (fileHandle: FileSystemFileHandle, content: string) => Promise<void>; // :151
   // Binary IO — PDFs cannot ride the text path (UTF-8 decode + CRLF

@@ -1581,10 +1581,67 @@ body {
   color: var(--text-muted);
 }
 
-/* ── Table Widget ── */
+/* ── Table Widget ──
+   Column widths and, when the columns can't all be satisfied, the table's own
+   type size are computed from measured content by editor/tableFit.ts. Three
+   things here are load-bearing for that. */
 .cm-table-widget {
   margin: 8px 0;
+  /* For the frames the fitter hasn't sized yet. A fitted table is pinned to
+     exactly the text width and cannot overflow, but before the first fit — and
+     on the paths where the fitter bails, such as a pane that measures zero —
+     the table is laid out by the browser at `width: 100%`, and an auto table
+     cannot go below its min-content. This is what scrolls it instead of
+     letting it run past the edge of the note. It does NOT rescue oversized
+     content inside a fitted cell: fixed column widths mean such content
+     overflows the cell while the table itself still measures 100%, so there is
+     nothing to scroll — hence the cap on replaced elements below. */
   overflow-x: auto;
+  /* CodeMirror's line wrapping puts `white-space: break-spaces;
+     word-break: break-word; overflow-wrap: anywhere` on .cm-content, and table
+     cells INHERIT all three. `anywhere` doesn't merely allow a mid-word break,
+     it also collapses the table's intrinsic MINIMUM width to about one
+     character per column — so `width: 100%` could squeeze a column narrower
+     than its longest word and "Location" rendered as "Locat / ion". Cells are
+     ordinary HTML text again: they wrap between words, and never inside one. */
+  white-space: normal;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* An unparseable table falls back to showing its source; keep its lines. */
+.cm-table-widget.cm-table-raw {
+  white-space: pre-wrap;
+}
+
+/* Paired with tableWidget's CELL_HTML allowlist, which no longer admits <img>,
+   so nothing reaches this today. Kept because it is the other half of that
+   decision: a cell's width is fixed by the fitter and text is the only thing
+   it can wrap, so a replaced element wider than its column neither shrinks it,
+   nor widens the table, nor scrolls — it paints across the next column's text.
+   Anything that widens the allowlist, or renders images in cells, needs this. */
+.cm-table-widget img,
+.cm-table-widget svg,
+.cm-table-widget video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* The fitter's sensors: this box's WIDTH is the available text width, and the
+   hidden text inside it changes width iff the note's font metrics do. Both are
+   watched by one ResizeObserver, and neither is affected by anything the
+   fitter does — so applying a fit can't re-trigger one. Zero height and
+   clipped, so they occupy nothing and can't be selected, found or copied. */
+.cm-table-probe {
+  height: 0;
+  overflow: hidden;
+}
+
+.cm-table-probe span {
+  display: inline-block;
+  white-space: pre;
+  visibility: hidden;
+  user-select: none;
 }
 
 .cm-table-widget table {
@@ -1597,7 +1654,10 @@ body {
 .cm-table-widget th,
 .cm-table-widget td {
   border: 1px solid var(--background-modifier-border);
-  padding: 6px 12px;
+  /* In em, not px: the fitter shrinks a too-wide table by its font size, and
+     padding that stayed put would grow into the space the text just gave up.
+     0.375em/0.75em is 6px/12px at the default 16px note. */
+  padding: 0.375em 0.75em;
   text-align: left;
 }
 
@@ -1613,7 +1673,9 @@ body {
 .cm-table-widget code {
   font-family: var(--font-monospace);
   font-size: 0.9em;
-  padding: 1px 4px;
+  /* em for the same reason the cell padding is (see above): a code chip in a
+     shrunk table would otherwise keep full-size padding around smaller type. */
+  padding: 0.07em 0.28em;
   border-radius: 3px;
   background: var(--background-modifier-active);
 }

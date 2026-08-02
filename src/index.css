@@ -930,6 +930,94 @@ body {
   backdrop-filter: blur(4px);
 }
 
+/* ── Confirmation dialog ──
+   Same modal treatment as Settings, sized for one question. Used where an
+   action destroys something the user cannot see (an embedded image's file). */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.confirm-dialog {
+  width: min(420px, 90vw);
+  padding: 22px 24px 18px;
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+
+.confirm-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.confirm-body {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.confirm-body strong {
+  color: var(--text-normal);
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.confirm-body code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--background-secondary);
+  font-size: 12px;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-btn {
+  padding: 7px 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 13px;
+  font-family: var(--font-text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.confirm-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.confirm-btn-danger {
+  border-color: transparent;
+  background: #c0392b;
+  color: #fff;
+  font-weight: 500;
+}
+
+.confirm-btn-danger:hover {
+  background: #a93226;
+}
+
+.confirm-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
 /* Obsidian-style modal: wide, capped to the viewport, header pinned and the
    body scrolling — so however many settings accrue, nothing ever clips. */
 .settings-panel {
@@ -1917,15 +2005,27 @@ li[aria-selected] .cm-completionMatchedText {
   padding: 0 2px;
 }
 
-/* ── Images ── */
+/* ── Images ──
+   An embedded picture is an object, not text: it is selected as a whole and
+   carries its own controls, so the wrapper is the positioning context for them
+   and is sized to the picture (never the line). */
 .cm-image-widget {
   display: block;
+  /* Shrink-wrapped, not full-bleed: still a block on a line of its own, but its
+     BOX is the picture. A full-width box would put the editor's selection
+     highlight — which is drawn from the replaced range's rectangle — right
+     across the rest of the line whenever the picture is selected, so a selected
+     picture read as a selected paragraph. */
+  width: fit-content;
+  max-width: 100%;
   margin: 16px 0;
 }
 
 .cm-image-wrapper {
+  position: relative;
   display: inline-block;
   max-width: 100%;
+  border-radius: var(--radius-m);
 }
 
 .cm-image-wrapper img {
@@ -1933,6 +2033,35 @@ li[aria-selected] .cm-completionMatchedText {
   max-width: 100%;
   height: auto;
   border-radius: var(--radius-m);
+  /* Dragging an image out of a contenteditable would tear the embed's text in
+     half; selecting it is the only gesture it has. */
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.cm-image-editable .cm-image-wrapper {
+  cursor: default;
+}
+
+/* The selected look: a ring around the picture, as in a word processor. Drawn
+   with a shadow rather than an outline so it hugs the rounded corners. */
+.cm-image-selected .cm-image-wrapper {
+  box-shadow: 0 0 0 2px var(--interactive-accent);
+}
+
+/* …and with the ring there, the editor's own text selection is redundant: the
+   selection IS the picture, so there is no other text to mark and nowhere for a
+   caret to be. Both would otherwise show up beside the picture — the band as a
+   sliver past its edge (CodeMirror pads a replaced range with zero-width buffer
+   elements), the caret as a full-height bar as wide as the caret setting. See
+   the editorAttributes provider in livePreview.ts. The band's `!important`
+   overrides a generated CodeMirror theme rule of equal specificity. */
+.cm-image-selection .cm-selectionBackground {
+  background: transparent !important;
+}
+
+.cm-image-selection .cm-cursorLayer {
+  display: none;
 }
 
 .cm-image-placeholder {
@@ -1950,6 +2079,92 @@ li[aria-selected] .cm-completionMatchedText {
   color: #e06c75;
   border-color: rgba(224, 108, 117, 0.3);
   background: rgba(224, 108, 117, 0.1);
+}
+
+/* ── The selected picture's controls ──
+   Only ever visible on a selected picture, which only edit mode can produce.
+   They float over its top corners — bin to the left, size to the right — so
+   they cost the document no layout and can't move the text around them.
+
+   ONE row pinned to both edges rather than two independently-cornered groups:
+   a picture the reader has shrunk can be narrower than the two groups together,
+   and cornered separately they would end up stacked on top of each other. In a
+   row they simply run past the edge, still both reachable. */
+.cm-image-tools {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  display: none;
+  justify-content: space-between;
+  gap: 8px;
+  /* The bar spans the picture, but only its buttons should take clicks. */
+  pointer-events: none;
+}
+
+.cm-image-selected .cm-image-tools {
+  display: flex;
+}
+
+.cm-image-zoom {
+  display: flex;
+  gap: 2px;
+}
+
+/* Resizing needs a picture with a size — a missing one can only be removed. */
+.cm-image-widget:not(.cm-image-loaded) .cm-image-zoom {
+  display: none;
+}
+
+/* Nothing to float over, and a message that must stay readable: on a picture
+   that failed to load the bin sits under the notice instead of on top of it. */
+.cm-image-widget:not(.cm-image-loaded) .cm-image-tools {
+  position: static;
+  margin-top: 6px;
+}
+
+/* Too small to hold its own controls (see NARROW_WIDTH): they lift clear of the
+   picture rather than covering all of it. */
+.cm-image-narrow .cm-image-tools {
+  top: auto;
+  right: auto;
+  left: 0;
+  bottom: calc(100% + 6px);
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.cm-image-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: rgba(20, 20, 22, 0.72);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  font-size: 14px;
+  font-family: var(--font-text);
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: background 0.12s, transform 0.12s;
+}
+
+.cm-image-tool:hover {
+  background: rgba(20, 20, 22, 0.92);
+}
+
+.cm-image-tool:active {
+  transform: scale(0.92);
+}
+
+.cm-image-remove:hover {
+  background: #c0392b;
 }
 
 .cm-live-link {

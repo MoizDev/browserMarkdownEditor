@@ -234,6 +234,11 @@ export interface FileSystemContextValue {
   createFolder: (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => Promise<FileSystemDirectoryHandle>; // :176
   getAssetUrl: (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<string | null>; // :188
   saveAsset: (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<void>; // :218
+  /** Move an asset out of a folder's .Assets and into its .Garbage, once no
+   *  note in that folder refers to it any more. Returns whether it moved. */
+  retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  /** The inverse, for when the reference comes back (undo, cut-and-paste). */
+  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
   moveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>; // :297

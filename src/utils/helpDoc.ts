@@ -69,21 +69,40 @@ When you scroll down a long document, the application remembers your position. I
 
 ### Managing Images
 You can seamlessly add images to your markdown notes:
-- **Paste:** Simply copy an image to your clipboard and paste it (\`Cmd + V\` / \`Ctrl + V\`) directly into the editor.
-- **Drag and Drop:** Drag an image file from your computer and drop it directly onto the text editor.
+- **Paste:** Simply copy an image to your clipboard and paste it (\`Cmd + V\` / \`Ctrl + V\`) directly into the editor. This is how you get a picture *into a note* — see below.
+- **Drag and Drop:** Drag an image file from your computer onto a folder in the file tree (or onto the empty space below it, for the vault root) to copy it into your vault as an ordinary file. A name already in use gets numbered rather than overwritten.
+
+### Working With an Image
+An image in a note behaves like an image in a word processor, not like a piece of text. It stays a picture at all times — clicking it never turns it back into markdown for you to retype — and in **Edit Mode** clicking it selects it and puts three small buttons on it:
+- **+ and −** (top right) resize it, a step at a time.
+- **The bin** (top left) removes it. So does pressing \`Backspace\` while it is selected. Either way you are asked first.
+
+In Reading Mode a picture is simply a picture, and clicking it does nothing.
 
 ### The \`.Assets\` Folder
-When you paste or drop an image, the application does the following in the background:
+When you paste an image, the application does the following in the background:
 1. It automatically creates a hidden folder named \`.Assets\` in the same directory as your active markdown file.
 2. It generates a uniquely named image file (e.g., \`Pasted image 20240101120000.png\`).
 3. It saves that image into the \`.Assets\` folder.
-4. It inserts the markdown code \`![[filename.png]]\` into your note, which natively renders the image.
+4. It inserts a reference to that file into your note, which renders as the image itself.
+
+Every folder gets its own \`.Assets\`, and a note only ever shows pictures from the one beside it. That means a folder is self-contained: move it, copy it onto another machine, or share it, and its notes still render. (Pictures from an older version of the app, saved higher up the vault, are still found — the app looks up through the parent folders when a note's own \`.Assets\` doesn't have them.)
+
+Your notes are still ordinary Markdown: what is actually written in the file is \`![[filename.png]]\`, and a resized picture records its width as \`![[filename.png|320]]\`. Anything else that reads Markdown sees exactly that. The editor simply spares you from typing it.
+
+### Removing an Image
+Deleting a picture — with the bin, with \`Backspace\`, or just by deleting the text around it — also retires the image file: a second later it moves out of \`.Assets\` and into that folder's \`.Garbage\`, so your folders don't slowly fill up with pictures nothing shows any more.
+
+Nothing is lost by this:
+- An image another note **in the same folder** still shows is left exactly where it is.
+- Undo (\`Cmd + Z\` / \`Ctrl + Z\`) brings the picture back — the image file comes back out of \`.Garbage\` with it.
+- And anything that was retired is still sitting in \`.Garbage\`, recoverable by hand.
 
 ### Opening Media
 If you click on \`.pdf\`, \`.jpg\`, \`.jpeg\`, or \`.png\` files directly within the file tree, they will automatically open in a new browser tab for viewing rather than attempting to load as text.
 
 ### The Trash System
-To prevent accidental permanent data loss, deleting a file or folder does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Garbage\` folder located in the same directory. You can manually recover these files using your computer's native file explorer (Finder or Windows Explorer) if needed.
+To prevent accidental permanent data loss, deleting a file does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Garbage\` folder located in the same directory as the file — deleting \`Maths/Calculus/notes.md\` puts it in \`Maths/Calculus/.Garbage\`, so a deletion stays next to the notes it came from. Deleting the same name twice keeps both copies (the second becomes \`notes (1).md\`). You can manually recover these files using your computer's native file explorer (Finder or Windows Explorer) if needed.
 
 ---
 

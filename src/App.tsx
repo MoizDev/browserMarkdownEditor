@@ -3,13 +3,15 @@ import { useFileSystem } from './context/FileSystemContext';
 import { HELP_DOC_CONTENT } from './utils/helpDoc';
 import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache } from './utils/graph';
 import { readJSON, writeJSON } from './utils/storage';
-import { joinVaultPath } from './utils/paths';
+import { joinVaultPath, parentVaultPath } from './utils/paths';
+import { assetEmbeds, referencesAsset } from './utils/assets';
 import { collectFiles } from './utils/tree';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
 import { isDrawingFile, isPdfFile, isAnnotatedPdf, annotatedNameFor } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import { clampTabSize } from './editor/lists';
+import { retryMissingAssets } from './editor/imageWidget';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
 // (~1.3MB) into the main bundle, which a markdown-only session never needs.
 // The builder itself is import()ed at the two points that actually write a PDF.
@@ -62,6 +64,15 @@ function externalOpenUrl(path: string, file: File): string {
 }
 
 /**
+ * Whether a document's text can embed a picture — i.e. whether its `.Assets`
+ * folder has to be kept in step with it. A drawing and a PDF are text on disk
+ * but a canvas on screen, and the Help guide has no folder of its own.
+ */
+function tracksAssets(file: ActiveFile): boolean {
+  return !file.isHelp && !!file.parentHandle && isTextFile(file.name) && !isDrawingFile(file.name);
+}
+
+/**
  * Structural equality for two link graphs.
  *
  * buildGraph is deterministic for a given vault — nodes follow the file list and
@@ -102,6 +113,8 @@ export default function App() {
     importFiles,
     createFile,
     createFolder,
+    retireAsset,
+    restoreAsset,
     restoreVault,
     moveToTrash,
     moveFile,
@@ -370,6 +383,136 @@ export default function App() {
   const [isDraggingSidebar, setIsDraggingSidebar] = useState<boolean>(false);
   const isResizing = useRef<boolean>(false);
 
+  // ── Asset lifecycle ─────────────────────────────────────────────────────
+  // An asset belongs to the notes that embed it: paste a picture and it is
+  // written into the `.Assets` beside the note, and when the last reference to
+  // it goes away it is retired into that same folder's `.Garbage`.
+  //
+  // What each open document referred to as of its last write, so a save can
+  // tell an embed that has just been DELETED from one that was never there.
+  // Seeded when a tab opens (below), because otherwise the first edit after
+  // opening a note — the likeliest one to remove a picture — would have
+  // nothing to compare against.
+  const assetRefsRef = useRef<Map<string, Set<string>>>(new Map());
+  const fileTreeRef = useRef<FileTreeNode[]>(fileTree);
+  useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
+
+  const rememberAssetRefs = useCallback((file: ActiveFile, content: string) => {
+    if (tracksAssets(file)) assetRefsRef.current.set(file.path, assetEmbeds(content));
+  }, []);
+
+  /** Follow a note to its new path (rename/move), so the next save there still
+   *  has something to diff against. */
+  const moveAssetRefs = useCallback((from: string, to: string) => {
+    const refs = assetRefsRef.current.get(from);
+    if (!refs) return;
+    assetRefsRef.current.delete(from);
+    assetRefsRef.current.set(to, refs);
+  }, []);
+
+  /**
+   * Bring a folder's `.Assets` back in step with the note that was just saved.
+   *
+   * Driven by the SAVED text rather than by keystrokes: until a removal has
+   * reached the disk it isn't one, the save debounce doubles as an undo grace
+   * period, and one regex pass per second beats one per character typed.
+   *
+   * Both sets are handed in rather than derived here, because the baseline can
+   * only be read (and handed over) SYNCHRONOUSLY at the point of the save — see
+   * flushTab.
+   */
+  const reconcileAssets = useCallback(async (file: ActiveFile, before: Set<string>, after: Set<string>) => {
+    const dir = file.parentHandle;
+    if (!dir) return;
+
+    try {
+      // A reference that came BACK — undo, or the same embed pasted into a
+      // sibling note — reclaims its asset from the folder's `.Garbage`. Almost
+      // always a no-op (the asset is right where it should be), and cheap.
+      //
+      // The editor showed the reclaimed embed the instant it was typed, i.e.
+      // a second before the file it wants came back, so it is holding an
+      // "Image not found" it has no reason to re-check on its own.
+      let reclaimed = false;
+      for (const name of after) {
+        if (before.has(name)) continue;
+        if (await restoreAsset(name, dir)) reclaimed = true;
+      }
+      if (reclaimed) retryMissingAssets();
+
+      const orphaned = new Set([...before].filter(name => !after.has(name)));
+      if (orphaned.size === 0) return;
+
+      // Who has to be consulted before a picture is taken away — a picture
+      // shared with another note must survive being removed from this one.
+      //
+      // NOT just this folder's own notes: getAssetUrl walks UP from a note when
+      // its own `.Assets` doesn't have the file, so a note in any DESCENDANT
+      // folder may be showing this very asset. That is exactly how a vault
+      // carried forward from the era of one root-level `.Assets` still renders,
+      // and going by the folder alone would retire the picture out from under
+      // every one of those notes. The subtree is only walked when an embed was
+      // actually dropped, which is rare; same-folder notes come first because
+      // they are the overwhelmingly likely hit, and the walk stops as soon as
+      // every dropped name has been spoken for.
+      const folder = parentVaultPath(file.path);
+      const under = folder ? `${folder}/` : '';
+      const candidates = collectFiles(fileTreeRef.current).filter(f =>
+        f.path !== file.path && isTextFile(f.name) && f.path.startsWith(under));
+      const neighbours = [
+        ...candidates.filter(f => parentVaultPath(f.path) === folder),
+        ...candidates.filter(f => parentVaultPath(f.path) !== folder),
+      ];
+
+      // Every dropped name is answered in ONE pass, holding one note's text at
+      // a time. These are the same files buildGraph deliberately stopped
+      // holding all at once, and for a note at the vault root this subtree is
+      // the whole vault.
+      for (const note of neighbours) {
+        if (orphaned.size === 0) break;
+        // An open tab is read from its BUFFER, so an unsaved reference counts
+        // just as much as a saved one.
+        const open = tabsRef.current.find(t => t.file.path === note.path);
+        const text = open ? open.content : await readFile(note.handle).catch(() => null);
+        // A note that can't be read might say anything, so it is taken to say
+        // "keep": a stale file costs nothing next to deleting a picture that is
+        // still on screen somewhere.
+        if (text === null) return;
+        for (const name of orphaned) {
+          if (referencesAsset(text, name)) orphaned.delete(name);
+        }
+      }
+
+      for (const name of orphaned) await retireAsset(name, dir);
+    } catch (err) {
+      console.error('Could not reconcile assets for', file.path, err);
+    }
+  }, [readFile, retireAsset, restoreAsset]);
+
+  // Read through a ref for the same reason writeFile and rebuildGraph are: it
+  // keeps flushTab — and every timer and listener downstream of it — stable.
+  const reconcileAssetsRef = useRef(reconcileAssets);
+  useEffect(() => { reconcileAssetsRef.current = reconcileAssets; }, [reconcileAssets]);
+
+  /**
+   * Reconciles run ONE AT A TIME, in the order their saves happened.
+   *
+   * A single pass can take a while — it may read a whole subtree — and the
+   * saves that start them are only a second apart, so they overlap easily. Left
+   * to race, the classic sequence loses a picture: remove an embed (save A
+   * begins a long scan), undo (save B restores the asset at once), then A's
+   * retire lands on top and the note is pointing at a file in `.Garbage`.
+   * Ordering them makes B's restore the last word, which is what it is.
+   *
+   * Same promise-queue shape as utils/recentVaults.ts. reconcileAssets catches
+   * its own errors, so this chain never rejects.
+   */
+  const reconcileQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const queueReconcile = useCallback((file: ActiveFile, before: Set<string>, after: Set<string>) => {
+    reconcileQueueRef.current = reconcileQueueRef.current
+      .then(() => reconcileAssetsRef.current(file, before, after));
+  }, []);
+
   // Returns whether the file was actually opened (as a tab or externally).
   const handleFileClick = useCallback(async (node: FileTreeNode): Promise<boolean> => {
     try {
@@ -392,6 +535,9 @@ export default function App() {
       // tldraw snapshot instead (empty until the canvas loads and reports one).
       // readFile() must not touch it — decoding a PDF as UTF-8 corrupts it.
       const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
+      // What this note referred to when it was opened — the baseline every
+      // later save's asset diff is taken against.
+      rememberAssetRefs(node, content);
       // Re-check inside the updater: a second click can land while the first
       // read is still in flight, and tabsRef only updates post-commit.
       setTabs(prev => prev.some(t => t.file.path === node.path)
@@ -404,7 +550,7 @@ export default function App() {
       console.error('Failed to read file:', err);
       return false;
     }
-  }, [readFile]);
+  }, [readFile, rememberAssetRefs]);
 
   /**
    * Start annotating a plain PDF. Creates "<name> (annotated).pdf" beside it —
@@ -417,8 +563,7 @@ export default function App() {
   const handleAnnotatePdf = useCallback(async (file: ActiveFile) => {
     if (!file.handle || !file.parentHandle) return;
     const targetName = annotatedNameFor(file.name);
-    const dir = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : '';
-    const targetPath = joinVaultPath(dir, targetName);
+    const targetPath = joinVaultPath(parentVaultPath(file.path), targetName);
 
     try {
       // Adopt an existing annotated file rather than overwriting it.
@@ -536,7 +681,23 @@ export default function App() {
         const bytes = await buildAnnotatedPdfAsync(data.original, snapshot, data.overlays);
         await writeFileBytesRef.current(tab.file.handle as FileSystemFileHandle, bytes);
       } else {
+        // Read AND handed over in one synchronous step, which is what makes the
+        // asset diff exact. Two things would otherwise race it: removeTab drops
+        // this entry the moment after it calls flushTab (so a closing tab's last
+        // save must capture first), and a second save landing while the first is
+        // still reconciling would read a baseline the first had yet to replace,
+        // and could retire a picture that save had just put back.
+        const embedsBefore = tracksAssets(tab.file) ? assetRefsRef.current.get(path) : undefined;
+        const embedsAfter = embedsBefore && assetEmbeds(snapshot);
+        if (embedsAfter) assetRefsRef.current.set(path, embedsAfter);
+
         await writeFileRef.current(tab.file.handle as FileSystemFileHandle, snapshot);
+        // Queued rather than awaited: reconciling reads the note's neighbours,
+        // and a save's "Saved" status (and the graph rebuild below) should not
+        // wait on that — but two of them must not interleave either.
+        if (embedsBefore && embedsAfter) {
+          queueReconcile(tab.file, embedsBefore, embedsAfter);
+        }
       }
       // Only clear `dirty` if the content hasn't changed since we snapshotted.
       setTabs(prev => prev.map(t =>
@@ -556,7 +717,9 @@ export default function App() {
     } catch (err) {
       console.error('Auto-save failed:', err);
     }
-  }, [clearSaveTimer]);
+    // queueReconcile is stable (a useCallback over refs), so flushTab — and
+    // every timer and listener downstream of it — keeps its identity.
+  }, [clearSaveTimer, queueReconcile]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -603,6 +766,9 @@ export default function App() {
     // Safe to drop now: flushTab reads the render data synchronously, before its
     // first await, so a flush already in flight has what it needs.
     clearPdfRenderData(path);
+    // Same: the flush above captured its own diff before this ran. A closed
+    // note has no unsaved edits left to attribute an asset change to.
+    assetRefsRef.current.delete(path);
 
     if (activeTabPathRef.current === path) {
       const list = tabsRef.current;
@@ -695,6 +861,9 @@ export default function App() {
       flushTab(tab.file.path);           // no-ops unless dirty; captures synchronously
       clearPdfRenderData(tab.file.path);
     }
+    // Those flushes captured what they needed synchronously (see flushTab); the
+    // paths themselves index the vault being left.
+    assetRefsRef.current.clear();
     setTabs([]);
     setActiveTabPath(null);
     setSaveStatus('');
@@ -752,6 +921,7 @@ export default function App() {
           // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
           // fill the buffer with garbage.
           const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
+          rememberAssetRefs(node, content);   // see handleFileClick
           restored.push({ file: node, content, mode: 'read', dirty: false });
         } catch (err) {
           console.error('Failed to restore tab:', path, err);
@@ -770,7 +940,7 @@ export default function App() {
       const active = restored.some(t => t.file.path === wantActive) ? wantActive : restored[0].file.path;
       setActiveTabPath(active);
     })();
-  }, [fileTree, readFile, currentVaultId]);
+  }, [fileTree, readFile, currentVaultId, rememberAssetRefs]);
 
   const handleHelpClick = useCallback(() => {
     const path = 'help-guide';
@@ -847,6 +1017,7 @@ export default function App() {
       // An annotated PDF's parked original + overlays are keyed by path; re-key
       // them or the next save finds nothing and silently writes nothing.
       movePdfRenderData(node.path, newPath);
+      moveAssetRefs(node.path, newPath);
       setTabs(prev => prev.map(t => t.file.path === node.path
         ? { ...t, file: { ...t.file, name: newName, path: newPath, handle: fileHandle } }
         : t));
@@ -857,7 +1028,7 @@ export default function App() {
     } catch (err) {
       console.error('Could not get handle for renamed file', err);
     }
-  }, [renameFile, clearSaveTimer, scheduleSave]);
+  }, [renameFile, clearSaveTimer, scheduleSave, moveAssetRefs]);
 
   // Wrap moveFile so a moved open file's tab tracks its new path/handle (also
   // fixes the pre-existing stale-path-after-move for the active document).
@@ -870,6 +1041,7 @@ export default function App() {
         const newHandle = await targetDirHandle.getFileHandle(sourceNode.name);
         clearSaveTimer(sourceNode.path);
         movePdfRenderData(sourceNode.path, newPath);   // see handleRenameFile
+        moveAssetRefs(sourceNode.path, newPath);
         setTabs(prev => prev.map(t => t.file.path === sourceNode.path
           ? { ...t, file: { ...t.file, path: newPath, handle: newHandle, parentHandle: targetDirHandle } }
           : t));
@@ -880,7 +1052,7 @@ export default function App() {
       }
     }
     return success;
-  }, [moveFile, clearSaveTimer, scheduleSave]);
+  }, [moveFile, clearSaveTimer, scheduleSave, moveAssetRefs]);
 
   // Global keyboard shortcuts
   useEffect(() => {

@@ -9,6 +9,7 @@ import { searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
 import { createLivePreviewPlugin } from '../editor/livePreview';
+import type { ImageDeleteRequest, ImageEmbedActions } from '../editor/imageWidget';
 import { markdownFormatExtension } from '../editor/formatKeymap';
 import { indentSettings, listIndentKeymap } from '../editor/lists';
 import { wikiLinkAutocomplete } from '../editor/wikiLinkComplete';
@@ -216,6 +217,43 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         boundGetAssetUrl.current = (fileName) => getAssetUrl(fileName, activeFile?.parentHandle || null);
     }, [activeFile, getAssetUrl]);
 
+    // ── Embedded images ────────────────────────────────────────────────────
+    // Deleting one is the editor's only action that needs the app: it has to be
+    // confirmed first, since the picture goes to .Garbage with it. The document
+    // edit itself stays inside the editor subsystem — this only decides whether
+    // it happens (see imageWidget.ts).
+    const [imageDelete, setImageDelete] = useState<ImageDeleteRequest | null>(null);
+    // Stable for the pane's life, for the same reason the resolver below is:
+    // ImageWidget.eq compares the context holding it by identity.
+    const imageActions = useRef<ImageEmbedActions>({
+        confirmDelete: (request) => setImageDelete(request),
+    }).current;
+
+    const closeImageDelete = useCallback(() => setImageDelete(null), []);
+    // Not inside a state updater: StrictMode invokes those twice, and this one
+    // edits the document.
+    const runImageDelete = useCallback(() => {
+        imageDelete?.run();
+        setImageDelete(null);
+    }, [imageDelete]);
+
+    // Escape cancels, wherever focus happens to be.
+    useEffect(() => {
+        if (!imageDelete) return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') { e.preventDefault(); setImageDelete(null); }
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        return () => window.removeEventListener('keydown', onKeyDown, true);
+    }, [imageDelete]);
+
+    // A pending request names a position in the document that was showing when
+    // it was raised, and the single EditorView swaps documents on a tab change
+    // (⌘N while the dialog is up reaches past it). The question stops meaning
+    // anything then, so it is withdrawn rather than answered against the wrong
+    // note — removeEmbed would refuse it anyway, silently.
+    useEffect(() => { setImageDelete(null); }, [activeFile?.path]);
+
     // ONE stable identity for the whole life of the pane, passed to every
     // createLivePreviewPlugin call below.
     //
@@ -276,7 +314,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 ]),
                 readOnlyCompartmentRef.current.of(EditorView.editable.of(mode !== 'read')),
                 wikiLinkAutocomplete(() => getWikiLinkTargets.current()),
-                livePreviewCompartmentRef.current.of(createLivePreviewPlugin(stableGetAssetUrl, mode)),
+                livePreviewCompartmentRef.current.of(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
                 markdownFormatExtension,
                 revealHighlightField,
                 updateListener,
@@ -411,7 +449,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                 effects: [
                     themeCompartmentRef.current.reconfigure(themeExtensions(theme)),
                     readOnlyCompartmentRef.current.reconfigure(EditorView.editable.of(editorMode !== 'read')),
-                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, editorMode)),
+                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, editorMode, imageActions)),
                     indentCompartmentRef.current.reconfigure(indentSettings(tabSize)),
                     setRevealHighlight.of(null),
                 ]
@@ -513,15 +551,16 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
             view.dispatch({
                 effects: [
                     readOnlyCompartmentRef.current.reconfigure(EditorView.editable.of(editorMode !== 'read')),
-                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, editorMode))
+                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, editorMode, imageActions))
                 ]
             });
         }
         // Only editorMode drives this: the tab-swap effect already reconfigures
         // these on a path change, so it need not fire again on every switch.
-        // (stableGetAssetUrl is a useRef().current — constant for the pane's
-        // life — so listing it satisfies the linter without re-arming anything.)
-    }, [editorMode, stableGetAssetUrl]);
+        // (stableGetAssetUrl and imageActions are both useRef().current —
+        // constant for the pane's life — so listing them satisfies the linter
+        // without re-arming anything.)
+    }, [editorMode, stableGetAssetUrl, imageActions]);
 
     return (
         <div className="editor-pane">
@@ -649,6 +688,30 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     <div className="editor-empty-inner">
                         <p className="editor-empty-title">No file open</p>
                         <p className="editor-empty-hint">Select a file from the sidebar to begin editing.</p>
+                    </div>
+                </div>
+            )}
+            {imageDelete && (
+                <div className="confirm-overlay" onMouseDown={closeImageDelete}>
+                    <div
+                        className="confirm-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="confirm-image-delete"
+                        onMouseDown={(e) => e.stopPropagation()}
+                    >
+                        <h3 className="confirm-title" id="confirm-image-delete">Delete image?</h3>
+                        <p className="confirm-body">
+                            <strong>{imageDelete.name}</strong> is removed from this note, and its file moves
+                            to this folder’s <code>.Garbage</code> unless another note here still shows it.
+                            Undo (⌘Z) brings both back.
+                        </p>
+                        <div className="confirm-actions">
+                            <button className="confirm-btn" onClick={closeImageDelete}>Cancel</button>
+                            <button className="confirm-btn confirm-btn-danger" onClick={runImageDelete} autoFocus>
+                                Delete
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

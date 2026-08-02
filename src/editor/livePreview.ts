@@ -1,7 +1,8 @@
 import { EditorView, Decoration } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import type { EditorState, Range, Transaction } from '@codemirror/state';
+import { RangeSet, RangeValue } from '@codemirror/state';
+import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
 import { analyzeDoc, firstMathFrom, overlapsMath, latexSourceDecorations } from './latexSource';
@@ -9,7 +10,9 @@ import { parseListMarker } from './lists';
 import type { ListMarker } from './lists';
 import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
-import { ImageWidget } from './imageWidget';
+import { ImageWidget, imageEmbedActions, imageEmbedKeymap } from './imageWidget';
+import type { ImageContext, ImageEmbedActions } from './imageWidget';
+import { embedPattern } from '../utils/assets';
 import { TableWidget } from './tableWidget';
 import { MermaidWidget } from './mermaidWidget';
 
@@ -121,6 +124,37 @@ type GetAssetUrl = (fileName: string) => Promise<string | null>;
 type StateView = { state: EditorState };
 
 /**
+ * A caret sitting strictly BETWEEN from and to — never at either edge, and
+ * never a selection.
+ *
+ * The one state in which an image embed shows its markdown. Because the range
+ * is atomic (see below), no arrow key, click or drag can produce it; the only
+ * thing that can is the keystrokes that typed the embed, where the caret is
+ * left inside the brackets. So `![[a` keeps showing what is being typed
+ * instead of collapsing into a broken picture on the first character, while a
+ * finished embed stays a picture for good.
+ */
+function caretInsideRange(state: EditorState, from: number, to: number): boolean {
+    for (const range of state.selection.ranges) {
+        if (range.empty && range.from > from && range.from < to) return true;
+    }
+    return false;
+}
+
+/** Marks an image embed as one indivisible thing for the cursor to step over. */
+class AtomicRange extends RangeValue {}
+const ATOMIC = new AtomicRange();
+
+/** What the live-preview field holds: the decorations to draw, the image ranges
+ *  the cursor must treat as atomic, and whether one of them is the selection.
+ *  All three come out of one pass. */
+interface LivePreview {
+    deco: DecorationSet;
+    atoms: RangeSet<AtomicRange>;
+    imageSelected: boolean;
+}
+
+/**
  * Check if the cursor (or any selection) overlaps the range [from, to].
  */
 function cursorInRange(state: EditorState, from: number, to: number): boolean {
@@ -147,9 +181,10 @@ function cursorOnLine(state: EditorState, from: number, to: number): boolean {
  * The Live Preview plugin — hides markdown syntax when cursor is away
  * and renders styled content, KaTeX math widgets, and Image widgets.
  */
-function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode: EditorMode): DecorationSet {
+function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: EditorMode): LivePreview {
     const { state } = view;
     const decorations: Range<Decoration>[] = [];
+    const atoms: Range<AtomicRange>[] = [];
 
     // Math is located BEFORE the markdown pass so formula innards can be
     // exempted from markdown styling — "[x](y)" inside an equation is LaTeX,
@@ -506,7 +541,15 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
     // === IMAGES (Obsidian Syntax) ===
     // Matches: ![[filename.png]] or ![[filename.png | width]]
     // Group 1: filename, Group 2: width (optional)
-    const imageRegex = /!\[\[([^\]|]+)(?:\s*\|\s*(\d+))?\]\]/g;
+    //
+    // Unlike every other construct here, an image is NOT revealed by the cursor
+    // being on it: it is an embedded object, selected and resized and deleted
+    // as one, and the markdown behind it is not something the reader edits (see
+    // imageWidget.ts). The single exception is a caret already strictly inside
+    // — only reachable while typing the embed, which has to stay visible.
+    const imageRegex = embedPattern();
+    const selection = state.selection.main;
+    let imageSelected = false;
     while ((match = imageRegex.exec(doc)) !== null) {
         const from = match.index;
         const to = from + match[0].length;
@@ -514,11 +557,22 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
         const width = match[2] ? parseInt(match[2].trim(), 10) : null;
 
         if (intersectsMath(from, to)) continue;
-        if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
+        // An embed written INSIDE code is being quoted, not embedded — a note
+        // (the Help guide among them) documenting `![[picture.png]]` means the
+        // text. It matters more here than for the other constructs: an image is
+        // never revealed by the cursor and its range is atomic, so a quoted
+        // embed rendered as a picture could not be read or edited back at all.
+        if (codeRanges.some(r => from < r.to && to > r.from)) continue;
+        if (editorMode !== 'read' && caretInsideRange(state, from, to)) continue;
 
+        const selected = imageCtx.editable && selection.from === from && selection.to === to;
+        imageSelected ||= selected;
         decorations.push(
-            Decoration.replace({ widget: new ImageWidget(filename, width, getAssetUrl) }).range(from, to)
+            Decoration.replace({ widget: new ImageWidget(filename, width, imageCtx, selected) }).range(from, to)
         );
+        // Only a rendered embed is atomic. The one being typed is plain text
+        // for as long as the caret is in it, and has to stay steppable.
+        atoms.push(ATOMIC.range(from, to));
     }
 
     // === WIKILINKS (Obsidian Syntax) ===
@@ -572,7 +626,12 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
         );
     }
 
-    return Decoration.set(decorations, true);
+    return {
+        deco: Decoration.set(decorations, true),
+        // Already in document order — the image scan is a single left-to-right pass.
+        atoms: RangeSet.of(atoms),
+        imageSelected,
+    };
 }
 
 /**
@@ -584,13 +643,22 @@ function buildDecorations(view: StateView, getAssetUrl: GetAssetUrl, editorMode:
  */
 import { StateField } from '@codemirror/state';
 
-export function createLivePreviewPlugin(getAssetUrl: GetAssetUrl, editorMode: EditorMode): StateField<DecorationSet> {
-    const field = StateField.define<DecorationSet>({
+export function createLivePreviewPlugin(
+    getAssetUrl: GetAssetUrl,
+    editorMode: EditorMode,
+    actions: ImageEmbedActions,
+): Extension {
+    // One per plugin instance, and compared by identity inside ImageWidget.eq —
+    // which is why `getAssetUrl` and `actions` must themselves be stable for the
+    // life of the pane (see EditorPane).
+    const imageCtx: ImageContext = { getAssetUrl, actions, editable: editorMode !== 'read' };
+
+    const field = StateField.define<LivePreview>({
         create(state: EditorState) {
             const viewShim = { state };
-            return buildDecorations(viewShim, getAssetUrl, editorMode);
+            return buildDecorations(viewShim, imageCtx, editorMode);
         },
-        update(decorations: DecorationSet, tr: Transaction) {
+        update(decorations: LivePreview, tr: Transaction) {
             // Markdown parses asynchronously: on a large document the tree only
             // covers a prefix when the file opens, and the parser keeps advancing
             // in idle time, dispatching otherwise-empty transactions as it goes.
@@ -603,15 +671,30 @@ export function createLivePreviewPlugin(getAssetUrl: GetAssetUrl, editorMode: Ed
             // editorMode !== 'read' — so skip rebuilds from selection-only changes.
             if (tr.docChanged || treeAdvanced || (tr.selection && editorMode !== 'read')) {
                 const viewShim = { state: tr.state };
-                return buildDecorations(viewShim, getAssetUrl, editorMode);
+                return buildDecorations(viewShim, imageCtx, editorMode);
             }
             return decorations;
         },
-        provide(field: StateField<DecorationSet>) {
-            return EditorView.decorations.from(field);
+        provide(field: StateField<LivePreview>) {
+            return [
+                EditorView.decorations.from(field, value => value.deco),
+                // Makes each rendered image one indivisible step for the cursor:
+                // arrow keys move over it rather than into it, a drag-selection
+                // snaps to the whole embed, and a Backspace beside it takes the
+                // embed with it instead of breaking the syntax into rubble.
+                EditorView.atomicRanges.of(view => view.state.field(field, false)?.atoms ?? RangeSet.empty),
+                // A selected picture wears its own ring, so the text-selection
+                // band is turned off while one is selected — the selection is
+                // the picture and nothing else, and the band would otherwise
+                // show as a sliver past the widget (CodeMirror pads a replaced
+                // range with zero-width buffer elements of its own).
+                EditorView.editorAttributes.of(view =>
+                    view.state.field(field, false)?.imageSelected ? { class: 'cm-image-selection' } : null),
+            ];
         }
     });
-    return field;
+
+    return [field, imageEmbedActions.of(actions), imageEmbedKeymap];
 }
 
 // The CodeMirror EditorView is created once and caches this decoration logic, so

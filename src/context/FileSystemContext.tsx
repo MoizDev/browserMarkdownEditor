@@ -2,11 +2,60 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault } from '../utils/recentVaults';
+import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
+import { joinVaultPath } from '../utils/paths';
 import type { FileTreeNode, FileSystemContextValue, RecentVault, VaultOpenResult } from '../types';
 
 const FileSystemContext = createContext<FileSystemContextValue | null>(null);
 
 const IDB_KEY = 'vault-directory-handle';
+
+/**
+ * A name that is free in `dir`: "note.md", then "note (1).md", "note (2).md", …
+ *
+ * Every write that could land on an existing file goes through here. Silently
+ * overwriting somebody's file is not a recoverable mistake — and for the trash
+ * in particular, deleting the same name twice would otherwise destroy the first
+ * copy at the exact moment the user was counting on it being kept.
+ */
+async function freeFileName(dir: FileSystemDirectoryHandle, name: string): Promise<string> {
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+
+    let candidate = name;
+    for (let n = 1; ; n++) {
+        try {
+            await dir.getFileHandle(candidate);      // resolves => taken
+            candidate = `${stem} (${n})${ext}`;
+        } catch {
+            return candidate;
+        }
+    }
+}
+
+/** Copy one file's bytes into `dir` under `name`. */
+async function copyFileInto(dir: FileSystemDirectoryHandle, name: string, file: File): Promise<void> {
+    const handle = await dir.getFileHandle(name, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(file);
+    await writable.close();
+}
+
+/**
+ * Where a folder parks assets whose last reference went away:
+ * `<folder>/.Garbage/.Assets`, mirroring where they came from.
+ *
+ * Deliberately NOT alongside the trashed files in `.Garbage` itself. A retired
+ * asset can be brought straight back when its reference returns (an undo, a
+ * cut-and-paste), and that round trip has to be exact — parked under the same
+ * name a user-trashed file could also hold, restoring one would resurrect the
+ * other's bytes into `.Assets`.
+ */
+async function retiredAssetsDir(dir: FileSystemDirectoryHandle, create: boolean): Promise<FileSystemDirectoryHandle> {
+    const trash = await dir.getDirectoryHandle(TRASH_DIR, { create });
+    return trash.getDirectoryHandle(ASSETS_DIR, { create });
+}
 
 /**
  * Recursively copies all entries from srcDir to destDir.
@@ -34,8 +83,9 @@ async function buildFileTree(dirHandle: FileSystemDirectoryHandle, path = ''): P
 
     for await (const [name, handle] of dirHandle.entries()) {
         if (name === '.DS_Store') continue;
-        // Hide standard system folders from the UI
-        if (handle.kind === 'directory' && (name === '.Assets' || name === '.Garbage')) continue;
+        // Hide standard system folders from the UI. Every folder may hold its
+        // own pair of them (see utils/assets.ts), so this is not a root-only test.
+        if (handle.kind === 'directory' && (name === ASSETS_DIR || name === TRASH_DIR)) continue;
 
         const entryPath = path ? `${path}/${name}` : name;
 
@@ -332,25 +382,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 try { await file.slice(0, 1).arrayBuffer(); } catch { continue; }
             }
 
-            const dot = file.name.lastIndexOf('.');
-            const stem = dot > 0 ? file.name.slice(0, dot) : file.name;
-            const ext = dot > 0 ? file.name.slice(dot) : '';
-
-            let name = file.name;
-            for (let n = 1; ; n++) {
-                try {
-                    await targetDir.getFileHandle(name);      // throws => free
-                    name = `${stem} (${n})${ext}`;
-                } catch {
-                    break;
-                }
-            }
-
             try {
-                const handle = await targetDir.getFileHandle(name, { create: true });
-                const writable = await handle.createWritable();
-                await writable.write(file);
-                await writable.close();
+                const name = await freeFileName(targetDir, file.name);
+                await copyFileInto(targetDir, name, file);
                 written.push(name);
             } catch (err) {
                 console.error(`Could not import "${file.name}":`, err);
@@ -450,40 +484,87 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         };
     }, [rootHandle]);
 
-    /**
-     * Look for a file in an 'Assets' folder.
-     * If parentDirHandle is provided, first look in parentDirHandle/Assets/,
-     * then fall back to rootHandle/Assets/ for backwards compatibility.
-     */
-    const getAssetUrl = useCallback(async (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => {
-        // Try the local Assets folder first (sibling of the .md file)
-        if (parentDirHandle) {
-            try {
-                const localAssets = await parentDirHandle.getDirectoryHandle('.Assets');
-                const fileHandle = await localAssets.getFileHandle(fileName);
-                // Scoped by the folder's vault path, so two folders holding an
-                // identically-named asset never collide in the cache.
-                return await assetUrlFor(`${await dirPath(parentDirHandle)}/.Assets/${fileName}`, fileHandle);
-            } catch (err) {
-                // Not found locally, fall through to root
-            }
-        }
-
-        // Fallback: root-level Assets folder
-        if (!rootHandle) return null;
+    /** The url for `fileName` in THIS folder's .Assets, or null if it isn't there. */
+    const assetUrlIn = useCallback(async (dir: FileSystemDirectoryHandle, fileName: string) => {
         try {
-            const assetsDir = await rootHandle.getDirectoryHandle('.Assets');
+            const assetsDir = await dir.getDirectoryHandle(ASSETS_DIR);
             const fileHandle = await assetsDir.getFileHandle(fileName);
-            return await assetUrlFor(`.Assets/${fileName}`, fileHandle);
-        } catch (err) {
+            // Scoped by the folder's vault path, so two folders holding an
+            // identically-named asset never collide in the cache.
+            return await assetUrlFor(`${joinVaultPath(await dirPath(dir), ASSETS_DIR)}/${fileName}`, fileHandle);
+        } catch {
             return null;
         }
-    }, [rootHandle, assetUrlFor, dirPath]);
+    }, [assetUrlFor, dirPath]);
 
     /**
-     * Save a Blob to an 'Assets' folder. If parentDirHandle is provided,
-     * saves to parentDirHandle/Assets/. Otherwise falls back to rootHandle/Assets/.
-     * Creates the Assets folder if it doesn't exist.
+     * Every folder between the vault root and `dir`, root first — derived by
+     * descending from the root, because a handle knows its own name and nothing
+     * above it. `dir` itself is excluded, as is everything when `dir` IS the
+     * root or isn't inside it at all.
+     */
+    const ancestorsOf = useCallback(async (dir: FileSystemDirectoryHandle) => {
+        if (!rootHandle) return [];
+        let segs: string[] | null = null;
+        try {
+            segs = await rootHandle.resolve(dir);
+        } catch {
+            return [];
+        }
+        if (!segs || segs.length === 0) return [];
+
+        const chain: FileSystemDirectoryHandle[] = [rootHandle];
+        let cur = rootHandle;
+        for (const seg of segs.slice(0, -1)) {       // stop short of `dir` itself
+            try {
+                cur = await cur.getDirectoryHandle(seg);
+            } catch {
+                break;
+            }
+            chain.push(cur);
+        }
+        return chain;
+    }, [rootHandle]);
+
+    /**
+     * Resolve an embedded asset NAME to a displayable url.
+     *
+     * A note owns the `.Assets` folder beside it and no other, so that folder
+     * is the only one the hot path consults: one directory lookup whatever the
+     * vault's depth, and an image is never served out of a folder the note has
+     * nothing to do with.
+     *
+     * The walk up the ancestors runs ONLY when that misses, and exists purely
+     * for backwards compatibility. Assets landed in the VAULT ROOT's `.Assets`
+     * before local ones existed, and still do for a document with no folder of
+     * its own (the Help guide), so a vault carried forward can have pictures
+     * sitting one or more folders above the note that shows them. Walking up
+     * from the note is exact for that: an asset can only have been misplaced
+     * ABOVE where it belongs — nothing ever wrote one sideways — so this
+     * reaches every one of them without ever searching the vault.
+     */
+    const getAssetUrl = useCallback(async (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => {
+        if (!isAssetName(fileName)) return null;
+        const home = parentDirHandle || rootHandle;
+        if (!home) return null;
+
+        const local = await assetUrlIn(home, fileName);
+        if (local) return local;
+
+        // Nearest ancestor first: the closest copy is the one that note was
+        // most likely written against.
+        const ancestors = await ancestorsOf(home);
+        for (let i = ancestors.length - 1; i >= 0; i--) {
+            const url = await assetUrlIn(ancestors[i], fileName);
+            if (url) return url;
+        }
+        return null;
+    }, [rootHandle, assetUrlIn, ancestorsOf]);
+
+    /**
+     * Save a Blob into the `.Assets` folder BESIDE the note being edited,
+     * creating it if this is the folder's first asset. Only a document with no
+     * folder of its own (the Help guide) falls back to the vault root.
      */
     const saveAsset = useCallback(async (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => {
         const targetDir = parentDirHandle || rootHandle;
@@ -491,7 +572,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
 
         let assetsDir;
         try {
-            assetsDir = await targetDir.getDirectoryHandle('.Assets', { create: true });
+            assetsDir = await targetDir.getDirectoryHandle(ASSETS_DIR, { create: true });
         } catch (err) {
             console.error('Could not create/access Assets folder:', err);
             throw err;
@@ -504,6 +585,79 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
 
         await refreshTree(rootHandle);
     }, [rootHandle, refreshTree]);
+
+    /**
+     * Move an asset out of a folder's `.Assets` and into its `.Garbage` — what
+     * happens once the last note in that folder stops referring to it (see
+     * App.reconcileAssets). Returns whether anything moved.
+     *
+     * Retired rather than erased, because unlike deleting a file this is not
+     * something the user asked for in so many words: it follows from an edit,
+     * with no confirmation between the two. The same folder's `.Garbage` is
+     * where a deleted file goes, so recovering one by hand is the same motion
+     * as recovering the other — and restoreAsset undoes it automatically when
+     * the reference comes back.
+     */
+    const retireAsset = useCallback(async (fileName: string, dirHandle: FileSystemDirectoryHandle) => {
+        if (!isAssetName(fileName)) return false;
+        try {
+            const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR);
+            const source = await assetsDir.getFileHandle(fileName);   // throws => nothing to retire
+            const file = await source.getFile();
+
+            // Under its own name, not a free one: a retired asset has to be
+            // findable again by the name the note used. Two assets that share a
+            // name in one folder are the same picture (the second write replaced
+            // the first in .Assets), so the newest bytes winning is right.
+            const graveyard = await retiredAssetsDir(dirHandle, true);
+            await copyFileInto(graveyard, fileName, file);
+            await assetsDir.removeEntry(fileName);
+
+            // The url cache pins a blob per file version; this one can't be
+            // served again until the asset comes back (which re-mints it).
+            const key = `${joinVaultPath(await dirPath(dirHandle), ASSETS_DIR)}/${fileName}`;
+            const cached = assetUrlsRef.current.get(key);
+            if (cached) {
+                URL.revokeObjectURL(cached.url);
+                assetUrlsRef.current.delete(key);
+            }
+            return true;
+        } catch {
+            return false;
+        }
+    }, [dirPath]);
+
+    /**
+     * Put a retired asset back into `.Assets` — the exact inverse of
+     * retireAsset, for when the reference returns (an undo, or the same embed
+     * pasted into a sibling note). Returns whether anything moved.
+     *
+     * Everything here is a miss in the ordinary case, so it opens with the
+     * cheapest one: a folder that has never retired an asset has no
+     * `.Garbage/.Assets` at all, and the lookup fails at the first step.
+     */
+    const restoreAsset = useCallback(async (fileName: string, dirHandle: FileSystemDirectoryHandle) => {
+        if (!isAssetName(fileName)) return false;
+        try {
+            const graveyard = await retiredAssetsDir(dirHandle, false);
+            const source = await graveyard.getFileHandle(fileName);   // throws => never retired
+            const file = await source.getFile();
+
+            // Only now is there anything to restore — and only now is creating
+            // the folder's .Assets warranted.
+            const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR, { create: true });
+            try {
+                await assetsDir.getFileHandle(fileName);
+                return false;    // a live asset already holds the name; leave both alone
+            } catch { /* free — take it back */ }
+
+            await copyFileInto(assetsDir, fileName, file);
+            await graveyard.removeEntry(fileName);
+            return true;
+        } catch {
+            return false;
+        }
+    }, []);
 
     /**
      * Restore the previous vault by requesting permission with a user gesture
@@ -526,21 +680,25 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, [previousVault, refreshTree, recordVault]);
 
     /**
-     * Move a file or folder to the Trash directory inside the root vault.
+     * Move a file into the Trash — the `.Garbage` folder BESIDE it, not the
+     * vault's. A note deleted from `math/units` lands in `math/units/.Garbage`,
+     * and only a note at the vault root lands in the root's.
+     *
+     * Where a deletion is recoverable from should follow the file, the same way
+     * its `.Assets` do: the trash stays next to the notes it came out of, so
+     * moving (or sharing, or archiving) a folder carries its history with it,
+     * and two folders each holding a "notes.md" no longer pile their deletions
+     * into one bucket at the top of the vault.
      */
     const moveToTrash = useCallback(async (node: FileTreeNode) => {
         if (!rootHandle || !node.parentHandle) return false;
 
         try {
-            // Attempt to get or create the Trash folder
-            const trashDir = await rootHandle.getDirectoryHandle('.Garbage', { create: true });
-
             if (node.kind === 'file') {
-                const newFileHandle = await trashDir.getFileHandle(node.name, { create: true });
-                const writable = await newFileHandle.createWritable();
-                const file = await node.handle.getFile();
-                await writable.write(file);
-                await writable.close();
+                const trashDir = await node.parentHandle.getDirectoryHandle(TRASH_DIR, { create: true });
+                // Deleting the same name twice must not destroy the first copy.
+                const trashName = await freeFileName(trashDir, node.name);
+                await copyFileInto(trashDir, trashName, await node.handle.getFile());
             } else {
                 // Moving folders via File System Access API requires recursive copying.
                 // For simplicity as requested, we handle files. 
@@ -643,6 +801,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         createFolder,
         getAssetUrl,
         saveAsset,
+        retireAsset,
+        restoreAsset,
         restoreVault,
         moveToTrash,
         moveFile,

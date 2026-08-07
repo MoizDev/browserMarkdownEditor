@@ -85,6 +85,7 @@ const readOnlyCompartment = new Compartment();
 const livePreviewCompartment = new Compartment();
 const indentCompartment = new Compartment();
 
+
 /** The theme + syntax-highlight extension pair for the current app theme. */
 function themeExtensions(theme: Theme) {
     return theme === 'light'
@@ -106,6 +107,19 @@ interface DocumentPaneProps {
     /** True once this tab holds more than one document: each pane then names
      *  itself, because side by side there is nothing else that could. */
     showHeader: boolean;
+    /**
+     * This pane's share of the tab's width — a `flex-grow` naming the CSS
+     * variable EditorPane keeps for this column, so a pane needs to know
+     * nothing at all about how its tab divides the width. `undefined` on a tab
+     * with a single pane, which then keeps the stylesheet's own `flex: 1 1 0`
+     * and is laid out exactly as it always was.
+     *
+     * EditorPane hands out ONE FROZEN OBJECT per column, so this prop's
+     * identity never moves: a pane's props do not change at all while a divider
+     * is being dragged, which is what lets the drag repaint the whole split
+     * without re-rendering a single document.
+     */
+    widthStyle: React.CSSProperties | undefined;
     theme: Theme;
     /** Spaces a Tab inserts — and how far Tab indents a list item. */
     tabSize: number;
@@ -154,6 +168,7 @@ function DocumentPane({
     tab,
     isFocused,
     showHeader,
+    widthStyle,
     theme,
     tabSize,
     stateCache,
@@ -459,6 +474,7 @@ function DocumentPane({
     return (
         <div
             className={`editor-slot${isFocused ? ' is-focused' : ''}`}
+            style={widthStyle}
             onMouseDownCapture={takeFocus}
             onFocusCapture={takeFocus}
         >

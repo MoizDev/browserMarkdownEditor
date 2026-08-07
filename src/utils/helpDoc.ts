@@ -59,7 +59,7 @@ Any tab can be merged into the tab you are looking at, so that both are on scree
 2. Drag another tab down out of the strip and over the page.
 3. A purple outline shows which half of the page it will take — drop it there.
 
-The two documents now share one tab, side by side. Keep going and you can have up to **five** at once; each new one is slotted wherever you drop it, and the columns divide the width evenly. The tab shows the name of whichever pane you are working in, with a small badge counting the panes inside it.
+The two documents now share one tab, side by side. Keep going and you can have up to **five** at once; each new one is slotted wherever you drop it, and the columns start out sharing the width evenly. The tab shows the name of whichever pane you are working in, with a small badge counting the panes inside it.
 
 Anything can go in a pane: two notes, a note beside a PDF you are reading, a whiteboard beside the notes you are taking from it.
 
@@ -71,6 +71,13 @@ That strip also holds the two ways back out:
 - **Close** closes just that document, leaving the rest of the split alone.
 
 Closing the whole tab with its × closes everything in it.
+
+### Giving One Pane More Room
+The line between two panes can be dragged. Pull it left or right and those two panes share the width between them — everything else in the split stays exactly where you put it. A pane won't shrink past being readable, so you can always find the line again.
+
+**Double-click** a line to put every pane in that tab back to equal widths. You can also click a line and nudge it with the **←** and **→** arrow keys, holding Shift to move it further at a time.
+
+The widths you set are remembered with the tab, and come back the next time you open the app.
 
 ---
 

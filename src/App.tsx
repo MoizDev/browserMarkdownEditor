@@ -23,6 +23,7 @@ import {
   reorderGroups,
   restoreLayout,
   selectGroup,
+  setGroupSizes,
   splitOff,
   visiblePaths,
 } from './utils/tabGroups';
@@ -396,6 +397,11 @@ export default function App() {
     // grouping keeps the exact shape every build has read, and a session
     // without it still restores (each tab falls back to its leftmost pane).
     writeJSON('openTabGroupFocus', layout.groups.map(g => g.activePath));
+    // How wide each split tab's panes were left, positionally alongside the
+    // grouping and `null` for the tabs nobody resized (which is most of them).
+    // Additive like every key before it: a build that doesn't read it restores
+    // the same session in equal columns, which is what all of them used to.
+    writeJSON('openTabGroupSizes', layout.groups.map(g => g.sizes ?? null));
     // Which vault this session belongs to. These paths index ONE vault's tree,
     // so the restore pass below has to know whether it is looking at that vault
     // (see there) — a session with no vault stamped on it predates this.
@@ -862,6 +868,13 @@ export default function App() {
     (sourceId: string, index: number) => setLayout(l => mergeIntoActive(l, sourceId, index)), []);
   const reorderTabGroups = useCallback(
     (id: string, toIndex: number) => setLayout(l => reorderGroups(l, id, toIndex)), []);
+  /** How a split tab divides its width between its panes; null evens them up.
+   *  One update at the END of a divider drag, never per frame: the persist
+   *  effect is keyed on `layout`, so a live commit would write the whole
+   *  session to localStorage sixty times a second. EditorPane holds the widths
+   *  in flight and hands the settled row over here. */
+  const resizeTabPanes = useCallback(
+    (id: string, sizes: number[] | null) => setLayout(l => setGroupSizes(l, id, sizes)), []);
 
   const toggleTabMode = useCallback((path: string | null) => {
     if (!path) return;
@@ -992,6 +1005,7 @@ export default function App() {
     // unreached.
     const storedGroups = readJSON<unknown>('openTabGroups', null);
     const storedFocus = readJSON<unknown>('openTabGroupFocus', null);
+    const storedSizes = readJSON<unknown>('openTabGroupSizes', null);
     const storedActive = localStorage.getItem('activeTabPath');
 
     (async () => {
@@ -1031,6 +1045,7 @@ export default function App() {
         restored.map(t => t.file.path),
         storedGroups,
         storedFocus,
+        storedSizes,
         storedActive,
       ));
     })();
@@ -1365,6 +1380,7 @@ export default function App() {
             onCloseGroup={closeTabGroup}
             onReorderGroups={reorderTabGroups}
             onMergeGroups={mergeTabGroups}
+            onResizePanes={resizeTabPanes}
             onFocusPane={focusPane}
             onClosePane={closeTab}
             onSplitOffPane={splitOffPane}

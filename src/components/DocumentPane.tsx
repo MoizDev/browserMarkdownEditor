@@ -102,6 +102,10 @@ export interface PaneImageDelete extends ImageDeleteRequest {
 
 interface DocumentPaneProps {
     tab: OpenTab;
+    /** What this pane's EditorState is cached under — the same string React
+     *  keys the pane by, so a pane and its state are one thing. It is NOT the
+     *  path: see EditorPane's paneKey. */
+    stateKey: string;
     /** The pane the header actions, ⌘E and ⌘S mean. */
     isFocused: boolean;
     /** True once this tab holds more than one document: each pane then names
@@ -124,11 +128,11 @@ interface DocumentPaneProps {
     /** Spaces a Tab inserts — and how far Tab indents a list item. */
     tabSize: number;
     /**
-     * Per-path EditorStates (doc + undo history + selection), owned by
+     * Per-document EditorStates (doc + undo history + selection), owned by
      * EditorPane and shared by every pane, so a document that leaves the screen
-     * and comes back is exactly where it was left. Keyed by path alone, which
-     * is sound because a path is open at most once and so can be in at most one
-     * pane at a time.
+     * and comes back is exactly where it was left. Keyed by `tab.id` — the
+     * document, not its path, which a rename can hand to a different document
+     * (see OpenTab.id).
      */
     stateCache: Map<string, EditorState>;
     getWikiLinkTargets: () => WikiLinkTarget[];
@@ -166,6 +170,7 @@ interface DocumentPaneProps {
  */
 function DocumentPane({
     tab,
+    stateKey,
     isFocused,
     showHeader,
     widthStyle,
@@ -364,7 +369,7 @@ function DocumentPane({
     // same reconfigure the single-view build did on a tab swap.
     const setEditorContainer = (node: HTMLDivElement | null) => {
         if (!node || viewRef.current) return;
-        const cached = stateCache.get(path);
+        const cached = stateCache.get(stateKey);
         const view = new EditorView({ state: cached ?? createTabState(tab.content), parent: node });
         viewRef.current = view;
 
@@ -397,7 +402,7 @@ function DocumentPane({
     useEffect(() => () => {
         const view = viewRef.current;
         if (view) {
-            stateCache.set(path, view.state);
+            stateCache.set(stateKey, view.state);
             view.destroy();
             viewRef.current = null;
         }
@@ -407,19 +412,35 @@ function DocumentPane({
         // that handler belongs to an earlier pane for this document.
         flushScroll(path);
         if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
-    }, [path, stateCache]);
+    }, [path, stateKey, stateCache]);
 
-    // Live settings → the open view. (Cached states get the same treatment when
-    // they are adopted, above.)
+    /* ── Live settings → the open view ────────────────────────────────────
+       The three effects below carry a CHANGE of setting into a view that is
+       already running. They must not also run at mount, which is what `settled`
+       is for: the callback ref above has just configured this view for exactly
+       these values — either by baking them into a fresh state or by
+       reconfiguring an adopted one — and re-stating them is not free.
+
+       livePreviewCompartment is the expensive one. Each createLivePreviewPlugin
+       mints a NEW StateField, so reconfiguring it discards the field's value and
+       runs create() — a full buildDecorations pass over the document (tens of
+       thousands of ranges on a large note; see AGENTS.md). Ungated, every pane
+       mount paid for two of those instead of one, and a pane now mounts on every
+       tab switch: a five-pane split cost ten walks where five would do. */
+    const settled = useRef(false);
+
     useEffect(() => {
+        if (!settled.current) return;
         viewRef.current?.dispatch({ effects: themeCompartment.reconfigure(themeExtensions(theme)) });
     }, [theme]);
 
     useEffect(() => {
+        if (!settled.current) return;
         viewRef.current?.dispatch({ effects: indentCompartment.reconfigure(indentSettings(tabSize)) });
     }, [tabSize]);
 
     useEffect(() => {
+        if (!settled.current) return;
         viewRef.current?.dispatch({
             effects: [
                 readOnlyCompartment.reconfigure(EditorView.editable.of(mode !== 'read')),
@@ -427,6 +448,16 @@ function DocumentPane({
             ],
         });
     }, [mode, stableGetAssetUrl, imageActions]);
+
+    // Declared LAST on purpose — effects run in declaration order, so the three
+    // above see `false` on the mount pass and `true` on every pass after it. The
+    // cleanup makes StrictMode's simulated remount behave like a real one: it
+    // re-runs the ref callback too, so that build configures the view just the
+    // same and the three should skip again.
+    useEffect(() => {
+        settled.current = true;
+        return () => { settled.current = false; };
+    }, []);
 
     // Jump to a search match: select it, scroll it to the vertical center, and
     // flash a highlight decoration (visible even in read mode, where the view
@@ -479,7 +510,17 @@ function DocumentPane({
             onFocusCapture={takeFocus}
         >
             {showHeader && (
-                <div className="editor-slot-header">
+                <div
+                    className="editor-slot-header"
+                    // A file dropped from the desktop on an UNCANCELLED target
+                    // navigates the whole app away to that file, taking every
+                    // unsaved buffer with it. Every other surface a drop can
+                    // land on cancels its own (`.view-content` below, the
+                    // divider in EditorPane); this strip is one too, and it is
+                    // the natural place to aim at if you mean "into that pane".
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => e.preventDefault()}
+                >
                     <span className="editor-slot-icon" aria-hidden="true">
                         {isDrawing ? <PenTool size={12} /> : <FileText size={12} />}
                     </span>

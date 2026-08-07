@@ -75,6 +75,25 @@ export interface ActiveFile {
  * ───────────────────────────────────────────────────────────────────────── */
 
 export interface OpenTab {
+  /**
+   * Identifies the DOCUMENT rather than the file, for the lifetime of this
+   * session. A rename carries it (the same document under a new name); the file
+   * a rename OVERWRITES has a different one, and takes it with it when it goes.
+   *
+   * That distinction is the whole reason this exists, because a path cannot
+   * make it. renameFile/moveFile deliberately overwrite an existing name, so
+   * for one commit two different documents answer to the same path — and
+   * everything keyed by path then hands the survivor the loser's belongings:
+   * React reuses the pane the overwritten file was drawn in, and the editor's
+   * per-document EditorState cache hands over its text and its undo history.
+   * The renamed file's first keystroke would then save the dead document's
+   * bytes straight over it, which is the loss App.releaseOverwritten exists to
+   * prevent and could not, holding only a path.
+   *
+   * Session-only, like a TabGroup's id: the stored session records paths, and
+   * these are re-minted on restore.
+   */
+  id: string;
   file: ActiveFile;        // the open doc's metadata (name, path, handle, isHelp…)
   content: string;         // in-memory text, edited live
   mode: EditorMode;        // 'read' | 'edit', remembered per tab

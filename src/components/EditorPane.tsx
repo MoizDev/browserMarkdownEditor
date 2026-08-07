@@ -100,6 +100,23 @@ const pct = (n: number) => n.toFixed(4);
 const PANE_WIDTH_STYLE: React.CSSProperties[] = Array.from(
     { length: MAX_SPLIT_PANES }, (_, i) => ({ flexGrow: `var(--pane-w-${i}, 1)` }));
 
+/**
+ * What a document's pane, and its cached EditorState, are held under.
+ *
+ * Its ID, because a path is not enough: renameFile/moveFile deliberately
+ * overwrite an existing name, so for one commit two different documents answer
+ * to the same path — and keyed by path React matched the survivor to the pane
+ * the OVERWRITTEN document was drawn in and kept that pane's view, while the
+ * state cache handed over its text and its undo history. The renamed file's
+ * first keystroke then saved the dead document's bytes over it.
+ *
+ * And its PATH, because a rename must still rebuild the view: the update
+ * listener that reports edits has the path baked into it (see DocumentPane), so
+ * a pane carried across a rename would go on reporting the old one and every
+ * edit after it would land nowhere. Injective either way — an id holds no '|'.
+ */
+const paneKey = (tab: OpenTab) => `${tab.id}|${tab.file.path}`;
+
 /** The least a pane may be left holding, as a percentage of the tab. */
 function paneFloorPct(totalPx: number): number {
     return totalPx > 0 ? (MIN_PANE_PX / totalPx) * 100 : 0;
@@ -238,10 +255,15 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
 
     // ── Per-document editor state ──────────────────────────────────────────
     // Each document's full EditorState (doc + undo history + selection) is
-    // cached here by PATH, and adopted by whichever pane shows it next — so
-    // undo survives tab switches and being dragged into a split, and can never
-    // reach across documents. Sound because a path is open at most once, and so
-    // can be in at most one pane at a time.
+    // cached here by DOCUMENT (OpenTab.id), and adopted by whichever pane shows
+    // it next — so undo survives tab switches and being dragged into a split,
+    // and can never reach across documents.
+    //
+    // By id rather than by path, which is the same reason the panes below are
+    // keyed by it: a rename that overwrites an open file leaves two different
+    // documents answering to one path for a commit, and keyed by path the
+    // survivor adopted the loser's text and undo history — then saved it over
+    // the file that had just replaced it (see OpenTab.id).
     const [stateCache] = useState(() => new Map<string, EditorState>());
 
     // ── Linked mentions popover ────────────────────────────────────────────
@@ -345,8 +367,8 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
     }, [visibleKey]);
 
     // Drop cached editor states for documents that are no longer open. Keyed on
-    // the joined path string so it doesn't run on every keystroke.
-    const openTabsKey = tabs.map(t => t.file.path).join('\n');
+    // the joined key string so it doesn't run on every keystroke.
+    const openTabsKey = tabs.map(paneKey).join('\n');
     useEffect(() => {
         const open = new Set(openTabsKey ? openTabsKey.split('\n') : []);
         for (const key of stateCache.keys()) {
@@ -449,8 +471,19 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
      * A cancel puts the columns back BY HAND: React has not re-rendered at any
      * point during the drag, so its own view of these variables is still the
      * committed one and nothing would otherwise correct the last frame.
+     *
+     * `restore` is false for the one exit where that reasoning inverts —
+     * abandoning because the panes being moved are no longer the panes on
+     * screen. React has just re-rendered (that is what raised the abandon), so
+     * repainting the row this gesture started from would drag the tab that
+     * REPLACED it into a shape nobody chose.
+     *
+     * Stable for the app's life, deliberately: the unmount guard below has it as
+     * a dependency, so an identity that moved would run that cleanup — and
+     * cancel a live drag — on every re-render, and this component re-renders on
+     * every keystroke and every save status.
      */
-    const endResize = useCallback((commit: boolean) => {
+    const endResize = useCallback((commit: boolean, restore = true) => {
         const drag = resizeRef.current;
         if (!drag) return;                  // a lost capture after a normal pointerup
         resizeRef.current = null;
@@ -462,16 +495,47 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
         window.removeEventListener('keydown', drag.onKey, true);
         document.body.classList.remove('is-resizing-panes');
         if (commit) onResizePanes(drag.groupId, drag.live);
-        else writePaneVars(drag.start);
+        else if (restore) writePaneVars(drag.start);
     }, [onResizePanes, writePaneVars]);
 
-    // A gesture can only be ended by its own pointer, so nothing here runs
-    // twice — but a pane unmounted mid-drag (⌘ to the Neural Brain view) must
-    // not leave the whole window stuck on a col-resize cursor.
+    /** Ends a gesture whose own pointer never will. */
+    const endsGesture = (e: React.PointerEvent<HTMLSpanElement>) =>
+        e.pointerId === resizeRef.current?.pointerId;
+
+    // The whole editor going away — ⌘ to the Neural Brain view — must not leave
+    // the window stuck on a col-resize cursor with text selection off.
     useEffect(() => () => { if (resizeRef.current) endResize(false); }, [endResize]);
+
+    /**
+     * ...and neither must the divider going away UNDER the gesture.
+     *
+     * Every exit from the drag is a React handler on the handle, and React
+     * delegates at the root: a handle removed from the document while it still
+     * holds the capture gets its implicit `lostpointercapture` at a detached
+     * node, which reaches no listener. Nothing would then release the body
+     * class, the Escape listener, or startResize's own guard — dividers would
+     * be dead and the whole app stuck on `col-resize` for the rest of the
+     * session. ⌘N is enough to do it: `prompt()` for a name, and the new tab
+     * takes the screen with a single pane.
+     *
+     * The same test covers the drag's premises moving without the handle going
+     * anywhere (a pane closing beside it), since `start` describes a pane list
+     * that no longer exists either way.
+     */
+    useEffect(() => {
+        const drag = resizeRef.current;
+        if (drag && (drag.groupId !== group?.id || drag.start.length !== paneCount)) {
+            endResize(false, false);
+        }
+    }, [group?.id, paneCount, endResize]);
 
     const startResize = (e: React.PointerEvent<HTMLSpanElement>, edge: number) => {
         if (e.button !== 0 || !e.isPrimary || !group || resizeRef.current) return;
+        // A tab holding a path with no open document draws fewer columns than it
+        // has panes — the two structures' documented failure mode — and a row
+        // that short is one setGroupSizes would decline, leaving the gesture to
+        // move the columns and then silently not be recorded. Refuse it instead.
+        if (widths.length !== group.paths.length) return;
         const total = splitRef.current?.getBoundingClientRect().width ?? 0;
         if (!(total > 0)) return;
         const handle = e.currentTarget;
@@ -479,6 +543,11 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
         // PDF pane's capture-phase pointerdown and from tldraw, and what makes a
         // drag that leaves the window still arrive back here.
         handle.setPointerCapture(e.pointerId);
+        // Capture does not focus, and the mousedown that would is cancelled
+        // below — so without this the arrow keys the Help guide describes ("click
+        // a line and nudge it") would never reach keyResize, and the only way to
+        // the divider at all would be tabbing out of a CodeMirror that binds Tab.
+        handle.focus({ preventScroll: true });
         handle.classList.add('is-resizing');
         // Capture phase and stopped: CodeMirror binds Escape too, and focus may
         // still be sitting in one of the panes.
@@ -528,7 +597,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
      *  Straight to the layout — a keypress is discrete and final, so there is
      *  nothing here worth deferring. */
     const keyResize = (e: React.KeyboardEvent<HTMLSpanElement>, edge: number) => {
-        if (!group) return;
+        if (!group || widths.length !== group.paths.length) return;   // see startResize
         const step = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
         if (!step && e.key !== 'Home' && e.key !== 'End') return;
         e.preventDefault();
@@ -617,7 +686,8 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
             <div className="editor-split" ref={splitRef}>
                 {paneTabs.map((tab, i) => (
                     <DocumentPane
-                        key={tab.file.path}
+                        key={paneKey(tab)}
+                        stateKey={paneKey(tab)}
                         tab={tab}
                         isFocused={tab.file.path === focusedPath}
                         showHeader={paneCount > 1}
@@ -639,9 +709,13 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                 {/* Drawn over the panes rather than as a border on them (a PDF
                     pane floats above its slot and would otherwise cover it) —
                     and it is the handle that moves the boundary. Keyed by the
-                    pane on its right, so a merge or a close never hands one
-                    boundary's DOM, and with it a live pointer capture, to a
-                    different boundary. */}
+                    pane on its right, so a boundary's DOM stays with the
+                    document it runs alongside rather than with an index a
+                    merge or a close can shift under it — which is what keeps
+                    its hover and focus state from jumping to a neighbour. It
+                    is NOT what makes a gesture safe against the pane list
+                    moving: nothing about a key can be, and the abandon effect
+                    above is what covers that. */}
                 {paneTabs.slice(1).map((right, i) => (
                     <span
                         key={right.file.path}
@@ -658,9 +732,14 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         title="Drag to resize · double-click for equal widths"
                         onPointerDown={(e) => startResize(e, i)}
                         onPointerMove={moveResize}
-                        onPointerUp={() => endResize(true)}
-                        onPointerCancel={() => endResize(false)}
-                        onLostPointerCapture={() => endResize(false)}
+                        // Only the gesture's OWN pointer ends it. A capture
+                        // retargets that pointer and nothing else, so a second
+                        // finger landing on the same strip still gets its
+                        // pointerup here — and unguarded it committed the drag
+                        // the first finger was still making.
+                        onPointerUp={(e) => { if (endsGesture(e)) endResize(true); }}
+                        onPointerCancel={(e) => { if (endsGesture(e)) endResize(false); }}
+                        onLostPointerCapture={(e) => { if (endsGesture(e)) endResize(false); }}
                         onKeyDown={(e) => keyResize(e, i)}
                         // Not on pointerdown: cancelling that suppresses the
                         // compatibility mouse events, and with them the
@@ -738,7 +817,12 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                     : undefined;
                 return (
                     <Suspense
-                        key={tab.file.path}
+                        // Same key as a pane (see paneKey): matched by path
+                        // alone, the pane of an overwritten PDF was handed to
+                        // the file that replaced it and went on showing the old
+                        // bytes — its re-read effect does re-run on the new
+                        // handle, and returns early on the bytes it has.
+                        key={paneKey(tab)}
                         fallback={visible ? (
                             <div
                                 className={`pdf-pane pdf-pane-message${split ? ' pdf-pane-split' : ''}`}

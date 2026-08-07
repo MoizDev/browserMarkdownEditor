@@ -80,6 +80,14 @@ function externalOpenUrl(path: string, file: File): string {
   return url;
 }
 
+/** Session-unique document ids (see OpenTab.id). Never persisted — the stored
+ *  session records paths, so these are re-minted on restore and only have to be
+ *  unique among the documents open at one moment. */
+let docSeq = 0;
+function newTabId(): string {
+  return `d${(++docSeq).toString(36)}`;
+}
+
 /**
  * Whether a document's text can embed a picture — i.e. whether its `.Assets`
  * folder has to be kept in step with it. A drawing and a PDF are text on disk
@@ -589,7 +597,7 @@ export default function App() {
       // read is still in flight, and tabsRef only updates post-commit.
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
-        : [...prev, { file: node, content, mode: 'read', dirty: false }]);
+        : [...prev, { id: newTabId(), file: node, content, mode: 'read', dirty: false }]);
       // openTab re-checks too, and focuses an existing tab rather than minting a
       // second one — the same race, answered the same way.
       setLayout(l => openTabIn(l, node.path));
@@ -637,7 +645,7 @@ export default function App() {
       };
       setTabs(prev => prev.some(t => t.file.path === targetPath)
         ? prev
-        : [...prev, { file: node, content: '', mode: 'edit', dirty: false }]);
+        : [...prev, { id: newTabId(), file: node, content: '', mode: 'edit', dirty: false }]);
       setLayout(l => openTabIn(l, targetPath));
       setMainView('editor');
     } catch (err) {
@@ -830,14 +838,30 @@ export default function App() {
    * flushed, or it would write itself straight back over the file that just
    * replaced it. Dropping it here is what keeps one path from ending up in two
    * tabs, drawing one document under two names.
+   *
+   * Called on EVERY overwrite, whether or not the file being renamed is itself
+   * open: the hazard belongs to the tab holding the destination name, which
+   * still holds a handle resolving to that very directory entry. Skipping it
+   * when the source happened to be closed left that tab's autosave to put the
+   * old bytes back over the file that had just replaced them.
+   *
+   * BEFORE the moved document's own per-path state is re-keyed onto this path,
+   * never after: `releaseTab` clears exactly the two slots (the parked PDF
+   * render data, the asset-diff baseline) that movePdfRenderData/moveAssetRefs
+   * write, so running it second wiped the survivor's rather than the loser's —
+   * silently dropping pending annotations and killing that note's asset diff
+   * for the rest of the session.
    */
   const releaseOverwritten = useCallback((path: string, movedFrom: string) => {
     if (path === movedFrom) return;
     if (!tabsRef.current.some(t => t.file.path === path)) return;
     releaseTab(path, false);                       // no flush: the bytes are gone
+    // Its pane goes too. renamePath would drop it as it re-points the moved
+    // document, but only when the moved one is open — and closing it here is
+    // also what puts the focus on a NEIGHBOUR of the tab that vanished rather
+    // than on whichever tab happens to be leftmost.
+    setLayout(l => closePath(l, path));
     setTabs(prev => prev.filter(t => t.file.path !== path));
-    // The layout is left to renamePath, which removes the overwritten pane and
-    // re-points the moved one at it in a single transition.
   }, [releaseTab]);
 
   /** Close one document. Its pane goes; the tab goes with it only if that was
@@ -1013,7 +1037,7 @@ export default function App() {
       const restored: OpenTab[] = [];
       for (const path of storedPaths) {
         if (path === 'help-guide') {
-          restored.push({ file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
+          restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
           continue;
         }
         const node = vaultFiles.find(f => f.path === path);
@@ -1024,7 +1048,7 @@ export default function App() {
           // fill the buffer with garbage.
           const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
           rememberAssetRefs(node, content);   // see handleFileClick
-          restored.push({ file: node, content, mode: 'read', dirty: false });
+          restored.push({ id: newTabId(), file: node, content, mode: 'read', dirty: false });
         } catch (err) {
           console.error('Failed to restore tab:', path, err);
         }
@@ -1058,6 +1082,7 @@ export default function App() {
       return;
     }
     setTabs(prev => prev.some(t => t.file.path === path) ? prev : [...prev, {
+      id: newTabId(),
       file: { name: 'Help Guide', isHelp: true, path },
       content: HELP_DOC_CONTENT,
       mode: 'read',
@@ -1112,22 +1137,27 @@ export default function App() {
   const handleRenameFile = useCallback(async (node: FileTreeNode, newName: string) => {
     const success = await renameFile(node, newName);
     if (!success) return;
-    const openTab = tabsRef.current.find(t => t.file.path === node.path);
-    if (!openTab) return;
 
     const segs = node.path.split('/');
     segs.pop();
     segs.push(newName);
     const newPath = segs.join('/');
 
+    // First, and outside the guard below: a rename can overwrite an open file
+    // whether or not the file being renamed is open itself.
+    releaseOverwritten(newPath, node.path);
+
+    const openTab = tabsRef.current.find(t => t.file.path === node.path);
+    if (!openTab) return;
+
     try {
       const fileHandle = await node.parentHandle.getFileHandle(newName);
       clearSaveTimer(node.path); // cancel any pending save against the OLD handle
       // An annotated PDF's parked original + overlays are keyed by path; re-key
-      // them or the next save finds nothing and silently writes nothing.
+      // them or the next save finds nothing and silently writes nothing. After
+      // releaseOverwritten, which clears these very slots.
       movePdfRenderData(node.path, newPath);
       moveAssetRefs(node.path, newPath);
-      releaseOverwritten(newPath, node.path);      // renamed onto an open tab
       setTabs(prev => prev
         .filter(t => t.file.path !== newPath)
         .map(t => t.file.path === node.path
@@ -1149,14 +1179,15 @@ export default function App() {
   const handleMoveFile = useCallback(async (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath = '') => {
     const openTab = tabsRef.current.find(t => t.file.path === sourceNode.path);
     const success = await moveFile(sourceNode, targetDirHandle);
+    const newPath = joinVaultPath(targetPath, sourceNode.name);
+    // Before the guard, and before the re-keys below — see handleRenameFile.
+    if (success) releaseOverwritten(newPath, sourceNode.path);
     if (success && openTab) {
-      const newPath = joinVaultPath(targetPath, sourceNode.name);
       try {
         const newHandle = await targetDirHandle.getFileHandle(sourceNode.name);
         clearSaveTimer(sourceNode.path);
         movePdfRenderData(sourceNode.path, newPath);   // see handleRenameFile
         moveAssetRefs(sourceNode.path, newPath);
-        releaseOverwritten(newPath, sourceNode.path);
         setTabs(prev => prev
           .filter(t => t.file.path !== newPath)
           .map(t => t.file.path === sourceNode.path

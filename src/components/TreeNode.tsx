@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool } from './icons';
 import { isDrawingFile } from '../utils/fileTypes';
 import { setDraggedNode, takeDraggedNode } from '../utils/treeDrag';
+import { isTabDrag } from '../utils/tabDrag';
 import type { FileTreeNode } from '../types';
 
 interface TreeNodeProps {
@@ -81,6 +82,10 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
 
     const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
         if (node.kind !== 'directory') return;
+        // An editor tab being carried to the split view passes right over the
+        // tree. Not preventing the default is what refuses the drop, so the row
+        // never lights up offering something it could not do with it.
+        if (isTabDrag(e.dataTransfer)) return;
         e.preventDefault();
         e.stopPropagation();
         // OS files are copied in; a tree node is moved. `types` is the only

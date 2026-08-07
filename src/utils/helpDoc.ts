@@ -47,7 +47,41 @@ Use the "New File" and "New Folder" icons at the top of the sidebar. When creati
 
 ---
 
-## 3. Editing Modes & Auto-Save
+## 3. Tabs and Split View
+
+### Tabs
+Every file you open gets a tab along the top of the editor. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
+
+### Putting Two Notes Side by Side
+Any tab can be merged into the tab you are looking at, so that both are on screen at once:
+
+1. Make sure the tab you want to read *alongside* something is the one in front.
+2. Drag another tab down out of the strip and over the page.
+3. A purple outline shows which half of the page it will take — drop it there.
+
+The two documents now share one tab, side by side. Keep going and you can have up to **five** at once; each new one is slotted wherever you drop it, and the columns start out sharing the width evenly. The tab shows the name of whichever pane you are working in, with a small badge counting the panes inside it.
+
+Anything can go in a pane: two notes, a note beside a PDF you are reading, a whiteboard beside the notes you are taking from it.
+
+### Working in a Split
+Each pane has a strip at the top with its file's name. The pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘S and the buttons in the top-right act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
+
+That strip also holds the two ways back out:
+- **Move to its own tab** returns that pane to being an ordinary tab.
+- **Close** closes just that document, leaving the rest of the split alone.
+
+Closing the whole tab with its × closes everything in it.
+
+### Giving One Pane More Room
+The line between two panes can be dragged. Pull it left or right and those two panes share the width between them — everything else in the split stays exactly where you put it. A pane won't shrink past being readable, so you can always find the line again.
+
+**Double-click** a line to put every pane in that tab back to equal widths. You can also click a line and nudge it with the **←** and **→** arrow keys, holding Shift to move it further at a time.
+
+The widths you set are remembered with the tab, and come back the next time you open the app.
+
+---
+
+## 4. Editing Modes & Auto-Save
 
 ### Edit Mode vs. Read Mode
 The application features two distinct viewing modes:
@@ -65,7 +99,7 @@ When you scroll down a long document, the application remembers your position. I
 
 ---
 
-## 4. Images, Assets, and Trash
+## 5. Images, Assets, and Trash
 
 ### Managing Images
 You can seamlessly add images to your markdown notes:
@@ -106,7 +140,7 @@ To prevent accidental permanent data loss, deleting a file does not erase it fro
 
 ---
 
-## 5. Markdown Syntax Reference
+## 6. Markdown Syntax Reference
 
 The editor supports standard Markdown and advanced formatting.
 
@@ -152,7 +186,7 @@ function helloWorld() {
 
 ---
 
-## 6. LaTeX Math Expressions
+## 7. LaTeX Math Expressions
 
 The application natively supports advanced LaTeX mathematical typesetting.
 

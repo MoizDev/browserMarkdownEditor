@@ -103,13 +103,23 @@ function isEven(sizes: number[]): boolean {
  * RATIOS it expresses, so a row written in any unit still means something.
  */
 export function normalizeSizes(value: unknown, count: number): number[] | undefined {
-    if (count < 2 || !Array.isArray(value) || value.length !== count) return undefined;
+    // The upper bound on `count` is what makes the sub-floor lift below sound:
+    // its proof needs `MIN_PANE_PCT * count <= 100`, and restoreLayout passes
+    // the length of a group straight out of localStorage — unbounded, and past
+    // 50 the lift drives every above-floor pane NEGATIVE. Well clear of
+    // MAX_SPLIT_PANES, and of any session an older cap could have written.
+    if (count < 2 || count > 100 / MIN_PANE_PCT) return undefined;
+    if (!Array.isArray(value) || value.length !== count) return undefined;
     let sum = 0;
     for (const v of value) {
         if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return undefined;
         sum += v;
     }
-    if (!(sum > 0)) return undefined;
+    // Finite as well as positive: every entry can be finite while the total
+    // overflows, and `v * 100 / Infinity` is NaN — which no test below catches
+    // (NaN fails every comparison, including isEven's), so a row of them would
+    // reach a CSS variable and collapse the columns.
+    if (!Number.isFinite(sum) || sum <= 0) return undefined;
 
     let sizes = (value as number[]).map(v => (v * 100) / sum);
     // Lift anything under the floor, and take what that costs out of the panes

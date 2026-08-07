@@ -906,8 +906,11 @@ body {
    written straight onto it, frame by frame, by a divider drag: --pane-w-<i> is
    pane i's width and --pane-x-<i> its left edge, both unitless numbers in
    percent. Everything that has to line up with a column reads them — the slots,
-   the dividers, the tab-drop highlight, and the PDF panes floating over the
-   slots — so one write moves all of it at once, with no React render at all.
+   the dividers, and the PDF panes floating over the slots — so one write moves
+   all of it at once, with no React render at all. (The tab-drop highlight is
+   the one column-aligned box that does NOT read them: it exists only while a
+   TAB is in flight, which a divider drag excludes, so React's own numbers are
+   never stale under it.)
    They live on .editor-pane rather than here because the PDF panes are its
    children, not the split's; the two boxes are the same width, which is what
    makes one set of percentages serve both, and what any change to the split's
@@ -1638,8 +1641,10 @@ body.is-resizing-panes * {
   color: var(--text-faint);
 }
 
-/* No-file overlay — shown when no tab is open. Covers the (still-mounted)
-   editor below the header so the CodeMirror view is never orphaned. */
+/* No-file overlay — shown when no tab is open. Still an overlay, but no longer
+   because there is a view underneath to protect: with no tab open there are no
+   panes at all. The overlay-not-unmount rule now applies WITHIN a pane
+   (.drawing-pane, .pdf-pane over their slot), not to the editor as a whole. */
 .editor-empty-overlay {
   position: absolute;
   top: var(--header-height);

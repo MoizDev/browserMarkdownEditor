@@ -75,10 +75,82 @@ export interface ActiveFile {
  * ───────────────────────────────────────────────────────────────────────── */
 
 export interface OpenTab {
+  /**
+   * Identifies the DOCUMENT rather than the file, for the lifetime of this
+   * session. A rename carries it (the same document under a new name); the file
+   * a rename OVERWRITES has a different one, and takes it with it when it goes.
+   *
+   * That distinction is the whole reason this exists, because a path cannot
+   * make it. renameFile/moveFile deliberately overwrite an existing name, so
+   * for one commit two different documents answer to the same path — and
+   * everything keyed by path then hands the survivor the loser's belongings:
+   * React reuses the pane the overwritten file was drawn in, and the editor's
+   * per-document EditorState cache hands over its text and its undo history.
+   * The renamed file's first keystroke would then save the dead document's
+   * bytes straight over it, which is the loss App.releaseOverwritten exists to
+   * prevent and could not, holding only a path.
+   *
+   * Session-only, like a TabGroup's id: the stored session records paths, and
+   * these are re-minted on restore.
+   */
+  id: string;
   file: ActiveFile;        // the open doc's metadata (name, path, handle, isHelp…)
   content: string;         // in-memory text, edited live
   mode: EditorMode;        // 'read' | 'edit', remembered per tab
   dirty: boolean;          // has unsaved edits since the last disk write
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * TAB GROUPS (split view)
+ * One entry in the tab bar is a GROUP of open documents, shown side by side as
+ * vertical panes whose widths the reader sets by dragging the divider between
+ * two of them. Most groups hold exactly one path, which is the ordinary
+ * single-document tab. `tabs` above stays a FLAT list of every open document —
+ * saving, asset tracking and search all key off it and are untouched by the
+ * split — while these describe only what the tab bar shows and where each
+ * document is drawn. See utils/tabGroups.ts for the operations and the
+ * invariants that keep the two in step.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface TabGroup {
+  /** Stable for the group's life; the React key and the drag payload. */
+  id: string;
+  /** ≥1 open-document paths, in left-to-right pane order. */
+  paths: string[];
+  /** Which of those panes has focus — remembered while the group is inactive. */
+  activePath: string;
+  /**
+   * Each pane's share of the tab's width, in `paths` order, as percentages
+   * summing to 100 — or ABSENT, which means equal columns and is what a tab is
+   * until someone drags one of its dividers (and what every one-pane tab always
+   * is).
+   *
+   * Absent rather than filled in, because "nobody has arranged this" then has
+   * exactly one representation: an untouched tab is byte-for-byte the object it
+   * was before this feature, a merge or a close has nothing to redistribute,
+   * evening the panes up again is a field being deleted, and a session full of
+   * ordinary tabs stores nothing but nulls.
+   *
+   * PERCENTAGES, not pixels: the window and the sidebar resize constantly and a
+   * restored session lands in a window of another size — the same reason a
+   * fitted table's columns and a PDF pane's slot are percentages.
+   *
+   * THE INVARIANT: absent, or exactly one finite, positive entry per path,
+   * summing to 100. utils/tabGroups.ts is the only writer and keeps it by
+   * routing every value through one gate; `paneSizes()` is the only reader and
+   * answers equal columns for anything that fails it — so a set that has fallen
+   * out of step degrades the way a path with no open document does, to
+   * something plainly wrong on screen rather than to a broken layout.
+   */
+  sizes?: number[];
+}
+
+/** The whole tab bar: its groups, and which one is on screen. Held as ONE piece
+ *  of state so a transition can never leave the active id naming a group that
+ *  the same update removed. */
+export interface TabLayout {
+  groups: TabGroup[];
+  activeId: string | null;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

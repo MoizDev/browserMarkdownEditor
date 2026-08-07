@@ -54,6 +54,10 @@
   /* ── Sizing ── */
   --nav-item-height: 28px;
   --header-height: 36px;
+  /* The strip naming one pane of a split tab. Only drawn when a tab holds more
+     than one document — but the PDF panes, which float over their slot rather
+     than sitting inside it, have to offset themselves by it in CSS. */
+  --pane-header-height: 26px;
   --radius-s: 4px;
   --radius-m: 6px;
 }
@@ -784,7 +788,7 @@ body {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
-  max-width: 180px;
+  max-width: 210px;
   height: calc(var(--header-height) - 8px);
   padding: 0 8px;
   border-radius: var(--radius-s);
@@ -794,6 +798,42 @@ body {
   user-select: none;
   cursor: pointer;
   transition: background 0.08s ease, color 0.08s ease;
+}
+
+/* The part of a tab that looks like something to grab. The whole tab is
+   draggable — dropped on the strip it reorders, dropped on the panes below it
+   merges into the tab on screen (see .editor-split-dropzone). */
+.tab-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.tab:hover .tab-icon,
+.tab.is-active .tab-icon {
+  color: var(--text-muted);
+}
+
+/* How many documents a merged tab holds. Only ever present on a split tab, so
+   an ordinary tab reads exactly as it always did. */
+.tab-split-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.tab.is-active .tab-split-badge {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
 }
 .tab:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
 .tab.is-active {
@@ -854,10 +894,247 @@ body {
   border-radius: 1px;
 }
 
-.view-content {
+/* ── The panes of the tab on screen ──
+   Columns, left to right: a tab holds one document in the ordinary case and up
+   to five once tabs have been merged (utils/tabGroups.ts). They start out even
+   and the divider between any two of them can be dragged. Splitting is
+   deliberately only ever vertical, so a pane's rectangle is a plain share of
+   the width — which is also what lets the PDF panes, which float above rather
+   than inside a pane, place themselves with two percentages.
+
+   THOSE PERCENTAGES ARE CSS VARIABLES, set on .editor-pane by EditorPane and
+   written straight onto it, frame by frame, by a divider drag: --pane-w-<i> is
+   pane i's width and --pane-x-<i> its left edge, both unitless numbers in
+   percent. Everything that has to line up with a column reads them — the slots,
+   the dividers, and the PDF panes floating over the slots — so one write moves
+   all of it at once, with no React render at all. (The tab-drop highlight is
+   the one column-aligned box that does NOT read them: it exists only while a
+   TAB is in flight, which a divider drag excludes, so React's own numbers are
+   never stale under it.)
+   They live on .editor-pane rather than here because the PDF panes are its
+   children, not the split's; the two boxes are the same width, which is what
+   makes one set of percentages serve both, and what any change to the split's
+   own box would quietly break. */
+.editor-split {
+  position: relative;
   flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* The basis stays 0 and EditorPane overrides flex-GROW with --pane-w-<i>, so
+   the width is shared out by the browser dividing by the sum of the factors:
+   the columns tile the container exactly whatever rounding left behind, which a
+   percentage basis would leave as a seam or an overflow. The fallback of 1 is
+   equal columns, i.e. what a tab nobody has resized has always looked like. */
+.editor-slot {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The line between two panes, and the handle that moves it.
+
+   Drawn OVER the panes rather than as a border on one of them: a PDF pane sits
+   above its slot and would paint straight over an edge belonging to it — which
+   goes for the grab area just as much as for the line, hence an 8px strip with
+   the 1px rule drawn inside it.
+
+   Offset 3px into the left pane and 5px into the right rather than centred: the
+   left pane's scrollbar is 6px and ends exactly at this boundary, so a centred
+   strip would leave too little of it to grab the thumb by, while the right
+   pane's first pixels are its editor's padding. 3px also clears the left pane
+   header's close button, which stops 4px short of the edge.
+
+   The z-index is load-bearing in both directions: above the panes (5) so the
+   strip is grabbable over a PDF or a drawing and the press never reaches
+   CodeMirror, and below .editor-split-dropzone (20), which exists only while a
+   TAB is in flight and has to keep winning while it is — which is what makes
+   the two gestures mutually exclusive without either knowing about the other. */
+.editor-split-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  margin-left: -3px;
+  background: transparent;
+  z-index: 6;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;          /* a touch here resizes; it never scrolls */
+}
+
+.editor-split-divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--background-modifier-border);
+  transition: background 0.15s ease, width 0.15s ease;
+}
+
+/* The same affordance as the sidebar's .workspace-resize-handle: whatever is
+   about to move goes accent under the pointer. */
+.editor-split-divider:hover::before,
+.editor-split-divider:focus-visible::before,
+.editor-split-divider.is-resizing::before {
+  background: var(--interactive-accent);
+  width: 2px;
+}
+
+/* The accent rule above IS the focus ring — a browser outline on an 8px
+   full-height strip reads as a rendering fault. */
+.editor-split-divider:focus-visible {
+  outline: none;
+}
+
+/* For the duration of a drag only. The pointer is captured by the handle but
+   travels over .cm-content and the PDF panes, which set cursors of their own,
+   and a descendant's cursor beats an ancestor's — so this has to reach
+   everything. */
+body.is-resizing-panes,
+body.is-resizing-panes * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* Each pane names its own document — side by side there is nothing else that
+   could, and the tab bar has room for one name. Absent entirely on a tab with a
+   single pane, so the ordinary editor is laid out exactly as it always was. */
+.editor-slot-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  /* A pane dragged narrow — or one a shrinking window left narrow — clips its
+     own chrome rather than painting it over the pane beside it. */
+  overflow: hidden;
+  height: var(--pane-header-height);
+  padding: 0 4px 0 10px;
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-faint);
+  font-size: 12px;
+  user-select: none;
+}
+
+/* Which pane ⌘E, ⌘S and the top-bar actions mean. */
+.editor-slot.is-focused .editor-slot-header {
+  color: var(--text-normal);
+  box-shadow: inset 0 -2px 0 var(--interactive-accent);
+}
+
+.editor-slot-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.editor-slot-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-slot-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+.editor-slot-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+/* The first action floats right; the pair stays together. */
+.editor-slot-action:first-of-type {
+  margin-left: auto;
+}
+
+.editor-slot-header:hover .editor-slot-action,
+.editor-slot-action:focus-visible {
+  opacity: 0.7;
+}
+
+.editor-slot-action:hover {
+  opacity: 1;
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+/* The pane's contents, and the positioning context for whatever surface draws
+   them (CodeMirror, or a drawing canvas over it). */
+.editor-slot-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.view-content {
+  position: absolute;
+  inset: 0;
   overflow: hidden;
   display: flex;
+}
+
+/* ── Merging a tab into this one ──
+   A layer over the panes, present ONLY while a tab is actually being dragged
+   (see EditorPane): CodeMirror handles `drop` itself and would insert the
+   dragged text, and a PDF pane would swallow it outright. */
+.editor-split-dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+}
+
+/* Where the dragged tab will be slotted — the half of the pane it would land
+   beside. Same purple as the file tree's drag-over outline, drawn heavier
+   because it lands over a document rather than a 28px row. */
+.editor-split-drop-target {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+  outline: 2px dashed var(--interactive-accent);
+  outline-offset: -4px;
+  border-radius: var(--radius-m);
+}
+
+/* Dragged onto a tab that is already full. Saying so beats a drop that quietly
+   does nothing, which reads as a broken feature. */
+.editor-split-drop-note {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 8px 14px;
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+  color: var(--text-muted);
+  font-size: 12px;
+  pointer-events: none;
 }
 
 /* CodeMirror 6 container */
@@ -1364,8 +1641,10 @@ body {
   color: var(--text-faint);
 }
 
-/* No-file overlay — shown when no tab is open. Covers the (still-mounted)
-   editor below the header so the CodeMirror view is never orphaned. */
+/* No-file overlay — shown when no tab is open. Still an overlay, but no longer
+   because there is a view underneath to protect: with no tab open there are no
+   panes at all. The overlay-not-unmount rule now applies WITHIN a pane
+   (.drawing-pane, .pdf-pane over their slot), not to the editor as a whole. */
 .editor-empty-overlay {
   position: absolute;
   top: var(--header-height);
@@ -1380,15 +1659,12 @@ body {
 }
 
 /* ── Drawing pane (.tldraw files) ──
-   Layered over the still-mounted CodeMirror view, same as the no-file overlay:
-   the editor view is created once by a callback ref, so unmounting its
-   container would orphan it. tldraw fills the box it's given. */
+   Fills the pane it belongs to (.editor-slot-body, or a .pdf-pane in annotate
+   mode) rather than the whole editor: with a split tab a drawing is one column
+   of several, and its box is that column's. tldraw fills what it's given. */
 .drawing-pane {
   position: absolute;
-  top: var(--header-height);
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   z-index: 5;
   background: var(--background-primary);
 }
@@ -1398,10 +1674,13 @@ body {
   height: 100%;
 }
 
-/* A PDF overlays the (hidden) CodeMirror view, same as .drawing-pane, because
-   the EditorView is created once and must never be unmounted. One pane exists
-   per OPEN PDF tab; inactive ones are hidden, not unmounted, so their document
-   and reading position survive tab switches. */
+/* A PDF pane floats over the slot its document occupies rather than living
+   inside it: one pane exists per OPEN PDF tab and the ones that are off screen
+   are hidden, not unmounted, so their document and reading position survive
+   tab switches — which a pane that only existed while its tab was shown could
+   never do. Its column, when the tab is split, arrives as an inline left/width
+   pair (see PdfPane); the offset below the pane headers is here, because that
+   height is the stylesheet's to know. */
 .pdf-pane {
   position: absolute;
   top: var(--header-height);
@@ -1412,14 +1691,12 @@ body {
   background: var(--background-primary);
 }
 
-.pdf-pane-hidden {
-  visibility: hidden;
+.pdf-pane-split {
+  top: calc(var(--header-height) + var(--pane-header-height));
 }
 
-/* The annotate canvas nests inside the pane, which already sits below the
-   header — without this it would offset itself below the header twice. */
-.pdf-pane .drawing-pane {
-  top: 0;
+.pdf-pane-hidden {
+  visibility: hidden;
 }
 
 .pdf-pane-message {

@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readAnnotatedPdf } from '../utils/pdfAnnotation';
@@ -13,13 +13,38 @@ const PdfAnnotateCanvas = lazy(() => import('./PdfAnnotateCanvas'));
 interface PdfPaneProps {
     file: ActiveFile;
     /**
-     * Whether this pane's tab is the active one. EditorPane keeps one pane
-     * MOUNTED per open PDF tab and merely hides the inactive ones, so switching
-     * tabs never reloads the document or loses the reading position. Inactive
-     * panes hold their viewer; only the annotate canvas is torn down (it's a
-     * whole tldraw instance, and unmounting it is also what flushes strokes).
+     * Whether this document is on screen. EditorPane keeps one pane MOUNTED per
+     * open PDF tab and merely hides the ones that aren't, so switching tabs
+     * never reloads the document or loses the reading position. Hidden panes
+     * hold their viewer; only the annotate canvas is torn down (it's a whole
+     * tldraw instance, and unmounting it is also what flushes strokes).
      */
-    isActive: boolean;
+    isVisible: boolean;
+    /**
+     * Whether this is the FOCUSED pane, which is a narrower thing than being on
+     * screen once tabs can hold several documents: two PDFs may be visible side
+     * by side, but the +/- zoom keys belong to exactly one of them.
+     */
+    isFocused: boolean;
+    /** Which pane of the tab this document occupies, and that column's left
+     *  edge and width as percentages of the editor. The pane is positioned over
+     *  the slot — it can't be a child of it, since it has to outlive it (see
+     *  isVisible) — and both forms are needed: the index addresses the split's
+     *  live CSS variables while the pane is on screen, the numbers are what it
+     *  freezes to once it isn't (see slotStyle). */
+    slotIndex: number;
+    slotLeft: number;
+    slotWidth: number;
+    /** Whether the tab is split at all, which is what draws the pane headers
+     *  this pane has to sit below. Retained alongside the geometry rather than
+     *  inferred from it: a lone pane is 100% wide, and so is a hidden one. */
+    isSplit: boolean;
+    /** Make this the focused pane. The pane floats OVER its slot rather than
+     *  sitting inside it, so DocumentPane's own mousedown/focus handlers can
+     *  never see a click that lands on the document — without this, clicking a
+     *  PDF in a split left ⌘E, ⌘S, the top-bar actions and the +/− zoom keys
+     *  acting on whichever neighbour was focused before. */
+    onFocusPane: (path: string) => void;
     /** 'read' = view the real PDF, 'edit' = annotate. Reuses the per-tab mode. */
     mode: EditorMode;
     /** The tab's buffered tldraw snapshot (annotated files only). */
@@ -52,7 +77,7 @@ interface PdfSource {
  * modes rather than one blended view because a rasterized page has no text to
  * select — the pixels are all that's left. See utils/pdfAnnotation.ts.
  */
-function PdfPane({ file, isActive, mode, content, onContentChange, onFlushNow, theme, isDirty }: PdfPaneProps) {
+function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, isSplit, onFocusPane, mode, content, onContentChange, onFlushNow, theme, isDirty }: PdfPaneProps) {
     const { readFileBytes } = useFileSystem();
     const [source, setSource] = useState<PdfSource | null>(null);
     const [viewBytes, setViewBytes] = useState<Uint8Array | null>(null);
@@ -68,8 +93,54 @@ function PdfPane({ file, isActive, mode, content, onContentChange, onFlushNow, t
 
     // Panes for background tabs mount hidden at session restore; don't touch
     // the disk (or pdf.js) until the tab is first brought to the front.
-    const [activated, setActivated] = useState(isActive);
-    useEffect(() => { if (isActive) setActivated(true); }, [isActive]);
+    const [activated, setActivated] = useState(isVisible);
+    useEffect(() => { if (isVisible) setActivated(true); }, [isVisible]);
+
+    // A hidden pane KEEPS the geometry it was last shown at. `.pdf-pane-hidden`
+    // is only `visibility: hidden`, so the box still takes part in layout — and
+    // letting it snap back to full width the moment its tab goes to the back
+    // resized the viewer, tripping its ResizeObserver into a full re-fit and a
+    // re-rasterization of every windowed page, for a document nobody can see.
+    // (Measured: a half-width pane at 618px jumping to 1236px on every switch.)
+    //
+    // It is the resolved GEOMETRY that is retained, not the slot index and pane
+    // count it used to be derived from: those two no longer determine a width
+    // now that a tab's panes can be sized individually.
+    const [shownSlot, setShownSlot] = useState(
+        { index: slotIndex, left: slotLeft, width: slotWidth, split: isSplit });
+    useEffect(() => {
+        if (isVisible) setShownSlot(prev =>
+            prev.index === slotIndex && prev.left === slotLeft
+                && prev.width === slotWidth && prev.split === isSplit
+                ? prev
+                : { index: slotIndex, left: slotLeft, width: slotWidth, split: isSplit });
+    }, [isVisible, slotIndex, slotLeft, slotWidth, isSplit]);
+    const slot = isVisible
+        ? { index: slotIndex, left: slotLeft, width: slotWidth, split: isSplit }
+        : shownSlot;
+
+    // The slot this document occupies, as a share of the editor's width. Only
+    // ever a fraction while its tab is split; the stylesheet's full-width box
+    // is what every ordinary tab uses.
+    //
+    // ON SCREEN it is expressed as the split's own CSS variables, so a divider
+    // drag carries this pane along with its column in the very write that moves
+    // the column — no render, and never a frame out of step with it.
+    // HIDDEN it freezes to the numbers instead: those variables now describe
+    // whichever tab replaced this one, so a pane left reading them would be
+    // dragged around behind a split it is not even in — the same hazard `shown`
+    // above exists to close, arriving by a new road. Every drag commits before
+    // any tab switch can happen, so the frozen numbers are never mid-gesture.
+    const slotStyle = useMemo(() => {
+        if (!slot.split) return undefined;
+        return isVisible
+            ? {
+                left: `calc(var(--pane-x-${slot.index}) * 1%)`,
+                width: `calc(var(--pane-w-${slot.index}) * 1%)`,
+                right: 'auto' as const,
+            }
+            : { left: `${slot.left}%`, width: `${slot.width}%`, right: 'auto' as const };
+    }, [isVisible, slot.index, slot.left, slot.width, slot.split]);
 
     // True from the moment the canvas starts exporting until that save lands.
     // `isDirty` alone can't cover this: the export takes a moment, and the tab
@@ -176,10 +247,10 @@ function PdfPane({ file, isActive, mode, content, onContentChange, onFlushNow, t
         } else if (!source) {
             body = <div className="pdf-pane-message">Loading PDF…</div>;
         } else if (mode === 'edit' && source.original) {
-            // The annotate canvas only exists while its tab is in front: a
-            // background tldraw instance would pin megabytes of page bitmaps,
-            // and unmounting it is what flushes pending strokes to disk.
-            body = isActive ? (
+            // The annotate canvas only exists while its document is on screen:
+            // a hidden tldraw instance would pin megabytes of page bitmaps, and
+            // unmounting it is what flushes pending strokes to disk.
+            body = isVisible ? (
                 <Suspense fallback={<div className="pdf-pane-message">Loading annotation tools…</div>}>
                     <PdfAnnotateCanvas
                         key={file.path}
@@ -204,14 +275,21 @@ function PdfPane({ file, isActive, mode, content, onContentChange, onFlushNow, t
         } else if (!viewBytes) {
             body = <div className="pdf-pane-message">Loading PDF…</div>;
         } else {
-            body = <PdfViewer filePath={file.path} data={viewBytes} isActive={isActive} />;
+            body = <PdfViewer filePath={file.path} data={viewBytes} isActive={isFocused} />;
         }
     }
 
-    // One stable root for every state, so EditorPane can hide an inactive pane
+    // One stable root for every state, so EditorPane can hide an off-screen pane
     // with CSS instead of unmounting it (which would forget the document).
     return (
-        <div className={`pdf-pane${isActive ? '' : ' pdf-pane-hidden'}`}>
+        <div
+            className={`pdf-pane${isVisible ? '' : ' pdf-pane-hidden'}${slot.split ? ' pdf-pane-split' : ''}`}
+            style={slotStyle}
+            // The pane floats over its slot, so this is the ONLY thing that can
+            // report a click on a PDF as "focus this pane" — capture, so a
+            // scroll, a text selection or a click on the zoom pill all count.
+            onPointerDownCapture={() => { if (isVisible) onFocusPane(file.path); }}
+        >
             {body}
         </div>
     );

@@ -82,6 +82,34 @@ export interface OpenTab {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
+ * TAB GROUPS (split view)
+ * One entry in the tab bar is a GROUP of open documents, shown side by side as
+ * vertical panes. Most groups hold exactly one path, which is the ordinary
+ * single-document tab. `tabs` above stays a FLAT list of every open document —
+ * saving, asset tracking and search all key off it and are untouched by the
+ * split — while these describe only what the tab bar shows and where each
+ * document is drawn. See utils/tabGroups.ts for the operations and the
+ * invariants that keep the two in step.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface TabGroup {
+  /** Stable for the group's life; the React key and the drag payload. */
+  id: string;
+  /** ≥1 open-document paths, in left-to-right pane order. */
+  paths: string[];
+  /** Which of those panes has focus — remembered while the group is inactive. */
+  activePath: string;
+}
+
+/** The whole tab bar: its groups, and which one is on screen. Held as ONE piece
+ *  of state so a transition can never leave the active id naming a group that
+ *  the same update removed. */
+export interface TabLayout {
+  groups: TabGroup[];
+  activeId: string | null;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
  * GRAPH MODEL
  * Built by buildGraph() (graph.js:71-142). Node objects are documented at
  * graph.js:66-69 and constructed at graph.js:82-89 (resolved) & 110-117

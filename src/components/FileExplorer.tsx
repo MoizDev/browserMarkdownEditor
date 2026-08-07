@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import TreeNode from './TreeNode';
 import { takeDraggedNode } from '../utils/treeDrag';
+import { isTabDrag } from '../utils/tabDrag';
 import SearchPanel from './SearchPanel';
 import VaultMenu from './VaultMenu';
 import { FilePlus, FolderPlus, FolderOpen, Search, PenTool, PanelLeft } from './icons';
@@ -204,12 +205,17 @@ function FileExplorer({
     const dragCounterRef = useRef(0);
 
     const handleRootDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+        // An editor tab on its way to the split view has no meaning here (see
+        // utils/tabDrag.ts) — leave the container inert rather than inviting a
+        // drop it would silently ignore.
+        if (isTabDrag(e.dataTransfer)) return;
         e.preventDefault();
         dragCounterRef.current++;
         setRootDragOver(true);
     };
 
     const handleRootDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+        if (isTabDrag(e.dataTransfer)) return;
         e.preventDefault();
         // Files dragged from the OS are copied in, not moved out of the vault —
         // showing 'move' would promise Explorer we're removing their original.

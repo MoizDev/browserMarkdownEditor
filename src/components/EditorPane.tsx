@@ -1,58 +1,42 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
-import { EditorView, keymap, drawSelection } from '@codemirror/view';
-import { EditorState } from '@codemirror/state';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { languages } from '@codemirror/language-data';
-import { LanguageDescription } from '@codemirror/language';
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { searchKeymap } from '@codemirror/search';
-import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
-import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
-import { createLivePreviewPlugin } from '../editor/livePreview';
-import type { ImageDeleteRequest, ImageEmbedActions } from '../editor/imageWidget';
-import { markdownFormatExtension } from '../editor/formatKeymap';
-import { indentSettings, listIndentKeymap } from '../editor/lists';
-import { wikiLinkAutocomplete } from '../editor/wikiLinkComplete';
-import { mathEditingExtensions } from '../editor/latexSource';
-import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
-import { revealHighlightField, setRevealHighlight } from '../editor/revealHighlight';
-import { Compartment } from '@codemirror/state';
-import { useFileSystem } from '../context/FileSystemContext';
+import type { EditorState } from '@codemirror/state';
 import BacklinksPanel from './BacklinksPanel';
+import DocumentPane from './DocumentPane';
+import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
 import { Link, Eye, Edit2, PenTool } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
-import { readRecord, flushRecord } from '../utils/storage';
-import { isDrawingFile, isPdfFile, isAnnotatedPdf } from '../utils/fileTypes';
+import { isPdfFile, isAnnotatedPdf, isDrawingFile } from '../utils/fileTypes';
+import { activeGroup as activeGroupOf, canMergeIntoActive, MAX_SPLIT_PANES } from '../utils/tabGroups';
+import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
-import type { ActiveFile, OpenTab, GraphData, GraphNode, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
+import type { ActiveFile, OpenTab, GraphData, GraphNode, TabLayout, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
 
-// tldraw is a heavy dependency (canvas engine + its own UI). Loading it lazily
-// keeps it out of the initial bundle, so a markdown-only session never pays for
-// it — the chunk is fetched the first time a .tldraw file is opened.
-const DrawingPane = lazy(() => import('./DrawingPane'));
-// Same reasoning: pdf.js + pdf-lib only load once a PDF is actually opened.
+// Same reasoning as the drawing canvas: pdf.js + pdf-lib only load once a PDF
+// is actually opened.
 const PdfPane = lazy(() => import('./PdfPane'));
 
 interface EditorPaneProps {
-    activeFile: ActiveFile | null;
-    fileContent: string;
+    /** Every open document, flat. */
+    tabs: OpenTab[];
+    /** What the tab bar shows, and which of those tabs' panes are on screen. */
+    layout: TabLayout;
     theme: Theme;
-    editorMode: EditorMode;
     /** Spaces a Tab inserts — and how far Tab indents a list item. */
     tabSize: number;
     saveStatus: string;
-    tabs: OpenTab[];
-    activeTabPath: string | null;
-    onSelectTab: (path: string) => void;
-    onCloseTab: (path: string) => void;
-    onReorderTabs: (path: string, toIndex: number) => void;
+    onSelectGroup: (id: string) => void;
+    onCloseGroup: (id: string) => void;
+    onReorderGroups: (id: string, toIndex: number) => void;
+    /** Merge a whole tab into the one on screen, as panes starting at `index`. */
+    onMergeGroups: (sourceId: string, index: number) => void;
+    onFocusPane: (path: string) => void;
+    onClosePane: (path: string) => void;
+    onSplitOffPane: (path: string) => void;
     onToggleMode: (path: string) => void;
-    onContentChange: (value: string) => void;
-    /** Path-explicit (unlike onContentChange, which targets the ACTIVE tab): a
-     *  drawing's debounced save can land after a tab switch, and must still be
-     *  written to its own file. */
-    onDrawingChange: (path: string, content: string) => void;
+    /** Path-explicit: several documents are editable at once, and a canvas's
+     *  debounced save can land after its pane has gone away. */
+    onContentChange: (path: string, content: string) => void;
     /** Buffer content and write it immediately, skipping the save debounce. */
     onFlushNow: (path: string, content: string) => void;
     /** Start annotating a plain PDF: creates "<name> (annotated).pdf" and opens it. */
@@ -65,58 +49,61 @@ interface EditorPaneProps {
     onRevealHandled: () => void;
 }
 
-/** localStorage key: per-file editor scroll offsets. */
-const SCROLL_POSITIONS_KEY = 'fileScrollPositions';
-
 /** Inline positioning for the linked-mentions popover (fixed top/right). */
 interface PopoverPos {
     top: number;
     right: number;
 }
 
-/** The theme + syntax-highlight extension pair for the current app theme. */
-function themeExtensions(theme: Theme) {
-    return theme === 'light'
-        ? [obsidianLightTheme, obsidianLightHighlightStyle]
-        : [obsidianDarkTheme, obsidianHighlightStyle];
+/** Where a dragged tab would land: the insertion index among the panes, plus
+ *  the half of which pane to paint while the pointer is there. */
+interface DropTarget {
+    index: number;
+    pane: number;
+    side: 'left' | 'right';
 }
 
-export default function EditorPane({ activeFile, fileContent, theme, editorMode, tabSize, saveStatus, tabs, activeTabPath, onSelectTab, onCloseTab, onReorderTabs, onToggleMode, onContentChange, onDrawingChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
-    const { getAssetUrl, saveAsset } = useFileSystem();
+/**
+ * The editor half of the workspace: the tab bar, and the panes of whichever tab
+ * is on screen.
+ *
+ * A tab shows one document in the ordinary case and up to five side by side
+ * once tabs have been merged (see utils/tabGroups.ts). Each pane is a
+ * DocumentPane owning its own CodeMirror view; this component owns what is
+ * shared between them — the per-path EditorState cache, the tab bar, the
+ * top-bar actions (which act on the focused pane), the image-delete
+ * confirmation, and the PDF panes, which are deliberately NOT inside a pane so
+ * they can outlive it.
+ */
+export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+    const group = activeGroupOf(layout);
+    const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
+    const paneTabs = useMemo(
+        () => (group ? group.paths.map(p => byPath.get(p)).filter((t): t is OpenTab => !!t) : []),
+        [group, byPath]
+    );
+    const paneCount = paneTabs.length;
 
-    // A drawing takes over the pane: the tldraw canvas is layered over the
-    // (hidden) CodeMirror view rather than replacing it, because the view is
-    // created once by a callback ref guarded on `!viewRef.current` — unmounting
-    // its container would orphan the view and never re-parent it on the way back.
+    const focusedPath = group?.activePath ?? null;
+    const focusedTab = focusedPath ? byPath.get(focusedPath) ?? null : null;
+    const activeFile: ActiveFile | null = focusedTab?.file ?? null;
+    const editorMode: EditorMode = focusedTab?.mode ?? 'read';
+
     const isDrawing = !!activeFile && !activeFile.isHelp && isDrawingFile(activeFile.name);
-    // PDFs take over the pane the same way, for the same reason.
     const isPdf = !!activeFile && !activeFile.isHelp && isPdfFile(activeFile.name);
     // Only a file we wrote can be annotated in place; a plain PDF gets an
     // "Annotate" action that spawns its annotated sibling instead.
     const isAnnotatable = isPdf && !!activeFile && isAnnotatedPdf(activeFile.name);
-    /** True whenever a non-CodeMirror surface owns the pane. */
+    /** True whenever a non-CodeMirror surface owns the focused pane. */
     const isCanvas = isDrawing || isPdf;
-    const editorContainerRef = useRef<HTMLDivElement | null>(null);
-    const viewRef = useRef<EditorView | null>(null);
-    const themeCompartmentRef = useRef<Compartment>(new Compartment());
-    const readOnlyCompartmentRef = useRef<Compartment>(new Compartment());
-    const livePreviewCompartmentRef = useRef<Compartment>(new Compartment());
-    const indentCompartmentRef = useRef<Compartment>(new Compartment());
-    const onContentChangeRef = useRef(onContentChange);
-    const activeFileRef = useRef<ActiveFile | null>(activeFile);
-    const onOpenNoteRef = useRef(onOpenNote);
-    const saveScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const revealClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // ── Per-tab editor state ────────────────────────────────────────────────
-    // One CodeMirror EditorView is reused across tabs; each tab's full state
-    // (doc + undo history + selection) is cached here and swapped in on switch,
-    // so undo can never reach across files and each tab keeps its own history.
-    const stateCacheRef = useRef<Map<string, EditorState>>(new Map());
-    const prevPathRef = useRef<string | null>(null);
-    // True while we programmatically swap the document, so the update listener
-    // doesn't mistake a swap for a user edit (which would mark the tab dirty).
-    const isSwappingRef = useRef<boolean>(false);
+    // ── Per-document editor state ──────────────────────────────────────────
+    // Each document's full EditorState (doc + undo history + selection) is
+    // cached here by PATH, and adopted by whichever pane shows it next — so
+    // undo survives tab switches and being dragged into a split, and can never
+    // reach across documents. Sound because a path is open at most once, and so
+    // can be in at most one pane at a time.
+    const [stateCache] = useState(() => new Map<string, EditorState>());
 
     // ── Linked mentions popover ────────────────────────────────────────────
     const [showBacklinks, setShowBacklinks] = useState(false);
@@ -164,42 +151,12 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         };
     }, [showBacklinks]);
 
-    // Debounced scroll persistence
-    const handleScroll = (view: EditorView) => {
-        if (!activeFileRef.current) return;
-        const path = activeFileRef.current.path;
-        const scrollTop = view.scrollDOM.scrollTop;
-
-        if (saveScrollTimeoutRef.current) clearTimeout(saveScrollTimeoutRef.current);
-
-        saveScrollTimeoutRef.current = setTimeout(() => {
-            // Held parsed in memory — mutate and write, no full re-parse per tick.
-            readRecord<number>(SCROLL_POSITIONS_KEY)[path] = scrollTop;
-            flushRecord(SCROLL_POSITIONS_KEY);
-        }, 300);
-    };
-
-    // Keep the callback ref up-to-date without re-creating the editor
-    useEffect(() => {
-        onContentChangeRef.current = onContentChange;
-    }, [onContentChange]);
-
-    useEffect(() => {
-        activeFileRef.current = activeFile;
-    }, [activeFile]);
-
-    useEffect(() => {
-        onOpenNoteRef.current = onOpenNote;
-    }, [onOpenNote]);
-
     // The [[ autocomplete reads targets through this ref so its (created-once)
     // extension always sees the current vault, deduped by link name since
-    // wikilinks resolve by name, not path.
+    // wikilinks resolve by name, not path. One stable getter for every pane.
     const graphRef = useRef<GraphData>(graph);
-    useEffect(() => {
-        graphRef.current = graph;
-    }, [graph]);
-    const getWikiLinkTargets = useRef(() => {
+    useEffect(() => { graphRef.current = graph; }, [graph]);
+    const [getWikiLinkTargets] = useState(() => () => {
         const seen = new Set<string>();
         const targets: WikiLinkTarget[] = [];
         for (const node of graphRef.current.nodes) {
@@ -211,23 +168,13 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         return targets;
     });
 
-    // Create a bound version of getAssetUrl that includes the active file's parent handle
-    const boundGetAssetUrl = useRef<(fileName: string) => Promise<string | null>>((fileName) => getAssetUrl(fileName, null));
-    useEffect(() => {
-        boundGetAssetUrl.current = (fileName) => getAssetUrl(fileName, activeFile?.parentHandle || null);
-    }, [activeFile, getAssetUrl]);
-
     // ── Embedded images ────────────────────────────────────────────────────
     // Deleting one is the editor's only action that needs the app: it has to be
     // confirmed first, since the picture goes to .Garbage with it. The document
     // edit itself stays inside the editor subsystem — this only decides whether
     // it happens (see imageWidget.ts).
-    const [imageDelete, setImageDelete] = useState<ImageDeleteRequest | null>(null);
-    // Stable for the pane's life, for the same reason the resolver below is:
-    // ImageWidget.eq compares the context holding it by identity.
-    const imageActions = useRef<ImageEmbedActions>({
-        confirmDelete: (request) => setImageDelete(request),
-    }).current;
+    const [imageDelete, setImageDelete] = useState<PaneImageDelete | null>(null);
+    const handleImageDelete = useCallback((request: PaneImageDelete) => setImageDelete(request), []);
 
     const closeImageDelete = useCallback(() => setImageDelete(null), []);
     // Not inside a state updater: StrictMode invokes those twice, and this one
@@ -247,330 +194,95 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
         return () => window.removeEventListener('keydown', onKeyDown, true);
     }, [imageDelete]);
 
-    // A pending request names a position in the document that was showing when
-    // it was raised, and the single EditorView swaps documents on a tab change
-    // (⌘N while the dialog is up reaches past it). The question stops meaning
-    // anything then, so it is withdrawn rather than answered against the wrong
-    // note — removeEmbed would refuse it anyway, silently.
-    useEffect(() => { setImageDelete(null); }, [activeFile?.path]);
-
-    // ONE stable identity for the whole life of the pane, passed to every
-    // createLivePreviewPlugin call below.
-    //
-    // ImageWidget.eq() compares its resolver by identity, so a fresh closure per
-    // call site made every image widget compare unequal after any compartment
-    // reconfigure — i.e. on every ⌘E and every tab switch CodeMirror tore down
-    // and rebuilt all their DOM, re-resolved every asset, and flashed each
-    // image back through its "Loading …" placeholder. Reading the live bound
-    // resolver through the ref keeps the current parent handle without ever
-    // changing this function's identity.
-    const stableGetAssetUrl = useRef((fileName: string) => boundGetAssetUrl.current(fileName)).current;
-
-    // Build the full extension list for a document. Shared by the initial view
-    // and every fresh per-tab state, so all tabs behave identically. All the
-    // dynamic bits (content-change, asset URLs, active file) go through refs.
-    const createTabState = (doc: string, mode: EditorMode): EditorState => {
-        const updateListener = EditorView.updateListener.of((update) => {
-            if (isSwappingRef.current) return;            // ignore programmatic doc swaps
-            if (update.docChanged) {
-                onContentChangeRef.current(update.state.doc.toString());
-            }
-        });
-
-        return EditorState.create({
-            doc: doc || '',
-            extensions: [
-                EditorView.lineWrapping,
-                // Draw a custom cursor element (.cm-cursor) instead of using the
-                // native browser caret, so the caret style/animation settings apply.
-                drawSelection(),
-                history(),
-                // Before closeBrackets so LaTeX gets first claim on $ { ( [ —
-                // the stock handler doesn't know $ at all, and refuses to pair
-                // brackets before non-whitespace, which is every keystroke
-                // inside $…$.
-                mathEditingExtensions(),
-                closeBrackets(),
-                // The extra resolver matters: fence infostrings are often file
-                // extensions (```py, ```rs) which matchLanguageName ignores —
-                // it only knows names and aliases — so fall back to matching
-                // them as if they were a filename's extension.
-                markdown({
-                    base: markdownLanguage,
-                    codeLanguages: (info: string) =>
-                        LanguageDescription.matchLanguageName(languages, info, true)
-                        ?? LanguageDescription.matchFilename(languages, `x.${info}`),
-                }),
-                themeCompartmentRef.current.of(themeExtensions(theme)),
-                indentCompartmentRef.current.of(indentSettings(tabSize)),
-                // Above the default keymap, which deliberately leaves Tab to the
-                // browser — here it indents (and re-nests list items) instead.
-                listIndentKeymap,
-                keymap.of([
-                    ...defaultKeymap,
-                    ...historyKeymap,
-                    ...closeBracketsKeymap,
-                    ...searchKeymap,
-                ]),
-                readOnlyCompartmentRef.current.of(EditorView.editable.of(mode !== 'read')),
-                wikiLinkAutocomplete(() => getWikiLinkTargets.current()),
-                livePreviewCompartmentRef.current.of(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
-                markdownFormatExtension,
-                revealHighlightField,
-                updateListener,
-                EditorView.domEventHandlers({
-                    paste(event, view) {
-                        const items = event.clipboardData?.items;
-                        if (!items) return false;
-
-                        for (const item of items) {
-                            if (item.type.startsWith('image/')) {
-                                event.preventDefault();
-                                const blob = item.getAsFile();
-
-                                // Generate a filename like Obsidian: Pasted image 20231025143000.png
-                                const now = new Date();
-                                const timestamp = now.getFullYear().toString() +
-                                    (now.getMonth() + 1).toString().padStart(2, '0') +
-                                    now.getDate().toString().padStart(2, '0') +
-                                    now.getHours().toString().padStart(2, '0') +
-                                    now.getMinutes().toString().padStart(2, '0') +
-                                    now.getSeconds().toString().padStart(2, '0');
-
-                                // Make sure we carry over the correct extension (e.g. image/png -> .png)
-                                const extMatch = item.type.match(/image\/(jpeg|png|gif|webp|svg\+xml)/);
-                                let ext = '.png';
-                                if (extMatch) {
-                                    ext = `.${extMatch[1] === 'svg+xml' ? 'svg' : extMatch[1]}`;
-                                }
-                                const filename = `Pasted image ${timestamp}${ext}`;
-
-                                // Save the asset to the local .Assets folder (sibling of the active file)
-                                const parentHandle = activeFileRef.current?.parentHandle || null;
-                                saveAsset(filename, blob!, parentHandle).then(() => {
-                                    // Insert the markdown at cursor
-                                    const insertText = `![[${filename}]]\n`;
-                                    const ranges = view.state.selection.ranges;
-                                    if (ranges.length > 0) {
-                                        const pos = ranges[0].from;
-                                        view.dispatch({
-                                            changes: { from: pos, insert: insertText },
-                                            selection: { anchor: pos + insertText.length }
-                                        });
-                                    }
-                                }).catch(err => {
-                                    console.error('Failed to save pasted image:', err);
-                                    alert('Failed to save image to .Assets folder.');
-                                });
-
-                                return true; // We handled the paste
-                            }
-                        }
-                        return false;
-                    },
-                    scroll(event, view) {
-                        handleScroll(view);
-                    },
-                    mousedown(event) {
-                        // Navigate when a rendered [[wikilink]] is clicked.
-                        const el = (event.target as HTMLElement).closest?.('.cm-wikilink');
-                        if (el && onOpenNoteRef.current) {
-                            event.preventDefault();
-                            onOpenNoteRef.current(el.getAttribute('data-wikilink') as string);
-                            return true;
-                        }
-                        return false;
-                    }
-                })
-            ],
-        });
-    };
-
-    // Use a callback ref to initialize CodeMirror as soon as the container is
-    // mounted. The container is now ALWAYS rendered (even with no file open), so
-    // the view is created once and never orphaned by an empty-state unmount.
-    const setEditorContainer = (node: HTMLDivElement | null) => {
-        editorContainerRef.current = node;
-        if (node && !viewRef.current) {
-            viewRef.current = new EditorView({
-                // A restored canvas tab (.tldraw / .pdf) must not seed CodeMirror
-                // with its JSON.
-                state: createTabState(isCanvas ? '' : fileContent, editorMode),
-                parent: node,
-            });
-            prevPathRef.current = activeFile?.path ?? null;
-        }
-    };
-
-    // Cleanup on unmount
+    // A pending request names a position in the document that raised it, and
+    // that document can leave the screen while the dialog is up (a tab switch,
+    // ⌘N, the pane being closed). The question stops meaning anything then, so
+    // it is withdrawn rather than answered against the wrong note — removeEmbed
+    // would refuse it anyway, silently.
+    const visibleKey = group ? group.paths.join('\n') : '';
     useEffect(() => {
-        return () => {
-            if (viewRef.current) {
-                viewRef.current.destroy();
-                viewRef.current = null;
-            }
-        };
-    }, []);
+        const visible = new Set(visibleKey ? visibleKey.split('\n') : []);
+        setImageDelete(prev => (prev && visible.has(prev.path) ? prev : null));
+    }, [visibleKey]);
 
-    // Swap the whole editor state when the ACTIVE TAB changes (keyed on path, not
-    // content, so typing never triggers a swap). The outgoing tab's state is
-    // cached; the incoming tab's cached state is restored (preserving its undo
-    // history + selection) or built fresh from its content.
-    useEffect(() => {
-        const view = viewRef.current;
-        if (!view) return;
-        const nextPath = activeFile?.path ?? null;
-        if (nextPath === prevPathRef.current) return;
-
-        isSwappingRef.current = true;
-        // A canvas tab leaves CodeMirror parked on a blank doc — there's no
-        // text state worth caching for it (and caching would key that blank doc
-        // under the drawing's/PDF's path).
-        const prevWasCanvas = prevPathRef.current
-            ? isDrawingFile(prevPathRef.current) || isPdfFile(prevPathRef.current)
-            : false;
-        if (prevPathRef.current && !prevWasCanvas) stateCacheRef.current.set(prevPathRef.current, view.state);
-
-        if (isCanvas) {
-            // The canvas owns the pane. Park CodeMirror on an empty doc so it
-            // never holds — or autosaves — the canvas's JSON.
-            view.setState(createTabState('', 'read'));
-            isSwappingRef.current = false;
-            prevPathRef.current = nextPath;
-            return;
-        }
-
-        if (nextPath) {
-            const cached = stateCacheRef.current.get(nextPath);
-            view.setState(cached ?? createTabState(fileContent, editorMode));
-            // Cached states may hold a stale theme/mode/tab size (or a leftover
-            // search reveal flash) → reconfigure/clear for this tab.
-            view.dispatch({
-                effects: [
-                    themeCompartmentRef.current.reconfigure(themeExtensions(theme)),
-                    readOnlyCompartmentRef.current.reconfigure(EditorView.editable.of(editorMode !== 'read')),
-                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, editorMode, imageActions)),
-                    indentCompartmentRef.current.reconfigure(indentSettings(tabSize)),
-                    setRevealHighlight.of(null),
-                ]
-            });
-        } else {
-            // No tab open — show an empty read-only doc behind the overlay.
-            view.setState(createTabState('', 'read'));
-        }
-
-        isSwappingRef.current = false;
-        prevPathRef.current = nextPath;
-
-        // Restore scroll position for the newly-active file.
-        if (nextPath) {
-            const savedScrollTop = readRecord<number>(SCROLL_POSITIONS_KEY)[nextPath];
-            requestAnimationFrame(() => {
-                if (viewRef.current) {
-                    viewRef.current.scrollDOM.scrollTop = savedScrollTop !== undefined ? savedScrollTop : 0;
-                }
-            });
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeFile?.path]);
-
-    // Jump to a search match once its tab is active: select it, scroll it to
-    // the vertical center, and flash a highlight decoration (visible even in
-    // read mode, where the view may refuse focus so the selection alone could
-    // be invisible). Declared AFTER the tab-swap effect so it sees the swapped
-    // state, and dispatched inside requestAnimationFrame so it runs after the
-    // swap effect's own scroll-position restore (rAFs fire in schedule order).
-    useEffect(() => {
-        if (!revealRequest || revealRequest.path !== activeFile?.path) return;
-        const { from, to } = revealRequest;
-        onRevealHandled();
-
-        requestAnimationFrame(() => {
-            const view = viewRef.current;
-            if (!view) return;
-            // The doc may be shorter than the searched text was (e.g. it
-            // changed on disk since indexing) — clamp rather than throw.
-            const docLen = view.state.doc.length;
-            const safeFrom = Math.min(from, docLen);
-            const safeTo = Math.min(to, docLen);
-            view.dispatch({
-                selection: { anchor: safeFrom, head: safeTo },
-                effects: [
-                    EditorView.scrollIntoView(safeFrom, { y: 'center' }),
-                    setRevealHighlight.of({ from: safeFrom, to: safeTo }),
-                ],
-            });
-            view.focus();
-        });
-
-        // Let the flash fade after a moment. An earlier reveal's pending
-        // fade is cancelled so it can't cut this one short. If the user
-        // switched tabs meanwhile, the clear no-ops (that state's field is
-        // already empty) and the tab swap clears leftovers on restore.
-        if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
-        revealClearTimerRef.current = setTimeout(() => {
-            viewRef.current?.dispatch({ effects: setRevealHighlight.of(null) });
-        }, 1600);
-        // No effect cleanup: it would cancel the pending fade when
-        // onRevealHandled() nulls the request and re-runs this effect. Both
-        // callbacks guard on viewRef; a redundant clear is harmless.
-    }, [revealRequest, activeFile?.path, onRevealHandled]);
-
-    // Drop cached editor states for tabs that are no longer open. Keyed on the
-    // joined path string so it doesn't run on every keystroke.
+    // Drop cached editor states for documents that are no longer open. Keyed on
+    // the joined path string so it doesn't run on every keystroke.
     const openTabsKey = tabs.map(t => t.file.path).join('\n');
     useEffect(() => {
         const open = new Set(openTabsKey ? openTabsKey.split('\n') : []);
-        for (const key of stateCacheRef.current.keys()) {
-            if (!open.has(key)) stateCacheRef.current.delete(key);
+        for (const key of stateCache.keys()) {
+            if (!open.has(key)) stateCache.delete(key);
         }
-    }, [openTabsKey]);
+    }, [openTabsKey, stateCache]);
 
-    // Update CodeMirror theme when app theme changes
-    useEffect(() => {
-        const view = viewRef.current;
-        if (view) {
-            view.dispatch({
-                effects: themeCompartmentRef.current.reconfigure(themeExtensions(theme))
-            });
-        }
-    }, [theme]);
+    // ── Merging a tab into this one ────────────────────────────────────────
+    // A tab dragged out of the bar and dropped on the panes below joins them.
+    // The drop zone is a layer OVER the panes rather than handlers on them:
+    // CodeMirror handles `drop` itself (it would insert the dragged text), and
+    // a PDF pane would swallow it entirely. It exists only while a tab is
+    // actually in flight, so nothing else is ever intercepted.
+    const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
+    const [dropAt, setDropAt] = useState<DropTarget | null>(null);
+    /** Whether the pointer is actually over the panes. The zone exists for the
+     *  whole drag (it has to, to keep CodeMirror off the drop), but what it says
+     *  is only about where the pointer IS. */
+    const [overZone, setOverZone] = useState(false);
 
-    // Apply a changed Tab size to the live view (cached per-tab states get it
-    // from the tab-swap effect above, like the theme).
-    useEffect(() => {
-        viewRef.current?.dispatch({
-            effects: indentCompartmentRef.current.reconfigure(indentSettings(tabSize)),
-        });
-    }, [tabSize]);
+    const endDrag = useCallback(() => {
+        setDraggingGroupId(null);
+        setDropAt(null);
+        setOverZone(false);
+    }, []);
 
-    // Update read-only & live-preview rules when mode or active file changes
-    useEffect(() => {
-        const view = viewRef.current;
-        if (view) {
-            view.dispatch({
-                effects: [
-                    readOnlyCompartmentRef.current.reconfigure(EditorView.editable.of(editorMode !== 'read')),
-                    livePreviewCompartmentRef.current.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, editorMode, imageActions))
-                ]
-            });
-        }
-        // Only editorMode drives this: the tab-swap effect already reconfigures
-        // these on a path change, so it need not fire again on every switch.
-        // (stableGetAssetUrl and imageActions are both useRef().current —
-        // constant for the pane's life — so listing them satisfies the linter
-        // without re-arming anything.)
-    }, [editorMode, stableGetAssetUrl, imageActions]);
+    const mergeable = canMergeIntoActive(layout, draggingGroupId);
+    /** Dragged onto a tab that can't take it — say why rather than look broken.
+     *  Gated on the pointer being over the panes: ungated it announced itself
+     *  from the moment the drag started, so merely re-ordering a tab along the
+     *  strip raised a message about something the user wasn't doing. */
+    const dropFull = overZone && !!draggingGroupId && !!group && draggingGroupId !== group.id && !mergeable;
+
+    const handleDropOver = (e: React.DragEvent<HTMLDivElement>) => {
+        setOverZone(true);
+        if (!mergeable || paneCount === 0) { setDropAt(null); return; }
+        e.preventDefault();                     // without this the drop is refused
+        e.dataTransfer.dropEffect = 'move';
+        const r = e.currentTarget.getBoundingClientRect();
+        const paneWidth = r.width / paneCount;
+        const x = e.clientX - r.left;
+        const pane = Math.max(0, Math.min(paneCount - 1, Math.floor(x / paneWidth)));
+        // Which half of that pane decides which side of it the new panes land.
+        const right = x - pane * paneWidth > paneWidth / 2;
+        const index = right ? pane + 1 : pane;
+        const side = right ? 'right' : 'left';
+        // dragover fires continuously — several times a second even with the
+        // pointer still. Keeping the same object when the answer hasn't changed
+        // is what stops each tick re-rendering this component and the tab bar.
+        setDropAt(prev => (prev && prev.index === index && prev.pane === pane && prev.side === side)
+            ? prev
+            : { index, pane, side });
+    };
+
+    const handleDropLeave = () => { setOverZone(false); setDropAt(null); };
+
+    const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        if (draggingGroupId && dropAt && mergeable) onMergeGroups(draggingGroupId, dropAt.index);
+        endDrag();
+    };
 
     return (
         <div className="editor-pane">
             <div className="view-header">
                 <TabBar
                     tabs={tabs}
-                    activeTabPath={activeTabPath}
-                    onSelectTab={onSelectTab}
-                    onCloseTab={onCloseTab}
-                    onReorderTabs={onReorderTabs}
+                    groups={layout.groups}
+                    activeGroupId={layout.activeId}
+                    draggingGroupId={draggingGroupId}
+                    onSelectGroup={onSelectGroup}
+                    onCloseGroup={onCloseGroup}
+                    onReorderGroups={onReorderGroups}
+                    onDragStart={setDraggingGroupId}
+                    onDragEnd={endDrag}
                 />
                 {saveStatus && <span className="save-status">{saveStatus}</span>}
                 {/* A plain PDF can't hold annotations, so this spawns its
@@ -625,57 +337,104 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     </>
                 )}
             </div>
-            <div
-                className="view-content"
-                ref={setEditorContainer}
-                style={isCanvas ? { display: 'none' } : undefined}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={async (e) => {
-                    e.preventDefault();
-                    if (!activeFile) return;
-                    const item = e.dataTransfer.items?.[0];
-                    if (!item || item.kind !== 'file') return;
-                    const file = item.getAsFile();
-                    if (!file || !file.name.endsWith('.md')) return;
-                    const text = await file.text();
-                    // Overwrite the active document; the update listener marks the
-                    // tab dirty and schedules the save.
-                    const view = viewRef.current;
-                    if (view) {
-                        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
-                    }
-                }}
-            />
-            {isDrawing && activeFile && (
-                <Suspense fallback={<div className="drawing-pane drawing-pane-loading">Loading whiteboard…</div>}>
-                    {/* Keyed on path: each drawing gets its own tldraw instance,
-                        loaded from its own snapshot. */}
-                    <DrawingPane
-                        key={activeFile.path}
-                        filePath={activeFile.path}
-                        content={fileContent}
-                        onContentChange={onDrawingChange}
+
+            {/* The panes of the tab on screen: equal columns, left to right. */}
+            <div className="editor-split">
+                {paneTabs.map(tab => (
+                    <DocumentPane
+                        key={tab.file.path}
+                        tab={tab}
+                        isFocused={tab.file.path === focusedPath}
+                        showHeader={paneCount > 1}
                         theme={theme}
+                        tabSize={tabSize}
+                        stateCache={stateCache}
+                        getWikiLinkTargets={getWikiLinkTargets}
+                        onContentChange={onContentChange}
+                        onFocusPane={onFocusPane}
+                        onClosePane={onClosePane}
+                        onSplitOffPane={onSplitOffPane}
+                        onOpenNote={onOpenNote}
+                        onImageDelete={handleImageDelete}
+                        revealRequest={revealRequest}
+                        onRevealHandled={onRevealHandled}
                     />
-                </Suspense>
-            )}
+                ))}
+                {/* Drawn over the panes rather than as a border on them: a PDF
+                    pane floats above its slot and would otherwise cover it. */}
+                {Array.from({ length: Math.max(0, paneCount - 1) }, (_, i) => (
+                    <span
+                        key={i}
+                        className="editor-split-divider"
+                        style={{ left: `${((i + 1) * 100) / paneCount}%` }}
+                        aria-hidden="true"
+                    />
+                ))}
+                {draggingGroupId && group && paneCount > 0 && (
+                    <div
+                        className="editor-split-dropzone"
+                        onDragEnter={handleDropOver}
+                        onDragOver={handleDropOver}
+                        onDragLeave={handleDropLeave}
+                        onDrop={handleDrop}
+                    >
+                        {dropAt && (
+                            <div
+                                className="editor-split-drop-target"
+                                style={{
+                                    left: `${((dropAt.pane + (dropAt.side === 'right' ? 0.5 : 0)) * 100) / paneCount}%`,
+                                    width: `${50 / paneCount}%`,
+                                }}
+                            />
+                        )}
+                        {dropFull && (
+                            <div className="editor-split-drop-note">
+                                One tab holds up to {MAX_SPLIT_PANES} panes
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+
             {/* One pane per OPEN PDF tab — kept mounted and merely hidden while
-                inactive, so switching tabs never reloads the document or loses
-                the reading position. Each pane defers its disk/pdf.js work
-                until its tab is first activated. */}
+                off screen, so switching tabs never reloads the document or loses
+                the reading position. That is why they live out here rather than
+                inside a DocumentPane, which exists only while its tab is shown;
+                each is positioned over the slot its document occupies. Panes
+                defer their disk/pdf.js work until first shown. */}
             {tabs.filter(t => !t.file.isHelp && isPdfFile(t.file.name)).map(tab => {
-                const active = tab.file.path === activeTabPath;
+                const slot = group ? group.paths.indexOf(tab.file.path) : -1;
+                const visible = slot >= 0;
+                // The placeholder has to stand in the SAME column as the pane it
+                // is standing in for: bare `.pdf-pane` is full width and sits
+                // above the pane headers, so on the restore path — the one that
+                // can put a PDF straight into a split — it covered the notes
+                // beside it until the lazy chunk arrived.
+                const fallbackStyle = visible && paneCount > 1
+                    ? { left: `${(slot * 100) / paneCount}%`, width: `${100 / paneCount}%`, right: 'auto' as const }
+                    : undefined;
                 return (
                     <Suspense
                         key={tab.file.path}
-                        fallback={active ? <div className="pdf-pane pdf-pane-message">Loading PDF…</div> : null}
+                        fallback={visible ? (
+                            <div
+                                className={`pdf-pane pdf-pane-message${paneCount > 1 ? ' pdf-pane-split' : ''}`}
+                                style={fallbackStyle}
+                            >
+                                Loading PDF…
+                            </div>
+                        ) : null}
                     >
                         <PdfPane
                             file={tab.file}
-                            isActive={active}
+                            isVisible={visible}
+                            isFocused={tab.file.path === focusedPath}
+                            slotIndex={visible ? slot : 0}
+                            slotCount={visible ? paneCount : 1}
+                            onFocusPane={onFocusPane}
                             mode={tab.mode}
                             content={tab.content}
-                            onContentChange={onDrawingChange}
+                            onContentChange={onContentChange}
                             onFlushNow={onFlushNow}
                             theme={theme}
                             isDirty={tab.dirty}
@@ -683,6 +442,7 @@ export default function EditorPane({ activeFile, fileContent, theme, editorMode,
                     </Suspense>
                 );
             })}
+
             {!activeFile && (
                 <div className="editor-empty-overlay">
                     <div className="editor-empty-inner">

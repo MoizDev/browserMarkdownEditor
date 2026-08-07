@@ -10,6 +10,22 @@ import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
 import { isDrawingFile, isPdfFile, isAnnotatedPdf, annotatedNameFor } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
+import {
+  EMPTY_LAYOUT,
+  closeGroup as closeGroupIn,
+  closePath,
+  focusTab,
+  focusedPath as focusedPathOf,
+  groupById,
+  mergeIntoActive,
+  openTab as openTabIn,
+  renamePath,
+  reorderGroups,
+  restoreLayout,
+  selectGroup,
+  splitOff,
+  visiblePaths,
+} from './utils/tabGroups';
 import { clampTabSize } from './editor/lists';
 import { retryMissingAssets } from './editor/imageWidget';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
@@ -30,8 +46,8 @@ import type {
   GraphData,
   GraphNode,
   SettingsDefaults,
+  TabLayout,
   Theme,
-  EditorMode,
   MainView,
   CaretStyle,
   EditorRevealRequest,
@@ -121,23 +137,29 @@ export default function App() {
     renameFile,
   } = useFileSystem();
 
-  // Open tabs (one per open document) + the path of the active tab. This
-  // replaces the former single (activeFile + fileContent + editorMode) trio;
-  // those three are now DERIVED from the active tab below and still fed to
-  // EditorPane, so most downstream code is unchanged.
+  // Every open document, flat — one entry per file, whatever tab it is drawn
+  // in. Autosave, the asset diff, search and rename all index this by path.
   const [tabs, setTabs] = useState<OpenTab[]>([]);
-  const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
+  // How those documents are arranged in the tab bar: one group per tab, holding
+  // one path in the ordinary case and up to five once tabs have been merged
+  // into a split view (utils/tabGroups.ts). Groups + the active one are ONE
+  // piece of state so no update can leave the active id naming a group it just
+  // removed; the focused document — the old `activeTabPath` — is derived from
+  // it, which is what keeps the two from drifting.
+  const [layout, setLayout] = useState<TabLayout>(EMPTY_LAYOUT);
   const [saveStatus, setSaveStatus] = useState<string>('');
+
+  const activeTabPath = focusedPathOf(layout);
 
   const activeTab = useMemo(
     () => tabs.find(t => t.file.path === activeTabPath) ?? null,
     [tabs, activeTabPath]
   );
-  // Keeping `t.file` identity stable across keystrokes (see updateActiveTabContent)
-  // means `activeFile` only changes on an actual tab switch, not on every edit.
+  // Keeping `t.file` identity stable across keystrokes (see updateTabContent)
+  // means `activeFile` only changes when the focus does, not on every edit.
+  // It is what the file tree highlights and what the graph view centres on;
+  // the editor derives its own from the layout, pane by pane.
   const activeFile = activeTab?.file ?? null;
-  const fileContent = activeTab?.content ?? '';
-  const editorMode: EditorMode = activeTab?.mode ?? 'read';
 
   // Main pane view ('editor' or 'graph' — the Neural Brain view)
   const [mainView, setMainView] = useState<MainView>('editor');
@@ -329,12 +351,20 @@ export default function App() {
 
   // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
+  const layoutRef = useRef<TabLayout>(layout);
   const activeTabPathRef = useRef<string | null>(activeTabPath);
+  // The documents currently on screen — every pane of the active tab, not just
+  // the focused one, so a save in a neighbouring pane still reports itself.
+  const visiblePathsRef = useRef<string[]>([]);
   // Per-PATH debounced save timers, so switching or closing one tab never
   // cancels another tab's pending write (fixes the old single-timer data loss).
   const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const saveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  useEffect(() => {
+    layoutRef.current = layout;
+    visiblePathsRef.current = visiblePaths(layout);
+  }, [layout]);
   useEffect(() => { activeTabPathRef.current = activeTabPath; }, [activeTabPath]);
 
   // True once the restore pass below has consumed the stored session.
@@ -344,30 +374,40 @@ export default function App() {
   const currentVaultIdRef = useRef<string | null>(currentVaultId);
   useEffect(() => { currentVaultIdRef.current = currentVaultId; }, [currentVaultId]);
 
-  // Persist the open tabs + active tab so they can be restored on reload. Keyed
-  // on the joined path string (not `tabs`) so it does NOT run on every keystroke
-  // — only when the set/order of open files, or the active one, changes.
+  // Persist the open documents, how they are grouped into tabs, and which one
+  // has focus, so a reload comes back to the same workspace. Keyed on `layout`
+  // (not `tabs`) so it does NOT run on every keystroke — the layout's identity
+  // only moves when the tab bar actually changes.
+  //
+  // The flat path list is written as it always was, so a build without split
+  // tabs still restores the session; the grouping rides alongside it and is
+  // ignored by anything that doesn't understand it.
   //
   // GATED until the restore pass has run: this effect also fires on mount, with
   // zero tabs, and writing that out would clobber the stored tab list moments
   // before restore reads it — which is exactly what reduced every reload to
   // "only the last-active file comes back" (via the lastFilePath fallback).
-  const openTabPathsKey = tabs.map(t => t.file.path).join('\n');
   useEffect(() => {
     if (!hasRestoredTabs.current) return;
-    const paths = openTabPathsKey ? openTabPathsKey.split('\n') : [];
-    writeJSON('openTabPaths', paths);
+    const groups = layout.groups.map(g => g.paths);
+    writeJSON('openTabPaths', groups.flat());
+    writeJSON('openTabGroups', groups);
+    // Which pane each split tab was left on. Written as its own key so the
+    // grouping keeps the exact shape every build has read, and a session
+    // without it still restores (each tab falls back to its leftmost pane).
+    writeJSON('openTabGroupFocus', layout.groups.map(g => g.activePath));
     // Which vault this session belongs to. These paths index ONE vault's tree,
     // so the restore pass below has to know whether it is looking at that vault
     // (see there) — a session with no vault stamped on it predates this.
     if (currentVaultId) localStorage.setItem('openTabsVaultId', currentVaultId);
-    if (activeTabPath) {
-      localStorage.setItem('activeTabPath', activeTabPath);
-      localStorage.setItem('lastFilePath', activeTabPath); // back-compat
+    const focused = focusedPathOf(layout);
+    if (focused) {
+      localStorage.setItem('activeTabPath', focused);
+      localStorage.setItem('lastFilePath', focused); // back-compat
     } else {
       localStorage.removeItem('activeTabPath');
     }
-  }, [openTabPathsKey, activeTabPath, currentVaultId]);
+  }, [layout, currentVaultId]);
 
   // Sidebar resizing
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
@@ -524,10 +564,11 @@ export default function App() {
         return true;
       }
 
-      // Already open? Just focus its tab — don't re-read (preserves the tab's
-      // unsaved edits and its own undo history).
+      // Already open? Just focus it — don't re-read (preserves the tab's
+      // unsaved edits and its own undo history). Its pane comes to the front
+      // whether it is a tab of its own or one pane of a split.
       if (tabsRef.current.some(t => t.file.path === node.path)) {
-        setActiveTabPath(node.path);
+        setLayout(l => focusTab(l, node.path));
         return true;
       }
 
@@ -543,7 +584,9 @@ export default function App() {
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
         : [...prev, { file: node, content, mode: 'read', dirty: false }]);
-      setActiveTabPath(node.path);
+      // openTab re-checks too, and focuses an existing tab rather than minting a
+      // second one — the same race, answered the same way.
+      setLayout(l => openTabIn(l, node.path));
       setSaveStatus('');
       return true;
     } catch (err) {
@@ -589,7 +632,7 @@ export default function App() {
       setTabs(prev => prev.some(t => t.file.path === targetPath)
         ? prev
         : [...prev, { file: node, content: '', mode: 'edit', dirty: false }]);
-      setActiveTabPath(targetPath);
+      setLayout(l => openTabIn(l, targetPath));
       setMainView('editor');
     } catch (err) {
       console.error('Could not create the annotated PDF:', err);
@@ -597,8 +640,13 @@ export default function App() {
     }
   }, [createFile, readFileBytes, writeFileBytes]);
 
-  // Flat index of markdown files for resolving wikilinks by note name
+  // Flat index of markdown files for resolving wikilinks by note name. Read
+  // through a ref by openNoteByName below, which MUST stay stable: the editor
+  // bakes its wikilink handler into a document's EditorState, and that state
+  // outlives the pane that built it (see DocumentPane).
   const mdFiles = useMemo(() => collectMarkdownFiles(fileTree), [fileTree]);
+  const mdFilesRef = useRef(mdFiles);
+  useEffect(() => { mdFilesRef.current = mdFiles; }, [mdFiles]);
 
   // A different vault may reuse paths — never resolve links from the old one's
   // cached extractions (mirrors FileExplorer clearing the search cache).
@@ -702,7 +750,9 @@ export default function App() {
       // Only clear `dirty` if the content hasn't changed since we snapshotted.
       setTabs(prev => prev.map(t =>
         t.file.path === path && t.content === snapshot ? { ...t, dirty: false } : t));
-      if (activeTabPathRef.current === path) {
+      // Any pane on screen, not only the focused one: with a split tab the
+      // status line speaks for everything the reader can see.
+      if (visiblePathsRef.current.includes(path)) {
         setSaveStatus('Saved');
         // Re-armed, not stacked: rapid saves used to leave a handful of live
         // timers all racing to clear the same message.
@@ -727,10 +777,12 @@ export default function App() {
     saveTimersRef.current.set(path, setTimeout(() => flushTab(path), 1000));
   }, [clearSaveTimer, flushTab]);
 
-  // Buffer an edit against ONE named tab and schedule its save. Path-explicit
-  // on purpose: the drawing canvas serializes on a debounce that can fire after
-  // the user has switched tabs, and that JSON must land in the drawing's own
-  // buffer — never in whichever tab happens to be active by then.
+  // Buffer an edit against ONE named document and schedule its save.
+  // Path-explicit on purpose, and the only content funnel there is: several
+  // documents are editable at once in a split tab, and the drawing canvas
+  // serializes on a debounce that can fire after its pane has gone away. Either
+  // way the text must land in the document it came from — never in whichever
+  // pane happens to have focus by then.
   const updateTabContent = useCallback((path: string, content: string) => {
     setTabs(prev => prev.map(t => t.file.path === path ? { ...t, content, dirty: true } : t));
     scheduleSave(path);
@@ -751,15 +803,9 @@ export default function App() {
     await flushTab(path, true, content);
   }, [flushTab]);
 
-  // Wired to EditorPane's onContentChange. CodeMirror only ever edits the
-  // visible document, so "the active tab" is the right target there.
-  const updateActiveTabContent = useCallback((content: string) => {
-    const path = activeTabPathRef.current;
-    if (!path) return;
-    updateTabContent(path, content);
-  }, [updateTabContent]);
-
-  const removeTab = useCallback((path: string, flush: boolean) => {
+  /** Everything that has to happen for ONE document to stop being open, short
+   *  of the two state updates (which differ per caller). */
+  const releaseTab = useCallback((path: string, flush: boolean) => {
     // flushTab captures the tab synchronously, clears the timer, and no-ops for
     // non-dirty / Help / handle-less tabs, so calling it whenever we flush is safe.
     if (flush) flushTab(path); else clearSaveTimer(path);
@@ -769,29 +815,53 @@ export default function App() {
     // Same: the flush above captured its own diff before this ran. A closed
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
-
-    if (activeTabPathRef.current === path) {
-      const list = tabsRef.current;
-      const i = list.findIndex(t => t.file.path === path);
-      setActiveTabPath(list[i + 1]?.file.path ?? list[i - 1]?.file.path ?? null);
-    }
-    setTabs(prev => prev.filter(t => t.file.path !== path));
   }, [clearSaveTimer, flushTab]);
+
+  /**
+   * A rename or move that lands on a name another tab is holding. renameFile /
+   * moveFile deliberately overwrite (an explicit move onto a name is the user
+   * saying so), so that tab's file no longer exists — its buffer must NOT be
+   * flushed, or it would write itself straight back over the file that just
+   * replaced it. Dropping it here is what keeps one path from ending up in two
+   * tabs, drawing one document under two names.
+   */
+  const releaseOverwritten = useCallback((path: string, movedFrom: string) => {
+    if (path === movedFrom) return;
+    if (!tabsRef.current.some(t => t.file.path === path)) return;
+    releaseTab(path, false);                       // no flush: the bytes are gone
+    setTabs(prev => prev.filter(t => t.file.path !== path));
+    // The layout is left to renamePath, which removes the overwritten pane and
+    // re-points the moved one at it in a single transition.
+  }, [releaseTab]);
+
+  /** Close one document. Its pane goes; the tab goes with it only if that was
+   *  its last pane (see utils/tabGroups.ts closePath). */
+  const removeTab = useCallback((path: string, flush: boolean) => {
+    releaseTab(path, flush);
+    setLayout(l => closePath(l, path));
+    setTabs(prev => prev.filter(t => t.file.path !== path));
+  }, [releaseTab]);
 
   const closeTab = useCallback((path: string) => removeTab(path, true), [removeTab]);
 
-  const reorderTabs = useCallback((path: string, toIndex: number) => {
-    setTabs(prev => {
-      const from = prev.findIndex(t => t.file.path === path);
-      if (from === -1) return prev;
-      const next = prev.slice();
-      const [moved] = next.splice(from, 1);
-      // `toIndex` indexes the PRE-removal array; adjust when moving rightward.
-      const insertAt = toIndex > from ? toIndex - 1 : toIndex;
-      next.splice(insertAt, 0, moved);
-      return next;
-    });
-  }, []);
+  /** Close a whole tab — every document in it. A merged tab is one tab, so its
+   *  × takes all of its panes; each pane's own × closes just that one. */
+  const closeTabGroup = useCallback((id: string) => {
+    const group = groupById(layoutRef.current, id);
+    if (!group) return;
+    for (const path of group.paths) releaseTab(path, true);
+    const closed = new Set(group.paths);
+    setLayout(l => closeGroupIn(l, id));
+    setTabs(prev => prev.filter(t => !closed.has(t.file.path)));
+  }, [releaseTab]);
+
+  const selectTabGroup = useCallback((id: string) => setLayout(l => selectGroup(l, id)), []);
+  const focusPane = useCallback((path: string) => setLayout(l => focusTab(l, path)), []);
+  const splitOffPane = useCallback((path: string) => setLayout(l => splitOff(l, path)), []);
+  const mergeTabGroups = useCallback(
+    (sourceId: string, index: number) => setLayout(l => mergeIntoActive(l, sourceId, index)), []);
+  const reorderTabGroups = useCallback(
+    (id: string, toIndex: number) => setLayout(l => reorderGroups(l, id, toIndex)), []);
 
   const toggleTabMode = useCallback((path: string | null) => {
     if (!path) return;
@@ -802,15 +872,23 @@ export default function App() {
   }, []);
 
   // Open a note by its name (used by [[wikilinks]], graph nodes, backlinks).
+  //
+  // STABLE FOR THE APP'S LIFE, deliberately — the note index is read from a ref
+  // rather than closed over. The editor bakes this into each document's
+  // EditorState (DocumentPane's `mousedown` handler), outside any compartment,
+  // and that state is cached and re-adopted by whichever pane shows the
+  // document next. Depending on `mdFiles` here froze the handler at whatever
+  // the index held when the document's FIRST pane unmounted, so a wikilink to
+  // any note created, renamed or moved after that silently did nothing.
   const openNoteByName = useCallback((name: string | null) => {
     if (!name) return;
     const key = baseName(name).toLowerCase();
-    const match = mdFiles.find(f => baseName(f.name).toLowerCase() === key);
+    const match = mdFilesRef.current.find(f => baseName(f.name).toLowerCase() === key);
     if (match) {
       handleFileClick(match);
       setMainView('editor');
     }
-  }, [mdFiles, handleFileClick]);
+  }, [handleFileClick]);
 
   // Open a note given a graph node (skips unresolved placeholder nodes).
   const handleOpenNode = useCallback((graphNode: GraphNode) => {
@@ -865,7 +943,7 @@ export default function App() {
     // paths themselves index the vault being left.
     assetRefsRef.current.clear();
     setTabs([]);
-    setActiveTabPath(null);
+    setLayout(EMPTY_LAYOUT);
     setSaveStatus('');
     setPendingReveal(null);
   }, [rootHandle, flushTab]);
@@ -905,6 +983,16 @@ export default function App() {
       storedPaths = last ? [last] : [];
     }
     if (storedPaths.length === 0) return;
+    // Read the REST of the session here too, not after the awaits below. The
+    // persist effect is un-gated the moment this pass starts, so anything that
+    // fires it while the file reads are in flight would have these keys already
+    // rewritten by the time they were read — and the split would come back
+    // silently flattened. Deciding the whole restore from one snapshot taken
+    // before yielding is what makes that unreachable rather than merely
+    // unreached.
+    const storedGroups = readJSON<unknown>('openTabGroups', null);
+    const storedFocus = readJSON<unknown>('openTabGroupFocus', null);
+    const storedActive = localStorage.getItem('activeTabPath');
 
     (async () => {
       const vaultFiles = collectFiles(fileTree);
@@ -936,25 +1024,31 @@ export default function App() {
       // vault's notes (handles and all) into the new vault's workspace.
       if (currentVaultIdRef.current !== currentVaultId) return;
       setTabs(restored);
-      const wantActive = localStorage.getItem('activeTabPath');
-      const active = restored.some(t => t.file.path === wantActive) ? wantActive : restored[0].file.path;
-      setActiveTabPath(active);
+      // Which of these shared a tab as split panes. A session written before
+      // split tabs existed has no record of it, and restoreLayout gives every
+      // document a tab of its own — exactly what used to happen.
+      setLayout(restoreLayout(
+        restored.map(t => t.file.path),
+        storedGroups,
+        storedFocus,
+        storedActive,
+      ));
     })();
   }, [fileTree, readFile, currentVaultId, rememberAssetRefs]);
 
   const handleHelpClick = useCallback(() => {
     const path = 'help-guide';
     if (tabsRef.current.some(t => t.file.path === path)) {
-      setActiveTabPath(path);
+      setLayout(l => focusTab(l, path));
       return;
     }
-    setTabs(prev => [...prev, {
+    setTabs(prev => prev.some(t => t.file.path === path) ? prev : [...prev, {
       file: { name: 'Help Guide', isHelp: true, path },
       content: HELP_DOC_CONTENT,
       mode: 'read',
       dirty: false,
     }]);
-    setActiveTabPath(path);
+    setLayout(l => openTabIn(l, path));
     setSaveStatus('');
   }, []);
 
@@ -1018,17 +1112,22 @@ export default function App() {
       // them or the next save finds nothing and silently writes nothing.
       movePdfRenderData(node.path, newPath);
       moveAssetRefs(node.path, newPath);
-      setTabs(prev => prev.map(t => t.file.path === node.path
-        ? { ...t, file: { ...t.file, name: newName, path: newPath, handle: fileHandle } }
-        : t));
-      setActiveTabPath(prev => prev === node.path ? newPath : prev);
+      releaseOverwritten(newPath, node.path);      // renamed onto an open tab
+      setTabs(prev => prev
+        .filter(t => t.file.path !== newPath)
+        .map(t => t.file.path === node.path
+          ? { ...t, file: { ...t.file, name: newName, path: newPath, handle: fileHandle } }
+          : t));
+      // The tab bar indexes documents by path too — a pane left pointing at the
+      // old one would have no document to draw.
+      setLayout(l => renamePath(l, node.path, newPath));
       // Flush buffered edits to the NEW handle (never the old one).
       if (openTab.dirty) scheduleSave(newPath);
       localStorage.setItem('lastFilePath', newPath);
     } catch (err) {
       console.error('Could not get handle for renamed file', err);
     }
-  }, [renameFile, clearSaveTimer, scheduleSave, moveAssetRefs]);
+  }, [renameFile, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten]);
 
   // Wrap moveFile so a moved open file's tab tracks its new path/handle (also
   // fixes the pre-existing stale-path-after-move for the active document).
@@ -1042,17 +1141,20 @@ export default function App() {
         clearSaveTimer(sourceNode.path);
         movePdfRenderData(sourceNode.path, newPath);   // see handleRenameFile
         moveAssetRefs(sourceNode.path, newPath);
-        setTabs(prev => prev.map(t => t.file.path === sourceNode.path
-          ? { ...t, file: { ...t.file, path: newPath, handle: newHandle, parentHandle: targetDirHandle } }
-          : t));
-        setActiveTabPath(prev => prev === sourceNode.path ? newPath : prev);
+        releaseOverwritten(newPath, sourceNode.path);
+        setTabs(prev => prev
+          .filter(t => t.file.path !== newPath)
+          .map(t => t.file.path === sourceNode.path
+            ? { ...t, file: { ...t.file, path: newPath, handle: newHandle, parentHandle: targetDirHandle } }
+            : t));
+        setLayout(l => renamePath(l, sourceNode.path, newPath));   // see handleRenameFile
         if (openTab.dirty) scheduleSave(newPath);
       } catch (err) {
         console.error('Could not update moved tab handle:', err);
       }
     }
     return success;
-  }, [moveFile, clearSaveTimer, scheduleSave, moveAssetRefs]);
+  }, [moveFile, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -1254,20 +1356,20 @@ export default function App() {
           />
         ) : (
           <EditorPane
-            activeFile={activeFile}
-            fileContent={fileContent}
+            tabs={tabs}
+            layout={layout}
             theme={theme}
-            editorMode={editorMode}
             tabSize={tabSize}
             saveStatus={saveStatus}
-            tabs={tabs}
-            activeTabPath={activeTabPath}
-            onSelectTab={(path) => setActiveTabPath(path)}
-            onCloseTab={closeTab}
-            onReorderTabs={reorderTabs}
+            onSelectGroup={selectTabGroup}
+            onCloseGroup={closeTabGroup}
+            onReorderGroups={reorderTabGroups}
+            onMergeGroups={mergeTabGroups}
+            onFocusPane={focusPane}
+            onClosePane={closeTab}
+            onSplitOffPane={splitOffPane}
             onToggleMode={toggleTabMode}
-            onContentChange={updateActiveTabContent}
-            onDrawingChange={updateTabContent}
+            onContentChange={updateTabContent}
             onFlushNow={flushTabNow}
             onAnnotatePdf={handleAnnotatePdf}
             onOpenNote={openNoteByName}

@@ -1,6 +1,6 @@
 import { Decoration, EditorView, keymap } from '@codemirror/view';
 import { EditorSelection, Prec } from '@codemirror/state';
-import type { EditorState, Extension, Range } from '@codemirror/state';
+import type { EditorState, Extension, Range, Text } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { docString } from './docCache';
 
@@ -83,8 +83,16 @@ export function findMathRegions(doc: string, codeRanges: CharRange[]): MathRegio
    Text and Tree are immutable and persistent, so object identity is an EXACT
    validity test rather than a heuristic — and keying on the tree (not just the
    doc) is what keeps this from defeating livePreview's deliberate rebuild when
-   the markdown parser advances over a large file. One slot: the entry it holds
-   is the live document's, which is retained anyway. */
+   the markdown parser advances over a large file.
+
+   ONE ENTRY PER DOCUMENT, not one entry. A single slot was right while one
+   EditorView was ever live, but a split tab puts up to five documents on screen
+   at once, each with its own state, its own live-preview field and its own
+   background parser — and they take turns through the slot, so every alternation
+   between two panes, and every parse-advance transaction while both are still
+   parsing, missed and re-walked a whole document. A WeakMap keyed on the Text
+   restores the original argument exactly: an entry is retained only as long as
+   the document it describes is. */
 
 /** Everything about a document that the math + code passes need, memoized. */
 export interface DocAnalysis {
@@ -97,11 +105,12 @@ export interface DocAnalysis {
     mathEnds: number[];
 }
 
-let memo: { doc: unknown; tree: unknown; value: DocAnalysis } | null = null;
+const memo = new WeakMap<Text, { tree: unknown; value: DocAnalysis }>();
 
 export function analyzeDoc(state: EditorState): DocAnalysis {
     const tree = syntaxTree(state);
-    if (memo && memo.doc === state.doc && memo.tree === tree) return memo.value;
+    const hit = memo.get(state.doc);
+    if (hit && hit.tree === tree) return hit.value;
 
     const doc = docString(state.doc);
     const codeRanges = collectCodeRanges(state);
@@ -112,7 +121,8 @@ export function analyzeDoc(state: EditorState): DocAnalysis {
         mathRegions,
         mathEnds: mathRegions.map(r => r.to),
     };
-    memo = { doc: state.doc, tree, value };
+    // One entry per Text, replaced as the tree advances over the same document.
+    memo.set(state.doc, { tree, value });
     return value;
 }
 

@@ -331,10 +331,10 @@ function applyFit(fit: TableFit): void {
     const avail = fit.widthProbe.getBoundingClientRect().width;
     const fontWidth = fit.fontProbe.getBoundingClientRect().width;
     const heightBefore = container.getBoundingClientRect().height;
-    // A hidden pane (EditorPane hides .view-content with display:none while a
-    // drawing or PDF owns the pane) measures zero — keep whatever fit the table
-    // already has and wait to be shown. Deliberately BEFORE the inputs are
-    // recorded below, so being hidden can never be mistaken for being fitted.
+    // A pane with no layout yet — or one that has been hidden — measures zero.
+    // Keep whatever fit the table already has and wait to be shown.
+    // Deliberately BEFORE the inputs are recorded below, so a zero measurement
+    // can never be mistaken for a fit.
     if (!(avail > 0) || !(fontWidth > 0)) return;
     if (avail === fit.lastAvail && fontWidth === fit.lastFont) return;
 

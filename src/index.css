@@ -895,11 +895,23 @@ body {
 }
 
 /* ── The panes of the tab on screen ──
-   Equal columns, left to right: a tab holds one document in the ordinary case
-   and up to five once tabs have been merged (utils/tabGroups.ts). Splitting is
+   Columns, left to right: a tab holds one document in the ordinary case and up
+   to five once tabs have been merged (utils/tabGroups.ts). They start out even
+   and the divider between any two of them can be dragged. Splitting is
    deliberately only ever vertical, so a pane's rectangle is a plain share of
    the width — which is also what lets the PDF panes, which float above rather
-   than inside a pane, place themselves with two percentages. */
+   than inside a pane, place themselves with two percentages.
+
+   THOSE PERCENTAGES ARE CSS VARIABLES, set on .editor-pane by EditorPane and
+   written straight onto it, frame by frame, by a divider drag: --pane-w-<i> is
+   pane i's width and --pane-x-<i> its left edge, both unitless numbers in
+   percent. Everything that has to line up with a column reads them — the slots,
+   the dividers, the tab-drop highlight, and the PDF panes floating over the
+   slots — so one write moves all of it at once, with no React render at all.
+   They live on .editor-pane rather than here because the PDF panes are its
+   children, not the split's; the two boxes are the same width, which is what
+   makes one set of percentages serve both, and what any change to the split's
+   own box would quietly break. */
 .editor-split {
   position: relative;
   flex: 1;
@@ -907,6 +919,11 @@ body {
   display: flex;
 }
 
+/* The basis stays 0 and EditorPane overrides flex-GROW with --pane-w-<i>, so
+   the width is shared out by the browser dividing by the sum of the factors:
+   the columns tile the container exactly whatever rounding left behind, which a
+   percentage basis would leave as a seam or an overflow. The fallback of 1 is
+   equal columns, i.e. what a tab nobody has resized has always looked like. */
 .editor-slot {
   position: relative;
   flex: 1 1 0;
@@ -915,16 +932,71 @@ body {
   flex-direction: column;
 }
 
-/* Drawn OVER the panes rather than as a border on one of them: a PDF pane sits
-   above its slot and would paint straight over an edge belonging to it. */
+/* The line between two panes, and the handle that moves it.
+
+   Drawn OVER the panes rather than as a border on one of them: a PDF pane sits
+   above its slot and would paint straight over an edge belonging to it — which
+   goes for the grab area just as much as for the line, hence an 8px strip with
+   the 1px rule drawn inside it.
+
+   Offset 3px into the left pane and 5px into the right rather than centred: the
+   left pane's scrollbar is 6px and ends exactly at this boundary, so a centred
+   strip would leave too little of it to grab the thumb by, while the right
+   pane's first pixels are its editor's padding. 3px also clears the left pane
+   header's close button, which stops 4px short of the edge.
+
+   The z-index is load-bearing in both directions: above the panes (5) so the
+   strip is grabbable over a PDF or a drawing and the press never reaches
+   CodeMirror, and below .editor-split-dropzone (20), which exists only while a
+   TAB is in flight and has to keep winning while it is — which is what makes
+   the two gestures mutually exclusive without either knowing about the other. */
 .editor-split-divider {
   position: absolute;
   top: 0;
   bottom: 0;
+  width: 8px;
+  margin-left: -3px;
+  background: transparent;
+  z-index: 6;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;          /* a touch here resizes; it never scrolls */
+}
+
+.editor-split-divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
   width: 1px;
   background: var(--background-modifier-border);
-  z-index: 6;
-  pointer-events: none;
+  transition: background 0.15s ease, width 0.15s ease;
+}
+
+/* The same affordance as the sidebar's .workspace-resize-handle: whatever is
+   about to move goes accent under the pointer. */
+.editor-split-divider:hover::before,
+.editor-split-divider:focus-visible::before,
+.editor-split-divider.is-resizing::before {
+  background: var(--interactive-accent);
+  width: 2px;
+}
+
+/* The accent rule above IS the focus ring — a browser outline on an 8px
+   full-height strip reads as a rendering fault. */
+.editor-split-divider:focus-visible {
+  outline: none;
+}
+
+/* For the duration of a drag only. The pointer is captured by the handle but
+   travels over .cm-content and the PDF panes, which set cursors of their own,
+   and a descendant's cursor beats an ancestor's — so this has to reach
+   everything. */
+body.is-resizing-panes,
+body.is-resizing-panes * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 /* Each pane names its own document — side by side there is nothing else that
@@ -935,6 +1007,9 @@ body {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  /* A pane dragged narrow — or one a shrinking window left narrow — clips its
+     own chrome rather than painting it over the pane beside it. */
+  overflow: hidden;
   height: var(--pane-header-height);
   padding: 0 4px 0 10px;
   background: var(--background-primary);

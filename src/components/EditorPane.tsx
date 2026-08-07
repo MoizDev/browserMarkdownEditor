@@ -7,7 +7,7 @@ import TabBar from './TabBar';
 import { Link, Eye, Edit2, PenTool } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
 import { isPdfFile, isAnnotatedPdf, isDrawingFile } from '../utils/fileTypes';
-import { activeGroup as activeGroupOf, canMergeIntoActive, MAX_SPLIT_PANES } from '../utils/tabGroups';
+import { activeGroup as activeGroupOf, canMergeIntoActive, paneSizes, MAX_SPLIT_PANES } from '../utils/tabGroups';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
 import type { ActiveFile, OpenTab, GraphData, GraphNode, TabLayout, Theme, EditorMode, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
@@ -30,6 +30,9 @@ interface EditorPaneProps {
     onReorderGroups: (id: string, toIndex: number) => void;
     /** Merge a whole tab into the one on screen, as panes starting at `index`. */
     onMergeGroups: (sourceId: string, index: number) => void;
+    /** Record a tab's pane widths (percentages summing to 100), or null to put
+     *  them back to equal columns. */
+    onResizePanes: (id: string, sizes: number[] | null) => void;
     onFocusPane: (path: string) => void;
     onClosePane: (path: string) => void;
     onSplitOffPane: (path: string) => void;
@@ -64,6 +67,83 @@ interface DropTarget {
 }
 
 /**
+ * The narrowest a pane may be DRAGGED to, in pixels.
+ *
+ * A pane header's fixed chrome measures about 78px before its title gets a
+ * single character (10px of padding, a 12px icon, two 6px gaps, two 20px
+ * buttons, 4px of padding), and a pane narrower than that starts clipping its
+ * own name away entirely. 140 leaves room for a word of it as well.
+ *
+ * A PIXEL floor, and so it lives here rather than in utils/tabGroups.ts, which
+ * is pure and never sees one — that module's own floor is about keeping a
+ * STORED arrangement sane and is deliberately far below this. It is a gesture
+ * constraint only: a window shrunk after a drag simply shows narrower panes,
+ * because re-clamping on every resize would rewrite an arrangement the reader
+ * made from a window size they were only passing through.
+ */
+const MIN_PANE_PX = 140;
+
+/** Both sides of the geometry format identically, so React's style diff — which
+ *  compares values — writes nothing when a re-render lands mid-drag and the
+ *  widths it is holding have not moved. */
+const pct = (n: number) => n.toFixed(4);
+
+/* A pane's share of its tab, as a `flex-grow` naming that column's variable.
+   Grow against the stylesheet's zero basis, so the browser shares the width out
+   by dividing by the sum of the factors: the columns tile the container exactly
+   however the percentages rounded, which a percentage basis would leave as a
+   seam or an overflow. The fallback of 1 is equal columns.
+
+   ONE FROZEN OBJECT PER COLUMN, not one built per render: this is the prop that
+   would otherwise defeat DocumentPane's memo, and a stable identity means a
+   pane's props do not change at all while a divider is being dragged. */
+const PANE_WIDTH_STYLE: React.CSSProperties[] = Array.from(
+    { length: MAX_SPLIT_PANES }, (_, i) => ({ flexGrow: `var(--pane-w-${i}, 1)` }));
+
+/** The least a pane may be left holding, as a percentage of the tab. */
+function paneFloorPct(totalPx: number): number {
+    return totalPx > 0 ? (MIN_PANE_PX / totalPx) * 100 : 0;
+}
+
+/**
+ * Where the boundary between two panes may sit, given what the pair holds
+ * between them.
+ *
+ * The floor is capped at HALF THE PAIR, which is what keeps the range from ever
+ * being empty (`lo <= pair / 2` gives `pair - lo >= lo`) — so a pair with no
+ * room for two full-width panes pins its divider at the midpoint rather than
+ * jamming or going negative. Deliberately measured against the pair rather than
+ * against an equal share of the whole tab: the drag only ever moves these two,
+ * and capping by the pane count instead put the floor at a tenth of a five-pane
+ * tab — 118px on a 1176px editor, well under the minimum this is here to keep.
+ */
+function clampEdge(want: number, pair: number, floor: number): number {
+    const lo = Math.min(floor, pair / 2);
+    return Math.min(Math.max(want, lo), pair - lo);
+}
+
+/** A divider drag in flight. Everything it needs is captured at pointerdown:
+ *  the gesture must not depend on a render happening during it. */
+interface PaneResize {
+    handle: HTMLElement;
+    pointerId: number;
+    /** The boundary being moved: between pane `edge` and pane `edge + 1`. */
+    edge: number;
+    groupId: string;
+    /** The split's width, read once — the whole gesture is measured in it. */
+    total: number;
+    x0: number;
+    x: number;
+    /** The widths at grab time: what the drag moves away from, and what Escape
+     *  and a cancelled pointer put back. */
+    start: number[];
+    live: number[];
+    floor: number;
+    frame: number | null;
+    onKey: (e: KeyboardEvent) => void;
+}
+
+/**
  * The editor half of the workspace: the tab bar, and the panes of whichever tab
  * is on screen.
  *
@@ -75,14 +155,73 @@ interface DropTarget {
  * confirmation, and the PDF panes, which are deliberately NOT inside a pane so
  * they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const group = activeGroupOf(layout);
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
-    const paneTabs = useMemo(
-        () => (group ? group.paths.map(p => byPath.get(p)).filter((t): t is OpenTab => !!t) : []),
-        [group, byPath]
-    );
+
+    // The panes on screen and the share of the width each one holds, from ONE
+    // walk: a path with no open document has no pane — the two structures'
+    // documented failure mode (see utils/tabGroups.ts) — and it has to drop out
+    // of both together, or the columns and the dividers stop describing the
+    // same panes. What is left is re-shared among them.
+    const { paneTabs, widths } = useMemo(() => {
+        const panes: OpenTab[] = [];
+        const share: number[] = [];
+        if (group) {
+            const stored = paneSizes(group);
+            group.paths.forEach((p, i) => {
+                const tab = byPath.get(p);
+                if (!tab) return;
+                panes.push(tab);
+                share.push(stored[i]);
+            });
+        }
+        const sum = share.reduce((a, b) => a + b, 0);
+        return { paneTabs: panes, widths: sum > 0 ? share.map(s => (s * 100) / sum) : [] };
+    }, [group, byPath]);
     const paneCount = paneTabs.length;
+
+    /** Each pane's left edge, in the same percentages. */
+    const edges = useMemo(() => {
+        const out: number[] = [];
+        let x = 0;
+        for (const w of widths) { out.push(x); x += w; }
+        return out;
+    }, [widths]);
+
+    /** Where each visible document's column is — what the PDF panes, which
+     *  float over a slot rather than sitting in it, are placed from. */
+    const paneGeom = useMemo(() => {
+        const m = new Map<string, { index: number; left: number; width: number }>();
+        paneTabs.forEach((t, i) => m.set(t.file.path, { index: i, left: edges[i], width: widths[i] }));
+        return m;
+    }, [paneTabs, edges, widths]);
+
+    /**
+     * The pane geometry, published as CSS variables on this component's root —
+     * the one box holding both the columns and the PDF panes floating over
+     * them. Everything that has to line up with a column reads them, so a
+     * divider drag moves all of it with one write and no render at all.
+     *
+     * A fresh object per render is the point, not a cost: React writes only the
+     * properties whose VALUES changed, so a re-render landing mid-drag (a save
+     * status arriving, a keystroke in a neighbouring pane) finds the committed
+     * widths unchanged and leaves the gesture's own writes exactly where they
+     * are. Both sides format through `pct` so that comparison is on the same
+     * strings. Removing a stale variable is React's too — a five-pane tab's
+     * leftovers go when a smaller one renders.
+     */
+    const splitVars = useMemo(() => {
+        const vars: Record<string, string> = {};
+        widths.forEach((w, i) => {
+            vars[`--pane-w-${i}`] = pct(w);
+            vars[`--pane-x-${i}`] = pct(edges[i]);
+        });
+        return vars as React.CSSProperties;
+    }, [widths, edges]);
+
+    const paneRootRef = useRef<HTMLDivElement | null>(null);
+    const splitRef = useRef<HTMLDivElement | null>(null);
 
     const focusedPath = group?.activePath ?? null;
     const focusedTab = focusedPath ? byPath.get(focusedPath) ?? null : null;
@@ -247,11 +386,14 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
         e.preventDefault();                     // without this the drop is refused
         e.dataTransfer.dropEffect = 'move';
         const r = e.currentTarget.getBoundingClientRect();
-        const paneWidth = r.width / paneCount;
-        const x = e.clientX - r.left;
-        const pane = Math.max(0, Math.min(paneCount - 1, Math.floor(x / paneWidth)));
+        const x = ((e.clientX - r.left) / r.width) * 100;
+        // Which pane the pointer is in, walked along the real boundaries: the
+        // columns are no longer equal, so neither the pane nor its midpoint can
+        // be divided out of the width any more.
+        let pane = 0;
+        while (pane + 1 < paneCount && x >= edges[pane + 1]) pane++;
         // Which half of that pane decides which side of it the new panes land.
-        const right = x - pane * paneWidth > paneWidth / 2;
+        const right = x - edges[pane] > widths[pane] / 2;
         const index = right ? pane + 1 : pane;
         const side = right ? 'right' : 'left';
         // dragover fires continuously — several times a second even with the
@@ -270,8 +412,140 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
         endDrag();
     };
 
+    // ── Resizing the panes ─────────────────────────────────────────────────
+    // The gesture writes the geometry variables straight onto the root and
+    // commits to the layout once, on release.
+    //
+    // LIVE, because the width is a decision about the text — you cannot judge
+    // where a line wraps or whether a table still fits without seeing it — and
+    // because this app's own sidebar drag is live already.
+    //
+    // WITHOUT REACT, because the frame budget belongs to what the width change
+    // already costs: editor/tableFit.ts re-fits every visible table on each one
+    // and PdfViewer re-lays-out and re-rasterizes its windowed pages, both
+    // ResizeObserver-driven and neither able to be told to wait. A setState per
+    // frame would put a re-render of this component, the tab bar and every
+    // mounted PDF pane on top of that — and would run App's persist effect, so
+    // the whole session would be written to localStorage sixty times a second.
+    const resizeRef = useRef<PaneResize | null>(null);
+
+    /** Move the columns. Only the two panes either side of the boundary can
+     *  have changed, but writing the row is a handful of property sets and
+     *  keeps this the single writer. */
+    const writePaneVars = useCallback((cols: number[]) => {
+        const root = paneRootRef.current;
+        if (!root) return;
+        let x = 0;
+        for (let i = 0; i < cols.length; i++) {
+            root.style.setProperty(`--pane-w-${i}`, pct(cols[i]));
+            root.style.setProperty(`--pane-x-${i}`, pct(x));
+            x += cols[i];
+        }
+    }, []);
+
+    /**
+     * The one way out of the gesture, however it ended.
+     *
+     * A cancel puts the columns back BY HAND: React has not re-rendered at any
+     * point during the drag, so its own view of these variables is still the
+     * committed one and nothing would otherwise correct the last frame.
+     */
+    const endResize = useCallback((commit: boolean) => {
+        const drag = resizeRef.current;
+        if (!drag) return;                  // a lost capture after a normal pointerup
+        resizeRef.current = null;
+        if (drag.frame !== null) cancelAnimationFrame(drag.frame);
+        if (drag.handle.hasPointerCapture?.(drag.pointerId)) {
+            drag.handle.releasePointerCapture(drag.pointerId);
+        }
+        drag.handle.classList.remove('is-resizing');
+        window.removeEventListener('keydown', drag.onKey, true);
+        document.body.classList.remove('is-resizing-panes');
+        if (commit) onResizePanes(drag.groupId, drag.live);
+        else writePaneVars(drag.start);
+    }, [onResizePanes, writePaneVars]);
+
+    // A gesture can only be ended by its own pointer, so nothing here runs
+    // twice — but a pane unmounted mid-drag (⌘ to the Neural Brain view) must
+    // not leave the whole window stuck on a col-resize cursor.
+    useEffect(() => () => { if (resizeRef.current) endResize(false); }, [endResize]);
+
+    const startResize = (e: React.PointerEvent<HTMLSpanElement>, edge: number) => {
+        if (e.button !== 0 || !e.isPrimary || !group || resizeRef.current) return;
+        const total = splitRef.current?.getBoundingClientRect().width ?? 0;
+        if (!(total > 0)) return;
+        const handle = e.currentTarget;
+        // Capture is what keeps every later move away from CodeMirror, from a
+        // PDF pane's capture-phase pointerdown and from tldraw, and what makes a
+        // drag that leaves the window still arrive back here.
+        handle.setPointerCapture(e.pointerId);
+        handle.classList.add('is-resizing');
+        // Capture phase and stopped: CodeMirror binds Escape too, and focus may
+        // still be sitting in one of the panes.
+        const onKey = (ev: KeyboardEvent) => {
+            if (ev.key !== 'Escape') return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            endResize(false);
+        };
+        window.addEventListener('keydown', onKey, true);
+        document.body.classList.add('is-resizing-panes');
+        resizeRef.current = {
+            handle, pointerId: e.pointerId, edge, groupId: group.id, total,
+            x0: e.clientX, x: e.clientX,
+            start: widths.slice(), live: widths.slice(),
+            floor: paneFloorPct(total), frame: null, onKey,
+        };
+    };
+
+    const moveResize = (e: React.PointerEvent<HTMLSpanElement>) => {
+        const drag = resizeRef.current;
+        if (!drag || e.pointerId !== drag.pointerId) return;
+        drag.x = e.clientX;
+        if (drag.frame !== null) return;
+        // At most one write per frame — and none at all when the clamped answer
+        // has not moved. Holding a divider against its floor would otherwise
+        // re-fit every table and re-rasterize every PDF page sixty times a
+        // second for a picture that never changes.
+        drag.frame = requestAnimationFrame(() => {
+            drag.frame = null;
+            const k = drag.edge;
+            const pair = drag.start[k] + drag.start[k + 1];
+            const left = clampEdge(
+                drag.start[k] + ((drag.x - drag.x0) / drag.total) * 100, pair, drag.floor);
+            if (Math.abs(left - drag.live[k]) < 0.01) return;
+            // Only the pair moves: every other pane keeps exactly the width it
+            // had, and the pair's total is conserved to the bit, so a long drag
+            // cannot accumulate drift.
+            drag.live = drag.start.slice();
+            drag.live[k] = left;
+            drag.live[k + 1] = pair - left;
+            writePaneVars(drag.live);
+        });
+    };
+
+    /** Arrow keys nudge the boundary; Home/End send it to the pair's limits.
+     *  Straight to the layout — a keypress is discrete and final, so there is
+     *  nothing here worth deferring. */
+    const keyResize = (e: React.KeyboardEvent<HTMLSpanElement>, edge: number) => {
+        if (!group) return;
+        const step = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+        if (!step && e.key !== 'Home' && e.key !== 'End') return;
+        e.preventDefault();
+        const total = splitRef.current?.getBoundingClientRect().width ?? 0;
+        const pair = widths[edge] + widths[edge + 1];
+        const floor = paneFloorPct(total);
+        const want = e.key === 'Home' ? 0
+            : e.key === 'End' ? pair
+            : widths[edge] + step * (e.shiftKey ? 10 : 2);
+        const next = widths.slice();
+        next[edge] = clampEdge(want, pair, floor);
+        next[edge + 1] = pair - next[edge];
+        onResizePanes(group.id, next);
+    };
+
     return (
-        <div className="editor-pane">
+        <div className="editor-pane" ref={paneRootRef} style={splitVars}>
             <div className="view-header">
                 <TabBar
                     tabs={tabs}
@@ -338,14 +612,16 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                 )}
             </div>
 
-            {/* The panes of the tab on screen: equal columns, left to right. */}
-            <div className="editor-split">
-                {paneTabs.map(tab => (
+            {/* The panes of the tab on screen: columns, left to right, as wide
+                as the reader left them (even until a divider is dragged). */}
+            <div className="editor-split" ref={splitRef}>
+                {paneTabs.map((tab, i) => (
                     <DocumentPane
                         key={tab.file.path}
                         tab={tab}
                         isFocused={tab.file.path === focusedPath}
                         showHeader={paneCount > 1}
+                        widthStyle={paneCount > 1 ? PANE_WIDTH_STYLE[i] : undefined}
                         theme={theme}
                         tabSize={tabSize}
                         stateCache={stateCache}
@@ -360,14 +636,46 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         onRevealHandled={onRevealHandled}
                     />
                 ))}
-                {/* Drawn over the panes rather than as a border on them: a PDF
-                    pane floats above its slot and would otherwise cover it. */}
-                {Array.from({ length: Math.max(0, paneCount - 1) }, (_, i) => (
+                {/* Drawn over the panes rather than as a border on them (a PDF
+                    pane floats above its slot and would otherwise cover it) —
+                    and it is the handle that moves the boundary. Keyed by the
+                    pane on its right, so a merge or a close never hands one
+                    boundary's DOM, and with it a live pointer capture, to a
+                    different boundary. */}
+                {paneTabs.slice(1).map((right, i) => (
                     <span
-                        key={i}
+                        key={right.file.path}
                         className="editor-split-divider"
-                        style={{ left: `${((i + 1) * 100) / paneCount}%` }}
-                        aria-hidden="true"
+                        style={{ left: `calc(var(--pane-x-${i + 1}) * 1%)` }}
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label={`Resize ${paneTabs[i].file.name} and ${right.file.name}`}
+                        aria-valuenow={Math.round(widths[i])}
+                        aria-valuemin={0}
+                        aria-valuemax={Math.round(widths[i] + widths[i + 1])}
+                        aria-valuetext={`${paneTabs[i].file.name} ${Math.round(widths[i])}%, ${right.file.name} ${Math.round(widths[i + 1])}%`}
+                        tabIndex={0}
+                        title="Drag to resize · double-click for equal widths"
+                        onPointerDown={(e) => startResize(e, i)}
+                        onPointerMove={moveResize}
+                        onPointerUp={() => endResize(true)}
+                        onPointerCancel={() => endResize(false)}
+                        onLostPointerCapture={() => endResize(false)}
+                        onKeyDown={(e) => keyResize(e, i)}
+                        // Not on pointerdown: cancelling that suppresses the
+                        // compatibility mouse events, and with them the
+                        // double-click this reset hangs off. mousedown is where
+                        // the focus steal and the text selection come from
+                        // anyway — the same trick the tab strip uses.
+                        onMouseDown={(e) => e.preventDefault()}
+                        onDoubleClick={() => group && onResizePanes(group.id, null)}
+                        // Now that this strip takes pointer events it is also a
+                        // drop target, and a file dropped from the desktop on an
+                        // uncancelled one navigates the whole app away to it.
+                        // It used to fall through to .view-content, which
+                        // cancels its own.
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => e.preventDefault()}
                     />
                 ))}
                 {draggingGroupId && group && paneCount > 0 && (
@@ -378,12 +686,18 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         onDragLeave={handleDropLeave}
                         onDrop={handleDrop}
                     >
-                        {dropAt && (
+                        {/* The half of the pane the tab would land beside —
+                            that pane's own half, since the columns can differ.
+                            Recomputed here rather than stored in `dropAt`,
+                            which would go stale under a resize and would churn
+                            the identity check that keeps dragover from
+                            re-rendering on every tick. */}
+                        {dropAt && dropAt.pane < paneCount && (
                             <div
                                 className="editor-split-drop-target"
                                 style={{
-                                    left: `${((dropAt.pane + (dropAt.side === 'right' ? 0.5 : 0)) * 100) / paneCount}%`,
-                                    width: `${50 / paneCount}%`,
+                                    left: `${edges[dropAt.pane] + (dropAt.side === 'right' ? widths[dropAt.pane] / 2 : 0)}%`,
+                                    width: `${widths[dropAt.pane] / 2}%`,
                                 }}
                             />
                         )}
@@ -403,22 +717,31 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                 each is positioned over the slot its document occupies. Panes
                 defer their disk/pdf.js work until first shown. */}
             {tabs.filter(t => !t.file.isHelp && isPdfFile(t.file.name)).map(tab => {
-                const slot = group ? group.paths.indexOf(tab.file.path) : -1;
-                const visible = slot >= 0;
+                // From the RENDERED panes, not the group's paths: a path with no
+                // open document draws no pane, and its column is not there to
+                // stand in.
+                const slot = paneGeom.get(tab.file.path);
+                const visible = !!slot;
+                const split = visible && paneCount > 1;
                 // The placeholder has to stand in the SAME column as the pane it
                 // is standing in for: bare `.pdf-pane` is full width and sits
                 // above the pane headers, so on the restore path — the one that
                 // can put a PDF straight into a split — it covered the notes
-                // beside it until the lazy chunk arrived.
-                const fallbackStyle = visible && paneCount > 1
-                    ? { left: `${(slot * 100) / paneCount}%`, width: `${100 / paneCount}%`, right: 'auto' as const }
+                // beside it until the lazy chunk arrived. Through the same
+                // variables as the pane itself, so it lines up even mid-drag.
+                const fallbackStyle = split
+                    ? {
+                        left: `calc(var(--pane-x-${slot!.index}) * 1%)`,
+                        width: `calc(var(--pane-w-${slot!.index}) * 1%)`,
+                        right: 'auto' as const,
+                    }
                     : undefined;
                 return (
                     <Suspense
                         key={tab.file.path}
                         fallback={visible ? (
                             <div
-                                className={`pdf-pane pdf-pane-message${paneCount > 1 ? ' pdf-pane-split' : ''}`}
+                                className={`pdf-pane pdf-pane-message${split ? ' pdf-pane-split' : ''}`}
                                 style={fallbackStyle}
                             >
                                 Loading PDF…
@@ -429,8 +752,10 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                             file={tab.file}
                             isVisible={visible}
                             isFocused={tab.file.path === focusedPath}
-                            slotIndex={visible ? slot : 0}
-                            slotCount={visible ? paneCount : 1}
+                            slotIndex={slot?.index ?? 0}
+                            slotLeft={slot?.left ?? 0}
+                            slotWidth={slot?.width ?? 100}
+                            isSplit={split}
                             onFocusPane={onFocusPane}
                             mode={tab.mode}
                             content={tab.content}

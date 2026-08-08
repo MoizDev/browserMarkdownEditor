@@ -1250,11 +1250,18 @@ body.is-resizing-panes * {
   word-break: break-word;
 }
 
+/* The chip has to read as a chip ON THE DIALOG's surface, which is
+   --background-primary-alt — and in the light theme --background-secondary is
+   the very same colour, so the background was invisible and a folder name sat
+   there as bare monospace with unexplained padding either side. The border tint
+   is the one that contrasts in both themes; it is what the tab and search-result
+   chips already use. */
 .confirm-body code {
-  padding: 1px 4px;
+  padding: 1px 5px;
   border-radius: 3px;
-  background: var(--background-secondary);
-  font-size: 12px;
+  background: var(--background-modifier-border);
+  font-family: var(--font-monospace);
+  font-size: 0.92em;
 }
 
 .confirm-actions {

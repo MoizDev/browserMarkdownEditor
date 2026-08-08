@@ -39,6 +39,8 @@ You can drag and drop files and folders within the file tree to reorganize your 
 - Drag any item and drop it onto the empty space in the sidebar (the root level) to move it back to the main vault directory.
 - Folders highlight with a purple dashed outline when you hover over them while dragging.
 
+Renaming or moving a folder takes the notes you have open from it along: they stay open, keep their place, and go on saving to the right file under its new name.
+
 ### Creating New Items
 Use the "New File" and "New Folder" icons at the top of the sidebar. When creating a new file:
 - It will be created in the root vault folder if nothing is selected.

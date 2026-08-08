@@ -35,6 +35,7 @@ import { retryMissingAssets } from './editor/imageWidget';
 import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
+import ConfirmDialog from './components/ConfirmDialog';
 import EditorPane from './components/EditorPane';
 import SettingsPanel from './components/SettingsPanel';
 import GraphView from './components/GraphView';
@@ -106,6 +107,35 @@ function tracksAssets(file: ActiveFile): boolean {
  * cascading a re-render (and a graph re-simulation) through the app.
  */
 const EMPTY_GRAPH: GraphData = { nodes: [], links: [], backlinks: {}, outlinks: {} };
+
+/**
+ * The file at a vault-relative path, and the directory holding it.
+ *
+ * Walked down from the root rather than looked up in the file tree, so it
+ * answers for a path the tree has not caught up with yet — which is exactly the
+ * moment a rename or a move needs it. Throws if anything on the way is missing,
+ * which the caller reports rather than guesses past.
+ */
+async function resolveVaultFile(root: FileSystemDirectoryHandle, path: string) {
+  const segs = path.split('/');
+  const name = segs.pop()!;
+  let parent = root;
+  for (const seg of segs) parent = await parent.getDirectoryHandle(seg);
+  return { handle: await parent.getFileHandle(name), parentHandle: parent };
+}
+
+/** A question (or a notice) waiting on screen — see App's `ask`/`tell`. */
+interface DialogRequest {
+  title: string;
+  body: React.ReactNode;
+  confirmLabel: string;
+  danger?: boolean;
+}
+interface AppDialog extends DialogRequest {
+  onConfirm: () => void;
+  /** Absent on a notice, which has nothing to decline. */
+  onCancel?: () => void;
+}
 
 function sameGraph(a: GraphData, b: GraphData): boolean {
   if (a.nodes.length !== b.nodes.length || a.links.length !== b.links.length) return false;
@@ -342,6 +372,32 @@ export default function App() {
     setCodeBlockColor(defaults.codeBlockColor);
     setRecentVaultLimit(defaults.recentVaultLimit);
   }, []);
+
+  // ── The app's own modal question ────────────────────────────────────────
+  // What `window.confirm` used to do, in the app's own dialog (see
+  // components/ConfirmDialog). Beyond looking like the rest of the app, a real
+  // dialog can say what will actually HAPPEN — a native one gets a single line
+  // of unformatted text, so the question could never be more than "are you
+  // sure?", while the thing worth knowing is where the file ends up.
+  //
+  // A promise per question keeps the callers linear, exactly as they read with
+  // `confirm()`. The handlers close the dialog before resolving, so a caller
+  // that opens another one is never fighting the first for the screen.
+  const [dialog, setDialog] = useState<AppDialog | null>(null);
+
+  const ask = useCallback((question: DialogRequest) => new Promise<boolean>(resolve => {
+    setDialog({
+      ...question,
+      onConfirm: () => { setDialog(null); resolve(true); },
+      onCancel: () => { setDialog(null); resolve(false); },
+    });
+  }), []);
+
+  /** Report something and wait for it to be read. One button, so Escape and a
+   *  click outside mean the same as pressing it. */
+  const tell = useCallback((notice: DialogRequest) => new Promise<void>(resolve => {
+    setDialog({ ...notice, onConfirm: () => { setDialog(null); resolve(); } });
+  }), []);
 
   // Expanded folder paths (persisted via localStorage)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
@@ -1144,27 +1200,49 @@ export default function App() {
     // other was abandoned half-written when the source vanished under it, and
     // the loser's `alert` then told the user a deletion that had SUCCEEDED had
     // failed. Same shape, same reason, as pickDirectory's pickerOpenRef.
+    //
+    // It covers the QUESTION as well as the copy, which `confirm()` used to get
+    // for free by freezing the page: the app's own dialog does not block, so
+    // without this a second click would stack a second question behind the
+    // first. (The overlay stops the pointer reaching the tree either way; this
+    // is what stops anything else from.)
     if (trashInFlightRef.current) return;
-
-    const isFolder = node.kind === 'directory';
-    // Which open documents this takes. A folder's own path is never a document's
-    // — except that the Help guide's pseudo-path is a bare name, so a vault
-    // folder called "help-guide" closed the Help tab. Only a FILE is matched by
-    // equality; a folder is matched by the `path/` prefix and nothing else.
-    const doomed = isFolder
-      ? (path: string) => path.startsWith(`${node.path}/`)
-      : (path: string) => path === node.path;
-
-    // Say what is actually going. "…and everything inside it" reads the same for
-    // two notes as for two thousand, and is plainly wrong for an empty folder.
-    const files = node.kind === 'directory' ? collectFiles(node.children).length : 0;
-    const what = files > 0
-      ? `"${node.name}" and the ${files} file${files === 1 ? '' : 's'} inside it`
-      : `"${node.name}"`;
-    if (!confirm(`Move ${what} to Trash?`)) return;
-
     trashInFlightRef.current = true;
     try {
+      const isFolder = node.kind === 'directory';
+      // Which open documents this takes. A folder's own path is never a
+      // document's — except that the Help guide's pseudo-path is a bare name, so
+      // a vault folder called "help-guide" closed the Help tab. Only a FILE is
+      // matched by equality; a folder is matched by the `path/` prefix and
+      // nothing else.
+      const doomed = isFolder
+        ? (path: string) => path.startsWith(`${node.path}/`)
+        : (path: string) => path === node.path;
+
+      // Say what is actually going. "…and everything inside it" reads the same
+      // for two notes as for two thousand, and is plainly wrong for an empty one.
+      const files = node.kind === 'directory' ? collectFiles(node.children).length : 0;
+      const beside = <>the <code>.Garbage</code> folder beside it</>;
+      const confirmed = await ask({
+        title: isFolder ? 'Move folder to Trash?' : 'Move to Trash?',
+        confirmLabel: 'Move to Trash',
+        danger: true,
+        body: files > 0 ? (
+          <>
+            <strong>{node.name}</strong> and the {files} file{files === 1 ? '' : 's'} inside it move
+            into {beside} — sub-folders, pictures and its own trash included. Notes you have open
+            from it are saved first, then closed. Nothing leaves your disk: you can take it all
+            back out whenever you like.
+          </>
+        ) : (
+          <>
+            <strong>{node.name}</strong> moves into {beside}. Nothing leaves your disk: you can
+            take it back out whenever you like.
+          </>
+        ),
+      });
+      if (!confirmed) return;
+
       // Write out what is still in the save debounce BEFORE the copy starts.
       // The tabs inside a folder stay live and editable for the whole copy, and
       // their save timers stay armed — so a debounced write would land on an
@@ -1194,9 +1272,20 @@ export default function App() {
       setSaveStatus('');
       if (!moved) {
         // Never silence: from the outside a click that does nothing is
-        // indistinguishable from a broken button. Truthful now that the move is
-        // all-or-nothing — a failure really does mean the item is still there.
-        alert(`Could not move "${node.name}" to Trash.`);
+        // indistinguishable from a broken button. And the reassurance is worth
+        // as much as the failure — the move is all-or-nothing, so there is no
+        // half-deleted state to go looking for.
+        await tell({
+          title: 'Nothing was moved',
+          confirmLabel: 'OK',
+          body: (
+            <>
+              <strong>{node.name}</strong> is still where it was, and nothing was left half-done.
+              Something inside it may be in use; the details are in the browser console. Try again
+              in a moment.
+            </>
+          ),
+        });
         return;
       }
 
@@ -1211,75 +1300,127 @@ export default function App() {
     } finally {
       trashInFlightRef.current = false;
     }
-  }, [moveToTrash, removeTab, flushTab]);
+  }, [moveToTrash, removeTab, flushTab, ask, tell]);
+
+  /**
+   * Follow every open document through a rename or a move.
+   *
+   * For a file that is the file itself. For a FOLDER it is every document open
+   * from anywhere INSIDE it, which is the case that used to be missing entirely:
+   * the old code looked for a tab at the folder's own path, never found one, and
+   * returned. So renaming a folder left its notes open on paths that no longer
+   * existed, holding handles into a directory that had just been removed —
+   * every later keystroke logged "Auto-save failed" and went nowhere, the tree
+   * highlighted nothing, and the stored session named a file that was gone. The
+   * documents are the same documents; they are re-pointed, not closed.
+   *
+   * Handles come from walking down from the VAULT ROOT rather than out of the
+   * file tree, because the tree is React state and this runs after an await —
+   * the refresh the rename triggered may not have been committed yet, and this
+   * has to be exact rather than probably-current.
+   */
+  const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => {
+    if (!rootHandle || newPath === node.path) return;
+    const isFolder = node.kind === 'directory';
+    const prefix = `${node.path}/`;
+    /** Where a path under `node` ends up. */
+    const to = (path: string) => (isFolder ? newPath + path.slice(node.path.length) : newPath);
+
+    // Every open document this move carries…
+    const moving = tabsRef.current
+      .filter(t => (isFolder ? t.file.path.startsWith(prefix) : t.file.path === node.path))
+      .map(t => ({ from: t.file.path, to: to(t.file.path), dirty: t.dirty }));
+
+    // …and every open document it OVERWRITES. renameFile/moveFile deliberately
+    // land on a taken name, and for a folder that is a MERGE: each file inside
+    // it overwrites whatever sat at its destination. The tab holding that
+    // destination has to be released whether or not the file replacing it is
+    // itself open — its handle still resolves to that very directory entry, so
+    // its autosave would put the old bytes straight back over the new ones.
+    // Read from the node's own children, the last description of the folder
+    // before it moved, and done for ALL of them BEFORE the re-keys below (see
+    // releaseOverwritten for why that order is load-bearing).
+    const open = new Set(tabsRef.current.map(t => t.file.path));
+    const sources = isFolder ? collectFiles(node.children).map(f => f.path) : [node.path];
+    for (const source of sources) {
+      const dest = to(source);
+      if (open.has(dest)) releaseOverwritten(dest, source);
+    }
+
+    for (const { from, to: dest, dirty } of moving) {
+      try {
+        const { handle, parentHandle } = await resolveVaultFile(rootHandle, dest);
+        clearSaveTimer(from);          // cancel any save pending against the OLD handle
+        // An annotated PDF's parked original + overlays are keyed by path; re-key
+        // them or the next save finds nothing and silently writes nothing.
+        movePdfRenderData(from, dest);
+        moveAssetRefs(from, dest);
+        setTabs(prev => prev
+          .filter(t => t.file.path !== dest)
+          .map(t => t.file.path === from
+            // `handle.name` covers both: a renamed file takes its new name, and
+            // a file carried along by its folder keeps the one it had.
+            ? { ...t, file: { ...t.file, name: handle.name, path: dest, handle, parentHandle } }
+            : t));
+        // The tab bar indexes documents by path too — a pane left pointing at
+        // the old one would have no document to draw.
+        setLayout(l => renamePath(l, from, dest));
+        // Buffered edits go to the NEW handle, never the old one. They are not
+        // in the copy the rename made: that read the file from disk.
+        if (dirty) scheduleSave(dest);
+      } catch (err) {
+        console.error('Could not follow a document to its new path:', from, '→', dest, err);
+      }
+    }
+  }, [rootHandle, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten]);
+
+  /**
+   * Keep the tree's disclosure state with the folder it describes.
+   *
+   * `expandedPaths` is keyed by path, so a renamed folder — and everything the
+   * reader had opened up inside it — silently collapsed, which after a rename
+   * looks like the contents went somewhere. It is the same folder; it answers
+   * to a new name.
+   */
+  const retargetExpanded = useCallback((node: FileTreeNode, newPath: string) => {
+    if (node.kind !== 'directory' || newPath === node.path) return;
+    setExpandedPaths(prev => {
+      const prefix = `${node.path}/`;
+      const next = new Set<string>();
+      let moved = false;
+      for (const path of prev) {
+        if (path === node.path || path.startsWith(prefix)) {
+          next.add(newPath + path.slice(node.path.length));
+          moved = true;
+        } else {
+          next.add(path);
+        }
+      }
+      if (!moved) return prev;
+      writeJSON('expandedPaths', [...next]);
+      return next;
+    });
+  }, []);
 
   const handleRenameFile = useCallback(async (node: FileTreeNode, newName: string) => {
     const success = await renameFile(node, newName);
     if (!success) return;
+    const newPath = joinVaultPath(parentVaultPath(node.path), newName);
+    retargetExpanded(node, newPath);
+    await retargetTabs(node, newPath);
+  }, [renameFile, retargetTabs, retargetExpanded]);
 
-    const segs = node.path.split('/');
-    segs.pop();
-    segs.push(newName);
-    const newPath = segs.join('/');
-
-    // First, and outside the guard below: a rename can overwrite an open file
-    // whether or not the file being renamed is open itself.
-    releaseOverwritten(newPath, node.path);
-
-    const openTab = tabsRef.current.find(t => t.file.path === node.path);
-    if (!openTab) return;
-
-    try {
-      const fileHandle = await node.parentHandle.getFileHandle(newName);
-      clearSaveTimer(node.path); // cancel any pending save against the OLD handle
-      // An annotated PDF's parked original + overlays are keyed by path; re-key
-      // them or the next save finds nothing and silently writes nothing. After
-      // releaseOverwritten, which clears these very slots.
-      movePdfRenderData(node.path, newPath);
-      moveAssetRefs(node.path, newPath);
-      setTabs(prev => prev
-        .filter(t => t.file.path !== newPath)
-        .map(t => t.file.path === node.path
-          ? { ...t, file: { ...t.file, name: newName, path: newPath, handle: fileHandle } }
-          : t));
-      // The tab bar indexes documents by path too — a pane left pointing at the
-      // old one would have no document to draw.
-      setLayout(l => renamePath(l, node.path, newPath));
-      // Flush buffered edits to the NEW handle (never the old one).
-      if (openTab.dirty) scheduleSave(newPath);
-      localStorage.setItem('lastFilePath', newPath);
-    } catch (err) {
-      console.error('Could not get handle for renamed file', err);
-    }
-  }, [renameFile, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten]);
-
-  // Wrap moveFile so a moved open file's tab tracks its new path/handle (also
-  // fixes the pre-existing stale-path-after-move for the active document).
+  // Wrap moveFile so a moved document's tab tracks its new path and handle —
+  // including every document inside a moved FOLDER.
   const handleMoveFile = useCallback(async (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath = '') => {
-    const openTab = tabsRef.current.find(t => t.file.path === sourceNode.path);
     const success = await moveFile(sourceNode, targetDirHandle);
-    const newPath = joinVaultPath(targetPath, sourceNode.name);
-    // Before the guard, and before the re-keys below — see handleRenameFile.
-    if (success) releaseOverwritten(newPath, sourceNode.path);
-    if (success && openTab) {
-      try {
-        const newHandle = await targetDirHandle.getFileHandle(sourceNode.name);
-        clearSaveTimer(sourceNode.path);
-        movePdfRenderData(sourceNode.path, newPath);   // see handleRenameFile
-        moveAssetRefs(sourceNode.path, newPath);
-        setTabs(prev => prev
-          .filter(t => t.file.path !== newPath)
-          .map(t => t.file.path === sourceNode.path
-            ? { ...t, file: { ...t.file, path: newPath, handle: newHandle, parentHandle: targetDirHandle } }
-            : t));
-        setLayout(l => renamePath(l, sourceNode.path, newPath));   // see handleRenameFile
-        if (openTab.dirty) scheduleSave(newPath);
-      } catch (err) {
-        console.error('Could not update moved tab handle:', err);
-      }
+    if (success) {
+      const newPath = joinVaultPath(targetPath, sourceNode.name);
+      retargetExpanded(sourceNode, newPath);
+      await retargetTabs(sourceNode, newPath);
     }
     return success;
-  }, [moveFile, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten]);
+  }, [moveFile, retargetTabs, retargetExpanded]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -1535,6 +1676,20 @@ export default function App() {
           onResetDefaults={handleResetDefaults}
           onClose={() => setShowSettings(false)}
         />
+      )}
+      {/* Last, so it sits over the settings panel as well as the workspace —
+          and outside the editor, because the questions it asks are the file
+          tree's (which is visible in the graph view too). */}
+      {dialog && (
+        <ConfirmDialog
+          title={dialog.title}
+          confirmLabel={dialog.confirmLabel}
+          danger={dialog.danger}
+          onConfirm={dialog.onConfirm}
+          onCancel={dialog.onCancel}
+        >
+          {dialog.body}
+        </ConfirmDialog>
       )}
     </div>
   );

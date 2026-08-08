@@ -138,6 +138,8 @@ If you click on \`.pdf\`, \`.jpg\`, \`.jpeg\`, or \`.png\` files directly within
 ### The Trash System
 To prevent accidental permanent data loss, deleting a file does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Garbage\` folder located in the same directory as the file — deleting \`Maths/Calculus/notes.md\` puts it in \`Maths/Calculus/.Garbage\`, so a deletion stays next to the notes it came from. Deleting the same name twice keeps both copies (the second becomes \`notes (1).md\`). You can manually recover these files using your computer's native file explorer (Finder or Windows Explorer) if needed.
 
+Deleting a **folder** works exactly the same way, and takes everything inside it along: deleting \`Maths/Calculus\` puts the whole folder in \`Maths/.Garbage/Calculus\`, with its notes, its sub-folders and the pictures from its own \`.Assets\` still in place — so in most cases you can drag it back out in Finder and it works again just as it did. (A picture stored higher up the vault, from an older version of the app, stays where it is and is not copied along.) Any notes from that folder you had open are saved first and then closed, so nothing you had just typed is left behind. A large folder takes a moment to copy; the top bar says so while it does.
+
 ---
 
 ## 6. Markdown Syntax Reference

@@ -1123,16 +1123,95 @@ export default function App() {
     }
   }, [createFolder]);
 
+  /**
+   * Move a file — or a whole folder, contents and all — to the Trash.
+   *
+   * A folder takes every document open from anywhere INSIDE it with it, which
+   * is the whole difference from deleting one file. Left open, those tabs go on
+   * drawing notes that no longer exist, holding handles that resolve to nothing,
+   * and are written back into the stored session on the next layout change.
+   *
+   * ONE AT A TIME, and everything pending is written out FIRST. Both follow from
+   * the same fact: unlike every other deletion in this app, trashing a folder is
+   * a copy of arbitrary size, and it runs for as long as that takes. See below.
+   */
+  const trashInFlightRef = useRef<boolean>(false);
+
   const handleTrash = useCallback(async (node: FileTreeNode) => {
-    if (confirm(`Move "${node.name}" to Trash?`)) {
-      const moved = await moveToTrash(node);
-      if (moved && tabsRef.current.some(t => t.file.path === node.path)) {
-        // Close the trashed file's tab WITHOUT flushing (its handle is gone).
-        removeTab(node.path, false);
-        setSaveStatus('');
+    // A folder copy runs for seconds, and its row stays on screen throughout —
+    // so "I clicked delete and nothing happened, click it again" is the natural
+    // thing to do, and unguarded it ran two copies at once: one completed, the
+    // other was abandoned half-written when the source vanished under it, and
+    // the loser's `alert` then told the user a deletion that had SUCCEEDED had
+    // failed. Same shape, same reason, as pickDirectory's pickerOpenRef.
+    if (trashInFlightRef.current) return;
+
+    const isFolder = node.kind === 'directory';
+    // Which open documents this takes. A folder's own path is never a document's
+    // — except that the Help guide's pseudo-path is a bare name, so a vault
+    // folder called "help-guide" closed the Help tab. Only a FILE is matched by
+    // equality; a folder is matched by the `path/` prefix and nothing else.
+    const doomed = isFolder
+      ? (path: string) => path.startsWith(`${node.path}/`)
+      : (path: string) => path === node.path;
+
+    // Say what is actually going. "…and everything inside it" reads the same for
+    // two notes as for two thousand, and is plainly wrong for an empty folder.
+    const files = node.kind === 'directory' ? collectFiles(node.children).length : 0;
+    const what = files > 0
+      ? `"${node.name}" and the ${files} file${files === 1 ? '' : 's'} inside it`
+      : `"${node.name}"`;
+    if (!confirm(`Move ${what} to Trash?`)) return;
+
+    trashInFlightRef.current = true;
+    try {
+      // Write out what is still in the save debounce BEFORE the copy starts.
+      // The tabs inside a folder stay live and editable for the whole copy, and
+      // their save timers stay armed — so a debounced write would land on an
+      // original that `removeEntry` then destroys, AFTER the walk had already
+      // copied the older bytes. Whether the edit survived came down to where the
+      // note happened to fall in an arbitrary `entries()` order. Flushed rather
+      // than merely cancelled: the copy then carries the reader's last words,
+      // which is what a trash folder is for.
+      await Promise.all(tabsRef.current
+        .filter(t => doomed(t.file.path))
+        .map(t => flushTab(t.file.path)));
+      // …and let the asset reconciles those saves queued run to completion, so
+      // nothing moves a picture between `.Assets` and `.Garbage/.Assets` while
+      // copyDirRecursive is walking one of them.
+      await reconcileQueueRef.current;
+
+      // The copy has no other outward sign, and an app that looks frozen is one
+      // people click again. Re-armed over any "Saved" the flush above left, whose
+      // own timer would otherwise clear this line mid-copy.
+      if (saveStatusTimerRef.current) {
+        clearTimeout(saveStatusTimerRef.current);
+        saveStatusTimerRef.current = null;
       }
+      setSaveStatus(`Moving "${node.name}" to Trash…`);
+
+      const moved = await moveToTrash(node);
+      setSaveStatus('');
+      if (!moved) {
+        // Never silence: from the outside a click that does nothing is
+        // indistinguishable from a broken button. Truthful now that the move is
+        // all-or-nothing — a failure really does mean the item is still there.
+        alert(`Could not move "${node.name}" to Trash.`);
+        return;
+      }
+
+      // What the deletion took with it. Read AFTER the move, not before: the
+      // predicate is a path test and does not move, but a document opened while
+      // the copy was running has to be closed too.
+      // Closed WITHOUT flushing — that already happened above, and their handles
+      // are gone now.
+      for (const tab of tabsRef.current) {
+        if (doomed(tab.file.path)) removeTab(tab.file.path, false);
+      }
+    } finally {
+      trashInFlightRef.current = false;
     }
-  }, [moveToTrash, removeTab]);
+  }, [moveToTrash, removeTab, flushTab]);
 
   const handleRenameFile = useCallback(async (node: FileTreeNode, newName: string) => {
     const success = await renameFile(node, newName);

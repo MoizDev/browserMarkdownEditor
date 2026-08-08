@@ -11,26 +11,50 @@ const FileSystemContext = createContext<FileSystemContextValue | null>(null);
 const IDB_KEY = 'vault-directory-handle';
 
 /**
+ * Whether `dir` already holds an entry called `name` — of EITHER kind.
+ *
+ * Two positive lookups rather than one lookup and a reading of the failure:
+ * `getFileHandle` does reject with TypeMismatchError when the name belongs to a
+ * directory, but keying "this name is taken" on an exact DOMException name is a
+ * more brittle thing to rest a delete on than simply asking both questions.
+ */
+async function entryExists(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
+    try { await dir.getFileHandle(name); return true; } catch { /* not a file here */ }
+    try { await dir.getDirectoryHandle(name); return true; } catch { /* nor a directory */ }
+    return false;
+}
+
+/**
  * A name that is free in `dir`: "note.md", then "note (1).md", "note (2).md", …
  *
- * Every write that could land on an existing file goes through here. Silently
+ * Every write that could land on an existing entry goes through here. Silently
  * overwriting somebody's file is not a recoverable mistake — and for the trash
  * in particular, deleting the same name twice would otherwise destroy the first
  * copy at the exact moment the user was counting on it being kept.
+ *
+ * A folder and a file cannot share a name, so BOTH kinds count as taken whatever
+ * kind is being written. Asking only about files reported a name free while a
+ * folder of that name sat there, and the write that followed threw outright —
+ * which for the trash meant a deletion that simply failed. That is reachable the
+ * moment folders can be deleted: trash the folder "notes", then the file
+ * "notes" beside it.
+ *
+ * `kind` decides only where the number goes: a folder has no extension, so
+ * "my.notes" numbers as "my.notes (1)" rather than "my (1).notes".
  */
-async function freeFileName(dir: FileSystemDirectoryHandle, name: string): Promise<string> {
-    const dot = name.lastIndexOf('.');
+async function freeEntryName(
+    dir: FileSystemDirectoryHandle,
+    name: string,
+    kind: 'file' | 'directory' = 'file',
+): Promise<string> {
+    const dot = kind === 'file' ? name.lastIndexOf('.') : -1;
     const stem = dot > 0 ? name.slice(0, dot) : name;
     const ext = dot > 0 ? name.slice(dot) : '';
 
     let candidate = name;
     for (let n = 1; ; n++) {
-        try {
-            await dir.getFileHandle(candidate);      // resolves => taken
-            candidate = `${stem} (${n})${ext}`;
-        } catch {
-            return candidate;
-        }
+        if (!(await entryExists(dir, candidate))) return candidate;
+        candidate = `${stem} (${n})${ext}`;
     }
 }
 
@@ -383,7 +407,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             }
 
             try {
-                const name = await freeFileName(targetDir, file.name);
+                const name = await freeEntryName(targetDir, file.name);
                 await copyFileInto(targetDir, name, file);
                 written.push(name);
             } catch (err) {
@@ -472,6 +496,24 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         const url = URL.createObjectURL(file);
         assetUrlsRef.current.set(key, { url, mtime: file.lastModified, size: file.size });
         return url;
+    }, []);
+
+    /**
+     * Let go of every object URL minted for an asset under `path`.
+     *
+     * The cache is keyed by the asset's vault path (see assetUrlIn), so a
+     * folder's own `.Assets` and every descendant's share its prefix. Called
+     * when a folder is trashed, for the reason retireAsset revokes when a single
+     * asset is: an entry that can never be served again is a pinned blob and a
+     * cache key nothing will ever match.
+     */
+    const revokeAssetUrlsUnder = useCallback((path: string) => {
+        const prefix = `${path}/`;
+        for (const [key, cached] of assetUrlsRef.current) {
+            if (!key.startsWith(prefix)) continue;
+            URL.revokeObjectURL(cached.url);
+            assetUrlsRef.current.delete(key);
+        }
     }, []);
 
     // A different vault can reuse the same asset names — never serve the old
@@ -680,45 +722,97 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, [previousVault, refreshTree, recordVault]);
 
     /**
-     * Move a file into the Trash — the `.Garbage` folder BESIDE it, not the
-     * vault's. A note deleted from `math/units` lands in `math/units/.Garbage`,
-     * and only a note at the vault root lands in the root's.
+     * Move a file — or a whole folder — into the Trash: the `.Garbage` folder
+     * BESIDE it, not the vault's. A note deleted from `math/units` lands in
+     * `math/units/.Garbage`; the folder `math/units` itself lands in
+     * `math/.Garbage/units`, and only an entry at the vault root lands in the
+     * root's.
      *
-     * Where a deletion is recoverable from should follow the file, the same way
-     * its `.Assets` do: the trash stays next to the notes it came out of, so
+     * Where a deletion is recoverable from should follow the thing deleted, the
+     * same way its `.Assets` do: the trash stays next to what it came out of, so
      * moving (or sharing, or archiving) a folder carries its history with it,
      * and two folders each holding a "notes.md" no longer pile their deletions
      * into one bucket at the top of the vault.
+     *
+     * A FOLDER GOES WHOLESALE, with everything under it — its notes, its
+     * sub-folders, and its own `.Assets` and `.Garbage`. That last part is the
+     * point rather than an oversight: the trashed copy is as self-contained as
+     * the folder was, so recovering it by hand restores its pictures and its own
+     * history along with its notes. There is no native move, so this is
+     * copy-then-delete like every other move here (copyDirRecursive), which
+     * means the copy is only ever as current as the DISK — App.handleTrash
+     * flushes every affected buffer before calling this, precisely so that what
+     * lands in the trash is what the reader last had rather than what was last
+     * autosaved.
+     *
+     * IT EITHER HAPPENED OR IT DIDN'T. Anything that throws — a copy that dies
+     * partway, or a `removeEntry` refused because a file inside is still being
+     * written — takes the copy back out again before reporting failure. Without
+     * that, the realistic failure (the copy SUCCEEDS and the removal is refused)
+     * left a complete second copy of the folder in `.Garbage`, and every retry
+     * added another numbered one: megabytes to gigabytes of trash indexed under
+     * names indistinguishable, in Finder, from a good backup. Removing it is
+     * safe precisely because it is ours — `freeEntryName` certified the name
+     * free a moment earlier and nothing else may be trashing at the same time
+     * (App.handleTrash serializes) — so this can only unmake what it just made.
+     * It is not a licence to prune `.Garbage`, which nothing here does.
+     *
+     * The rollback can never run once the original is gone: `refreshTree`
+     * handles its own errors, so `removeEntry` succeeding is the last thing that
+     * can fail.
      */
     const moveToTrash = useCallback(async (node: FileTreeNode) => {
         if (!rootHandle || !node.parentHandle) return false;
+        // The trash must never be nested inside itself, and a folder must never
+        // be trashed into the bucket retired ASSETS are parked in — restoreAsset
+        // would then be able to resurrect its bytes into a live `.Assets`.
+        // Neither hidden folder is in the file tree, so nothing can ask for this
+        // today; the guard is here because the failure if anything ever did is
+        // copyDirRecursive walking into the copy it is making, without bound.
+        if (node.kind === 'directory' && (node.name === TRASH_DIR || node.name === ASSETS_DIR)) return false;
+
+        // What this call has put into `.Garbage`, so a failure can take it back
+        // out. Recorded before a single byte is written, so a copy that dies
+        // on its first file is unmade just as surely as one that dies on its last.
+        let wrote: { dir: FileSystemDirectoryHandle; name: string } | null = null;
 
         try {
+            const trashDir = await node.parentHandle.getDirectoryHandle(TRASH_DIR, { create: true });
+            // Deleting the same name twice must not destroy the first copy.
+            const trashName = await freeEntryName(trashDir, node.name, node.kind);
+            wrote = { dir: trashDir, name: trashName };
+
             if (node.kind === 'file') {
-                const trashDir = await node.parentHandle.getDirectoryHandle(TRASH_DIR, { create: true });
-                // Deleting the same name twice must not destroy the first copy.
-                const trashName = await freeFileName(trashDir, node.name);
                 await copyFileInto(trashDir, trashName, await node.handle.getFile());
             } else {
-                // Moving folders via File System Access API requires recursive copying.
-                // For simplicity as requested, we handle files. 
-                // Full folder copy-then-delete is complex in browser filesystem API.
-                // To keep it clean, we warn the user or we can implement recursive copy.
-                // Given the instructions say "move it and put it in Trash", we'll do files first.
-                // If folder deletion is strictly required, we need a recursive web worker.
-                alert("Folder deletion is currently not fully supported by the browser file system API without recursive copy. Please delete files individually.");
-                return false; /* We will only allow file deletion for now for safety and API limits */
+                const grave = await trashDir.getDirectoryHandle(trashName, { create: true });
+                await copyDirRecursive(node.handle, grave);
             }
 
-            // Remove original
-            await node.parentHandle.removeEntry(node.name);
+            // Remove original. Recursively for a folder — it still holds
+            // everything that was just copied out of it.
+            await node.parentHandle.removeEntry(node.name, { recursive: node.kind === 'directory' });
+            // The pictures that folder held can only have been shown by notes
+            // inside it (resolution never looks sideways or down), and those are
+            // closed. A url that can never be displayed again is a pinned blob —
+            // the same reason retireAsset revokes.
+            if (node.kind === 'directory') revokeAssetUrlsUnder(node.path);
             await refreshTree(rootHandle);
             return true;
         } catch (err) {
             console.error('Failed to move item to trash:', err);
+            if (wrote) {
+                try {
+                    await wrote.dir.removeEntry(wrote.name, { recursive: node.kind === 'directory' });
+                } catch (undoErr) {
+                    // Nothing is lost — the original is still there — so say so
+                    // and leave it rather than trying harder at a failing disk.
+                    console.error('Could not remove the abandoned trash copy:', undoErr);
+                }
+            }
             return false;
         }
-    }, [rootHandle, refreshTree]);
+    }, [rootHandle, refreshTree, revokeAssetUrlsUnder]);
 
     /**
      * Move a file from its current parent to a target directory handle.

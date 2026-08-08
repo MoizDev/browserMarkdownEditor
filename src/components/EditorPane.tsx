@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
 import type { EditorState } from '@codemirror/state';
 import BacklinksPanel from './BacklinksPanel';
+import ConfirmDialog from './ConfirmDialog';
 import DocumentPane from './DocumentPane';
 import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
@@ -345,15 +346,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
         setImageDelete(null);
     }, [imageDelete]);
 
-    // Escape cancels, wherever focus happens to be.
-    useEffect(() => {
-        if (!imageDelete) return;
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') { e.preventDefault(); setImageDelete(null); }
-        };
-        window.addEventListener('keydown', onKeyDown, true);
-        return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, [imageDelete]);
+    // (Escape, the click outside and the focus round trip are ConfirmDialog's.)
 
     // A pending request names a position in the document that raised it, and
     // that document can leave the screen while the dialog is up (a tab switch,
@@ -861,28 +854,17 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                 </div>
             )}
             {imageDelete && (
-                <div className="confirm-overlay" onMouseDown={closeImageDelete}>
-                    <div
-                        className="confirm-dialog"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="confirm-image-delete"
-                        onMouseDown={(e) => e.stopPropagation()}
-                    >
-                        <h3 className="confirm-title" id="confirm-image-delete">Delete image?</h3>
-                        <p className="confirm-body">
-                            <strong>{imageDelete.name}</strong> is removed from this note, and its file moves
-                            to this folder’s <code>.Garbage</code> unless another note here still shows it.
-                            Undo (⌘Z) brings both back.
-                        </p>
-                        <div className="confirm-actions">
-                            <button className="confirm-btn" onClick={closeImageDelete}>Cancel</button>
-                            <button className="confirm-btn confirm-btn-danger" onClick={runImageDelete} autoFocus>
-                                Delete
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <ConfirmDialog
+                    title="Delete image?"
+                    confirmLabel="Delete"
+                    danger
+                    onConfirm={runImageDelete}
+                    onCancel={closeImageDelete}
+                >
+                    <strong>{imageDelete.name}</strong> is removed from this note, and its file moves
+                    to this folder’s <code>.Garbage</code> unless another note here still shows it.
+                    Undo (⌘Z) brings both back.
+                </ConfirmDialog>
             )}
             {showBacklinks && activeFile && !activeFile.isHelp && (
                 <BacklinksPanel

@@ -18,7 +18,7 @@ npm run lint       # eslint .      (flat config, loaded via jiti)
 npm run preview    # serve a production build
 ```
 
-**There is no test suite / test runner.** Changes are verified by driving the running app headlessly, and the technique is written out here rather than pointed at, because the skill that used to hold it no longer exists:
+**There is no test suite / test runner.** Changes are verified by driving the running app headlessly, and the full technique is written out here:
 
 - launch the dev server on a port of your own (`npm run dev -- --port <PORT> --strictPort`) — **not** Vite's default 5173 and not 5199, either of which the developer may already be on;
 - drive the GUI with Playwright, stubbing `window.showDirectoryPicker` with **OPFS** in an `addInitScript` *before* the page loads, because the native picker cannot open headless. Patch `queryPermission`/`requestPermission` to return `'granted'` on the returned handle **and** on `FileSystemDirectoryHandle.prototype.getDirectoryHandle`'s result, or a restored vault will ask for a gesture that never comes;
@@ -268,7 +268,6 @@ A `.tldraw` file is a tldraw snapshot **plus an extra `ui` block** (current tool
 - **File System Access API types** (`showDirectoryPicker`, `queryPermission`, `requestPermission`) are not in stock `lib.dom` — they're augmented via `declare global` at the bottom of `src/types/index.ts`.
 - **`React.StrictMode` is on** (`main.tsx`), so effects run twice in dev — write effects to tolerate it.
 - **ESLint config carries intentional relaxations** (`eslint.config.ts`): `no-unused-vars` ignores PascalCase/UPPER vars, all args, and catch bindings; `react-hooks/set-state-in-effect` is off (the app deliberately sets state in effects to rebuild the graph / restore the last file); `react-refresh/only-export-components` is off for the context module (it exports the Provider alongside `useFileSystem`). These preserve existing patterns — don't "fix" them into failures.
-- **The repo carries no agent assets of its own.** There is no `.claude/` directory: the `dev-loop` skill, its twelve agent definitions and the `settings.json` that raised the subagent depth/concurrency limits for it were all removed deliberately, and `.agents/` is an empty leftover. `CLAUDE.md` — a one-line `@AGENTS.md` include — and this file are the whole of it. So an agent working here has only its own defaults plus whatever the developer configures globally; nothing project-scoped is waiting to be found, and the verification technique under **Commands** is written out in full precisely because the skill that used to hold it is gone.
 
 ---
 

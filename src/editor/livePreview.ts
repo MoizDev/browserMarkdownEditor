@@ -1,7 +1,7 @@
-import { EditorView, Decoration } from '@codemirror/view';
+import { EditorView, Decoration, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { RangeSet, RangeValue } from '@codemirror/state';
+import { EditorSelection, Prec, RangeSet, RangeValue } from '@codemirror/state';
 import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
@@ -14,6 +14,8 @@ import { ImageWidget, imageEmbedActions, imageEmbedKeymap } from './imageWidget'
 import type { ImageContext, ImageEmbedActions } from './imageWidget';
 import { embedPattern } from '../utils/assets';
 import { TableWidget } from './tableWidget';
+import { cellAt, findTables, parseTableLayout } from './tableModel';
+import { focusTableCell, tableDomAt } from './tableEdit';
 import { MermaidWidget } from './mermaidWidget';
 
 /* ── Shared decoration values ──
@@ -145,13 +147,17 @@ function caretInsideRange(state: EditorState, from: number, to: number): boolean
 class AtomicRange extends RangeValue {}
 const ATOMIC = new AtomicRange();
 
-/** What the live-preview field holds: the decorations to draw, the image ranges
- *  the cursor must treat as atomic, and whether one of them is the selection.
- *  All three come out of one pass. */
+/** What the live-preview field holds: the decorations to draw, the image and
+ *  table ranges the cursor must treat as atomic, where the rendered tables are
+ *  (so the entry keymap and the adoption rule can find one beside the caret),
+ *  and whether an object of either kind is the selection. All of it comes out
+ *  of one pass. */
 interface LivePreview {
     deco: DecorationSet;
     atoms: RangeSet<AtomicRange>;
     imageSelected: boolean;
+    tables: readonly { from: number; to: number }[];
+    tableSelected: boolean;
 }
 
 /**
@@ -549,7 +555,10 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // — only reachable while typing the embed, which has to stay visible.
     const imageRegex = embedPattern();
     const selection = state.selection.main;
+    const editable = editorMode !== 'read';
     let imageSelected = false;
+    const tables: { from: number; to: number }[] = [];
+    let tableSelected = false;
     while ((match = imageRegex.exec(doc)) !== null) {
         const from = match.index;
         const to = from + match[0].length;
@@ -611,26 +620,55 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     }
 
     // === TABLES (GFM-style) ===
-    // Match consecutive lines starting and ending with | that include a separator row
-    const tableRegex = /(^\|.+\|[ \t]*\n)(^\|[\s:|-]+\|[ \t]*\n)((?:^\|.+\|[ \t]*\n?)+)/gm;
-    while ((match = tableRegex.exec(doc)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
-        // Trim trailing newline from the range to avoid replacing it
-        const trimmedTo = doc[to - 1] === '\n' ? to - 1 : to;
-
-        if (editorMode !== 'read' && cursorInRange(state, from, trimmedTo)) continue;
-
+    // A rendered table is an OBJECT, like an embedded image: never revealed by
+    // the cursor, atomic, and edited through its own contenteditable cells (see
+    // tableWidget.ts and tableEdit.ts). It has no equivalent of the image's
+    // typing exception, because a table cannot half-exist — the pattern needs
+    // three complete lines — so entry is an explicit keymap plus a caret
+    // adoption rule instead (tableEntryKeymap / tableAdoptListener below).
+    //
+    // findTables returns only spans parseGrid accepts, and that is what keeps
+    // the atom below and the editable widget in step: an atomic, never-revealed
+    // range with no contenteditable cell in it would be a block of the user's
+    // own text with no way to put a caret in it at all.
+    for (const span of findTables(doc)) {
+        // A table written inside code is being QUOTED, not tabulated — and it
+        // matters more here than for any other construct, exactly as it does
+        // for images: an object that is never revealed and whose range is
+        // atomic could not be read or edited back out of a fence at all.
+        //
+        // CONTAINMENT, not the image pass's intersection test above.
+        // collectCodeRanges also collects InlineCode, and a table spans several
+        // lines — so an intersection test would reject any table with one
+        // `code` span in one cell. A fence contains the whole table; an inline
+        // span inside a cell never can.
+        if (codeRanges.some(r => r.from <= span.from && r.to >= span.to)) continue;
+        // No math guard, deliberately: overlapsMath is an intersection too, so
+        // it would reject any table containing $x$, and a containment version
+        // could only fire for a table wholly inside a math region, which cannot
+        // occur. Adding nothing is exactly today's behaviour.
+        const selected = editable && selection.from === span.from && selection.to === span.to;
+        tableSelected ||= selected;
         decorations.push(
-            Decoration.replace({ widget: new TableWidget(match[0].trim()) }).range(from, trimmedTo)
+            Decoration.replace({
+                widget: new TableWidget(doc.slice(span.from, span.to), editable, selected),
+            }).range(span.from, span.to)
         );
+        atoms.push(ATOMIC.range(span.from, span.to));
+        tables.push(span);
     }
 
     return {
         deco: Decoration.set(decorations, true),
-        // Already in document order — the image scan is a single left-to-right pass.
-        atoms: RangeSet.of(atoms),
+        // SORTED: images and tables are each a left-to-right pass, but tables
+        // are appended after images, so the two runs interleave in the document
+        // and the combined array is not in order. (This comment used to say the
+        // opposite and was right at the time — it is exactly the kind of stale
+        // claim that would make a later reader delete the `true`.)
+        atoms: RangeSet.of(atoms, true),
         imageSelected,
+        tables,
+        tableSelected,
     };
 }
 
@@ -683,18 +721,247 @@ export function createLivePreviewPlugin(
                 // snaps to the whole embed, and a Backspace beside it takes the
                 // embed with it instead of breaking the syntax into rubble.
                 EditorView.atomicRanges.of(view => view.state.field(field, false)?.atoms ?? RangeSet.empty),
-                // A selected picture wears its own ring, so the text-selection
+                // A selected object wears its own ring, so the text-selection
                 // band is turned off while one is selected — the selection is
-                // the picture and nothing else, and the band would otherwise
-                // show as a sliver past the widget (CodeMirror pads a replaced
-                // range with zero-width buffer elements of its own).
-                EditorView.editorAttributes.of(view =>
-                    view.state.field(field, false)?.imageSelected ? { class: 'cm-image-selection' } : null),
+                // the picture (or the table) and nothing else, and the band
+                // would otherwise show as a sliver past the widget (CodeMirror
+                // pads a replaced range with zero-width buffer elements of its
+                // own). The class covers both kinds; renaming it would touch
+                // three files for nothing.
+                EditorView.editorAttributes.of(view => {
+                    const value = view.state.field(field, false);
+                    return value && (value.imageSelected || value.tableSelected)
+                        ? { class: 'cm-image-selection' }
+                        : null;
+                }),
             ];
         }
     });
 
-    return [field, imageEmbedActions.of(actions), imageEmbedKeymap];
+    return [
+        field,
+        imageEmbedActions.of(actions),
+        imageEmbedKeymap,
+        tableEntryKeymap(field),
+        tableAdoptListener(field),
+    ];
+}
+
+/* ── Getting into (and out of) a table ────────────────────────────────────
+ *
+ * A table's range is atomic, so CodeMirror's own motion parks the caret on its
+ * `from` or its `to` and never strictly inside — in both axes, moveVertically
+ * included. That is exactly what we want for stepping OVER one; entering it is
+ * therefore a separate, deliberate act, and these two extensions are the two
+ * halves of it.
+ */
+
+/** The house predicate for "may this document be written to" — see tableEdit's
+ *  canWrite. EditorState.readOnly is never set anywhere in src/. */
+function writable(state: EditorState): boolean {
+    return !state.readOnly && state.facet(EditorView.editable);
+}
+
+/** The one empty caret, or null — every binding below wants exactly that. */
+function loneCaret(state: EditorState): number | null {
+    const { ranges, main } = state.selection;
+    if (ranges.length !== 1 || !main.empty) return null;
+    return main.head;
+}
+
+function tablesIn(view: EditorView, field: StateField<LivePreview>): readonly { from: number; to: number }[] {
+    return view.state.field(field, false)?.tables ?? [];
+}
+
+/** Put the caret in a cell of the table drawn at `from`, choosing the column
+ *  from an x coordinate so vertical motion feels continuous. */
+function enterTable(view: EditorView, from: number, edge: 'first' | 'last', x: number | null): boolean {
+    const dom = tableDomAt(view, from);
+    if (!dom) return false;
+    const layout = parseTableLayout(view.state.doc, from);
+    if (!layout) return false;
+    const row = edge === 'first' ? 0 : layout.rows.length - 1;
+    if (x === null) {
+        return focusTableCell(dom, row, edge === 'first' ? 0 : layout.columns - 1,
+            edge === 'first' ? 'start' : 'end');
+    }
+    // The column under the caret's own x, so arrowing down lands where the eye
+    // expects rather than always in the first cell.
+    let col = 0;
+    for (let i = 0; i < layout.columns; i++) {
+        const cell = dom.querySelector(`.cm-table-cell[data-row="${row}"][data-col="${i}"]`);
+        const rect = cell?.getBoundingClientRect();
+        if (rect && x >= rect.left) col = i;
+    }
+    return focusTableCell(dom, row, col, { x });
+}
+
+/**
+ * ArrowDown / ArrowUp / ArrowRight / ArrowLeft beside a table step INTO it.
+ *
+ * Prec.high so it runs before the default keymap, and every branch returns
+ * false unless the caret is exactly on a table's edge — so ordinary motion is
+ * untouched. Backspace and Delete are here too: the range is atomic, so
+ * @codemirror/commands would widen through the whole table and swallow it in
+ * one keystroke with nothing to show for it. Selecting it first is the same
+ * "a click selects the object" treatment a picture gets; a second press then
+ * deletes the selection through the default command.
+ */
+function tableEntryKeymap(field: StateField<LivePreview>): Extension {
+    /**
+     * Would an ordinary ArrowDown/ArrowUp leave this LOGICAL line?
+     *
+     * `lineWrapping` is on, so a paragraph is usually several visual rows and a
+     * logical line above a table may be three of them. Testing the logical line
+     * alone made ↓ from the first row of such a paragraph jump straight into
+     * the table, skipping two rows of the user's own text with no way back to
+     * them from above. `moveVertically` is visual-line aware, so asking it
+     * where the caret would actually go answers the question exactly.
+     *
+     * Deliberately NOT "does it land on the table's edge": moveVertically runs
+     * through skipAtoms, and skipAtomicRanges (@codemirror/view:3690-3705) moves
+     * a position strictly inside an atomic range to its FAR side — `to` when
+     * moving down (bias +1, :3729-3732) — so a downward move over a table
+     * reports `table.to`, never `table.from`. Whether it leaves the line is the
+     * robust question; where the skip parks is not.
+     */
+    const leavesLine = (view: EditorView, pos: number, forward: boolean): boolean => {
+        const line = view.state.doc.lineAt(pos);
+        const target = view.moveVertically(EditorSelection.cursor(pos), forward).head;
+        return forward ? target > line.to : target < line.from;
+    };
+
+    const enterFromLineAbove = (view: EditorView): boolean => {
+        if (!writable(view.state)) return false;
+        const pos = loneCaret(view.state);
+        if (pos === null) return false;
+        const line = view.state.doc.lineAt(pos);
+        if (line.number >= view.state.doc.lines) return false;
+        const next = view.state.doc.line(line.number + 1).from;
+        const table = tablesIn(view, field).find(t => t.from === next);
+        if (!table || !leavesLine(view, pos, true)) return false;
+        return enterTable(view, table.from, 'first', view.coordsAtPos(pos)?.left ?? null);
+    };
+
+    const enterFromLineBelow = (view: EditorView): boolean => {
+        if (!writable(view.state)) return false;
+        const pos = loneCaret(view.state);
+        if (pos === null) return false;
+        const line = view.state.doc.lineAt(pos);
+        if (line.number <= 1) return false;
+        const previous = view.state.doc.line(line.number - 1).to;
+        const table = tablesIn(view, field).find(t => t.to === previous);
+        if (!table || !leavesLine(view, pos, false)) return false;
+        return enterTable(view, table.from, 'last', view.coordsAtPos(pos)?.left ?? null);
+    };
+
+    const enterFromEdge = (view: EditorView, side: 'from' | 'to'): boolean => {
+        if (!writable(view.state)) return false;
+        const pos = loneCaret(view.state);
+        if (pos === null) return false;
+        const table = tablesIn(view, field).find(t => (side === 'from' ? t.from : t.to) === pos);
+        if (!table) return false;
+        return enterTable(view, table.from, side === 'from' ? 'first' : 'last', null);
+    };
+
+    const selectBeside = (view: EditorView, side: 'from' | 'to'): boolean => {
+        if (!writable(view.state)) return false;
+        const pos = loneCaret(view.state);
+        // Already exactly a table? Then this is the second press: let the
+        // default command delete the selection.
+        if (pos === null) return false;
+        const table = tablesIn(view, field).find(t => (side === 'to' ? t.to : t.from) === pos);
+        if (!table) return false;
+        view.dispatch({ selection: EditorSelection.single(table.from, table.to) });
+        return true;
+    };
+
+    return Prec.high(keymap.of([
+        { key: 'ArrowDown', run: enterFromLineAbove },
+        { key: 'ArrowUp', run: enterFromLineBelow },
+        { key: 'ArrowRight', run: view => enterFromEdge(view, 'from') },
+        { key: 'ArrowLeft', run: view => enterFromEdge(view, 'to') },
+        { key: 'Backspace', run: view => selectBeside(view, 'to') },
+        { key: 'Delete', run: view => selectBeside(view, 'from') },
+    ]));
+}
+
+/**
+ * The caret ended up somewhere a keypress could not have put it — adopt it into
+ * the cell it belongs in.
+ *
+ * Two jobs, and they are both narrow.
+ *
+ *  (a) A caret STRICTLY INSIDE a rendered table. Atomic ranges close every
+ *      motion path CodeMirror runs through skipAtoms, but moveToLineBoundary —
+ *      Home/End with line wrapping on — is not one of them, and an undo or a
+ *      programmatic dispatch can leave a caret anywhere.
+ *  (b) A table TYPED INTO EXISTENCE. The pattern's last body row may have no
+ *      trailing newline, so after typing the closing `|` the caret sits exactly
+ *      on the new table's `to`. Left alone the next character lands after that
+ *      pipe, the row stops matching, and the table flips back to source — a
+ *      render/de-render flicker per keystroke. Adopting into the last cell
+ *      removes it, and is what "as soon as it renders, keep typing in it" means.
+ *      It waits for the row to be COMPLETE, though — see the check below, and
+ *      the file the early version wrote.
+ *
+ * Boundaries are otherwise never adopted, because `from` and `to` are exactly
+ * where every documented way OUT of a table parks the caret. That is why (b) is
+ * gated on `input.type`, which excludes a paste (criterion: the caret is left
+ * after a pasted table, not trapped in it) and every write this feature makes.
+ *
+ * Legal to dispatch from here: updateListener handlers run after CodeMirror has
+ * reset updateState to Idle, unlike updateDOM and destroy.
+ */
+function tableAdoptListener(field: StateField<LivePreview>): Extension {
+    return EditorView.updateListener.of((update) => {
+        const { view } = update;
+        // hasFocus requires the contentDOM to be the active element, so this is
+        // also what keeps the listener out of the way while a cell is focused —
+        // including the moment right after a write-back, when Chromium has
+        // blurred the cell to BODY and the repair has not run yet.
+        if (!view.hasFocus || !writable(view.state)) return;
+        const tables = view.state.field(field, false)?.tables ?? [];
+        if (tables.length === 0) return;
+        const pos = loneCaret(view.state);
+        if (pos === null) return;
+
+        for (const table of tables) {
+            if (pos <= table.from || pos >= table.to) continue;
+            const dom = tableDomAt(view, table.from);
+            const layout = dom ? parseTableLayout(view.state.doc, table.from) : null;
+            const cell = layout ? cellAt(layout, pos) : null;
+            if (dom && cell) focusTableCell(dom, cell.row, cell.col, 'end');
+            return;
+        }
+
+        if (!update.transactions.some(tr => tr.isUserEvent('input.type'))) return;
+        const insertionEnds = new Set<number>();
+        for (const tr of update.transactions) {
+            tr.changes.iterChanges((_fromA, _toA, _fromB, toB) => { insertionEnds.add(toB); });
+        }
+        for (const table of tables) {
+            if (pos !== table.to || !insertionEnds.has(table.to)) continue;
+            const dom = tableDomAt(view, table.from);
+            const layout = dom ? parseTableLayout(view.state.doc, table.from) : null;
+            const lastRow = layout?.rows[layout.rows.length - 1];
+            // ...and only once that row is FINISHED. The pattern's body group is
+            // `(?:^\|.+\|[ \t]*\n?)+`, so a body row matches as soon as it has
+            // ONE cell: typing `| a | b |` ⏎ `| --- | --- |` ⏎ `| c | d |` makes
+            // a table at the `|` after `c`, two keystrokes early. Adopting there
+            // pulled the caret into the empty last cell, and the user's own
+            // closing `|` was then a keystroke INSIDE a cell — correctly escaped
+            // (criterion 8) and written to the file as `| c | d \| |`. Measured,
+            // 4/4. A row whose segments have not reached the header's column
+            // count is still being typed, so the caret is left in the document
+            // and adoption waits for the keystroke that really does finish it —
+            // which is exactly what "the moment the third line completes" means.
+            if (dom && layout && lastRow && lastRow.cells.length >= layout.columns) {
+                focusTableCell(dom, layout.rows.length - 1, layout.columns - 1, 'end');
+            }
+            return;
+        }
+    });
 }
 
 // The CodeMirror EditorView is created once and caches this decoration logic, so

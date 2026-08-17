@@ -46,6 +46,11 @@ interface EditorPaneProps {
     /** Start annotating a plain PDF: creates "<name> (annotated).pdf" and opens it. */
     onAnnotatePdf: (file: ActiveFile) => void;
     onOpenNote: OpenNoteByNameHandler;
+    /** Say something to the reader in the app's own dialog — App's `tell`,
+     *  threaded down to the panes because a right-click menu row that cannot
+     *  reach the clipboard has to say so. Stable, or DocumentPane's memo (and
+     *  with it every pane's) stops holding. */
+    onNotify: (message: string) => void;
     graph: GraphData;
     onOpenNode: OpenNodeHandler;
     /** One-shot select+scroll order from vault search (null = nothing pending). */
@@ -173,7 +178,7 @@ interface PaneResize {
  * confirmation, and the PDF panes, which are deliberately NOT inside a pane so
  * they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onOpenNote, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onOpenNote, onNotify, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const group = activeGroupOf(layout);
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
@@ -695,6 +700,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         onSplitOffPane={onSplitOffPane}
                         onOpenNote={onOpenNote}
                         onImageDelete={handleImageDelete}
+                        onNotify={onNotify}
                         revealRequest={revealRequest}
                         onRevealHandled={onRevealHandled}
                     />

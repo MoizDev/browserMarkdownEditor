@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { useFileSystem } from './context/FileSystemContext';
 import { HELP_DOC_CONTENT } from './utils/helpDoc';
 import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache } from './utils/graph';
@@ -29,6 +29,8 @@ import {
 } from './utils/tabGroups';
 import { clampTabSize } from './editor/lists';
 import { retryMissingAssets } from './editor/imageWidget';
+import { setTableNotify } from './editor/tableEdit';
+import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/contextMenu';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
 // (~1.3MB) into the main bundle, which a markdown-only session never needs.
 // The builder itself is import()ed at the two points that actually write a PDF.
@@ -36,6 +38,7 @@ import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils
 import './index.css';
 import FileExplorer from './components/FileExplorer';
 import ConfirmDialog from './components/ConfirmDialog';
+import ContextMenu from './components/ContextMenu';
 import EditorPane from './components/EditorPane';
 import SettingsPanel from './components/SettingsPanel';
 import GraphView from './components/GraphView';
@@ -135,6 +138,29 @@ interface AppDialog extends DialogRequest {
   onConfirm: () => void;
   /** Absent on a notice, which has nothing to decline. */
   onCancel?: () => void;
+}
+
+/**
+ * Is `name` already used inside `dir`, by anything at all?
+ *
+ * BOTH KINDS of entry count as taken, whichever kind is about to be written: a
+ * file and a folder cannot share a name, and asking only about files once
+ * reported a name free while a folder of it sat there. That is the rule
+ * `freeEntryName` already documents (FileSystemContext.tsx:21-25); this is the
+ * same rule at the one entry point that cannot go through it.
+ *
+ * It matters here because `createFile` OPENS-OR-TRUNCATES (:425-434). Without
+ * this check a "New note" onto an existing name empties that file — no
+ * warning, no undo, and the tree looks exactly as it did a moment before. The
+ * guard is at this entry point rather than in the primitive deliberately:
+ * routing `createFile` through `freeEntryName` would quietly create
+ * "note (1).md" while the caller went on to open the name it asked for, and
+ * the other caller (the annotated-PDF path) wants create-or-open.
+ */
+async function nameTaken(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
+  try { await dir.getFileHandle(name); return true; } catch { /* not a file */ }
+  try { await dir.getDirectoryHandle(name); return true; } catch { /* nor a folder */ }
+  return false;
 }
 
 function sameGraph(a: GraphData, b: GraphData): boolean {
@@ -398,6 +424,34 @@ export default function App() {
   const tell = useCallback((notice: DialogRequest) => new Promise<void>(resolve => {
     setDialog({ ...notice, onConfirm: () => { setDialog(null); resolve(); } });
   }), []);
+
+  // ── The app's own right-click menu ──────────────────────────────────────
+  // One menu is on screen at a time, and every raiser — the editor, a table
+  // cell, a file tree row — asks for it through the module store rather than
+  // through a prop. See utils/contextMenu.ts: a CodeMirror widget's handlers
+  // know nothing about React and outlive the pane that built them, and the
+  // file tree is memoized specifically so it stops re-rendering while the user
+  // types. Reading the store here is the whole of App's involvement.
+  const contextMenu = useSyncExternalStore(subscribeContextMenu, getContextMenu);
+
+  // A menu's rows close over a view — a CodeMirror view, a tree row — and both
+  // of those go away when the workspace switches out from under them. Leaving
+  // the menu on screen would leave rows that act on something unmounted.
+  useEffect(() => { closeContextMenu(); }, [mainView, rootHandle]);
+
+  /** Say something went wrong, in the app's own dialog. One button, because
+   *  there is nothing to decide. STABLE — it is handed to EditorPane and on to
+   *  every memoized DocumentPane, which must not re-render per keystroke. */
+  const notify = useCallback((message: string) => {
+    void tell({ title: 'Could not continue', confirmLabel: 'OK', body: message });
+  }, [tell]);
+
+  // The same voice, given to the editor subsystem: a refused clipboard read
+  // inside a table cell is the only thing that uses it today. ONE call, at the
+  // top level, into a module-level setter — src/editor/ must not learn about
+  // React, and what it holds has to stay valid for the app's life, because the
+  // handler that eventually calls it was baked into a widget several panes ago.
+  useEffect(() => { setTableNotify(notify); }, [notify]);
 
   // Expanded folder paths (persisted via localStorage)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
@@ -1149,7 +1203,20 @@ export default function App() {
   }, []);
 
   const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath = '') => {
+    const where = parentPath || parentHandle?.name || 'this folder';
     try {
+      // Nothing here overwrites a file by accident — the rule the rest of the
+      // app keeps with freeEntryName, kept here with a refusal instead,
+      // because the user named this file and silently getting "note (1).md"
+      // is not what they asked for either.
+      if (parentHandle && await nameTaken(parentHandle, name)) {
+        await tell({
+          title: 'That name is taken',
+          confirmLabel: 'OK',
+          body: <><strong>{name}</strong> already exists in <code>{where}</code>. Nothing was created — pick another name, or open the one that is there.</>,
+        });
+        return;
+      }
       const newFileHandle = await createFile(parentHandle!, name);
       // Auto-open the newly created file straight into edit mode. Build the path
       // to match buildFileTree's convention (vault-root-relative, no vault-name
@@ -1167,17 +1234,41 @@ export default function App() {
         setTabs(prev => prev.map(t => t.file.path === newPath ? { ...t, mode: 'edit' } : t));
       }
     } catch (err) {
+      // Said out loud, not only logged: from the sidebar a create that failed
+      // is indistinguishable from one that worked and left the tree alone.
       console.error('Failed to create file:', err);
+      await tell({
+        title: 'Could not create the note',
+        confirmLabel: 'OK',
+        body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
+      });
     }
-  }, [createFile, handleFileClick]);
+  }, [createFile, handleFileClick, tell]);
 
   const handleCreateFolder = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string) => {
+    const where = parentHandle?.name || 'this folder';
     try {
+      // createFolder is create-or-open like createFile, so an existing folder
+      // would silently be "created" and the reader would be looking at
+      // somebody else's notes inside it.
+      if (parentHandle && await nameTaken(parentHandle, name)) {
+        await tell({
+          title: 'That name is taken',
+          confirmLabel: 'OK',
+          body: <><strong>{name}</strong> already exists in <code>{where}</code>. Nothing was created.</>,
+        });
+        return;
+      }
       await createFolder(parentHandle!, name);
     } catch (err) {
       console.error('Failed to create folder:', err);
+      await tell({
+        title: 'Could not create the folder',
+        confirmLabel: 'OK',
+        body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
+      });
     }
-  }, [createFolder]);
+  }, [createFolder, tell]);
 
   /**
    * Move a file — or a whole folder, contents and all — to the Trash.
@@ -1640,6 +1731,7 @@ export default function App() {
             onFlushNow={flushTabNow}
             onAnnotatePdf={handleAnnotatePdf}
             onOpenNote={openNoteByName}
+            onNotify={notify}
             graph={graph}
             onOpenNode={handleOpenNode}
             revealRequest={pendingReveal}
@@ -1677,6 +1769,9 @@ export default function App() {
           onClose={() => setShowSettings(false)}
         />
       )}
+      {/* Before the dialog, so ConfirmDialog still covers it: a menu row can
+          raise a question (Move to Trash), and the menu closes first anyway. */}
+      {contextMenu && <ContextMenu request={contextMenu} onClose={closeContextMenu} />}
       {/* Last, so it sits over the settings panel as well as the workspace —
           and outside the editor, because the questions it asks are the file
           tree's (which is visible in the graph view too). */}

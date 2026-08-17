@@ -470,6 +470,27 @@ body {
   outline-offset: -1px;
 }
 
+/* "The right-click menu open right now belongs to this row." The pointer has
+   usually left the row by the time the menu is up, so the hover tint has gone
+   and nothing else would say which row the menu's Rename and Move to Trash are
+   about.
+
+   Deliberately the HOVER tint and not is-active's: is-active means "this is the
+   file you have open", it is drawn on exactly one row, and borrowing it here
+   would make it lie about which file the editor is showing. This is the same
+   tint the row would be wearing if the pointer had stayed on it — which is
+   precisely the statement being made.
+
+   ABOVE is-active, and the order is the whole of the interaction between them:
+   the two are equally specific, so whichever comes second wins, and the open
+   file right-clicked must keep looking open rather than being demoted to the
+   weaker tint for as long as its menu is up. Nothing is lost — a row wearing
+   is-active is already the one row the eye is on. */
+.tree-item.is-context-target {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
 .tree-item.is-active {
   background: var(--background-modifier-active);
   color: var(--text-normal);
@@ -2047,9 +2068,23 @@ body.is-resizing-panes * {
 /* ── Table Widget ──
    Column widths and, when the columns can't all be satisfied, the table's own
    type size are computed from measured content by editor/tableFit.ts. Three
-   things here are load-bearing for that. */
+   things here are load-bearing for that.
+
+   A rendered table is also an OBJECT the reader edits in place (editor/
+   tableWidget.ts + tableEdit.ts): its cells are contenteditable islands and it
+   carries two corner chips of its own. That adds two structural requirements,
+   both below and both measured. */
 .cm-table-widget {
   margin: 8px 0;
+
+  /* The containing block for the corner chips, and it has to be said
+     explicitly: `contain: inline-size` below is SIZE containment only, and
+     unlike `layout`/`paint`/`strict` it does not establish one. Measured
+     without this: a chip positioned `top: 2px` inside the widget escaped to
+     .cm-content and landed at y=151 instead of y=91 — over the paragraph two
+     lines further down. Adding it costs the fit nothing, because `position`
+     does not alter inline size. */
+  position: relative;
   /* The table's own intrinsic width must never reach the editor. Restoring
      `overflow-wrap: normal` above gives the table a real min-content again,
      and while it is still browser-laid-out that min-content propagates up and
@@ -2060,16 +2095,6 @@ body.is-resizing-panes * {
      and one fit is enough. */
   contain: inline-size;
 
-  /* For the frames the fitter hasn't sized yet. A fitted table is pinned to
-     exactly the text width and cannot overflow, but before the first fit — and
-     on the paths where the fitter bails, such as a pane that measures zero —
-     the table is laid out by the browser at `width: 100%`, and an auto table
-     cannot go below its min-content. This is what scrolls it instead of
-     letting it run past the edge of the note. It does NOT rescue oversized
-     content inside a fitted cell: fixed column widths mean such content
-     overflows the cell while the table itself still measures 100%, so there is
-     nothing to scroll — hence the cap on replaced elements below. */
-  overflow-x: auto;
   /* CodeMirror's line wrapping puts `white-space: break-spaces;
      word-break: break-word; overflow-wrap: anywhere` on .cm-content, and table
      cells INHERIT all three. `anywhere` doesn't merely allow a mid-word break,
@@ -2080,6 +2105,30 @@ body.is-resizing-panes * {
   white-space: normal;
   overflow-wrap: normal;
   word-break: normal;
+}
+
+/* The box the table is actually laid out inside, sitting between the widget
+   and the <table>.
+
+   It exists so the overflow lives somewhere OTHER than the widget. An overflow
+   container clips in both axes — `overflow-x: auto` computes `overflow-y` to
+   `auto` too — so with this on the widget the corner chips were cut off along
+   the top and bottom edges, and a chip nudged outwards made the widget itself
+   scrollable rather than showing the chip. Same behaviour as before for the
+   table, one element further in.
+
+   What it is for is unchanged, and is only ever needed for the frames the
+   fitter hasn't sized yet: a fitted table is pinned to exactly the text width
+   and cannot overflow, but before the first fit — and on the paths where the
+   fitter bails, such as a pane that measures zero — the table is laid out by
+   the browser at `width: 100%`, and an auto table cannot go below its
+   min-content. This is what scrolls it instead of letting it run past the edge
+   of the note. It does NOT rescue oversized content inside a fitted cell: fixed
+   column widths mean such content overflows the cell while the table itself
+   still measures 100%, so there is nothing to scroll — hence the cap on
+   replaced elements below. */
+.cm-table-scroll {
+  overflow-x: auto;
 }
 
 /* An unparseable table falls back to showing its source; keep its lines. */
@@ -2143,6 +2192,67 @@ body.is-resizing-panes * {
   background: var(--background-primary-alt);
 }
 
+/* The delimiter row's colons, honoured. Written with the element selector in
+   front on purpose: the `text-align: left` these have to beat is the
+   `.cm-table-widget th, .cm-table-widget td` rule above, specificity (0,1,1),
+   so a bare `.cm-table-align-center` at (0,1,0) would lose to it and a table
+   whose file says `---:` would go on rendering left-aligned. As written these
+   are (0,2,1) and win. Left needs no class of its own; it is what the rule
+   above already says. */
+.cm-table-widget th.cm-table-align-center,
+.cm-table-widget td.cm-table-align-center {
+  text-align: center;
+}
+
+.cm-table-widget th.cm-table-align-right,
+.cm-table-widget td.cm-table-align-right {
+  text-align: right;
+}
+
+/* ── A cell is an editable island ──
+   Each <th>/<td> is contenteditable="plaintext-only" in edit mode, so the
+   pointer must say "text" over one, and the browser's own focus ring must not
+   be what marks the cell being typed in — the ring below is. */
+.cm-table-widget .cm-table-cell[contenteditable] {
+  cursor: text;
+  outline: none;
+}
+
+/* The cell the caret is in. Scoped through the same [contenteditable] selector
+   as the reset above rather than written as a bare class: at (0,1,0) it would
+   lose to that reset, which is (0,3,0) — two classes and an attribute —
+   `outline: none` would win, and the one piece of feedback saying which cell is
+   live would never be drawn. As written this is (0,4,0).
+
+   NO caret-color here, deliberately. drawSelection()'s hideNativeSelection
+   theme hides the native caret across .cm-content and then restores
+   `caret-color: initial` for any focused element inside it, at Prec.highest
+   (@codemirror/view:9428-9442) — which is exactly this cell. Setting one here
+   would be fighting that rule for the same pixels; the app's caret settings
+   (line/block, thickness, glide) deliberately do not reach inside a widget,
+   because .cm-cursor is drawn from document positions and a cell has none.
+
+   overflow-wrap: break-word so a long unbroken word typed into a fixed-width
+   column wraps inside its cell instead of painting across its neighbour — the
+   fitter's own last-resort rule, applied to the cell being written into. */
+.cm-table-widget .cm-table-cell[contenteditable].cm-table-cell-editing {
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+  overflow-wrap: break-word;
+}
+
+/* The whole table is the document's selection — what a Backspace beside it, or
+   an arrow key stepping onto its edge, produces. The ring hangs off the
+   WIDGET'S OWN class and not off .cm-image-selection, which is set on the
+   editor root: scoped to the root, a note with two tables would outline both
+   while the next keystroke deleted only one. (.cm-image-selection is still set
+   for a selected table — that is what turns the text-selection band and the
+   caret off, and both are wanted here exactly as they are for a picture.) */
+.cm-table-widget.cm-table-selected table {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
 .cm-table-widget code {
   font-family: var(--font-monospace);
   font-size: 0.9em;
@@ -2151,6 +2261,127 @@ body.is-resizing-panes * {
   padding: 0.07em 0.28em;
   border-radius: 3px;
   background: var(--background-modifier-active);
+}
+
+/* ── The table's corner chips ──
+   Append a column (top right) and append a row (bottom left), in the shape
+   Google Docs uses. They are a layer over the table rather than anything in
+   its flow, so they cost the document no layout and cannot move the text
+   around them — and, crucially, cannot move a probe: the fitter's two sensors
+   are direct children of the widget and its inputs, so anything the chips did
+   to the flow would feed straight back into the fit.
+
+   Shown on hover, and while the caret is in one of this table's cells —
+   `:focus-within` on the widget is what covers the keyboard route, where there
+   is no pointer to hover with. Only ever drawn when the table is editable
+   (tableWidget builds the layer only when `canEdit`), so nothing here needs a
+   read-mode guard of its own. */
+.cm-table-controls {
+  position: absolute;
+  inset: 0;
+  /* The layer spans the whole table; only its buttons should take clicks. */
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.cm-table-widget:hover .cm-table-controls,
+.cm-table-widget:focus-within .cm-table-controls {
+  opacity: 1;
+}
+
+/* Sized in em, not px, the way everything else inside this widget is — so the
+   chips follow the note's own type, which the Settings font-size slider moves.
+   Note the exact limit of that, because the comment on the cell padding above
+   promises something slightly different: the fitter shrinks a too-wide table by
+   writing a font-size onto the <table> element (tableFit.ts:512), and these two
+   sit outside it, in the widget. They therefore track the READER's type size and
+   not the fitter's shrink. That is the right way round — a chip is chrome the
+   reader reaches for, not part of the table's content — but it does mean a
+   heavily shrunk table wears chips a little larger, relative to its rows, than
+   an unshrunk one.
+
+   Themed rather than the image widget's dark-glass chip. That one is
+   deliberately theme-independent because it floats over arbitrary picture
+   content; this one floats over the note's own background, where dark glass
+   reads as foreign in the light theme.
+
+   The fill is --background-primary-alt, with a light-theme override for the
+   reason the vault menu and the context menu carry one: a raised thing has to
+   read as brighter than what it covers, and in the light theme
+   --background-primary-alt IS the table's own header tint (#f2f3f5, the value
+   --background-secondary also has). These two chips are the only part of this
+   widget's chrome that sits ON the table rather than beside it, so they are the
+   one place that collapse actually happens. The border and the small shadow are
+   what keep the circle readable in the one case a single fill cannot cover —
+   the dark theme's even body rows, which are --background-primary-alt too.
+
+   THE FILL IS CARRIED BY A CUSTOM PROPERTY, and that is not decoration.
+   `:root[data-theme="light"] .cm-table-control` is specificity (0,3,0) and
+   `.cm-table-control:hover` is only (0,2,0) — so a theme override that set
+   `background` directly would beat the hover state, which sets `background` AND
+   `color`. Measured, before this was a variable: in the light theme hovering the
+   chip left it white (the override's fill) while the ink moved to
+   --text-on-accent, i.e. #fff on #fff — the `+` vanished under the pointer at
+   the exact moment the reader was about to click it, in the one theme where the
+   two happen to be the same colour. Setting a custom property instead means the
+   override contributes no `background` declaration at all, so the state rules
+   below win by ordinary source order and the trap cannot come back.
+
+   The `+` is drawn here because the button carries none: it has a title and an
+   aria-label and no text, so a glyph in the markup would have to be hidden from
+   assistive tech anyway. */
+.cm-table-control {
+  --table-chip-bg: var(--background-primary-alt);
+  --table-chip-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4em;
+  height: 1.4em;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 50%;
+  background: var(--table-chip-bg);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 0.85em;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--table-chip-shadow);
+  /* Re-enables what the layer disabled. */
+  pointer-events: auto;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+:root[data-theme="light"] .cm-table-control {
+  --table-chip-bg: var(--background-primary);
+  --table-chip-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+}
+
+.cm-table-control::before {
+  content: '+';
+}
+
+.cm-table-control:hover {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* BOTH chips sit fully inside the widget's box, never at a negative offset: a
+   child hanging outside made the widget scrollable, which is the same hazard
+   the scroller above exists to keep away from these two. */
+.cm-table-add-col {
+  top: 2px;
+  right: 2px;
+}
+
+.cm-table-add-row {
+  bottom: 2px;
+  left: 2px;
 }
 
 /* ── Inline Formatting ── */
@@ -2923,4 +3154,204 @@ li[aria-selected] .cm-completionMatchedText {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* =============================================================
+   The app's own right-click menu (components/ContextMenu.tsx)
+   ============================================================= */
+
+/* One menu is on screen at a time and every surface raises the same one — note
+   text, a table cell, a file tree row, the empty tree area. It hangs from a
+   POINT in the viewport rather than from a button, so unlike .vault-menu its
+   left/top are written inline by the component after it has measured itself
+   (flip at an edge, then clamp). Everything that is not those two numbers is
+   here.
+
+   z-index 900 is the established band for a dismissible popover, shared with
+   .vault-menu and .backlinks-popover. Both bounds matter here in a way they do
+   not for those two: it has to clear CodeMirror's own .cm-tooltip (500, set in
+   node_modules and not in this file — .editor-slot has no z-index, so that 500
+   competes directly with this ladder), and it has to stay under Settings (1000)
+   and ConfirmDialog (1100), because a menu row can raise a question and the
+   question must cover the menu that asked it.
+
+   max-height with a scroll rather than a taller box: the component clamps its
+   top edge to the viewport, so a menu taller than the window would otherwise
+   have rows below the bottom edge and no way to reach them. Its dismiss-on-
+   scroll listener already excludes scrolls that happen INSIDE the menu, which
+   is what makes scrolling here safe. */
+.context-menu {
+  position: fixed;
+  z-index: 900;
+  min-width: 200px;
+  max-width: 320px;
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+/* The same override .vault-menu carries, for the same reason and one surface
+   further: a raised sheet should read as brighter than what it covers, and in
+   the light theme --background-primary-alt IS the sidebar's colour (#f2f3f5,
+   the same value as --background-secondary). Raised over a tree row the menu
+   would be one flat sheet with the file list, told apart only by its 1px
+   border. Over the editor, which is white, it is the shadow that does the
+   work — which is why this override also keeps a shadow rather than dropping
+   to the border alone. */
+:root[data-theme="light"] .context-menu,
+:root[data-theme="light"] .context-menu-panel {
+  background: var(--background-primary);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+/* A row. Deliberately .vault-menu-item's shape — same padding, same radius,
+   same muted-until-hovered ink — because the two are the same kind of object
+   and a reader should not have to notice which one they are looking at. */
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--nav-item-size);
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu-item:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* The keyboard's own highlight — the arrow keys walk these rows, so it has to
+   match what the pointer does and then say, additionally, that the keyboard is
+   here. Inset outline, as everywhere else in this file. */
+.context-menu-item:focus-visible {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+/* A row that cannot act STAYS ON SCREEN and says why in its title (Cut with
+   nothing selected, Insert table… while reading). Faint ink and no hover, so
+   it reads as unavailable rather than broken — a menu that quietly grows and
+   shrinks makes the reader hunt for a row that is simply not applicable now. */
+.context-menu-item:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+/* Delete table, Move to Trash. The same red the failed-image notice uses, so
+   the app has one colour for "this destroys something". Only at rest and on
+   hover — a disabled danger row is still just unavailable. */
+.context-menu-item.is-danger:not(:disabled) {
+  color: #e06c75;
+}
+
+.context-menu-item.is-danger:not(:disabled):hover,
+.context-menu-item.is-danger:not(:disabled):focus-visible {
+  background: rgba(224, 108, 117, 0.12);
+  color: #e06c75;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--background-modifier-border);
+}
+
+/* "This row opens something." Pushed to the right edge by the row's own flex,
+   and faint because it is a hint about the row rather than part of its name. */
+.context-menu-item-arrow {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* The flyout beside the menu — the table size picker lives in one. Chrome only:
+   the component positions it inline (position/left/top), because only it knows
+   the row the flyout hangs off. Anything positional here would be overridden
+   and would read as though it were doing something. */
+.context-menu-panel {
+  z-index: 900;
+  padding: 8px;
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+/* ── The matrix size picker ──
+   Sweep the pointer across it, watch the rectangle light up, click to commit —
+   the gesture everyone already knows from Google Docs and Word. The cells are
+   direct grid items of this box, which is why TableSizeGrid's role="row"
+   wrappers are `display: contents`: the ARIA tree needs the rows, the layout
+   must not see them.
+
+   The column count is NOT written here. It is `TABLE_GRID_COLS`
+   (DocumentPane.tsx), the same number that decides how many cells the component
+   renders, and TableSizeGrid hands it over as `--table-grid-cols` on this
+   element. Written as a literal in both places they would agree only until
+   somebody changed one, and the failure is silent — the cells keep rendering
+   and the rows simply wrap at the wrong column. The `10` below is a fallback
+   for a grid rendered without the variable, not a second source of truth. */
+.table-size-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--table-grid-cols, 10), 16px);
+  gap: 2px;
+}
+
+.table-size-cell {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 2px;
+  background: var(--background-primary);
+  cursor: pointer;
+}
+
+/* The rectangle the click would create. Filled with the accent rather than
+   merely outlined: the whole picker is read at a glance, as a shape. */
+.table-size-cell.is-on {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+
+/* Keyboard only — the pointer already says where it is by being there. Drawn
+   OUTSIDE the cell (a 16px box has no room for an inset ring) and lifted above
+   its neighbours so the ring is not clipped by the next cell's border. */
+.table-size-cell:focus-visible {
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: 1px;
+  position: relative;
+  z-index: 1;
+}
+
+/* "4 × 3" under the grid: the same count the lit rectangle shows, for the
+   reader who is counting cells and for the screen reader that cannot see them
+   at all (the element is aria-live). */
+.table-size-label {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: var(--nav-item-size);
+  text-align: center;
+}
+
+.table-size-hint {
+  margin-top: 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-align: center;
 }

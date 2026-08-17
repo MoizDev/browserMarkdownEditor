@@ -47,6 +47,8 @@ Use the "New File" and "New Folder" icons at the top of the sidebar. When creati
 - If you have a file or folder selected, it will be created in the same directory as that selection.
 - New files will automatically open and place you in **Edit Mode**.
 
+To create something *inside* a particular folder, right-click that folder (or use the small icons that appear on its row) and choose **New note** or **New folder**. Either way you type the name into a small input row inside the folder itself, and a name that folder already uses is refused rather than overwriting what is there. See **Right-click** below.
+
 ---
 
 ## 3. Tabs and Split View
@@ -93,11 +95,31 @@ The application features two distinct viewing modes:
 ### Live Preview
 Even in Edit Mode, the editor uses a "Live Preview" system. Markdown syntax (like bold asterisks or heading hashes) is hidden on lines you are not actively editing. When your cursor moves to a line, the raw syntax is revealed so you can modify it.
 
+Two things are deliberately never revealed that way, because they are objects rather than text: an **embedded image** and a **table**. Putting the cursor on either one does not turn it back into markdown for you to retype — you work on the thing itself, and the file goes on holding ordinary Markdown. See *Working With an Image* and *Tables*.
+
 ### Auto-Save
 You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
 
 ### Scroll Persistence
 When you scroll down a long document, the application remembers your position. If you switch to another file and then come back, the editor will automatically snap back down to exactly where you left off.
+
+### Right-click
+Right-clicking in a note, or anywhere in the file tree, opens the application's own menu instead of the browser's. Escape closes it, and so does clicking somewhere else or scrolling.
+
+**In a note** the menu offers **Cut**, **Copy**, **Paste**, **Select all** and **Insert table…**. A row that cannot do anything just now stays on the menu and says why when you hover it — Cut with nothing selected, or anything that writes while you are in Read Mode (\`Cmd + E\` / \`Ctrl + E\` switches out of it). Right-clicking *outside* your selection moves the cursor there first, so **Insert table…** lands where you aimed; right-clicking *inside* a selection leaves it alone, so **Copy** means what it looks like.
+
+**Paste** is the one row that can refuse. Browsers guard reading the clipboard, and by the time you click a menu row the right-click that opened it no longer counts as your permission — so the browser may say no. The application tells you when that happens: \`Cmd + V\` / \`Ctrl + V\` always works and needs no permission at all. Inside a table cell, \`Cmd + X\` / \`Cmd + C\` / \`Cmd + V\` are the browser's own and never refuse either.
+
+**In a table cell** the menu is the table's own — rows, columns, and the cell's own clipboard. See *Tables*.
+
+**In the file tree**:
+- On a **file**: *Rename*, and *Move to Trash*.
+- On a **folder**: *New note*, *New folder*, *Rename*, and *Move to Trash*. New note and New folder open a small input row inside that folder, and open the folder so you can see what lands in it.
+- On the **empty space** below the tree: *New note* and *New folder*, at the vault root.
+- *Move to Trash* asks first and names where the item is going, exactly as the row's own trash button does.
+- A row you are in the middle of renaming keeps the browser's menu, because what you want there is its Paste.
+
+A **drawing** keeps tldraw's own menu and a **PDF** keeps the browser's, since both of those already have menus that fit what they are.
 
 ---
 
@@ -187,6 +209,29 @@ function helloWorld() {
 | ----------- | ----------- |
 | Header | Title |
 | Paragraph | Text |
+
+A table stays a table. Click a cell and type in it; arrow up into it from the line below and the cursor lands in a cell. It never turns back into markdown under your hands. What the file holds is still the ordinary pipe-and-dash table above — the grid is simply an easier way to work on it, exactly as an embedded picture is an easier way to work on \`![[picture.png]]\`.
+
+Getting around, and editing:
+- **Tab** and **Shift + Tab** step to the next and previous cell, wrapping onto the next row; from the very last cell, Tab adds a row and lands in it. **Enter** moves down a row, and from the last row it adds one too. **Escape** leaves the table, with the cursor just after it.
+- **Shift + Enter** breaks a line inside a cell. It writes \`<br>\`, which is the only way Markdown has of doing that.
+- The two small **+** buttons at the corners — top right and bottom left — add a column and a row. They appear while the pointer is over the table, or while you are typing in it.
+- **Right-click a cell** for everything else: *Cut*, *Copy* and *Paste* within that cell, *Insert row above* / *below*, *Insert column left* / *right*, *Delete row*, *Delete column*, *Delete table*. None of them asks you to confirm, because a single \`Cmd + Z\` / \`Ctrl + Z\` undoes any of them.
+- The cell you are in shows its **raw text**, just as the file has it: a cell holding \`**bold**\` shows the asterisks while you are in it and the bold word again once you leave. That is the same thing the editor does when you put the cursor on a bold word anywhere else.
+- \`Cmd + B\` and \`Cmd + I\` do not reach inside a cell. Type \`**bold**\` and \`*italic*\` there yourself.
+- A pipe inside a cell is written \`\\|\`, and the editor writes that for you — type a \`|\` into a cell and the file gets \`\\|\`, so the row keeps the number of columns you can see.
+- The colons in the second row are honoured: \`| :--- |\` is left-aligned, \`| :---: |\` centred, \`| ---: |\` right-aligned. Editing a cell never disturbs them.
+- Nothing you did not edit is rewritten. Change one cell and every other row comes back byte for byte, spacing included — a table you have lined up by hand stays lined up.
+
+To make a new one, right-click in a note and choose **Insert table…**, then sweep across the grid to the size you want and click (the first row is the header, so the smallest table is two rows). Or just start typing one: the moment the header row, the \`| --- |\` row and one body row are all there it renders, and you carry on typing in the last cell. Pasting a Markdown table in does the same.
+
+A table written inside a code fence stays as text — it is being quoted, not tabulated:
+
+\`\`\`markdown
+| Syntax | Description |
+| ------ | ----------- |
+| Header | Title |
+\`\`\`
 
 ---
 

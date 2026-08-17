@@ -238,6 +238,83 @@ export function observeTableFit(fit: TableFit): void {
     observer.observe(fit.fontProbe);
 }
 
+/**
+ * Point a tracked table's memo key at its new source, and nothing else.
+ *
+ * A cell write-back changes the source on every keystroke, so the fit cache
+ * would otherwise be looking up a key the table no longer has — and the entry
+ * it wrote a moment ago would accumulate one per character. It must NOT re-fit:
+ * the columns moving under the user's hands mid-word is exactly the thing the
+ * fitter's own "a content change alone never re-fits" rule already promises.
+ */
+export function rekeyTableFit(container: Element, key: string): void {
+    const fit = tracked.get(container);
+    if (fit) fit.key = key;
+}
+
+/* Retunes waiting for the next animation frame, coalesced per table — the same
+   "one fit per table however many notifications" shape the observer uses. */
+const retunePending = new Set<TableFit>();
+let retuneFrame = 0;
+
+/**
+ * A table's SHAPE changed — a row or a column was added or removed, or ⌘E
+ * flipped the mode — so the remembered fit is re-applied at once and a real
+ * re-measure is scheduled for the next frame.
+ *
+ * Two things about this are load-bearing.
+ *
+ * `fitted` is reset. `firstFitOfThisWidget` is what licenses the height-map
+ * re-state at the end of applyFit, and a row or column change is precisely the
+ * case that reliably changes the table's height — the one CodeMirror has
+ * already measured. Leaving `fitted` true would skip the re-state and strand
+ * the caret, which is the bug that whole block exists to prevent.
+ *
+ * And applyFit is DEFERRED rather than called here. Every caller of this
+ * function runs inside a CodeMirror update — updateDOM is reached from
+ * findWidget inside DocView.update — where EditorView.update throws
+ * ("Calls to EditorView.update are not allowed while an update is in
+ * progress", @codemirror/view:7810, measured). applyFit's tail dispatches
+ * whenever the height changed and this is the widget's first fit, which the
+ * reset above makes true again. So a synchronous re-fit would throw out of the
+ * middle of CodeMirror's update on the first "add column". restoreFit is style
+ * writes only and is safe to run here, which is what keeps the one-frame gap
+ * from being visible on a table that has been fitted at this width before.
+ */
+export function retuneTableFit(
+    container: Element,
+    key: string,
+    next?: { table: HTMLTableElement; cols: HTMLTableColElement[] },
+): void {
+    const fit = tracked.get(container);
+    if (!fit) return;
+    fit.key = key;
+    if (next) {
+        fit.table = next.table;
+        fit.cols = next.cols;
+    }
+    fit.lastAvail = -1;
+    fit.lastFont = -1;
+    fit.lastBreaks = '';
+    fit.fitted = false;
+    restoreFit(fit);
+
+    retunePending.add(fit);
+    if (retuneFrame) return;
+    retuneFrame = requestAnimationFrame(() => {
+        retuneFrame = 0;
+        const due = [...retunePending];
+        retunePending.clear();
+        for (const pending of due) {
+            // The widget may have been destroyed, or its element handed to
+            // another table, in the frame we waited.
+            if (!pending.container.isConnected) continue;
+            if (tracked.get(pending.container) !== pending) continue;
+            applyFit(pending);
+        }
+    });
+}
+
 /** Stop tracking a table (called from the widget's destroy). */
 export function releaseTableFit(container: Element): void {
     const fit = tracked.get(container);

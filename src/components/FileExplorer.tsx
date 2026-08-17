@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import TreeNode from './TreeNode';
 import { takeDraggedNode } from '../utils/treeDrag';
 import { isTabDrag } from '../utils/tabDrag';
+import { openContextMenu } from '../utils/contextMenu';
+import type { ContextMenuEntry } from '../utils/contextMenu';
 import SearchPanel from './SearchPanel';
 import VaultMenu from './VaultMenu';
 import { FilePlus, FolderPlus, FolderOpen, Search, PenTool, PanelLeft } from './icons';
@@ -188,18 +190,49 @@ function FileExplorer({
         setCreatingInRoot(null);
     };
 
-    // Stable identities: these are passed to every TreeNode, so an inline arrow
-    // here would give each row a fresh prop on every explorer render and defeat
-    // TreeNode's memo entirely.
-    const promptCreateFile = useCallback((handle: FileSystemDirectoryHandle, path: string) => {
-        const name = prompt('Enter file name (e.g. "note.md"):');
-        if (name) onCreateFile(handle, name, path);
-    }, [onCreateFile]);
-
-    const promptCreateFolder = useCallback((handle: FileSystemDirectoryHandle) => {
-        const name = prompt('Enter folder name:');
-        if (name) onCreateFolder(handle, name);
-    }, [onCreateFolder]);
+    /**
+     * The app's own menu for the empty tree area — the vault root.
+     *
+     * A right-click on a row raises that row's own menu and stops propagating,
+     * so in principle this never sees one. It checks anyway: either mechanism
+     * alone is one refactor away from silently raising two menus, and the cost
+     * of the check is a `closest` call on a right-click. Returning WITHOUT
+     * preventing is deliberate on that path — for a row we want the row's menu,
+     * and for the inline input row (which also carries `.tree-item`) we want the
+     * browser's own, because a text field wants its native Paste.
+     *
+     * `openContextMenu` is imported rather than passed in, so FileExplorerProps
+     * — every entry of which is referentially stable across a keystroke — is
+     * untouched and the memo below still holds.
+     */
+    const handleRootContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+        if ((e.target as HTMLElement).closest('.tree-item')) return;
+        e.preventDefault();
+        const container = e.currentTarget;
+        // Present-and-disabled with the reason stated, never absent: a row that
+        // does nothing and says nothing is indistinguishable from a broken one
+        // (VaultMenu.messageFor states the rule for the vault list).
+        const noVault = rootHandle ? undefined : 'Open a vault first';
+        const entries: ContextMenuEntry[] = [
+            {
+                kind: 'command', id: 'new-note', label: 'New note',
+                disabled: !rootHandle, reason: noVault,
+                run: () => startCreateInRoot('file'),
+            },
+            {
+                kind: 'command', id: 'new-folder', label: 'New folder',
+                disabled: !rootHandle, reason: noVault,
+                run: () => startCreateInRoot('folder'),
+            },
+        ];
+        openContextMenu({
+            x: e.clientX,
+            y: e.clientY,
+            entries,
+            label: 'Vault actions',
+            opener: container,
+        });
+    };
 
     // Root-level drop handlers — use a counter to reliably track enter/leave
     const dragCounterRef = useRef(0);
@@ -342,6 +375,7 @@ function FileExplorer({
                     onDragOver={handleRootDragOver}
                     onDragLeave={handleRootDragLeave}
                     onDrop={handleRootDrop}
+                    onContextMenu={handleRootContextMenu}
                 >
                     {creatingInRoot && (
                         <div className="tree-item tree-inline-input" style={{ paddingLeft: 12 }}>
@@ -365,8 +399,15 @@ function FileExplorer({
                             node={node}
                             activeFilePath={activeFilePath}
                             onFileClick={onFileClick}
-                            onCreateFile={promptCreateFile}
-                            onCreateFolder={promptCreateFolder}
+                            // Straight through — no wrapper. The two that used
+                            // to sit here each raised a window.prompt() for the
+                            // name; a folder row now opens the app's own inline
+                            // input instead and hands the name it collected to
+                            // these, which are already stable useCallbacks from
+                            // App (a fresh arrow here would defeat TreeNode's
+                            // memo for every row).
+                            onCreateFile={onCreateFile}
+                            onCreateFolder={onCreateFolder}
                             onTrash={onTrash}
                             expandedPaths={expandedPaths}
                             onToggleExpand={onToggleExpand}

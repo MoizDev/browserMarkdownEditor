@@ -16,8 +16,12 @@ import { wikiLinkAutocomplete } from '../editor/wikiLinkComplete';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import { mathEditingExtensions } from '../editor/latexSource';
 import { revealHighlightField, setRevealHighlight } from '../editor/revealHighlight';
+import { insertTableAtCursor } from '../editor/tableEdit';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readRecord, flushRecord } from '../utils/storage';
+import { openContextMenu } from '../utils/contextMenu';
+import type { ContextMenuEntry } from '../utils/contextMenu';
+import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
 import { isDrawingFile, isPdfFile } from '../utils/fileTypes';
 import { FileText, PenTool, PopOut, X } from './icons';
 import type { EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
@@ -93,6 +97,135 @@ function themeExtensions(theme: Theme) {
         : [obsidianDarkTheme, obsidianHighlightStyle];
 }
 
+/* ── The editor's own right-click menu ────────────────────────────────────
+   What Reading mode actually IS, said once so every row below agrees.
+
+   It is `EditorView.editable`, and nothing else: readOnlyCompartment (below)
+   holds `EditorView.editable.of(mode !== 'read')` despite its name, and
+   `EditorState.readOnly` is never set anywhere in this app. Two things follow,
+   and both bite if this is written as `state.readOnly` — the obvious reading.
+   That flag is always false, so Cut, Paste and Insert table… would all be
+   ENABLED while the reader is only reading; and `editable.of(false)` does not
+   block a programmatic `view.dispatch`, so the enabled Insert table… would
+   really insert a table into a document nobody was editing, with no visible
+   cause. `readOnly` is still tested, because it is the half of the predicate
+   that would matter the day anything does set it (the same test lists.ts:425
+   makes). */
+function isEditable(state: EditorState): boolean {
+    return !state.readOnly && state.facet(EditorView.editable);
+}
+
+const READ_MODE_REASON = 'Switch to editing with ⌘E';
+const NO_SELECTION_REASON = 'Nothing is selected';
+
+/** The size picker's extent — 10 columns by 8 rows, Google Docs' own shape. */
+const TABLE_GRID_COLS = 10;
+const TABLE_GRID_ROWS = 8;
+
+/**
+ * The rows of the menu a right-click in note text raises.
+ *
+ * Built fresh per click, so every disabled state is a snapshot of the moment
+ * the user asked. Disabled rows are PRESENT and carry their reason rather than
+ * being left out — a menu that quietly grows and shrinks makes the reader hunt
+ * for a row that is simply not applicable right now (the rule
+ * VaultMenu.messageFor states for the vault list).
+ *
+ * Every command re-reads the selection from the view when it RUNS rather than
+ * closing over the one measured here: the clipboard calls are async, and a
+ * position captured before an await is a position that may no longer describe
+ * anything.
+ */
+function editorMenuEntries(view: EditorView, notify: (message: string) => void): ContextMenuEntry[] {
+    const editable = isEditable(view.state);
+    const empty = view.state.selection.main.empty;
+
+    return [
+        {
+            kind: 'command',
+            id: 'cut',
+            label: 'Cut',
+            disabled: !editable || empty,
+            reason: !editable ? READ_MODE_REASON : empty ? NO_SELECTION_REASON : undefined,
+            run: async () => {
+                const range = view.state.selection.main;
+                if (range.empty) return;
+                // The text goes ONLY after the clipboard write resolves: a
+                // refused clipboard that had already deleted the selection
+                // would have destroyed it and put it nowhere.
+                if (!await copyText(view.state.sliceDoc(range.from, range.to))) {
+                    notify(CLIPBOARD_WRITE_BLOCKED);
+                    return;
+                }
+                const now = view.state.selection.main;
+                if (now.empty || !isEditable(view.state)) return;
+                view.dispatch({ changes: { from: now.from, to: now.to, insert: '' }, selection: { anchor: now.from } });
+                view.focus();
+            },
+        },
+        {
+            kind: 'command',
+            id: 'copy',
+            label: 'Copy',
+            // Copy is the one row that survives Reading mode — reading is
+            // exactly when quoting a passage is most likely.
+            disabled: empty,
+            reason: empty ? NO_SELECTION_REASON : undefined,
+            run: async () => {
+                const range = view.state.selection.main;
+                if (range.empty) return;
+                if (!await copyText(view.state.sliceDoc(range.from, range.to))) {
+                    notify(CLIPBOARD_WRITE_BLOCKED);
+                }
+            },
+        },
+        {
+            kind: 'command',
+            id: 'paste',
+            label: 'Paste',
+            disabled: !editable,
+            reason: !editable ? READ_MODE_REASON : undefined,
+            run: async () => {
+                // Chromium permission-gates a clipboard READ that is not
+                // driven by a live gesture, and by the time a menu row is
+                // clicked the right-click is spent — so a refusal here is
+                // ordinary, and saying so (naming the keystroke that always
+                // works) is the whole handling.
+                const read = await readClipboardText();
+                if (!read.ok) { notify(CLIPBOARD_READ_BLOCKED); return; }
+                if (!isEditable(view.state)) return;
+                const range = view.state.selection.main;
+                view.dispatch({
+                    changes: { from: range.from, to: range.to, insert: read.text },
+                    selection: { anchor: range.from + read.text.length },
+                    scrollIntoView: true,
+                });
+                view.focus();
+            },
+        },
+        {
+            kind: 'command',
+            id: 'select-all',
+            label: 'Select all',
+            run: () => {
+                view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+                view.focus();
+            },
+        },
+        { kind: 'separator', id: 'sep-insert' },
+        {
+            kind: 'grid',
+            id: 'insert-table',
+            label: 'Insert table…',
+            maxRows: TABLE_GRID_ROWS,
+            maxCols: TABLE_GRID_COLS,
+            disabled: !editable,
+            reason: !editable ? READ_MODE_REASON : undefined,
+            pick: (rows, cols) => { insertTableAtCursor(view, rows, cols); },
+        },
+    ];
+}
+
 /** A delete request, tagged with the document it was raised against — the
  *  confirmation is the app's (EditorPane's), and with several panes on screen
  *  it has to know which one asked. */
@@ -144,6 +277,12 @@ interface DocumentPaneProps {
     onSplitOffPane: (path: string) => void;
     onOpenNote: OpenNoteByNameHandler;
     onImageDelete: (request: PaneImageDelete) => void;
+    /** Say something to the reader — the app's own dialog, from App's `tell`.
+     *  A refused clipboard is the only thing that uses it today, and it is the
+     *  difference between a menu row that explains itself and a dead click.
+     *  Must be STABLE: this component is memoized so the tree of panes does
+     *  not re-render on every keystroke. */
+    onNotify: (message: string) => void;
     /** One-shot select+scroll order from vault search (null = nothing pending). */
     revealRequest: EditorRevealRequest | null;
     onRevealHandled: () => void;
@@ -184,6 +323,7 @@ function DocumentPane({
     onSplitOffPane,
     onOpenNote,
     onImageDelete,
+    onNotify,
     revealRequest,
     onRevealHandled,
 }: DocumentPaneProps) {
@@ -549,6 +689,78 @@ function DocumentPane({
                     <div
                         className="view-content"
                         ref={setEditorContainer}
+                        /* The app's own menu, in place of the browser's.
+                           WHERE this handler lives is the whole safety
+                           argument, and it is the reason it is not a document
+                           listener with an exclusion list: this element is
+                           rendered `{!isCanvas && …}`, DrawingPane is its
+                           sibling, EditorPane mounts every PdfPane outside the
+                           slot entirely, and GraphView replaces EditorPane. So
+                           tldraw's own menu, a PDF's and the graph's are
+                           excluded BY CONSTRUCTION — there is no closest()
+                           list here to drift out of step as surfaces are
+                           added. (Suppressing tldraw's menu would be a
+                           regression, not a feature.)
+
+                           An ordinary React prop, recreated per render, rather
+                           than EditorView.domEventHandlers: those are baked
+                           into the EditorState, which outlives the pane that
+                           built it — and CodeMirror's own event dispatch
+                           refuses events raised inside a widget, which is the
+                           one place a menu is most wanted. */
+                        onContextMenu={(e) => {
+                            const view = viewRef.current;
+                            if (!view) return;
+                            // A right-click inside a table widget raises the
+                            // TABLE menu and stops there (tableEdit's handler
+                            // is a native listener that stops propagation, so
+                            // it never reaches React's root), which means
+                            // anything arriving here is note text.
+                            e.preventDefault();
+                            // Right-clicking OUTSIDE the selection moves the
+                            // caret there first, the way every editor does, so
+                            // "Insert table…" lands where the user aimed.
+                            // Inside a selection, leave it alone so Copy means
+                            // what it looks like.
+                            //
+                            // The LOOSE overload, and that is load-bearing. The
+                            // precise one returns null whenever the block under
+                            // the pointer falls outside the rendered viewport
+                            // (@codemirror/view 6.39.15 :3766-3768), and
+                            // `viewport.to <= block.from` is true for exactly
+                            // one on-screen target: the document's LAST line
+                            // when it is empty, whose from === to === doc.length
+                            // === viewport.to. That is every note that ends in a
+                            // newline, and it is the line the reader aims at to
+                            // put a table at the end of a note. Measured: the
+                            // caret never moved, so "Insert table…" wrote its
+                            // table at the previous caret — the TOP of a
+                            // freshly-opened note, under the heading — and Paste
+                            // spliced the clipboard into the middle of the title
+                            // line. Interior blank lines all resolve either way;
+                            // the loose form differs from the precise one ONLY
+                            // in that branch, where it estimates instead of
+                            // giving up, and it returns doc.length here. The
+                            // null guard below stays regardless.
+                            const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+                            const sel = view.state.selection.main;
+                            if (pos !== null && (sel.empty || pos < sel.from || pos > sel.to)) {
+                                view.dispatch({ selection: { anchor: pos } });
+                            }
+                            openContextMenu({
+                                x: e.clientX,
+                                y: e.clientY,
+                                // "<noun> actions", the form every raiser uses
+                                // — the menu is announced as "Note actions
+                                // menu" wherever it was raised, rather than
+                                // this one alone reading out a file name. The
+                                // document is not in doubt: the reader's own
+                                // click is what opened it.
+                                label: 'Note actions',
+                                opener: document.activeElement as HTMLElement | null,
+                                entries: editorMenuEntries(view, onNotify),
+                            });
+                        }}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={async (e) => {
                             e.preventDefault();

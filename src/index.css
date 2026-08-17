@@ -2271,23 +2271,33 @@ body.is-resizing-panes * {
    are direct children of the widget and its inputs, so anything the chips did
    to the flow would feed straight back into the fit.
 
-   Shown on hover, and while the caret is in one of this table's cells —
-   `:focus-within` on the widget is what covers the keyboard route, where there
-   is no pointer to hover with. Only ever drawn when the table is editable
-   (tableWidget builds the layer only when `canEdit`), so nothing here needs a
-   read-mode guard of its own. */
+   EACH CHIP IS SUMMONED BY ITS OWN EDGE, and neither by the caret.
+   `.cm-table-near-right` / `.cm-table-near-bottom` are set by tableWidget's
+   pointer arithmetic (attachEdgeReveal) — the right edge draws the column chip,
+   the bottom edge the row chip — so the only thing that puts one on screen is a
+   reader already reaching for it. Two rules this replaced, both on purpose:
+
+   · `:focus-within` used to hold the layer up while the caret was in a cell,
+     and it FLICKERED once per character. Every write-back blurs the focused
+     cell to BODY and refocuses it synchronously (tableEdit's repairFocus, which
+     documents the same measurement from the other side), so the predicate went
+     false→true per keystroke on a transitioned property. Measured before this
+     change: typing ten characters with the pointer parked off the table drove
+     the layer 1 → 0 → 0.85 → 0 → … ten times, one full pulse per keystroke. It
+     bought nothing, either: the chips are `tabIndex: -1` and so were never
+     keyboard-reachable, and the keyboard route to a row or column is the cell's
+     own context menu.
+   · `:hover` on the whole widget used to draw BOTH chips whenever the pointer
+     was anywhere over the table — including the middle of it, where neither is
+     the thing being reached for.
+
+   Only ever drawn when the table is editable (tableWidget builds the layer only
+   when `canEdit`), so nothing here needs a read-mode guard of its own. */
 .cm-table-controls {
   position: absolute;
   inset: 0;
   /* The layer spans the whole table; only its buttons should take clicks. */
   pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-
-.cm-table-widget:hover .cm-table-controls,
-.cm-table-widget:focus-within .cm-table-controls {
-  opacity: 1;
 }
 
 /* Sized in em, not px, the way everything else inside this widget is — so the
@@ -2351,9 +2361,14 @@ body.is-resizing-panes * {
   line-height: 1;
   cursor: pointer;
   box-shadow: var(--table-chip-shadow);
-  /* Re-enables what the layer disabled. */
-  pointer-events: auto;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  /* Inert until its own edge summons it. `pointer-events` is half of that and
+     not decoration: `opacity: 0` still hit-tests, so a hidden chip would sit in
+     the corner of every editable table quietly taking the clicks — and showing
+     the `cursor: pointer` — that belong to the cell underneath it. The reveal
+     rule below is what turns a chip into a button, and it undoes both. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s, background 0.12s, color 0.12s, border-color 0.12s;
 }
 
 :root[data-theme="light"] .cm-table-control {
@@ -2382,6 +2397,17 @@ body.is-resizing-panes * {
 .cm-table-add-row {
   bottom: 2px;
   left: 2px;
+}
+
+/* Each edge summons its own chip and only its own; EDGE_BAND_PX in
+   tableWidget.ts is how near "near" is. Two-class specificity (0,2,0), which is
+   what beats the base rule's `opacity: 0` — and it sets neither `background`
+   nor `color`, so it does not collide with `.cm-table-control:hover` above at
+   the same weight. */
+.cm-table-near-right .cm-table-add-col,
+.cm-table-near-bottom .cm-table-add-row {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* ── Inline Formatting ── */

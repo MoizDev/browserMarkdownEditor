@@ -218,8 +218,10 @@ export function restoreRenderedCell(dom: HTMLElement, cell: HTMLElement): void {
 /** The two corner chips, in the shape imageWidget's toolButton established. */
 function controlButton(cls: string, title: string, onPress: () => void): HTMLButtonElement {
     const button = document.createElement('button');
-    // The base class is what carries `pointer-events: auto`; the layer they sit
-    // in is `none`, so a button given only its modifier is an unclickable div.
+    // The base class is INERT — `opacity: 0` and `pointer-events: none` — and
+    // the modifier is what the edge-reveal rule keys off to undo both. So a
+    // button given only the base class is an invisible div, and one given only
+    // the modifier is an unclickable one; each needs the other.
     button.className = `cm-table-control ${cls}`;
     button.type = 'button';
     button.title = title;
@@ -328,6 +330,12 @@ export class TableWidget extends WidgetType {
             cols,
         };
         attachCellEditing(view, container);
+        // Attached to the container, which is built exactly once per element, so
+        // this needs no idempotence guard of its own — unlike attachCellEditing,
+        // which updateDOM calls again on every shape change. Attached whatever
+        // `canEdit` says, because the controls layer comes and goes with ⌘E
+        // while the container stays; the handler asks the model instead.
+        attachEdgeReveal(container);
 
         observeTableFit({
             key: this.rawTable, view, container, widthProbe: probe, fontProbe, table, cols,
@@ -459,4 +467,67 @@ function buildControls(view: EditorView, container: HTMLElement): HTMLElement {
         if (model) insertRow(view, container, model.cellText.length - 1);
     }));
     return controls;
+}
+
+/**
+ * How close to an edge the pointer must come for that edge's chip to appear.
+ *
+ * Comfortably wider than a chip is tall: one is 1.4em across at 0.85em type and
+ * sits 2px in, so it reaches ~35px into the box at the largest editor font the
+ * Settings slider offers (28px) and ~21px at the default 16px. A band narrower
+ * than the chip would be self-defeating — the pointer could land ON a revealed
+ * chip from outside the band that revealed it, blinking it away at the exact
+ * moment it was being aimed at.
+ */
+const EDGE_BAND_PX = 48;
+
+/**
+ * Reveal each chip only while the pointer is at the edge that chip belongs to:
+ * the right edge summons "add column", the bottom edge "add row".
+ *
+ * This is pointer arithmetic rather than a pair of CSS :hover zones, and it has
+ * to be. A hoverable zone is a zone that takes clicks, and both bands lie over
+ * real cells — the right one over every row's last column, the bottom one over
+ * the whole last row — so a CSS answer would swallow the click that puts a
+ * caret in them. That is the same reason the layer they sit in is
+ * `pointer-events: none` to begin with.
+ *
+ * The listeners go on the container and close over nothing but it, because this
+ * element outlives the widget instance that built it (see updateDOM) and
+ * CodeMirror may hand it to another TableWidget entirely.
+ */
+function attachEdgeReveal(container: HTMLElement): void {
+    let frame = 0;
+    let clientX = 0;
+    let clientY = 0;
+
+    const measure = () => {
+        frame = 0;
+        // Re-read the box every frame rather than caching it when the pointer
+        // arrives: a re-fit, an added row or a window resize all move it under a
+        // pointer that never moved.
+        const rect = container.getBoundingClientRect();
+        const inside = clientX >= rect.left && clientX <= rect.right
+            && clientY >= rect.top && clientY <= rect.bottom;
+        container.classList.toggle('cm-table-near-right', inside && rect.right - clientX <= EDGE_BAND_PX);
+        container.classList.toggle('cm-table-near-bottom', inside && rect.bottom - clientY <= EDGE_BAND_PX);
+    };
+
+    container.addEventListener('pointermove', (event) => {
+        // A table with no chips has nothing to reveal, and measuring its box
+        // would be layout work for nothing. `canEdit` on the model is exactly
+        // "does this table carry a controls layer" — updateDOM adds and removes
+        // the two together.
+        if (!tableModelOf(container)?.canEdit) return;
+        clientX = event.clientX;
+        clientY = event.clientY;
+        // At most one box read per frame: pointermove outruns paint.
+        if (!frame) frame = requestAnimationFrame(measure);
+    });
+
+    container.addEventListener('pointerleave', () => {
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0;
+        container.classList.remove('cm-table-near-right', 'cm-table-near-bottom');
+    });
 }

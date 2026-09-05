@@ -123,7 +123,11 @@ export function rememberVault(handle: FileSystemDirectoryHandle): Promise<{ list
     });
 }
 
-/** Drop one vault from the list — used when its folder turns out to be gone. */
+/**
+ * Drop one vault from the list and return what is left. The folder itself is
+ * untouched: this list is only a record of what was opened, so the vault comes
+ * straight back the next time it is.
+ */
 export function forgetVault(id: string): Promise<StoredVault[]> {
     return serialize(async () => {
         const next = (await readList()).filter(v => v.id !== id);

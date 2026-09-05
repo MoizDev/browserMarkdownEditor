@@ -212,6 +212,22 @@ raising the setting later still has history to show.
   picking a vault you already have — the slow one. The cost is that the menu flashes open under the
   first click of a double-click. Keyboard activation reports `detail === 0` and lists; an empty list
   goes straight to the picker rather than making the user open a menu to reach it.
+- **Each row carries a minus that forgets it** (`forgetRecentVault` on the context → the same
+  serialized `forgetVault`). Every write to the list publishes through `publishVaults`, which
+  re-labels first: a qualified `parent/name` is earned only while two listed vaults share a folder
+  name, so dropping one of a pair has to leave the survivor as the bare name. Nothing on disk is
+  touched, so there is no confirm in front of it, and `forgetRecentVault` reports whether the write
+  landed — a refused one says so in the menu rather than leaving a dead click.
+- **The open vault's row shows no minus**: every load re-records it (`recordVault`), so removing it
+  would grow back before the user looked again. `.vault-menu-row` is a two-column grid, so that row
+  and "Open folder…" keep every label on one x without a placeholder element to hold the gap.
+- **The menu reads focus out of the DOM, not out of ref arrays** (`rowsIn`/`focusedRowIn` over
+  `.vault-menu-row`). Rows are what shift when one is removed, and the row with no minus is exactly
+  what would slide parallel arrays out of step. `Delete` is handled on the menu root beside the
+  arrow keys — which walk rows only, since arrowing through twice as many stops would tax opening a
+  vault to serve tidying the list. After a removal focus returns to the successor's button **of the
+  same kind**; a minus click that handed focus to a vault row would arm the next `Enter` to open a
+  vault nobody chose.
 - **The menu's width is computed from its anchor, not just capped in CSS.** It hangs from the
   button's right edge, so the room it has is everything from the left of the screen to that edge;
   content-sized and unbounded, one long folder name pushed the whole menu off the left of the

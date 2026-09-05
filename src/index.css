@@ -367,15 +367,50 @@ body {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
 }
 
+/* An entry is TWO controls — remove, and open — but one thing on screen, so the
+   row is what highlights. Lighting only the half the pointer happens to be over
+   would read as two rows; painting both would stack the light theme's
+   translucent hover tint on itself and darken that half instead.
+
+   Two columns rather than two flex children, so a row with no minus — the open
+   vault, and "Open folder…" — still starts its label at the same x without a
+   placeholder element to hold the gap. The column is the 22px control plus the
+   2px that keeps its hover chip off the menu's own 4px padding; flush at 4, the
+   chip's rounded corner sat almost on the border. */
+.vault-menu-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  border-radius: var(--radius-s);
+}
+
+.vault-menu-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* Mirrors the search result rows' keyboard treatment, drawn on the row rather
+   than the button so the ring encloses the remove control too. :focus-visible,
+   not :focus-within — the menu takes focus programmatically when it opens, and
+   a mouse user should not be shown a ring for that. */
+.vault-menu-row:has(:focus-visible) {
+  background: var(--background-modifier-hover);
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+.vault-menu-row:hover .vault-menu-item,
+.vault-menu-row:has(:focus-visible) .vault-menu-item {
+  color: var(--text-normal);
+}
+
 .vault-menu-item {
+  grid-column: 2;
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
+  padding: 6px 8px 6px 4px;
   background: transparent;
   border: none;
-  border-radius: var(--radius-s);
   color: var(--text-muted);
   font-family: inherit;
   font-size: var(--nav-item-size);
@@ -383,17 +418,37 @@ body {
   cursor: pointer;
 }
 
-.vault-menu-item:hover {
-  background: var(--background-modifier-hover);
+/* The app's icon button (.tree-action-btn), only quieter: this tidies a list,
+   it does not delete anything, and a row that shouted about being removable
+   would out-weigh the vault it names. Scoped to the row so these deltas outrank
+   the base class, which is defined further down this file. */
+.vault-menu-row .vault-menu-forget {
+  grid-column: 1;
+  /* Flush to the label side of its column, which leaves exactly the 2px that
+     keeps the hover chip off the menu's own 4px padding — see the row above.
+     Centring it would split that gap and bring the chip back toward the edge. */
+  justify-self: end;
+  color: var(--text-faint);
+}
+
+/* A stronger chip than .tree-action-btn's, because the row underneath is
+   already painting --background-modifier-hover behind it. */
+.vault-menu-row .vault-menu-forget:hover:not(:disabled) {
+  background: var(--background-modifier-border);
   color: var(--text-normal);
 }
 
-/* Mirrors the search result rows' keyboard treatment. */
+.vault-menu-forget:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The row draws one ring for both of its buttons, so neither draws its own —
+   without this the UA's default ring nests inside the row's. */
+.vault-menu-forget:focus-visible,
 .vault-menu-item:focus-visible {
-  background: var(--background-modifier-hover);
+  outline: none;
   color: var(--text-normal);
-  outline: 1px solid var(--interactive-accent);
-  outline-offset: -1px;
 }
 
 .vault-menu-label {
@@ -3234,9 +3289,11 @@ li[aria-selected] .cm-completionMatchedText {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
 }
 
-/* A row. Deliberately .vault-menu-item's shape — same padding, same radius,
-   same muted-until-hovered ink — because the two are the same kind of object
-   and a reader should not have to notice which one they are looking at. */
+/* A row. Deliberately .vault-menu-item's shape — same height, same radius, same
+   muted-until-hovered ink — because the two are the same kind of object and a
+   reader should not have to notice which one they are looking at. Only the left
+   padding differs, and only because the vault menu's rows give up 22px of it to
+   the remove control that sits ahead of every label. */
 .context-menu-item {
   display: flex;
   align-items: center;

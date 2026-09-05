@@ -197,6 +197,7 @@ export default function App() {
     currentVaultId,
     pickDirectory,
     openRecentVault,
+    forgetRecentVault,
     readFile,
     writeFile,
     readFileBytes,
@@ -1656,6 +1657,7 @@ export default function App() {
           currentVaultId={currentVaultId}
           recentVaultLimit={recentVaultLimit}
           onOpenRecentVault={openRecentVault}
+          onForgetRecentVault={forgetRecentVault}
           onCollapse={() => setSidebarCollapsed(true)}
           onTrash={handleTrash}
           expandedPaths={expandedPaths}

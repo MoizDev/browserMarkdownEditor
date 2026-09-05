@@ -59,6 +59,10 @@ interface FileExplorerProps {
     /** How many of them the menu lists (Settings → Vault). */
     recentVaultLimit: number;
     onOpenRecentVault: (vault: RecentVault) => Promise<VaultOpenResult>;
+    /** Drop one vault from the recent list, false if it could not be dropped.
+     *  Stable for the app's life — FileExplorer is memoized and a fresh closure
+     *  would defeat that. */
+    onForgetRecentVault: (id: string) => Promise<boolean>;
     onCollapse: () => void;
     onTrash: (node: FileTreeNode) => void;
     expandedPaths: Set<string>;
@@ -83,6 +87,7 @@ function FileExplorer({
     currentVaultId,
     recentVaultLimit,
     onOpenRecentVault,
+    onForgetRecentVault,
     onCollapse,
     onTrash,
     expandedPaths,
@@ -355,6 +360,7 @@ function FileExplorer({
                     vaults={listedVaults}
                     currentVaultId={currentVaultId}
                     onOpen={onOpenRecentVault}
+                    onForget={onForgetRecentVault}
                     onBrowse={browseForVault}
                     onClose={closeVaultMenu}
                 />

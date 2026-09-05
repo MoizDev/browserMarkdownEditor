@@ -4,7 +4,7 @@ import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault } from '../utils/recentVaults';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath } from '../utils/paths';
-import type { FileTreeNode, FileSystemContextValue, RecentVault, VaultOpenResult } from '../types';
+import type { FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult } from '../types';
 
 const FileSystemContext = createContext<FileSystemContextValue | null>(null);
 
@@ -194,6 +194,19 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, []);
 
     /**
+     * Publish a stored list to the menu.
+     *
+     * Labelling is never optional and never cacheable: `label` is qualified to
+     * "parent/name" only while two listed vaults share a folder name, so any
+     * change to the list can free — or take — a survivor's bare name. Going
+     * through one function is what stops a future writer from setting the state
+     * directly and shipping stale labels.
+     */
+    const publishVaults = useCallback(async (list: StoredVault[]) => {
+        setRecentVaults(await labelVaults(list));
+    }, []);
+
+    /**
      * Note a vault as just-opened: it moves to the head of the recent list and
      * becomes the one the vault menu marks as current. Every path that changes
      * `rootHandle` goes through here, including the silent restore on mount —
@@ -203,11 +216,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         try {
             const { list, id } = await rememberVault(handle);
             setCurrentVaultId(id);
-            setRecentVaults(await labelVaults(list));
+            await publishVaults(list);
         } catch (err) {
             console.warn('Could not record the opened vault:', err);
         }
-    }, []);
+    }, [publishVaults]);
 
     /**
      * On mount, try to restore the previously saved directory handle from IndexedDB.
@@ -238,13 +251,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // No vault restored — the list still loads, so whatever the user
             // opens next lands on top of a complete history.
             try {
-                setRecentVaults(await labelVaults(await loadRecentVaults()));
+                await publishVaults(await loadRecentVaults());
             } catch (err) {
                 console.warn('Could not load the recent vault list:', err);
             }
             setIsLoading(false);
         })();
-    }, [refreshTree, recordVault]);
+    }, [refreshTree, recordVault, publishVaults]);
 
     /**
      * Prompt the user to pick a directory, store its handle, and scan it.
@@ -288,6 +301,25 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, [refreshTree, recordVault, isCurrentVault]);
 
     /**
+     * Take one vault off the recent list. Nothing on disk is touched: the list
+     * only records what has been opened, so the folder stays where it is and
+     * the row returns the next time that folder is opened as a vault.
+     *
+     * Reports whether the list was actually rewritten. An IndexedDB write can
+     * fail (blocked storage, a corrupt store), and the row then stays put — the
+     * menu has to be able to say so rather than leave a dead click behind.
+     */
+    const forgetRecentVault = useCallback(async (id: string) => {
+        try {
+            await publishVaults(await forgetVault(id));
+            return true;
+        } catch (err) {
+            console.warn('Could not drop the vault from the recent list:', err);
+            return false;
+        }
+    }, [publishVaults]);
+
+    /**
      * Switch to a vault the user has opened before, straight from its stored
      * handle — no picker, because the point of the recent list is not having to
      * find the folder again.
@@ -327,17 +359,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             if ((err as DOMException)?.name === 'NotFoundError') {
                 // The folder is gone; keeping a row that can never open again
                 // would just be a trap.
-                try {
-                    setRecentVaults(await labelVaults(await forgetVault(vault.id)));
-                } catch (dropErr) {
-                    console.warn('Could not drop the missing vault:', dropErr);
-                }
+                await forgetRecentVault(vault.id);
                 return 'missing';
             }
             console.error('Could not open the vault:', err);
             return 'error';
         }
-    }, [refreshTree, recordVault, isCurrentVault]);
+    }, [refreshTree, recordVault, isCurrentVault, forgetRecentVault]);
 
     /**
      * Read the text content of a file handle. Line endings are normalized to
@@ -886,6 +914,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         currentVaultId,
         pickDirectory,
         openRecentVault,
+        forgetRecentVault,
         readFile,
         writeFile,
         readFileBytes,

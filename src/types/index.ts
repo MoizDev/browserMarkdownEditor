@@ -293,6 +293,9 @@ export interface FileSystemContextValue {
   pickDirectory: () => Promise<void>;                    // FileSystemContext.jsx:118
   /** Switch to an already-known vault, re-requesting permission if needed. */
   openRecentVault: (vault: RecentVault) => Promise<VaultOpenResult>;
+  /** Take one vault off the recent list — a record only, nothing on disk.
+   *  Resolves false if the list could not be rewritten. */
+  forgetRecentVault: (id: string) => Promise<boolean>;
   readFile: (fileHandle: FileSystemFileHandle) => Promise<string>;            // :143
   writeFile: (fileHandle: FileSystemFileHandle, content: string) => Promise<void>; // :151
   // Binary IO — PDFs cannot ride the text path (UTF-8 decode + CRLF

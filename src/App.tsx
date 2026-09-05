@@ -163,6 +163,16 @@ async function nameTaken(dir: FileSystemDirectoryHandle, name: string): Promise<
   return false;
 }
 
+/**
+ * Is this graph the same one we already handed out?
+ *
+ * `rebuildGraph` keeps the PREVIOUS GraphData object when the answer is yes, and
+ * that identity is load-bearing: a fresh object propagates into GraphView's
+ * effects, which re-seed the simulation (alpha = 1) and tear down and rebuild
+ * the RAF loop and the ResizeObserver. Without this, an unrelated tab
+ * autosaving visibly re-heated the graph the user was looking at — and the
+ * graph is rebuilt after EVERY save, not just on tree changes.
+ */
 function sameGraph(a: GraphData, b: GraphData): boolean {
   if (a.nodes.length !== b.nodes.length || a.links.length !== b.links.length) return false;
   for (let i = 0; i < a.nodes.length; i++) {

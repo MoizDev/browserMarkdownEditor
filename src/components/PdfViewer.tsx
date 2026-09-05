@@ -30,10 +30,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
  *   external URL opens in a new tab (see utils/pdfLinks.ts).
  * - The current page is shown, and can be typed into to jump.
  *
- * Memory discipline: canvas BITMAPS are the expensive part (a page at 2x DPR is
- * ~10MB), so only pages near the viewport hold one — scrolled-away canvases are
- * freed (width=0) and re-rendered on approach. Text and link layers are cheap
- * DOM and are kept once built.
+ * Memory discipline: canvas BITMAPS are windowed (a page at Retina fit-width is
+ * ~25-31MB), so only pages near the viewport hold one — scrolled-away canvases
+ * are freed (width=0) and re-rendered on approach, and pages past CLEANUP_BEYOND
+ * also get page.cleanup() so pdf.js drops the parsed operator list. Link layers
+ * are cheap DOM. TEXT layers are NOT: at ~4.3KB of renderer memory per
+ * positioned span they are the largest single memory item in the app (hundreds
+ * of MB for a dense book), and they are never released — that is what makes ⌘F
+ * find text on pages you have never scrolled to. See the verify-in-browser and
+ * pdf-and-drawings skills before trading that away.
  *
  * The current position is tracked as {page, offset-within-page}, which survives
  * zoom, container resizes and reloads of the underlying bytes (an annotated

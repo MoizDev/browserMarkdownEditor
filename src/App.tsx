@@ -197,6 +197,7 @@ export default function App() {
     currentVaultId,
     pickDirectory,
     openRecentVault,
+    openFolderAsVault,
     forgetRecentVault,
     readFile,
     writeFile,
@@ -1282,6 +1283,57 @@ export default function App() {
   }, [createFolder, tell]);
 
   /**
+   * Open a folder in the tree as the vault — the file tree's "Open as Vault"
+   * row, and the same switch as picking that folder in the OS picker.
+   *
+   * Nothing is flushed or closed here: setting `rootHandle` is what makes this a
+   * vault switch, and the switch effect above already flushes every open tab
+   * (its handles are still good) before emptying the workspace. Every failure is
+   * said out loud, because from the sidebar a switch that did not happen is
+   * indistinguishable from one that did and found an empty folder — the rule
+   * VaultMenu.messageFor states for the vault list.
+   *
+   * ONE AT A TIME. Two switches in flight are two vault walks racing, and the
+   * one that FINISHES last wins the tree — which can be the one that started
+   * FIRST, leaving the sidebar on vault A while `rootHandle`, IndexedDB and
+   * `currentVaultId` all say vault B. The tree is where that is easiest to
+   * start: setRootHandle lands early, but the OLD vault's rows stay on screen
+   * until the new walk finishes — seconds on a big vault — so the folder just
+   * right-clicked is still sitting there, still offering the row.
+   *
+   * Racing a DIFFERENT raiser is the provider's `switchInFlightRef`, which is
+   * why 'busy' is not an error here. This ref covers the two things that gate
+   * cannot: a second click on the tree, and the dialog below — which, like
+   * handleTrash's, must not have a second question stacked behind it.
+   */
+  const openAsVaultInFlightRef = useRef<boolean>(false);
+
+  const handleOpenAsVault = useCallback(async (node: FileTreeNode) => {
+    if (node.kind !== 'directory') return;
+    if (openAsVaultInFlightRef.current) return;
+    openAsVaultInFlightRef.current = true;
+    try {
+      const result = await openFolderAsVault(node.handle);
+      // 'busy' is another raiser's switch still walking, not a failure — the
+      // ref above only covers a second click on the TREE. The vault menu says
+      // so inline; a tree row has nowhere to put a note, and a modal for "not
+      // yet" would be louder than the thing it reports, so here it stays silent.
+      if (result === 'ok' || result === 'busy') return;
+      await tell({
+        title: 'Could not open that folder as a vault',
+        confirmLabel: 'OK',
+        body: result === 'denied'
+          ? <>Permission to read and write <strong>{node.name}</strong> was refused.</>
+          : result === 'missing'
+            ? <><strong>{node.name}</strong> is no longer on disk.</>
+            : <><strong>{node.name}</strong> could not be opened.</>,
+      });
+    } finally {
+      openAsVaultInFlightRef.current = false;
+    }
+  }, [openFolderAsVault, tell]);
+
+  /**
    * Move a file — or a whole folder, contents and all — to the Trash.
    *
    * A folder takes every document open from anywhere INSIDE it with it, which
@@ -1660,6 +1712,7 @@ export default function App() {
           onForgetRecentVault={forgetRecentVault}
           onCollapse={() => setSidebarCollapsed(true)}
           onTrash={handleTrash}
+          onOpenAsVault={handleOpenAsVault}
           expandedPaths={expandedPaths}
           onToggleExpand={handleToggleExpand}
           onMoveFile={handleMoveFile}

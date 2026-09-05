@@ -23,6 +23,9 @@ interface TreeNodeProps {
      *  into one shape. */
     onCreateFolder: (handle: FileSystemDirectoryHandle, name: string) => void | Promise<void>;
     onTrash: (node: FileTreeNode) => void;
+    /** Open this folder as the vault (directories only). App owns the switch —
+     *  the FS layer is reached through it, never from here. */
+    onOpenAsVault: (node: FileTreeNode) => void | Promise<void>;
     expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
@@ -33,7 +36,7 @@ interface TreeNodeProps {
 }
 
 
-function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
+function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
     const isActive = node.kind === 'file' && node.path === activeFilePath;
     const paddingLeft = 12 + depth * 16;
     const expanded = expandedPaths.has(node.path);
@@ -205,6 +208,15 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
             : [
                 { kind: 'command', id: 'new-note', label: 'New note', run: () => startCreate('file') },
                 { kind: 'command', id: 'new-folder', label: 'New folder', run: () => startCreate('folder') },
+                {
+                    // A vault is just a folder, so a folder inside one can be
+                    // opened as a vault of its own — the same switch "Open
+                    // folder…" performs, minus the picker, since the handle is
+                    // already here. It lands in the recent-vaults list like any
+                    // other opened vault, so the way back is that menu.
+                    kind: 'command', id: 'open-as-vault', label: 'Open as Vault',
+                    run: () => { void onOpenAsVault(node); },
+                },
                 { kind: 'separator', id: 'sep-rename' },
                 rename,
                 ...trash,
@@ -439,6 +451,7 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
                             onCreateFile={onCreateFile}
                             onCreateFolder={onCreateFolder}
                             onTrash={onTrash}
+                            onOpenAsVault={onOpenAsVault}
                             expandedPaths={expandedPaths}
                             onToggleExpand={onToggleExpand}
                             onMoveFile={onMoveFile}

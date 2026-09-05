@@ -160,6 +160,24 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const pickerOpenRef = useRef(false);
 
     /**
+     * True while a vault switch is underway — for the picker from the moment it
+     * opens (a folder chosen there has to be able to commit, so the gate cannot
+     * wait for the pick), for the others from the call — until its tree walk has
+     * finished. ONE switch at a time, across every raiser.
+     *
+     * Each raiser used to guard only itself — VaultMenu's `opening`, the tree
+     * row's `openAsVaultInFlightRef`, `pickerOpenRef` — which stops nobody from
+     * starting a switch while a DIFFERENT raiser's walk is running. Measured:
+     * "Open as Vault" on a 40-file folder (walk ~4.5s), then a recent-vault row
+     * clicked 260ms in, left the sidebar listing the first vault's 40 files
+     * while the header, the IndexedDB handle and the menu's current-vault check
+     * all read the second. A row clicked in that state opens one vault's handle
+     * under the other's path — a write into the wrong vault. The gate belongs
+     * here, at the one funnel all three raisers pass through, not in any of them.
+     */
+    const switchInFlightRef = useRef(false);
+
+    /**
      * True when `handle` names the folder that is already open, whatever object
      * it happens to be.
      *
@@ -181,17 +199,32 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, []);
 
     /**
-     * Refresh the file tree from the current root handle.
+     * Walk a vault into a tree, or null if the walk failed.
+     *
+     * Split out of `refreshTree` because a vault SWITCH has to know whether the
+     * walk worked BEFORE it commits anything — see openVaultHandle. Swallowing
+     * the failure is right for a refresh and wrong for a switch: a switch that
+     * kept the old tree standing would have already moved `rootHandle`.
+     */
+    const loadTree = useCallback(async (handle: FileSystemDirectoryHandle): Promise<FileTreeNode[] | null> => {
+        try {
+            return await buildFileTree(handle);
+        } catch (err) {
+            console.error('Failed to build file tree:', err);
+            return null;
+        }
+    }, []);
+
+    /**
+     * Refresh the file tree from the current root handle. A failed walk leaves
+     * the tree that is up standing: it still describes the vault the app is on,
+     * which is more use than an empty sidebar.
      */
     const refreshTree = useCallback(async (handle: FileSystemDirectoryHandle | null | undefined) => {
         if (!handle) return;
-        try {
-            const tree = await buildFileTree(handle);
-            setFileTree(tree);
-        } catch (err) {
-            console.error('Failed to build file tree:', err);
-        }
-    }, []);
+        const tree = await loadTree(handle);
+        if (tree) setFileTree(tree);
+    }, [loadTree]);
 
     /**
      * Publish a stored list to the menu.
@@ -261,21 +294,28 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
 
     /**
      * Prompt the user to pick a directory, store its handle, and scan it.
+     *
+     * Reports its outcome the way `openVaultHandle` does, and for the same
+     * reason: "Open folder…" is a menu row, and the menu closes on the result.
+     * A picker refused because another switch is walking has to come back
+     * 'busy' and say so — returning void, the row closed the menu, opened no
+     * picker and said nothing, which is the dead click messageFor rules out.
      */
-    const pickDirectory = useCallback(async () => {
+    const pickDirectory = useCallback(async (): Promise<VaultOpenResult> => {
         if (!window.showDirectoryPicker) {
             alert(
                 "Your browser doesn't support the local File System Access API.\n\n" +
                 "This feature is currently only supported in Chromium-based browsers (Chrome, Edge, Opera) on desktop."
             );
-            return;
+            return 'error';
         }
         // One picker at a time: browsing for a vault is a DOUBLE-click on the
         // explorer's vault button, and with nothing in the recent list the first
         // of those two clicks already opens the picker. A second call while one
         // is up rejects with NotAllowedError ("File picker already active").
-        if (pickerOpenRef.current) return;
+        if (pickerOpenRef.current || switchInFlightRef.current) return 'busy';
         pickerOpenRef.current = true;
+        switchInFlightRef.current = true;
 
         try {
             const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
@@ -283,22 +323,34 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // keep the handle the app (and every open tab) is already using.
             if (await isCurrentVault(handle)) {
                 await refreshTree(rootHandleRef.current);
-                return;
+                return 'ok';
             }
+            // Walk before committing, exactly as openVaultHandle does — see the
+            // reasoning there. The picker reached that split state the least
+            // often (its own dialog is tab-modal, so the tree is unclickable
+            // until it closes), but the window it opened afterwards was the
+            // same one, and it is the same three lines that close it.
+            const tree = await loadTree(handle);
+            if (!tree) return 'error';
+
             await set(IDB_KEY, handle);
             setPreviousVault(null);
             setRootHandle(handle);
+            setFileTree(tree);
             await recordVault(handle);
-            await refreshTree(handle);
+            return 'ok';
         } catch (err) {
-            // User cancelled the picker
-            if ((err as DOMException).name !== 'AbortError') {
-                console.error('Error picking directory:', err);
-            }
+            // Cancelling the picker is not a failure — nothing was asked for and
+            // nothing went wrong — so it reports 'ok' and the menu closes on it,
+            // which is what "Open folder…" has always done.
+            if ((err as DOMException).name === 'AbortError') return 'ok';
+            console.error('Error picking directory:', err);
+            return 'error';
         } finally {
             pickerOpenRef.current = false;
+            switchInFlightRef.current = false;
         }
-    }, [refreshTree, recordVault, isCurrentVault]);
+    }, [refreshTree, loadTree, recordVault, isCurrentVault]);
 
     /**
      * Take one vault off the recent list. Nothing on disk is touched: the list
@@ -320,20 +372,25 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, [publishVaults]);
 
     /**
-     * Switch to a vault the user has opened before, straight from its stored
-     * handle — no picker, because the point of the recent list is not having to
-     * find the folder again.
+     * Commit the app to `handle` as its vault, from a handle we already hold —
+     * no picker, because the point of both callers (the recent list, and "Open
+     * as Vault" on a folder in the tree) is not having to find the folder again.
      *
      * Permission is re-requested when Chrome has let the grant lapse (a new
      * session, usually); that call is legal here only because opening a vault
-     * is always a click. Returns why it didn't happen when it didn't, so the
-     * menu can say so instead of appearing to do nothing.
+     * is always a click. A folder taken out of the tree is inside a vault whose
+     * grant is live, so it answers 'granted' without prompting — asking is what
+     * makes the one code path safe for a handle deserialized out of IndexedDB
+     * too. Returns why it didn't happen when it didn't, so the caller can say so
+     * instead of appearing to do nothing.
      */
-    const openRecentVault = useCallback(async (vault: RecentVault): Promise<VaultOpenResult> => {
+    const openVaultHandle = useCallback(async (handle: FileSystemDirectoryHandle): Promise<VaultOpenResult> => {
+        if (switchInFlightRef.current) return 'busy';
+        switchInFlightRef.current = true;
         try {
-            let permission = await vault.handle.queryPermission({ mode: 'readwrite' });
+            let permission = await handle.queryPermission({ mode: 'readwrite' });
             if (permission !== 'granted') {
-                permission = await vault.handle.requestPermission({ mode: 'readwrite' });
+                permission = await handle.requestPermission({ mode: 'readwrite' });
             }
             if (permission !== 'granted') return 'denied';
 
@@ -342,30 +399,60 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // recording the vault failed — and a stored handle is a different
             // OBJECT from the open one for the same folder, so letting it
             // through would read as a switch and close every tab.
-            if (await isCurrentVault(vault.handle)) return 'ok';
+            if (await isCurrentVault(handle)) return 'ok';
 
             // Touch the folder before committing the app to it: one that has
             // been deleted or moved since throws here, whereas swapping the
-            // tree first would just blank the sidebar with no explanation.
-            await vault.handle.entries().next();
+            // tree first would just blank the sidebar with no explanation. A
+            // tree row can be that stale too — the folder may have gone on disk
+            // since the last refreshTree.
+            await handle.entries().next();
 
-            await set(IDB_KEY, vault.handle);
+            // Walk the new vault BEFORE committing the app to it. Setting
+            // `rootHandle` first and awaiting the walk after left the app split
+            // for the whole walk — seconds on a big vault — with `rootHandle`,
+            // IndexedDB and the header on the new vault while the sidebar still
+            // listed the OLD one's rows. Nothing covers the tree in that window
+            // (VaultMenu draws no overlay either), so a row clicked then opened
+            // the old vault's handle under the new vault's path: autosave writes
+            // through one vault while every path-keyed lookup resolves in the
+            // other. It also means a failed walk has committed nothing at all —
+            // it used to leave that same split state behind and report 'ok'.
+            const tree = await loadTree(handle);
+            if (!tree) return 'error';
+
+            // The three setters are synchronous and in one task, so React
+            // batches them into a single render: `rootHandle` and `fileTree`
+            // cannot be observed describing different vaults.
+            await set(IDB_KEY, handle);
             setPreviousVault(null);
-            setRootHandle(vault.handle);
-            await recordVault(vault.handle);
-            await refreshTree(vault.handle);
+            setRootHandle(handle);
+            setFileTree(tree);
+            await recordVault(handle);
             return 'ok';
         } catch (err) {
-            if ((err as DOMException)?.name === 'NotFoundError') {
-                // The folder is gone; keeping a row that can never open again
-                // would just be a trap.
-                await forgetRecentVault(vault.id);
-                return 'missing';
-            }
+            if ((err as DOMException)?.name === 'NotFoundError') return 'missing';
             console.error('Could not open the vault:', err);
             return 'error';
+        } finally {
+            switchInFlightRef.current = false;
         }
-    }, [refreshTree, recordVault, isCurrentVault, forgetRecentVault]);
+    }, [loadTree, recordVault, isCurrentVault]);
+
+    /**
+     * Switch to a vault the user has opened before, straight from its stored
+     * handle. Everything but the recent list's own bookkeeping is
+     * `openVaultHandle`.
+     */
+    const openRecentVault = useCallback(async (vault: RecentVault): Promise<VaultOpenResult> => {
+        const result = await openVaultHandle(vault.handle);
+        if (result === 'missing') {
+            // The folder is gone; keeping a row that can never open again would
+            // just be a trap.
+            await forgetRecentVault(vault.id);
+        }
+        return result;
+    }, [openVaultHandle, forgetRecentVault]);
 
     /**
      * Read the text content of a file handle. Line endings are normalized to
@@ -914,6 +1001,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         currentVaultId,
         pickDirectory,
         openRecentVault,
+        // Open a folder that is already inside the open vault as a vault of its
+        // own — the file tree's "Open as Vault" row. A vault is just a folder,
+        // so this is exactly what picking that folder in the OS picker does,
+        // minus the picker: the handle is in hand, so showing one would only ask
+        // the user to find the folder they have just right-clicked. It lands in
+        // the recent list like any other opened vault (recordVault, inside).
+        openFolderAsVault: openVaultHandle,
         forgetRecentVault,
         readFile,
         writeFile,

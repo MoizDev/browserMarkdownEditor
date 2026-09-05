@@ -14,8 +14,10 @@ interface VaultMenuProps {
     /** Drop a row from the recent list — the folder is not touched. Resolves
      *  false if the list could not be rewritten. */
     onForget: (id: string) => Promise<boolean>;
-    /** Fall through to the native folder picker ("Open folder…"). */
-    onBrowse: () => void;
+    /** Fall through to the native folder picker ("Open folder…"). Reports like
+     *  `onOpen` — the picker is a vault switch too, so it can come back 'busy'
+     *  with no picker ever shown, and this menu is what closes on the result. */
+    onBrowse: () => Promise<VaultOpenResult>;
     onClose: () => void;
     /** Fixed positioning under the anchor button, from its bounding rect. */
     style?: CSSProperties;
@@ -33,6 +35,13 @@ function messageFor(result: VaultOpenResult, vault: RecentVault): string {
             return `Could not open “${vault.label}”.`;
     }
 }
+
+/** What 'busy' says. Another raiser's switch — the tree's "Open as Vault", or
+ *  the picker — is still walking, so nothing happened; but nothing happening
+ *  silently is the dead click messageFor exists to rule out. The row greys and
+ *  un-greys inside a walk that runs for seconds, which from the outside is
+ *  indistinguishable from a broken button, so say so and leave the menu up. */
+const BUSY_NOTE = 'Another vault is still opening — try again in a moment.';
 
 /** The menu's rows, in document order: one per vault, then "Open folder…". */
 const rowsIn = (menu: HTMLElement | null): HTMLElement[] =>
@@ -145,8 +154,24 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
         const result = await onOpen(vault);
         setOpening(null);
         if (result === 'ok') onClose();
+        else if (result === 'busy') setError(BUSY_NOTE);
         else setError(messageFor(result, vault));
     }, [currentVaultId, opening, onOpen, onClose]);
+
+    /**
+     * "Open folder…" — the same shape as `activate`, because the picker is a
+     * vault switch on the same gate. Closing the menu here (as FileExplorer
+     * used to, before the call) threw away the only surface a 'busy' picker has
+     * to report from: the row closed the menu, opened nothing and said nothing.
+     * Everything else closes, cancelling the picker included — that is 'ok'.
+     */
+    const browse = useCallback(async () => {
+        if (opening) return;
+        setError(null);
+        const result = await onBrowse();
+        if (result === 'busy') { setError(BUSY_NOTE); return; }
+        onClose();
+    }, [opening, onBrowse, onClose]);
 
     /**
      * Take a row off the list. Nothing is destroyed — the vault is a folder that
@@ -234,7 +259,7 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
                 <button
                     className="vault-menu-item"
                     role="menuitem"
-                    onClick={onBrowse}
+                    onClick={() => void browse()}
                 >
                     <span className="vault-menu-label">Open folder…</span>
                 </button>

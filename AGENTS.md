@@ -98,8 +98,10 @@ and use it before saying a change works.
   identity (`Text`/tree, in a `WeakMap`), reuse a shared `Decoration`, or be measured; a per-node
   linear scan once cost ~138ms/keystroke. Read mode is a **pure function of the document**.
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,
-  asset reconciles, the recent-vaults read-modify-write and the folder picker each hold an in-flight
-  ref or a promise queue, because `StrictMode` double-runs effects and users click twice mid-copy.
+  asset reconciles, the recent-vaults read-modify-write, the folder picker and every vault switch
+  (one gate for all three raisers, and it walks the new vault before committing anything) each hold
+  an in-flight ref or a promise queue, because `StrictMode` double-runs effects and users click twice
+  mid-copy.
 - **The PDF/tldraw module split is bundle-size discipline enforced only by import discipline** —
   there is no manual chunking in `vite.config.ts`, so one new import silently pulls pdf-lib (~400kB),
   pdf.js or tldraw into the main bundle. Check the `pdf-and-drawings` skill before adding one.

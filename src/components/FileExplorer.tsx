@@ -50,8 +50,10 @@ interface FileExplorerProps {
     onFileClick: (node: FileTreeNode) => void;
     onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath?: string) => void | Promise<void>;
     onCreateFolder: (parentHandle: FileSystemDirectoryHandle | null, name: string) => void | Promise<void>;
-    /** Open the native folder picker — a double-click on the vault button. */
-    onChangeVault: () => void;
+    /** Open the native folder picker — a double-click on the vault button, or
+     *  its "Open folder…" row. Reports the switch's outcome, which that row
+     *  needs: the picker shares one gate with every other raiser. */
+    onChangeVault: () => Promise<VaultOpenResult>;
     /** Folders previously opened as vaults, newest first (already labelled). */
     recentVaults: RecentVault[];
     /** Which of those is open right now, so the menu can mark it. */
@@ -65,6 +67,8 @@ interface FileExplorerProps {
     onForgetRecentVault: (id: string) => Promise<boolean>;
     onCollapse: () => void;
     onTrash: (node: FileTreeNode) => void;
+    /** Open a folder row as the vault. Directories only — App ignores the rest. */
+    onOpenAsVault: (node: FileTreeNode) => void | Promise<void>;
     expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
@@ -90,6 +94,7 @@ function FileExplorer({
     onForgetRecentVault,
     onCollapse,
     onTrash,
+    onOpenAsVault,
     expandedPaths,
     onToggleExpand,
     onMoveFile,
@@ -138,10 +143,12 @@ function FileExplorer({
         if (vaultBtnRef.current) setVaultMenuPos(vaultMenuPosFor(vaultBtnRef.current));
     };
 
-    const browseForVault = useCallback(() => {
-        setVaultMenuPos(null);
-        onChangeVault();
-    }, [onChangeVault]);
+    /** "Open folder…" in the vault menu. The menu is NOT closed here: a picker
+     *  refused because another vault switch is still walking comes back 'busy'
+     *  with nothing shown, and the menu is the only surface that can say so —
+     *  closing first left a row that closed the menu and did nothing at all.
+     *  VaultMenu closes itself on every other result. */
+    const browseForVault = useCallback(() => onChangeVault(), [onChangeVault]);
 
     // The indexed vault text lives here (not in SearchPanel) so reopening
     // search doesn't re-read unchanged files.
@@ -415,6 +422,7 @@ function FileExplorer({
                             onCreateFile={onCreateFile}
                             onCreateFolder={onCreateFolder}
                             onTrash={onTrash}
+                            onOpenAsVault={onOpenAsVault}
                             expandedPaths={expandedPaths}
                             onToggleExpand={onToggleExpand}
                             onMoveFile={onMoveFile}

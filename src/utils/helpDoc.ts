@@ -20,7 +20,7 @@ The folder icon at the top of the file tree remembers every folder you have open
 - Vaults are listed newest first, by folder name alone; two vaults whose folders share a name show the parent folder too. Settings → Vault controls how many are listed.
 - The **minus** at the left of a row takes that vault off the list, so the folders you actually switch between are not buried under ones you opened once. It forgets the row only — the folder and everything in it stays exactly where it is, and opening it again puts the row back. There is no minus beside the vault you have open, because the app re-lists that one every time it loads. (From the keyboard: **Delete** on the highlighted row does the same thing.)
 
-Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`.
+Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`. You do not need the file dialog for that — right-click the folder in the file tree and choose **Open as Vault**, and it opens as the vault straight away and joins the recent list, so the folder icon is the way back out.
 
 Switching vaults closes the notes you had open (saving anything unsaved first), since those files belong to the vault you just left.
 
@@ -115,7 +115,7 @@ Right-clicking in a note, or anywhere in the file tree, opens the application's 
 
 **In the file tree**:
 - On a **file**: *Rename*, and *Move to Trash*.
-- On a **folder**: *New note*, *New folder*, *Rename*, and *Move to Trash*. New note and New folder open a small input row inside that folder, and open the folder so you can see what lands in it.
+- On a **folder**: *New note*, *New folder*, *Open as Vault*, *Rename*, and *Move to Trash*. *Open as Vault* narrows the app down to that folder — see *Switching Vaults*. New note and New folder open a small input row inside that folder, and open the folder so you can see what lands in it.
 - On the **empty space** below the tree: *New note* and *New folder*, at the vault root.
 - *Move to Trash* asks first and names where the item is going, exactly as the row's own trash button does.
 - A row you are in the middle of renaming keeps the browser's menu, because what you want there is its Paste.

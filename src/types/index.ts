@@ -234,9 +234,14 @@ export interface RecentVault extends StoredVault {
   label: string;
 }
 
-/** Why opening a recent vault did or didn't take effect. 'missing' also drops
- *  the entry from the list — its folder is gone from disk. */
-export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error';
+/** Why opening a vault did or didn't take effect — from the recent list, the
+ *  file tree's "Open as Vault", or the folder picker. 'missing' also drops the
+ *  entry from the list, when there is one — its folder is gone from disk.
+ *  'busy' means another vault switch was already walking (see
+ *  FileSystemContext's switchInFlightRef): nothing happened and nothing is
+ *  wrong, but nothing happening is exactly what a caller with somewhere to say
+ *  it must still say — a control that greys and un-greys reads as broken. */
+export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy';
 
 /* ─────────────────────────────────────────────────────────────────────────
  * SETTINGS
@@ -290,9 +295,15 @@ export interface FileSystemContextValue {
   currentVaultId: string | null;
 
   // ── actions ──
-  pickDirectory: () => Promise<void>;                    // FileSystemContext.jsx:118
+  /** Open the OS folder picker and switch to what comes back. Reports its
+   *  outcome like the other two raisers — "Open folder…" is a menu row, and a
+   *  refused picker has to be able to say so. A cancelled pick is 'ok'. */
+  pickDirectory: () => Promise<VaultOpenResult>;         // FileSystemContext.jsx:118
   /** Switch to an already-known vault, re-requesting permission if needed. */
   openRecentVault: (vault: RecentVault) => Promise<VaultOpenResult>;
+  /** Open a folder from the file tree as the vault — the same switch the picker
+   *  performs, from a handle already in hand. */
+  openFolderAsVault: (handle: FileSystemDirectoryHandle) => Promise<VaultOpenResult>;
   /** Take one vault off the recent list — a record only, nothing on disk.
    *  Resolves false if the list could not be rewritten. */
   forgetRecentVault: (id: string) => Promise<boolean>;

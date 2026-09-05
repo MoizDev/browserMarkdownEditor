@@ -9,7 +9,7 @@ description: How this app reads and writes the user's real files — the File Sy
 Everything else goes through `useFileSystem()`: `readFile`/`writeFile`, binary
 `readFileBytes`/`writeFileBytes`, `createFile`/`createFolder`, `moveFile`/`renameFile`/`moveToTrash`,
 `importFiles`, `getAssetUrl`/`saveAsset`/`retireAsset`/`restoreAsset`,
-`pickDirectory`/`restoreVault`/`openRecentVault`.
+`pickDirectory`/`restoreVault`/`openRecentVault`/`openFolderAsVault`.
 
 There is no backend and no undo stack behind these calls — a mistake here destroys the user's notes.
 
@@ -232,6 +232,39 @@ raising the setting later still has history to show.
   button's right edge, so the room it has is everything from the left of the screen to that edge;
   content-sized and unbounded, one long folder name pushed the whole menu off the left of the
   viewport with its shorter rows rendering outside the window entirely.
+- **A folder in the file tree can be opened as a vault too** — `TreeNode`'s "Open as Vault" row →
+  `App.handleOpenAsVault` → `openFolderAsVault`, which IS `openVaultHandle`, the same body
+  `openRecentVault` runs (`openRecentVault` adds only "forget the row if the folder is `missing`").
+  No picker: the handle is already in hand, so one would only ask the user to find the folder they
+  just right-clicked. It records the vault, so the way back is the vault menu. App does no flushing
+  or tab-closing of its own — setting `rootHandle` is the switch, and the vault-switch effect already
+  flushes every open tab before emptying the workspace. It **holds an in-flight ref** covering the
+  switch AND its error dialog, so a second right-click cannot stack a second question.
+- **ONE vault switch at a time, across every raiser — `switchInFlightRef`, in the provider.**
+  `refreshTree` is not serialized, so two switches at once are two vault walks racing and the
+  LATER-FINISHING one wins the tree: the sidebar lists vault A while `rootHandle`, IndexedDB and the
+  menu's current-vault check all say B, and a row clicked then opens A's handle under B's path. The
+  tree starts that race easily — its old rows stay on screen until the new walk lands. Guarding each
+  raiser separately does **not** stop it, which is what the per-raiser refs (`opening`,
+  `openAsVaultInFlightRef`, `pickerOpenRef`) each did: measured, "Open as Vault" on a 40-file folder
+  (walk ~4.5s) plus a recent-vault row clicked 260ms in produced exactly that split state. So the
+  gate sits at the funnel both `openVaultHandle` and `pickDirectory` pass through; a blocked call
+  returns **`'busy'`** — nothing happened, which is precisely what a caller with somewhere to say it
+  must still say. The vault menu prints a neutral inline note in its `.vault-menu-error` element
+  (deliberately not red — see the CSS comment) for **both** its raisers, the recent row and "Open
+  folder…"; a row that greys and un-greys inside a walk running for seconds is the dead click
+  `messageFor` exists to rule out. Only the tree row stays silent, having nowhere to put a note.
+- **A vault switch WALKS BEFORE IT COMMITS, and commits in one synchronous burst.** `loadTree` (the
+  walk, `null` on failure) is separate from `refreshTree` (the walk that leaves the current tree
+  standing on failure) for exactly this: `openVaultHandle` and `pickDirectory` both call `loadTree`
+  first, and only then do `set(IDB_KEY)` → `setRootHandle` → `setFileTree` with no await between the
+  setters, so React batches them and `rootHandle` and `fileTree` are never seen describing different
+  vaults. `setRootHandle` first and `await refreshTree` after left the app split for the WHOLE walk —
+  the header, IndexedDB and `currentVaultId` on vault B, the sidebar still listing A's rows, nothing
+  covering the tree — and `App.handleFileClick` on one of those rows opens A's handle under B's path.
+  During the walk the app therefore stays wholly on the old vault, which is coherent: a row clicked
+  then opens the old vault's file from the old vault. The one lag left is `recordVault`, deliberately
+  still after the commit — `currentVaultId` trails by a tick and nothing reads it in between.
 - Opening a row **re-requests permission when Chrome has let the grant lapse** (legal because it's a
   click), then touches the folder before committing the app to it — a vault deleted or moved since
   would otherwise just blank the sidebar. That entry is dropped from the list instead, and every
@@ -250,4 +283,10 @@ raising the setting later still has history to show.
   button, so with nothing in the recent list the first of those two clicks has already opened the
   picker and the second call rejects with `NotAllowedError` ("File picker already active"). That list
   is empty only when the IDB write failed — every path that sets `rootHandle` records it — which is
-  exactly when the noise would be least welcome.
+  exactly when the noise would be least welcome. **`pickDirectory` reports a `VaultOpenResult` like
+  the other two raisers**, because "Open folder…" is a menu row and the menu closes on the result:
+  refused by the switch gate it must come back `'busy'` and leave the menu up to say so, and while it
+  returned void that row closed the menu, opened no picker and said nothing at all. A **cancelled**
+  pick is `'ok'` — nothing failed, so the menu closes as it always did — and so is the unsupported
+  browser's `alert` path being `'error'`. `FileExplorer.browseForVault` no longer closes the menu
+  before the call; `VaultMenu.browse` owns that, mirroring its `activate`.

@@ -21,8 +21,7 @@ instead:
 3. **Neither** → bloat: delete it, or leave it as a comment beside the code, where a narrow fact
    stays honest longest. A fact with no trigger is not a skill either — never invent one to hold it.
 
-Skills live in `.agents/skills/<name>/SKILL.md` (`.claude/skills` symlinks there); deepen an existing
-one before adding another. Being under the cap is fine — it is a ceiling, not a quota.
+Skills live in `.agents/skills/<name>/SKILL.md`.
 
 
 ## What this is

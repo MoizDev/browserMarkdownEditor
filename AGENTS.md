@@ -12,8 +12,10 @@ nothing. So the test is never "is this true and useful" (almost everything is) b
 
 > **Is this worth removing something else to make room for?**
 
-If no, it does not go here. If yes, name what you cut and cut it in the same change. Where it goes
-instead:
+If no, it does not go here. If yes, name what you cut and cut it in the same change — though while
+the file is *under* 150 that room already exists, so add freely without removing anything: spare
+budget is there to be spent, and a file that uses it well beats one that leaves it on the table.
+Where it goes instead:
 
 1. **Has a detectable trigger** ("when editing a table", "when touching the PDF pipeline") → a
    **skill**, loaded only when needed and costing nothing otherwise. This is the default answer.

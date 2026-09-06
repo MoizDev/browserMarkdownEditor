@@ -93,6 +93,8 @@ The application features two distinct viewing modes:
 - **Read Mode (Default):** Files open in this mode by default. Markdown syntax is fully rendered and hidden, and the document is locked from accidental edits.
 - **Edit Mode:** Clicking the toggle button (or pressing \`Cmd + E\` / \`Ctrl + E\`) switches the editor to Edit Mode. You can now type and edit.
 
+Reading is the mode in which a link is a link: in Read Mode a web address is clickable, and in Edit Mode it is text you can edit. See *Links*.
+
 ### Live Preview
 Even in Edit Mode, the editor uses a "Live Preview" system. Markdown syntax (like bold asterisks or heading hashes) is hidden on lines you are not actively editing. When your cursor moves to a line, the raw syntax is revealed so you can modify it.
 
@@ -177,10 +179,30 @@ The editor supports standard Markdown and advanced formatting.
 ### Header 3
 
 ### Text Styling
-**Bold Text** using double asterisks.
-*Italic Text* using single asterisks.
-~~Strikethrough~~ using double tildes.
-==Highlighted Text== using double equals signs.
+Wrap the text in the marker on both sides. What you type, and what you get:
+- \`**Bold Text**\` gives **Bold Text** — double asterisks.
+- \`*Italic Text*\` gives *Italic Text* — single asterisks.
+- \`~~Strikethrough~~\` gives ~~Strikethrough~~ — double tildes.
+- \`==Highlighted Text==\` gives ==Highlighted Text== — double equals signs.
+
+Note how each marker above shows as itself when it is wrapped in backticks: anything inside \`code\` is text being quoted rather than formatting being applied, which is how this guide can print the syntax it is describing.
+
+### Links
+Three ways of writing one, all of them ordinary Markdown:
+- \`[Anthropic](https://www.anthropic.com)\` — a label, and the address behind it. Only the label shows.
+- \`<https://www.anthropic.com>\` — the address as its own label. The angle brackets are syntax and hide like any other.
+- \`https://www.anthropic.com\` on its own — just paste it in. \`www.anthropic.com\` and a plain email address are picked up the same way.
+
+A link's label is ordinary text, so the formatting above works inside it — \`[the **important** part](https://www.anthropic.com)\` gives you [the **important** part](https://www.anthropic.com), and the whole of it is one link.
+
+**In Read Mode a link is clickable, and opens in a new browser tab** so the note you were reading is still there behind it. It is a real link, so hovering over it shows the browser where it leads. In Edit Mode it stays text, so that clicking it puts the cursor in it — press \`Cmd + E\` / \`Ctrl + E\` to read, then click.
+
+Only addresses that lead somewhere outside the app are made clickable — \`https:\`, \`http:\`, \`mailto:\` and \`tel:\`. A link to a path inside your vault, or to a heading (\`[see below](#chapter-two)\`), is styled but does nothing; use \`[[Note Name]]\` for those (see *Wiki Links*). The same goes for a \`javascript:\` or \`data:\` address, the two a note from someone else could use to attack your vault: it still looks like a link, but clicking it does nothing at all.
+
+An address written *inside* a label — \`[read this https://example.com now](https://www.anthropic.com)\` — is part of the label and nothing more: the whole label leads to the one address in the brackets after it, so there is never a second, different destination hiding inside a link you are about to click.
+
+### Wiki Links
+\`[[Note Name]]\` links to another note in the vault by its name, and \`[[Note Name|what to call it]]\` shows different text. Type \`[[\` and the editor offers the notes you have. Clicking one **opens that note in a new tab inside the app** — it never leaves the browser page you are on. This works in both modes.
 
 ### Lists
 Unordered Lists:

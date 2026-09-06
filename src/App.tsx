@@ -187,6 +187,26 @@ function sameGraph(a: GraphData, b: GraphData): boolean {
   return true;
 }
 
+/**
+ * Is this keystroke ⌘/Ctrl + `letter`, whatever case the OS reported?
+ *
+ * `e.key` carries the CHARACTER the layout produced, so with Caps Lock on it is
+ * `'E'` and a bare `e.key === 'e'` silently stops matching — ⌘E just did
+ * nothing, with no feedback of any kind, for as long as the light was on.
+ * Lower-casing is the fix; the `shiftKey` test is what keeps it honest.
+ *
+ * Caps Lock and Shift are indistinguishable in `e.key` — both give `'E'` — and
+ * `e.shiftKey` is the only thing that tells them apart. It is tested rather
+ * than ignored because ⌘⇧S / ⌘⇧N / ⌘⇧E are conventionally DIFFERENT commands
+ * (Save As, New Window, …): firing the unshifted action on them would both
+ * surprise the user and spend three chords this app may want later. So Caps
+ * Lock is accepted and Shift is declined, which is exactly the distinction a
+ * user would draw.
+ */
+function isCmdLetter(e: KeyboardEvent, letter: string): boolean {
+  return (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === letter;
+}
+
 export default function App() {
   const {
     rootHandle,
@@ -1579,12 +1599,12 @@ export default function App() {
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      if (isCmdLetter(e, 's')) {
         e.preventDefault();
         flushTab(activeTabPathRef.current, true);
       }
       // Cmd+N — create new note in vault root
-      if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
+      if (isCmdLetter(e, 'n')) {
         e.preventDefault();
         if (rootHandle) {
           const name = prompt('New note name (e.g. "note.md"):');
@@ -1592,7 +1612,7 @@ export default function App() {
         }
       }
       // Cmd+E — toggle read/edit mode of the active tab
-      if ((e.metaKey || e.ctrlKey) && e.key === 'e') {
+      if (isCmdLetter(e, 'e')) {
         e.preventDefault();
         toggleTabMode(activeTabPathRef.current);
       }

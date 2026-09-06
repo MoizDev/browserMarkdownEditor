@@ -1,6 +1,7 @@
 import { EditorView, Decoration, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
+import type { SyntaxNode } from '@lezer/common';
 import { EditorSelection, Prec, RangeSet, RangeValue } from '@codemirror/state';
 import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
@@ -119,6 +120,146 @@ function wikiLinkMark(target: string): Decoration {
     return dec;
 }
 
+/* ── Following an external link ───────────────────────────────────────────
+ *
+ * In READING mode the three outward-pointing link forms — `[label](url)`,
+ * `<url>` and a bare `https://…` — are marked up as real <a> elements, so a
+ * click is the browser's own navigation and the affordances that come with it
+ * (⌘-click, middle-click, the status-bar preview) work without this app
+ * implementing any of them. One is missing rather than declined: this pane
+ * preventDefaults `contextmenu` to raise the app's own menu, which has no "Copy
+ * link address" row yet. Adding one there is what closes that gap.
+ *
+ * Editing mode keeps the plain span it has always had: there, contenteditable
+ * owns the click, and a link is text being written rather than a target being
+ * followed.
+ *
+ * The destination is therefore the whole of the security story, and it is not
+ * a theoretical one: this origin holds the vault's directory handle with
+ * permission already granted, so a `javascript:` href in someone else's note
+ * would run with read/write over every file in the vault, and a page opened
+ * without `noopener` gets a window handle on that same origin. Everything below
+ * restates only what is specific to it; this is the premise under all of it.
+ */
+const SAFE_PROTOCOLS = new Set(['https:', 'http:', 'mailto:', 'tel:']);
+/** CommonMark's `<a@b.com>` and GFM's bare `a@b.com` both mean `mailto:`. The
+ *  colon exclusion is load-bearing: `mailto:a@b.com` satisfies every other part
+ *  of this shape, and would otherwise be handed a second `mailto:`. */
+const BARE_EMAIL = /^[^\s@<>:]+@[^\s@<>:]+\.[^\s@<>]+$/;
+/** GFM autolinks a bare `www.` host too, with the scheme left implicit. Nothing
+ *  schemed can start with `www.`, so this is safe to test before the parse. */
+const BARE_WWW = /^www\.[^\s<>]+$/i;
+
+/**
+ * The href to hand the reader, or null for anything that must stay inert text.
+ *
+ * The check IS the parse, and that is the whole design. Chromium drops tab, LF
+ * and CR from a URL before reading its scheme, so `java<LF>script:` navigates as
+ * `javascript:` while the document text shows no such scheme — so any test that
+ * reads one string and links another is wrong for that entire class of input,
+ * not just for the characters someone remembered to strip. `new URL()` runs the
+ * same WHATWG parse the navigator will, and the href handed on is the one it
+ * produced, so the two cannot disagree. It normalizes on the way through — a
+ * bare origin gains its trailing slash, a space becomes %20 — which is
+ * invisible in the note and correct in the status bar.
+ *
+ * Relative destinations (`notes/other.md`, `#heading`, `../x`) have no scheme
+ * and throw here, which is the wanted answer rather than an accident: an <a>
+ * pointing at one navigates the single-page app itself away, taking the vault's
+ * granted directory handle with it. `[[wikilinks]]` are this app's in-app link
+ * and have their own click path in DocumentPane; a relative path has no handler
+ * at all, so it is left looking exactly as it did before.
+ */
+function externalHref(raw: string): string | null {
+    const text = raw.trim();
+    const candidate = BARE_WWW.test(text) ? `https://${text}`
+        : BARE_EMAIL.test(text) ? `mailto:${text}`
+            : text;
+    let url: URL;
+    try {
+        url = new URL(candidate);
+    } catch {
+        return null;
+    }
+    return SAFE_PROTOCOLS.has(url.protocol) ? url.href : null;
+}
+
+/* Cached by href for the same reason wikilinks are cached by target: one note
+   repeats a handful of destinations, and the key space accumulates only across
+   documents opened in a session (see DEC_CACHE_MAX above). */
+const externalLinkCache = new Map<string, Decoration>();
+function externalLinkMark(href: string): Decoration {
+    let dec = externalLinkCache.get(href);
+    if (!dec) {
+        dec = Decoration.mark({
+            tagName: 'a',
+            class: 'cm-live-link cm-external-link',
+            // CodeMirror sets these with setAttribute, so no note text is ever
+            // parsed as markup on the way in — this is not a second innerHTML
+            // sink, and must not become one.
+            //
+            // `noopener` is load-bearing rather than habit: without it the page
+            // that opens gets a `window.opener` handle on THIS origin, the one
+            // holding the vault's directory permission.
+            attributes: { href, target: '_blank', rel: 'noopener noreferrer' },
+        });
+        cachePut(externalLinkCache, href, dec);
+    }
+    return dec;
+}
+
+/** The mark a link's visible text wears: a real anchor when the destination is
+ *  one a reader can safely be sent to, and the inert accent styling otherwise. */
+function linkTextMark(state: EditorState, url: SyntaxNode | null, readMode: boolean): Decoration {
+    if (!readMode || !url) return LINK_MARK;
+    // CommonMark allows an angle-bracket wrapper on the destination: [a](<b c>).
+    const dest = state.doc.sliceString(url.from, url.to).replace(/^<([^]*)>$/, '$1');
+    const href = externalHref(dest);
+    return href ? externalLinkMark(href) : LINK_MARK;
+}
+
+/** The nodes that own a `URL` child and decorate it themselves. One list,
+ *  because the bare-URL branch's exclusion test and the branches that handle
+ *  those nodes are the same fact stated twice: a fourth wrapper form reaching
+ *  only one of them decorates a URL twice, or silently stops linking it. */
+const URL_WRAPPERS = new Set(['Link', 'Autolink', 'Image', 'LinkReference']);
+
+/**
+ * Is this node somewhere inside a `[label](url)` — i.e. under a link that has
+ * already decided where a click on it goes?
+ *
+ * The companion to URL_WRAPPERS, and the reason it is not enough on its own.
+ * A link's label wears ONE mark for its whole width — a real `<a>` in reading
+ * mode — and nothing beneath it may mint a second, because a nested anchor
+ * takes its href from the LABEL TEXT: `[click here <https://evil.example>](https://good.example)`
+ * renders the destination the reader was shown, wrapped around an anchor to the
+ * one the label chose, and a click lands on the INNER one. That is exactly the
+ * substitution the scheme allowlist and URL_WRAPPERS exist to prevent, arriving
+ * through the door neither watches — `Autolink` is not a `URL`, so URL_WRAPPERS
+ * never sees it. (An HTML parser refuses to nest two `<a>`s; CodeMirror builds
+ * decorations with createElement, so here they really do nest. Verified.)
+ *
+ * ANCESTORS, not `node.parent`: an autolink or a bare URL can sit under an
+ * Emphasis under the Link — `[a **<https://evil.example>** b](https://good.example)`
+ * — and a parent-only test reads `StrongEmphasis` and waves it through. The walk
+ * is a handful of steps up a shallow inline tree and runs only on the two link
+ * branches, so a document with no autolinks in it pays nothing for this.
+ *
+ * ANY `Link` ancestor counts, including one whose own destination was rejected
+ * or never parsed (a reference link, `[a <url> b][ref]`). That costs a clickable
+ * URL in a construct nobody writes, and buys a rule with no exceptions in it: a
+ * URL inside a link's label is never separately followable. The narrower version
+ * would have to re-derive, at every ancestor, whether that link ended up wearing
+ * an anchor — which is the kind of condition that drifts out of step with the
+ * branch it is mirroring.
+ */
+function insideLinkLabel(node: SyntaxNode): boolean {
+    for (let p = node.parent; p; p = p.parent) {
+        if (p.name === 'Link') return true;
+    }
+    return false;
+}
+
 /** The single-argument, curried asset resolver the editor subsystem consumes. */
 type GetAssetUrl = (fileName: string) => Promise<string | null>;
 
@@ -202,6 +343,14 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     const analysis = analyzeDoc(state);
     const { doc, codeRanges, mathRegions } = analysis;
     const intersectsMath = (a: number, b: number) => overlapsMath(analysis, a, b);
+    // The same question asked of code, named for the same reason: four regex
+    // passes below need it, and a hand-copied half-open comparison at each is
+    // how the copies drift apart. The highlight pass is the evidence — it never
+    // had a copy at all, so `==x==` inside backticks rendered as a highlight and
+    // no note could print the syntax it was documenting. The table pass keeps
+    // its own CONTAINMENT test: a different question, and it says so where it
+    // asks it.
+    const intersectsCode = (a: number, b: number) => codeRanges.some(r => a < r.to && b > r.from);
 
     syntaxTree(state).iterate({
         enter(node) {
@@ -368,25 +517,140 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 return false;
             }
 
-            // === LINKS ===
+            // === LINKS: [label](url) ===
             if (name === 'Link') {
                 if (editorMode !== 'read' && cursorInRange(state, from, to)) return;
 
-                const content = state.doc.sliceString(from, to);
-                const match = content.match(/^\[([^\]]*)\]\(([^)]*)\)$/);
-                if (!match) return;
+                // Geometry comes from the tree, not from a regex over the node's
+                // text. The regex this replaced was /^\[([^\]]*)\]\(([^)]*)\)$/,
+                // which a destination containing a parenthesis could not match —
+                // so a Wikipedia link, `[Foo](https://en.wikipedia.org/wiki/Foo_(bar))`,
+                // stayed raw markdown even in reading mode. A title was mangled
+                // the other way: match[2] on `[t](url "T")` was `url "T"`, which
+                // would become a broken href the moment anything read it.
+                //
+                // The LinkMark children are `[ ] ( )` in document order. All
+                // four means a real destination group; fewer means there is
+                // none at all — a reference link (`[a][ref]`), a shortcut link
+                // (`[a]`), or the stray Link that `[[wikilink]]` parses into —
+                // and each is left to whatever really owns it. Counting the
+                // marks is what the old regex's `\]\(` was testing for.
+                const marks = node.node.getChildren('LinkMark');
+                if (marks.length < 4) return;
 
-                const linkText = match[1];
-                const linkTextStart = from + 1; // after [
-                const linkTextEnd = linkTextStart + linkText.length;
+                const linkTextStart = from + 1;    // after [
+                const linkTextEnd = marks[1].from; // the ] closing the label
+                // A mark decoration may not be empty, and hiding both sides of
+                // an empty one would erase `[](url)` from the view outright.
+                // Showing it as written is the honest failure.
+                if (linkTextEnd <= linkTextStart) return;
+
+                // The destination is the URL after the `(` — NOT getChild('URL').
+                // GFM autolinks a bare URL inside the LABEL too, and that one is
+                // an earlier direct child of this very Link node, so the first
+                // URL child of `[see https://a](https://b)` is https://a. Taking
+                // it would hand the reader an href chosen by the label text: the
+                // exact substitution the scheme allowlist exists to prevent.
+                // `[label]()` has a `(…)` group and no URL in it, hence the null.
+                const after = marks[2].nextSibling;
+                const url = after?.name === 'URL' ? after : null;
 
                 // Hide [
-                decorations.push(HIDE.range(from, from + 1));
+                decorations.push(HIDE.range(from, linkTextStart));
                 // Hide ](url)
                 decorations.push(HIDE.range(linkTextEnd, to));
-                // Style link text
-                decorations.push(LINK_MARK.range(linkTextStart, linkTextEnd));
+                // Style link text — and, in reading mode, make it a real anchor.
+                decorations.push(linkTextMark(state, url, editorMode === 'read').range(linkTextStart, linkTextEnd));
 
+                // DESCEND — the label is inline Markdown like any other run of
+                // text, and `[a **b** c](url)` showed its literal asterisks for
+                // as long as this branch returned false. The parser had already
+                // built the StrongEmphasis node; the walk simply never reached
+                // it. `return` hands the label's children to the same emphasis /
+                // strikethrough / inline-code branches above, so a label formats
+                // exactly as the same text would outside a link.
+                //
+                // Three things make descending safe rather than merely tempting,
+                // and each is worth knowing before touching this:
+                //
+                //  1. The tail `](url)` is walked too, and must decorate NOTHING
+                //     — it sits under the HIDE just pushed, so anything drawn
+                //     there is invisible work at best. It decorates nothing
+                //     because `LinkMark` and `LinkTitle` have no branch, and the
+                //     destination `URL` is excluded by URL_WRAPPERS, which lists
+                //     `Link` precisely so a URL its wrapper already handled is
+                //     not handled twice.
+                //  2. Nothing under the label may mint a SECOND anchor, because
+                //     a nested one takes its href from the label text and is the
+                //     one a click actually lands on. A label can hold exactly
+                //     two things that would: a bare `URL`, which GFM autolinks
+                //     as a direct child, and an `Autolink`. `URL_WRAPPERS` stops
+                //     the first where it sits; `insideLinkLabel` stops both
+                //     wherever they sit, including under an emphasis, which is
+                //     the case a `node.parent` test waves through. A `Link`
+                //     cannot nest inside a `Link` at all — the outer one simply
+                //     does not parse — so there is no third.
+                //  3. The hidden `**` markers land strictly inside the label's
+                //     own mark. A replace nested in a mark is ordinary for
+                //     CodeMirror (the mark simply wraps the pieces either side),
+                //     and the emphasis branches place their marks on the INNER
+                //     text only, so nothing here overlaps a hide.
+                //
+                // Edit mode already proved the shape: the revealed-by-caret
+                // early return above is a plain `return`, so a link under the
+                // caret has descended into its label since before this branch
+                // used the tree at all. The cost is measured, not assumed: five
+                // extra `enter` calls for a plain link, eight for a bolded one,
+                // fifteen for the worst realistic label — purely additive, with
+                // no per-node scan, on a walk that already visits every node in
+                // the document.
+                return;
+            }
+
+            // === ANGLE AUTOLINKS: <https://example.com> ===
+            // CommonMark's bracketed form. The angle brackets are syntax like
+            // any other, so they hide once the caret leaves — the URL itself is
+            // already the label, so nothing else changes.
+            if (name === 'Autolink') {
+                if (editorMode !== 'read' && cursorInRange(state, from, to)) return;
+
+                const url = node.node.getChild('URL');
+                if (!url) return;
+
+                decorations.push(HIDE.range(from, url.from));
+                decorations.push(HIDE.range(url.to, to));
+                // Inside a link's LABEL the angle brackets still hide — that is
+                // cosmetic and harmless — but no anchor is minted, because the
+                // enclosing link already owns the click. See insideLinkLabel:
+                // the nested `<a>` would be the one a reader actually followed,
+                // with an href the label picked.
+                const anchor = editorMode === 'read' && !insideLinkLabel(node.node);
+                decorations.push(linkTextMark(state, url, anchor).range(url.from, url.to));
+
+                return false;
+            }
+
+            // === BARE URLS: https://example.com, www.example.com, a@b.com ===
+            // What GFM's autolinker leaves on running prose: a URL node with no
+            // wrapper of any kind. `Autolink` returns false above once it has a
+            // URL child, and `Link` DESCENDS into its label — where GFM leaves a
+            // bare URL as a direct child of the Link itself — so both a wrapper's
+            // own URL and a label's stray one arrive here and must be declined.
+            if (name === 'URL') {
+                // Nothing to hide and nothing to reveal, so edit mode is left
+                // exactly as it was: bare text the syntax highlighter colours —
+                // and the guard comes first, so a URL-dense note pays nothing
+                // per keystroke for a branch that would do nothing anyway.
+                if (editorMode !== 'read') return false;
+                if (URL_WRAPPERS.has(node.node.parent?.name ?? '')) return false;
+                // The parent test above catches a URL sitting DIRECTLY under the
+                // link; this catches `[a **https://evil.example** b](https://good.example)`,
+                // where the parent it reads is `StrongEmphasis`. Same rule, one
+                // level further out — see insideLinkLabel.
+                if (insideLinkLabel(node.node)) return false;
+
+                const href = externalHref(state.doc.sliceString(from, to));
+                if (href) decorations.push(externalLinkMark(href).range(from, to));
                 return false;
             }
 
@@ -522,7 +786,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
             if (match[0].length % 2 !== 0) continue;
             if (doc[from - 1] === '\\') continue; // \$ — literal dollar
             if (intersectsMath(from, to)) continue;
-            if (codeRanges.some(r => from < r.to && to > r.from)) continue;
+            if (intersectsCode(from, to)) continue;
             decorations.push(LATEX_DELIM.range(from, to));
         }
     }
@@ -535,6 +799,14 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         const to = from + match[0].length;
 
         if (intersectsMath(from, to)) continue;
+        // The third regex pass that has to re-derive by hand what the parser
+        // already knows: Lezer does not inline-parse inside a code span, so the
+        // TREE branches get code-skipping for free, but a regex over the raw
+        // text does not and matches straight through the backticks. Without
+        // this, `==x==` written in code rendered as a highlight — so the one
+        // note that most needs to print the syntax, the Help guide's own
+        // Markdown reference, was the one note that could not.
+        if (intersectsCode(from, to)) continue;
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 
         // Hide ==
@@ -571,7 +843,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         // text. It matters more here than for the other constructs: an image is
         // never revealed by the cursor and its range is atomic, so a quoted
         // embed rendered as a picture could not be read or edited back at all.
-        if (codeRanges.some(r => from < r.to && to > r.from)) continue;
+        if (intersectsCode(from, to)) continue;
         if (editorMode !== 'read' && caretInsideRange(state, from, to)) continue;
 
         const selected = imageCtx.editable && selection.from === from && selection.to === to;
@@ -598,6 +870,12 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         const target = (pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner).split('#')[0].trim();
 
         if (intersectsMath(from, to)) continue;
+        // A wikilink written inside code is being QUOTED, not linked — the same
+        // rule the image pass above applies, and for a weaker but real version
+        // of the same reason: a note documenting the syntax (the Help guide is
+        // one) would otherwise show the rendered link where the brackets it is
+        // explaining ought to be, and the reader is never shown what to type.
+        if (intersectsCode(from, to)) continue;
         // While editing, reveal the raw syntax when the cursor is inside it.
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 
@@ -608,14 +886,14 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         decorations.push(HIDE.range(from, innerStart));
         decorations.push(HIDE.range(innerEnd, to));
 
-        const linkMark = wikiLinkMark(target);
+        const mark = wikiLinkMark(target);
         if (pipeIndex >= 0) {
             // Hide "target|" and show only the alias text.
             const pipePos = innerStart + pipeIndex;
             decorations.push(HIDE.range(innerStart, pipePos + 1));
-            decorations.push(linkMark.range(pipePos + 1, innerEnd));
+            decorations.push(mark.range(pipePos + 1, innerEnd));
         } else {
-            decorations.push(linkMark.range(innerStart, innerEnd));
+            decorations.push(mark.range(innerStart, innerEnd));
         }
     }
 

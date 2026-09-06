@@ -2769,6 +2769,26 @@ li[aria-selected] .cm-completionMatchedText {
   cursor: pointer;
 }
 
+/* Only the hover. The read-mode anchor carries .cm-live-link too, and an author
+   declaration outranks the UA sheet's a:link/a:visited colours by origin alone,
+   so the base colour above already reaches it in every state — restating it
+   here would give one colour two owners, and the read-mode one would win.
+   Hover matches .cm-wikilink's: the two are one gesture, aimed elsewhere. */
+.cm-external-link:hover {
+  color: var(--interactive-accent-hover);
+}
+
+/* A struck word inside a link label keeps the LINK's colour. .cm-live-strikethrough
+   mutes its own text, which is right in prose — struck text is text withdrawn —
+   but inside a label it broke the colour mid-link while the underline ran on
+   through it, so the struck part read as body text that had wandered into a
+   link. Only strikethrough sets a colour of its own; bold, italic, code and
+   highlight already inherit. This became visible when the Link branch started
+   descending into its label — before that, nothing inside one ever rendered. */
+.cm-live-link .cm-live-strikethrough {
+  color: inherit;
+}
+
 /* ── List Items ── */
 .cm-live-list-item {
   padding-left: calc(36px + var(--list-indent, 0) * 28px) !important;

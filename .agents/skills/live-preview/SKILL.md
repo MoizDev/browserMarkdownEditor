@@ -20,8 +20,8 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   each left-to-right, but tables are appended after images, so the combined array is **not** sorted.
 - `buildDecorations` walks the Lezer syntax tree **plus** regex passes, in this order: `analyzeDoc`
   (flatten + code ranges + math regions) → one tree walk (headings, emphasis, strikethrough, inline
-  code, fences incl. mermaid, links, blockquote, list items, HR) → math regions → `$`-delimiter
-  feedback → `==highlight==` → image embeds → wikilinks → tables.
+  code, fences incl. mermaid, links + autolinks + bare URLs, blockquote, list items, HR) → math
+  regions → `$`-delimiter feedback → `==highlight==` → image embeds → wikilinks → tables.
 - `cursorInRange`/`cursorOnLine` decide when to reveal raw syntax — only in edit mode, and **images
   and tables are the two constructs that never reveal** (each has its own rules). The table branch
   does not call `cursorInRange` at all. **Read mode is a pure function of the document** (every
@@ -177,6 +177,94 @@ accident.
 - `retryMissingAssets()` re-runs *only* the failed resolutions when an asset comes back (undo).
   Rebuilding the widgets instead would flash every other image in the document through its
   placeholder.
+
+# Links: read mode emits real `<a>` elements
+
+Three tree branches, one shared helper, and a security boundary that is easy to walk back into.
+
+- **Three node names, not one.** `[a](b)` is `Link`; `<https://x>` is `Autolink` (both with a `URL`
+  child); a bare `https://x`, `www.x` or `a@b.com` in running prose is a **top-level `URL` node with
+  no wrapper**, produced by GFM's autolinker, which `markdownLanguage` enables through its base. The
+  bare-`URL` branch therefore has to test `node.parent` — `Link`/`Autolink` `return false` once they
+  have a URL child, but their early returns (revealed-by-caret, a reference link) do descend.
+- **Only reading mode gets the anchor.** `linkTextMark()` returns `externalLinkMark(href)` when
+  `editorMode === 'read'` and the destination passes `externalHref`, and the shared attribute-free
+  `LINK_MARK` otherwise. Edit mode is deliberately unchanged: contenteditable owns the click there,
+  and an anchor in it would be a draggable, un-followable decoy. This keeps read mode a pure function
+  of the document — the branch reads `editorMode`, never the selection.
+- **`externalHref` is the whole security boundary, and the check IS the parse.** It runs the text
+  through `new URL()` — the same WHATWG parse the navigator will run — and links `url.href`, the
+  string that parse produced, when `url.protocol` is in the `SAFE_PROTOCOLS` allowlist. That identity
+  is the design: Chromium drops tab/LF/CR before reading a scheme, so anything testing one string
+  while linking another passes `java\nscript:`, and no hand-maintained control-character class closes
+  that class of input the way delegating to the parser does. The two bare forms are prepended first
+  (`mailto:` for a bare email, `https://` for a bare `www.`); `BARE_EMAIL` excludes a colon so that
+  `mailto:a@b.com` is not handed a second scheme. Relative
+  destinations (`notes/x.md`, `#heading`) are rejected rather than resolved: an `<a>` at one navigates
+  the SPA away and the vault's granted directory handle goes with it. `[[wikilinks]]` are the in-app
+  link and keep their own `mousedown` path in `DocumentPane`. This is **not** a second `innerHTML`
+  sink — CodeMirror sets mark attributes with `setAttribute` — and must not become one.
+- **The one browser affordance a reader does not get is the link context menu**, because
+  `DocumentPane` preventDefaults `contextmenu` to raise the app's own. A "Copy link address" row
+  there would close it — `.cm-wikilink` has the same gap; see the `app-context-menu` skill.
+- `rel="noopener noreferrer"` is load-bearing, not habit: this origin holds the vault's directory
+  permission, so a `window.opener` handle on it is a real capability leak. Verified: `window.opener`
+  is `null` in the opened tab.
+- **Geometry comes from the tree, not a regex.** The `Link` branch reads `getChildren('LinkMark')`,
+  which is `[ ] ( )` in document order: `marks[1].from` ends the label, and the destination is
+  `marks[2].nextSibling` **when it is a `URL`**.
+  The regex this replaced, `/^\[([^\]]*)\]\(([^)]*)\)$/`, could not match a destination containing a
+  parenthesis — a Wikipedia URL — so such a link stayed raw markdown in *both* modes, and it folded a
+  link title into the destination.
+- **Never `getChild('URL')` on a `Link`.** GFM autolinks a bare URL inside the **label** too, and it
+  lands as an earlier direct child of the same `Link` node — so the first `URL` child of
+  `[see https://a](https://b)` is `https://a`. Using it hands the reader an href chosen by the label
+  text, which is precisely the substitution the scheme allowlist exists to stop; it also breaks the
+  geometry, because the `]` is then no longer two steps back from that node.
+- **Fewer than four `LinkMark`s means no `(…)` group at all** — a reference link (`[a][ref]`), a
+  shortcut link (`[a]`), or the stray `Link` that `[[wikilink]]` parses into. Fall through and leave
+  the range to whatever really owns it; the count is what the old regex's `\]\(` tested for.
+  A `(…)` group with nothing in it (`[label]()`) has no `URL`, and renders inert rather than raw.
+- **An empty label returns early rather than pushing an empty mark**: a mark may not be empty, and
+  hiding both sides of `[](url)` would erase it from the view. It stays visible as written.
+- **Which nodes wrap a `URL` is stated once**, in `URL_WRAPPERS`, tested by the bare-`URL` branch
+  against `node.parent`. Add a wrapper form and both the branch handling it and that exclusion must
+  learn about it; split lists double-decorate, or silently stop linking.
+- **The `Link` branch DESCENDS into its label** (`return`, not `return false`), so `[a **b** c](url)`
+  formats its label the way the same text formats outside a link — the parser had always built the
+  `StrongEmphasis`, the walk just never reached it. There is no `LinkText`/`LinkLabel` node on an
+  inline link: the label's inline nodes are **direct children of `Link`**, interleaved between the
+  four `LinkMark`s, and nothing straddles the `]`. Three facts keep descending safe. The tail
+  `](url "T")` decorates nothing (`LinkMark` and `LinkTitle` have no branch; the destination `URL` is
+  excluded by `URL_WRAPPERS`). The hidden `**` markers are a `replace` nested inside the label's own
+  `mark`, which CodeMirror handles by wrapping the pieces either side — and the emphasis branches
+  mark only the INNER text, so nothing overlaps a hide. And the reference/shortcut early return
+  (`marks.length < 4`) was **already** a plain `return`, so those labels have always descended; the
+  bug was specific to the four-mark inline form. Cost: five extra `enter` calls for a plain link,
+  eight for a bolded one, ~fifteen worst case — purely additive, no per-node scan. One CSS
+  consequence came with it: `.cm-live-strikethrough` is the only inline class that sets a **colour**,
+  so a struck word broke the link's colour mid-label — `.cm-live-link .cm-live-strikethrough` puts it
+  back to `inherit`. Any new inline class that sets a colour of its own needs the same treatment.
+- **Nothing inside a label may mint a second anchor**, and `URL_WRAPPERS` alone does not enforce it.
+  A nested `<a>` takes its href from the LABEL TEXT and is the one a click lands on —
+  `[click here <https://evil.example>](https://good.example)` — which is the substitution the scheme
+  allowlist exists to stop, arriving through the door `URL_WRAPPERS` cannot watch, because an
+  `Autolink` is not a `URL`. (An HTML parser refuses to nest two anchors; CodeMirror builds
+  decorations with `createElement`, so here they really do nest — verified in the browser.)
+  `insideLinkLabel(node)` walks **ancestors**, not `node.parent`, because either form can sit under
+  an `Emphasis` under the `Link`; the `Autolink` and bare-`URL` branches both consult it. It counts
+  ANY `Link` ancestor, a reference link included, which costs a clickable URL inside `[a <url> b][ref]`
+  and buys a rule with no exceptions in it.
+- **The wikilink, image and `==highlight==` regex passes all skip `codeRanges`** (via
+  `intersectsCode`, the sibling of `intersectsMath`), so a note documenting any of the three shows
+  the syntax instead of the rendered thing. The Help guide depends on this for all three — its
+  Markdown reference prints `` `==Highlighted Text==` `` alongside the rendered form, which it could
+  not do while the highlight pass was the one missing its copy of the guard. The tree branches need
+  no such guard, and the asymmetry is the point: they get code-skipping from the parser, while a
+  regex pass bypasses it and must re-derive by hand what Lezer already knows. **A new regex pass
+  inherits the omission, not the guard** — that is the failure mode to watch for. Parsing wikilinks
+  as a Lezer inline extension is the change that would retire these guards, and `findTables` with
+  them.
 
 # List editing (`src/editor/lists.ts`)
 

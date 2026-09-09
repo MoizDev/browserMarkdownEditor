@@ -6,7 +6,7 @@ import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type Pdf
 import { setPdfRenderData } from '../utils/pdfRenderCache';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
-import { CANVAS_COMPONENTS, applyPenDefaults } from './canvasPen';
+import { CANVAS_COMPONENTS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
 
 interface PdfAnnotateCanvasProps {
     filePath: string;
@@ -124,13 +124,22 @@ function refreshPageAsset(editor: Editor | null, index: number): void {
     });
 }
 
-function parseSnapshot(content: string): TLEditorSnapshot | undefined {
-    if (!content.trim()) return undefined;
+/**
+ * The snapshot embedded in an annotated PDF, plus the `ui` block beside it.
+ *
+ * tldraw's snapshots carry no styles at all (see CanvasUiState), so without
+ * this an annotated PDF reopened with the default colour and width however it
+ * was left — unlike a drawing or a notebook, which have always saved theirs.
+ * A file written before this block existed simply yields `ui: undefined`.
+ */
+function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: CanvasUiState } {
+    if (!content.trim()) return {};
     try {
-        return JSON.parse(content) as TLEditorSnapshot;
+        const { ui, ...snapshot } = JSON.parse(content) as TLEditorSnapshot & { ui?: CanvasUiState };
+        return { snapshot: 'document' in snapshot ? snapshot as TLEditorSnapshot : undefined, ui };
     } catch (err) {
         console.error('Could not parse PDF annotations (leaving the file untouched):', err);
-        return undefined;
+        return {};
     }
 }
 
@@ -159,6 +168,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     // (and could clobber in-progress strokes). PdfPane keys this component on
     // the file path, so a different file means a fresh mount and a fresh parse.
     const [parsed] = useState(() => parseSnapshot(snapshot));
+    const uiRef = useRef<CanvasUiState | undefined>(parsed.ui);
     const serializeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     /** Page images as they arrive, by page index. Read by the asset store. */
     const pageImagesRef = useRef<Array<PageImage | undefined>>([]);
@@ -308,7 +318,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
 
         // Frame the document only on a first-ever open. On a reopen the snapshot
         // restores the camera, and fitting would throw away where the user was.
-        if (!parsed) editor.zoomToFit();
+        if (!parsed.snapshot) editor.zoomToFit();
 
         for (const shape of editor.getCurrentPageShapes()) {
             if (shape.meta?.pdfPage !== undefined) pageShapeIdsRef.current.add(shape.id);
@@ -496,13 +506,24 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             // Hand the binary to the save path, then report the snapshot as this
             // tab's content — that marks it dirty and triggers the write.
             setPdfRenderData(filePath, { original, overlays });
-            const json = JSON.stringify(getSnapshot(editor.store));
+            uiRef.current = readCanvasUi(editor);
+            const json = JSON.stringify({ ...getSnapshot(editor.store), ui: uiRef.current });
             if (immediate) onFlushNowRef.current(filePath, json);
             else onContentChangeRef.current(filePath, json);
         };
 
+        // Before applyPenDefaults, whose shape handler reads the width this
+        // seeds, and before the listeners attach — restoring what the file
+        // already says must not mark it dirty and rewrite the whole PDF.
+        applyCanvasUi(editor, uiRef.current);
         const disposePen = applyPenDefaults(editor);
 
+        /* Deliberately document-scope only, unlike a drawing or a notebook,
+           which also save when the pen alone changes. A PDF's save REBUILDS THE
+           WHOLE DOCUMENT (~150ms per annotated page), so doing that because a
+           colour was clicked would stall the pen for nothing. The pen is
+           captured by the next stroke's flush instead, which is the moment it
+           first matters. */
         const unlisten = editor.store.listen(() => {
             hasUnsavedRef.current = true;
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
@@ -523,7 +544,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 void flush(true);
             }
         };
-    }, [filePath, original, pages, parsed]);
+    }, [filePath, original, pages, parsed.snapshot]);
 
     if (error) {
         return (
@@ -540,7 +561,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     return (
         <div className="drawing-pane pdf-annotate-pane">
             <Tldraw
-                snapshot={parsed}
+                snapshot={parsed.snapshot}
                 assets={assetStore}
                 onMount={handleMount}
                 components={CANVAS_COMPONENTS}

@@ -59,7 +59,10 @@ export default function CanvasStylePanel() {
     const editor = useEditor();
     const color = useCurrentColor(editor);
     const swatches = useSwatchColors(editor);
-    const scale = useSyncExternalStore(subscribePenScale, getPenScale, getPenScale);
+    // This canvas's own width, not the app's: two files can be on screen at
+    // once in a split, each remembering its own pen.
+    const readScale = useCallback(() => getPenScale(editor), [editor]);
+    const scale = useSyncExternalStore(subscribePenScale, readScale, readScale);
 
     const pickColor = useCallback((next: TLDefaultColorStyle) => {
         editor.run(() => {
@@ -71,7 +74,7 @@ export default function CanvasStylePanel() {
 
     const changeWidth = useCallback((position: number) => {
         const next = sliderToPenScale(position);
-        setPenScale(next);
+        setPenScale(editor, next);
         // Apply to anything selected, so the slider re-inks a stroke already
         // drawn rather than only the next one.
         const selected = editor.getSelectedShapes().filter(s => 'scale' in s.props);

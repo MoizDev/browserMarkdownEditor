@@ -2271,6 +2271,173 @@ body.is-resizing-panes * {
   --tl-color-text-3: var(--canvas-chrome-muted);
 }
 
+/* The eight folder colours, one value per theme.
+   A `.folders.json` stores the NAME, so the same folder is legible on a dark
+   sidebar and a light one — a single hex cannot be both. Dark first, since an
+   absent data-theme means dark in this app. */
+:root {
+  --folder-red: #dc2626;
+  --folder-orange: #ea580c;
+  --folder-amber: #d97706;
+  --folder-green: #16a34a;
+  --folder-teal: #0d9488;
+  --folder-blue: #2563eb;
+  --folder-violet: #7c3aed;
+  --folder-pink: #db2777;
+}
+
+:root:not([data-theme="light"]) {
+  --folder-red: #f87171;
+  --folder-orange: #fb923c;
+  --folder-amber: #fbbf24;
+  --folder-green: #4ade80;
+  --folder-teal: #2dd4bf;
+  --folder-blue: #60a5fa;
+  --folder-violet: #a78bfa;
+  --folder-pink: #f472b6;
+}
+
+/* A folder's chosen colour tints its ICON only — the label keeps the normal
+   text colour, so a tree of customized folders still reads as a list of names
+   rather than a set of highlights. */
+.tree-item .folder-icon[style*="--folder-color"] {
+  color: var(--folder-color);
+}
+
+/* ── "Choose icon / colour", the flyout off a folder's context menu ─────── */
+.folder-style-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 268px;
+  padding: 10px;
+}
+
+.folder-style-loading {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.folder-style-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.folder-style-heading {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.folder-style-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.folder-style-color {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--folder-color);
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--background-modifier-border);
+}
+
+/* "No colour" reads as an empty well rather than another swatch. */
+.folder-style-color.is-none {
+  background: transparent;
+  box-shadow: 0 0 0 1px var(--background-modifier-border) inset;
+}
+
+.folder-style-color:hover {
+  box-shadow: 0 0 0 2px var(--text-muted);
+}
+
+.folder-style-color.selected {
+  box-shadow: 0 0 0 2px var(--background-secondary), 0 0 0 4px var(--interactive-accent);
+}
+
+.folder-style-search {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font: inherit;
+  font-size: 12px;
+}
+
+.folder-style-search:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
+.folder-style-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  /* The list is capped at 180 icons and search reaches the rest, so this scrolls
+     a bounded amount — the flyout itself must not grow past the viewport. */
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.folder-style-icon {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-normal);
+  cursor: pointer;
+}
+
+.folder-style-icon:hover {
+  background: var(--background-modifier-hover);
+}
+
+.folder-style-icon.selected {
+  background: var(--interactive-accent);
+  color: #fff;
+}
+
+.folder-style-empty,
+.folder-style-more {
+  margin: 0;
+  padding: 6px 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.folder-style-reset {
+  padding: 5px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-normal);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.folder-style-reset:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+}
+
+.folder-style-reset:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* =============================================================
    Live Preview — Styled Markdown Elements
    ============================================================= */

@@ -31,6 +31,11 @@ import { clampTabSize } from './editor/lists';
 import { retryMissingAssets } from './editor/imageWidget';
 import { getNotebookExporter, clearNotebookRenderData, moveNotebookRenderData } from './utils/notebookRenderCache';
 import { readLocation, vaultLinkName, writeLocation } from './utils/appUrl';
+import {
+  FOLDER_STYLE_FILE, emptyFolderStyles, forgetFolder, parseFolderStyles,
+  renameFolder, serializeFolderStyles, withFolderStyle, type IconNode,
+} from './utils/folderStyle';
+import { getFolderStyles, setFolderStyles } from './utils/folderStyleStore';
 import { setTableNotify } from './editor/tableEdit';
 import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/contextMenu';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
@@ -806,6 +811,62 @@ export default function App() {
       alert(`Could not create "${targetName}".`);
     }
   }, [createFile, readFileBytes, writeFileBytes]);
+
+  /**
+   * Read `<vault>/.folders.json` when the vault opens.
+   *
+   * Once per vault, not once per tree walk: the walk runs after every save, and
+   * a file read on that path would be a read per keystroke-triggered autosave
+   * (the rule AGENTS.md states for anything that touches the whole vault). The
+   * styles are held in a store from then on, and this app is the only writer.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    if (!rootHandle) { setFolderStyles(emptyFolderStyles()); return; }
+    (async () => {
+      try {
+        const handle = await rootHandle.getFileHandle(FOLDER_STYLE_FILE);
+        const text = await (await handle.getFile()).text();
+        if (!cancelled) setFolderStyles(parseFolderStyles(text));
+      } catch {
+        // No file yet is the ordinary case — a vault has none until a folder is
+        // given a look. Anything else unreadable is handled inside the parser.
+        if (!cancelled) setFolderStyles(emptyFolderStyles());
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [rootHandle]);
+
+  /**
+   * Persist the folder styles, and put them on screen at once.
+   *
+   * The store is updated first and the write follows, so a picked icon appears
+   * in the sidebar immediately rather than after a round trip to disk — the
+   * picker is a live preview, and it is being judged against the real tree.
+   */
+  const writeFolderStyles = useCallback(async (next: ReturnType<typeof getFolderStyles>) => {
+    setFolderStyles(next);
+    if (!rootHandle) return;
+    try {
+      // createFile opens-or-truncates, which is exactly right here: this file is
+      // the app's own and is rewritten whole every time.
+      const handle = await createFile(rootHandle, FOLDER_STYLE_FILE);
+      await writeFile(handle, serializeFolderStyles(next));
+    } catch (err) {
+      console.error(`Could not save ${FOLDER_STYLE_FILE}:`, err);
+      notify('Could not save how that folder looks.');
+    }
+  }, [createFile, notify, rootHandle, writeFile]);
+
+  /** Stable for the app's life: FileExplorer and TreeNode are both memoized. */
+  const handleStyleFolder = useCallback((
+    path: string,
+    icon: string | undefined,
+    color: string | undefined,
+    nodes?: IconNode[],
+  ) => {
+    void writeFolderStyles(withFolderStyle(getFolderStyles(), path, { icon, color }, nodes));
+  }, [writeFolderStyles]);
 
   /** PDF names this session has exported. Re-exporting must not ask about a
    *  file that is this notebook's own previous export. */
@@ -1603,6 +1664,14 @@ export default function App() {
         return;
       }
 
+      // A trashed folder's icon and colour go with it, along with every
+      // subfolder's — otherwise the entry sits in the file forever, and a new
+      // folder later given the same name would inherit a look nobody chose.
+      if (node.kind === 'directory') {
+        const remaining = forgetFolder(getFolderStyles(), node.path);
+        if (remaining !== getFolderStyles()) void writeFolderStyles(remaining);
+      }
+
       // What the deletion took with it. Read AFTER the move, not before: the
       // predicate is a path test and does not move, but a document opened while
       // the copy was running has to be closed too.
@@ -1614,7 +1683,7 @@ export default function App() {
     } finally {
       trashInFlightRef.current = false;
     }
-  }, [moveToTrash, removeTab, flushTab, ask, tell]);
+  }, [moveToTrash, removeTab, flushTab, ask, tell, writeFolderStyles]);
 
   /**
    * Follow every open document through a rename or a move.
@@ -1654,6 +1723,15 @@ export default function App() {
     // Read from the node's own children, the last description of the folder
     // before it moved, and done for ALL of them BEFORE the re-keys below (see
     // releaseOverwritten for why that order is load-bearing).
+    // A folder's icon and colour are keyed by its vault path, and so are its
+    // subfolders' — so a rename strands every one of them on a path nothing has
+    // any more. Done for the folder itself, not per open tab: a folder with no
+    // note open in it still has a look to carry.
+    if (isFolder) {
+      const restyled = renameFolder(getFolderStyles(), node.path, newPath);
+      if (restyled !== getFolderStyles()) void writeFolderStyles(restyled);
+    }
+
     const open = new Set(tabsRef.current.map(t => t.file.path));
     const sources = isFolder ? collectFiles(node.children).map(f => f.path) : [node.path];
     for (const source of sources) {
@@ -1689,7 +1767,7 @@ export default function App() {
         console.error('Could not follow a document to its new path:', from, '→', dest, err);
       }
     }
-  }, [rootHandle, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten]);
+  }, [rootHandle, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeFolderStyles]);
 
   /**
    * Keep the tree's disclosure state with the folder it describes.
@@ -1896,6 +1974,7 @@ export default function App() {
           onCloseSearch={closeSearch}
           onTrash={handleTrash}
           onOpenAsVault={handleOpenAsVault}
+          onStyleFolder={handleStyleFolder}
           expandedPaths={expandedPaths}
           onToggleExpand={handleToggleExpand}
           onMoveFile={handleMoveFile}

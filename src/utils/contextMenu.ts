@@ -57,12 +57,38 @@ export interface ContextMenuGrid {
     reason?: string;
 }
 
+/**
+ * A row that opens the folder icon/colour picker beside itself.
+ *
+ * Carries DATA, not a React node: this module is `src/utils/` and stays free of
+ * React (a table cell in `src/editor/` raises this menu). `ContextMenu` decides
+ * what a picker row renders, exactly as it does for the size grid.
+ */
+export interface ContextMenuFolderStyle {
+    kind: 'folder-style';
+    id: string;
+    label: string;
+    /** The folder's current look, so the picker opens showing it. */
+    icon?: string;
+    color?: string;
+    /** Applied live as the user picks, so a choice can be judged against the
+     *  real sidebar. `nodes` is the icon's artwork, which the caller stores. */
+    pick: (icon: string | undefined, color: string | undefined, nodes?: unknown) => void;
+    disabled?: boolean;
+    /** Becomes the row's `title`. REQUIRED when `disabled` — see above. */
+    reason?: string;
+}
+
 export interface ContextMenuSeparator {
     kind: 'separator';
     id: string;
 }
 
-export type ContextMenuEntry = ContextMenuCommand | ContextMenuGrid | ContextMenuSeparator;
+export type ContextMenuEntry =
+    | ContextMenuCommand
+    | ContextMenuGrid
+    | ContextMenuFolderStyle
+    | ContextMenuSeparator;
 
 export interface ContextMenuRequest {
     /** Viewport coordinates of the click the menu hangs from. */

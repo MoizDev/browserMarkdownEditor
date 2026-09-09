@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault } from '../utils/recentVaults';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
+import { FOLDER_STYLE_FILE } from '../utils/folderStyle';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath } from '../utils/paths';
 import type { FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult } from '../types';
@@ -108,6 +109,10 @@ async function buildFileTree(dirHandle: FileSystemDirectoryHandle, path = ''): P
 
     for await (const [name, handle] of dirHandle.entries()) {
         if (name === '.DS_Store') continue;
+        // The app's own record of how folders look. Hidden for the same reason
+        // .Assets and .Garbage are: it is bookkeeping, not something the reader
+        // put in their vault. Root-only, unlike those two — see folderStyle.ts.
+        if (!path && name === FOLDER_STYLE_FILE) continue;
         // Hide standard system folders from the UI. Every folder may hold its
         // own pair of them (see utils/assets.ts), so this is not a root-only test.
         if (handle.kind === 'directory' && (name === ASSETS_DIR || name === TRASH_DIR)) continue;

@@ -1,6 +1,9 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import TableSizeGrid from './TableSizeGrid';
 import type { ContextMenuRequest } from '../utils/contextMenu';
+
+// Lazy so the icon set stays out of the main bundle — see utils/lucideIcons.ts.
+const FolderStylePicker = lazy(() => import('./FolderStylePicker'));
 
 interface ContextMenuProps {
     /** What to draw, where to hang it, and who to give focus back to. One
@@ -77,9 +80,11 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
      *  place. */
     const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
-    /** The id of the grid row whose size picker is open, and the rect of that
-     *  row — the flyout hangs off the row, like a native submenu. */
-    const [grid, setGrid] = useState<{ id: string; anchor: DOMRect } | null>(null);
+    /** The id of the row whose flyout is open, and that row's rect — the
+     *  flyout hangs off the row, like a native submenu. Two kinds of row open
+     *  one (the table size flyout and the folder style picker); which component
+     *  goes inside is decided at render time from the entry. */
+    const [flyout, setFlyout] = useState<{ id: string; anchor: DOMRect } | null>(null);
     const [panelPos, setPanelPos] = useState<{ left: number; top: number } | null>(null);
 
     /* One menu REPLACING another does not remount this component — the store
@@ -94,7 +99,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
     if (shown !== request) {
         setShown(request);
         setPos(null);
-        setGrid(null);
+        setFlyout(null);
     }
 
     /* Which rows can hold focus, in the order the arrow keys walk them.
@@ -139,18 +144,18 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         });
     }, [request, rowIndex]);
 
-    // Same treatment for the size picker's flyout: beside the row it belongs
-    // to, flipped to the row's left when there is no room to its right.
+    // Same treatment for a flyout: beside the row it belongs to, flipped to the
+    // row's left when there is no room to its right.
     useLayoutEffect(() => {
         const el = panelRef.current;
-        if (!grid || !el) { setPanelPos(null); return; }
+        if (!flyout || !el) { setPanelPos(null); return; }
         const rect = el.getBoundingClientRect();
-        const right = grid.anchor.right + MARGIN;
+        const right = flyout.anchor.right + MARGIN;
         const left = right + rect.width + MARGIN > window.innerWidth
-            ? Math.max(MARGIN, grid.anchor.left - MARGIN - rect.width)
+            ? Math.max(MARGIN, flyout.anchor.left - MARGIN - rect.width)
             : right;
-        setPanelPos({ left, top: place(grid.anchor.top, rect.height, window.innerHeight) });
-    }, [grid]);
+        setPanelPos({ left, top: place(flyout.anchor.top, rect.height, window.innerHeight) });
+    }, [flyout]);
 
     /* Dismissal. Mirrors VaultMenu.tsx:61-77, with the two listeners a menu
        anchored to a VIEWPORT POINT needs and the vault button's menu did not:
@@ -250,12 +255,12 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
     /** Shut the flyout and put focus back on the row it came out of. Not
      *  inside the state updater: StrictMode invokes those twice, and moving
      *  focus is not something to do twice. */
-    const closeGrid = useCallback(() => {
-        if (!grid) return;
-        const row = itemsRef.current[rowIndex.get(grid.id) ?? -1];
-        setGrid(null);
+    const closeFlyout = useCallback(() => {
+        if (!flyout) return;
+        const row = itemsRef.current[rowIndex.get(flyout.id) ?? -1];
+        setFlyout(null);
         row?.focus();
-    }, [grid, rowIndex]);
+    }, [flyout, rowIndex]);
 
     const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
         switch (e.key) {
@@ -266,19 +271,19 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
             case 'ArrowLeft':
                 // Only meaningful while a flyout is open — otherwise leave the
                 // key alone rather than swallowing it.
-                if (grid) { e.preventDefault(); closeGrid(); }
+                if (flyout) { e.preventDefault(); closeFlyout(); }
                 break;
             default: break;
         }
     };
 
-    /** The flyout's own keys. Everything the grid handles it stops itself; what
+    /** The flyout's own keys. Everything the flyout handles it stops itself; what
      *  reaches here is ArrowLeft at the grid's left edge, which means "back to
      *  the menu". */
     const onPanelKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
         if (e.key !== 'ArrowLeft') return;
         e.preventDefault();
-        closeGrid();
+        closeFlyout();
     };
 
     /** Close FIRST, then act. A `run` that raises the app's dialog would
@@ -328,8 +333,8 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
 
                     const index = rowIndex.get(entry.id) ?? 0;
 
-                    if (entry.kind === 'grid') {
-                        const open = grid?.id === entry.id;
+                    if (entry.kind === 'grid' || entry.kind === 'folder-style') {
+                        const open = flyout?.id === entry.id;
                         return (
                             <button
                                 key={entry.id}
@@ -342,12 +347,12 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                 title={entry.reason}
                                 onClick={e => {
                                     const anchor = e.currentTarget.getBoundingClientRect();
-                                    setGrid(current => (current?.id === entry.id ? null : { id: entry.id, anchor }));
+                                    setFlyout(current => (current?.id === entry.id ? null : { id: entry.id, anchor }));
                                 }}
                                 onKeyDown={e => {
                                     if (e.key !== 'ArrowRight' || open) return;
                                     e.preventDefault();
-                                    setGrid({ id: entry.id, anchor: e.currentTarget.getBoundingClientRect() });
+                                    setFlyout({ id: entry.id, anchor: e.currentTarget.getBoundingClientRect() });
                                 }}
                             >
                                 {entry.label}
@@ -374,15 +379,15 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                 })}
             </div>
 
-            {/* The size picker is a flyout BESIDE the menu, not a modal: it has
-                no backdrop, takes no focus round trip and needs no change to
-                the app's ask()/tell() dialog — which could not host it anyway
-                (its children render inside a <p> and its confirm carries no
-                value). Positioned inline because only this component knows the
-                row it hangs off; the stylesheet gives it its chrome. */}
-            {grid && (() => {
-                const entry = request.entries.find(e => e.id === grid.id);
-                if (!entry || entry.kind !== 'grid') return null;
+            {/* A picker is a flyout BESIDE the menu, not a modal: it has no
+                backdrop, takes no focus round trip and needs no change to the
+                app's ask()/tell() dialog — which could not host one anyway (its
+                children render inside a <p> and its confirm carries no value).
+                Positioned inline because only this component knows the row it
+                hangs off; the stylesheet gives it its chrome. */}
+            {flyout && (() => {
+                const entry = request.entries.find(e => e.id === flyout.id);
+                if (!entry || (entry.kind !== 'grid' && entry.kind !== 'folder-style')) return null;
                 return (
                     <div
                         ref={panelRef}
@@ -398,11 +403,28 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                         onDragOver={cancelDrop}
                         onDrop={cancelDrop}
                     >
-                        <TableSizeGrid
-                            maxRows={entry.maxRows}
-                            maxCols={entry.maxCols}
-                            onPick={(rows, cols) => activate(() => entry.pick(rows, cols))}
-                        />
+                        {entry.kind === 'grid' ? (
+                            <TableSizeGrid
+                                maxRows={entry.maxRows}
+                                maxCols={entry.maxCols}
+                                onPick={(rows, cols) => activate(() => entry.pick(rows, cols))}
+                            />
+                        ) : (
+                            <Suspense fallback={<div className="folder-style-picker folder-style-loading">Loading icons…</div>}>
+                                {/* Lazy, and that is the whole bundle argument:
+                                    this is the only route to the Lucide set, so
+                                    a session that never opens it never fetches
+                                    it. Unlike the size grid, picking here does
+                                    NOT close the menu — colour and icon are two
+                                    choices and are usually both wanted. */}
+                                <FolderStylePicker
+                                    icon={entry.icon}
+                                    color={entry.color}
+                                    onChange={entry.pick}
+                                    onClose={closeFlyout}
+                                />
+                            </Suspense>
+                        )}
                     </div>
                 );
             })()}

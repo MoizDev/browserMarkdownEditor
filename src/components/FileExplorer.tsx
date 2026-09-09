@@ -11,6 +11,7 @@ import { ensureDrawingExt, ensureNotebookExt } from '../utils/fileTypes';
 import { createVaultTextCache } from '../utils/vaultSearch';
 import type { VaultTextCache } from '../utils/vaultSearch';
 import type { FileTreeNode, FileTreeFileNode, RecentVault, TextRange, VaultOpenResult } from '../types';
+import type { IconNode } from '../utils/folderStyle';
 
 /**
  * True when the drag carries OS files rather than a tree node being moved.
@@ -74,6 +75,9 @@ interface FileExplorerProps {
     onTrash: (node: FileTreeNode) => void;
     /** Open a folder row as the vault. Directories only — App ignores the rest. */
     onOpenAsVault: (node: FileTreeNode) => void | Promise<void>;
+    /** Give a folder an icon and colour, or clear them. Stable for the app's
+     *  life: this component is memoized and TreeNode is too. */
+    onStyleFolder: (path: string, icon: string | undefined, color: string | undefined, nodes?: IconNode[]) => void;
     expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
@@ -102,6 +106,7 @@ function FileExplorer({
     onCloseSearch,
     onTrash,
     onOpenAsVault,
+    onStyleFolder,
     expandedPaths,
     onToggleExpand,
     onMoveFile,
@@ -435,6 +440,7 @@ function FileExplorer({
                             onCreateFolder={onCreateFolder}
                             onTrash={onTrash}
                             onOpenAsVault={onOpenAsVault}
+                            onStyleFolder={onStyleFolder}
                             expandedPaths={expandedPaths}
                             onToggleExpand={onToggleExpand}
                             onMoveFile={onMoveFile}

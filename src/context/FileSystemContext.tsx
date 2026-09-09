@@ -1,9 +1,9 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
-import { forgetVault, labelVaults, loadRecentVaults, rememberVault } from '../utils/recentVaults';
+import { forgetVault, labelVaults, loadRecentVaults, rememberVault, withVaultPaths } from '../utils/recentVaults';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
-import { FOLDER_STYLE_FILE } from '../utils/folderStyle';
+import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from '../utils/entryStyle';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath } from '../utils/paths';
 import type { FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult } from '../types';
@@ -109,10 +109,13 @@ async function buildFileTree(dirHandle: FileSystemDirectoryHandle, path = ''): P
 
     for await (const [name, handle] of dirHandle.entries()) {
         if (name === '.DS_Store') continue;
-        // The app's own record of how folders look. Hidden for the same reason
+        // The app's own record of how things look. Hidden for the same reason
         // .Assets and .Garbage are: it is bookkeeping, not something the reader
-        // put in their vault. Root-only, unlike those two — see folderStyle.ts.
-        if (!path && name === FOLDER_STYLE_FILE) continue;
+        // put in their vault. Root-only, unlike those two — see entryStyle.ts.
+        // The legacy name goes too: migration reads it forward and deliberately
+        // leaves it on disk, and a file this app wrote should not then surface
+        // in the tree as though the reader had put it there.
+        if (!path && (name === ENTRY_STYLE_FILE || name === LEGACY_STYLE_FILE)) continue;
         // Hide standard system folders from the UI. Every folder may hold its
         // own pair of them (see utils/assets.ts), so this is not a root-only test.
         if (handle.kind === 'directory' && (name === ASSETS_DIR || name === TRASH_DIR)) continue;
@@ -245,8 +248,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * through one function is what stops a future writer from setting the state
      * directly and shipping stale labels.
      */
-    const publishVaults = useCallback(async (list: StoredVault[]) => {
-        setRecentVaults(await labelVaults(list));
+    const publishVaults = useCallback(async (list: StoredVault[], root?: FileSystemDirectoryHandle | null) => {
+        const labelled = await labelVaults(list);
+        // The root is passed in rather than read from state: every caller has
+        // just decided what it is, and the one on mount runs before the state
+        // it would read has settled.
+        setRecentVaults(root ? await withVaultPaths(labelled, root) : labelled);
     }, []);
 
     /**
@@ -259,7 +266,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         try {
             const { list, id } = await rememberVault(handle);
             setCurrentVaultId(id);
-            await publishVaults(list);
+            await publishVaults(list, handle);
         } catch (err) {
             console.warn('Could not record the opened vault:', err);
         }
@@ -297,7 +304,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                         return;
                     }
                     setLinkedVault((await labelVaults([target]))[0]);
-                    await publishVaults(stored);
+                    await publishVaults(stored, target.handle);
                     setIsLoading(false);
                     return;
                 }
@@ -324,7 +331,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             }
             // No vault restored — the list still loads, so whatever the user
             // opens next lands on top of a complete history.
-            await publishVaults(stored);
+            await publishVaults(stored, null);
             setIsLoading(false);
         })();
     }, [refreshTree, recordVault, publishVaults]);
@@ -401,7 +408,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      */
     const forgetRecentVault = useCallback(async (id: string) => {
         try {
-            await publishVaults(await forgetVault(id));
+            await publishVaults(await forgetVault(id), rootHandleRef.current);
             return true;
         } catch (err) {
             console.warn('Could not drop the vault from the recent list:', err);

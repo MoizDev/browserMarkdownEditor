@@ -3,7 +3,7 @@ import TableSizeGrid from './TableSizeGrid';
 import type { ContextMenuRequest } from '../utils/contextMenu';
 
 // Lazy so the icon set stays out of the main bundle — see utils/lucideIcons.ts.
-const FolderStylePicker = lazy(() => import('./FolderStylePicker'));
+const EntryStylePicker = lazy(() => import('./EntryStylePicker'));
 
 interface ContextMenuProps {
     /** What to draw, where to hang it, and who to give focus back to. One
@@ -333,7 +333,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
 
                     const index = rowIndex.get(entry.id) ?? 0;
 
-                    if (entry.kind === 'grid' || entry.kind === 'folder-style') {
+                    if (entry.kind === 'grid' || entry.kind === 'entry-style') {
                         const open = flyout?.id === entry.id;
                         return (
                             <button
@@ -387,7 +387,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                 hangs off; the stylesheet gives it its chrome. */}
             {flyout && (() => {
                 const entry = request.entries.find(e => e.id === flyout.id);
-                if (!entry || (entry.kind !== 'grid' && entry.kind !== 'folder-style')) return null;
+                if (!entry || (entry.kind !== 'grid' && entry.kind !== 'entry-style')) return null;
                 return (
                     <div
                         ref={panelRef}
@@ -417,7 +417,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                     it. Unlike the size grid, picking here does
                                     NOT close the menu — colour and icon are two
                                     choices and are usually both wanted. */}
-                                <FolderStylePicker
+                                <EntryStylePicker
                                     icon={entry.icon}
                                     color={entry.color}
                                     onChange={entry.pick}

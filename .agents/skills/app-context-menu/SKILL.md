@@ -76,14 +76,14 @@ store; `App` reads it with `useSyncExternalStore` and renders `<ContextMenu>` on
 - **A menu row closes over a view or a tree node**, so `App` closes the menu whenever `mainView` or
   `rootHandle` changes — both of those unmount the things the rows act on.
 - **The flyout hosts TWO pickers now** — `kind: 'grid'` (table size) and
-  `kind: 'folder-style'` (a folder's icon and colour), so the state is `flyout`, not `grid`, and the
+  `kind: 'entry-style'` (a file's or folder's icon and colour), so the state is `flyout`, not `grid`, and the
   row branch takes both kinds while the panel branch chooses the component. Entry types stay PLAIN
   DATA: `utils/contextMenu.ts` is React-free because `src/editor/` raises this menu, so a row carries
-  values and a callback, never a node to render. The folder picker is `React.lazy` — it is the only
+  values and a callback, never a node to render. The style picker is `React.lazy` — it is the only
   route to the 1,818-icon Lucide set, and that is what keeps it out of the main bundle. It also does
   **not** close the menu on a pick (icon and colour are two choices), and it seeds its own state from
   the entry: entries are built once, when the menu is raised, so reading them per render would freeze
-  the highlight at the folder's look before the first pick.
+  the highlight at the row's look before the first pick.
 - **The size picker is a flyout, not a modal.** `ConfirmDialog` could not host it anyway (its
   `children` render inside a `<p>`, its `onConfirm` carries no value, and focus goes to a button), and
   a flyout beside the row needs no backdrop and no focus round trip. It is positioned inline by the

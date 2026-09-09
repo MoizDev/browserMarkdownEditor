@@ -232,6 +232,11 @@ export interface StoredVault {
  *  "parent/name" when another listed vault has the same folder name. */
 export interface RecentVault extends StoredVault {
   label: string;
+  /** Where this vault sits inside the OPEN one, when it is inside it at all —
+   *  which is what lets the vault menu show the icon and colour the file tree
+   *  gives that same folder. Absent for a vault elsewhere on disk, and for the
+   *  open vault itself (its root has no entry of its own). */
+  vaultPath?: string;
 }
 
 /** Why opening a vault did or didn't take effect — from the recent list, the

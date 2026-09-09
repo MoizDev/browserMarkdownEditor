@@ -47,21 +47,29 @@ a single **Open '<vault>'** button, because only a click can ask for that access
 back. On a machine that has never opened the vault, the link cannot find it — open
 the folder once and the link works from then on.
 
-### Giving a Folder an Icon and a Colour
-Right-click a folder and choose **Choose icon / colour**. A panel opens beside
-the menu with eight colours and a search box over all 1,818 Lucide icons — it
-opens on the ones people usually want (folders, books, flasks, code, work), and
-typing a word finds the rest. Picking is live: the folder in the sidebar changes
-as you click, so you can judge it against the real tree before dismissing the
-menu.
+### Giving a File or Folder an Icon and a Colour
+Right-click anything in the sidebar — a folder, a note, a notebook, a drawing —
+and choose **Choose icon / colour**. A panel opens beside the menu with eight
+colours and a search box over all 1,818 Lucide icons; it opens on the ones people
+usually want (folders, books, flasks, code, work), and typing a word finds the
+rest. Picking is live: the row in the sidebar changes as you click, so you can
+judge it against the real tree before dismissing the menu.
 
-Clicking the icon a folder already has removes it, and **Reset to default** puts
-the folder back to a plain grey folder. The colour tints the icon only — the
-folder's name keeps the normal text colour, so the tree still reads as a list.
+Clicking the icon something already has removes it, and **Reset to default** puts
+the row back to normal. The colour tints the icon only — the name keeps the
+normal text colour, so the tree still reads as a list.
 
-This is remembered in a hidden \`.folders.json\` at the top of your vault, so the
-icons travel with the vault rather than living in one browser. Renaming or moving
-a folder takes its icon along, and trashing one forgets it.
+On a file, the colour is usually the part you want: a file's icon already says
+what it is (a note, a notebook, a drawing), so replacing it is offered but never
+the default.
+
+This is remembered in a hidden \`.appearance.json\` at the top of your vault, so
+the icons travel with the vault rather than living in one browser. Renaming or
+moving something takes its icon along — a folder's carries everything inside it —
+and trashing it forgets it.
+
+A folder you have also opened as a vault shows the same icon in the vault menu,
+so the list you switch vaults with looks like the tree you set up.
 
 ### Searching the Vault
 **Search** sits at the bottom of the sidebar, under the theme switch, alongside

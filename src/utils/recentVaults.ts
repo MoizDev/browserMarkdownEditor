@@ -198,3 +198,31 @@ export function labelVaults(list: StoredVault[]): Promise<RecentVault[]> {
         label: shared.has(v.name.toLowerCase()) ? await qualifiedLabel(v, list) : v.name,
     })));
 }
+
+/**
+ * Note where each vault sits INSIDE the open one, when it does.
+ *
+ * A vault is just a folder, and the folders people open as vaults are usually
+ * folders of the vault they are already in — so most rows in the vault menu
+ * name something the file tree is also showing, icon and all. `resolve` is the
+ * only thing the File System Access API offers here (see NAMES above): it
+ * answers "where is b inside a", or null when b is not inside a at all.
+ *
+ * One handle round trip per vault, on a list that changes only when a vault is
+ * opened or forgotten — not on the tree walk, which runs after every save.
+ */
+export async function withVaultPaths(
+    vaults: RecentVault[],
+    root: FileSystemDirectoryHandle,
+): Promise<RecentVault[]> {
+    return Promise.all(vaults.map(async vault => {
+        try {
+            const segments = await root.resolve(vault.handle);
+            // [] means "this IS the root", which has no entry of its own to
+            // carry a look; null means it is somewhere else entirely.
+            return segments?.length ? { ...vault, vaultPath: segments.join('/') } : vault;
+        } catch {
+            return vault;
+        }
+    }));
+}

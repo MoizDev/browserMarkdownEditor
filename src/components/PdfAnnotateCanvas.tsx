@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
 import type { Editor, TLAssetId, TLAssetStore, TLEditorSnapshot, TLImageShape, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
-import type { Theme } from '../types';
-import { pageLayout, openPdfPages, type PdfPageSize } from '../utils/pdfAnnotation';
+import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type PdfPageSource } from '../utils/pdfAnnotation';
 import { setPdfRenderData } from '../utils/pdfRenderCache';
+import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
+import { svgToVectorOps } from '../utils/pdfVector';
 
 interface PdfAnnotateCanvasProps {
     filePath: string;
@@ -23,8 +24,36 @@ interface PdfAnnotateCanvasProps {
      * was BEFORE those strokes.
      */
     onFlushStart: () => void;
-    theme: Theme;
 }
+
+/**
+ * ANNOTATING A PDF IS ALWAYS A LIGHT-MODE JOB, whatever theme the app is in.
+ *
+ * tldraw resolves a shape's colour NAME through the active theme at render time,
+ * and its dark theme maps 'black' to #f2f2f2 — near-white. The backdrop here is
+ * the real page, which is white in either theme, so following the app's theme
+ * put near-white ink on a white page: invisible on screen, and stamped that way
+ * into the saved PDF, where it stayed invisible in every other viewer too.
+ *
+ * The files are unharmed — a snapshot stores 'black', not a hex value, so
+ * strokes drawn in dark mode reappear correctly once this is pinned. A .tldraw
+ * whiteboard is the opposite case and rightly still follows the theme: it draws
+ * its own background, so it has no white page to contrast against.
+ */
+const ANNOTATE_COLOR_SCHEME = 'light';
+
+/**
+ * Shape types that cannot become paths in the saved PDF, so their pages carry a
+ * bitmap overlay as well.
+ *
+ * A DENY list, not an allow list, and deliberately so: an unfamiliar shape type
+ * is tried as vector first, and `svgToVectorOps` rejecting the export is the
+ * real gate — it returns null for anything it cannot draw exactly (embedded
+ * fonts, <pattern> fills, clip paths), which sends the page down this same
+ * raster route. So the list is a fast path for the obvious cases, and being
+ * wrong about a new tldraw shape type costs correctness nothing.
+ */
+const RASTER_ONLY_SHAPES = new Set(['text', 'note', 'image', 'video', 'bookmark', 'embed']);
 
 /**
  * Deliberately far longer than DrawingPane's 400ms.
@@ -39,6 +68,60 @@ interface PdfAnnotateCanvasProps {
  * after you stop — still well inside the "close the tab and it's saved" flush.
  */
 const SERIALIZE_DEBOUNCE_MS = 1500;
+
+/* ── Keeping the backdrop sharp when you zoom in ──────────────────────────
+ *
+ * A page is a rasterized image, so at 400% a 2x backdrop is showing each of its
+ * pixels four screen pixels wide and the text under your pen goes to mush —
+ * while the ink drawn over it, being vector, stays perfectly crisp. The mismatch
+ * is what makes it look broken rather than merely soft.
+ *
+ * pdf.js cannot help here: its SVG backend was removed in v4, so there is no
+ * resolution-independent page to fall back on. Re-rasterizing is the only
+ * answer, and it is bounded to the pages you can actually SEE — every page of
+ * the document is held at PAGE_RENDER_SCALE for the canvas's whole life, so
+ * refining all of them would multiply the largest memory item in the pane by the
+ * square of the zoom.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** How sharp a page may get. 6x a Letter page is ~3670x4750 — around 70MB
+ *  decoded, which is why this is a hard ceiling and not a function of zoom. */
+const MAX_PAGE_SCALE = 6;
+
+/** Re-render only in whole steps, so a slow pinch doesn't re-rasterize every
+ *  visible page at 2.1x, then 2.2x, then 2.3x. */
+const PAGE_SCALE_STEP = 1;
+
+/** Long enough that a pinch or a wheel burst refines once, at the scale it
+ *  settles on, rather than at every value it passed through. */
+const REFINE_DEBOUNCE_MS = 350;
+
+/** One page's rasterized backdrop, and how sharp it currently is. */
+interface PageImage {
+    url: string;
+    scale: number;
+}
+
+/**
+ * Tell tldraw an asset's image changed.
+ *
+ * `mergeRemoteChanges` marks the edit as 'remote', so the 'user'-scoped save
+ * listener ignores it — without that, merely opening a file (or zooming in on
+ * one) would mark the tab dirty and rewrite the PDF. The bumped `rev` is what
+ * makes the asset record actually differ, so the resolver is asked again.
+ */
+function refreshPageAsset(editor: Editor | null, index: number): void {
+    if (!editor) return;
+    const assetId = AssetRecordType.createId(`pdf-page-${index}`);
+    const asset = editor.getAsset(assetId);
+    if (!asset) return;
+    editor.store.mergeRemoteChanges(() => {
+        editor.updateAssets([{
+            ...asset,
+            meta: { ...asset.meta, pdfPage: index, rev: (Number(asset.meta?.rev) || 0) + 1 },
+        }]);
+    });
+}
 
 function parseSnapshot(content: string): TLEditorSnapshot | undefined {
     if (!content.trim()) return undefined;
@@ -58,9 +141,9 @@ function parseSnapshot(content: string): TLEditorSnapshot | undefined {
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
-export default function PdfAnnotateCanvas({ filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, theme }: PdfAnnotateCanvasProps) {
+export default function PdfAnnotateCanvas({ filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart }: PdfAnnotateCanvasProps) {
     // Geometry only. The canvas mounts as soon as this lands; the page images
-    // stream in afterwards through pageUrlsRef.
+    // stream in afterwards through pageImagesRef.
     const [pages, setPages] = useState<PdfPageSize[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const onContentChangeRef = useRef(onContentChange);
@@ -76,14 +159,16 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     // the file path, so a different file means a fresh mount and a fresh parse.
     const [parsed] = useState(() => parseSnapshot(snapshot));
     const serializeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    /** Page image URLs as they arrive, by page index. Read by the asset store. */
-    const pageUrlsRef = useRef<Array<string | undefined>>([]);
+    /** Page images as they arrive, by page index. Read by the asset store. */
+    const pageImagesRef = useRef<Array<PageImage | undefined>>([]);
+    /** The open document, so a zoomed-in page can be re-rendered sharper. */
+    const sourceRef = useRef<PdfPageSource | null>(null);
     /** The live editor, so streamed pages can refresh their assets. */
     const editorRef = useRef<Editor | null>(null);
     /** Shape ids of the page backdrops — never exported, never saved as strokes. */
     const pageShapeIdsRef = useRef<Set<TLShapeId>>(new Set());
     /** Last exported overlay per page index, keyed by that page's shape signature. */
-    const overlayCacheRef = useRef<Map<number, { signature: string; bytes: Uint8Array | undefined }>>(new Map());
+    const overlayCacheRef = useRef<Map<number, { signature: string; overlay: PageOverlay | undefined }>>(new Map());
     /** Whether the user has drawn anything not yet handed to the save path. */
     const hasUnsavedRef = useRef(false);
 
@@ -105,7 +190,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             const page = asset.meta?.pdfPage;
             // null while this page is still rasterizing — it renders blank at the
             // right size, and refreshes when its image arrives.
-            if (typeof page === 'number') return pageUrlsRef.current[page] ?? null;
+            if (typeof page === 'number') return pageImagesRef.current[page]?.url ?? null;
             return inlineBase64AssetStore.resolve?.(asset, ctx) ?? asset.props.src;
         },
     }), []);
@@ -115,8 +200,8 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     // editable copies.
     useEffect(() => {
         let cancelled = false;
-        const urls: Array<string | undefined> = [];
-        let source: Awaited<ReturnType<typeof openPdfPages>> | null = null;
+        const images: Array<PageImage | undefined> = [];
+        let source: PdfPageSource | null = null;
 
         (async () => {
             try {
@@ -127,29 +212,15 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 // wait on a single pixel. Set the ref before the state: <Tldraw>
                 // mounts the moment `pages` is non-null and immediately asks the
                 // asset store to resolve page URLs through this ref.
-                pageUrlsRef.current = urls;
+                pageImagesRef.current = images;
+                sourceRef.current = source;
                 setPages(source.sizes);
 
                 for (let i = 0; i < source.sizes.length; i++) {
                     const url = await source.renderPage(i);
                     if (cancelled) { URL.revokeObjectURL(url); return; }
-                    urls[i] = url;
-
-                    // Nudge tldraw to re-resolve this page's asset now that it has
-                    // an image. mergeRemoteChanges marks the edit as 'remote', so
-                    // the 'user'-scoped save listener ignores it — otherwise
-                    // merely opening a file would mark it dirty and rewrite it.
-                    const editor = editorRef.current;
-                    const assetId = AssetRecordType.createId(`pdf-page-${i}`);
-                    const asset = editor?.getAsset(assetId);
-                    if (editor && asset) {
-                        editor.store.mergeRemoteChanges(() => {
-                            editor.updateAssets([{
-                                ...asset,
-                                meta: { ...asset.meta, pdfPage: i, rev: (Number(asset.meta?.rev) || 0) + 1 },
-                            }]);
-                        });
-                    }
+                    images[i] = { url, scale: PAGE_RENDER_SCALE };
+                    refreshPageAsset(editorRef.current, i);
                 }
             } catch (err) {
                 console.error('Could not render PDF pages:', err);
@@ -159,8 +230,9 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
 
         return () => {
             cancelled = true;
-            pageUrlsRef.current = [];
-            for (const url of urls) if (url) URL.revokeObjectURL(url);
+            pageImagesRef.current = [];
+            sourceRef.current = null;
+            for (const image of images) if (image) URL.revokeObjectURL(image.url);
             void source?.close();
         };
     }, [original]);
@@ -242,6 +314,83 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         }
 
         /**
+         * Bring the pages you can see up to the zoom you are looking at them at,
+         * and let the ones you have left go back to the base scale.
+         *
+         * Serialized behind `refining`, not merely started: rasterizing a page is
+         * a worker round-trip plus a JPEG encode, and a zoom gesture can queue
+         * several passes before the first finishes — which would render the same
+         * page at two scales at once and leak whichever URL lost the race.
+         */
+        let refining = false;
+        let refineAgain = false;
+        const refinePages = async () => {
+            if (refining) { refineAgain = true; return; }
+            const source = sourceRef.current;
+            const images = pageImagesRef.current;
+            if (!source || !images.length) return;
+
+            refining = true;
+            try {
+                do {
+                    refineAgain = false;
+                    // Zoom is CSS pixels per page unit; the display adds its own
+                    // ratio on top, and it is the product that a raster has to
+                    // match to look sharp.
+                    const wanted = Math.min(
+                        MAX_PAGE_SCALE,
+                        Math.max(
+                            PAGE_RENDER_SCALE,
+                            Math.ceil((editor.getZoomLevel() * window.devicePixelRatio) / PAGE_SCALE_STEP) * PAGE_SCALE_STEP,
+                        ),
+                    );
+                    const viewport = editor.getViewportPageBounds();
+
+                    for (let i = 0; i < boxes.length; i++) {
+                        const box = boxes[i];
+                        const current = images[i];
+                        // Not yet rasterized at all — the streaming load owns it.
+                        if (!current) continue;
+
+                        const visible = box.y < viewport.maxY && box.y + box.height > viewport.minY
+                            && box.x < viewport.maxX && box.x + box.width > viewport.minX;
+                        const target = visible ? wanted : PAGE_RENDER_SCALE;
+                        if (current.scale === target) continue;
+
+                        // Dropping back to base is a re-render too, but a cheap
+                        // one, and it is what returns the memory a zoomed-in page
+                        // borrowed.
+                        const url = await source.renderPage(i, target);
+                        // The canvas may have gone away mid-render; the cleanup
+                        // has already emptied the array, so this URL is ours to
+                        // drop rather than ours to install.
+                        if (pageImagesRef.current !== images) { URL.revokeObjectURL(url); return; }
+                        URL.revokeObjectURL(current.url);
+                        images[i] = { url, scale: target };
+                        refreshPageAsset(editor, i);
+                    }
+                } while (refineAgain);
+            } catch (err) {
+                // A failed refinement leaves the previous image in place, which is
+                // merely less sharp — never worth breaking the canvas over.
+                console.warn('Could not re-render PDF pages for the current zoom:', err);
+            } finally {
+                refining = false;
+            }
+        };
+
+        let refineTimer: ReturnType<typeof setTimeout> | null = null;
+        const scheduleRefine = () => {
+            if (refineTimer) clearTimeout(refineTimer);
+            refineTimer = setTimeout(() => { refineTimer = null; void refinePages(); }, REFINE_DEBOUNCE_MS);
+        };
+        // Session scope is where the camera lives, and it is deliberately a
+        // different listener from the save one below: a pan or a zoom must
+        // refine the backdrop WITHOUT marking the file dirty.
+        const unlistenCamera = editor.store.listen(scheduleRefine, { scope: 'session' });
+        scheduleRefine();   // the snapshot may have restored a zoomed-in camera
+
+        /**
          * @param immediate true when the canvas is going away (mode toggle, tab
          *        switch, tab close). The viewer re-reads the file the instant it
          *        appears, so the write cannot sit in a debounce queue.
@@ -275,44 +424,71 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 }
             }
 
-            const overlays: Array<Uint8Array | undefined> = [];
+            const overlays: Array<PageOverlay | undefined> = [];
             for (let i = 0; i < boxes.length; i++) {
                 const box = boxes[i];
                 const onThisPage = shapesByPage[i];
 
-                // Re-render a page only when its own annotations actually changed.
-                // Rasterizing is main-thread work (it needs the DOM, so unlike the
+                // Re-export a page only when its own annotations actually changed.
+                // Exporting is main-thread work (it needs the DOM, so unlike the
                 // PDF build it can't be moved off), and a stroke on page 1 must not
-                // cost a re-render of pages 2..N. The signature covers every shape
+                // cost a re-export of pages 2..N. The signature covers every shape
                 // on the page, so a moved or recoloured stroke still invalidates.
                 const signature = JSON.stringify(onThisPage);
                 const cached = overlayCacheRef.current.get(i);
-                if (cached?.signature === signature) { overlays.push(cached.bytes); continue; }
+                if (cached?.signature === signature) { overlays.push(cached.overlay); continue; }
 
                 if (!onThisPage.length) {
-                    overlayCacheRef.current.set(i, { signature, bytes: undefined });
+                    overlayCacheRef.current.set(i, { signature, overlay: undefined });
                     overlays.push(undefined);
                     continue;
                 }
 
+                // bounds = exactly the page box, so an export maps 1:1 onto the
+                // page when stamped; padding 0 or it would shift.
+                const bounds = new Box(box.x, box.y, box.width, box.height);
+                const exportOptions = { background: false, bounds, padding: 0, darkMode: false } as const;
+
                 try {
-                    // bounds = exactly the page box, so the PNG maps 1:1 onto the
-                    // page when stamped; padding 0 or it would shift.
-                    const image = await editor.toImage(onThisPage.map(s => s.id), {
-                        format: 'png',
-                        background: false,
-                        bounds: new Box(box.x, box.y, box.width, box.height),
-                        padding: 0,
-                        scale: 2,
-                    });
-                    const bytes = new Uint8Array(await image.blob.arrayBuffer());
-                    overlayCacheRef.current.set(i, { signature, bytes });
-                    overlays.push(bytes);
+                    const overlay: PageOverlay = {};
+                    const rasterShapes = onThisPage.filter(s => RASTER_ONLY_SHAPES.has(s.type));
+                    const vectorShapes = onThisPage.filter(s => !RASTER_ONLY_SHAPES.has(s.type));
+
+                    // Strokes as paths: sharp at any zoom in the saved PDF, and
+                    // an order of magnitude smaller than the equivalent PNG.
+                    if (vectorShapes.length) {
+                        const svg = await editor.getSvgString(vectorShapes.map(s => s.id), {
+                            ...exportOptions,
+                            // Positions are read back out of the viewBox, which is
+                            // in page units — so keep the two the same and no
+                            // scale has to be undone later.
+                            scale: 1,
+                        });
+                        const ops = svg ? svgToVectorOps(svg.svg) : null;
+                        // Anything that cannot be drawn exactly as paths falls
+                        // back to pixels, which is where this code came from —
+                        // never a wrong drawing, just a softer one.
+                        if (ops) overlay.vector = ops;
+                        else rasterShapes.push(...vectorShapes);
+                    }
+
+                    if (rasterShapes.length) {
+                        const image = await editor.toImage(rasterShapes.map(s => s.id), {
+                            ...exportOptions,
+                            format: 'png',
+                            scale: 2,
+                        });
+                        overlay.raster = new Uint8Array(await image.blob.arrayBuffer());
+                    }
+
+                    const result = isEmptyOverlay(overlay) ? undefined : overlay;
+                    overlayCacheRef.current.set(i, { signature, overlay: result });
+                    overlays.push(result);
                 } catch (err) {
                     console.error(`Could not export annotations for page ${i + 1}:`, err);
                     // Reuse the last good overlay rather than dropping this page's
                     // annotations out of the file on a transient export failure.
-                    overlays.push(cached?.bytes);
+                    overlays.push(cached?.overlay);
                 }
             }
 
@@ -332,6 +508,8 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
 
         return () => {
             unlisten();
+            unlistenCamera();
+            if (refineTimer) clearTimeout(refineTimer);
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
             // Write on the way out so the viewer (which re-reads immediately) sees
             // the strokes — but only if there are any. Flushing unconditionally
@@ -361,7 +539,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 snapshot={parsed}
                 assets={assetStore}
                 onMount={handleMount}
-                colorScheme={theme === 'light' ? 'light' : 'dark'}
+                colorScheme={ANNOTATE_COLOR_SCHEME}
                 licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
             />
         </div>

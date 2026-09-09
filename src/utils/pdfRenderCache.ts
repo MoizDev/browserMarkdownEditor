@@ -14,11 +14,13 @@
 // Also deliberately outside React state: these are megabytes of binary that
 // must never land in a re-render path or in localStorage.
 
+import type { PageOverlay } from './pdfOverlay';
+
 export interface PdfRenderData {
     /** Pristine original, extracted once when the file was opened. */
     original: Uint8Array;
-    /** Transparent overlay PNG per page index; undefined = page unannotated. */
-    overlays: Array<Uint8Array | undefined>;
+    /** Annotations per page index; undefined = page unannotated. */
+    overlays: Array<PageOverlay | undefined>;
 }
 
 const renderCache = new Map<string, PdfRenderData>();

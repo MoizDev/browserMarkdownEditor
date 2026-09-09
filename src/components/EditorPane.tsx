@@ -844,7 +844,6 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                             content={tab.content}
                             onContentChange={onContentChange}
                             onFlushNow={onFlushNow}
-                            theme={theme}
                             isDirty={tab.dirty}
                         />
                     </Suspense>

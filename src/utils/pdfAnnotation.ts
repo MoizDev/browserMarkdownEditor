@@ -31,11 +31,17 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 import { ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT } from './pdfFormat';
 
 /**
- * Pages are rasterized at 2x so strokes sit against a crisp backdrop.
+ * The scale every page is first rasterized at, and the floor it falls back to.
  *
  * This only affects what you see WHILE annotating. The saved PDF is built by
- * stamping overlays onto the original pages, which are never rasterized — so
- * this number trades render speed against on-screen sharpness and nothing else.
+ * drawing annotations onto the original pages, which are never rasterized — so
+ * this number trades render speed and memory against on-screen sharpness and
+ * nothing else.
+ *
+ * Every page of the document is held at this scale for as long as the canvas is
+ * open, so raising it is paid for by the whole document at once. Zooming in is
+ * served by re-rendering the few VISIBLE pages instead — see
+ * PdfAnnotateCanvas's refinement pass.
  */
 export const PAGE_RENDER_SCALE = 2;
 
@@ -115,8 +121,13 @@ export interface PdfPageSize {
 export interface PdfPageSource {
     /** Every page's geometry, known without rasterizing anything. */
     sizes: PdfPageSize[];
-    /** Rasterize one page (0-based) to an object URL. Caller owns the URL. */
-    renderPage(index: number): Promise<string>;
+    /**
+     * Rasterize one page (0-based) to an object URL. Caller owns the URL.
+     *
+     * `scale` defaults to PAGE_RENDER_SCALE; a higher one is how a zoomed-in
+     * page is re-rendered sharp.
+     */
+    renderPage(index: number, scale?: number): Promise<string>;
     /** Tear down the pdf.js worker. */
     close(): Promise<void>;
 }
@@ -150,9 +161,9 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
 
     return {
         sizes,
-        async renderPage(index: number) {
+        async renderPage(index: number, scale = PAGE_RENDER_SCALE) {
             const page = await doc.getPage(index + 1);
-            const viewport = page.getViewport({ scale: PAGE_RENDER_SCALE });
+            const viewport = page.getViewport({ scale });
             const canvas = document.createElement('canvas');
             canvas.width = Math.ceil(viewport.width);
             canvas.height = Math.ceil(viewport.height);

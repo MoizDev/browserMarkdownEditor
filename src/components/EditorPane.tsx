@@ -53,6 +53,8 @@ interface EditorPaneProps {
      *  reach the clipboard has to say so. Stable, or DocumentPane's memo (and
      *  with it every pane's) stops holding. */
     onNotify: (message: string) => void;
+    /** Ask a yes/no question in the app's own dialog. Resolves false on cancel. */
+    onConfirm: (question: { title: string; body: string; confirmLabel: string; danger?: boolean }) => Promise<boolean>;
     graph: GraphData;
     onOpenNode: OpenNodeHandler;
     /** One-shot select+scroll order from vault search (null = nothing pending). */
@@ -180,7 +182,7 @@ interface PaneResize {
  * confirmation, and the PDF panes, which are deliberately NOT inside a pane so
  * they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onExportNotebook, onOpenNote, onNotify, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onExportNotebook, onOpenNote, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const group = activeGroupOf(layout);
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
@@ -716,6 +718,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         onOpenNote={onOpenNote}
                         onImageDelete={handleImageDelete}
                         onNotify={onNotify}
+                        onConfirm={onConfirm}
                         revealRequest={revealRequest}
                         onRevealHandled={onRevealHandled}
                     />

@@ -10,6 +10,7 @@ import { parseNotebookFile, serializeNotebookFile, type NotebookUiState } from '
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
+import { CANVAS_COMPONENTS, applyPenDefaults } from './canvasPen';
 
 interface NotebookPaneProps {
     /** The notebook's vault path. Every change is reported against it explicitly
@@ -19,6 +20,8 @@ interface NotebookPaneProps {
     /** The file's text. See utils/notebookFile.ts. */
     content: string;
     onContentChange: (path: string, content: string) => void;
+    /** The app's own confirm, for the one action here that destroys writing. */
+    onConfirm: (question: { title: string; body: string; confirmLabel: string; danger?: boolean }) => Promise<boolean>;
 }
 
 /**
@@ -74,7 +77,7 @@ function pageShapeId(index: number): TLShapeId {
  * the strokes already there instead of rewriting the document, and no page ever
  * gets re-created on top of the writing it belongs under.
  */
-export default function NotebookPane({ filePath, content, onContentChange }: NotebookPaneProps) {
+export default function NotebookPane({ filePath, content, onContentChange, onConfirm }: NotebookPaneProps) {
     // Parsed once per FILE, not per render: `content` changes on every save
     // round-trip, but tldraw owns the document after mount, so re-reading it
     // would be pointless work (and could clobber in-progress edits).
@@ -89,6 +92,8 @@ export default function NotebookPane({ filePath, content, onContentChange }: Not
 
     const onContentChangeRef = useRef(onContentChange);
     useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
+    const onConfirmRef = useRef(onConfirm);
+    useEffect(() => { onConfirmRef.current = onConfirm; }, [onConfirm]);
 
     const editorRef = useRef<Editor | null>(null);
     const uiRef = useRef<NotebookUiState | undefined>(parsed.ui);
@@ -153,7 +158,12 @@ export default function NotebookPane({ filePath, content, onContentChange }: Not
         const boxes = pageLayout(Array.from({ length: next.pageCount }, () => size));
         const assetId = AssetRecordType.createId('notebook-paper');
 
-        editor.store.mergeRemoteChanges(() => {
+        // `ignoreShapeLock`, and it is load-bearing: the pages are locked so a
+        // stray drag cannot shift one out from under the writing on it, and
+        // `updateShape`/`deleteShapes` SILENTLY SKIP locked shapes. Without this
+        // the artwork re-generated at the new size while every page box kept the
+        // old one — which is what "landscape doesn't rotate them" looked like.
+        editor.run(() => editor.store.mergeRemoteChanges(() => {
             // A COMPLETE record either way, never a partial one. tldraw
             // validates an updated asset in full, so passing only the props that
             // changed fails on the ones left out ("props.name: expected string,
@@ -213,7 +223,7 @@ export default function NotebookPane({ filePath, content, onContentChange }: Not
 
             editor.sendToBack(wanted);
             pageShapeIdsRef.current = new Set(wanted);
-        });
+        }), { ignoreShapeLock: true });
     }, []);
 
     /**
@@ -260,6 +270,8 @@ export default function NotebookPane({ filePath, content, onContentChange }: Not
             editor.getCurrentPageShapeIds().size > FULL_INK_SHAPE_LIMIT
                 ? realEfficientZoom()
                 : Math.max(0.5, realEfficientZoom());
+
+        const disposePen = applyPenDefaults(editor);
 
         // Everything below runs BEFORE the listeners attach, so none of it marks
         // a just-opened file dirty.
@@ -321,6 +333,7 @@ export default function NotebookPane({ filePath, content, onContentChange }: Not
 
         return () => {
             editorRef.current = null;
+            disposePen();
             unlistenDoc();
             unlistenSession();
             // Unmounting mid-debounce (tab switch, tab close) must not drop the
@@ -394,6 +407,54 @@ export default function NotebookPane({ filePath, content, onContentChange }: Not
         });
     }, [filePath, inkShapes]);
 
+    /**
+     * Drop the last page.
+     *
+     * The LAST one specifically: pages are a stack, and removing one from the
+     * middle would have to decide what happens to everything written below it.
+     * Trailing pages are also what actually accumulates — writing low on a page
+     * summons the next one, so overshooting leaves blanks at the end.
+     *
+     * Writing on that page goes with it, and is the one thing here that
+     * destroys something the user made — so it asks first, and says how much.
+     * An empty page just goes.
+     */
+    const removeLastPage = useCallback(async () => {
+        const editor = editorRef.current;
+        const current = paperRef.current;
+        if (!editor || current.pageCount <= 1) return;
+
+        const size = paperPageSize(current);
+        const boxes = pageLayout(Array.from({ length: current.pageCount }, () => size));
+        const last = boxes[boxes.length - 1];
+        const doomed = inkShapes(editor).filter(shape => {
+            const b = editor.getShapePageBounds(shape.id);
+            // Anything that starts below the last page's top belongs to it. A
+            // stroke straddling the boundary is kept: it is mostly on the page
+            // that survives, and dropping it would delete from a page the user
+            // did not ask to remove.
+            return b ? b.minY >= last.y : false;
+        });
+
+        if (doomed.length) {
+            const ok = await onConfirmRef.current({
+                title: `Delete page ${current.pageCount}?`,
+                body: `It has ${doomed.length} ${doomed.length === 1 ? 'stroke' : 'strokes'} on it, which will be deleted with it.`,
+                confirmLabel: 'Delete page',
+                danger: true,
+            });
+            if (!ok) return;
+            // A user deletion, not a remote merge: this SHOULD dirty the file.
+            editor.deleteShapes(doomed.map(s => s.id));
+        }
+
+        const next = { ...current, pageCount: current.pageCount - 1 };
+        paperRef.current = next;
+        setPaper(next);
+        layOutPages(editor, next);
+        persist();
+    }, [inkShapes, layOutPages, persist]);
+
     const changePaper = useCallback((patch: Partial<NotebookPaper>) => {
         const next = { ...paperRef.current, ...patch };
         paperRef.current = next;
@@ -408,11 +469,12 @@ export default function NotebookPane({ filePath, content, onContentChange }: Not
 
     return (
         <div className="drawing-pane notebook-pane">
-            <NotebookToolbar paper={paper} onChange={changePaper} />
+            <NotebookToolbar paper={paper} onChange={changePaper} onRemovePage={removeLastPage} />
             <Tldraw
                 snapshot={parsed.snapshot}
                 assets={assetStore}
                 onMount={handleMount}
+                components={CANVAS_COMPONENTS}
                 colorScheme={NOTEBOOK_COLOR_SCHEME}
                 licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
             />
@@ -421,7 +483,11 @@ export default function NotebookPane({ filePath, content, onContentChange }: Not
 }
 
 /** Paper settings, over the canvas's top-left where tldraw leaves room. */
-function NotebookToolbar({ paper, onChange }: { paper: NotebookPaper; onChange: (patch: Partial<NotebookPaper>) => void }) {
+function NotebookToolbar({ paper, onChange, onRemovePage }: {
+    paper: NotebookPaper;
+    onChange: (patch: Partial<NotebookPaper>) => void;
+    onRemovePage: () => void;
+}) {
     return (
         <div className="notebook-toolbar">
             <select
@@ -455,6 +521,15 @@ function NotebookToolbar({ paper, onChange }: { paper: NotebookPaper; onChange: 
             <span className="notebook-page-count">
                 {paper.pageCount} {paper.pageCount === 1 ? 'page' : 'pages'}
             </span>
+            <button
+                className="notebook-toolbar-btn"
+                onClick={onRemovePage}
+                disabled={paper.pageCount <= 1}
+                title="Delete the last page"
+                aria-label="Delete the last page"
+            >
+                − Page
+            </button>
             <button
                 className="notebook-toolbar-btn"
                 onClick={() => onChange({ pageCount: Math.min(MAX_PAGES, paper.pageCount + 1) })}

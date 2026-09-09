@@ -3,6 +3,7 @@ import { Tldraw, getSnapshot } from 'tldraw';
 import type { Editor, TLEditorSnapshot } from 'tldraw';
 import 'tldraw/tldraw.css';
 import type { Theme } from '../types';
+import { CANVAS_COMPONENTS, applyPenDefaults } from './canvasPen';
 
 interface DrawingPaneProps {
     /** The drawing's vault path. Every change is reported against it explicitly
@@ -121,6 +122,8 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
             }
         }
 
+        const disposePen = applyPenDefaults(editor);
+
         let lastUi = JSON.stringify(readUiState(editor));
 
         const flush = () => {
@@ -148,6 +151,7 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
 
         return () => {
             editorRef.current = null;
+            disposePen();
             unlistenDoc();
             unlistenSession();
             // Unmounting mid-debounce (tab switch, tab close) must not drop the
@@ -164,6 +168,7 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
             <Tldraw
                 snapshot={snapshot}
                 onMount={handleMount}
+                components={CANVAS_COMPONENTS}
                 colorScheme={theme === 'light' ? 'light' : 'dark'}
                 // Required once deployed, not cosmetic: on a non-localhost HTTPS
                 // origin, tldraw with no key reports `unlicensed-production` and

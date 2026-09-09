@@ -285,6 +285,7 @@ interface DocumentPaneProps {
      *  Must be STABLE: this component is memoized so the tree of panes does
      *  not re-render on every keystroke. */
     onNotify: (message: string) => void;
+    onConfirm: (question: { title: string; body: string; confirmLabel: string; danger?: boolean }) => Promise<boolean>;
     /** One-shot select+scroll order from vault search (null = nothing pending). */
     revealRequest: EditorRevealRequest | null;
     onRevealHandled: () => void;
@@ -326,6 +327,7 @@ function DocumentPane({
     onOpenNote,
     onImageDelete,
     onNotify,
+    onConfirm,
     revealRequest,
     onRevealHandled,
 }: DocumentPaneProps) {
@@ -803,6 +805,7 @@ function DocumentPane({
                             filePath={path}
                             content={tab.content}
                             onContentChange={onContentChange}
+                            onConfirm={onConfirm}
                         />
                     </Suspense>
                 )}

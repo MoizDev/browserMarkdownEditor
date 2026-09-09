@@ -1990,6 +1990,7 @@ export default function App() {
             onExportNotebook={handleExportNotebook}
             onOpenNote={openNoteByName}
             onNotify={notify}
+            onConfirm={ask}
             graph={graph}
             onOpenNode={handleOpenNode}
             revealRequest={pendingReveal}

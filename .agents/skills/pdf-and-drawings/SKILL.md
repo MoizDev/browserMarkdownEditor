@@ -206,6 +206,13 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
 - **A `TLEditorSnapshot` is `{document, session}`** — the store is one level down, inside `document`.
   `parseNotebookFile` tests for `document`; testing for `store` is always false and the failure is
   silent and total (paper restores, every stroke vanishes, file on disk still holds them).
+- ⚠️ **The pages are LOCKED, and `updateShape`/`deleteShapes` SILENTLY SKIP locked shapes.** Every
+  page mutation therefore runs inside `editor.run(..., { ignoreShapeLock: true })`. Without it the
+  paper SVG regenerated at the new size while every page box kept the old one — which is what
+  "landscape doesn't rotate the pages" turned out to be.
+- **Deleting a page takes the writing on it**, so it asks first through App's own confirm (threaded
+  down as `onConfirm` beside `onNotify`). Only the LAST page, and only ever removed — pages are a
+  stack, and an "empty" page may be one deliberately left blank.
 - **Pages grow as you write** (`growIfNeeded`, run just before each serialize): ink within 20% of the
   last page's bottom appends however many pages the overflow needs. Pages are only ever ADDED —
   removing an "empty" one would discard a page left blank on purpose.
@@ -218,6 +225,29 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
   mirroring `paperSvg` by hand: `paper.ts` is in the main bundle and must stay free of pdf-lib.
 - Colours in `pdfBuild`'s ruling constants and `paper.ts`'s SVG are **two copies of one palette** —
   change both.
+
+# The pen panel, and chrome vs paper
+
+`CanvasStylePanel.tsx` (the component) + `canvasPen.ts` (`CANVAS_COMPONENTS`,
+`applyPenDefaults`) + `utils/penStyle.ts` (the store) replace tldraw's `StylePanel` in **all three**
+canvases. Split across two files because `react-refresh/only-export-components` is relaxed for
+`src/context/**` only, so a component and a helper cannot share a file.
+
+- **Width is `props.scale`, NOT the `size` style.** tldraw's thinnest, `s`, is `(2*1 + 1) = 3px`;
+  handwriting on ruled paper needs less. `size` is pinned to `s`, `dash` to `solid`, and a
+  `registerBeforeCreateHandler` stamps `scale` on every new shape that HAS that prop — `scale` is an
+  ordinary prop, not a StyleProp, so `stylesForNextShape` cannot carry it. The slider is logarithmic
+  (half its travel is below the default) and `penStyle.ts` is an external store, not per-pane state,
+  because a split can show two canvases at once.
+- **Swatch colours come from `editor.getCurrentTheme().colors[editor.getColorMode()]`**, never a
+  hard-coded list: the same `'black'` is `#1d1d1d` on a pinned-light page canvas and `#f2f2f2` on a
+  dark whiteboard, and a swatch has to show the ink you will actually get. (`--tl-color-<name>` does
+  not exist; tldraw's CSS vars are semantic — panel, text, low, divider…)
+- **CHROME FOLLOWS THE THEME; PAPER NEVER DOES.** The canvases stay `colorScheme="light"` for ink
+  correctness, and `index.css` themes everything around the page by remapping tldraw's own
+  `--tl-color-*` on `.notebook-pane`/`.pdf-annotate-pane .tl-container` (plus the
+  `--canvas-chrome-*` variables). Restyle the variables, not the widgets. A `.tldraw` whiteboard is
+  excluded on purpose: no pages, so its whole surface is the drawing surface.
 
 # Drawings (`DrawingPane.tsx`, tldraw)
 

@@ -2095,13 +2095,13 @@ body.is-resizing-panes * {
   gap: 6px;
   padding: 4px 6px;
   border-radius: 8px;
-  /* The canvas below is pinned to light (paper is paper), so this bar is too —
-     app theme variables here would put dark chrome on a white page. */
-  background: #ffffff;
-  border: 1px solid #e4e4e7;
+  /* Chrome, not paper — so this follows the app theme even though the pages
+     below it never do. See the canvas-chrome variables. */
+  background: var(--canvas-chrome-bg);
+  border: 1px solid var(--canvas-chrome-border);
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.1), 0 4px 12px rgb(0 0 0 / 0.06);
   font-size: 12px;
-  color: #1d1d1d;
+  color: var(--canvas-chrome-text);
 }
 
 .notebook-select,
@@ -2118,7 +2118,7 @@ body.is-resizing-panes * {
 
 .notebook-select:hover,
 .notebook-toolbar-btn:hover:not(:disabled) {
-  background: #f1f1f3;
+  background: var(--canvas-chrome-hover);
 }
 
 .notebook-toolbar-btn:disabled {
@@ -2128,10 +2128,147 @@ body.is-resizing-panes * {
 
 .notebook-page-count {
   padding: 0 2px;
-  color: #6b6b70;
+  color: var(--canvas-chrome-muted);
   /* Tabular figures so "9 pages" -> "10 pages" doesn't shift the + Page button
      sideways while pages are being appended as you write. */
   font-variant-numeric: tabular-nums;
+}
+
+/* The replacement style panel — colours plus one continuous width slider.
+   See components/CanvasStylePanel.tsx for why tldraw's own is not used. */
+.canvas-style-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  width: 168px;
+  /* Replacing tldraw's StylePanel replaces its positioning wrapper too, so the
+     inset it used to get from the layout has to be stated here or the panel
+     sits flush against the window edge. */
+  margin: 8px;
+  border-radius: 10px;
+  background: var(--canvas-chrome-bg);
+  border: 1px solid var(--canvas-chrome-border);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1), 0 6px 16px rgb(0 0 0 / 0.08);
+  pointer-events: all;
+}
+
+.canvas-style-colors {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.canvas-style-swatch {
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--swatch);
+  cursor: pointer;
+  /* An OUTER ring, not an inset one, and in the chrome's border colour rather
+     than a black tint: the canvases are pinned to tldraw's light theme, so
+     'black' is #1d1d1d — which on dark chrome is a black dot on a near-black
+     panel. The ring is the only thing that makes that swatch findable. It sits
+     outside the circle so selecting a colour doesn't shrink it a pixel. */
+  box-shadow: 0 0 0 1px var(--canvas-chrome-border);
+}
+
+.canvas-style-swatch:hover {
+  box-shadow: 0 0 0 2px var(--canvas-chrome-muted);
+}
+
+.canvas-style-swatch.selected {
+  box-shadow: 0 0 0 2px var(--canvas-chrome-bg), 0 0 0 4px var(--interactive-accent);
+}
+
+.canvas-style-width {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--canvas-chrome-border);
+}
+
+/* A dot of exactly the ink the pen will lay down. Fixed 20px box so the row
+   height doesn't change as the dot grows, which would jog the slider. */
+.canvas-style-width-preview {
+  flex: 0 0 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+}
+
+.canvas-style-width-preview::after {
+  content: '';
+  /* Floored at 2px: the thinnest pen is 0.36px of ink, which is honest but
+     renders as nothing at all — and a preview that disappears reads as broken
+     rather than as fine. */
+  width: max(2px, var(--dot));
+  height: max(2px, var(--dot));
+  max-width: 18px;
+  max-height: 18px;
+  border-radius: 50%;
+  background: var(--swatch);
+}
+
+.canvas-style-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--interactive-accent);
+  cursor: pointer;
+}
+
+/* ── Canvas chrome follows the app theme; the PAGES never do ──────────────
+   A notebook page and a PDF page are white in either theme — that is the paper
+   the export prints on, and tldraw resolves ink COLOURS through its theme, so a
+   dark canvas would draw near-white 'black' onto white paper (the bug the
+   colorScheme pin exists to stop). So the canvases stay pinned to tldraw's light
+   scheme for correctness, and everything AROUND the paper is themed here
+   instead: the surround, this panel, and the notebook's paper bar. */
+:root {
+  --canvas-surround: #f7f7f9;
+  --canvas-chrome-bg: #ffffff;
+  --canvas-chrome-border: #e4e4e7;
+  --canvas-chrome-text: #1d1d1d;
+  --canvas-chrome-muted: #6b6b70;
+  --canvas-chrome-hover: #f1f1f3;
+}
+
+:root:not([data-theme="light"]) {
+  --canvas-surround: var(--background-primary);
+  --canvas-chrome-bg: var(--background-secondary);
+  --canvas-chrome-border: var(--background-modifier-border);
+  --canvas-chrome-text: var(--text-normal);
+  --canvas-chrome-muted: var(--text-muted);
+  --canvas-chrome-hover: var(--background-modifier-hover);
+}
+
+/* The two canvases that draw on PAGES take the themed surround and themed
+   panels. A `.tldraw` whiteboard is excluded on purpose: it has no pages, so its
+   whole surface IS the drawing surface, and it already follows the app theme
+   through colorScheme.
+
+   Remapping tldraw's own variables rather than restyling its elements — the
+   same approach the cursor overrides below use — so this keeps working through
+   tldraw's inline style updates and does not need a selector per widget. */
+.notebook-pane .tl-container,
+.pdf-annotate-pane .tl-container {
+  --tl-color-background: var(--canvas-surround);
+  --tl-color-panel: var(--canvas-chrome-bg);
+  --tl-color-panel-contrast: var(--canvas-chrome-bg);
+  --tl-color-low: var(--canvas-chrome-hover);
+  --tl-color-low-border: var(--canvas-chrome-border);
+  --tl-color-muted-1: var(--canvas-chrome-hover);
+  --tl-color-muted-2: var(--canvas-chrome-hover);
+  --tl-color-divider: var(--canvas-chrome-border);
+  --tl-color-hint: var(--canvas-chrome-border);
+  --tl-color-tooltip: var(--canvas-chrome-text);
+  --tl-color-text: var(--canvas-chrome-text);
+  --tl-color-text-1: var(--canvas-chrome-text);
+  --tl-color-text-2: var(--canvas-chrome-text);
+  --tl-color-text-3: var(--canvas-chrome-muted);
 }
 
 /* =============================================================

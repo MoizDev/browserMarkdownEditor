@@ -121,9 +121,9 @@ and use it before saying a change works.
   `(lastModified, size)`. Each pane likewise holds **one stable resolver identity and one stable
   `imageActions`** for life; a fresh closure per call makes every image widget compare unequal on
   every ⌘E and tab switch.
-- **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, and so are the context-menu
-  and folder-style stores. `FileExplorer`/`TreeNode` are `React.memo`'d so the tree stops re-rendering
-  while the user types — never thread a per-save, per-menu, per-search or per-icon value through them.
+- **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, and so are the context-menu,
+  entry-style and create-request stores. `FileExplorer`/`TreeNode` are `React.memo`'d so the tree stops
+  re-rendering while the user types — never thread a per-save/menu/search/icon/create value through.
 - **The two path-keyed position records** (`fileScrollPositions`, `pdfViewPositions`) are held parsed
   in memory via `readRecord`/`flushRecord` in `utils/storage.ts`. They are never pruned; capping by
   recency was considered and **rejected**, as it discards the position of a file returned to later.

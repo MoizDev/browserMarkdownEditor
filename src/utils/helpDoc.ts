@@ -203,6 +203,13 @@ The notebook stays the original you keep writing in. Exporting again overwrites
 the same PDF rather than leaving a pile of copies, and asks first if a PDF of
 that name is there that this notebook did not put there.
 
+The exported PDF remembers which notebook it came from, so pressing the pen on
+it **opens that notebook** instead of annotating the PDF as if it were someone
+else's. That is what you want: annotating the export would make a third file
+holding marks the notebook knew nothing about, and your next export would
+neither include them nor replace it. The link survives renaming the PDF, and if
+the notebook itself is gone the app says so rather than quietly forking.
+
 ### The pen
 Colour and thickness live in the panel at the top right, and it is the same
 panel in a notebook, a drawing and an annotated PDF.

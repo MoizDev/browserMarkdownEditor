@@ -8,7 +8,10 @@ import { assetEmbeds, referencesAsset } from './utils/assets';
 import { collectFiles } from './utils/tree';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
-import { isCanvasFile, isPdfFile, isAnnotatedPdf, annotatedNameFor, notebookPdfName } from './utils/fileTypes';
+import {
+  isCanvasFile, isPdfFile, isAnnotatedPdf, isNotebookFile, annotatedNameFor,
+  ensureNotebookExt, notebookPdfName, stripPdfExt,
+} from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -780,6 +783,53 @@ export default function App() {
     const targetName = annotatedNameFor(file.name);
     const targetPath = joinVaultPath(parentVaultPath(file.path), targetName);
 
+    /**
+     * A PDF this app exported from a notebook goes BACK TO THE NOTEBOOK.
+     *
+     * Annotating it as an ordinary PDF produced a third file — "X (annotated)
+     * .pdf" — holding strokes the notebook knew nothing about, which the next
+     * export would neither include nor overwrite. Two divergent copies of one
+     * document, and no way back. The notebook is the thing that is edited; this
+     * PDF is what it prints to.
+     */
+    const source = await (async () => {
+      try {
+        const bytes = await readFileBytes(file.handle as FileSystemFileHandle);
+        // Dynamic, like the builder below: pdfAnnotation pulls in pdf.js, and
+        // App is the main bundle (see the module-split rule in AGENTS.md).
+        const { readNotebookSource } = await import('./utils/pdfAnnotation');
+        return await readNotebookSource(bytes);
+      } catch (err) {
+        console.warn('Could not read the PDF looking for its source notebook:', err);
+        return null;
+      }
+    })();
+
+    if (source && rootHandle) {
+      // The stored path first; then a notebook beside this PDF answering to its
+      // name, which is what a rename of either leaves behind. Both are checked
+      // because the pointer is written once and the vault goes on moving.
+      const beside = joinVaultPath(parentVaultPath(file.path), ensureNotebookExt(stripPdfExt(file.name)));
+      for (const candidate of [source.path, beside]) {
+        const node = collectFiles(fileTree).find(f => f.path === candidate && isNotebookFile(f.name));
+        if (!node) continue;
+        await handleFileClick(node);
+        return;
+      }
+      await tell({
+        title: 'That notebook has moved',
+        confirmLabel: 'OK',
+        body: (
+          <>
+            This PDF was exported from <strong>{source.path}</strong>, which is no longer there.
+            Open the notebook and export again, or annotate this PDF on its own — which makes a
+            separate file the notebook will not know about.
+          </>
+        ),
+      });
+      return;
+    }
+
     try {
       // Adopt an existing annotated file rather than overwriting it.
       let handle: FileSystemFileHandle;
@@ -810,7 +860,7 @@ export default function App() {
       console.error('Could not create the annotated PDF:', err);
       alert(`Could not create "${targetName}".`);
     }
-  }, [createFile, readFileBytes, writeFileBytes]);
+  }, [createFile, fileTree, handleFileClick, readFileBytes, tell, writeFileBytes, rootHandle]);
 
   /**
    * Read `<vault>/.folders.json` when the vault opens.
@@ -928,7 +978,10 @@ export default function App() {
       }
 
       const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
-      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays);
+      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, {
+        path: file.path,
+        exportedAt: Date.now(),
+      });
       // createFile refreshes the tree, so the PDF shows up in the sidebar.
       const handle = await createFile(file.parentHandle, targetName);
       await writeFileBytes(handle, bytes);

@@ -9,7 +9,7 @@
 
 import { PDFDocument, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
 import type { PDFPage, PDFImage } from 'pdf-lib';
-import { ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT } from './pdfFormat';
+import { NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT, type NotebookSource } from './pdfFormat';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from './paper';
 import type { PageOverlay } from './pdfOverlay';
 import type { VectorOp } from './pdfVector';
@@ -204,6 +204,7 @@ const RULE_WIDTH = 0.75;
 export async function buildNotebookPdf(
     paper: NotebookPaper,
     overlays: Array<PageOverlay | undefined> = [],
+    source?: NotebookSource,
 ): Promise<Uint8Array> {
     const doc = await PDFDocument.create();
     const { width, height } = paperPageSize(paper);
@@ -240,6 +241,20 @@ export async function buildNotebookPdf(
         if (!overlay) continue;
         if (overlay.raster?.length) stampRaster(page, await doc.embedPng(overlay.raster.slice()));
         if (overlay.vector?.length) stampVector(page, overlay.vector);
+    }
+
+    if (source) {
+        // Which notebook this came out of. Only a POINTER — the notebook itself
+        // is not embedded, because this file is an output and the notebook is
+        // the original that stays put and keeps being edited. Annotating this
+        // PDF follows the pointer back rather than forking a third file.
+        doc.attach(new TextEncoder().encode(JSON.stringify(source)), NOTEBOOK_SOURCE_ATTACHMENT, {
+            mimeType: 'application/json',
+            description: 'The notebook this PDF was exported from. Edit that, then export again.',
+        });
+        // Said in the document properties too, where any PDF viewer will show
+        // it — the attachment is for this app, this line is for a person.
+        doc.setProducer(`Exported from ${source.path}`);
     }
 
     return doc.save();

@@ -4,6 +4,7 @@
 // a worker per save would re-pay module init (pdf-lib is ~400kB) every time.
 
 import type { NotebookPaper } from './paper';
+import type { NotebookSource } from './pdfFormat';
 import type { PageOverlay } from './pdfOverlay';
 import type { PdfBuildRequest, PdfBuildResponse } from './pdfBuild.worker';
 
@@ -59,8 +60,9 @@ export function buildAnnotatedPdfAsync(
 export function buildNotebookPdfAsync(
     paper: NotebookPaper,
     overlays: Array<PageOverlay | undefined>,
+    source?: NotebookSource,
 ): Promise<Uint8Array> {
-    return dispatch(id => ({ kind: 'notebook', id, paper, overlays }));
+    return dispatch(id => ({ kind: 'notebook', id, paper, overlays, source }));
 }
 
 function dispatch(build: (id: number) => PdfBuildRequest): Promise<Uint8Array> {

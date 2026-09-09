@@ -28,7 +28,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 // Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
 // The shared names come from pdfFormat.ts rather than from pdfBuild directly —
 // importing pdfBuild here would pull pdf-lib into this main-thread module.
-import { ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT } from './pdfFormat';
+import { NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT, type NotebookSource } from './pdfFormat';
 
 // Page stacking lives in paper.ts, which imports nothing — the notebook canvas
 // lays its pages out with the same function and must not pull pdf.js in to do it.
@@ -110,6 +110,34 @@ export async function readAnnotatedPdf(bytes: Uint8Array): Promise<AnnotatedPdfC
         // view onto a larger buffer, where the extra bytes would travel with it.
         const tight = original.byteOffset === 0 && original.byteLength === original.buffer.byteLength;
         return { original: tight ? original : new Uint8Array(original), snapshot };
+    });
+}
+
+/**
+ * Which notebook this PDF was exported from, or null if it wasn't.
+ *
+ * Told by CONTENT, never by filename — the same rule `readAnnotatedPdf`
+ * follows. A PDF that merely sits next to a notebook of the same name is not
+ * that notebook's export, and a renamed export still is.
+ */
+export async function readNotebookSource(bytes: Uint8Array): Promise<NotebookSource | null> {
+    return withPdf(bytes, async doc => {
+        const attachments = await doc.getAttachments();
+        // NB: a Map, not a plain object — Object.keys() on it is always empty.
+        if (!attachments?.has(NOTEBOOK_SOURCE_ATTACHMENT)) return null;
+        const raw = await doc.getAttachmentContent(NOTEBOOK_SOURCE_ATTACHMENT);
+        if (!raw) return null;
+        try {
+            const parsed = JSON.parse(new TextDecoder().decode(raw)) as Partial<NotebookSource>;
+            // The path is the whole point; without it there is nothing to follow.
+            return typeof parsed.path === 'string' && parsed.path
+                ? { path: parsed.path, exportedAt: Number(parsed.exportedAt) || 0 }
+                : null;
+        } catch {
+            // Hand-edited, or written by a build that shaped it differently.
+            // Falling back to ordinary annotation is the safe answer.
+            return null;
+        }
     });
 }
 

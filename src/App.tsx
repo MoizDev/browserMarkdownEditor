@@ -30,6 +30,7 @@ import {
 import { clampTabSize } from './editor/lists';
 import { retryMissingAssets } from './editor/imageWidget';
 import { getNotebookExporter, clearNotebookRenderData, moveNotebookRenderData } from './utils/notebookRenderCache';
+import { readLocation, vaultLinkName, writeLocation } from './utils/appUrl';
 import { setTableNotify } from './editor/tableEdit';
 import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/contextMenu';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
@@ -214,11 +215,13 @@ export default function App() {
     fileTree,
     isLoading,
     previousVault,
+    linkedVault,
     recentVaults,
     currentVaultId,
     pickDirectory,
     openRecentVault,
     openFolderAsVault,
+    openLinkedVault,
     forgetRecentVault,
     readFile,
     writeFile,
@@ -1288,6 +1291,72 @@ export default function App() {
     })();
   }, [fileTree, readFile, currentVaultId, rememberAssetRefs]);
 
+  /**
+   * Open the file the address bar names, once there is a tree to find it in.
+   *
+   * Deliberately AFTER the session restore rather than inside it: a link is an
+   * instruction and the restored session is only a default, so whatever the link
+   * names has to end up in front — and `handleFileClick` focuses what it opens,
+   * which the restore above would undo if this ran first. Its own ref gate makes
+   * it once-per-load, because the tree is rebuilt after every save.
+   */
+  /**
+   * The address bar AS THE PAGE LOADED, captured once.
+   *
+   * Not re-read later: the effect below rewrites the hash as the app settles,
+   * and one render where a vault is open but the labelled list has not caught
+   * up used to clear it — wiping the link while this was still waiting for a
+   * tree to find its file in. Reading a link that is being kept up to date is
+   * the mistake; the instruction is what arrived, once.
+   */
+  const [initialLocation] = useState(readLocation);
+
+  const linkedFileOpened = useRef(false);
+  useEffect(() => {
+    if (linkedFileOpened.current || !fileTree.length) return;
+    const wanted = initialLocation.file;
+    if (!wanted) { linkedFileOpened.current = true; return; }
+    const node = collectFiles(fileTree).find(f => f.path === wanted);
+    // Not found is not yet a failure: the tree may still be the OLD vault's,
+    // one render before the switch lands. Only give up once a vault is open and
+    // its tree has been walked.
+    if (!node) {
+      if (rootHandle) linkedFileOpened.current = true;
+      return;
+    }
+    linkedFileOpened.current = true;
+    void handleFileClick(node);
+  }, [fileTree, rootHandle, handleFileClick, initialLocation]);
+
+  /**
+   * Keep the address bar describing what is open, so it can be copied at any
+   * moment as a link back here.
+   *
+   * The vault is named rather than identified wherever it can be — a link is
+   * something a person reads and types — and only carries an id suffix when two
+   * known vaults share a folder name. See utils/appUrl.ts for why a link cannot
+   * carry a path on disk, which is the thing it would obviously want to.
+   */
+  useEffect(() => {
+    const vault = recentVaults.find(v => v.id === currentVaultId);
+    if (!vault) {
+      // Two reasons there may be no vault to name, and neither is a reason to
+      // clear the hash. Before a vault is open, the link is what the "Open 'X'"
+      // button is about to act on. And `currentVaultId` is set by recordVault
+      // BEFORE the tree walk, so "an id but no entry in the list" is one
+      // transient render while the labelled list catches up — clearing there
+      // wiped the link mid-open, and the file it named never got opened.
+      if (!rootHandle || currentVaultId) return;
+      writeLocation({});
+      return;
+    }
+    writeLocation({
+      vault: vaultLinkName(vault, recentVaults),
+      // The help guide is not a file in the vault, so it has no link.
+      file: activeFile && !activeFile.isHelp ? activeFile.path : undefined,
+    });
+  }, [rootHandle, currentVaultId, recentVaults, activeFile]);
+
   const handleHelpClick = useCallback(() => {
     const path = 'help-guide';
     if (tabsRef.current.some(t => t.file.path === path)) {
@@ -1743,9 +1812,27 @@ export default function App() {
             </svg>
           </div>
           <h1 className="welcome-title">Markdown Editor</h1>
-          <p className="welcome-subtitle">Open a vault to start editing your notes.</p>
+          {/* A link named a vault this browser knows, but the grant has lapsed.
+              Browsers only let requestPermission ask from a user gesture, so
+              the link cannot open itself — this button is that gesture. */}
+          <p className="welcome-subtitle">
+            {linkedVault
+              ? <>This link opens <strong>{linkedVault.label}</strong>. Allow access to it to continue.</>
+              : 'Open a vault to start editing your notes.'}
+          </p>
           <div style={{ display: 'flex', gap: '12px', marginTop: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
-            <button className="welcome-btn" style={{ margin: 0 }} onClick={pickDirectory}>
+            {linkedVault && (
+              <button className="welcome-btn" style={{ margin: 0 }} onClick={openLinkedVault}>
+                Open '{linkedVault.label}'
+              </button>
+            )}
+            <button
+              className="welcome-btn"
+              style={linkedVault
+                ? { margin: 0, background: 'var(--background-modifier-border)', color: 'var(--text-normal)' }
+                : { margin: 0 }}
+              onClick={pickDirectory}
+            >
               Open Vault
             </button>
             {previousVault && (

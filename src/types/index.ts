@@ -289,6 +289,11 @@ export interface FileSystemContextValue {
   fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
   isLoading: boolean;                                     // FileSystemContext.jsx:72
   previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73
+  /** The vault the address bar asked for, when it is known to this browser but
+   *  its permission has lapsed — `requestPermission` needs a click, and a page
+   *  load is not one. Null in every other case, including a link naming a vault
+   *  this browser has never opened (nothing can be done with that name). */
+  linkedVault: RecentVault | null;
   /** Folders opened as vaults, newest first, each already labelled. */
   recentVaults: RecentVault[];
   /** Which of those is open right now (null until one is). */
@@ -304,6 +309,8 @@ export interface FileSystemContextValue {
   /** Open a folder from the file tree as the vault — the same switch the picker
    *  performs, from a handle already in hand. */
   openFolderAsVault: (handle: FileSystemDirectoryHandle) => Promise<VaultOpenResult>;
+  /** Grant and open `linkedVault`. Must be called from a user gesture. */
+  openLinkedVault: () => Promise<VaultOpenResult>;
   /** Take one vault off the recent list — a record only, nothing on disk.
    *  Resolves false if the list could not be rewritten. */
   forgetRecentVault: (id: string) => Promise<boolean>;

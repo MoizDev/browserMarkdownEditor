@@ -256,24 +256,29 @@ function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, i
     if (activated) {
         if (error) {
             body = <div className="pdf-pane-message">Could not open this PDF: {error}</div>;
-        } else if (!source) {
+        } else if (mode === 'edit' && !source) {
+            /* Waiting on the ROLE read, which is lazy — only annotating needs
+               it. Gating every branch on it (as this did) left a PDF opened for
+               reading stuck on "Loading PDF…" forever, waiting for a read that
+               no longer happens until you switch to annotate. Reading needs
+               `viewBytes` and nothing else; that is the branch further down. */
             body = <div className="pdf-pane-message">Loading PDF…</div>;
-        } else if (mode === 'edit' && source.notebookSource) {
+        } else if (mode === 'edit' && source?.notebookSource) {
             // A notebook's export. Annotating it would fork a third document
             // whose marks the notebook could neither see nor replace, so the
             // pane hands you back to the notebook instead of drawing anything.
             body = (
                 <div className="pdf-pane-message">
-                    This PDF was exported from <strong>{source.notebookSource.path}</strong>.
+                    This PDF was exported from <strong>{source!.notebookSource!.path}</strong>.
                     <button
                         className="pdf-pane-action"
-                        onClick={() => onOpenNotebookSource(file.path, source.notebookSource!.path)}
+                        onClick={() => onOpenNotebookSource(file.path, source!.notebookSource!.path)}
                     >
                         Open the notebook
                     </button>
                 </div>
             );
-        } else if (mode === 'edit') {
+        } else if (mode === 'edit' && source) {
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
             // unmounting it is what flushes pending strokes to disk.

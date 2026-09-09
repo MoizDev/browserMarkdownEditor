@@ -6,6 +6,7 @@ import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type Pdf
 import { setPdfRenderData } from '../utils/pdfRenderCache';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
+import { CANVAS_COMPONENTS, applyPenDefaults } from './canvasPen';
 
 interface PdfAnnotateCanvasProps {
     filePath: string;
@@ -500,6 +501,8 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             else onContentChangeRef.current(filePath, json);
         };
 
+        const disposePen = applyPenDefaults(editor);
+
         const unlisten = editor.store.listen(() => {
             hasUnsavedRef.current = true;
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
@@ -508,6 +511,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
 
         return () => {
             unlisten();
+            disposePen();
             unlistenCamera();
             if (refineTimer) clearTimeout(refineTimer);
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
@@ -534,11 +538,12 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     }
 
     return (
-        <div className="drawing-pane">
+        <div className="drawing-pane pdf-annotate-pane">
             <Tldraw
                 snapshot={parsed}
                 assets={assetStore}
                 onMount={handleMount}
+                components={CANVAS_COMPONENTS}
                 colorScheme={ANNOTATE_COLOR_SCHEME}
                 licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
             />

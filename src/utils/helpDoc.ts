@@ -166,6 +166,8 @@ The bar across the top of a notebook is its paper:
 - **Letter / A4 / Legal** and **Portrait / Landscape** — the page size.
 - **+ Page** adds a page at the bottom. You rarely need it: writing near the
   bottom of the last page adds the next one for you, before you run out of room.
+- **− Page** removes the last one. An empty page just goes; one with writing on
+  it asks first and says how much, because that writing goes with it.
 
 ### Exporting a notebook to PDF
 The download icon in the top bar writes a PDF beside the notebook — \`Assignment
@@ -176,6 +178,17 @@ the pages are ordinary PDF pages that anything can open.
 The notebook stays the original you keep writing in. Exporting again overwrites
 the same PDF rather than leaving a pile of copies, and asks first if a PDF of
 that name is there that this notebook did not put there.
+
+### The pen
+Colour and thickness live in the panel at the top right, and it is the same
+panel in a notebook, a drawing and an annotated PDF.
+
+The **slider is the pen's width**, and it is continuous rather than a set of
+sizes — it starts at a normal writing width and goes down to a hairline, which is
+what small handwriting on ruled paper needs. Double-click it to come back to the
+default. The dot beside it is the actual width, in the actual colour, so you can
+see what you are about to draw with. Drag the slider or pick a colour with
+something selected and it re-inks that instead of only the next stroke.
 
 ### Drawings
 A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endless
@@ -197,8 +210,12 @@ selectable underneath. It also quietly carries the untouched original and your
 strokes inside itself, which is what lets you reopen it here and keep editing —
 or erase — annotations you made days ago.
 
-Notebooks and PDF annotation are always on white paper, whichever theme the app
-is in, because that is the paper the exported PDF will be printed on.
+Everything around a page — the toolbars, the pen panel, the space the pages sit
+on — follows the app's theme, so a notebook or a PDF is dark at night like the
+rest of the app. The **pages themselves stay white** in either theme, because
+that is paper: it is what the exported PDF prints on, and ink that changed colour
+with the theme would come out invisible in the file. A drawing has no pages, so
+it is dark all over.
 
 ---
 

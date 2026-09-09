@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool, Notebook } from './icons';
 import { isDrawingFile, isNotebookFile } from '../utils/fileTypes';
+import {
+    clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor, requestCreate,
+    subscribeCreateRequest, type CreateKind,
+} from '../utils/createRequest';
 import { setDraggedNode, takeDraggedNode } from '../utils/treeDrag';
 import { isTabDrag } from '../utils/tabDrag';
 import { openContextMenu } from '../utils/contextMenu';
@@ -76,16 +80,26 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
     // dismissed.
     const [marked, setMarked] = useState(false);
 
-    // The folder branch's "New note" / "New folder" flow. It used to be a
-    // window.prompt() raised from FileExplorer; this is the app's own inline
-    // input row instead — the same one the explorer header already opens at the
-    // vault root, and the same direction 89824e7 took the rename dialog.
-    const [creating, setCreating] = useState<'file' | 'folder' | null>(null);
+    /* The inline "new thing" name box, driven by the module store rather than
+       by local state — see utils/createRequest.ts. The explorer's toolbar has to
+       be able to open this box in a folder several levels down the recursion,
+       which a prop could only do by travelling every level. */
+    const creating = useSyncExternalStore(
+        subscribeCreateRequest,
+        useCallback(() => getCreateKindFor(node.path), [node.path]),
+    );
     const createInputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
         if (creating) createInputRef.current?.focus();
     }, [creating]);
+
+    // A folder asked to create something has to be open, or the box it is about
+    // to render is inside a subtree nobody can see. Its ANCESTORS are opened by
+    // whoever raised the request: this row is not rendered until they are.
+    useEffect(() => {
+        if (creating && !expandedPaths.has(node.path)) onToggleExpand(node.path);
+    }, [creating, expandedPaths, node.path, onToggleExpand]);
 
     useEffect(() => {
         if (isRenaming && renameInputRef.current) {
@@ -138,16 +152,13 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
      * description of what is open (App's `expandedPaths`, which is persisted and
      * which a rename carries across) telling the truth.
      */
-    const startCreate = (kind: 'file' | 'folder') => {
-        if (!expanded) onToggleExpand(node.path);
-        setCreating(kind);
-    };
+    const startCreate = (kind: CreateKind) => requestCreate(node.path, kind);
 
     const handleCreateKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter') {
             const name = (e.target as HTMLInputElement).value.trim();
             const kind = creating;
-            setCreating(null);
+            clearCreateRequest();
             if (!name) return;
             // Narrowing only: the input row is rendered on the folder branch
             // alone, so `node` is a directory whenever this runs.
@@ -160,9 +171,9 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
             // means (a file and a folder cannot share a name — freeEntryName's
             // rule, FileSystemContext.tsx:21-25).
             if (kind === 'folder') await onCreateFolder(node.handle, name);
-            else await onCreateFile(node.handle, name, node.path);
+            else await onCreateFile(node.handle, nameForKind(kind, name), node.path);
         } else if (e.key === 'Escape') {
-            setCreating(null);
+            clearCreateRequest();
         }
     };
 
@@ -487,9 +498,9 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
                                 ref={createInputRef}
                                 className="inline-rename-input"
                                 type="text"
-                                placeholder={creating === 'file' ? 'Untitled.md' : 'New folder'}
+                                placeholder={placeholderFor(creating)}
                                 onKeyDown={handleCreateKeyDown}
-                                onBlur={() => setCreating(null)}
+                                onBlur={() => clearCreateRequest()}
                                 onClick={(e) => e.stopPropagation()}
                             />
                         </div>

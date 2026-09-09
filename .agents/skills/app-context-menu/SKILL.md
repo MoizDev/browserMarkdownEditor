@@ -84,6 +84,12 @@ store; `App` reads it with `useSyncExternalStore` and renders `<ContextMenu>` on
   **not** close the menu on a pick (icon and colour are two choices), and it seeds its own state from
   the entry: entries are built once, when the menu is raised, so reading them per render would freeze
   the highlight at the row's look before the first pick.
+- **The inline "new thing" name box is a THIRD module store** (`utils/createRequest.ts`), for the
+  same reason: the explorer header's New-note button has to open that box in a folder several levels
+  down a memoized recursion. It replaced the two implementations it addresses — a folder row's local
+  `creating` state and `FileExplorer`'s own — so there is now one box, at `path: ''` for the vault
+  root or a folder's path. The target row expands ITSELF; its ancestors are expanded by the raiser,
+  since the row is not mounted until they are.
 - **The size picker is a flyout, not a modal.** `ConfirmDialog` could not host it anyway (its
   `children` render inside a `<p>`, its `onConfirm` carries no value, and focus goes to a button), and
   a flyout beside the row needs no backdrop and no focus round trip. It is positioned inline by the

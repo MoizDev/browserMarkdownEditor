@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore } from 'react';
 import TreeNode from './TreeNode';
 import { takeDraggedNode } from '../utils/treeDrag';
 import { isTabDrag } from '../utils/tabDrag';
@@ -7,7 +7,11 @@ import type { ContextMenuEntry } from '../utils/contextMenu';
 import SearchPanel from './SearchPanel';
 import VaultMenu from './VaultMenu';
 import { FilePlus, FolderPlus, FolderOpen, PenTool, Notebook, PanelLeft } from './icons';
-import { ensureDrawingExt, ensureNotebookExt } from '../utils/fileTypes';
+import {
+    ancestorsOf, clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor,
+    requestCreate, subscribeCreateRequest, type CreateKind,
+} from '../utils/createRequest';
+import { collectFiles } from '../utils/tree';
 import { createVaultTextCache } from '../utils/vaultSearch';
 import type { VaultTextCache } from '../utils/vaultSearch';
 import type { FileTreeNode, FileTreeFileNode, RecentVault, TextRange, VaultOpenResult } from '../types';
@@ -115,10 +119,13 @@ function FileExplorer({
     onOpenSearchResult,
     getOpenTabContent,
 }: FileExplorerProps) {
-    // 'drawing' creates a .tldraw whiteboard and 'notebook' a .notebook; both
-    // differ from 'file' only in the extension forced onto the typed name, and
-    // a notebook additionally starts life with its paper already written down.
-    const [creatingInRoot, setCreatingInRoot] = useState<'file' | 'folder' | 'drawing' | 'notebook' | null>(null);
+    /* The name box at the vault ROOT. Driven by the same store the tree rows
+       use, so the header's buttons can open it either here or inside a folder
+       without two implementations of one control. */
+    const creatingInRoot = useSyncExternalStore(
+        subscribeCreateRequest,
+        useCallback(() => getCreateKindFor(''), []),
+    );
     const [rootDragOver, setRootDragOver] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -178,11 +185,34 @@ function FileExplorer({
         }
     }, [creatingInRoot]);
 
-    /** Open the inline "new file/folder" input, leaving search mode if needed
-     *  (the input lives in the tree view, which search temporarily replaces). */
-    const startCreateInRoot = (kind: 'file' | 'folder' | 'drawing' | 'notebook') => {
+    /**
+     * Where the header's New-something buttons put things.
+     *
+     * THE FOLDER OF THE FILE YOU HAVE OPEN, not the vault root. Making a note
+     * while reading one almost always means making it next to that one, and
+     * having it land at the root instead means moving it by hand every time.
+     * With nothing open — or a file whose folder cannot be resolved — the root
+     * is still the answer.
+     */
+    const createTarget = useMemo(() => {
+        if (!activeFilePath) return '';
+        const node = collectFiles(fileTree).find(f => f.path === activeFilePath);
+        if (!node) return '';
+        const slash = node.path.lastIndexOf('/');
+        return slash === -1 ? '' : node.path.slice(0, slash);
+    }, [activeFilePath, fileTree]);
+
+    /** Open the inline "new file/folder" name box in `createTarget`, leaving
+     *  search mode if needed (the box lives in the tree view, which search
+     *  temporarily replaces). */
+    const startCreateInRoot = (kind: CreateKind) => {
         onCloseSearch();
-        setCreatingInRoot(kind);
+        // Every folder on the way down has to be open, or the row that renders
+        // the box is not mounted to see the request. The target opens itself.
+        for (const ancestor of ancestorsOf(createTarget)) {
+            if (!expandedPaths.has(ancestor)) onToggleExpand(ancestor);
+        }
+        requestCreate(createTarget, kind);
     };
 
     const handleSearchResult = (node: FileTreeFileNode, range: TextRange | null) => {
@@ -194,29 +224,27 @@ function FileExplorer({
         if (e.key === 'Enter') {
             const name = (e.target as HTMLInputElement).value.trim();
             if (!name) {
-                setCreatingInRoot(null);
+                clearCreateRequest();
                 return;
             }
-            if (creatingInRoot === 'notebook') {
-                // Empty on disk until the first stroke, exactly as a drawing is:
-                // parseNotebookFile('') is default paper, so a notebook created
-                // and never written in still opens as a blank one-page notebook.
-                await onCreateFile(rootHandle, ensureNotebookExt(name), '');
-            } else if (creatingInRoot === 'drawing') {
-                await onCreateFile(rootHandle, ensureDrawingExt(name), '');
+            if (creatingInRoot === 'notebook' || creatingInRoot === 'drawing') {
+                // Empty on disk until the first stroke: a notebook created and
+                // never written in still opens as a blank one-page notebook,
+                // exactly as a drawing opens as a blank canvas.
+                await onCreateFile(rootHandle, nameForKind(creatingInRoot, name), '');
             } else if (creatingInRoot === 'file') {
                 await onCreateFile(rootHandle, name, '');
             } else {
                 await onCreateFolder(rootHandle, name);
             }
-            setCreatingInRoot(null);
+            clearCreateRequest();
         } else if (e.key === 'Escape') {
-            setCreatingInRoot(null);
+            clearCreateRequest();
         }
     };
 
     const handleRootCreateBlur = () => {
-        setCreatingInRoot(null);
+        clearCreateRequest();
     };
 
     /**
@@ -334,15 +362,18 @@ function FileExplorer({
                     >
                         <FilePlus size={15} />
                     </button>
+                    {/* The two handwriting surfaces carry the accent colour, so
+                        they read as a pair and stand out from the file/folder
+                        actions either side of them. */}
                     <button
-                        className="nav-action-btn"
+                        className="nav-action-btn is-accented"
                         title="New notebook — ruled pages you can write on and export as a PDF"
                         onClick={() => startCreateInRoot('notebook')}
                     >
                         <Notebook size={15} />
                     </button>
                     <button
-                        className="nav-action-btn"
+                        className="nav-action-btn is-accented"
                         title="New drawing"
                         onClick={() => startCreateInRoot('drawing')}
                     >
@@ -412,12 +443,7 @@ function FileExplorer({
                                 ref={inputRef}
                                 className="inline-rename-input"
                                 type="text"
-                                placeholder={
-                                    creatingInRoot === 'file' ? 'Untitled.md'
-                                        : creatingInRoot === 'drawing' ? 'Untitled.tldraw'
-                                            : creatingInRoot === 'notebook' ? 'Untitled.notebook'
-                                                : 'New folder'
-                                }
+                                placeholder={placeholderFor(creatingInRoot)}
                                 onKeyDown={handleRootCreate}
                                 onBlur={handleRootCreateBlur}
                             />

@@ -335,6 +335,21 @@ body {
   background: var(--background-modifier-hover);
 }
 
+/* The two canvas creators (new notebook, new drawing), in the user's accent so
+   they read as a pair among six otherwise identical grey glyphs. Uses the
+   accent VARIABLE, not a colour: Settings lets that be changed, and it is
+   applied as an inline override on <html>. */
+.nav-action-btn.is-accented {
+  color: var(--interactive-accent);
+}
+
+/* The hover rule above would grey them on hover, which reads as the icon going
+   dead exactly when it is being aimed at. */
+.nav-action-btn.is-accented:hover {
+  color: var(--interactive-accent-hover);
+  background: var(--background-modifier-hover);
+}
+
 .nav-files-container {
   flex: 1;
   overflow-y: auto;

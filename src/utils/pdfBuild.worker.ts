@@ -5,24 +5,39 @@
 // under the pen, because the pen and the encoder share a thread. Here it costs
 // the user nothing.
 
-import { buildAnnotatedPdf } from './pdfBuild';
+import { buildAnnotatedPdf, buildNotebookPdf } from './pdfBuild';
+import type { NotebookPaper } from './paper';
 import type { PageOverlay } from './pdfOverlay';
 
-export interface PdfBuildRequest {
+/** Stamping annotations back onto their source document. */
+export interface AnnotateBuildRequest {
+    kind: 'annotate';
     id: number;
     original: Uint8Array;
     snapshot: string;
     overlays: Array<PageOverlay | undefined>;
 }
 
+/** Writing a notebook out as ruled pages with the writing drawn on. */
+export interface NotebookBuildRequest {
+    kind: 'notebook';
+    id: number;
+    paper: NotebookPaper;
+    overlays: Array<PageOverlay | undefined>;
+}
+
+export type PdfBuildRequest = AnnotateBuildRequest | NotebookBuildRequest;
+
 export type PdfBuildResponse =
     | { id: number; bytes: Uint8Array; error?: undefined }
     | { id: number; bytes?: undefined; error: string };
 
 self.onmessage = async (e: MessageEvent<PdfBuildRequest>) => {
-    const { id, original, snapshot, overlays } = e.data;
+    const { id } = e.data;
     try {
-        const bytes = await buildAnnotatedPdf(original, snapshot, overlays);
+        const bytes = e.data.kind === 'notebook'
+            ? await buildNotebookPdf(e.data.paper, e.data.overlays)
+            : await buildAnnotatedPdf(e.data.original, e.data.snapshot, e.data.overlays);
         // Transfer rather than copy: the worker has no further use for these
         // bytes, and they can be megabytes.
         (self as unknown as Worker).postMessage({ id, bytes } satisfies PdfBuildResponse, [bytes.buffer as ArrayBuffer]);

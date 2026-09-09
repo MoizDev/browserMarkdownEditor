@@ -22,14 +22,16 @@ import { readRecord, flushRecord } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
-import { isDrawingFile, isPdfFile } from '../utils/fileTypes';
-import { FileText, PenTool, PopOut, X } from './icons';
+import { isDrawingFile, isNotebookFile, isPdfFile } from '../utils/fileTypes';
+import { FileText, Notebook, PenTool, PopOut, X } from './icons';
 import type { EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
 
 // tldraw is a heavy dependency (canvas engine + its own UI). Loading it lazily
 // keeps it out of the initial bundle, so a markdown-only session never pays for
 // it — the chunk is fetched the first time a .tldraw file is opened.
 const DrawingPane = lazy(() => import('./DrawingPane'));
+// Lazy for the same reason DrawingPane is: opening a note must not load tldraw.
+const NotebookPane = lazy(() => import('./NotebookPane'));
 
 /** localStorage key: per-file editor scroll offsets. */
 const SCROLL_POSITIONS_KEY = 'fileScrollPositions';
@@ -333,8 +335,9 @@ function DocumentPane({
     const path = file.path;
     const mode = tab.mode;
     const isDrawing = !file.isHelp && isDrawingFile(file.name);
+    const isNotebook = !file.isHelp && isNotebookFile(file.name);
     const isPdf = !file.isHelp && isPdfFile(file.name);
-    const isCanvas = isDrawing || isPdf;
+    const isCanvas = isDrawing || isNotebook || isPdf;
 
     const viewRef = useRef<EditorView | null>(null);
     const revealClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -662,7 +665,7 @@ function DocumentPane({
                     onDrop={(e) => e.preventDefault()}
                 >
                     <span className="editor-slot-icon" aria-hidden="true">
-                        {isDrawing ? <PenTool size={12} /> : <FileText size={12} />}
+                        {isNotebook ? <Notebook size={12} /> : isDrawing ? <PenTool size={12} /> : <FileText size={12} />}
                     </span>
                     <span className="editor-slot-title" title={path}>{file.name}</span>
                     {tab.dirty && <span className="editor-slot-dot" aria-hidden="true" />}
@@ -693,8 +696,8 @@ function DocumentPane({
                            WHERE this handler lives is the whole safety
                            argument, and it is the reason it is not a document
                            listener with an exclusion list: this element is
-                           rendered `{!isCanvas && …}`, DrawingPane is its
-                           sibling, EditorPane mounts every PdfPane outside the
+                           rendered `{!isCanvas && …}`, DrawingPane and
+                           NotebookPane are its siblings, EditorPane mounts every PdfPane outside the
                            slot entirely, and GraphView replaces EditorPane. So
                            tldraw's own menu, a PDF's and the graph's are
                            excluded BY CONSTRUCTION — there is no closest()
@@ -788,6 +791,18 @@ function DocumentPane({
                             content={tab.content}
                             onContentChange={onContentChange}
                             theme={theme}
+                        />
+                    </Suspense>
+                )}
+                {isNotebook && (
+                    <Suspense fallback={<div className="drawing-pane drawing-pane-loading">Loading notebook…</div>}>
+                        {/* Keyed on path, like a drawing: each notebook gets its
+                            own tldraw instance, loaded from its own file. */}
+                        <NotebookPane
+                            key={path}
+                            filePath={path}
+                            content={tab.content}
+                            onContentChange={onContentChange}
                         />
                     </Suspense>
                 )}

@@ -10,6 +10,7 @@
 import { PDFDocument, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
 import type { PDFPage, PDFImage } from 'pdf-lib';
 import { ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT } from './pdfFormat';
+import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from './paper';
 import type { PageOverlay } from './pdfOverlay';
 import type { VectorOp } from './pdfVector';
 
@@ -176,6 +177,70 @@ export async function buildAnnotatedPdf(
         mimeType: 'application/json',
         description: 'tldraw snapshot: the editable form of the annotations stamped on the pages.',
     });
+
+    return doc.save();
+}
+
+/* ── Notebooks ──────────────────────────────────────────────────────────── */
+
+/** Ruled paper, as PDF drawing colours. Kept in step with paper.ts's SVG by
+ *  hand: that file is imported by the main bundle and must stay free of
+ *  pdf-lib's `rgb`, so the two cannot share a constant. */
+const RULE_RGB = rgb(0.765, 0.827, 0.910);      // #c3d3e8
+const MARGIN_RGB = rgb(0.914, 0.722, 0.741);    // #e9b8bd
+const RULE_WIDTH = 0.75;
+
+/**
+ * Write a notebook out as a PDF: ruled pages with the writing drawn onto them.
+ *
+ * The ruling is drawn, not rasterized — so an exported notebook is vector
+ * through and through, prints at any size, and costs a few hundred bytes a page
+ * rather than an image. It deliberately mirrors `paperSvg`, because what is
+ * exported has to be the paper that was written on.
+ *
+ * No attachments and no round trip: unlike an annotated PDF this is an OUTPUT,
+ * and the `.notebook` file beside it stays the editable original.
+ */
+export async function buildNotebookPdf(
+    paper: NotebookPaper,
+    overlays: Array<PageOverlay | undefined> = [],
+): Promise<Uint8Array> {
+    const doc = await PDFDocument.create();
+    const { width, height } = paperPageSize(paper);
+    const rules = paper.ruling === 'lined' || paper.ruling === 'grid' ? ruleOffsets(paper) : [];
+    const columns = paper.ruling === 'grid' || paper.ruling === 'dotted' ? columnOffsets(paper) : [];
+    const dots = paper.ruling === 'dotted' ? ruleOffsets(paper) : [];
+    const margin = marginX(paper);
+
+    for (let i = 0; i < paper.pageCount; i++) {
+        const page = doc.addPage([width, height]);
+
+        // paper.ts works top-down (SVG); PDF user space is bottom-up.
+        for (const y of rules) {
+            page.drawLine({ start: { x: 0, y: height - y }, end: { x: width, y: height - y }, thickness: RULE_WIDTH, color: RULE_RGB });
+        }
+        if (paper.ruling === 'grid') {
+            for (const x of columns) {
+                page.drawLine({ start: { x, y: 0 }, end: { x, y: height }, thickness: RULE_WIDTH, color: RULE_RGB });
+            }
+        }
+        for (const y of dots) {
+            for (const x of columns) {
+                page.drawCircle({ x, y: height - y, size: 1.1, color: RULE_RGB });
+            }
+        }
+        if (margin !== null) {
+            page.drawLine({ start: { x: margin, y: 0 }, end: { x: margin, y: height }, thickness: 1, color: MARGIN_RGB });
+        }
+
+        // No page rotation to undo here — these pages are made portrait or
+        // landscape outright — but displaySpace() handles /Rotate 0 as the
+        // identity, so the two canvases share one stamping path.
+        const overlay = overlays[i];
+        if (!overlay) continue;
+        if (overlay.raster?.length) stampRaster(page, await doc.embedPng(overlay.raster.slice()));
+        if (overlay.vector?.length) stampVector(page, overlay.vector);
+    }
 
     return doc.save();
 }

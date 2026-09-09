@@ -3,7 +3,7 @@ import { subscribeSaveEpoch, getSaveEpoch } from '../utils/saveEpoch';
 import { FileText, X } from './icons';
 import { collectFiles } from '../utils/tree';
 import { searchVault, isTextFile } from '../utils/vaultSearch';
-import { isDrawingFile } from '../utils/fileTypes';
+import { isCanvasFile } from '../utils/fileTypes';
 import type { VaultTextCache, FileSearchResult } from '../utils/vaultSearch';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 
@@ -63,7 +63,7 @@ export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpen
     // Drawings are JSON on disk: indexing them would surface raw snapshot text
     // as match snippets. They stay searchable by NAME (they're still in `files`).
     const textFiles = useMemo(
-        () => files.filter(f => isTextFile(f.name) && !isDrawingFile(f.name)),
+        () => files.filter(f => isTextFile(f.name) && !isCanvasFile(f.name)),
         [files]
     );
 
@@ -91,7 +91,7 @@ export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpen
         () => searchVault(files, deferredQuery, path =>
             // An OPEN drawing would otherwise leak its live JSON buffer in here,
             // bypassing the index filter above.
-            isDrawingFile(path) ? undefined : (getOpenTabContent(path) ?? index?.get(path))),
+            isCanvasFile(path) ? undefined : (getOpenTabContent(path) ?? index?.get(path))),
         [files, deferredQuery, index, getOpenTabContent]
     );
 

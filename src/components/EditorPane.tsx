@@ -5,9 +5,9 @@ import ConfirmDialog from './ConfirmDialog';
 import DocumentPane from './DocumentPane';
 import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
-import { Link, Eye, Edit2, PenTool } from './icons';
+import { Link, Eye, Edit2, PenTool, Download } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
-import { isPdfFile, isAnnotatedPdf, isDrawingFile } from '../utils/fileTypes';
+import { isPdfFile, isAnnotatedPdf, isCanvasFile, isNotebookFile } from '../utils/fileTypes';
 import { activeGroup as activeGroupOf, canMergeIntoActive, paneSizes, MAX_SPLIT_PANES } from '../utils/tabGroups';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
@@ -45,6 +45,8 @@ interface EditorPaneProps {
     onFlushNow: (path: string, content: string) => void;
     /** Start annotating a plain PDF: creates "<name> (annotated).pdf" and opens it. */
     onAnnotatePdf: (file: ActiveFile) => void;
+    /** Write the active notebook out as a PDF beside it. */
+    onExportNotebook: (file: ActiveFile) => void;
     onOpenNote: OpenNoteByNameHandler;
     /** Say something to the reader in the app's own dialog — App's `tell`,
      *  threaded down to the panes because a right-click menu row that cannot
@@ -178,7 +180,7 @@ interface PaneResize {
  * confirmation, and the PDF panes, which are deliberately NOT inside a pane so
  * they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onOpenNote, onNotify, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onExportNotebook, onOpenNote, onNotify, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const group = activeGroupOf(layout);
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
@@ -251,7 +253,8 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
     const activeFile: ActiveFile | null = focusedTab?.file ?? null;
     const editorMode: EditorMode = focusedTab?.mode ?? 'read';
 
-    const isDrawing = !!activeFile && !activeFile.isHelp && isDrawingFile(activeFile.name);
+    const isDrawing = !!activeFile && !activeFile.isHelp && isCanvasFile(activeFile.name);
+    const isNotebook = !!activeFile && !activeFile.isHelp && isNotebookFile(activeFile.name);
     const isPdf = !!activeFile && !activeFile.isHelp && isPdfFile(activeFile.name);
     // Only a file we wrote can be annotated in place; a plain PDF gets an
     // "Annotate" action that spawns its annotated sibling instead.
@@ -626,6 +629,18 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                     onDragEnd={endDrag}
                 />
                 {saveStatus && <span className="save-status">{saveStatus}</span>}
+                {/* A notebook is the editable original; the PDF is an output,
+                    so this writes rather than switching to it. */}
+                {isNotebook && activeFile && (
+                    <button
+                        className="view-header-action"
+                        onClick={() => onExportNotebook(activeFile)}
+                        title="Export to PDF — writes a .pdf beside this notebook"
+                        aria-label="Export this notebook to PDF"
+                    >
+                        <Download size={15} />
+                    </button>
+                )}
                 {/* A plain PDF can't hold annotations, so this spawns its
                     annotated sibling and switches to it. On an annotated file the
                     View/Annotate toggle below takes over instead. */}

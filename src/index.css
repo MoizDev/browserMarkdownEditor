@@ -2076,6 +2076,64 @@ body.is-resizing-panes * {
   font-size: 13px;
 }
 
+/* A notebook's paper settings, floated over the canvas.
+
+   Top-CENTRE, not a corner: tldraw already owns all four of them (the menu and
+   page control top-left, the style panel top-right, the toolbar bottom-centre,
+   the zoom pill bottom-left), and the middle of the top edge is the one strip
+   it leaves clear at every window size. z-index sits above tldraw's canvas but
+   below its panels, so a style popover still opens over this rather than
+   under it. */
+.notebook-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  /* The canvas below is pinned to light (paper is paper), so this bar is too —
+     app theme variables here would put dark chrome on a white page. */
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1), 0 4px 12px rgb(0 0 0 / 0.06);
+  font-size: 12px;
+  color: #1d1d1d;
+}
+
+.notebook-select,
+.notebook-toolbar-btn {
+  font: inherit;
+  color: inherit;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.notebook-select:hover,
+.notebook-toolbar-btn:hover:not(:disabled) {
+  background: #f1f1f3;
+}
+
+.notebook-toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.notebook-page-count {
+  padding: 0 2px;
+  color: #6b6b70;
+  /* Tabular figures so "9 pages" -> "10 pages" doesn't shift the + Page button
+     sideways while pages are being appended as you write. */
+  font-variant-numeric: tabular-nums;
+}
+
 /* =============================================================
    Live Preview — Styled Markdown Elements
    ============================================================= */

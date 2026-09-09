@@ -32,7 +32,7 @@ A local-first, Obsidian-style Markdown editor that runs **entirely in the browse
 database, or network. It reads and writes the user's real files through the **File System Access
 API**, so it is **Chromium-only by design** (`showDirectoryPicker`, OPFS, `color-mix` are used
 freely). Stack: **React 19 + Vite 7 + TypeScript 6 + CodeMirror 6**, plus KaTeX, mermaid, tldraw
-(whiteboards + PDF annotation), pdf.js + pdf-lib, idb-keyval.
+(whiteboards, ruled notebooks, PDF annotation), pdf.js + pdf-lib, idb-keyval.
 
 > Converted from JS to TS: many comments cite `.jsx` line numbers from pre-conversion files. The real
 > files are `.tsx`, and in `src/types/index.ts` the *numbers* are wrong too, often by hundreds of
@@ -104,7 +104,8 @@ and use it before saying a change works.
   mid-copy.
 - **The PDF/tldraw module split is bundle-size discipline enforced only by import discipline** —
   there is no manual chunking in `vite.config.ts`, so one new import silently pulls pdf-lib (~400kB),
-  pdf.js or tldraw into the main bundle. Check the `pdf-and-drawings` skill before adding one.
+  pdf.js or tldraw into the main bundle. Check the `pdf-and-drawings` skill before adding one; it
+  covers notebooks and drawings too, and `utils/paper.ts` importing nothing is part of that split.
 - **`readFile` normalizes `\r\n → \n`, and everything downstream depends on that agreement.**
   CodeMirror normalizes the same way, so tab buffers, saved output and vault-search match offsets
   stay in step. A new reader of file text that doesn't normalize drifts silently on a CRLF file.

@@ -3,6 +3,7 @@
 // One worker for the whole app, started on first use and kept warm — spinning up
 // a worker per save would re-pay module init (pdf-lib is ~400kB) every time.
 
+import type { NotebookPaper } from './paper';
 import type { PageOverlay } from './pdfOverlay';
 import type { PdfBuildRequest, PdfBuildResponse } from './pdfBuild.worker';
 
@@ -45,8 +46,26 @@ export function buildAnnotatedPdfAsync(
     snapshot: string,
     overlays: Array<PageOverlay | undefined>,
 ): Promise<Uint8Array> {
+    return dispatch(id => ({ kind: 'annotate', id, original, snapshot, overlays }));
+}
+
+/**
+ * Write a notebook out as a PDF, off the main thread.
+ *
+ * Shares the annotated-PDF worker rather than starting a second one: both jobs
+ * are pdf-lib, so a separate worker would re-pay ~400kB of module init to do the
+ * same work.
+ */
+export function buildNotebookPdfAsync(
+    paper: NotebookPaper,
+    overlays: Array<PageOverlay | undefined>,
+): Promise<Uint8Array> {
+    return dispatch(id => ({ kind: 'notebook', id, paper, overlays }));
+}
+
+function dispatch(build: (id: number) => PdfBuildRequest): Promise<Uint8Array> {
     const id = nextId++;
-    const request: PdfBuildRequest = { id, original, snapshot, overlays };
+    const request = build(id);
     return new Promise<Uint8Array>((resolve, reject) => {
         pending.set(id, { resolve, reject });
         getWorker().postMessage(request);

@@ -1,6 +1,6 @@
 ---
 name: pdf-and-drawings
-description: The canvas documents — the annotated-PDF read/write pipeline, the pdf.js viewer's rendering/windowing/memory strategy, and tldraw drawings. Load before touching any pdf* module, PdfPane/PdfViewer/PdfAnnotateCanvas/DrawingPane, or adding an import to any of them (the module split is load-bearing for bundle size).
+description: The canvas documents — the annotated-PDF read/write pipeline, the pdf.js viewer's rendering/windowing/memory strategy, notebooks (ruled pages + PDF export), and tldraw drawings. Load before touching any pdf* module, paper.ts, notebook*, PdfPane/PdfViewer/PdfAnnotateCanvas/DrawingPane/NotebookPane, or adding an import to any of them (the module split is load-bearing for bundle size).
 ---
 
 # PDF annotation pipeline (the subtlest subsystem)
@@ -184,6 +184,41 @@ JSON signature of that page's shapes, so an untouched page is not re-exported. O
 unsaved work it calls `onFlushStart()` synchronously (beating the viewer's re-read) and then flushes
 immediately.
 
+# Notebooks (`.notebook`)
+
+Files: `paper.ts` (page stacking + the ruled-paper model, **imports nothing**),
+`notebookFile.ts` (the on-disk shape), `notebookRenderCache.ts` (canvas→export handoff),
+`NotebookPane.tsx`, `pdfBuild.buildNotebookPdf`.
+
+A notebook is **a drawing on generated pages**: the same tldraw canvas as the PDF annotator, over
+locked backdrop image shapes, but the pages come from a `paper` block instead of a document.
+
+- **`paper` is the authority; the pages are reconciled to it BY SHAPE ID on every open**
+  (`layOutPages`). Never re-create them — `createShapes` appends to the top of the z-order, so a
+  rebuild lays blank pages OVER the writing. Same trap as PdfAnnotateCanvas's backdrops.
+- **The page backdrop is a real SVG data URI**, resolved through the asset store from a stable
+  `asset:notebook-paper` reference. This is the one backdrop in the app that is genuinely
+  resolution-independent — pdf.js has no SVG backend, but `paperSvg` is ours — so a notebook needs
+  no zoom-refinement pass and no per-zoom memory. Every page is identical, so ONE asset serves all.
+- **`updateAssets` validates the WHOLE record.** Passing only the changed props fails on the ones
+  left out (`props.name: expected string, got undefined`), and spreading the existing props hits
+  TLAsset being a union. `layOutPages` therefore states every field and picks create-vs-update.
+- **A `TLEditorSnapshot` is `{document, session}`** — the store is one level down, inside `document`.
+  `parseNotebookFile` tests for `document`; testing for `store` is always false and the failure is
+  silent and total (paper restores, every stroke vanishes, file on disk still holds them).
+- **Pages grow as you write** (`growIfNeeded`, run just before each serialize): ink within 20% of the
+  last page's bottom appends however many pages the overflow needs. Pages are only ever ADDED —
+  removing an "empty" one would discard a page left blank on purpose.
+- **Re-papering reaches the store as a `mergeRemoteChanges`**, so the save listener does NOT see it;
+  `changePaper` calls `persist()` itself. One `persist` writes paper + snapshot + pickers together,
+  because they share a file.
+- **Export writes a sibling `.pdf` and deliberately OVERWRITES it** — the app's one exception to
+  never-overwrite, since the name is derived from the notebook's and can only be its own export.
+  App asks first unless this session already wrote that name. The ruling is drawn with `drawLine`,
+  mirroring `paperSvg` by hand: `paper.ts` is in the main bundle and must stay free of pdf-lib.
+- Colours in `pdfBuild`'s ruling constants and `paper.ts`'s SVG are **two copies of one palette** —
+  change both.
+
 # Drawings (`DrawingPane.tsx`, tldraw)
 
 A `.tldraw` file is a tldraw snapshot **plus an extra `ui` block** (current tool +
@@ -203,8 +238,9 @@ Localhost counts as development, so a missing key never shows up in `npm run dev
 
 # File-type routing (`utils/fileTypes.ts`)
 
-`.tldraw` → `DrawingPane`, `.pdf` → `PdfPane`, everything else textual → CodeMirror. Note the
-deliberate split between two predicates: **`isTextFile` (vaultSearch)** = shown/indexed as text;
-**`isDrawingFile`/`isPdfFile` (fileTypes)** = which pane. A drawing *is* text on disk (a JSON
-snapshot) so it flows through `readFile`/`writeFile`/autosave, but it must **not** be shown or
-content-indexed as text.
+`.tldraw` → `DrawingPane`, `.notebook` → `NotebookPane`, `.pdf` → `PdfPane`, everything else textual
+→ CodeMirror. Note the deliberate split between two predicates: **`isTextFile` (vaultSearch)** =
+shown/indexed as text; **`isCanvasFile`/`isPdfFile` (fileTypes)** = which pane. A drawing and a
+notebook *are* text on disk (JSON snapshots) so they flow through `readFile`/`writeFile`/autosave,
+but they must **not** be shown or content-indexed as text — `isCanvasFile` is the predicate that
+covers both, and every site that used to say `isDrawingFile` for that purpose now says it.

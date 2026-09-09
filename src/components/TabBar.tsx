@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Columns, FileText, PenTool, X } from './icons';
-import { isDrawingFile } from '../utils/fileTypes';
+import { Columns, FileText, Notebook, PenTool, X } from './icons';
+import { isDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import { TAB_DRAG_TYPE } from '../utils/tabDrag';
 import type { OpenTab, TabGroup } from '../types';
 
@@ -24,6 +24,7 @@ interface TabBarProps {
 /** The same file-type icons the explorer uses, so a tab and its tree row read
  *  as the same thing. */
 function tabIcon(tab: OpenTab | undefined) {
+    if (tab && !tab.file.isHelp && isNotebookFile(tab.file.name)) return <Notebook size={13} />;
     if (tab && !tab.file.isHelp && isDrawingFile(tab.file.name)) return <PenTool size={13} />;
     return <FileText size={13} />;
 }

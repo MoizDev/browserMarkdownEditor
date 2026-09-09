@@ -6,8 +6,8 @@ import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import SearchPanel from './SearchPanel';
 import VaultMenu from './VaultMenu';
-import { FilePlus, FolderPlus, FolderOpen, Search, PenTool, PanelLeft } from './icons';
-import { ensureDrawingExt } from '../utils/fileTypes';
+import { FilePlus, FolderPlus, FolderOpen, PenTool, Notebook, PanelLeft } from './icons';
+import { ensureDrawingExt, ensureNotebookExt } from '../utils/fileTypes';
 import { createVaultTextCache } from '../utils/vaultSearch';
 import type { VaultTextCache } from '../utils/vaultSearch';
 import type { FileTreeNode, FileTreeFileNode, RecentVault, TextRange, VaultOpenResult } from '../types';
@@ -66,6 +66,11 @@ interface FileExplorerProps {
      *  would defeat that. */
     onForgetRecentVault: (id: string) => Promise<boolean>;
     onCollapse: () => void;
+    /** Whether the search panel replaces the tree. Owned by App, because the
+     *  button that toggles it now sits in the sidebar's bottom actions —
+     *  alongside Neural Brain and Settings — rather than in this header. */
+    searchOpen: boolean;
+    onCloseSearch: () => void;
     onTrash: (node: FileTreeNode) => void;
     /** Open a folder row as the vault. Directories only — App ignores the rest. */
     onOpenAsVault: (node: FileTreeNode) => void | Promise<void>;
@@ -93,6 +98,8 @@ function FileExplorer({
     onOpenRecentVault,
     onForgetRecentVault,
     onCollapse,
+    searchOpen,
+    onCloseSearch,
     onTrash,
     onOpenAsVault,
     expandedPaths,
@@ -103,11 +110,11 @@ function FileExplorer({
     onOpenSearchResult,
     getOpenTabContent,
 }: FileExplorerProps) {
-    // 'drawing' creates a .tldraw whiteboard; it differs from 'file' only in the
-    // extension it forces onto the typed name.
-    const [creatingInRoot, setCreatingInRoot] = useState<'file' | 'folder' | 'drawing' | null>(null);
+    // 'drawing' creates a .tldraw whiteboard and 'notebook' a .notebook; both
+    // differ from 'file' only in the extension forced onto the typed name, and
+    // a notebook additionally starts life with its paper already written down.
+    const [creatingInRoot, setCreatingInRoot] = useState<'file' | 'folder' | 'drawing' | 'notebook' | null>(null);
     const [rootDragOver, setRootDragOver] = useState(false);
-    const [searchOpen, setSearchOpen] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
 
     // ── Vault menu ──────────────────────────────────────────────────────────
@@ -168,14 +175,14 @@ function FileExplorer({
 
     /** Open the inline "new file/folder" input, leaving search mode if needed
      *  (the input lives in the tree view, which search temporarily replaces). */
-    const startCreateInRoot = (kind: 'file' | 'folder' | 'drawing') => {
-        setSearchOpen(false);
+    const startCreateInRoot = (kind: 'file' | 'folder' | 'drawing' | 'notebook') => {
+        onCloseSearch();
         setCreatingInRoot(kind);
     };
 
     const handleSearchResult = (node: FileTreeFileNode, range: TextRange | null) => {
         onOpenSearchResult(node, range);
-        setSearchOpen(false); // picking a result returns the sidebar to the tree
+        onCloseSearch();      // picking a result returns the sidebar to the tree
     };
 
     const handleRootCreate = async (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -185,7 +192,12 @@ function FileExplorer({
                 setCreatingInRoot(null);
                 return;
             }
-            if (creatingInRoot === 'drawing') {
+            if (creatingInRoot === 'notebook') {
+                // Empty on disk until the first stroke, exactly as a drawing is:
+                // parseNotebookFile('') is default paper, so a notebook created
+                // and never written in still opens as a blank one-page notebook.
+                await onCreateFile(rootHandle, ensureNotebookExt(name), '');
+            } else if (creatingInRoot === 'drawing') {
                 await onCreateFile(rootHandle, ensureDrawingExt(name), '');
             } else if (creatingInRoot === 'file') {
                 await onCreateFile(rootHandle, name, '');
@@ -311,19 +323,18 @@ function FileExplorer({
                 </span>
                 <div className="nav-header-actions">
                     <button
-                        className={`nav-action-btn${searchOpen ? ' active' : ''}`}
-                        title="Search vault"
-                        aria-pressed={searchOpen}
-                        onClick={() => setSearchOpen(open => !open)}
-                    >
-                        <Search size={15} />
-                    </button>
-                    <button
                         className="nav-action-btn"
                         title="New note"
                         onClick={() => startCreateInRoot('file')}
                     >
                         <FilePlus size={15} />
+                    </button>
+                    <button
+                        className="nav-action-btn"
+                        title="New notebook — ruled pages you can write on and export as a PDF"
+                        onClick={() => startCreateInRoot('notebook')}
+                    >
+                        <Notebook size={15} />
                     </button>
                     <button
                         className="nav-action-btn"
@@ -379,7 +390,7 @@ function FileExplorer({
                     cache={searchCache}
                     getOpenTabContent={getOpenTabContent}
                     onOpenResult={handleSearchResult}
-                    onClose={() => setSearchOpen(false)}
+                    onClose={onCloseSearch}
                 />
             ) : (
                 <div
@@ -399,7 +410,8 @@ function FileExplorer({
                                 placeholder={
                                     creatingInRoot === 'file' ? 'Untitled.md'
                                         : creatingInRoot === 'drawing' ? 'Untitled.tldraw'
-                                            : 'New folder'
+                                            : creatingInRoot === 'notebook' ? 'Untitled.notebook'
+                                                : 'New folder'
                                 }
                                 onKeyDown={handleRootCreate}
                                 onBlur={handleRootCreateBlur}

@@ -1,20 +1,39 @@
-// Which editor a file opens in: `.tldraw` files render as a tldraw whiteboard,
-// everything else textual goes to CodeMirror.
+// Which editor a file opens in: `.tldraw` and `.notebook` files render as a
+// tldraw canvas, everything else textual goes to CodeMirror.
 //
-// Deliberately separate from vaultSearch's isTextFile(): a drawing IS text on
-// disk (it's a JSON snapshot), so it must keep flowing through the normal
-// readFile/writeFile/autosave path. It just must not be *shown* as text, nor
-// content-indexed by search.
+// Deliberately separate from vaultSearch's isTextFile(): both canvas kinds ARE
+// text on disk (they're JSON snapshots), so they must keep flowing through the
+// normal readFile/writeFile/autosave path. They just must not be *shown* as
+// text, nor content-indexed by search.
 
 export const DRAWING_EXT = '.tldraw';
+
+/** A notebook is a drawing on ruled pages, with an export to PDF. Its own
+ *  extension rather than a flag inside a `.tldraw`, so the file tree can say
+ *  which is which and "New notebook" makes something unambiguous. */
+export const NOTEBOOK_EXT = '.notebook';
 
 export function isDrawingFile(name: string): boolean {
     return name.toLowerCase().endsWith(DRAWING_EXT);
 }
 
+export function isNotebookFile(name: string): boolean {
+    return name.toLowerCase().endsWith(NOTEBOOK_EXT);
+}
+
+/** Either kind of tldraw-backed document: a canvas rather than a text editor. */
+export function isCanvasFile(name: string): boolean {
+    return isDrawingFile(name) || isNotebookFile(name);
+}
+
 /** Append `.tldraw` unless the user already typed it. */
 export function ensureDrawingExt(name: string): string {
     return isDrawingFile(name) ? name : `${name}${DRAWING_EXT}`;
+}
+
+/** Append `.notebook` unless the user already typed it. */
+export function ensureNotebookExt(name: string): string {
+    return isNotebookFile(name) ? name : `${name}${NOTEBOOK_EXT}`;
 }
 
 /* ── PDFs ────────────────────────────────────────────────────────────────
@@ -40,6 +59,11 @@ export function isAnnotatedPdf(name: string): boolean {
 
 function stripExt(name: string): string {
     return name.slice(0, -PDF_EXT.length);
+}
+
+/** "Assignment 3.notebook" -> "Assignment 3.pdf", the file Export writes. */
+export function notebookPdfName(name: string): string {
+    return `${isNotebookFile(name) ? name.slice(0, -NOTEBOOK_EXT.length) : name}${PDF_EXT}`;
 }
 
 /**

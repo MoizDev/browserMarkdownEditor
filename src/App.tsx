@@ -8,7 +8,7 @@ import { assetEmbeds, referencesAsset } from './utils/assets';
 import { collectFiles } from './utils/tree';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
-import { isDrawingFile, isPdfFile, isAnnotatedPdf, annotatedNameFor } from './utils/fileTypes';
+import { isCanvasFile, isPdfFile, isAnnotatedPdf, annotatedNameFor, notebookPdfName } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -29,6 +29,7 @@ import {
 } from './utils/tabGroups';
 import { clampTabSize } from './editor/lists';
 import { retryMissingAssets } from './editor/imageWidget';
+import { getNotebookExporter, clearNotebookRenderData, moveNotebookRenderData } from './utils/notebookRenderCache';
 import { setTableNotify } from './editor/tableEdit';
 import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/contextMenu';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
@@ -42,7 +43,7 @@ import ContextMenu from './components/ContextMenu';
 import EditorPane from './components/EditorPane';
 import SettingsPanel from './components/SettingsPanel';
 import GraphView from './components/GraphView';
-import { Settings, HelpCircle, Network, FileTextOutline, PanelLeft } from './components/icons';
+import { Settings, HelpCircle, Network, FileTextOutline, PanelLeft, Search } from './components/icons';
 import type {
   ActiveFile,
   FileTreeNode,
@@ -98,7 +99,7 @@ function newTabId(): string {
  * but a canvas on screen, and the Help guide has no folder of its own.
  */
 function tracksAssets(file: ActiveFile): boolean {
-  return !file.isHelp && !!file.parentHandle && isTextFile(file.name) && !isDrawingFile(file.name);
+  return !file.isHelp && !!file.parentHandle && isTextFile(file.name) && !isCanvasFile(file.name);
 }
 
 /**
@@ -485,6 +486,13 @@ export default function App() {
   // handler that eventually calls it was baked into a widget several panes ago.
   useEffect(() => { setTableNotify(notify); }, [notify]);
 
+  /** Whether the sidebar shows vault search in place of the file tree. Lifted
+   *  out of FileExplorer when the toggle moved to the bottom actions, which App
+   *  renders — FileExplorer is memoized, so `closeSearch` has to be stable or
+   *  the tree starts re-rendering while the user types. */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
+
   // Expanded folder paths (persisted via localStorage)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
     () => new Set<string>(readJSON<string[]>('expandedPaths', []))
@@ -796,6 +804,65 @@ export default function App() {
     }
   }, [createFile, readFileBytes, writeFileBytes]);
 
+  /** PDF names this session has exported. Re-exporting must not ask about a
+   *  file that is this notebook's own previous export. */
+  const exportedNotebooksRef = useRef<Set<string>>(new Set());
+
+  /**
+   * Write the open notebook out as a PDF beside it.
+   *
+   * The notebook stays the editable original and the PDF is an OUTPUT, so
+   * re-exporting overwrites the same name rather than piling up "(1)" copies —
+   * that name is derived from the notebook's, so it can only ever land on this
+   * notebook's own export. It is the one deliberate exception to the app's
+   * never-overwrite rule, and it is why the confirm below exists: a PDF of that
+   * name that ISN'T ours is a file we would be destroying.
+   */
+  const handleExportNotebook = useCallback(async (file: ActiveFile) => {
+    if (!file.parentHandle) return;
+    const targetName = notebookPdfName(file.name);
+
+    const exporter = getNotebookExporter(file.path);
+    if (!exporter) {
+      notify(`Open "${file.name}" before exporting it.`);
+      return;
+    }
+
+    try {
+      const exported = await exporter();
+      if (!exported) { notify(`Open "${file.name}" before exporting it.`); return; }
+
+      // Only ask when there is something to lose, and only once: after the
+      // first export the file at that name is one of ours.
+      if (!exportedNotebooksRef.current.has(targetName)
+          && await nameTaken(file.parentHandle, targetName)) {
+        const replace = await ask({
+          title: `Replace "${targetName}"?`,
+          body: `A PDF of that name is already in this folder. Exporting will overwrite it.`,
+          confirmLabel: 'Replace',
+          danger: true,
+        });
+        if (!replace) return;
+      }
+
+      const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
+      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays);
+      // createFile refreshes the tree, so the PDF shows up in the sidebar.
+      const handle = await createFile(file.parentHandle, targetName);
+      await writeFileBytes(handle, bytes);
+      exportedNotebooksRef.current.add(targetName);
+      void tell({
+        title: 'Exported to PDF',
+        confirmLabel: 'OK',
+        body: `"${targetName}" is in the same folder — ${exported.paper.pageCount} `
+          + `${exported.paper.pageCount === 1 ? 'page' : 'pages'}.`,
+      });
+    } catch (err) {
+      console.error('Could not export the notebook:', err);
+      notify(`Could not export "${file.name}".`);
+    }
+  }, [ask, createFile, notify, tell, writeFileBytes]);
+
   // Flat index of markdown files for resolving wikilinks by note name. Read
   // through a ref by openNoteByName below, which MUST stay stable: the editor
   // bakes its wikilink handler into a document's EditorState, and that state
@@ -968,6 +1035,9 @@ export default function App() {
     // Safe to drop now: flushTab reads the render data synchronously, before its
     // first await, so a flush already in flight has what it needs.
     clearPdfRenderData(path);
+    // A notebook's exporter closes over its editor; dropping it is what stops a
+    // closed notebook pinning that editor for the rest of the session.
+    clearNotebookRenderData(path);
     // Same: the flush above captured its own diff before this ran. A closed
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
@@ -1089,7 +1159,7 @@ export default function App() {
     setMainView('editor');
     // Drawings match by NAME only (their JSON isn't indexed), so there's no text
     // range to reveal — and a char offset would be meaningless on a canvas.
-    if (range && !isDrawingFile(node.name)) {
+    if (range && !isCanvasFile(node.name)) {
       setPendingReveal({ path: node.path, from: range.from, to: range.to });
     }
   }, [handleFileClick]);
@@ -1117,6 +1187,7 @@ export default function App() {
     for (const tab of tabsRef.current) {
       flushTab(tab.file.path);           // no-ops unless dirty; captures synchronously
       clearPdfRenderData(tab.file.path);
+      clearNotebookRenderData(tab.file.path);
     }
     // Those flushes captured what they needed synchronously (see flushTab); the
     // paths themselves index the vault being left.
@@ -1528,6 +1599,9 @@ export default function App() {
         // An annotated PDF's parked original + overlays are keyed by path; re-key
         // them or the next save finds nothing and silently writes nothing.
         movePdfRenderData(from, dest);
+        // Same trap, same fix: an exporter left under the old path means Export
+        // to PDF on the renamed notebook silently finds nothing.
+        moveNotebookRenderData(from, dest);
         moveAssetRefs(from, dest);
         setTabs(prev => prev
           .filter(t => t.file.path !== dest)
@@ -1731,6 +1805,8 @@ export default function App() {
           onOpenRecentVault={openRecentVault}
           onForgetRecentVault={forgetRecentVault}
           onCollapse={() => setSidebarCollapsed(true)}
+          searchOpen={searchOpen}
+          onCloseSearch={closeSearch}
           onTrash={handleTrash}
           onOpenAsVault={handleOpenAsVault}
           expandedPaths={expandedPaths}
@@ -1760,6 +1836,15 @@ export default function App() {
           </button>
         </div>
         <div className="sidebar-bottom-actions">
+          <button
+            className={`theme-toggle-btn settings-btn${searchOpen ? ' active' : ''}`}
+            onClick={() => setSearchOpen(open => !open)}
+            aria-pressed={searchOpen}
+            title="Search this vault — file names and contents"
+          >
+            <Search size={16} />
+            Search
+          </button>
           <button
             className={`theme-toggle-btn settings-btn${mainView === 'graph' ? ' active' : ''}`}
             onClick={() => setMainView(v => (v === 'graph' ? 'editor' : 'graph'))}
@@ -1815,6 +1900,7 @@ export default function App() {
             onContentChange={updateTabContent}
             onFlushNow={flushTabNow}
             onAnnotatePdf={handleAnnotatePdf}
+            onExportNotebook={handleExportNotebook}
             onOpenNote={openNoteByName}
             onNotify={notify}
             graph={graph}

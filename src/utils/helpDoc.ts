@@ -34,6 +34,14 @@ Modern browsers require you to explicitly grant permission every time you open a
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any \`.md\` file to open it in the editor.
 
+### Searching the Vault
+**Search** sits at the bottom of the sidebar, under the theme switch, alongside
+Neural Brain and Settings. It looks through every note in the vault — file names
+*and* the text inside them — and replaces the file tree while it is open. Picking
+a result opens that note and scrolls to the line it matched, then puts the tree
+back. Notebooks, drawings and PDFs match on their names only, since what is in
+them is not text.
+
 ### Drag and Drop
 You can drag and drop files and folders within the file tree to reorganize your vault:
 - Drag any item and drop it onto a folder to move it inside that folder.
@@ -43,7 +51,7 @@ You can drag and drop files and folders within the file tree to reorganize your 
 Renaming or moving a folder takes the notes you have open from it along: they stay open, keep their place, and go on saving to the right file under its new name.
 
 ### Creating New Items
-Use the "New File" and "New Folder" icons at the top of the sidebar. When creating a new file:
+Use the icons at the top of the sidebar: **New note**, **New notebook**, **New drawing**, **New folder**, and the folder icon that opens another vault. When creating a new file:
 - It will be created in the root vault folder if nothing is selected.
 - If you have a file or folder selected, it will be created in the same directory as that selection.
 - New files will automatically open and place you in **Edit Mode**.
@@ -126,7 +134,62 @@ A **drawing** keeps tldraw's own menu and a **PDF** keeps the browser's, since b
 
 ---
 
-## 5. Images, Assets, and Trash
+## 5. Notebooks, Drawings, and PDFs
+
+Three kinds of file open on a canvas instead of in the text editor. All three
+are drawn with the same tools — pen, highlighter, shapes, text — and all three
+save themselves as you work, a second after you stop.
+
+### Notebooks
+A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
+here to a paper pad, and what to reach for when you are doing an assignment by
+hand rather than taking notes in Markdown. Make one with the notebook icon at
+the top of the sidebar.
+
+The bar across the top of a notebook is its paper:
+
+- **Lined / Grid / Dotted / Blank** — the ruling. Changing it re-papers what you
+  have already written; nothing you have drawn moves.
+- **Letter / A4 / Legal** and **Portrait / Landscape** — the page size.
+- **+ Page** adds a page at the bottom. You rarely need it: writing near the
+  bottom of the last page adds the next one for you, before you run out of room.
+
+### Exporting a notebook to PDF
+The download icon in the top bar writes a PDF beside the notebook — \`Assignment
+3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
+drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
+the pages are ordinary PDF pages that anything can open.
+
+The notebook stays the original you keep writing in. Exporting again overwrites
+the same PDF rather than leaving a pile of copies, and asks first if a PDF of
+that name is there that this notebook did not put there.
+
+### Drawings
+A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endless
+sheet in every direction, for diagrams and thinking rather than for a page you
+intend to hand in.
+
+### PDFs
+A PDF opens in a reader: scroll it, select its text, search it with \`Cmd + F\`,
+follow its links, and jump to a page with the box at the bottom. Pinch or hold
+\`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys.
+
+The pen icon in the top bar **annotates** it. That makes a second file — \`Notes
+(annotated).pdf\` — and leaves your original untouched. Draw on it as you would
+on a notebook; \`Cmd + E\` switches between reading it and writing on it.
+
+The annotated file is a real PDF that opens anywhere, with your annotations
+drawn into it as vector artwork and the original document's own text still
+selectable underneath. It also quietly carries the untouched original and your
+strokes inside itself, which is what lets you reopen it here and keep editing —
+or erase — annotations you made days ago.
+
+Notebooks and PDF annotation are always on white paper, whichever theme the app
+is in, because that is the paper the exported PDF will be printed on.
+
+---
+
+## 6. Images, Assets, and Trash
 
 ### Managing Images
 You can seamlessly add images to your markdown notes:
@@ -169,7 +232,7 @@ Deleting a **folder** works exactly the same way, and takes everything inside it
 
 ---
 
-## 6. Markdown Syntax Reference
+## 7. Markdown Syntax Reference
 
 The editor supports standard Markdown and advanced formatting.
 
@@ -258,7 +321,7 @@ A table written inside a code fence stays as text — it is being quoted, not ta
 
 ---
 
-## 7. LaTeX Math Expressions
+## 8. LaTeX Math Expressions
 
 The application natively supports advanced LaTeX mathematical typesetting.
 

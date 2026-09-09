@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool } from './icons';
-import { isDrawingFile } from '../utils/fileTypes';
+import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool, Notebook } from './icons';
+import { isDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import { setDraggedNode, takeDraggedNode } from '../utils/treeDrag';
 import { isTabDrag } from '../utils/tabDrag';
 import { openContextMenu } from '../utils/contextMenu';
@@ -309,7 +309,9 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
                 onDragEnd={!isRenaming ? handleDragEnd : undefined}
             >
                 <span className="tree-item-icon file-icon">
-                    {isDrawingFile(node.name) ? <PenTool size={14} /> : <FileText size={14} />}
+                    {isNotebookFile(node.name) ? <Notebook size={14} />
+                        : isDrawingFile(node.name) ? <PenTool size={14} />
+                            : <FileText size={14} />}
                 </span>
                 {isRenaming ? (
                     <div className="tree-inline-input" style={{ flex: 1, paddingRight: 0 }}>

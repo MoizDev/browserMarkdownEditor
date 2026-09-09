@@ -30,6 +30,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 // importing pdfBuild here would pull pdf-lib into this main-thread module.
 import { ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT } from './pdfFormat';
 
+// Page stacking lives in paper.ts, which imports nothing — the notebook canvas
+// lays its pages out with the same function and must not pull pdf.js in to do it.
+export { PAGE_GAP, pageLayout } from './paper';
+
 /**
  * The scale every page is first rasterized at, and the floor it falls back to.
  *
@@ -55,9 +59,6 @@ export const PAGE_RENDER_SCALE = 2;
  */
 const PAGE_IMAGE_TYPE = 'image/jpeg';
 const PAGE_IMAGE_QUALITY = 0.82;
-
-/** Vertical gap between pages on the annotate canvas, in PDF points. */
-export const PAGE_GAP = 24;
 
 export interface AnnotatedPdfContents {
     /** The pristine original, with no strokes stamped in. */
@@ -179,20 +180,6 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
         },
         close: () => task.destroy(),
     };
-}
-
-/**
- * Where each page sits on the annotate canvas: stacked vertically, left-aligned,
- * in PDF point space. Shared by the canvas layout and the save path so a stroke's
- * canvas position maps back to the correct page and offset.
- */
-export function pageLayout(pages: Array<{ width: number; height: number }>) {
-    let y = 0;
-    return pages.map(p => {
-        const box = { x: 0, y, width: p.width, height: p.height };
-        y += p.height + PAGE_GAP;
-        return box;
-    });
 }
 
 // The canvas↔save handoff lives in utils/pdfRenderCache.ts — importable without

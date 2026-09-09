@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault } from '../utils/recentVaults';
+import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath } from '../utils/paths';
 import type { FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult } from '../types';
@@ -148,6 +149,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [previousVault, setPreviousVault] = useState<FileSystemDirectoryHandle | null>(null);
+    /** What the address bar asked for and could not be given silently — the
+     *  handle is known but its permission has lapsed, and `requestPermission`
+     *  needs a click. App renders a one-button screen naming this vault. */
+    const [linkedVault, setLinkedVault] = useState<RecentVault | null>(null);
     const [recentVaults, setRecentVaults] = useState<RecentVault[]>([]);
     const [currentVaultId, setCurrentVaultId] = useState<string | null>(null);
 
@@ -260,7 +265,38 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      */
     useEffect(() => {
         (async () => {
+            // The address bar wins over the last-used vault: a link is an
+            // instruction, and a stored handle is only a default. Both are read
+            // before either is acted on, so a link naming a vault this browser
+            // has never opened falls back to the default rather than to nothing.
+            const linked = readLocation().vault;
+            let stored: StoredVault[] = [];
             try {
+                stored = await loadRecentVaults();
+            } catch (err) {
+                console.warn('Could not load the recent vault list:', err);
+            }
+            const target = findLinkedVault(linked, stored);
+
+            try {
+                if (target) {
+                    // queryPermission needs no user gesture; requestPermission
+                    // does, and there has been none — this is a page load. So a
+                    // lapsed grant is handed to App to ask for with a button.
+                    const permission = await target.handle.queryPermission({ mode: 'readwrite' });
+                    if (permission === 'granted') {
+                        setRootHandle(target.handle);
+                        await recordVault(target.handle);
+                        await refreshTree(target.handle);
+                        setIsLoading(false);
+                        return;
+                    }
+                    setLinkedVault((await labelVaults([target]))[0]);
+                    await publishVaults(stored);
+                    setIsLoading(false);
+                    return;
+                }
+
                 const storedHandle = await get<FileSystemDirectoryHandle>(IDB_KEY);
                 if (storedHandle) {
                     // queryPermission does not require a user gesture, unlike requestPermission
@@ -283,14 +319,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             }
             // No vault restored — the list still loads, so whatever the user
             // opens next lands on top of a complete history.
-            try {
-                await publishVaults(await loadRecentVaults());
-            } catch (err) {
-                console.warn('Could not load the recent vault list:', err);
-            }
+            await publishVaults(stored);
             setIsLoading(false);
         })();
     }, [refreshTree, recordVault, publishVaults]);
+
 
     /**
      * Prompt the user to pick a directory, store its handle, and scan it.
@@ -438,6 +471,20 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             switchInFlightRef.current = false;
         }
     }, [loadTree, recordVault, isCurrentVault]);
+
+    /**
+     * Take the grant a linked vault still needs.
+     *
+     * Separate from `openRecentVault` only in that it clears the prompt: a link
+     * whose vault has been opened is no longer pending. Called from a click,
+     * which is the only context `requestPermission` is allowed to ask in.
+     */
+    const openLinkedVault = useCallback(async (): Promise<VaultOpenResult> => {
+        if (!linkedVault) return 'denied';
+        const result = await openVaultHandle(linkedVault.handle);
+        if (result === 'ok') setLinkedVault(null);
+        return result;
+    }, [linkedVault, openVaultHandle]);
 
     /**
      * Switch to a vault the user has opened before, straight from its stored
@@ -997,6 +1044,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         fileTree,
         isLoading,
         previousVault,
+        linkedVault,
         recentVaults,
         currentVaultId,
         pickDirectory,
@@ -1008,6 +1056,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         // the user to find the folder they have just right-clicked. It lands in
         // the recent list like any other opened vault (recordVault, inside).
         openFolderAsVault: openVaultHandle,
+        openLinkedVault,
         forgetRecentVault,
         readFile,
         writeFile,

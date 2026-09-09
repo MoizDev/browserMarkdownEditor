@@ -34,6 +34,19 @@ Modern browsers require you to explicitly grant permission every time you open a
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any \`.md\` file to open it in the editor.
 
+### Links to a Note
+The address bar tracks what is open — \`#vault=Notes&file=Math/HW1.md\` — so you
+can copy it at any moment and get back to exactly that note. Paste one into a new
+tab, bookmark it, or put it in another note.
+
+A link works on the machine and browser you opened the vault in. Browsers do not
+let a page open a folder just because it can name one, so what a link carries is
+not a location on your disk: it is the name of a vault this browser has already
+been given access to. Opening a link to a vault whose permission has lapsed shows
+a single **Open '<vault>'** button, because only a click can ask for that access
+back. On a machine that has never opened the vault, the link cannot find it — open
+the folder once and the link works from then on.
+
 ### Searching the Vault
 **Search** sits at the bottom of the sidebar, under the theme switch, alongside
 Neural Brain and Settings. It looks through every note in the vault — file names

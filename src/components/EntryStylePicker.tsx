@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import LucideGlyph from './LucideGlyph';
-import { FOLDER_COLORS, folderColorVar, type IconNode } from '../utils/folderStyle';
+import { ENTRY_COLORS, entryColorVar, type IconNode } from '../utils/entryStyle';
 import { loadLucideIcons, searchIcons, type LucideIcon } from '../utils/lucideIcons';
 
 interface FolderStylePickerProps {
@@ -33,7 +33,7 @@ const VISIBLE_ICONS = 180;
  * icon set is fetched on mount — this component is the only thing in the app
  * that pulls it, which is what keeps 91KB of icon data out of the main bundle.
  */
-export default function FolderStylePicker({ icon: initialIcon, color: initialColor, onChange, onClose }: FolderStylePickerProps) {
+export default function EntryStylePicker({ icon: initialIcon, color: initialColor, onChange, onClose }: FolderStylePickerProps) {
     /* The picker owns the selection while it is open, seeded from the folder's
        current look. The context-menu entry that carries those in is built once,
        when the menu is raised, so reading them on every render would freeze the
@@ -88,12 +88,12 @@ export default function FolderStylePicker({ icon: initialIcon, color: initialCol
             <div className="folder-style-section">
                 <span className="folder-style-heading">Colour</span>
                 <div className="folder-style-colors">
-                    {Object.entries(FOLDER_COLORS).map(([key, value]) => (
+                    {Object.entries(ENTRY_COLORS).map(([key, value]) => (
                         <button
                             key={key}
                             type="button"
                             className={`folder-style-color${color === key ? ' selected' : ''}`}
-                            style={{ ['--folder-color' as string]: folderColorVar(key) }}
+                            style={{ ['--folder-color' as string]: entryColorVar(key) }}
                             onClick={() => apply(icon, color === key ? undefined : key, nodesFor(icon ?? ''))}
                             aria-pressed={color === key}
                             aria-label={value.label}

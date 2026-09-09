@@ -72,7 +72,7 @@ and use it before saying a change works.
   opens-or-*truncates*, guarded only at `App.handleCreateFile`; anything new calling it inherits it.
 - **`.Assets` (images) and `.Garbage` (trash) are per FOLDER**, owned by `utils/assets.ts` — nothing
   else spells `'.Assets'` — and hidden, so a folder carries its own pictures and deletions wherever it
-  goes. `.folders.json` is the third app-owned name, and the only root-only one (`folder-styles`).
+  goes. `.appearance.json` is the third app-owned name, and the only root-only one (`entry-styles`).
 - **Paths are vault-root-relative with no vault-name prefix**, centralized in `utils/paths.ts`;
   `buildFileTree` and every create/move/rename tab handler must agree or tabs stop deduping.
 - **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault: the FS Access

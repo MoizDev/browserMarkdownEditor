@@ -64,8 +64,8 @@ export interface ContextMenuGrid {
  * React (a table cell in `src/editor/` raises this menu). `ContextMenu` decides
  * what a picker row renders, exactly as it does for the size grid.
  */
-export interface ContextMenuFolderStyle {
-    kind: 'folder-style';
+export interface ContextMenuEntryStyle {
+    kind: 'entry-style';
     id: string;
     label: string;
     /** The folder's current look, so the picker opens showing it. */
@@ -87,7 +87,7 @@ export interface ContextMenuSeparator {
 export type ContextMenuEntry =
     | ContextMenuCommand
     | ContextMenuGrid
-    | ContextMenuFolderStyle
+    | ContextMenuEntryStyle
     | ContextMenuSeparator;
 
 export interface ContextMenuRequest {

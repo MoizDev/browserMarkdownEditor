@@ -1,5 +1,5 @@
 import { createElement } from 'react';
-import type { IconNode } from '../utils/folderStyle';
+import type { IconNode } from '../utils/entryStyle';
 
 /** Lucide's own drawing contract. Every icon is authored on a 24x24 grid with
  *  these stroke settings; the node data carries only the geometry. */

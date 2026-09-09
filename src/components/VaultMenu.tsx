@@ -1,5 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Minus } from './icons';
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Check, FolderIcon, Minus } from './icons';
+import LucideGlyph from './LucideGlyph';
+import { entryColorVar } from '../utils/entryStyle';
+import { getEntryStyles, subscribeEntryStyles } from '../utils/entryStyleStore';
 import type { CSSProperties } from 'react';
 import type { RecentVault, VaultOpenResult } from '../types';
 
@@ -246,6 +249,7 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
                             title={isCurrent ? `${vault.label} (current vault)` : vault.label}
                             onClick={() => activate(vault)}
                         >
+                            <VaultRowIcon vault={vault} />
                             <span className="vault-menu-label">{vault.label}</span>
                             {isCurrent && <Check size={13} className="vault-menu-check" aria-hidden="true" />}
                         </button>
@@ -267,5 +271,28 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
 
             {error && <p className="vault-menu-error" role="alert">{error}</p>}
         </div>
+    );
+}
+
+/**
+ * The icon a vault row shows.
+ *
+ * The SAME icon and colour the file tree gives that folder, when the vault is a
+ * folder of the one currently open — which is the usual case, since "Open as
+ * Vault" is how most of these get onto the list. A vault elsewhere on disk, or
+ * the open vault itself, falls back to a plain folder: its look lives in its own
+ * `.appearance.json`, which is not the one loaded.
+ */
+function VaultRowIcon({ vault }: { vault: RecentVault }) {
+    const styles = useSyncExternalStore(subscribeEntryStyles, getEntryStyles);
+    const style = vault.vaultPath ? styles.entries[vault.vaultPath] : undefined;
+    const nodes = style?.icon ? styles.icons[style.icon] : undefined;
+    return (
+        <span
+            className="vault-menu-icon"
+            style={style?.color ? { ['--entry-color' as string]: entryColorVar(style.color) } : undefined}
+        >
+            {nodes ? <LucideGlyph nodes={nodes} size={13} /> : <FolderIcon size={13} />}
+        </span>
     );
 }

@@ -5,8 +5,8 @@ import { setDraggedNode, takeDraggedNode } from '../utils/treeDrag';
 import { isTabDrag } from '../utils/tabDrag';
 import { openContextMenu } from '../utils/contextMenu';
 import LucideGlyph from './LucideGlyph';
-import { getFolderStyle, getFolderStyles, subscribeFolderStyles } from '../utils/folderStyleStore';
-import { folderColorVar, type IconNode } from '../utils/folderStyle';
+import { getEntryStyle, getEntryStyles, subscribeEntryStyles } from '../utils/entryStyleStore';
+import { entryColorVar, type IconNode } from '../utils/entryStyle';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import type { FileTreeNode } from '../types';
 
@@ -31,7 +31,7 @@ interface TreeNodeProps {
     onOpenAsVault: (node: FileTreeNode) => void | Promise<void>;
     /** Give a folder an icon and a colour, or clear them. Stable for the app's
      *  life — TreeNode is memoized, and a fresh closure would defeat that. */
-    onStyleFolder: (path: string, icon: string | undefined, color: string | undefined, nodes?: IconNode[]) => void;
+    onStyleEntry: (path: string, icon: string | undefined, color: string | undefined, nodes?: IconNode[]) => void;
     expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
@@ -42,20 +42,20 @@ interface TreeNodeProps {
 }
 
 
-function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, onStyleFolder, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
+function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, onStyleEntry, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
     /* This row's own icon and colour, read from the store rather than taken as
        a prop — see utils/folderStyleStore.ts. The snapshot is the STORED object,
        so a row whose folder was not the one that changed sees an unchanged
        reference and does not re-render. */
     const style = useSyncExternalStore(
-        subscribeFolderStyles,
-        useCallback(() => getFolderStyle(node.path), [node.path]),
+        subscribeEntryStyles,
+        useCallback(() => getEntryStyle(node.path), [node.path]),
     );
     /* Read at render rather than subscribed to: the icons map changes identity
        on every pick, so subscribing to it would re-render every row in the tree
        for one folder's change. This row already re-renders when its OWN style
        does, which is the only time the artwork it needs can have arrived. */
-    const folderIconNodes = style?.icon ? getFolderStyles().icons[style.icon] : undefined;
+    const customIconNodes = style?.icon ? getEntryStyles().icons[style.icon] : undefined;
     const isActive = node.kind === 'file' && node.path === activeFilePath;
     const paddingLeft = 12 + depth * 16;
     const expanded = expandedPaths.has(node.path);
@@ -222,8 +222,22 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
             { kind: 'command', id: 'trash', label: 'Move to Trash', danger: true, run: () => onTrash(node) },
         ];
 
+        /* The same row on both kinds. A file's icon says what it is — a
+           notebook, a drawing, a note — so overriding it is a deliberate choice
+           and not the default; the colour is the part most people want. */
+        const styleRow: ContextMenuEntry = {
+            // A flyout rather than a command, like Insert table…: there are two
+            // choices to make (icon and colour) and picking one should not shut
+            // the menu before the other is made.
+            kind: 'entry-style', id: 'entry-style', label: 'Choose icon / colour',
+            icon: style?.icon,
+            color: style?.color,
+            pick: (icon, color, nodes) =>
+                onStyleEntry(node.path, icon, color, nodes as IconNode[] | undefined),
+        };
+
         const entries: ContextMenuEntry[] = node.kind === 'file'
-            ? [rename, ...trash]
+            ? [rename, { kind: 'separator', id: 'sep-style' }, styleRow, ...trash]
             : [
                 { kind: 'command', id: 'new-note', label: 'New note', run: () => startCreate('file') },
                 { kind: 'command', id: 'new-folder', label: 'New folder', run: () => startCreate('folder') },
@@ -237,16 +251,7 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
                     run: () => { void onOpenAsVault(node); },
                 },
                 { kind: 'separator', id: 'sep-style' },
-                {
-                    // A flyout rather than a command, like Insert table…: there
-                    // are two choices to make (icon and colour) and picking one
-                    // should not shut the menu before the other is made.
-                    kind: 'folder-style', id: 'folder-style', label: 'Choose icon / colour',
-                    icon: style?.icon,
-                    color: style?.color,
-                    pick: (icon, color, nodes) =>
-                        onStyleFolder(node.path, icon, color, nodes as IconNode[] | undefined),
-                },
+                styleRow,
                 { kind: 'separator', id: 'sep-rename' },
                 rename,
                 ...trash,
@@ -338,10 +343,17 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
                 onDragStart={!isRenaming ? handleDragStart : undefined}
                 onDragEnd={!isRenaming ? handleDragEnd : undefined}
             >
-                <span className="tree-item-icon file-icon">
-                    {isNotebookFile(node.name) ? <Notebook size={14} />
-                        : isDrawingFile(node.name) ? <PenTool size={14} />
-                            : <FileText size={14} />}
+                <span
+                    className="tree-item-icon file-icon"
+                    style={style?.color ? { ['--entry-color' as string]: entryColorVar(style.color) } : undefined}
+                >
+                    {/* A chosen icon replaces the TYPE icon, which is the one
+                        thing a file row says on its own — so it is opt-in and
+                        never the default. */}
+                    {style?.icon && customIconNodes ? <LucideGlyph nodes={customIconNodes} size={14} />
+                        : isNotebookFile(node.name) ? <Notebook size={14} />
+                            : isDrawingFile(node.name) ? <PenTool size={14} />
+                                : <FileText size={14} />}
                 </span>
                 {isRenaming ? (
                     <div className="tree-inline-input" style={{ flex: 1, paddingRight: 0 }}>
@@ -401,14 +413,14 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
                 <span
                     className="tree-item-icon folder-icon"
                     style={style?.color
-                        ? { ['--folder-color' as string]: folderColorVar(style.color) }
+                        ? { ['--entry-color' as string]: entryColorVar(style.color) }
                         : undefined}
                 >
                     {/* The artwork comes from `.folders.json`, not from the icon
                         library — which is why a customized tree draws instantly
                         with none of Lucide in the bundle. */}
-                    {style?.icon && folderIconNodes
-                        ? <LucideGlyph nodes={folderIconNodes} size={14} />
+                    {style?.icon && customIconNodes
+                        ? <LucideGlyph nodes={customIconNodes} size={14} />
                         : <FolderIcon size={14} />}
                 </span>
                 {isRenaming ? (
@@ -494,7 +506,7 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
                             onCreateFolder={onCreateFolder}
                             onTrash={onTrash}
                             onOpenAsVault={onOpenAsVault}
-                            onStyleFolder={onStyleFolder}
+                            onStyleEntry={onStyleEntry}
                             expandedPaths={expandedPaths}
                             onToggleExpand={onToggleExpand}
                             onMoveFile={onMoveFile}

@@ -10,7 +10,7 @@
 // node data alongside the folder that uses it, so a row draws its icon from the
 // vault file. This module is the picker's business alone.
 
-import type { IconNode } from './folderStyle';
+import type { IconNode } from './entryStyle';
 
 export interface LucideIcon {
     name: string;

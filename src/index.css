@@ -504,9 +504,16 @@ body {
   position: relative;
 }
 
+.tree-item {
+  /* What the floated action buttons fade into. Restated by each row state
+     below, so the fade always matches the row it sits on. */
+  --tree-row-bg: var(--background-secondary);
+}
+
 .tree-item:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
+  --tree-row-bg: var(--background-modifier-hover);
 }
 
 .tree-item.drag-over {
@@ -544,11 +551,19 @@ body {
 .tree-item.is-context-target {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
+  --tree-row-bg: var(--background-modifier-hover);
 }
 
 .tree-item.is-active {
   background: var(--background-modifier-active);
   color: var(--text-normal);
+  --tree-row-bg: var(--background-modifier-active);
+}
+
+/* An active row that is ALSO hovered keeps the active background, so the fade
+   has to as well — otherwise the buttons sit on a patch of the wrong colour. */
+.tree-item.is-active:hover {
+  --tree-row-bg: var(--background-modifier-active);
 }
 
 .tree-item-chevron {
@@ -591,13 +606,28 @@ body {
   line-height: var(--nav-item-height);
 }
 
+/* OUT OF FLOW, not merely transparent.
+   These were `opacity: 0` and still took their full width in the row, so every
+   name was ellipsized around invisible buttons — and a folder has four of them
+   to a file's two, which is why folder names truncated hardest while the
+   sidebar sat half empty. Floated over the row's right edge instead: the label
+   gets the whole width, and the buttons appear on top of its tail on hover,
+   behind a fade so the text does not run into them. */
 .tree-item-actions {
+  position: absolute;
+  right: 8px;
+  top: 0;
+  bottom: 0;
   display: flex;
+  align-items: center;
   gap: 2px;
-  margin-left: auto;
+  padding-left: 16px;
   opacity: 0;
   transition: opacity 0.12s;
   flex-shrink: 0;
+  /* The row's own background, whichever state it is in — hovered, active, or
+     holding the context menu. `transparent` would let the name show through. */
+  background: linear-gradient(to right, transparent, var(--tree-row-bg) 16px);
 }
 
 .tree-item:hover .tree-item-actions {
@@ -2297,11 +2327,26 @@ body.is-resizing-panes * {
   --folder-pink: #f472b6;
 }
 
-/* A folder's chosen colour tints its ICON only — the label keeps the normal
-   text colour, so a tree of customized folders still reads as a list of names
-   rather than a set of highlights. */
-.tree-item .folder-icon[style*="--folder-color"] {
-  color: var(--folder-color);
+/* The vault menu's rows carry the same icon the file tree gives that folder. */
+.vault-menu-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex-shrink: 0;
+  margin-right: 6px;
+  color: var(--text-faint);
+}
+
+.vault-menu-icon[style*="--entry-color"] {
+  color: var(--entry-color);
+}
+
+/* A chosen colour tints the row's ICON only — the label keeps the normal text
+   colour, so a tree of customized rows still reads as a list of names rather
+   than a set of highlights. Files and folders alike. */
+.tree-item .tree-item-icon[style*="--entry-color"] {
+  color: var(--entry-color);
 }
 
 /* ── "Choose icon / colour", the flyout off a folder's context menu ─────── */

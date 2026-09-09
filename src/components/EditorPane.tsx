@@ -7,7 +7,7 @@ import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
 import { Link, Eye, Edit2, PenTool, Download } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
-import { isPdfFile, isAnnotatedPdf, isCanvasFile, isNotebookFile } from '../utils/fileTypes';
+import { isPdfFile, isCanvasFile, isNotebookFile } from '../utils/fileTypes';
 import { activeGroup as activeGroupOf, canMergeIntoActive, paneSizes, MAX_SPLIT_PANES } from '../utils/tabGroups';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
@@ -44,7 +44,8 @@ interface EditorPaneProps {
     /** Buffer content and write it immediately, skipping the save debounce. */
     onFlushNow: (path: string, content: string) => void;
     /** Start annotating a plain PDF: creates "<name> (annotated).pdf" and opens it. */
-    onAnnotatePdf: (file: ActiveFile) => void;
+    /** A notebook's exported PDF sends you to the notebook — see PdfPane. */
+    onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void;
     /** Write the active notebook out as a PDF beside it. */
     onExportNotebook: (file: ActiveFile) => void;
     onOpenNote: OpenNoteByNameHandler;
@@ -182,7 +183,7 @@ interface PaneResize {
  * confirmation, and the PDF panes, which are deliberately NOT inside a pane so
  * they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onAnnotatePdf, onExportNotebook, onOpenNote, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onOpenNotebookSource, onExportNotebook, onOpenNote, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const group = activeGroupOf(layout);
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
@@ -260,7 +261,10 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
     const isPdf = !!activeFile && !activeFile.isHelp && isPdfFile(activeFile.name);
     // Only a file we wrote can be annotated in place; a plain PDF gets an
     // "Annotate" action that spawns its annotated sibling instead.
-    const isAnnotatable = isPdf && !!activeFile && isAnnotatedPdf(activeFile.name);
+    /* EVERY PDF, not just one whose name says "(annotated)": annotating writes
+       into the file you opened, so the read/annotate toggle is the only control
+       a PDF needs and there is nothing to spawn. */
+    const isAnnotatable = isPdf && !!activeFile;
     /** True whenever a non-CodeMirror surface owns the focused pane. */
     const isCanvas = isDrawing || isPdf;
 
@@ -643,21 +647,8 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         <Download size={15} />
                     </button>
                 )}
-                {/* A plain PDF can't hold annotations, so this spawns its
-                    annotated sibling and switches to it. On an annotated file the
-                    View/Annotate toggle below takes over instead. */}
-                {isPdf && !isAnnotatable && activeFile && (
-                    <button
-                        className="view-header-action"
-                        onClick={() => onAnnotatePdf(activeFile)}
-                        title="Annotate — creates a copy with “(annotated)” in the name"
-                        aria-label="Annotate this PDF"
-                    >
-                        <PenTool size={15} />
-                    </button>
-                )}
-                {/* An annotated PDF reuses the per-tab mode: read = view the real
-                    PDF (text selectable), edit = draw on it. */}
+                {/* A PDF reuses the per-tab mode: read = view the real PDF
+                    (text selectable), edit = draw on it, in that same file. */}
                 {isAnnotatable && activeFile && (
                     <button
                         className="view-header-action"
@@ -862,6 +853,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                             content={tab.content}
                             onContentChange={onContentChange}
                             onFlushNow={onFlushNow}
+                            onOpenNotebookSource={onOpenNotebookSource}
                             isDirty={tab.dirty}
                         />
                     </Suspense>

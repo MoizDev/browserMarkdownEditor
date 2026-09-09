@@ -1831,10 +1831,29 @@ body.is-resizing-panes * {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Stacks when the message carries an action (the notebook hand-off); a
+     single-line message is unaffected, since one child centres either way. */
+  flex-direction: column;
+  gap: 10px;
   color: var(--text-muted);
   font-size: 13px;
   padding: 24px;
   text-align: center;
+}
+
+.pdf-pane-action {
+  padding: 6px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--interactive-accent);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pdf-pane-action:hover {
+  background: var(--interactive-accent-hover);
 }
 
 /* Status messages nested inside a pane must fill it to center properly (the

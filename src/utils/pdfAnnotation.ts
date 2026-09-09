@@ -113,31 +113,85 @@ export async function readAnnotatedPdf(bytes: Uint8Array): Promise<AnnotatedPdfC
     });
 }
 
+/** Everything the app needs to know about a PDF it is about to let you edit. */
+export interface PdfRole {
+    /**
+     * The pristine pages to draw on and rebuild from.
+     *
+     * For a file already annotated by this app, the embedded `original.pdf`.
+     * For any other PDF, ITS OWN BYTES — which is what makes annotating happen
+     * in the file you opened rather than in a copy beside it. Either way the
+     * load-bearing rule holds: every save stamps onto these, never onto pages
+     * that already carry strokes.
+     */
+    original: Uint8Array;
+    /** Strokes already in the file, or '' for a PDF being annotated first time. */
+    snapshot: string;
+    /** Set when this PDF is a notebook's export — see pdfFormat.ts. */
+    notebookSource: NotebookSource | null;
+    /** False the first time: the file has no embedded original yet, so the next
+     *  save is what converts it into one of ours. */
+    alreadyAnnotated: boolean;
+}
+
 /**
- * Which notebook this PDF was exported from, or null if it wasn't.
+ * Read a PDF's role in ONE pdf.js open.
  *
- * Told by CONTENT, never by filename — the same rule `readAnnotatedPdf`
- * follows. A PDF that merely sits next to a notebook of the same name is not
- * that notebook's export, and a renamed export still is.
+ * Told by CONTENT, never by filename — the rule this format has always run on.
+ * A file called "… (annotated).pdf" that this app did not write has no
+ * attachments and is treated as the plain PDF it is; a renamed one of ours is
+ * still ours.
  */
-export async function readNotebookSource(bytes: Uint8Array): Promise<NotebookSource | null> {
+export async function readPdfRole(bytes: Uint8Array): Promise<PdfRole> {
     return withPdf(bytes, async doc => {
         const attachments = await doc.getAttachments();
         // NB: a Map, not a plain object — Object.keys() on it is always empty.
-        if (!attachments?.has(NOTEBOOK_SOURCE_ATTACHMENT)) return null;
-        const raw = await doc.getAttachmentContent(NOTEBOOK_SOURCE_ATTACHMENT);
-        if (!raw) return null;
-        try {
-            const parsed = JSON.parse(new TextDecoder().decode(raw)) as Partial<NotebookSource>;
-            // The path is the whole point; without it there is nothing to follow.
-            return typeof parsed.path === 'string' && parsed.path
-                ? { path: parsed.path, exportedAt: Number(parsed.exportedAt) || 0 }
-                : null;
-        } catch {
-            // Hand-edited, or written by a build that shaped it differently.
-            // Falling back to ordinary annotation is the safe answer.
-            return null;
+        const has = (name: string) => !!attachments?.has(name);
+
+        let notebookSource: NotebookSource | null = null;
+        if (has(NOTEBOOK_SOURCE_ATTACHMENT)) {
+            const raw = await doc.getAttachmentContent(NOTEBOOK_SOURCE_ATTACHMENT);
+            if (raw) {
+                try {
+                    const parsed = JSON.parse(new TextDecoder().decode(raw)) as Partial<NotebookSource>;
+                    // The path is the whole point; without one there is nothing
+                    // to follow, so treat it as absent rather than as broken.
+                    if (typeof parsed.path === 'string' && parsed.path) {
+                        notebookSource = { path: parsed.path, exportedAt: Number(parsed.exportedAt) || 0 };
+                    }
+                } catch { /* hand-edited, or a shape an older build wrote */ }
+            }
         }
+
+        // pdf.js 6 lists attachments without their bytes; content is a 2nd call,
+        // and it yields null if the attachment is present but unreadable.
+        const embedded = has(ORIGINAL_ATTACHMENT)
+            ? await doc.getAttachmentContent(ORIGINAL_ATTACHMENT)
+            : null;
+
+        let snapshot = '';
+        if (embedded && has(SNAPSHOT_ATTACHMENT)) {
+            const raw = await doc.getAttachmentContent(SNAPSHOT_ATTACHMENT);
+            if (raw) snapshot = new TextDecoder().decode(raw);
+        }
+
+        // getAttachmentContent already hands back a fresh array, structured-cloned
+        // out of the worker — copying it again duplicated the whole document for
+        // nothing. Only re-wrap in the case the copy actually guards against: a
+        // view onto a larger buffer, where the extra bytes would travel with it.
+        const tight = embedded
+            && embedded.byteOffset === 0
+            && embedded.byteLength === embedded.buffer.byteLength;
+
+        return {
+            // No embedded original means this PDF has never been annotated here,
+            // so the file itself IS the pristine copy. `bytes` is the caller's
+            // array and pdf.js was handed a slice, so it is intact.
+            original: embedded ? (tight ? embedded : new Uint8Array(embedded)) : bytes,
+            snapshot,
+            notebookSource,
+            alreadyAnnotated: !!embedded,
+        };
     });
 }
 

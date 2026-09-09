@@ -39,22 +39,21 @@ export function ensureNotebookExt(name: string): string {
 /* ── PDFs ────────────────────────────────────────────────────────────────
  * A PDF opens in a pane with two modes: View (the real PDF — scrollable,
  * text selectable) and Annotate (a tldraw canvas over rasterized pages).
- * Annotating spawns a sibling "<name> (annotated).pdf", which is a genuine
- * PDF — strokes stamped onto the pages — that also carries the pristine
- * original and the tldraw snapshot as embedded attachments, so it opens in
- * any viewer AND stays editable here. See utils/pdfAnnotation.ts.
+ * Annotating writes into THAT FILE: it stays a genuine PDF, strokes stamped
+ * onto its pages, and gains the pristine original and the tldraw snapshot as
+ * embedded attachments — so it opens in any viewer AND the strokes stay
+ * editable here. See utils/pdfAnnotation.ts.
+ *
+ * There is deliberately NO name test for "is this annotated". A PDF's role is
+ * read from its attachments, so a renamed one of ours is still ours and a file
+ * someone else called "… (annotated).pdf" is not. Files this app made under
+ * the old spawn-a-sibling behaviour keep working for exactly that reason.
  * ──────────────────────────────────────────────────────────────────────── */
 
 export const PDF_EXT = '.pdf';
-export const ANNOTATED_SUFFIX = ' (annotated)';
 
 export function isPdfFile(name: string): boolean {
     return name.toLowerCase().endsWith(PDF_EXT);
-}
-
-/** True for files this app produced, i.e. "Physics exercise 2 (annotated).pdf". */
-export function isAnnotatedPdf(name: string): boolean {
-    return isPdfFile(name) && stripExt(name).toLowerCase().endsWith(ANNOTATED_SUFFIX.toLowerCase());
 }
 
 function stripExt(name: string): string {
@@ -72,14 +71,4 @@ export function notebookPdfName(name: string): string {
     return `${isNotebookFile(name) ? name.slice(0, -NOTEBOOK_EXT.length) : name}${PDF_EXT}`;
 }
 
-/**
- * "Physics exercise 2.pdf" -> "Physics exercise 2 (annotated).pdf".
- *
- * Idempotent: an already-annotated name is returned unchanged, so re-entering
- * annotate mode edits that file in place instead of spawning
- * "… (annotated) (annotated).pdf".
- */
-export function annotatedNameFor(name: string): string {
-    if (isAnnotatedPdf(name)) return name;
-    return `${stripExt(name)}${ANNOTATED_SUFFIX}${PDF_EXT}`;
-}
+

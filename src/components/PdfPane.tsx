@@ -1,8 +1,8 @@
 import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
-import { readAnnotatedPdf } from '../utils/pdfAnnotation';
-import { isAnnotatedPdf } from '../utils/fileTypes';
+import { readPdfRole } from '../utils/pdfAnnotation';
+import type { NotebookSource } from '../utils/pdfFormat';
 import PdfViewer from './PdfViewer';
 import type { ActiveFile, EditorMode } from '../types';
 
@@ -52,15 +52,22 @@ interface PdfPaneProps {
     onContentChange: (path: string, content: string) => void;
     /** Writes to disk immediately; used as the canvas hands over to the viewer. */
     onFlushNow: (path: string, content: string) => void;
+    /** This PDF is a notebook's export — open that notebook instead. Takes the
+     *  PDF's own path too, so App can put its tab back into reading mode. */
+    onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void;
     /** True while this tab has strokes not yet written to disk. */
     isDirty: boolean;
 }
 
 interface PdfSource {
-    /** Pristine original bytes — only annotated files have them. */
-    original: Uint8Array | null;
+    /** The pages to draw on and rebuild from — the embedded pristine original
+     *  for a file already annotated here, otherwise the file's own bytes. */
+    original: Uint8Array;
     /** Snapshot found on disk when the file was opened. */
     diskSnapshot: string;
+    /** Set when this PDF is a notebook's export; the pane then hands you back
+     *  to the notebook instead of letting you fork it. */
+    notebookSource: NotebookSource | null;
 }
 
 /**
@@ -76,7 +83,7 @@ interface PdfSource {
  * modes rather than one blended view because a rasterized page has no text to
  * select — the pixels are all that's left. See utils/pdfAnnotation.ts.
  */
-function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, isSplit, onFocusPane, mode, content, onContentChange, onFlushNow, isDirty }: PdfPaneProps) {
+function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, isSplit, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, isDirty }: PdfPaneProps) {
     const { readFileBytes } = useFileSystem();
     const [source, setSource] = useState<PdfSource | null>(null);
     const [viewBytes, setViewBytes] = useState<Uint8Array | null>(null);
@@ -170,13 +177,23 @@ function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, i
     const viewStaleRef = useRef(false);
     useEffect(() => { if (isDirty) viewStaleRef.current = true; }, [isDirty]);
 
-    // Load once per file (once activated). Annotated files also yield the
-    // pristine original and any existing snapshot out of their attachments.
+    /* Read the file's role only once annotating is actually wanted.
+       Every PDF can be annotated now, so this can no longer be gated on the
+       filename — and reading every PDF on open just to find out would be an
+       N-MB allocation and a disk read for documents opened to read. Sticky: it
+       stays true after the first switch, so toggling back to reading does not
+       throw away the original the canvas is drawing on. */
+    const [needsSource, setNeedsSource] = useState(mode === 'edit');
+    useEffect(() => { if (mode === 'edit') setNeedsSource(true); }, [mode]);
+
+    // Load once per file (once activated and wanted). A file already annotated
+    // here yields its pristine original and existing snapshot out of its
+    // attachments; any other PDF yields itself as the original.
     //
     // Deliberately does NOT re-run on saves: `original` feeds the canvas, and
     // replacing it would re-rasterize every page mid-session.
     useEffect(() => {
-        if (!activated) return;
+        if (!activated || !needsSource) return;
         let cancelled = false;
         setSource(null);
         setSourceError(null);
@@ -185,22 +202,18 @@ function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, i
             try {
                 if (!file.handle) return;
 
-                // Trust the file's contents, not its name: a file named
-                // "… (annotated).pdf" that we didn't write has no attachments and
-                // must be treated as a plain PDF rather than crashing.
-                //
-                // The read is INSIDE the branch: a plain PDF has no attachments
-                // to extract, so pulling its whole file into memory here only to
-                // discard it was a wasted N-MB allocation and a wasted disk read
-                // on every plain PDF opened. (The viewer does its own read below.)
-                const annotated = isAnnotatedPdf(file.name)
-                    ? await readAnnotatedPdf(await readFileBytes(file.handle as FileSystemFileHandle))
-                    : null;
+                // Every PDF is annotatable now, in the file you opened — so the
+                // role is read by CONTENT for all of them, not just for files
+                // whose name says "(annotated)". Still only when annotating: a
+                // PDF opened to read is a wasted N-MB allocation and disk read
+                // otherwise, and the viewer does its own read below.
+                const role = await readPdfRole(await readFileBytes(file.handle as FileSystemFileHandle));
 
                 if (cancelled) return;
                 setSource({
-                    original: annotated?.original ?? null,
-                    diskSnapshot: annotated?.snapshot ?? '',
+                    original: role.original,
+                    diskSnapshot: role.snapshot,
+                    notebookSource: role.notebookSource,
                 });
             } catch (err) {
                 console.error('Could not open PDF:', err);
@@ -209,7 +222,7 @@ function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, i
         })();
 
         return () => { cancelled = true; };
-    }, [activated, file.path, file.handle, file.name, readFileBytes]);
+    }, [activated, needsSource, file.path, file.handle, file.name, readFileBytes]);
 
     // Read the bytes the viewer shows: once on first need, and again only after
     // a save of THIS file lands (mid-flush the bytes on disk still predate the
@@ -245,7 +258,22 @@ function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, i
             body = <div className="pdf-pane-message">Could not open this PDF: {error}</div>;
         } else if (!source) {
             body = <div className="pdf-pane-message">Loading PDF…</div>;
-        } else if (mode === 'edit' && source.original) {
+        } else if (mode === 'edit' && source.notebookSource) {
+            // A notebook's export. Annotating it would fork a third document
+            // whose marks the notebook could neither see nor replace, so the
+            // pane hands you back to the notebook instead of drawing anything.
+            body = (
+                <div className="pdf-pane-message">
+                    This PDF was exported from <strong>{source.notebookSource.path}</strong>.
+                    <button
+                        className="pdf-pane-action"
+                        onClick={() => onOpenNotebookSource(file.path, source.notebookSource!.path)}
+                    >
+                        Open the notebook
+                    </button>
+                </div>
+            );
+        } else if (mode === 'edit') {
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
             // unmounting it is what flushes pending strokes to disk.

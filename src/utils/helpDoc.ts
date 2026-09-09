@@ -231,15 +231,22 @@ A PDF opens in a reader: scroll it, select its text, search it with \`Cmd + F\`,
 follow its links, and jump to a page with the box at the bottom. Pinch or hold
 \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys.
 
-The pen icon in the top bar **annotates** it. That makes a second file — \`Notes
-(annotated).pdf\` — and leaves your original untouched. Draw on it as you would
-on a notebook; \`Cmd + E\` switches between reading it and writing on it.
+\`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
+**writing on it** — the same toggle every other file has. Draw on it as you would
+on a notebook.
 
-The annotated file is a real PDF that opens anywhere, with your annotations
-drawn into it as vector artwork and the original document's own text still
-selectable underneath. It also quietly carries the untouched original and your
-strokes inside itself, which is what lets you reopen it here and keep editing —
-or erase — annotations you made days ago.
+**The marks go into that PDF, not into a copy.** There is no second
+"(annotated)" file to keep track of, and nothing to remember to open next time:
+the file you annotated is the file you annotate again. It is still a real PDF
+that opens anywhere, with your marks drawn in as vector artwork and the
+document's own text still selectable underneath.
+
+Your original is not lost. The file quietly carries a pristine copy of the PDF
+as it was before you touched it, alongside the editable form of your strokes —
+which is what lets you come back days later and move, recolour or erase a mark
+rather than being stuck with it. It is also why annotating never builds up:
+every save redraws from that pristine copy, so the marks never thicken or
+double no matter how many times you edit.
 
 Everything around a page — the toolbars, the pen panel, the space the pages sit
 on — follows the app's theme, so a notebook or a PDF is dark at night like the

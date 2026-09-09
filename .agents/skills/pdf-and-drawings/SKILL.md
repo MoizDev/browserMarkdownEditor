@@ -11,11 +11,21 @@ names), `pdfOverlay.ts` (the per-page overlay contract), `pdfVector.ts` (tldraw 
 `pdfRenderCache.ts` (canvas↔save handoff), `pdfLinks.ts` (link annotations → boxes +
 destinations), `PdfPane.tsx`, `PdfViewer.tsx` (view mode), `PdfAnnotateCanvas.tsx`.
 
-An **annotated PDF (`<name> (annotated).pdf`) is a genuine PDF**: original pages + the annotations
-drawn onto them (vector paths, see below) + two embedded attachments — `original.pdf` (pristine) and
-`tldraw-snapshot.json` (editable strokes). It opens in any viewer *and* reopens here as live tldraw
-shapes. A plain PDF is told from an annotated one by **content** (is the `original.pdf` attachment
-there), never by filename.
+**Annotating happens IN THE FILE YOU OPENED.** It stays a genuine PDF: its original pages + the
+annotations drawn onto them (vector paths, see below) + two embedded attachments — `original.pdf`
+(pristine) and `tldraw-snapshot.json` (editable strokes). It opens in any viewer *and* reopens here
+as live tldraw shapes.
+
+- **No `(annotated)` sibling, and no name test anywhere.** `readPdfRole` reads a PDF's role from its
+  attachments in ONE pdf.js open: an embedded `original.pdf` means it is already one of ours, and its
+  ABSENCE means the file's own bytes are the pristine original. That is the whole of the conversion —
+  the first save is what adds the attachments. Files made by the old spawn-a-sibling behaviour keep
+  working unchanged, because they were always identified by content.
+- **The role read is lazy** (`needsSource`, set on first switch to edit and sticky): every PDF can be
+  annotated now, so gating it on the filename is gone, and reading every PDF on open just to find out
+  would be an N-MB allocation and a disk read for documents only ever read.
+- `flushTab`'s PDF branch is now `isPdfFile`, not `isAnnotatedPdf`; `getPdfRenderData` returning
+  nothing is what distinguishes a PDF that was only read.
 
 > **THE LOAD-BEARING RULE: every save rebuilds from the embedded pristine original, never the
 > currently-stamped pages.** Rebuilding from stamped pages re-stamps strokes over themselves — each

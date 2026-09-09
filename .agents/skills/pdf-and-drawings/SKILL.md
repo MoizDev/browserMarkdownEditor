@@ -7,11 +7,12 @@ description: The canvas documents — the annotated-PDF read/write pipeline, the
 
 Files: `pdfAnnotation.ts` (read + rasterize, pdf.js), `pdfBuild.ts` (write, pdf-lib),
 `pdfBuild.worker.ts` + `pdfBuildClient.ts` (off-main-thread), `pdfFormat.ts` (shared attachment
-names), `pdfRenderCache.ts` (canvas↔save handoff), `pdfLinks.ts` (link annotations → boxes +
+names), `pdfOverlay.ts` (the per-page overlay contract), `pdfVector.ts` (tldraw SVG → path ops),
+`pdfRenderCache.ts` (canvas↔save handoff), `pdfLinks.ts` (link annotations → boxes +
 destinations), `PdfPane.tsx`, `PdfViewer.tsx` (view mode), `PdfAnnotateCanvas.tsx`.
 
-An **annotated PDF (`<name> (annotated).pdf`) is a genuine PDF**: original pages + stamped
-transparent stroke overlays + two embedded attachments — `original.pdf` (pristine) and
+An **annotated PDF (`<name> (annotated).pdf`) is a genuine PDF**: original pages + the annotations
+drawn onto them (vector paths, see below) + two embedded attachments — `original.pdf` (pristine) and
 `tldraw-snapshot.json` (editable strokes). It opens in any viewer *and* reopens here as live tldraw
 shapes. A plain PDF is told from an annotated one by **content** (is the `original.pdf` attachment
 there), never by filename.
@@ -21,14 +22,31 @@ there), never by filename.
 > save darkens/duplicates annotations and inflates the file.
 
 - The annotated tab's `content` buffer is the **tldraw snapshot string** (rides normal autosave).
-  Building the PDF *also* needs the original + rasterized overlays, which only the live canvas can
+  Building the PDF *also* needs the original + the exported overlays, which only the live canvas can
   make — it parks them per-path in `pdfRenderCache` (kept **outside React state**; these are megabytes
   of binary that must never enter a re-render path or localStorage), and `flushTab` picks them up and
   calls `buildAnnotatedPdfAsync`. `movePdfRenderData` must follow a rename, or the tab's next save
   silently no-ops looking under the new path.
-- `stampOverlay` handles the `/Rotate` trap: pdf.js *applies* `/Rotate` (canvas is landscape) but
-  pdf-lib *ignores* it (`getSize()` returns the portrait MediaBox), so overlays are mapped back into
-  user space by hand per rotation angle.
+- **Annotations reach the page as VECTOR paths, not pixels.** `getSvgString` → `svgToVectorOps`
+  (`pdfVector.ts`) → `page.drawSvgPath` per op. A `PageOverlay` (`pdfOverlay.ts`) carries `vector`
+  and/or `raster`; shapes with no path form (text, images — `RASTER_ONLY_SHAPES`) still export as a
+  PNG, and the builder draws that **first** so ink lands on top. `svgToVectorOps` returning null
+  (embedded fonts, `<pattern>` fills, clip paths, a non-similarity transform) sends the whole page
+  down the raster route, which is the pre-vector behaviour — so a failure is softer output, never
+  wrong output.
+- ⚠️ **pdf-lib's `drawSvgPath` renders quadratic curves WRONG** — its `appendQuadraticCurve` emits
+  the PDF `v` operator, a *cubic* using the current point as first control. tldraw's ink is almost
+  entirely `q`/`t`, so every stroke came out a splayed blob. `pdfVector.normalizePathData` therefore
+  converts everything to absolute `M`/`L`/`C`/`Z` first, and pdf-lib never sees a Q, T, S, A or a
+  relative command. Verified against `getPointAtLength` on 14 path shapes; do not "simplify" it away.
+- **Exports pin `darkMode: false` and the canvas pins `colorScheme="light"`.** tldraw resolves colour
+  NAMES through the live theme and its dark theme maps `black` → `#f2f2f2`; a PDF page is white in
+  either theme, so following the app theme drew near-white ink on white paper, on screen and in the
+  saved file. Snapshots store the name, so old files heal themselves.
+- `stampRaster`/`stampVector` share `displaySpace()`, which handles the `/Rotate` trap: pdf.js
+  *applies* `/Rotate` (canvas is landscape) but pdf-lib *ignores* it (`getSize()` returns the
+  portrait MediaBox). The raster half anchors + rotates the image per angle; the vector half
+  concatenates the same mapping as a CTM and draws inside it.
 - `withPdf` always slices the buffer (pdf.js detaches it) and always destroys the worker.
 - `pdfBuildClient` keeps one warm `Worker` for the app's life, and on `worker.onerror` rejects every
   in-flight build and nulls the worker so the next call re-spawns it.
@@ -149,12 +167,22 @@ A tldraw canvas over rasterized pages that are **locked backdrop image shapes, e
 exported overlay** (tracked by id). Two modes rather than one because a rasterized page has no
 selectable text.
 
+**The backdrop re-renders to match the zoom.** pdf.js dropped its SVG backend in v4, so a page can
+only ever be a bitmap; at 400% a 2x raster is mush under a pen whose ink is vector and stays crisp.
+A debounced pass re-rasterizes the pages **inside the viewport** at `zoom x devicePixelRatio`,
+stepped and capped at `MAX_PAGE_SCALE` (6x — a Letter page is then ~70MB decoded), and drops pages
+you have left back to `PAGE_RENDER_SCALE`. It is bounded to visible pages because **every** page is
+held rasterized for the canvas's life. It rides a **second, session-scoped** store listener: a pan or
+zoom must not mark the file dirty, which is also why the swap goes through `refreshPageAsset`'s
+`mergeRemoteChanges`. The pass is serialized behind an in-flight flag — overlapping runs would render
+one page at two scales and leak the loser's object URL.
+
 The serialize debounce is 1500ms — far longer than a drawing's 400ms — because a PDF export
-rasterizes and rebuilds the whole document on the main thread. `flush()` buckets shapes by page
-**once** (not a per-page re-filter, which was O(pages × shapes)) and caches each page's exported
-overlay PNG by a JSON signature of that page's shapes, so an untouched page is not re-rasterized. On
-unmount with unsaved work it calls `onFlushStart()` synchronously (beating the viewer's re-read) and
-then flushes immediately.
+rebuilds the whole document on the main thread. `flush()` buckets shapes by page **once** (not a
+per-page re-filter, which was O(pages × shapes)) and caches each page's exported `PageOverlay` by a
+JSON signature of that page's shapes, so an untouched page is not re-exported. On unmount with
+unsaved work it calls `onFlushStart()` synchronously (beating the viewer's re-read) and then flushes
+immediately.
 
 # Drawings (`DrawingPane.tsx`, tldraw)
 

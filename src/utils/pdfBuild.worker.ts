@@ -6,12 +6,13 @@
 // the user nothing.
 
 import { buildAnnotatedPdf } from './pdfBuild';
+import type { PageOverlay } from './pdfOverlay';
 
 export interface PdfBuildRequest {
     id: number;
     original: Uint8Array;
     snapshot: string;
-    overlays: Array<Uint8Array | undefined>;
+    overlays: Array<PageOverlay | undefined>;
 }
 
 export type PdfBuildResponse =

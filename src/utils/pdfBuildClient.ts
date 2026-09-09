@@ -3,6 +3,7 @@
 // One worker for the whole app, started on first use and kept warm — spinning up
 // a worker per save would re-pay module init (pdf-lib is ~400kB) every time.
 
+import type { PageOverlay } from './pdfOverlay';
 import type { PdfBuildRequest, PdfBuildResponse } from './pdfBuild.worker';
 
 let worker: Worker | null = null;
@@ -42,7 +43,7 @@ function getWorker(): Worker {
 export function buildAnnotatedPdfAsync(
     original: Uint8Array,
     snapshot: string,
-    overlays: Array<Uint8Array | undefined>,
+    overlays: Array<PageOverlay | undefined>,
 ): Promise<Uint8Array> {
     const id = nextId++;
     const request: PdfBuildRequest = { id, original, snapshot, overlays };

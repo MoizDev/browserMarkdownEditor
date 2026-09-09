@@ -249,6 +249,19 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
 canvases. Split across two files because `react-refresh/only-export-components` is relaxed for
 `src/context/**` only, so a component and a helper cannot share a file.
 
+- **The pen is PER FILE, and per open editor.** `penStyle` keys on the live `Editor` in a WeakMap,
+  not one app-wide value, because a split shows two canvases at once and each answers to its own
+  file. `canvasPen`'s `CanvasUiState` (`toolId` + `stylesForNextShape` + `penScale`) is the one shape
+  all three canvases write into their file's `ui` key — tldraw's own snapshots carry NO styles
+  (`TLSessionStateSnapshot` is camera and selection only), which is why an annotated PDF used to
+  reopen with the default pen while drawings and notebooks did not. `applyCanvasUi` must run BEFORE
+  `applyPenDefaults` (whose shape handler reads the seeded width) and before the save listeners
+  attach, or restoring a file marks it dirty. An unseeded file inherits the last width used anywhere
+  (localStorage) rather than snapping to the default.
+- **Width changes touch no tldraw store**, so the panes also `subscribePenScale` — the session
+  listener alone never sees them, and the width was only remembered if you happened to draw after.
+  `PdfAnnotateCanvas` deliberately does NOT: its save rebuilds the whole document (~150ms/page), so
+  the pen rides the next stroke's flush instead of stalling under a colour click.
 - **Width is `props.scale`, NOT the `size` style.** tldraw's thinnest, `s`, is `(2*1 + 1) = 3px`;
   handwriting on ruled paper needs less. `size` is pinned to `s`, `dash` to `solid`, and a
   `registerBeforeCreateHandler` stamps `scale` on every new shape that HAS that prop — `scale` is an

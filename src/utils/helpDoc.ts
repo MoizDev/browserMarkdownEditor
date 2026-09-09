@@ -221,6 +221,12 @@ default. The dot beside it is the actual width, in the actual colour, so you can
 see what you are about to draw with. Drag the slider or pick a colour with
 something selected and it re-inks that instead of only the next stroke.
 
+**Every file keeps its own pen.** A notebook you annotate in fine red stays fine
+and red; the PDF you were marking up in thick blue is still thick and blue when
+you come back to it, however many other things you drew in between. A brand new
+file starts at the width you were last using, since that is usually the one you
+want again.
+
 ### Drawings
 A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endless
 sheet in every direction, for diagrams and thinking rather than for a page you

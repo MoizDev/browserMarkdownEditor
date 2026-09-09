@@ -3,7 +3,8 @@ import { Tldraw, getSnapshot } from 'tldraw';
 import type { Editor, TLEditorSnapshot } from 'tldraw';
 import 'tldraw/tldraw.css';
 import type { Theme } from '../types';
-import { CANVAS_COMPONENTS, applyPenDefaults } from './canvasPen';
+import { CANVAS_COMPONENTS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { subscribePenScale } from '../utils/penStyle';
 
 interface DrawingPaneProps {
     /** The drawing's vault path. Every change is reported against it explicitly
@@ -16,15 +17,6 @@ interface DrawingPaneProps {
     theme: Theme;
 }
 
-/** The tool and style pickers (color, pen size, dash, fill…) live in tldraw's
- *  instance state, which its document AND session snapshots both omit — so
- *  they're persisted as an extra `ui` block in the file, and put back on open
- *  exactly as the user left them. */
-interface SavedUiState {
-    toolId?: string;
-    stylesForNextShape?: Record<string, unknown>;
-}
-
 /** Drawing a single stroke fires a burst of store transactions; serializing the
  *  whole document on each one would be wasteful. Coalesce, then hand off to the
  *  app's own 1s save debounce. */
@@ -34,12 +26,12 @@ const SERIALIZE_DEBOUNCE_MS = 400;
  *  rendering; past it, tldraw's low-zoom thin-line LOD applies as designed. */
 const FULL_INK_SHAPE_LIMIT = 1000;
 
-function parseDrawingFile(content: string): { snapshot?: TLEditorSnapshot; ui?: SavedUiState } {
+function parseDrawingFile(content: string): { snapshot?: TLEditorSnapshot; ui?: CanvasUiState } {
     if (!content.trim()) return {}; // new/empty file → blank canvas
     try {
         // Files written before the `ui` block existed are plain snapshots;
         // destructuring just yields ui === undefined for those.
-        const { ui, ...snapshot } = JSON.parse(content) as TLEditorSnapshot & { ui?: SavedUiState };
+        const { ui, ...snapshot } = JSON.parse(content) as TLEditorSnapshot & { ui?: CanvasUiState };
         return { snapshot, ui };
     } catch (err) {
         // Don't destroy an unreadable file: mounting blank would autosave over
@@ -48,13 +40,6 @@ function parseDrawingFile(content: string): { snapshot?: TLEditorSnapshot; ui?: 
         console.error('Could not parse drawing (leaving the file untouched):', err);
         return {};
     }
-}
-
-function readUiState(editor: Editor): SavedUiState {
-    return {
-        toolId: editor.getCurrentToolId(),
-        stylesForNextShape: editor.getInstanceState().stylesForNextShape,
-    };
 }
 
 /**
@@ -106,29 +91,18 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
                 ? realEfficientZoom()
                 : Math.max(0.5, realEfficientZoom());
 
-        // Restore the saved pickers BEFORE the listeners attach: these writes
-        // are indistinguishable from user edits, and a restore must not mark a
-        // just-opened file dirty.
-        if (ui) {
-            try {
-                if (ui.stylesForNextShape) {
-                    editor.updateInstanceState({ stylesForNextShape: ui.stylesForNextShape });
-                }
-                if (ui.toolId) editor.setCurrentTool(ui.toolId);
-            } catch (err) {
-                // A tool/style saved by a newer build than this one — the
-                // defaults are a fine fallback, the drawing itself is intact.
-                console.warn('Could not restore drawing UI state:', err);
-            }
-        }
-
+        // Restore the saved pen BEFORE the listeners attach: these writes are
+        // indistinguishable from user edits, and a restore must not mark a
+        // just-opened file dirty. Also before applyPenDefaults, whose shape
+        // handler reads the width this seeds.
+        applyCanvasUi(editor, ui);
         const disposePen = applyPenDefaults(editor);
 
-        let lastUi = JSON.stringify(readUiState(editor));
+        let lastUi = JSON.stringify(readCanvasUi(editor));
 
         const flush = () => {
             serializeTimerRef.current = null;
-            const uiNow = readUiState(editor);
+            const uiNow = readCanvasUi(editor);
             lastUi = JSON.stringify(uiNow);
             onContentChangeRef.current(filePath, JSON.stringify({ ...getSnapshot(editor.store), ui: uiNow }));
         };
@@ -145,15 +119,21 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
         // The pickers live in session scope alongside camera/selection noise
         // that must NOT dirty the file — so compare just the slice we persist
         // and only save when THAT changed.
-        const unlistenSession = editor.store.listen(() => {
-            if (JSON.stringify(readUiState(editor)) !== lastUi) schedule();
-        }, { source: 'user', scope: 'session' });
+        const saveUiIfChanged = () => {
+            if (JSON.stringify(readCanvasUi(editor)) !== lastUi) schedule();
+        };
+        const unlistenSession = editor.store.listen(saveUiIfChanged, { source: 'user', scope: 'session' });
+        // Pen WIDTH is not a tldraw style, so changing it touches no store and
+        // the listener above never sees it. Without this the width was only
+        // remembered if you happened to draw afterwards.
+        const unlistenPen = subscribePenScale(saveUiIfChanged);
 
         return () => {
             editorRef.current = null;
             disposePen();
             unlistenDoc();
             unlistenSession();
+            unlistenPen();
             // Unmounting mid-debounce (tab switch, tab close) must not drop the
             // last strokes — flush them synchronously while the editor is alive.
             if (serializeTimerRef.current) {

@@ -10,7 +10,8 @@ import { parseNotebookFile, serializeNotebookFile, type NotebookUiState } from '
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
-import { CANVAS_COMPONENTS, applyPenDefaults } from './canvasPen';
+import { CANVAS_COMPONENTS, applyCanvasUi, applyPenDefaults, readCanvasUi } from './canvasPen';
+import { subscribePenScale } from '../utils/penStyle';
 
 interface NotebookPaneProps {
     /** The notebook's vault path. Every change is reported against it explicitly
@@ -271,26 +272,18 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
                 ? realEfficientZoom()
                 : Math.max(0.5, realEfficientZoom());
 
+        // Before applyPenDefaults, whose shape handler reads the width this
+        // seeds, and before the listeners attach — restoring what the file
+        // already says must not mark it dirty.
+        applyCanvasUi(editor, uiRef.current);
         const disposePen = applyPenDefaults(editor);
 
         // Everything below runs BEFORE the listeners attach, so none of it marks
         // a just-opened file dirty.
         layOutPages(editor, paperRef.current);
 
-        const ui = uiRef.current;
-        if (ui) {
-            try {
-                if (ui.stylesForNextShape) editor.updateInstanceState({ stylesForNextShape: ui.stylesForNextShape });
-                if (ui.toolId) editor.setCurrentTool(ui.toolId);
-            } catch (err) {
-                // A tool or style saved by a newer build — the defaults are a
-                // fine fallback and the writing itself is intact.
-                console.warn('Could not restore notebook UI state:', err);
-            }
-        } else {
-            // A new notebook opens ready to write on, not ready to select.
-            editor.setCurrentTool('draw');
-        }
+        // A new notebook opens ready to write on, not ready to select.
+        if (!uiRef.current?.toolId) editor.setCurrentTool('draw');
 
         // Frame the first page on a first-ever open; a reopen restores the
         // camera from the snapshot, and fitting would throw away where the user
@@ -300,10 +293,7 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
             editor.zoomToBounds(new Box(0, 0, size.width, size.height), { inset: FIT_INSET });
         }
 
-        const readUi = (): NotebookUiState => ({
-            toolId: editor.getCurrentToolId(),
-            stylesForNextShape: editor.getInstanceState().stylesForNextShape,
-        });
+        const readUi = () => readCanvasUi(editor);
         let lastUi = JSON.stringify(readUi());
 
         const flush = () => {
@@ -327,15 +317,21 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         const unlistenDoc = editor.store.listen(schedule, { source: 'user', scope: 'document' });
         // The pickers live in session scope alongside camera noise that must NOT
         // dirty the file, so compare just the slice that gets persisted.
-        const unlistenSession = editor.store.listen(() => {
+        const saveUiIfChanged = () => {
             if (JSON.stringify(readUi()) !== lastUi) schedule();
-        }, { source: 'user', scope: 'session' });
+        };
+        const unlistenSession = editor.store.listen(saveUiIfChanged, { source: 'user', scope: 'session' });
+        // Pen WIDTH is not a tldraw style, so changing it touches no store and
+        // the listener above never sees it. Without this the width was only
+        // remembered if you happened to write afterwards.
+        const unlistenPen = subscribePenScale(saveUiIfChanged);
 
         return () => {
             editorRef.current = null;
             disposePen();
             unlistenDoc();
             unlistenSession();
+            unlistenPen();
             // Unmounting mid-debounce (tab switch, tab close) must not drop the
             // last strokes — flush them while the editor is still alive.
             if (serializeTimerRef.current) {

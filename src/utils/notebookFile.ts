@@ -18,13 +18,11 @@
 
 import type { TLEditorSnapshot } from 'tldraw';
 import { normalizePaper, type NotebookPaper } from './paper';
+import type { CanvasUiState } from '../components/canvasPen';
 
-/** The tool and style pickers, which tldraw's document AND session snapshots
- *  both omit — so they are persisted here and put back on open. */
-export interface NotebookUiState {
-    toolId?: string;
-    stylesForNextShape?: Record<string, unknown>;
-}
+/** The pen this notebook was last written with. One shape across all three
+ *  canvases — see components/canvasPen.ts. */
+export type NotebookUiState = CanvasUiState;
 
 export interface NotebookFile {
     paper: NotebookPaper;

@@ -9,8 +9,58 @@
 
 import type { Editor, TLShape } from 'tldraw';
 import { DefaultDashStyle, DefaultSizeStyle } from 'tldraw';
-import { getPenScale } from '../utils/penStyle';
+import { getPenScale, seedPenScale } from '../utils/penStyle';
 import CanvasStylePanel from './CanvasStylePanel';
+
+/**
+ * What a canvas file remembers about how you were drawing in it.
+ *
+ * tldraw's own snapshots carry NONE of this: a document snapshot holds shapes
+ * and a session snapshot holds the camera and selection (TLSessionStateSnapshot
+ * is the whole list — no styles). So a file that did not save this block
+ * reopened with the default colour and width however it was left, which is what
+ * "each file remembers its own pen" is about.
+ *
+ * Written into every canvas file's `ui` key: `.tldraw`, `.notebook`, and the
+ * snapshot embedded in an annotated PDF.
+ */
+export interface CanvasUiState {
+    toolId?: string;
+    /** tldraw's own style memory — colour, and anything else it tracks. */
+    stylesForNextShape?: Record<string, unknown>;
+    /** Pen width. Not a tldraw style (it is `props.scale`), so it is kept here
+     *  rather than inside stylesForNextShape. See utils/penStyle.ts. */
+    penScale?: number;
+}
+
+/** What to write into the file. */
+export function readCanvasUi(editor: Editor): CanvasUiState {
+    return {
+        toolId: editor.getCurrentToolId(),
+        stylesForNextShape: editor.getInstanceState().stylesForNextShape,
+        penScale: getPenScale(editor),
+    };
+}
+
+/**
+ * Put a file's remembered pen back.
+ *
+ * MUST run before the save listeners attach: these writes are indistinguishable
+ * from user edits, and restoring what a file already says must not mark it
+ * dirty and rewrite it.
+ */
+export function applyCanvasUi(editor: Editor, ui: CanvasUiState | undefined): void {
+    seedPenScale(editor, ui?.penScale);
+    if (!ui) return;
+    try {
+        if (ui.stylesForNextShape) editor.updateInstanceState({ stylesForNextShape: ui.stylesForNextShape });
+        if (ui.toolId) editor.setCurrentTool(ui.toolId);
+    } catch (err) {
+        // A tool or style saved by a newer build than this one — the defaults
+        // are a fine fallback, and the drawing itself is untouched.
+        console.warn('Could not restore this canvas\'s tools:', err);
+    }
+}
 
 /** What every canvas in the app passes to <Tldraw components={...}>. */
 export const CANVAS_COMPONENTS = { StylePanel: CanvasStylePanel };
@@ -41,6 +91,6 @@ export function applyPenDefaults(editor: Editor): () => void {
         // widens them past the discriminant, and the guard above is what makes
         // the write sound.
         if (!('scale' in shape.props)) return shape;
-        return { ...shape, props: { ...shape.props, scale: getPenScale() } } as TLShape;
+        return { ...shape, props: { ...shape.props, scale: getPenScale(editor) } } as TLShape;
     });
 }

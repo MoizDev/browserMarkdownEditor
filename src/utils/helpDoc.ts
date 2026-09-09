@@ -47,6 +47,22 @@ a single **Open '<vault>'** button, because only a click can ask for that access
 back. On a machine that has never opened the vault, the link cannot find it — open
 the folder once and the link works from then on.
 
+### Giving a Folder an Icon and a Colour
+Right-click a folder and choose **Choose icon / colour**. A panel opens beside
+the menu with eight colours and a search box over all 1,818 Lucide icons — it
+opens on the ones people usually want (folders, books, flasks, code, work), and
+typing a word finds the rest. Picking is live: the folder in the sidebar changes
+as you click, so you can judge it against the real tree before dismissing the
+menu.
+
+Clicking the icon a folder already has removes it, and **Reset to default** puts
+the folder back to a plain grey folder. The colour tints the icon only — the
+folder's name keeps the normal text colour, so the tree still reads as a list.
+
+This is remembered in a hidden \`.folders.json\` at the top of your vault, so the
+icons travel with the vault rather than living in one browser. Renaming or moving
+a folder takes its icon along, and trashing one forgets it.
+
 ### Searching the Vault
 **Search** sits at the bottom of the sidebar, under the theme switch, alongside
 Neural Brain and Settings. It looks through every note in the vault — file names

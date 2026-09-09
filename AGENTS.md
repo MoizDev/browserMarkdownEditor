@@ -64,15 +64,15 @@ and use it before saying a change works.
   is renamed aside — which is why each costs a copy instead of a `removeEntry`. Prefer a wrong call
   that keeps a file over a right one that cannot be undone.
 - **State lives in `App.tsx`; the filesystem lives behind `useFileSystem()`.** App owns nearly all
-  state and every FS call goes through that one hook. There is no backend and no undo stack behind
-  it: a mistake there destroys the user's notes.
+  state and every FS call goes through it. There is no backend and no undo stack behind it: a
+  mistake there destroys the user's notes.
 - **Nothing overwrites an existing file by accident.** Every write that could land on a taken name
   goes through `freeEntryName`, which counts **both** files and folders; `moveFile`/`renameFile` and
   the notebook PDF export are the deliberate exceptions. **`createFile` is the hole** — it
   opens-or-*truncates*, guarded only at `App.handleCreateFile`; anything new calling it inherits it.
-- **`.Assets` (pasted images) and `.Garbage` (trash) are per FOLDER, not per vault**, and
-  `utils/assets.ts` owns both names — nothing else spells `'.Assets'`. Neither appears in the tree,
-  so a folder carries its own pictures and deletions wherever it is moved.
+- **`.Assets` (images) and `.Garbage` (trash) are per FOLDER**, owned by `utils/assets.ts` — nothing
+  else spells `'.Assets'` — and hidden, so a folder carries its own pictures and deletions wherever it
+  goes. `.folders.json` is the third app-owned name, and the only root-only one (`folder-styles`).
 - **Paths are vault-root-relative with no vault-name prefix**, centralized in `utils/paths.ts`;
   `buildFileTree` and every create/move/rename tab handler must agree or tabs stop deduping.
 - **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault: the FS Access
@@ -112,8 +112,8 @@ and use it before saying a change works.
   that doesn't normalize drifts silently on a CRLF file.
 - **The app's user documentation is a file in this repo** — `utils/helpDoc.ts`, one exported string
   opened as a real read-mode tab, and the only thing telling a user a gesture exists: a user-facing
-  change is not finished until it describes them. Its pseudo-path is a **bare name**, not a vault
-  path — which is why tab-closing code gates its equality branch to real files.
+  change is not finished until it describes them. Its pseudo-path is a **bare name**, not a vault path
+  — which is why tab-closing code gates its equality branch to real files.
 
 ## Conventions & gotchas
 
@@ -121,9 +121,9 @@ and use it before saying a change works.
   `(lastModified, size)`. Each pane likewise holds **one stable resolver identity and one stable
   `imageActions`** for life; a fresh closure per call makes every image widget compare unequal on
   every ⌘E and tab switch.
-- **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, and so is the context-menu
-  store. `FileExplorer`/`TreeNode` are `React.memo`'d so the tree stops re-rendering while the user
-  types — never thread a per-save, per-menu or per-search value through them.
+- **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, and so are the context-menu
+  and folder-style stores. `FileExplorer`/`TreeNode` are `React.memo`'d so the tree stops re-rendering
+  while the user types — never thread a per-save, per-menu, per-search or per-icon value through them.
 - **The two path-keyed position records** (`fileScrollPositions`, `pdfViewPositions`) are held parsed
   in memory via `readRecord`/`flushRecord` in `utils/storage.ts`. They are never pruned; capping by
   recency was considered and **rejected**, as it discards the position of a file returned to later.
@@ -143,7 +143,7 @@ and use it before saying a change works.
   but leaves `noUnusedLocals`/`noUnusedParameters` to lint. Don't "fix" these into failures.
 - **Match the house comment style.** This codebase explains *why*, beside the code, with the measured
   evidence that forced the decision ("measured: 7 tabs → 0", "~186M comparisons per keystroke"); a
-  comment restating what the line does is not the standard. Narrow, hard-won facts belong there.
+  comment restating what the line does is not it. Narrow, hard-won facts belong there.
 - **Three things exist twice, as independent copies — change both halves.** "Is this name taken by
   either kind" is `App.nameTaken` *and* `FileSystemContext.entryExists`; the editable-view test is
   `lists.ts`'s *and* `tableEdit.ts`'s `canWrite`; ruled-paper colours are `paper.ts`'s SVG *and*

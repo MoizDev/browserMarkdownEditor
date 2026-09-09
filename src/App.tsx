@@ -9,8 +9,7 @@ import { collectFiles } from './utils/tree';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
 import {
-  isCanvasFile, isPdfFile, isAnnotatedPdf, isNotebookFile, annotatedNameFor,
-  ensureNotebookExt, notebookPdfName, stripPdfExt,
+  isCanvasFile, isPdfFile, isNotebookFile, ensureNotebookExt, notebookPdfName, stripPdfExt,
 } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
@@ -233,7 +232,6 @@ export default function App() {
     forgetRecentVault,
     readFile,
     writeFile,
-    readFileBytes,
     writeFileBytes,
     importFiles,
     createFile,
@@ -771,99 +769,42 @@ export default function App() {
   }, [readFile, rememberAssetRefs]);
 
   /**
-   * Start annotating a plain PDF. Creates "<name> (annotated).pdf" beside it —
-   * a real PDF carrying the pristine original + an empty snapshot — then opens
-   * it in annotate mode. The source PDF is never modified.
+   * Hand a notebook's exported PDF back to its notebook.
    *
-   * Re-annotating an existing annotated file just reopens it, so the button is
-   * safe to press twice and existing strokes are never blown away.
+   * The PDF pane reads the pointer (see pdfFormat.ts) and calls this instead of
+   * drawing anything: annotating an export would fork a third document whose
+   * marks the notebook could neither see nor replace. The stored path first,
+   * then a notebook beside the PDF answering to its name — the pointer is
+   * written once and the vault goes on moving, so between them they survive a
+   * rename of either file.
    */
-  const handleAnnotatePdf = useCallback(async (file: ActiveFile) => {
-    if (!file.handle || !file.parentHandle) return;
-    const targetName = annotatedNameFor(file.name);
-    const targetPath = joinVaultPath(parentVaultPath(file.path), targetName);
-
-    /**
-     * A PDF this app exported from a notebook goes BACK TO THE NOTEBOOK.
-     *
-     * Annotating it as an ordinary PDF produced a third file — "X (annotated)
-     * .pdf" — holding strokes the notebook knew nothing about, which the next
-     * export would neither include nor overwrite. Two divergent copies of one
-     * document, and no way back. The notebook is the thing that is edited; this
-     * PDF is what it prints to.
-     */
-    const source = await (async () => {
-      try {
-        const bytes = await readFileBytes(file.handle as FileSystemFileHandle);
-        // Dynamic, like the builder below: pdfAnnotation pulls in pdf.js, and
-        // App is the main bundle (see the module-split rule in AGENTS.md).
-        const { readNotebookSource } = await import('./utils/pdfAnnotation');
-        return await readNotebookSource(bytes);
-      } catch (err) {
-        console.warn('Could not read the PDF looking for its source notebook:', err);
-        return null;
-      }
-    })();
-
-    if (source && rootHandle) {
-      // The stored path first; then a notebook beside this PDF answering to its
-      // name, which is what a rename of either leaves behind. Both are checked
-      // because the pointer is written once and the vault goes on moving.
-      const beside = joinVaultPath(parentVaultPath(file.path), ensureNotebookExt(stripPdfExt(file.name)));
-      for (const candidate of [source.path, beside]) {
-        const node = collectFiles(fileTree).find(f => f.path === candidate && isNotebookFile(f.name));
-        if (!node) continue;
-        await handleFileClick(node);
-        return;
-      }
-      await tell({
-        title: 'That notebook has moved',
-        confirmLabel: 'OK',
-        body: (
-          <>
-            This PDF was exported from <strong>{source.path}</strong>, which is no longer there.
-            Open the notebook and export again, or annotate this PDF on its own — which makes a
-            separate file the notebook will not know about.
-          </>
-        ),
-      });
+  const handleOpenNotebookSource = useCallback(async (pdfPath: string, notebookPath: string) => {
+    const pdfName = pdfPath.slice(pdfPath.lastIndexOf('/') + 1);
+    const beside = joinVaultPath(parentVaultPath(pdfPath), ensureNotebookExt(stripPdfExt(pdfName)));
+    for (const candidate of [notebookPath, beside]) {
+      const node = collectFiles(fileTree).find(f => f.path === candidate && isNotebookFile(f.name));
+      if (!node) continue;
+      // Back to reading, so coming back to this tab shows the PDF rather than
+      // the hand-off message that sent you away from it.
+      setTabs(prev => prev.map(t => (t.file.path === pdfPath ? { ...t, mode: 'read' as const } : t)));
+      await handleFileClick(node);
       return;
     }
-
-    try {
-      // Adopt an existing annotated file rather than overwriting it.
-      let handle: FileSystemFileHandle;
-      try {
-        handle = await file.parentHandle.getFileHandle(targetName);
-      } catch {
-        const original = await readFileBytes(file.handle as FileSystemFileHandle);
-        const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
-        const bytes = await buildAnnotatedPdfAsync(original, '', []);
-        // createFile refreshes the tree, so the new file shows up right away.
-        handle = await createFile(file.parentHandle, targetName);
-        await writeFileBytes(handle, bytes);
-      }
-
-      const node: ActiveFile = {
-        name: targetName,
-        path: targetPath,
-        kind: 'file',
-        handle,
-        parentHandle: file.parentHandle,
-      };
-      setTabs(prev => prev.some(t => t.file.path === targetPath)
-        ? prev
-        : [...prev, { id: newTabId(), file: node, content: '', mode: 'edit', dirty: false }]);
-      setLayout(l => openTabIn(l, targetPath));
-      setMainView('editor');
-    } catch (err) {
-      console.error('Could not create the annotated PDF:', err);
-      alert(`Could not create "${targetName}".`);
-    }
-  }, [createFile, fileTree, handleFileClick, readFileBytes, tell, writeFileBytes, rootHandle]);
+    await tell({
+      title: 'That notebook has moved',
+      confirmLabel: 'OK',
+      body: (
+        <>
+          This PDF was exported from <strong>{notebookPath}</strong>, which is no longer there.
+          Open the notebook and export again — annotating this PDF instead would put marks in it
+          that the notebook could not see.
+        </>
+      ),
+    });
+  }, [fileTree, handleFileClick, tell]);
 
   /**
-   * Read `<vault>/.folders.json` when the vault opens.
+   * Read `<vault>/.appearance.json` when the vault opens.
    *
    * Once per vault, not once per tree walk: the walk runs after every save, and
    * a file read on that path would be a read per keystroke-triggered autosave
@@ -1074,11 +1015,12 @@ export default function App() {
     const snapshot = contentOverride ?? tab.content;
 
     try {
-      if (isAnnotatedPdf(tab.file.name)) {
-        // An annotated PDF's buffer is a tldraw snapshot; the file on disk is a
-        // real PDF. Rebuild it from the pristine original + the overlays the
-        // canvas parked for us. No render data yet means the canvas hasn't
-        // reported a change, so there is nothing to write.
+      if (isPdfFile(tab.file.name)) {
+        // An annotated PDF tab's buffer is a tldraw snapshot; the file on disk
+        // is a real PDF. Rebuild it from the pristine original + the overlays
+        // the canvas parked for us. No render data yet means the canvas has not
+        // reported a change — which is also every PDF only ever read, now that
+        // any of them can be annotated and none is told apart by its name.
         const data = getPdfRenderData(path);
         if (!data) return;
         // Off the main thread: stamping overlays costs ~150ms per annotated page
@@ -2132,7 +2074,7 @@ export default function App() {
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
             onFlushNow={flushTabNow}
-            onAnnotatePdf={handleAnnotatePdf}
+            onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}
             onOpenNote={openNoteByName}
             onNotify={notify}

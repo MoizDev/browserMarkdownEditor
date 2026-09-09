@@ -225,6 +225,12 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
   mirroring `paperSvg` by hand: `paper.ts` is in the main bundle and must stay free of pdf-lib.
 - Colours in `pdfBuild`'s ruling constants and `paper.ts`'s SVG are **two copies of one palette** —
   change both.
+- **An exported PDF carries a pointer back** (`NOTEBOOK_SOURCE_ATTACHMENT`, plus a human-readable
+  `Producer`), and `App.handleAnnotatePdf` follows it: pressing the pen on a notebook's export opens
+  the NOTEBOOK. Without that it fell into the ordinary PDF flow and forked a third file whose strokes
+  the notebook could neither see nor overwrite. Resolution is the stored path first, then a notebook
+  beside the PDF answering to its name (which covers renaming either); when neither resolves it says
+  so rather than silently forking. Told by CONTENT, never filename — the format's standing rule.
 
 # The pen panel, and chrome vs paper
 

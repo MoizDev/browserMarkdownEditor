@@ -7,6 +7,7 @@
 
 import { buildAnnotatedPdf, buildNotebookPdf } from './pdfBuild';
 import type { NotebookPaper } from './paper';
+import type { NotebookSource } from './pdfFormat';
 import type { PageOverlay } from './pdfOverlay';
 
 /** Stamping annotations back onto their source document. */
@@ -24,6 +25,9 @@ export interface NotebookBuildRequest {
     id: number;
     paper: NotebookPaper;
     overlays: Array<PageOverlay | undefined>;
+    /** The notebook this came from, stamped in so annotating the PDF can find
+     *  its way back. */
+    source?: NotebookSource;
 }
 
 export type PdfBuildRequest = AnnotateBuildRequest | NotebookBuildRequest;
@@ -36,7 +40,7 @@ self.onmessage = async (e: MessageEvent<PdfBuildRequest>) => {
     const { id } = e.data;
     try {
         const bytes = e.data.kind === 'notebook'
-            ? await buildNotebookPdf(e.data.paper, e.data.overlays)
+            ? await buildNotebookPdf(e.data.paper, e.data.overlays, e.data.source)
             : await buildAnnotatedPdf(e.data.original, e.data.snapshot, e.data.overlays);
         // Transfer rather than copy: the worker has no further use for these
         // bytes, and they can be megabytes.

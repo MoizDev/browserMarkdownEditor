@@ -61,6 +61,12 @@ function stripExt(name: string): string {
     return name.slice(0, -PDF_EXT.length);
 }
 
+/** "Assignment.pdf" -> "Assignment". Exported so the notebook a PDF came from
+ *  can be looked for beside it by name, when the stored path has gone stale. */
+export function stripPdfExt(name: string): string {
+    return isPdfFile(name) ? stripExt(name) : name;
+}
+
 /** "Assignment 3.notebook" -> "Assignment 3.pdf", the file Export writes. */
 export function notebookPdfName(name: string): string {
     return `${isNotebookFile(name) ? name.slice(0, -NOTEBOOK_EXT.length) : name}${PDF_EXT}`;

@@ -155,6 +155,10 @@ export interface TableFit {
     widthProbe: HTMLElement;
     /** Hidden text whose width changes iff the note's font metrics change. */
     fontProbe: HTMLElement;
+    /** The same, in KaTeX's TWO text faces — see createFitProbes. Their webfonts
+     *  arrive after first paint and are wider than the fallback, and nothing
+     *  else in this widget notices when they land. */
+    mathProbe: HTMLElement;
     table: HTMLTableElement;
     cols: HTMLTableColElement[];
     /** Inputs of the last fit, so a re-notification with nothing new is free. */
@@ -167,7 +171,7 @@ export interface TableFit {
     fitted: boolean;
 }
 
-/* Keyed by all three elements: a notification arrives on one of the probes and
+/* Keyed by all four elements: a notification arrives on one of the probes and
    has to find its table, and destroy() arrives with the container and has to
    release all of them. (The container itself is never observed — its entry
    exists only so release can start from it.) */
@@ -176,9 +180,9 @@ const tracked = new Map<Element, TableFit>();
 /**
  * ONE observer for every table in the session.
  *
- * It watches the two PROBES rather than the container, because the probes are
+ * It watches the three PROBES rather than the container, because the probes are
  * the fit's inputs: nothing the fitter writes — the table's type size, the
- * column percentages, a cell's wrapping — can change either one. Watching the
+ * column percentages, a cell's wrapping — can change any of them. Watching the
  * container instead would notify on its own height change after every single
  * fit. (The invariant is about the widget, not the whole page: a fit changes
  * the table's height, and on a platform whose scrollbars take layout space
@@ -232,10 +236,12 @@ export function observeTableFit(fit: TableFit): void {
     tracked.set(fit.container, fit);
     tracked.set(fit.widthProbe, fit);
     tracked.set(fit.fontProbe, fit);
+    tracked.set(fit.mathProbe, fit);
     // The initial callback these schedule is what performs the first fit —
     // delivered after layout but before paint, so nothing unfitted is shown.
     observer.observe(fit.widthProbe);
     observer.observe(fit.fontProbe);
+    observer.observe(fit.mathProbe);
 }
 
 /**
@@ -321,9 +327,11 @@ export function releaseTableFit(container: Element): void {
     if (!fit) return;
     observer.unobserve(fit.widthProbe);
     observer.unobserve(fit.fontProbe);
+    observer.unobserve(fit.mathProbe);
     tracked.delete(fit.container);
     tracked.delete(fit.widthProbe);
     tracked.delete(fit.fontProbe);
+    tracked.delete(fit.mathProbe);
 }
 
 /**
@@ -406,7 +414,20 @@ function applyFit(fit: TableFit): void {
     // against is the table's resting state rather than one of the measuring
     // widths below.
     const avail = fit.widthProbe.getBoundingClientRect().width;
-    const fontWidth = fit.fontProbe.getBoundingClientRect().width;
+    // TWO fonts move a table's fit: the note's, and KaTeX's — a formula in a
+    // cell is laid out in KaTeX's own faces, whose webfonts arrive after first
+    // paint and are wider than the fallback, so a math table fitted before they
+    // land stays fitted to the wrong metrics. Summed into ONE number so the
+    // `lastFont` gate below covers both without a second field; the two cannot
+    // plausibly change by exactly opposite amounts in the same frame (and the
+    // math probe carries an explicit family while inheriting its size, so a
+    // font-size setting moves both summands the same way).
+    // restoreFit does NOT screen for this — its `done.at.font` is the note's
+    // computed font shorthand, which KaTeX's webfonts landing does not move —
+    // but it adopts `done.font` (this sum) into `fit.lastFont`, so a cached fit
+    // measured before they landed simply misses that gate and re-fits.
+    const fontWidth = fit.fontProbe.getBoundingClientRect().width
+        + fit.mathProbe.getBoundingClientRect().width;
     const heightBefore = container.getBoundingClientRect().height;
     // A pane with no layout yet — or one that has been hidden — measures zero.
     // Keep whatever fit the table already has and wait to be shown.
@@ -584,7 +605,7 @@ function applyFit(fit: TableFit): void {
 }
 
 /** The hidden sensors a fitted table carries; see TableFit. */
-export function createFitProbes(): { probe: HTMLElement; fontProbe: HTMLElement } {
+export function createFitProbes(): { probe: HTMLElement; fontProbe: HTMLElement; mathProbe: HTMLElement } {
     const probe = document.createElement('div');
     probe.className = 'cm-table-probe';
     probe.setAttribute('aria-hidden', 'true');
@@ -593,5 +614,41 @@ export function createFitProbes(): { probe: HTMLElement; fontProbe: HTMLElement 
     fontProbe.textContent = FONT_PROBE_TEXT;
     probe.appendChild(fontProbe);
 
-    return { probe, fontProbe };
+    // The same sample in KaTeX's own fonts. Until they are loaded this measures
+    // the serif fallback, so the moment a webfont lands the probe changes width
+    // and the ordinary re-fit path runs — which is the only way a table holding
+    // maths learns that its columns are now too narrow.
+    //
+    // TWO faces, because KaTeX_Main alone is blind to the one that actually
+    // sets most formulas' width: a maths VARIABLE renders in KaTeX_Math-Italic,
+    // not KaTeX_Main. Measured with only KaTeX_Math delayed, an all-variable
+    // formula grew 26.7px after its font landed while both probes — and so the
+    // fitted column percentages — never moved. They are separate inner spans
+    // rather than one italic probe so the sensor still sees KaTeX_Main too; the
+    // outer span's width is their sum, and one observation covers both.
+    //
+    // TWO, not all of them, and that is a KNOWN LIMIT rather than a claim of
+    // coverage. KaTeX also lays out big operators and stretchy delimiters in
+    // KaTeX_Size1–4, `\mathbb`/`\mathfrak` in KaTeX_AMS and `\mathtt` in
+    // KaTeX_Typewriter; a formula made of those can still grow after its face
+    // lands with no probe moving. Adding them here would not help much either:
+    // FONT_PROBE_TEXT is letters and digits, and the Size faces carry no Latin
+    // glyphs at all, so such a probe would measure the fallback forever and
+    // sense nothing. The faces are bundled locally, so in practice they land in
+    // the same frame as these two or come from cache. Left as is — with the
+    // cell scroller below, the residue is a clipped formula rather than one
+    // overlapping its neighbour.
+    const mathProbe = document.createElement('span');
+    for (const family of ["'KaTeX_Main', serif", "'KaTeX_Math', serif"]) {
+        const face = document.createElement('span');
+        face.textContent = FONT_PROBE_TEXT;
+        face.style.fontFamily = family;
+        // KaTeX_Math ships only italic faces; upright would resolve to the
+        // fallback and sense nothing.
+        if (family.includes('Math')) face.style.fontStyle = 'italic';
+        mathProbe.appendChild(face);
+    }
+    probe.appendChild(mathProbe);
+
+    return { probe, fontProbe, mathProbe };
 }

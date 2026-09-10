@@ -30,12 +30,29 @@ Each step below exists because skipping it produces a *working change that looks
 5. **Press `⌘E` before testing anything about the caret, typing, or cell editing.** Files open in
    Reading mode by default, where nothing is editable.
 
-6. **Selectors:** the editor is `.cm-content` inside `.cm-scroller`. Chromium only, by design.
+6. **Selectors:** the editor is `.cm-content` inside `.cm-scroller`. Chromium only, by design. On the
+   welcome screen the only control is a button reading **Open Vault**; `aria-label="Open another
+   vault"` exists only once a vault is already open, and `.vault-menu-row` only inside that menu.
 
-7. **`await document.fonts.ready` before asserting a column width.** Google Fonts is the app's one
-   outbound request and a font arriving late re-triggers the table fit.
+7. **A reload with a vault open CRASHES headless Chromium** (both `chromium` and
+   `chrome-headless-shell`, Playwright 1.63): reading the OPFS handle back out of IndexedDB kills the
+   renderer *and* the browser with no crash log. It is an OPFS limitation, not an app bug — but it
+   means the stock recipe cannot test reload, restore-on-load, or anything with two vaults. The
+   trigger is narrower than "a reload": it is any READ of a stored handle, so the **second** vault
+   you open dies inside `rememberVault`'s `isSameEntry` sweep over the list (the first is fine —
+   `readList` returns `[]`, so nothing is deserialized). Work around it by `page.route`-intercepting
+   the `idb-keyval` module with a localStorage shim that stores `{__handle: name}` and re-resolves it
+   from the OPFS root — **pack/unpack recursively**, because `recent-vaults` is an array of objects
+   each holding a handle, not a bare handle — or by deleting the `keyval-store` database before the
+   reload and re-opening through the picker. Say which you did: the shim means the real
+   structured-clone path went unexercised.
 
-8. **Suppressed browser menus are asserted, not screenshotted.** To check the app's own context menu
+8. **`await document.fonts.ready` before asserting a column width.** Two fonts re-trigger the table
+   fit when they land, and only one of them is a request you could watch for: Google Fonts is the
+   app's one outbound request, but **KaTeX's faces are bundled locally** and a table holding maths
+   re-fits when they arrive too (`tableFit`'s `mathProbe`). Offline is not an exemption.
+
+9. **Suppressed browser menus are asserted, not screenshotted.** To check the app's own context menu
    replaced the browser's, assert `defaultPrevented` on the `contextmenu` event — the OS menu never
    appears in a screenshot either way.
 

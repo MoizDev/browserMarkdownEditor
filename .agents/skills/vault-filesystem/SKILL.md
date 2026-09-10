@@ -224,7 +224,11 @@ raising the setting later still has history to show.
   workspace. That is the intended reading of "forget". Only the **session** is actually deleted
   (`pruneSessions`, off the recent list, by an effect in `App`); the two path-keyed position records
   are never pruned, so their scoped entries merely become unreachable — and scoping multiplies their
-  growth by the number of vaults, which the "never pruned" decision in AGENTS.md predates.
+  growth by the number of vaults, which the "never pruned" decision in AGENTS.md predates. Scoping
+  also orphaned every entry written **before** it, once, on the first load of the build that added
+  it: those are keyed by the bare path and nothing reads them now. Deliberately not migrated — the
+  only vault they could be filed under is whichever opens first, and misattributing another vault's
+  offsets is worse than one reset.
 - **The open vault's row shows no minus**: every load re-records it (`recordVault`), so removing it
   would grow back before the user looked again. `.vault-menu-row` is a two-column grid, so that row
   and "Open folder…" keep every label on one x without a placeholder element to hold the gap.

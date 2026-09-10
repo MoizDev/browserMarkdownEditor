@@ -73,7 +73,9 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   string, because the layout's identity already moves only when the tab bar does.
 - **A forgotten vault's session is pruned** (`pruneSessions` off `recentVaults`), because
   `forgetVault` means the folder mints a fresh id if it is ever opened again. Nothing prunes by
-  staleness — the same call `fileScrollPositions` makes.
+  staleness — the same call `fileScrollPositions` makes. The effect gates on "has the list ever
+  loaded" (a ref), **not** on `recentVaults.length === 0`: forgetting the last removable row is a
+  real transition to zero, and an emptiness test silently skipped it.
 
 ## Switching vaults empties the workspace but no longer loses it
 
@@ -94,9 +96,22 @@ Neither ref alone is enough, because of two real orderings:
   `recordVault`, so there is a commit where the tree is the NEW vault's and `currentVaultId` is
   still the OLD one. Restoring there would open the old vault's paths out of the new vault's tree.
   Requiring *both* refs to differ makes the pass wait for that commit to pass.
-- The persist effect is declared **before** the switch effect, so on the switch commit it runs
-  first, with the outgoing layout — and would file it under the incoming id. Requiring both refs to
-  *match* makes it skip until the incoming vault's restore has run.
+- On the switch commit the persist effect runs with the outgoing layout, and a commit later with
+  the empty one the switch installs; requiring both refs to *match* makes it skip until the incoming
+  vault's restore has run. What closes that is the **`sessionRootRef.current = null` in the switch
+  effect**, not declaration order — the ref holds the outgoing handle before that line and `null`
+  after, and neither can equal the incoming `rootHandle`. Do not "simplify" that assignment away:
+  `rootHandle` is compared by object identity and the vault menu re-mints handles, so without it
+  coming back to a vault by the same menu row filed the EMPTY layout under its id.
+
+**The switch effect re-points `sessionVaultIdRef` at the vault being LEFT** (it does not clear it —
+that would let the pass claim on the mid-switch commit, where `currentVaultId` is still the outgoing
+one). Leaving it on the last *claim* instead is not equivalent, because a vault can set
+`currentVaultId` and never claim: the pass returns on an empty `fileTree`, and an **empty folder** is
+indistinguishable from a tree that has not landed. Measured — vault R with three tabs → an empty
+folder → back to R — the pass then claimed R's handle against the empty vault's id, so the commit
+carrying R's own id failed the handle test: **R's tabs never came back and nothing R did afterwards
+was persisted for the rest of the page load.**
 
 **`if (!currentVaultId) return;` must stay ABOVE the ref claim.** `currentVaultId` starts `null` and
 is never reset to `null` on a switch, so the only way it is falsy is "`recordVault` has not finished

@@ -89,10 +89,11 @@ and use it before saying a change works.
   unreachable by design, never revealed by the cursor, and the range is atomic. The file on disk
   stays ordinary markdown — "the reader never sees the source" is the requirement.
 - **The app draws its own context menu and its own `confirm()`; prefer them to native dialogs.**
-- **Exactly one place in the app turns note text into DOM `innerHTML`** — the table cell renderer's
-  attribute-free allowlist, and since maths landed in cells its one *write site* (`renderCellContent`;
-  KaTeX splices in built DOM, never a string). This origin holds the vault's directory handle with
-  permission already granted, so a hole is read/write over the whole vault. Do not open a second sink.
+- **TWO places turn note text into DOM `innerHTML`, safe for different reasons** — `tableWidget`'s
+  `renderCellContent` (attribute-free allowlist; one sink AND one write site, KaTeX splices in built
+  DOM, never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'`
+  DOMPurify pass). This origin holds the vault's handle with permission granted, so a hole is
+  read/write over the whole vault. Do not open a third.
 - **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
   (`utils/graph.ts`, `utils/vaultSearch.ts`) and holds one file's text at a time. Both run after
   *every* save — an uncached walk is a full vault read per keystroke-triggered autosave.
@@ -125,8 +126,7 @@ and use it before saying a change works.
   re-rendering while the user types — never thread a per-save/menu/search/icon/create value through.
 - **The two path-keyed position records** (`fileScrollPositions`, `pdfViewPositions`) are held parsed
   in memory via `readRecord`/`flushRecord` in `utils/storage.ts`, keyed by its `scopedKey` — two
-  vaults share paths freely. Never pruned (capping by recency was **rejected**: it drops the position
-  of a file returned to later), so scoping grows them per vault × path.
+  vaults share paths freely. Never pruned (recency capping was **rejected**), so they grow per vault.
 - **Settings → CSS variables.** Appearance state persists to `localStorage` and is applied by setting
   CSS variables on `document.documentElement`. Two are not variables: **Tab size** (a CodeMirror
   compartment) and **Recent vaults shown** (a plain prop); both are clamped on read, since

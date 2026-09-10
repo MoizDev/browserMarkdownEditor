@@ -2662,10 +2662,16 @@ body.is-resizing-panes * {
 }
 
 /* The fitter's sensors: this box's WIDTH is the available text width, and the
-   hidden text inside it changes width iff the note's font metrics do. Both are
-   watched by one ResizeObserver, and neither is affected by anything the
-   fitter does — so applying a fit can't re-trigger one. Zero height and
-   clipped, so they occupy nothing and can't be selected, found or copied. */
+   hidden text spans inside it change width iff the note's — or KaTeX's — font
+   metrics do. All are watched by one ResizeObserver, and none is affected by
+   anything the fitter does — so applying a fit can't re-trigger one. Zero
+   height and clipped, so they occupy nothing and can't be selected, found or
+   copied.
+
+   The selector below is a DESCENDANT one on purpose: the math probe is a span
+   of spans (see tableFit's createFitProbes), and `inline-block` on every level
+   is what makes the outer one's width the sum of its faces — a `> span` here
+   would silently stop the sensing. */
 .cm-table-probe {
   height: 0;
   overflow: hidden;
@@ -2775,6 +2781,31 @@ body.is-resizing-panes * {
    floor, which is right: a wrapped formula is not a formula. */
 .cm-table-math {
   white-space: nowrap;
+}
+
+/* `white-space` alone does NOT deliver that, because KaTeX breaks a top-level
+   `\\` STRUCTURALLY: it emits `<span class="mspace newline">` and katex.css
+   makes `.katex .katex-html > .newline { display: block }`, which no
+   white-space value on an ancestor can override. `displayMode: false` is not a
+   way out either — katex's `cr` handler sets `newLine = !displayMode || …`, so
+   in the mode a cell uses it is unconditionally true. Measured on a two-row
+   table: a cell holding `$p \\ q$` rendered on two lines and its row came out
+   65.8px against the plain row's 39.4px — so "a formula is one atom" and "rows
+   holding a formula stay the height plain rows are" were both false for the one
+   construction helpDoc used to tell people to write.
+
+   Restated back to `inline` rather than `none`: the break is dropped, not the
+   glyphs around it. Only a TOP-LEVEL break carries this class — the `\\`
+   inside `aligned`, `matrix` or `array` is the environment's own row separator
+   and lays out through the table path, untouched here.
+
+   `.cm-table-widget` is on the front to out-SPECIFY katex.css, not to scope:
+   its rule is also (0,3,0), and `katex/dist/katex.min.css` is imported from
+   EditorPane while this file is imported from main.tsx — so KaTeX's sheet is
+   injected LAST and wins every tie. Measured without the extra class: computed
+   `display` stayed `block`. */
+.cm-table-widget .cm-table-math .katex-html > .newline {
+  display: inline;
 }
 
 /* …and the other half of that floor: what happens when the column does not get

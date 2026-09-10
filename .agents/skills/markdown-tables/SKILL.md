@@ -265,11 +265,94 @@ something has to decide.
   escapes everything except a fixed set of attribute-free inline tags (`br`, `b`, `i`, `code`, `kbd`,
   `sub`, `sup`, …), re-emitted from the pattern's own alternation rather than copied out of the
   input — so no untrusted markup is ever parsed and no attribute is ever emitted. **This is the only
-  place in the app where note text reaches the DOM as HTML**, and this origin holds the vault's
-  directory handle in IndexedDB with permission already granted, so a note carrying
-  `<img src=x onerror=…>` would get read/write over the whole vault the moment it was opened.
+  place in the app where note text reaches the DOM as HTML by this repo's own code** — the one other
+  sink is `mermaidWidget.renderInto`, which rests on mermaid's `securityLevel: 'strict'` DOMPurify
+  pass instead of on an allowlist. This origin holds the vault's directory handle in IndexedDB with
+  permission already granted, so a note carrying `<img src=x onerror=…>` would get read/write over
+  the whole vault the moment it was opened.
   `<br>` is in because it is the only way to break a line inside a cell; `<a href>` and `<img src>`
   are out because they need attributes. Side benefit: `Type<T>` renders instead of being swallowed.
+- **`renderCellContent(cell, text)` is that sink's ONE write site** — it used to be three
+  (`buildRow`, `restoreRenderedCell`, `updateDOM`'s per-cell diff, each doing its own
+  `cell.innerHTML = renderInlineMarkdown(...)`). They all call it now, and the single
+  `CELL_PARSER.innerHTML = renderInlineMarkdown(masked)` inside it is the only assignment left.
+  Collapsing them is what made maths in a cell safe to add; don't reopen a second one.
+- **Maths is MASKED out of the cell before the allowlist runs, and spliced back in as DOM.** The
+  order matters in both directions: on the way in, `$a_1 + b_2$` came back with its subscripts eaten
+  by the `_(.+?)_` italic rule — the old behaviour was not "maths didn't render", it MANGLED it; on
+  the way out, KaTeX's output is markup the allowlist would rightly escape into visible tag text.
+  So: strip the two sentinels from the cell text, `findMathRegions` over it, replace each region
+  with `\uE000<index>\uE001` (Private Use Area, written as escapes), run the **unmodified** allowlist
+  over the masked string, parse once into the shared module-level `<template>` (`CELL_PARSER` —
+  appending `.content` empties it, so a table re-dressing every cell allocates no template per cell),
+  then walk the fragment's text nodes and `splitText`/`replaceWith` each slot for a
+  `<span class="cm-table-math">` filled by `renderMath`.
+  - **Masked, not split at the math boundaries.** Running `renderInlineMarkdown` over the pieces
+    would break emphasis that spans a formula: `**bold $x$ end**` would lose its bold and show the
+    literal asterisks, because neither piece holds a matched pair. The emphasis rules must see the
+    whole cell, with each formula standing in as one inert token.
+  - **The inline-code ranges fed to `findMathRegions` use the SAME `` /`(.+?)`/g `` the allowlist
+    uses**, so both agree what is code and a `$` inside backticks stays literal.
+  - **Sentinel forgery is possible and is handled at the LOOKUP, not the strip.** Stripping the cell
+    text is not enough: `escapeText` leaves `&` alone by design, so `&#xE000;9&#xE001;` survives
+    every string stage and the HTML parser decodes it into real sentinels inside the text node
+    `fillMathSlots` walks. Measured — such a cell beside any real formula threw `undefined.latex` out
+    of `toDOM`, React unmounted and **`#root` was left empty on every open of the note**; the
+    in-range `&#xE000;0&#xE001;` rendered region 0 twice, doubling `cell.textContent`. So `MATH_SLOT`
+    matches a lone sentinel too, and a token naming no region — or one already in `used` — is
+    **deleted**. Escaping `&` is not the fix; it breaks the cell that means to show `&lt;br&gt;`.
+  - **The parse container must be an ordinary element, not a `<template>`.** Fragment parsing takes
+    its insertion mode from the context element; `<template>` parses "in template", which *ignores*
+    a stray `</br>` that `<td>` (and a `<div>`) turn into `<br>`. `CELL_HTML` admits `</br>` on
+    purpose, so a `<template>` silently rendered `one</br>two` as `onetwo`. Measured across all
+    thirteen allowlisted tags, open and close: that is the only divergence.
+  - **Holders are collected in full before any split** — `splitText` mutates the tree the
+    `TreeWalker` is walking and the walker's position does not survive its current node being split.
+  - **`katex.render` is a DOM builder, not a sink**: it builds with `createElement`/`createTextNode`,
+    so no note text is ever parsed as markup. And it is synchronous, which is required — `updateDOM`
+    may not go async. Don't lazy-import KaTeX in this path.
+  - **`output: 'html'` is load-bearing here**, not just cosmetic: MathML would put every formula in
+    `cell.textContent` TWICE, and `tableEdit`'s caret arithmetic, its copy path and `beginCellEdit`'s
+    "does the rendered text differ from the raw source" guard all read that. Its price is that
+    KaTeX's tree is entirely `aria-hidden` with no MathML beside it, so the span carries
+    `role="math"` + `aria-label` of the LaTeX source — without it a maths cell is announced as
+    **empty**, where before the change it at least read out its `$…$`.
+  - **`displayMode: false` even for `$$…$$`.** A cell is one line; `.katex-display`'s
+    `display:block; margin:1em 0; text-align:center` would break the row and the fitter's height
+    accounting. Deliberate divergence from Obsidian.
+  - Clicking a maths cell lands the caret at the **end** of it, because `beginCellEdit`'s
+    `textContent !== raw` guard now always fires there — exactly as it already did for `**bold**`.
+    Expected; do not "fix" it by weakening the guard.
+  - CSS: `.cm-table-math { white-space: nowrap }` (a formula is one atom — `.katex .base` says it per
+    base, this says it for the whole span; the fitter reads it through min-content as the column's
+    floor) **plus `.cm-table-widget .cm-table-math .katex-html > .newline { display: inline }`,
+    without which nowrap does not deliver it**: KaTeX breaks a top-level `\\` *structurally*, as a
+    `.newline` span that katex.css makes `display: block`, and `displayMode: false` makes that
+    unconditional rather than avoiding it. Measured, `$p \\ q$` in a cell rendered on two lines in a
+    65.8px row against a plain row's 39.4px. The leading `.cm-table-widget` is for SPECIFICITY —
+    katex.css is imported from `EditorPane` and so wins every tie against `index.css`. Environment
+    row separators (`matrix`, `aligned`) carry no `.newline` and are untouched: verified. And the SVG exemption `.cm-table-widget .cm-table-math svg { max-width: none; height:
+    inherit }` — `\sqrt` surds and stretchy delimiters are inline `<svg>`, which the widget's
+    `img, svg, video { height: auto }` cap would collapse. It **restates** `katex.css`'s own
+    `.katex svg { height: inherit }` rather than using `revert`, which would roll back the whole
+    author origin — KaTeX's rule included — and land on the UA's `auto`, the value being escaped.
+    And **the CELL holding a formula scrolls**, `th:has(.cm-table-math), td:has(.cm-table-math) {
+    overflow-x: auto }`: the nowrap raises the column's min-content floor, but `COMFORT_EM` caps what
+    a column may demand and `overflow-wrap: break-word` (the fitter's per-column last resort) cannot
+    touch an unbreakable formula, so an over-wide one **overhung its neighbour** — measured on a
+    five-column table, 18.9px past the cell at 1400px and 62.4px at 520px, with the rendered bands
+    differing pixel-for-pixel, i.e. real ink on the next column's prose. Scoped by `:has()` so
+    ordinary cells and a cell being edited (raw source, no `.cm-table-math`) are untouched. Do NOT
+    instead scroll the formula's own span (`display:inline-block; max-width:100%; overflow-x:auto`):
+    an inline-block baselines at its bottom margin edge, not its text's, so every formula would sit
+    off the text beside it and grow its row — and `vertical-align: bottom` does not recover a formula
+    taller than the line box. Cell scrolling costs nothing: measured, a formula's rect and the rect
+    of the text node beside it in the same cell are identical, math rows keep plain-row height, and
+    the fitter's per-column min-content/max-content are unchanged by the rule.
+    **Known cost:** an over-wide formula is then CLIPPED with no affordance on overlay-scrollbar
+    platforms (13–22px lost, measured at 820px). The fitter declined to shrink because `COMFORT_EM`
+    capped the column's demand below its true `tight` width — arguably an unbreakable column should
+    be exempt from that cap in `wordsWhole`. Deliberately NOT changed here; it is a fitter decision.
 - **Two structural facts the chips depend on and the fit must survive.** `.cm-table-widget` is
   `position: relative`, because `contain: inline-size` is **size** containment only and does not
   establish a containing block: measured without it, a chip at `top: 2px` escaped to `.cm-content`
@@ -277,16 +360,30 @@ something has to decide.
   And **both chips sit fully inside the box**, never at a negative offset, which made the widget
   scrollable back when the overflow was still on it. The chips are out of flow and the width probe is
   still the container's **direct first child**.
-- **Re-fitting is driven by two probes inside the widget** — a zero-height block whose width *is* the
-  available text width, and hidden text (normally sized, clipped by that box) whose width changes iff
-  the note's font metrics do — watched by one shared `ResizeObserver`. They are the fit's INPUTS and
+- **Re-fitting is driven by three probes inside the widget** — a zero-height block whose width *is*
+  the available text width, hidden text (normally sized, clipped by that box) whose width changes iff
+  the note's font metrics do, and a third hidden span holding the sample **twice — in `KaTeX_Main`
+  and in italic `KaTeX_Math`** — whose width moves when either of KaTeX's text webfonts lands (until
+  then it measures the serif fallback). Do NOT collapse those two into one: a maths *variable*
+  renders in KaTeX_Math-Italic, and with only KaTeX_Main sensed an all-variable formula grew 26.7px
+  after its font landed with no probe moving. The Size/AMS/Typewriter faces are still unsensed and
+  that is a known limit, not coverage — `FONT_PROBE_TEXT` is letters and digits, which the Size faces
+  do not even contain. All three probes are watched by one shared `ResizeObserver`, and the last two
+  are **summed into the single `fontWidth`**, so the `lastFont` gate covers both without a second
+  field. (`restoreFit` does not
+  screen for it — its `done.at.font` is the note's computed font shorthand, which KaTeX's webfonts
+  landing does not move — but it adopts the sum into `fit.lastFont`, so a pre-webfont cached fit
+  misses that gate and re-fits.) Without that third probe a table holding maths stays
+  fitted to pre-webfont metrics: nothing else in the widget notices KaTeX's fonts arriving. It is
+  created for every table, math-free ones included — one extra fit pass, and the font is bundled
+  locally. They are the fit's INPUTS and
   nothing the fitter writes changes either, so a fit can't re-trigger one from inside the widget;
   watching the container instead would notify on its own height change every time. That invariant
   stops at the widget's edge: a fit changes the table's height, and where scrollbars take layout
   space that can toggle the editor's own, moving `.cm-content`'s *percentage* padding. Chromium
   bounds that at a round per frame and it hasn't been observed on overlay-scrollbar platforms — don't
   restate the claim more broadly. Between them the probes cover window and sidebar resizes, the
-  Text-width and font-size settings, and a Google Font arriving late.
+  Text-width and font-size settings, and a Google Font — or a KaTeX font — arriving late.
 - **A fit must not change the table's height after CodeMirror has measured it**, and three things
   cooperate. Resize observations arrive *after* the frame in which CM measures, so a table laid out
   at its natural size and fitted a moment later leaves CM's height map — and the caret the selection

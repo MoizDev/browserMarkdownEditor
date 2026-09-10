@@ -471,7 +471,8 @@ function isPathMatrix(value: unknown): value is string[][] {
 }
 
 /** The per-group focused pane, stored alongside the grouping rather than inside
- *  it so `openTabGroups` keeps the exact shape every build has written. */
+ *  it so a session's `groups` keeps the plain string[][] shape it has always
+ *  had (see StoredSession in utils/tabSessions.ts). */
 function isStringList(value: unknown): value is string[] {
     return Array.isArray(value) && value.every(p => typeof p === 'string');
 }

@@ -72,7 +72,22 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   highlighting, and the **app-wide `$` pairing + in-math `{ ( [` auto-pairing**
   (`mathEditingExtensions`). It is registered **before** `closeBrackets` so LaTeX gets first claim on
   `$ { ( [`.
-- Widgets are `WidgetType` subclasses: `MathWidget` (KaTeX; normalizes
+- `mathWidget.ts` holds **the app's one KaTeX call**, `renderMath(el, latex, displayMode)`, and it is
+  **exported** — the table cell renderer needs the same options, and a second copy of them is the
+  "three things exist twice" hazard in miniature. `normalizeForKatex` stays module-private.
+  `output: 'html'` is not cosmetic: it suppresses the parallel MathML layer, so `el.textContent`
+  holds the visible glyphs once — which a table cell's caret arithmetic depends on (and costs the
+  MathML an `aria-hidden` tree would otherwise have provided, which is why the cell labels its span).
+  Two options are load-bearing **by absence**: `trust` stays falsy, which is the only thing turning
+  `\href`/`\url`/`\includegraphics`/`\html*` into inert text rather than note-authored ATTRIBUTES
+  one call from the innerHTML sink; and `maxSize` stays Infinity, so `$\rule{9999em}{9999em}$` in a
+  cell measured a 193,601px row — the one way note text can still break "a cell is one line".
+- **Math inside a table span is drawn by the table, not by a `MathWidget`.** The pass builds one for
+  it anyway and `@codemirror/state`'s `SpanCursor` silently drops it (the outer table
+  `Decoration.replace` wins), which is why a cell used to show `$x^2$` as text. `tableWidget.ts`'s
+  `renderCellContent` now calls `renderMath` itself, at `displayMode: false` even for `$$…$$` — see
+  the `markdown-tables` skill. The deliberate absence of a math guard on the table pass is unchanged.
+- Widgets are `WidgetType` subclasses: `MathWidget` (KaTeX via `renderMath`; `normalizeForKatex` maps
   `\begin{equation|align|gather}` onto KaTeX-supported forms), `MermaidWidget` (async render but sync
   DOM → SVG cached by `theme+source`, bounded; a `MutationObserver` re-renders on theme flip),
   `TableWidget`, `ImageWidget` (async `getAssetUrl`; the only one that is interactive and updates in

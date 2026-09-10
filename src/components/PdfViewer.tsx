@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { readRecord, flushRecord } from '../utils/storage';
+import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
 
@@ -157,8 +157,10 @@ interface PinchGesture {
 
 function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     // Read once per mount: where this file was last left, and at what zoom.
+    // Keyed by vault as well as path — two vaults can both hold `refs/spec.pdf`
+    // and page 47 of one is nowhere in the other (see utils/storage.ts).
     const [saved] = useState<PdfViewPos | undefined>(
-        () => readRecord<PdfViewPos>(STORAGE_KEY)[filePath]
+        () => readRecord<PdfViewPos>(STORAGE_KEY)[scopedKey(filePath)]
     );
     const [zoom, setZoom] = useState<number>(() => clampZoom(saved?.zoom ?? 1));
     const [docState, setDocState] = useState<DocState | null>(null);
@@ -206,7 +208,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         // The record is held parsed in memory — mutate and write, no re-parse.
         const all = readRecord<PdfViewPos>(STORAGE_KEY);
         const { page, offset } = currentPosRef.current;
-        all[filePath] = { page, offset: Math.round(offset * 1000) / 1000, zoom: zoomRef.current };
+        all[scopedKey(filePath)] = { page, offset: Math.round(offset * 1000) / 1000, zoom: zoomRef.current };
         flushRecord(STORAGE_KEY);
     }, [filePath]);
 

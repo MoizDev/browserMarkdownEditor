@@ -18,7 +18,7 @@ import { mathEditingExtensions } from '../editor/latexSource';
 import { revealHighlightField, setRevealHighlight } from '../editor/revealHighlight';
 import { insertTableAtCursor } from '../editor/tableEdit';
 import { useFileSystem } from '../context/FileSystemContext';
-import { readRecord, flushRecord } from '../utils/storage';
+import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
@@ -45,7 +45,12 @@ const SCROLL_POSITIONS_KEY = 'fileScrollPositions';
    is open at most once, so at most one pane is ever scrolling it.
 
    `pending` is remembered rather than re-read because by the time an unmount
-   runs the scroller is detached and reports 0. */
+   runs the scroller is detached and reports 0.
+
+   The in-memory map stays keyed by the BARE path — it lives for one session,
+   inside one vault. Only the stored record is `scopedKey`'d, because it
+   outlives the switch and `Notes/index.md` names a different file in every
+   vault (see utils/storage.ts). */
 const scrollDebounce = new Map<string, { timer: ReturnType<typeof setTimeout> | null; pending: number | null }>();
 
 function scrollSlot(path: string) {
@@ -61,7 +66,7 @@ function flushScroll(path: string): void {
     if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
     if (slot.pending !== null) {
         // Held parsed in memory — mutate and write, no full re-parse per tick.
-        readRecord<number>(SCROLL_POSITIONS_KEY)[path] = slot.pending;
+        readRecord<number>(SCROLL_POSITIONS_KEY)[scopedKey(path)] = slot.pending;
         flushRecord(SCROLL_POSITIONS_KEY);
         slot.pending = null;
     }
@@ -535,7 +540,7 @@ function DocumentPane({
         // Restore where this file was left. Scheduled from the callback ref,
         // which runs BEFORE effects — so the reveal effect below, whose own
         // frame is scheduled after this one, still lands last and wins.
-        const savedScrollTop = readRecord<number>(SCROLL_POSITIONS_KEY)[path];
+        const savedScrollTop = readRecord<number>(SCROLL_POSITIONS_KEY)[scopedKey(path)];
         requestAnimationFrame(() => {
             if (viewRef.current === view) view.scrollDOM.scrollTop = savedScrollTop ?? 0;
         });

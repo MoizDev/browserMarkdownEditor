@@ -76,7 +76,12 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   **exported** — the table cell renderer needs the same options, and a second copy of them is the
   "three things exist twice" hazard in miniature. `normalizeForKatex` stays module-private.
   `output: 'html'` is not cosmetic: it suppresses the parallel MathML layer, so `el.textContent`
-  holds the visible glyphs once — which a table cell's caret arithmetic depends on.
+  holds the visible glyphs once — which a table cell's caret arithmetic depends on (and costs the
+  MathML an `aria-hidden` tree would otherwise have provided, which is why the cell labels its span).
+  Two options are load-bearing **by absence**: `trust` stays falsy, which is the only thing turning
+  `\href`/`\url`/`\includegraphics`/`\html*` into inert text rather than note-authored ATTRIBUTES
+  one call from the innerHTML sink; and `maxSize` stays Infinity, so `$\rule{9999em}{9999em}$` in a
+  cell measured a 193,601px row — the one way note text can still break "a cell is one line".
 - **Math inside a table span is drawn by the table, not by a `MathWidget`.** The pass builds one for
   it anyway and `@codemirror/state`'s `SpanCursor` silently drops it (the outer table
   `Decoration.replace` wins), which is why a cell used to show `$x^2$` as text. `tableWidget.ts`'s

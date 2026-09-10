@@ -50,11 +50,16 @@ export function readRecord<T>(key: string): Record<string, T> {
         const stored = readJSON<unknown>(key, {});
         // readJSON only falls back when the JSON is unparseable. localStorage is
         // user-editable, so `"hello"`, `42` and `[1,2,3]` all parse fine and
-        // then reach callers that MUTATE the result: `delete record[id]` on a
-        // String object throws in strict mode, and every caller of this is
-        // inside a React effect, so that threw before the first paint and left
-        // an empty #root that no reload could clear (the bad value is still
-        // there). A record is an object and not an array, or it is nothing.
+        // then reach callers that MUTATE the result. Measured on the three:
+        // `record[key] = value` throws TypeError on a primitive in strict mode
+        // (which every module here is), taking out whichever handler was
+        // writing — a scroll flush, a PDF position, a session write; the ARRAY
+        // throws nothing at all and is the quieter bug, since the assignment
+        // succeeds and JSON.stringify then silently drops the entry, so
+        // positions look saved and never come back. `delete` is innocent on all
+        // three (a missing property on a boxed primitive is a no-op), so the
+        // assignments are what this guard is for. A record is an object and not
+        // an array, or it is nothing.
         record = stored && typeof stored === 'object' && !Array.isArray(stored)
             ? stored as Record<string, unknown>
             : {};
@@ -80,9 +85,28 @@ export function flushRecord(key: string): boolean {
    Everything else in the app drops its per-vault caches on a switch
    (clearLinkCache, the search cache, the object-URL registry); these records
    deliberately OUTLIVE the session instead, so they carry the vault in the key
-   rather than being cleared. A vault whose id could not be recorded degrades to
-   the bare path — which is exactly what every entry written before this looked
-   like. */
+   rather than being cleared.
+
+   Two costs, both accepted rather than overlooked:
+
+   · Every entry written BEFORE this scoping is keyed by the bare path, and
+     nothing reads those any more — so the first load of a build with this in it
+     drops every remembered scroll offset and PDF page, once, and leaves the
+     dead entries behind (nothing prunes these). Not migrated on purpose: the
+     only vault they could be attributed to is whichever one happens to open
+     first, and filing another vault's offsets under it would be a new bug in
+     place of a one-time reset.
+
+   · The bare-path fallback below is NOT the failure mode it looks like.
+     `currentVaultId` is assigned in exactly one place (FileSystemContext's
+     recordVault) and is never reset to null, so "no id" only ever means "the
+     first vault of this page load has not been recorded yet". A LATER vault
+     whose recordVault throws leaves the scope pointing at the vault before it,
+     not at the bare path, and files its positions there — the collision this
+     scoping exists to prevent, arriving through the one path that cannot be
+     gated from here. Nulling the id in that catch would fix it and clear the
+     address bar mid-open (see App's URL writer, which reads exactly that), so
+     it is left as the rarer of the two. */
 
 let recordScope = '';
 

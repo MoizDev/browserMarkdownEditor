@@ -155,9 +155,9 @@ export interface TableFit {
     widthProbe: HTMLElement;
     /** Hidden text whose width changes iff the note's font metrics change. */
     fontProbe: HTMLElement;
-    /** The same, in KaTeX_Main — the font a formula in a cell is laid out in.
-     *  Its webfonts arrive after first paint and are wider than the fallback,
-     *  and nothing else in this widget notices when they land. */
+    /** The same, in KaTeX's TWO text faces — see createFitProbes. Their webfonts
+     *  arrive after first paint and are wider than the fallback, and nothing
+     *  else in this widget notices when they land. */
     mathProbe: HTMLElement;
     table: HTMLTableElement;
     cols: HTMLTableColElement[];
@@ -180,9 +180,9 @@ const tracked = new Map<Element, TableFit>();
 /**
  * ONE observer for every table in the session.
  *
- * It watches the two PROBES rather than the container, because the probes are
+ * It watches the three PROBES rather than the container, because the probes are
  * the fit's inputs: nothing the fitter writes — the table's type size, the
- * column percentages, a cell's wrapping — can change either one. Watching the
+ * column percentages, a cell's wrapping — can change any of them. Watching the
  * container instead would notify on its own height change after every single
  * fit. (The invariant is about the widget, not the whole page: a fit changes
  * the table's height, and on a platform whose scrollbars take layout space
@@ -415,11 +415,13 @@ function applyFit(fit: TableFit): void {
     // widths below.
     const avail = fit.widthProbe.getBoundingClientRect().width;
     // TWO fonts move a table's fit: the note's, and KaTeX's — a formula in a
-    // cell is laid out in KaTeX_Main, whose webfonts arrive after first paint
-    // and are wider than the fallback, so a math table fitted before they land
-    // stays fitted to the wrong metrics. Summed into ONE number so the
+    // cell is laid out in KaTeX's own faces, whose webfonts arrive after first
+    // paint and are wider than the fallback, so a math table fitted before they
+    // land stays fitted to the wrong metrics. Summed into ONE number so the
     // `lastFont` gate below covers both without a second field; the two cannot
-    // plausibly change by exactly opposite amounts in the same frame.
+    // plausibly change by exactly opposite amounts in the same frame (and the
+    // math probe carries an explicit family while inheriting its size, so a
+    // font-size setting moves both summands the same way).
     // restoreFit does NOT screen for this — its `done.at.font` is the note's
     // computed font shorthand, which KaTeX's webfonts landing does not move —
     // but it adopts `done.font` (this sum) into `fit.lastFont`, so a cached fit
@@ -624,6 +626,18 @@ export function createFitProbes(): { probe: HTMLElement; fontProbe: HTMLElement;
     // fitted column percentages — never moved. They are separate inner spans
     // rather than one italic probe so the sensor still sees KaTeX_Main too; the
     // outer span's width is their sum, and one observation covers both.
+    //
+    // TWO, not all of them, and that is a KNOWN LIMIT rather than a claim of
+    // coverage. KaTeX also lays out big operators and stretchy delimiters in
+    // KaTeX_Size1–4, `\mathbb`/`\mathfrak` in KaTeX_AMS and `\mathtt` in
+    // KaTeX_Typewriter; a formula made of those can still grow after its face
+    // lands with no probe moving. Adding them here would not help much either:
+    // FONT_PROBE_TEXT is letters and digits, and the Size faces carry no Latin
+    // glyphs at all, so such a probe would measure the fallback forever and
+    // sense nothing. The faces are bundled locally, so in practice they land in
+    // the same frame as these two or come from cache. Left as is — with the
+    // cell scroller below, the residue is a clipped formula rather than one
+    // overlapping its neighbour.
     const mathProbe = document.createElement('span');
     for (const family of ["'KaTeX_Main', serif", "'KaTeX_Math', serif"]) {
         const face = document.createElement('span');

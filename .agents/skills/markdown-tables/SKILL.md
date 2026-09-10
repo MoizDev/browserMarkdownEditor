@@ -265,9 +265,11 @@ something has to decide.
   escapes everything except a fixed set of attribute-free inline tags (`br`, `b`, `i`, `code`, `kbd`,
   `sub`, `sup`, …), re-emitted from the pattern's own alternation rather than copied out of the
   input — so no untrusted markup is ever parsed and no attribute is ever emitted. **This is the only
-  place in the app where note text reaches the DOM as HTML**, and this origin holds the vault's
-  directory handle in IndexedDB with permission already granted, so a note carrying
-  `<img src=x onerror=…>` would get read/write over the whole vault the moment it was opened.
+  place in the app where note text reaches the DOM as HTML by this repo's own code** — the one other
+  sink is `mermaidWidget.renderInto`, which rests on mermaid's `securityLevel: 'strict'` DOMPurify
+  pass instead of on an allowlist. This origin holds the vault's directory handle in IndexedDB with
+  permission already granted, so a note carrying `<img src=x onerror=…>` would get read/write over
+  the whole vault the moment it was opened.
   `<br>` is in because it is the only way to break a line inside a cell; `<a href>` and `<img src>`
   are out because they need attributes. Side benefit: `Type<T>` renders instead of being swallowed.
 - **`renderCellContent(cell, text)` is that sink's ONE write site** — it used to be three
@@ -291,8 +293,19 @@ something has to decide.
     whole cell, with each formula standing in as one inert token.
   - **The inline-code ranges fed to `findMathRegions` use the SAME `` /`(.+?)`/g `` the allowlist
     uses**, so both agree what is code and a `$` inside backticks stays literal.
-  - **Sentinel forgery is impossible**: they are stripped from the cell text before masking, so every
-    `SLOT_OPEN` in the masked string is one this function just wrote.
+  - **Sentinel forgery is possible and is handled at the LOOKUP, not the strip.** Stripping the cell
+    text is not enough: `escapeText` leaves `&` alone by design, so `&#xE000;9&#xE001;` survives
+    every string stage and the HTML parser decodes it into real sentinels inside the text node
+    `fillMathSlots` walks. Measured — such a cell beside any real formula threw `undefined.latex` out
+    of `toDOM`, React unmounted and **`#root` was left empty on every open of the note**; the
+    in-range `&#xE000;0&#xE001;` rendered region 0 twice, doubling `cell.textContent`. So `MATH_SLOT`
+    matches a lone sentinel too, and a token naming no region — or one already in `used` — is
+    **deleted**. Escaping `&` is not the fix; it breaks the cell that means to show `&lt;br&gt;`.
+  - **The parse container must be an ordinary element, not a `<template>`.** Fragment parsing takes
+    its insertion mode from the context element; `<template>` parses "in template", which *ignores*
+    a stray `</br>` that `<td>` (and a `<div>`) turn into `<br>`. `CELL_HTML` admits `</br>` on
+    purpose, so a `<template>` silently rendered `one</br>two` as `onetwo`. Measured across all
+    thirteen allowlisted tags, open and close: that is the only divergence.
   - **Holders are collected in full before any split** — `splitText` mutates the tree the
     `TreeWalker` is walking and the walker's position does not survive its current node being split.
   - **`katex.render` is a DOM builder, not a sink**: it builds with `createElement`/`createTextNode`,
@@ -300,7 +313,10 @@ something has to decide.
     may not go async. Don't lazy-import KaTeX in this path.
   - **`output: 'html'` is load-bearing here**, not just cosmetic: MathML would put every formula in
     `cell.textContent` TWICE, and `tableEdit`'s caret arithmetic, its copy path and `beginCellEdit`'s
-    "does the rendered text differ from the raw source" guard all read that.
+    "does the rendered text differ from the raw source" guard all read that. Its price is that
+    KaTeX's tree is entirely `aria-hidden` with no MathML beside it, so the span carries
+    `role="math"` + `aria-label` of the LaTeX source — without it a maths cell is announced as
+    **empty**, where before the change it at least read out its `$…$`.
   - **`displayMode: false` even for `$$…$$`.** A cell is one line; `.katex-display`'s
     `display:block; margin:1em 0; text-align:center` would break the row and the fitter's height
     accounting. Deliberate divergence from Obsidian.
@@ -309,7 +325,13 @@ something has to decide.
     Expected; do not "fix" it by weakening the guard.
   - CSS: `.cm-table-math { white-space: nowrap }` (a formula is one atom — `.katex .base` says it per
     base, this says it for the whole span; the fitter reads it through min-content as the column's
-    floor). And the SVG exemption `.cm-table-widget .cm-table-math svg { max-width: none; height:
+    floor) **plus `.cm-table-widget .cm-table-math .katex-html > .newline { display: inline }`,
+    without which nowrap does not deliver it**: KaTeX breaks a top-level `\\` *structurally*, as a
+    `.newline` span that katex.css makes `display: block`, and `displayMode: false` makes that
+    unconditional rather than avoiding it. Measured, `$p \\ q$` in a cell rendered on two lines in a
+    65.8px row against a plain row's 39.4px. The leading `.cm-table-widget` is for SPECIFICITY —
+    katex.css is imported from `EditorPane` and so wins every tie against `index.css`. Environment
+    row separators (`matrix`, `aligned`) carry no `.newline` and are untouched: verified. And the SVG exemption `.cm-table-widget .cm-table-math svg { max-width: none; height:
     inherit }` — `\sqrt` surds and stretchy delimiters are inline `<svg>`, which the widget's
     `img, svg, video { height: auto }` cap would collapse. It **restates** `katex.css`'s own
     `.katex svg { height: inherit }` rather than using `revert`, which would roll back the whole
@@ -340,10 +362,15 @@ something has to decide.
   still the container's **direct first child**.
 - **Re-fitting is driven by three probes inside the widget** — a zero-height block whose width *is*
   the available text width, hidden text (normally sized, clipped by that box) whose width changes iff
-  the note's font metrics do, and a third hidden span of the same sample in `'KaTeX_Main', serif`,
-  whose width moves when KaTeX's webfont lands (until then it measures the serif fallback). All three
-  are watched by one shared `ResizeObserver`, and the last two are **summed into the single
-  `fontWidth`**, so the `lastFont` gate covers both without a second field. (`restoreFit` does not
+  the note's font metrics do, and a third hidden span holding the sample **twice — in `KaTeX_Main`
+  and in italic `KaTeX_Math`** — whose width moves when either of KaTeX's text webfonts lands (until
+  then it measures the serif fallback). Do NOT collapse those two into one: a maths *variable*
+  renders in KaTeX_Math-Italic, and with only KaTeX_Main sensed an all-variable formula grew 26.7px
+  after its font landed with no probe moving. The Size/AMS/Typewriter faces are still unsensed and
+  that is a known limit, not coverage — `FONT_PROBE_TEXT` is letters and digits, which the Size faces
+  do not even contain. All three probes are watched by one shared `ResizeObserver`, and the last two
+  are **summed into the single `fontWidth`**, so the `lastFont` gate covers both without a second
+  field. (`restoreFit` does not
   screen for it — its `done.at.font` is the note's computed font shorthand, which KaTeX's webfonts
   landing does not move — but it adopts the sum into `fit.lastFont`, so a pre-webfont cached fit
   misses that gate and re-fits.) Without that third probe a table holding maths stays

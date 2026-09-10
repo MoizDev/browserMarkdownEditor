@@ -159,6 +159,11 @@ export function readSession(vaultId: string): StoredSession | null {
  */
 export function writeSession(vaultId: string, session: StoredSession): void {
     sessions()[vaultId] = session;
+    // The boolean is deliberately dropped here, unlike in migrateLegacy: there
+    // is nothing to roll back (the map IS the only home) and nothing to tell,
+    // since the app has no place to report "your tabs stopped being
+    // remembered". writeJSON has already logged it. If that ever needs
+    // surfacing, this is the call site to read.
     flushRecord(KEY);
 }
 

@@ -569,6 +569,15 @@ export default function App() {
   // pass so no pane it opens can read a record under the outgoing vault's
   // scope — `Notes/index.md` names a different file in every vault, and with
   // per-vault sessions both of them are routinely open.
+  //
+  // That covers the panes THIS app opens, and not the one window it cannot:
+  // `currentVaultId` lands a commit after `rootHandle`+`fileTree` on the
+  // switch paths, so the new vault's tree is clickable while the scope still
+  // names the old one, and a file opened by hand right then reads the other
+  // vault's offset for the same path. Deliberately not "fixed" by clearing the
+  // scope on switch: pane unmounts run one commit AFTER the switch effect, so
+  // their flush would then write the OUTGOING vault's offsets to bare paths —
+  // trading a rare wrong offset for a routine one.
   useEffect(() => { setRecordScope(currentVaultId); }, [currentVaultId]);
 
   // Persist the open documents, how they are grouped into tabs, which pane each
@@ -582,10 +591,16 @@ export default function App() {
   //   • mount, with zero tabs — writing that out would clobber the stored list
   //     moments before restore reads it, which is what once reduced every
   //     reload to "only the last-active file comes back";
-  //   • the vault-switch commit, where this effect runs BEFORE the switch
-  //     effect (declaration order) and would otherwise file the OUTGOING
-  //     layout — or, a commit later, the empty one the switch installs —
-  //     under the INCOMING vault's id.
+  //   • the vault-switch commit, where this effect runs first (declaration
+  //     order) with the OUTGOING layout, and a commit later with the empty one
+  //     the switch installs — either of which would land under the INCOMING
+  //     vault's id.
+  // The HANDLE test is what actually closes that, under either ordering:
+  // `sessionRootRef` holds the outgoing handle before the switch effect runs
+  // and `null` after, and the switch effect only fires when the handle really
+  // changed — so it can never equal the incoming `rootHandle`. Declaration
+  // order is therefore not the guard; the `sessionRootRef.current = null`
+  // there is (see it for what depends on it).
   // An empty layout is written happily once the refs match: "I closed
   // everything in this vault" is a session, and must survive a switch.
   useEffect(() => {
@@ -1315,6 +1330,17 @@ export default function App() {
     // this EMPTY layout under its id, destroying the session it was about to
     // restore. Gated instead, it merely does not restore that once.
     sessionRootRef.current = null;
+    // The id ref is not cleared but RE-POINTED at the vault being left, which is
+    // the only thing the restore pass's `=== currentVaultId` test can safely
+    // mean. Leaving it holding whatever was last CLAIMED is not the same thing,
+    // because a vault can set `currentVaultId` and never claim: the pass returns
+    // above on an empty `fileTree`, and an empty FOLDER is indistinguishable
+    // from a tree that has not landed yet. Measured — vault R with three tabs,
+    // switch to an empty folder, switch back — the pass then claimed R's handle
+    // against the EMPTY vault's id on the mid-switch commit, so the commit
+    // carrying R's own id failed the handle test: R's tabs never came back and
+    // nothing R did afterwards was persisted for the rest of the page load.
+    sessionVaultIdRef.current = currentVaultIdRef.current;
   }, [rootHandle, flushTab]);
 
   // Search reads open-tab buffers through this accessor (via tabsRef) so its
@@ -1327,6 +1353,12 @@ export default function App() {
   // Auto-restore THIS VAULT'S tabs once its file tree has loaded — on a cold
   // start and on every switch back to it.
   useEffect(() => {
+    // Nothing to restore against yet — and NOTE that this return is above the
+    // claim below, so a vault can set `currentVaultId` and never claim (an
+    // empty folder walks to an empty tree, which is indistinguishable from one
+    // that has not landed). That is why the switch effect re-points the id ref
+    // at the vault being LEFT rather than leaving it on the last claim; see
+    // there for what went wrong when it did not.
     if (!fileTree || fileTree.length === 0) return;
     // Both halves must have moved on: see sessionRootRef's note above. Equal on
     // either one means this commit is mid-switch (openVaultHandle commits the
@@ -1352,10 +1384,11 @@ export default function App() {
     // the id test above stops it instead. Persistence is not left un-gated by
     // the wait, because its own first line is the same check.
     if (!currentVaultId) return;
-    // Claimed BEFORE any remaining early return — and before any await, since
+    // Claimed before every remaining early return — and before any await, since
     // StrictMode runs this effect twice — because persistence stays gated until
     // this pass has run, and a vault with nothing stored must still un-gate it.
-    // The old `hasRestoredTabs` rule, per vault.
+    // The old `hasRestoredTabs` rule, per vault. (The `fileTree` return at the
+    // top is the one that precedes it, deliberately: see there.)
     sessionRootRef.current = rootHandle;
     sessionVaultIdRef.current = currentVaultId;
 
@@ -1424,8 +1457,17 @@ export default function App() {
   // id if it is ever opened again, so its stored session would be unreachable
   // weight. Nothing prunes by staleness — a vault returned to a year later
   // still opens where it was left, the same call fileScrollPositions makes.
+  // "Has the list ever loaded" rather than "is it empty now", because those are
+  // not the same question and an emptiness test answers the wrong one: forgetting
+  // the LAST row is a real transition to zero, and skipping it left that vault's
+  // session behind forever — the one case where the help doc's "taking a vault
+  // off that list forgets its tabs" was false. (Reachable because the open
+  // vault's row has no minus, so a single removable row means the open vault is
+  // absent from the list, which is what a failed `recordVault` leaves behind.)
+  const sawVaultList = useRef<boolean>(false);
   useEffect(() => {
-    if (recentVaults.length === 0) return;   // the list has not loaded yet
+    if (recentVaults.length > 0) sawVaultList.current = true;
+    if (!sawVaultList.current) return;   // the list has not loaded yet
     pruneSessions(recentVaults.map(v => v.id));
   }, [recentVaults]);
 

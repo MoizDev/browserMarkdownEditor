@@ -415,7 +415,7 @@ $$
 $$
 
 ### Math in a Table
-Both forms work inside a table cell too — see section 7. One thing to watch: a cell escapes its own backslashes, so a LaTeX line break, normally \`\\\\\`, has to be written \`\\\\\\\\\` there. Everything else carries across unchanged.
+Both forms work inside a table cell too — see section 7. Two things to watch. A cell resolves \`\\\\\` down to a single backslash on the way in, so LaTeX that needs a real \`\\\\\` — the row separator inside \`\\begin{matrix}\`, say — has to be written \`\\\\\\\\\` there; those environments then lay out their rows normally. A \`\\\\\` on its own, though, does nothing at all in a cell: a cell is one line, so the break is dropped rather than splitting the formula and growing the row. Everything else carries across unchanged.
 
 ---
 

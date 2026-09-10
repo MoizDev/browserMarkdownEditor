@@ -30,7 +30,23 @@ function normalizeForKatex(latex: string): string {
  * visible glyphs once. With the default 'htmlAndMathml' every formula appears
  * TWICE in a cell's textContent — which tableEdit.ts's caret arithmetic, its
  * copy path and beginCellEdit's "does the rendered text differ from the raw
- * source" guard all read.
+ * source" guard all read. Its cost is that the tree KaTeX hands back is
+ * entirely `aria-hidden` with no MathML beside it, so a caller that puts one
+ * somewhere a reader could not otherwise read the source owes it a label —
+ * tableWidget's fillMathSlots does exactly that.
+ *
+ * TWO defaults are load-bearing BY ABSENCE, so think before adding either:
+ *  · `trust` is left falsy, which is what turns `\href`, `\url`,
+ *    `\includegraphics` and `\htmlClass/Id/Style/Data` into inert red text.
+ *    It is the only thing keeping note text from emitting ATTRIBUTES one call
+ *    away from the app's innerHTML sink, in an origin holding the vault's
+ *    directory handle. Turning it on to make `\href` work is not a local
+ *    change.
+ *  · `maxSize` is left at KaTeX's Infinity. Measured, `$\rule{9999em}{9999em}$`
+ *    in a cell produced a 193,601px row — self-inflicted, and it is the one way
+ *    note text can still break "a cell is one line" (which the fitter's height
+ *    accounting rests on). Capping it would change note bodies too, so it is a
+ *    deliberate open question rather than an oversight.
  */
 export function renderMath(el: HTMLElement, latex: string, displayMode: boolean): void {
     try {

@@ -22,7 +22,7 @@ The folder icon at the top of the file tree remembers every folder you have open
 
 Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`. You do not need the file dialog for that — right-click the folder in the file tree and choose **Open as Vault**, and it opens as the vault straight away and joins the recent list, so the folder icon is the way back out.
 
-Switching vaults closes the notes you had open (saving anything unsaved first), since those files belong to the vault you just left.
+Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's tabs, the way they were split, the pane widths and the note you were reading straight back, without your reopening a thing. A note you deleted from disk in the meantime is simply not among them. That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row.
 
 ### Security & Permissions
 Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
@@ -100,7 +100,7 @@ To create something *inside* a particular folder, right-click that folder (or us
 ## 3. Tabs and Split View
 
 ### Tabs
-Every file you open gets a tab along the top of the editor. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
+Every file you open gets a tab along the top of the editor. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app — and, because every vault keeps its own set, whenever you come back to that vault. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
 
 ### Putting Two Notes Side by Side
 Any tab can be merged into the tab you are looking at, so that both are on screen at once:
@@ -378,6 +378,7 @@ Getting around, and editing:
 - The two small **+** buttons at the corners — top right and bottom left — add a column and a row. They appear while the pointer is over the table, or while you are typing in it.
 - **Right-click a cell** for everything else: *Cut*, *Copy* and *Paste* within that cell, *Insert row above* / *below*, *Insert column left* / *right*, *Delete row*, *Delete column*, *Delete table*. None of them asks you to confirm, because a single \`Cmd + Z\` / \`Ctrl + Z\` undoes any of them.
 - The cell you are in shows its **raw text**, just as the file has it: a cell holding \`**bold**\` shows the asterisks while you are in it and the bold word again once you leave. That is the same thing the editor does when you put the cursor on a bold word anywhere else.
+- **Maths renders in a cell.** Write \`$x^2$\` and the cell shows the formula, exactly as it would in the body of a note; step into the cell and the \`$…$\` comes back, like any other markup. A \`$$…$$\` inside a cell is drawn inline rather than as a centred block, because a cell is one line.
 - \`Cmd + B\` and \`Cmd + I\` do not reach inside a cell. Type \`**bold**\` and \`*italic*\` there yourself.
 - A pipe inside a cell is written \`\\|\`, and the editor writes that for you — type a \`|\` into a cell and the file gets \`\\|\`, so the row keeps the number of columns you can see.
 - The colons in the second row are honoured: \`| :--- |\` is left-aligned, \`| :---: |\` centred, \`| ---: |\` right-aligned. Editing a cell never disturbs them.
@@ -412,6 +413,9 @@ $$
 $$
 \\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}
 $$
+
+### Math in a Table
+Both forms work inside a table cell too — see section 7. One thing to watch: a cell escapes its own backslashes, so a LaTeX line break, normally \`\\\\\`, has to be written \`\\\\\\\\\` there. Everything else carries across unchanged.
 
 ---
 

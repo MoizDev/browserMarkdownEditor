@@ -41,34 +41,41 @@ never re-reads disk or loses unsaved edits; `dirty` drives the tab dot.
   A save reports "Saved" when its path is **visible** (any pane of the tab on screen), not merely
   focused.
 
-## Session persistence
+## Session persistence is PER VAULT
 
-The whole tab set persists — `openTabPaths` + `openTabGroups` + `openTabGroupFocus` +
-`openTabGroupSizes` + `openTabsVaultId` + `activeTabPath` in localStorage — and is restored once the
-tree loads.
+`utils/tabSessions.ts` owns one localStorage record, `vaultSessions: Record<vaultId, StoredSession>`
+— `{paths, groups, focus, sizes, active}` — and is that record's **only writer**, which is
+`readRecord`/`flushRecord`'s stated safety condition. The key is `StoredVault.id`. The restore pass
+runs **once per vault**, on a cold start and again on every switch back to it.
 
-- **Each key is additive to the one before it and every one is optional**, so a session written by
-  any earlier build still restores: the grouping rides alongside the flat list, the per-group focused
-  pane rides alongside the grouping (without it a background split tab came back on its leftmost
-  pane, since `activeTabPath` speaks for only one group), and the per-group pane widths ride
-  alongside that (`null` for the tabs nobody resized, which is most of them; a session without the
-  key restores in equal columns). Stored widths are validated at the pane count the session was
-  *written* at and then narrowed by the positions that actually came back, so a note deleted on disk
-  since takes its share with it and the rest divide it up — exactly as closing that pane would have.
+- **This replaced six flat keys stamped with one `openTabsVaultId`.** That shape held ONE session,
+  belonging to whichever vault wrote it last, and the switch effect's `EMPTY_LAYOUT` went straight
+  back out through the un-gated persist effect — so the outgoing vault's session was destroyed on
+  the way out. That is precisely why switching back used to restore nothing. A map keyed by vault id
+  has nowhere to lose it. Migration from the flat keys is **one-way** and deletes them: a per-vault
+  map cannot be written back into flat keys without lying to an older build about whose session it
+  is, so a downgrade restores nothing rather than restoring wrongly.
+- **`sizes` is `null` for the tabs nobody resized**, which is most of them; absence encodes "equal
+  columns" all the way down. Stored widths are validated at the pane count the session was *written*
+  at and then narrowed by the positions that actually came back, so a note deleted on disk since
+  takes its share with it and the rest divide it up — exactly as closing that pane would have.
 - **The whole stored session is read synchronously, before the restore pass yields to its file
-  reads** — persistence is un-gated the moment the pass starts, so a key read after the awaits could
-  already have been rewritten by it.
+  reads** — persistence is un-gated the moment the pass claims its refs, so a value read after the
+  awaits could already have been rewritten by it, and a split would come back silently flattened.
 - `restoreLayout` gives any path a stored group can't account for a tab of its own; a session written
-  before split tabs restores as all-singletons.
-- **The persist effect is gated on the restore pass having run** (`hasRestoredTabs`). Ungated, it
-  fires at mount with zero tabs and clobbers the stored list moments before restore reads it — the
-  old "only the active file survives a reload" bug. A *missing* `openTabPaths` falls back to the
-  legacy single `lastFilePath`; a present-but-empty one means "no tabs" and restores nothing.
+  before split tabs restores as all-singletons. A path whose file is gone is simply skipped.
+- **An empty `paths` is a real session** — "I closed everything in this vault" — and must survive a
+  switch. Nothing may treat it as absence on the way *in*.
+- Everything read back is shape-guarded (`isStoredSession`); localStorage is user-editable and holds
+  whatever an older build wrote, and a malformed entry reads as `null`.
 - Restored PDF tabs get `content: ''` exactly like `handleFileClick` (their buffer is a tldraw
-  snapshot, never file bytes). The effect is keyed on `layout` rather than a joined path string,
-  because the layout's identity already moves only when the tab bar does.
+  snapshot, never file bytes). The persist effect is keyed on `layout` rather than a joined path
+  string, because the layout's identity already moves only when the tab bar does.
+- **A forgotten vault's session is pruned** (`pruneSessions` off `recentVaults`), because
+  `forgetVault` means the folder mints a fresh id if it is ever opened again. Nothing prunes by
+  staleness — the same call `fileScrollPositions` makes.
 
-## Switching vaults empties the workspace
+## Switching vaults empties the workspace but no longer loses it
 
 Flushing every pending write first — those handles are still good. A tab only means anything inside
 the vault it came from: its path indexes that vault's tree, its handle writes into that vault's
@@ -78,14 +85,32 @@ share could serve the old vault's buffer for the new vault's file. The effect is
 startup must not clear the tabs the restore pass is about to bring back. Clearing the tabs is also
 what drops their cached editor states, since `EditorPane` prunes that map to the open set.
 
-**The persisted session is stamped with the vault it belongs to** (`openTabsVaultId`, the
-recent-vault id) and the restore pass declines a session from a different vault, because that effect
-reaches the same hazard by a road the switch effect never sees: a *cold start* can land on another
-vault — the last one's permission lapsed to `prompt`, or the user picked from the vault menu — and
-those paths would then open whichever of the new vault's files happen to sit at them. An unstamped
-session predates this and is restored as before. The pass re-checks the vault after its file reads
-too, alongside the existing "did the user open something already" guard: the switch empties the tab
-set, so that guard alone waves the old vault's tabs straight through.
+**Two refs say WHICH VAULT the workspace on screen is the session of** — `sessionRootRef`
+(the handle) and `sessionVaultIdRef` (the id) — written together by the restore pass and checked by
+**both** effects. `hasRestoredTabs`, the old single boolean, is gone; this is that rule per vault.
+Neither ref alone is enough, because of two real orderings:
+
+- `openVaultHandle` commits `setRootHandle` + `setFileTree` in one batch and only **then** awaits
+  `recordVault`, so there is a commit where the tree is the NEW vault's and `currentVaultId` is
+  still the OLD one. Restoring there would open the old vault's paths out of the new vault's tree.
+  Requiring *both* refs to differ makes the pass wait for that commit to pass.
+- The persist effect is declared **before** the switch effect, so on the switch commit it runs
+  first, with the outgoing layout — and would file it under the incoming id. Requiring both refs to
+  *match* makes it skip until the incoming vault's restore has run.
+
+**`if (!currentVaultId) return;` must stay ABOVE the ref claim.** `currentVaultId` starts `null` and
+is never reset to `null` on a switch, so the only way it is falsy is "`recordVault` has not finished
+yet, or failed". Claiming the refs there marks the workspace as that vault's against a `null` id,
+and the follow-up commit carrying the real id is then rejected by `sessionRootRef === rootHandle` —
+the session silently never restores. It bit `openVaultHandle` (and `openRecentVault`, which is only
+a wrapper over it) and `pickDirectory` — the paths that commit the tree before `recordVault`. The
+mount path and `restoreVault` call `recordVault` FIRST and walk after, which is why an ordinary
+reload and the permission button looked fine. Above the claim, the pass simply waits for the id;
+nothing is left un-gated, because the persist effect's own first line is the same check.
+
+The pass still re-checks the vault after its file reads, alongside the "did the user open something
+already" guard: the switch empties the tab set, so that guard alone waves the old vault's tabs
+straight through.
 
 # Split tabs (`utils/tabGroups.ts`, `DocumentPane.tsx`, `EditorPane.tsx`)
 

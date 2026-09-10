@@ -217,7 +217,14 @@ raising the setting later still has history to show.
   re-labels first: a qualified `parent/name` is earned only while two listed vaults share a folder
   name, so dropping one of a pair has to leave the survivor as the bare name. Nothing on disk is
   touched, so there is no confirm in front of it, and `forgetRecentVault` reports whether the write
-  landed — a refused one says so in the menu rather than leaving a dead click.
+  landed — a refused one says so in the menu rather than leaving a dead click. **It forgets more
+  than the row now**: `StoredVault.id` is also the key of this vault's per-vault browser storage —
+  its tab session (`utils/tabSessions.ts`) and, through `storage.ts`'s `scopedKey`, its scroll and
+  PDF-page positions. A forgotten folder re-opened is a new id, so it comes back with an empty
+  workspace. That is the intended reading of "forget". Only the **session** is actually deleted
+  (`pruneSessions`, off the recent list, by an effect in `App`); the two path-keyed position records
+  are never pruned, so their scoped entries merely become unreachable — and scoping multiplies their
+  growth by the number of vaults, which the "never pruned" decision in AGENTS.md predates.
 - **The open vault's row shows no minus**: every load re-records it (`recordVault`), so removing it
   would grow back before the user looked again. `.vault-menu-row` is a two-column grid, so that row
   and "Open folder…" keep every label on one x without a placeholder element to hold the gap.
@@ -273,8 +280,8 @@ raising the setting later still has history to show.
 - **Re-opening the vault that is already open is a no-op, and the provider has to say so
   (`isCurrentVault`), because App.tsx cannot.** The switch effect compares root handles by *object
   identity*, and the picker mints a fresh handle for the same folder every time — so picking the
-  folder you already have open read as a switch and closed every tab (measured: 7 tabs → 0,
-  `openTabPaths` overwritten with `[]`). `isSameEntry` is the only test that sees through that, so
+  folder you already have open read as a switch and closed every tab (measured: 7 tabs → 0, and the
+  stored session overwritten with an empty one). `isSameEntry` sees through that, so
   `pickDirectory` and `openRecentVault` both run it before touching `rootHandle`; the menu's own
   current-vault guard is by id and is absent whenever recording the vault failed. On a match
   `pickDirectory` keeps the handle the app is already using — its permission is live and every open

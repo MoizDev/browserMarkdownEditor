@@ -76,12 +76,12 @@ and use it before saying a change works.
 - **Paths are vault-root-relative with no vault-name prefix**, centralized in `utils/paths.ts`;
   `buildFileTree` and every create/move/rename tab handler must agree or tabs stop deduping.
 - **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault: the FS Access
-  API takes no path, so `?vault=/Users/…` is impossible, not absent. On load it outranks the stored
-  handle, a lapsed grant becomes a one-button screen (`requestPermission` needs a gesture), and it is
-  read ONCE at load — the writer effect rewrites it as the app settles.
+  API takes no path. On load it outranks the stored handle, a lapsed grant becomes a one-button
+  screen (`requestPermission` needs a gesture), and it is read ONCE — a writer effect then owns it.
 - **Open documents are a flat list (`tabs`) plus a separate tab *layout*;** `activeTabPath` is
   derived. The save funnel `updateTabContent(path, content)` is **path-explicit and the only one** —
-  several documents are editable at once and canvas panes serialize after their pane has gone.
+  several documents are editable at once and canvas panes serialize after their pane has gone. The
+  session is per vault id (`utils/tabSessions.ts`); a switch empties the workspace without losing it.
 - **A CodeMirror `EditorState` outlives the pane that built it**, and so does everything baked into
   it (`domEventHandlers`, the update listener); anything such a handler reaches must be **stable for
   the app's life**. A per-pane ref does not rescue that, it hides the staleness.
@@ -90,8 +90,9 @@ and use it before saying a change works.
   stays ordinary markdown — "the reader never sees the source" is the requirement.
 - **The app draws its own context menu and its own `confirm()`; prefer them to native dialogs.**
 - **Exactly one place in the app turns note text into DOM `innerHTML`** — the table cell renderer's
-  attribute-free tag allowlist. This origin holds the vault's directory handle with permission
-  already granted, so a hole there is read/write over the whole vault. Do not open a second sink.
+  attribute-free allowlist, and since maths landed in cells its one *write site* (`renderCellContent`;
+  KaTeX splices in built DOM, never a string). This origin holds the vault's directory handle with
+  permission already granted, so a hole is read/write over the whole vault. Do not open a second sink.
 - **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
   (`utils/graph.ts`, `utils/vaultSearch.ts`) and holds one file's text at a time. Both run after
   *every* save — an uncached walk is a full vault read per keystroke-triggered autosave.
@@ -107,13 +108,11 @@ and use it before saying a change works.
   there is no manual chunking in `vite.config.ts`, so one new import silently pulls pdf-lib (~400kB),
   pdf.js or tldraw into the main bundle. Check the `pdf-and-drawings` skill (it covers notebooks and
   drawings too) before adding one; `utils/paper.ts` importing nothing is part of that split.
-- **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it.** CodeMirror does the
-  same, so tab buffers, saved output and vault-search offsets stay in step; a new reader of file text
-  that doesn't normalize drifts silently on a CRLF file.
+- **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it** — CodeMirror does
+  the same, so buffers and search offsets stay in step; a reader that skips it drifts on CRLF.
 - **The app's user documentation is a file in this repo** — `utils/helpDoc.ts`, one exported string
-  opened as a real read-mode tab, and the only thing telling a user a gesture exists: a user-facing
-  change is not finished until it describes them. Its pseudo-path is a **bare name**, not a vault path
-  — which is why tab-closing code gates its equality branch to real files.
+  opened as a read-mode tab: a user-facing change is not finished until it describes the gestures it
+  adds. Its pseudo-path is a **bare name**, so tab-closing code gates its equality branch to files.
 
 ## Conventions & gotchas
 
@@ -125,8 +124,9 @@ and use it before saying a change works.
   entry-style and create-request stores. `FileExplorer`/`TreeNode` are `React.memo`'d so the tree stops
   re-rendering while the user types — never thread a per-save/menu/search/icon/create value through.
 - **The two path-keyed position records** (`fileScrollPositions`, `pdfViewPositions`) are held parsed
-  in memory via `readRecord`/`flushRecord` in `utils/storage.ts`. They are never pruned; capping by
-  recency was considered and **rejected**, as it discards the position of a file returned to later.
+  in memory via `readRecord`/`flushRecord` in `utils/storage.ts`, keyed by its `scopedKey` — two
+  vaults share paths freely. Never pruned (capping by recency was **rejected**: it drops the position
+  of a file returned to later), so scoping grows them per vault × path.
 - **Settings → CSS variables.** Appearance state persists to `localStorage` and is applied by setting
   CSS variables on `document.documentElement`. Two are not variables: **Tab size** (a CodeMirror
   compartment) and **Recent vaults shown** (a plain prop); both are clamped on read, since

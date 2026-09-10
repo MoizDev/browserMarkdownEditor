@@ -270,6 +270,67 @@ something has to decide.
   `<img src=x onerror=…>` would get read/write over the whole vault the moment it was opened.
   `<br>` is in because it is the only way to break a line inside a cell; `<a href>` and `<img src>`
   are out because they need attributes. Side benefit: `Type<T>` renders instead of being swallowed.
+- **`renderCellContent(cell, text)` is that sink's ONE write site** — it used to be three
+  (`buildRow`, `restoreRenderedCell`, `updateDOM`'s per-cell diff, each doing its own
+  `cell.innerHTML = renderInlineMarkdown(...)`). They all call it now, and the single
+  `CELL_PARSER.innerHTML = renderInlineMarkdown(masked)` inside it is the only assignment left.
+  Collapsing them is what made maths in a cell safe to add; don't reopen a second one.
+- **Maths is MASKED out of the cell before the allowlist runs, and spliced back in as DOM.** The
+  order matters in both directions: on the way in, `$a_1 + b_2$` came back with its subscripts eaten
+  by the `_(.+?)_` italic rule — the old behaviour was not "maths didn't render", it MANGLED it; on
+  the way out, KaTeX's output is markup the allowlist would rightly escape into visible tag text.
+  So: strip the two sentinels from the cell text, `findMathRegions` over it, replace each region
+  with `\uE000<index>\uE001` (Private Use Area, written as escapes), run the **unmodified** allowlist
+  over the masked string, parse once into the shared module-level `<template>` (`CELL_PARSER` —
+  appending `.content` empties it, so a table re-dressing every cell allocates no template per cell),
+  then walk the fragment's text nodes and `splitText`/`replaceWith` each slot for a
+  `<span class="cm-table-math">` filled by `renderMath`.
+  - **Masked, not split at the math boundaries.** Running `renderInlineMarkdown` over the pieces
+    would break emphasis that spans a formula: `**bold $x$ end**` would lose its bold and show the
+    literal asterisks, because neither piece holds a matched pair. The emphasis rules must see the
+    whole cell, with each formula standing in as one inert token.
+  - **The inline-code ranges fed to `findMathRegions` use the SAME `` /`(.+?)`/g `` the allowlist
+    uses**, so both agree what is code and a `$` inside backticks stays literal.
+  - **Sentinel forgery is impossible**: they are stripped from the cell text before masking, so every
+    `SLOT_OPEN` in the masked string is one this function just wrote.
+  - **Holders are collected in full before any split** — `splitText` mutates the tree the
+    `TreeWalker` is walking and the walker's position does not survive its current node being split.
+  - **`katex.render` is a DOM builder, not a sink**: it builds with `createElement`/`createTextNode`,
+    so no note text is ever parsed as markup. And it is synchronous, which is required — `updateDOM`
+    may not go async. Don't lazy-import KaTeX in this path.
+  - **`output: 'html'` is load-bearing here**, not just cosmetic: MathML would put every formula in
+    `cell.textContent` TWICE, and `tableEdit`'s caret arithmetic, its copy path and `beginCellEdit`'s
+    "does the rendered text differ from the raw source" guard all read that.
+  - **`displayMode: false` even for `$$…$$`.** A cell is one line; `.katex-display`'s
+    `display:block; margin:1em 0; text-align:center` would break the row and the fitter's height
+    accounting. Deliberate divergence from Obsidian.
+  - Clicking a maths cell lands the caret at the **end** of it, because `beginCellEdit`'s
+    `textContent !== raw` guard now always fires there — exactly as it already did for `**bold**`.
+    Expected; do not "fix" it by weakening the guard.
+  - CSS: `.cm-table-math { white-space: nowrap }` (a formula is one atom — `.katex .base` says it per
+    base, this says it for the whole span; the fitter reads it through min-content as the column's
+    floor). And the SVG exemption `.cm-table-widget .cm-table-math svg { max-width: none; height:
+    inherit }` — `\sqrt` surds and stretchy delimiters are inline `<svg>`, which the widget's
+    `img, svg, video { height: auto }` cap would collapse. It **restates** `katex.css`'s own
+    `.katex svg { height: inherit }` rather than using `revert`, which would roll back the whole
+    author origin — KaTeX's rule included — and land on the UA's `auto`, the value being escaped.
+    And **the CELL holding a formula scrolls**, `th:has(.cm-table-math), td:has(.cm-table-math) {
+    overflow-x: auto }`: the nowrap raises the column's min-content floor, but `COMFORT_EM` caps what
+    a column may demand and `overflow-wrap: break-word` (the fitter's per-column last resort) cannot
+    touch an unbreakable formula, so an over-wide one **overhung its neighbour** — measured on a
+    five-column table, 18.9px past the cell at 1400px and 62.4px at 520px, with the rendered bands
+    differing pixel-for-pixel, i.e. real ink on the next column's prose. Scoped by `:has()` so
+    ordinary cells and a cell being edited (raw source, no `.cm-table-math`) are untouched. Do NOT
+    instead scroll the formula's own span (`display:inline-block; max-width:100%; overflow-x:auto`):
+    an inline-block baselines at its bottom margin edge, not its text's, so every formula would sit
+    off the text beside it and grow its row — and `vertical-align: bottom` does not recover a formula
+    taller than the line box. Cell scrolling costs nothing: measured, a formula's rect and the rect
+    of the text node beside it in the same cell are identical, math rows keep plain-row height, and
+    the fitter's per-column min-content/max-content are unchanged by the rule.
+    **Known cost:** an over-wide formula is then CLIPPED with no affordance on overlay-scrollbar
+    platforms (13–22px lost, measured at 820px). The fitter declined to shrink because `COMFORT_EM`
+    capped the column's demand below its true `tight` width — arguably an unbreakable column should
+    be exempt from that cap in `wordsWhole`. Deliberately NOT changed here; it is a fitter decision.
 - **Two structural facts the chips depend on and the fit must survive.** `.cm-table-widget` is
   `position: relative`, because `contain: inline-size` is **size** containment only and does not
   establish a containing block: measured without it, a chip at `top: 2px` escaped to `.cm-content`
@@ -277,16 +338,25 @@ something has to decide.
   And **both chips sit fully inside the box**, never at a negative offset, which made the widget
   scrollable back when the overflow was still on it. The chips are out of flow and the width probe is
   still the container's **direct first child**.
-- **Re-fitting is driven by two probes inside the widget** — a zero-height block whose width *is* the
-  available text width, and hidden text (normally sized, clipped by that box) whose width changes iff
-  the note's font metrics do — watched by one shared `ResizeObserver`. They are the fit's INPUTS and
+- **Re-fitting is driven by three probes inside the widget** — a zero-height block whose width *is*
+  the available text width, hidden text (normally sized, clipped by that box) whose width changes iff
+  the note's font metrics do, and a third hidden span of the same sample in `'KaTeX_Main', serif`,
+  whose width moves when KaTeX's webfont lands (until then it measures the serif fallback). All three
+  are watched by one shared `ResizeObserver`, and the last two are **summed into the single
+  `fontWidth`**, so the `lastFont` gate covers both without a second field. (`restoreFit` does not
+  screen for it — its `done.at.font` is the note's computed font shorthand, which KaTeX's webfonts
+  landing does not move — but it adopts the sum into `fit.lastFont`, so a pre-webfont cached fit
+  misses that gate and re-fits.) Without that third probe a table holding maths stays
+  fitted to pre-webfont metrics: nothing else in the widget notices KaTeX's fonts arriving. It is
+  created for every table, math-free ones included — one extra fit pass, and the font is bundled
+  locally. They are the fit's INPUTS and
   nothing the fitter writes changes either, so a fit can't re-trigger one from inside the widget;
   watching the container instead would notify on its own height change every time. That invariant
   stops at the widget's edge: a fit changes the table's height, and where scrollbars take layout
   space that can toggle the editor's own, moving `.cm-content`'s *percentage* padding. Chromium
   bounds that at a round per frame and it hasn't been observed on overlay-scrollbar platforms — don't
   restate the claim more broadly. Between them the probes cover window and sidebar resizes, the
-  Text-width and font-size settings, and a Google Font arriving late.
+  Text-width and font-size settings, and a Google Font — or a KaTeX font — arriving late.
 - **A fit must not change the table's height after CodeMirror has measured it**, and three things
   cooperate. Resize observations arrive *after* the frame in which CM measures, so a table laid out
   at its natural size and fitted a moment later leaves CM's height map — and the caret the selection

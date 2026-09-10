@@ -16,6 +16,36 @@ function normalizeForKatex(latex: string): string {
 }
 
 /**
+ * Render `latex` into `el` with this app's one set of KaTeX options.
+ *
+ * Exported because the table cell renderer needs the SAME call, and a second
+ * copy of these options is the "three things exist twice" hazard in miniature.
+ * It is a DOM builder, not a second innerHTML sink: katex.render builds its
+ * tree with createElement/createTextNode, so no note text is ever parsed as
+ * markup here (see tableWidget.ts's allowlist note, which is the app's only
+ * innerHTML write site for note text).
+ *
+ * `output: 'html'` is load-bearing for a table cell as much as for a widget:
+ * it suppresses KaTeX's parallel MathML layer, so `el.textContent` stays the
+ * visible glyphs once. With the default 'htmlAndMathml' every formula appears
+ * TWICE in a cell's textContent — which tableEdit.ts's caret arithmetic, its
+ * copy path and beginCellEdit's "does the rendered text differ from the raw
+ * source" guard all read.
+ */
+export function renderMath(el: HTMLElement, latex: string, displayMode: boolean): void {
+    try {
+        katex.render(normalizeForKatex(latex), el, {
+            displayMode,
+            throwOnError: false,
+            output: 'html',
+        });
+    } catch {
+        el.textContent = latex;
+        el.classList.add('cm-math-error');
+    }
+}
+
+/**
  * A CodeMirror 6 widget that renders LaTeX math via KaTeX.
  */
 export class MathWidget extends WidgetType {
@@ -35,16 +65,7 @@ export class MathWidget extends WidgetType {
     toDOM(): HTMLElement {
         const el = document.createElement(this.displayMode ? 'div' : 'span');
         el.className = this.displayMode ? 'cm-math-widget cm-math-block' : 'cm-math-widget cm-math-inline';
-        try {
-            katex.render(normalizeForKatex(this.latex), el, {
-                displayMode: this.displayMode,
-                throwOnError: false,
-                output: 'html',
-            });
-        } catch (e) {
-            el.textContent = this.latex;
-            el.classList.add('cm-math-error');
-        }
+        renderMath(el, this.latex, this.displayMode);
         return el;
     }
 

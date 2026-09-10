@@ -2,7 +2,8 @@ import React, { useState, useCallback, useRef, useEffect, useMemo, useSyncExtern
 import { useFileSystem } from './context/FileSystemContext';
 import { HELP_DOC_CONTENT } from './utils/helpDoc';
 import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache } from './utils/graph';
-import { readJSON, writeJSON } from './utils/storage';
+import { readJSON, setRecordScope, writeJSON } from './utils/storage';
+import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
 import { assetEmbeds, referencesAsset } from './utils/assets';
 import { collectFiles } from './utils/tree';
@@ -535,52 +536,74 @@ export default function App() {
   }, [layout]);
   useEffect(() => { activeTabPathRef.current = activeTabPath; }, [activeTabPath]);
 
-  // True once the restore pass below has consumed the stored session.
-  const hasRestoredTabs = useRef<boolean>(false);
+  /**
+   * WHICH VAULT the workspace on screen is the session of — the handle and the
+   * id together, because neither alone is enough.
+   *
+   * `openVaultHandle` commits rootHandle + fileTree in one batch and only then
+   * awaits recordVault, so there is a commit where the tree is the NEW vault's
+   * and `currentVaultId` is still the OLD one; restoring there would open the
+   * old vault's paths out of the new vault's tree. And the persist effect is
+   * declared before the switch effect, so on the switch commit it runs FIRST,
+   * with the outgoing layout — and would file it under the incoming id.
+   *
+   * So both effects check both refs, and the restore pass writes them together
+   * — and only once it has a real id to write, never against the `null` a vault
+   * carries between its tree landing and recordVault answering (see there).
+   * `undefined` is "nothing restored yet", which no vault id can collide with.
+   */
+  const sessionRootRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const sessionVaultIdRef = useRef<string | null | undefined>(undefined);
 
-  // The open vault, for the async restore pass to re-check after its awaits.
+  // The open vault, for the async restore pass to re-check after its awaits —
+  // BOTH halves of it, because `currentVaultId` lags `rootHandle` by a commit on
+  // every path that commits the tree before awaiting `recordVault`. The id alone
+  // cannot tell that pass a switch happened underneath it (see there).
   const currentVaultIdRef = useRef<string | null>(currentVaultId);
   useEffect(() => { currentVaultIdRef.current = currentVaultId; }, [currentVaultId]);
+  const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(rootHandle);
+  useEffect(() => { rootHandleRef.current = rootHandle; }, [rootHandle]);
 
-  // Persist the open documents, how they are grouped into tabs, and which one
-  // has focus, so a reload comes back to the same workspace. Keyed on `layout`
-  // (not `tabs`) so it does NOT run on every keystroke — the layout's identity
-  // only moves when the tab bar actually changes.
+  // Which vault the two path-keyed records (fileScrollPositions,
+  // pdfViewPositions) file their entries under. Declared BEFORE the restore
+  // pass so no pane it opens can read a record under the outgoing vault's
+  // scope — `Notes/index.md` names a different file in every vault, and with
+  // per-vault sessions both of them are routinely open.
+  useEffect(() => { setRecordScope(currentVaultId); }, [currentVaultId]);
+
+  // Persist the open documents, how they are grouped into tabs, which pane each
+  // tab was left on and how wide those panes were, UNDER THIS VAULT'S ID — so a
+  // reload, and a switch away and back, both come back to the same workspace.
+  // Keyed on `layout` (not `tabs`) so it does NOT run on every keystroke — the
+  // layout's identity only moves when the tab bar actually changes.
   //
-  // The flat path list is written as it always was, so a build without split
-  // tabs still restores the session; the grouping rides alongside it and is
-  // ignored by anything that doesn't understand it.
-  //
-  // GATED until the restore pass has run: this effect also fires on mount, with
-  // zero tabs, and writing that out would clobber the stored tab list moments
-  // before restore reads it — which is exactly what reduced every reload to
-  // "only the last-active file comes back" (via the lastFilePath fallback).
+  // GATED on the two session refs, which is the old `hasRestoredTabs` rule
+  // generalized per vault. It has to cover two things:
+  //   • mount, with zero tabs — writing that out would clobber the stored list
+  //     moments before restore reads it, which is what once reduced every
+  //     reload to "only the last-active file comes back";
+  //   • the vault-switch commit, where this effect runs BEFORE the switch
+  //     effect (declaration order) and would otherwise file the OUTGOING
+  //     layout — or, a commit later, the empty one the switch installs —
+  //     under the INCOMING vault's id.
+  // An empty layout is written happily once the refs match: "I closed
+  // everything in this vault" is a session, and must survive a switch.
   useEffect(() => {
-    if (!hasRestoredTabs.current) return;
-    const groups = layout.groups.map(g => g.paths);
-    writeJSON('openTabPaths', groups.flat());
-    writeJSON('openTabGroups', groups);
-    // Which pane each split tab was left on. Written as its own key so the
-    // grouping keeps the exact shape every build has read, and a session
-    // without it still restores (each tab falls back to its leftmost pane).
-    writeJSON('openTabGroupFocus', layout.groups.map(g => g.activePath));
-    // How wide each split tab's panes were left, positionally alongside the
-    // grouping and `null` for the tabs nobody resized (which is most of them).
-    // Additive like every key before it: a build that doesn't read it restores
-    // the same session in equal columns, which is what all of them used to.
-    writeJSON('openTabGroupSizes', layout.groups.map(g => g.sizes ?? null));
-    // Which vault this session belongs to. These paths index ONE vault's tree,
-    // so the restore pass below has to know whether it is looking at that vault
-    // (see there) — a session with no vault stamped on it predates this.
-    if (currentVaultId) localStorage.setItem('openTabsVaultId', currentVaultId);
-    const focused = focusedPathOf(layout);
-    if (focused) {
-      localStorage.setItem('activeTabPath', focused);
-      localStorage.setItem('lastFilePath', focused); // back-compat
-    } else {
-      localStorage.removeItem('activeTabPath');
-    }
-  }, [layout, currentVaultId]);
+    if (!currentVaultId) return;                              // no id → nowhere to file it
+    if (sessionRootRef.current !== rootHandle) return;        // the workspace is still the old vault's
+    if (sessionVaultIdRef.current !== currentVaultId) return; // …or this vault's restore has not run yet
+    writeSession(currentVaultId, {
+      paths: layout.groups.flatMap(g => g.paths),
+      groups: layout.groups.map(g => g.paths),
+      // Which pane each split tab was left on: without it a background split
+      // tab came back on its leftmost pane, since `active` speaks for one group.
+      focus: layout.groups.map(g => g.activePath),
+      // `null` for the tabs nobody resized, which is most of them — absence is
+      // how "equal columns" is encoded all the way down (see tabGroups.ts).
+      sizes: layout.groups.map(g => g.sizes ?? null),
+      active: focusedPathOf(layout),
+    });
+  }, [layout, currentVaultId, rootHandle]);
 
   // Sidebar resizing
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
@@ -1253,6 +1276,13 @@ export default function App() {
   // vault's file. So flush what's pending (those handles are still good) and
   // hand the new vault an empty workspace.
   //
+  // Emptying the workspace does NOT lose the outgoing vault's session: the
+  // persist effect above has already written it under that vault's id on every
+  // layout change, and the two session refs stop this `EMPTY_LAYOUT` being
+  // filed under either vault — the outgoing one because its restore marker no
+  // longer matches `rootHandle`, the incoming one because its restore has not
+  // run yet. That is what makes switching back restore the workspace.
+  //
   // Only fires on a REAL switch: the null → vault assignment at startup must not
   // clear the tabs the restore pass below is about to bring back.
   const prevRootRef = useRef<FileSystemDirectoryHandle | null>(null);
@@ -1273,6 +1303,18 @@ export default function App() {
     setLayout(EMPTY_LAYOUT);
     setSaveStatus('');
     setPendingReveal(null);
+    // The workspace on screen is no longer ANY vault's session — least of all
+    // this empty one's. Only the handle ref is released: clearing the id ref too
+    // would let the restore pass claim on this very commit, where
+    // `currentVaultId` is still the OUTGOING vault's, and open the old vault's
+    // paths out of the new vault's tree. Without this, persistence is gated only
+    // by `rootHandle` never being the same OBJECT twice — and it can be, since
+    // the vault menu re-mints its handles from `publishVaults`, which a
+    // `recordVault` that failed after `setCurrentVaultId` never reaches. Coming
+    // back to that vault by the same menu row then matched both refs and filed
+    // this EMPTY layout under its id, destroying the session it was about to
+    // restore. Gated instead, it merely does not restore that once.
+    sessionRootRef.current = null;
   }, [rootHandle, flushTab]);
 
   // Search reads open-tab buffers through this accessor (via tabsRef) so its
@@ -1282,50 +1324,56 @@ export default function App() {
     []
   );
 
-  // Auto-restore previously-open tabs once the file tree has loaded.
+  // Auto-restore THIS VAULT'S tabs once its file tree has loaded — on a cold
+  // start and on every switch back to it.
   useEffect(() => {
-    if (hasRestoredTabs.current || !fileTree || fileTree.length === 0) return;
-    // Consume the stored session exactly once per app load — and flip the flag
-    // BEFORE any early return, because persistence stays gated until this pass
-    // has run and a fresh profile with nothing stored must still un-gate it.
-    hasRestoredTabs.current = true;
+    if (!fileTree || fileTree.length === 0) return;
+    // Both halves must have moved on: see sessionRootRef's note above. Equal on
+    // either one means this commit is mid-switch (openVaultHandle commits the
+    // tree before recordVault sets the id) or this vault has already been
+    // restored — and restoring against the wrong pairing opens whichever of the
+    // other vault's files happen to sit at these paths. That is the same hazard
+    // the vault-switch effect exists to prevent, arriving by another road.
+    if (sessionRootRef.current === rootHandle) return;
+    if (sessionVaultIdRef.current === currentVaultId) return;
+    // WAIT for the id rather than claim against its absence. Two paths —
+    // openVaultHandle (and openRecentVault, only a wrapper over it) and
+    // pickDirectory — commit the tree and only THEN await recordVault, while
+    // the mount path and restoreVault record FIRST and walk after (which is why
+    // an ordinary reload always looked fine). So the first vault of a page load
+    // opened through the picker or the vault menu arrives
+    // with `currentVaultId` still at its initial null; claiming here would mark
+    // the workspace as that vault's and make the very next commit, the one
+    // carrying the real id, fail the `sessionRootRef.current === rootHandle`
+    // test above — the vault's session silently never restored. A vault whose
+    // recordVault genuinely FAILED gets no session either way, which is the
+    // intent: on the first vault of a load it keeps the null id and stops here;
+    // on a later switch `currentVaultId` is left naming the OUTGOING vault, and
+    // the id test above stops it instead. Persistence is not left un-gated by
+    // the wait, because its own first line is the same check.
+    if (!currentVaultId) return;
+    // Claimed BEFORE any remaining early return — and before any await, since
+    // StrictMode runs this effect twice — because persistence stays gated until
+    // this pass has run, and a vault with nothing stored must still un-gate it.
+    // The old `hasRestoredTabs` rule, per vault.
+    sessionRootRef.current = rootHandle;
+    sessionVaultIdRef.current = currentVaultId;
 
-    // The stored session belongs to ONE vault: its paths index that vault's
-    // tree, and nothing else about them says so. A cold start can land on a
-    // DIFFERENT vault — the last one's permission lapsed, or the user opened
-    // another from the vault menu before this pass ran — and restoring then
-    // opens whichever of the new vault's files happen to sit at those paths.
-    // That is precisely what the vault-switch effect above exists to prevent,
-    // arriving by another road. A session with no vault stamped on it was
-    // written by an older build; restore it as before rather than discard it.
-    const sessionVaultId = localStorage.getItem('openTabsVaultId');
-    if (sessionVaultId && currentVaultId && sessionVaultId !== currentVaultId) return;
-
-    // A missing key (pre-tab-era profile) falls back to its single
-    // lastFilePath; a present-but-empty list means the last session really
-    // ended with no tabs open, so nothing should be restored.
-    let storedPaths = readJSON<string[] | null>('openTabPaths', null);
-    if (!Array.isArray(storedPaths)) {
-      const last = localStorage.getItem('lastFilePath');
-      storedPaths = last ? [last] : [];
-    }
-    if (storedPaths.length === 0) return;
-    // Read the REST of the session here too, not after the awaits below. The
-    // persist effect is un-gated the moment this pass starts, so anything that
-    // fires it while the file reads are in flight would have these keys already
-    // rewritten by the time they were read — and the split would come back
-    // silently flattened. Deciding the whole restore from one snapshot taken
-    // before yielding is what makes that unreachable rather than merely
-    // unreached.
-    const storedGroups = readJSON<unknown>('openTabGroups', null);
-    const storedFocus = readJSON<unknown>('openTabGroupFocus', null);
-    const storedSizes = readJSON<unknown>('openTabGroupSizes', null);
-    const storedActive = localStorage.getItem('activeTabPath');
+    // Read the session WHOLE and synchronously, before the file reads below
+    // yield: persistence is un-gated the moment the refs are claimed, so
+    // anything that fires it while the reads are in flight would have rewritten
+    // the entry — and the split would come back silently flattened. Deciding
+    // the whole restore from one snapshot is what makes that unreachable rather
+    // than merely unreached.
+    const stored = readSession(currentVaultId);
+    // An empty `paths` is a real session ("I closed everything here"); there is
+    // simply nothing to open for it.
+    if (!stored || stored.paths.length === 0) return;
 
     (async () => {
       const vaultFiles = collectFiles(fileTree);
       const restored: OpenTab[] = [];
-      for (const path of storedPaths) {
+      for (const path of stored.paths) {
         if (path === 'help-guide') {
           restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
           continue;
@@ -1349,7 +1397,14 @@ export default function App() {
       if (tabsRef.current.length > 0) return;
       // Or switched vaults in the meantime — the switch effect empties the tab
       // set, so the check above would wave these through and drop the OLD
-      // vault's notes (handles and all) into the new vault's workspace.
+      // vault's notes (handles and all) into the new vault's workspace. The
+      // HANDLE is checked as well as the id, and it is the half that catches it:
+      // `currentVaultId` lags `rootHandle` by a commit, so a switch whose reads
+      // land in that window passes an id test comparing the outgoing id with
+      // itself (measured: with a 600ms-per-file read, switching away mid-restore
+      // put vault A's three tabs on screen over vault B's tree, autosaving
+      // through A's handles).
+      if (rootHandleRef.current !== rootHandle) return;
       if (currentVaultIdRef.current !== currentVaultId) return;
       setTabs(restored);
       // Which of these shared a tab as split panes. A session written before
@@ -1357,13 +1412,22 @@ export default function App() {
       // document a tab of its own — exactly what used to happen.
       setLayout(restoreLayout(
         restored.map(t => t.file.path),
-        storedGroups,
-        storedFocus,
-        storedSizes,
-        storedActive,
+        stored.groups,
+        stored.focus,
+        stored.sizes,
+        stored.active,
       ));
     })();
-  }, [fileTree, readFile, currentVaultId, rememberAssetRefs]);
+  }, [fileTree, rootHandle, currentVaultId, readFile, rememberAssetRefs]);
+
+  // A vault taken off the recent list (the minus in the vault menu) mints a new
+  // id if it is ever opened again, so its stored session would be unreachable
+  // weight. Nothing prunes by staleness — a vault returned to a year later
+  // still opens where it was left, the same call fileScrollPositions makes.
+  useEffect(() => {
+    if (recentVaults.length === 0) return;   // the list has not loaded yet
+    pruneSessions(recentVaults.map(v => v.id));
+  }, [recentVaults]);
 
   /**
    * Open the file the address bar names, once there is a tree to find it in.

@@ -4,6 +4,9 @@ import { createFitProbes, observeTableFit, rekeyTableFit, releaseTableFit, retun
 import { parseGrid } from './tableModel';
 import type { ColumnAlign, Grid } from './tableModel';
 import { activeCellSession, attachCellEditing, endCellEdit, insertColumn, insertRow } from './tableEdit';
+import { findMathRegions } from './latexSource';
+import type { MathRegion } from './latexSource';
+import { renderMath } from './mathWidget';
 
 /* ── A rendered table is an OBJECT with an inside ─────────────────────────
  *
@@ -54,7 +57,14 @@ import { activeCellSession, attachCellEditing, endCellEdit, insertColumn, insert
    renderInlineMarkdown is the same unescaped cell text it has always been
    given; the ONLY other way anything reaches a cell is textContent, which is a
    text node and can never be markup; and a paste into a cell is intercepted
-   and re-inserted as plain text on top of plaintext-only's own guarantee. */
+   and re-inserted as plain text on top of plaintext-only's own guarantee.
+
+   Math does not widen it either, and is why there is now exactly ONE innerHTML
+   WRITE SITE (renderCellContent) where there used to be three. A formula is
+   lifted OUT of the cell text before the allowlist runs and comes back as DOM
+   that katex.render built with createElement/createTextNode — a DOM builder,
+   never an HTML-string sink. The only string that reaches innerHTML is still
+   the allowlist's own output, over text with the formulas masked out. */
 const CELL_HTML = /<(\/?)(br|b|i|u|s|em|strong|code|kbd|mark|small|sub|sup)\s*\/?>/gi;
 
 /** `<` and `>` only: an entity can't open a tag, so leaving `&` alone keeps a
@@ -89,6 +99,113 @@ function renderInlineMarkdown(text: string): string {
         .replace(/_(.+?)_/g, '<em>$1</em>')
         // Inline code: `text`
         .replace(/`(.+?)`/g, '<code>$1</code>');
+}
+
+/* ── Math in a cell ──
+   A formula must not go through the allowlist above, in either direction. On
+   the way in, `$a_1 + b_2$` comes back with its subscripts eaten by the
+   `_(.+?)_` italic rule — the cell did not merely fail to render maths, it
+   MANGLED it. On the way out, KaTeX's output is markup the allowlist would
+   (rightly) escape into visible tag text.
+
+   So the formula is lifted OUT of the text first, the remaining text goes
+   through the one unmodified allowlist, and the KaTeX DOM is spliced into the
+   parsed result. katex.render builds its tree with createElement /
+   createTextNode, so no note text ever reaches a second innerHTML — the sink
+   below is still the only one, and collecting the three former call sites here
+   makes it the only WRITE SITE as well.
+
+   MASKED rather than split at the math boundaries. Splitting the cell at each
+   `$…$` and running renderInlineMarkdown over the pieces would break emphasis
+   that spans a formula: `**bold $x$ end**` would lose its bold and show the
+   literal asterisks, because neither piece contains a matched pair. The
+   emphasis rules have to see the whole cell, so what they see is the whole
+   cell with each formula standing in as one inert token. */
+const SLOT_OPEN = '\uE000';   // Private Use Area, written here as an ESCAPE and never
+const SLOT_CLOSE = '\uE001';  // as a literal character. Nothing a note can mean uses
+                              // these, and they are stripped from the cell text below
+                              // anyway, so a note cannot forge one.
+const MATH_SLOT = /\uE000(\d+)\uE001/;
+
+/** One reusable parser. Appending `.content` moves its children out, so it is
+ *  always clean on the way in — and a table that re-dresses every cell does not
+ *  allocate a <template> per cell to find that out. */
+const CELL_PARSER = document.createElement('template');
+
+/** Inline-code spans, found with the SAME regex renderInlineMarkdown uses, so
+ *  the two agree on what is code and a `$` inside backticks stays literal.
+ *  (findMathRegions takes the unexported CharRange[]; this shape satisfies it.) */
+function inlineCodeRanges(text: string): { from: number; to: number }[] {
+    const out: { from: number; to: number }[] = [];
+    const re = /`(.+?)`/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) out.push({ from: m.index, to: m.index + m[0].length });
+    return out;
+}
+
+/**
+ * Put `text` into `cell` as rendered content: the app's one allowlisted
+ * innerHTML sink, with KaTeX-built DOM spliced in wherever the cell held maths.
+ *
+ * Depends on nothing but the cell's text — no selection, no editor mode — which
+ * is what keeps reading mode a pure function of the document.
+ */
+function renderCellContent(cell: HTMLElement, text: string): void {
+    // A note cannot forge a slot: the sentinels are removed before masking, so
+    // every SLOT_OPEN in the masked string is one this function just wrote.
+    const clean = text.replace(/[\uE000\uE001]/g, '');
+    const regions = findMathRegions(clean, inlineCodeRanges(clean));
+
+    let masked = clean;
+    if (regions.length) {
+        masked = '';
+        let last = 0;
+        for (let i = 0; i < regions.length; i++) {
+            masked += clean.slice(last, regions[i].from) + SLOT_OPEN + i + SLOT_CLOSE;
+            last = regions[i].to;
+        }
+        masked += clean.slice(last);
+    }
+
+    CELL_PARSER.innerHTML = renderInlineMarkdown(masked);   // ← the app's one innerHTML sink
+    if (regions.length) fillMathSlots(CELL_PARSER.content, regions);
+    cell.textContent = '';
+    cell.appendChild(CELL_PARSER.content);
+    // A cell holding an over-wide formula is a scroll container (see index.css's
+    // `td:has(.cm-table-math)`), and replacing its children does NOT reset that
+    // scroll. Measured: a cell scrolled 13px to read the tail of an integral kept
+    // the offset through a click-in/edit/blur cycle and came back with the
+    // formula's LEFT edge cut off instead of its right — new content, stale view.
+    cell.scrollLeft = 0;
+}
+
+/** Swap every slot in the parsed fragment's text for its rendered formula. */
+function fillMathSlots(root: DocumentFragment, regions: MathRegion[]): void {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const holders: Text[] = [];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (n.nodeValue?.includes(SLOT_OPEN)) holders.push(n as Text);
+    }
+    // Collected in full FIRST: splitText mutates the tree the walker is walking,
+    // and the walker's position does not survive having its current node split.
+    for (const holder of holders) {
+        let rest = holder;
+        for (;;) {
+            const m = MATH_SLOT.exec(rest.nodeValue ?? '');
+            if (!m) break;
+            const slot = rest.splitText(m.index);
+            const tail = slot.splitText(m[0].length);
+            const span = document.createElement('span');
+            span.className = 'cm-table-math';
+            // displayMode false even for `$$…$$`: a cell is one line, and
+            // .katex-display is `display:block; margin:1em 0; text-align:center`,
+            // which would break the row's rhythm and the fitter's height
+            // accounting (which is what keeps the caret from being stranded).
+            renderMath(span, regions[Number(m[1])].latex, false);
+            slot.replaceWith(span);
+            rest = tail;
+        }
+    }
 }
 
 /**
@@ -153,7 +270,7 @@ function buildRow(grid: Grid, row: number, tag: 'th' | 'td', canEdit: boolean): 
     for (let col = 0; col < grid.columns; col++) {
         const cell = document.createElement(tag);
         dressCell(cell, grid, row, col, canEdit);
-        cell.innerHTML = renderInlineMarkdown(grid.rows[row].cells[col].text);
+        renderCellContent(cell, grid.rows[row].cells[col].text);
         tr.appendChild(cell);
     }
     return tr;
@@ -212,7 +329,7 @@ export function restoreRenderedCell(dom: HTMLElement, cell: HTMLElement): void {
     if (!Number.isInteger(row) || !Number.isInteger(col)) return;
     if (row >= grid.rows.length || col >= grid.columns) return;
     dressCell(cell as HTMLTableCellElement, grid, row, col, model.canEdit);
-    cell.innerHTML = renderInlineMarkdown(grid.rows[row].cells[col].text);
+    renderCellContent(cell, grid.rows[row].cells[col].text);
 }
 
 /** The two corner chips, in the shape imageWidget's toolButton established. */
@@ -304,7 +421,7 @@ export class TableWidget extends WidgetType {
         // The sensors the fitter watches — zero-height, never painted. The
         // width probe must stay a DIRECT first child of the container: its
         // width IS the available text width, which is the fit's input.
-        const { probe, fontProbe } = createFitProbes();
+        const { probe, fontProbe, mathProbe } = createFitProbes();
         container.appendChild(probe);
 
         // The table sits inside its own scroller rather than in the container,
@@ -338,7 +455,7 @@ export class TableWidget extends WidgetType {
         attachEdgeReveal(container);
 
         observeTableFit({
-            key: this.rawTable, view, container, widthProbe: probe, fontProbe, table, cols,
+            key: this.rawTable, view, container, widthProbe: probe, fontProbe, mathProbe, table, cols,
             lastAvail: -1, lastFont: -1, lastBreaks: '', fitted: false,
         });
 
@@ -422,7 +539,7 @@ export class TableWidget extends WidgetType {
                     if (!cell) continue;
                     dressCell(cell, grid, row, col, this.canEdit);
                     if (model.cellText[row]?.[col] === grid.rows[row].cells[col].text) continue;
-                    cell.innerHTML = renderInlineMarkdown(grid.rows[row].cells[col].text);
+                    renderCellContent(cell, grid.rows[row].cells[col].text);
                 }
             }
             retuneTableFit(dom, this.rawTable);

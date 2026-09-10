@@ -2645,6 +2645,22 @@ body.is-resizing-panes * {
   height: auto;
 }
 
+/* …with one exemption, for the SVGs a formula is partly drawn out of. KaTeX's
+   HTML output draws \sqrt surds and stretchy delimiters/accents as inline
+   <svg> and sizes them from its own stylesheet — `.katex svg { position:
+   absolute; width: 100%; height: inherit }` (katex.css) — so the cap above,
+   which exists for pictures pasted into a fitted cell, would leave a root with
+   no bar over it and a delimiter with no height.
+
+   KaTeX's declaration is restated rather than reverted: `height: revert` rolls
+   back the whole AUTHOR origin, katex.css included, and would land on the UA's
+   `auto` — the very value being escaped. Everything else KaTeX emits is a
+   <span> and is untouched by any of this. */
+.cm-table-widget .cm-table-math svg {
+  max-width: none;
+  height: inherit;
+}
+
 /* The fitter's sensors: this box's WIDTH is the available text width, and the
    hidden text inside it changes width iff the note's font metrics do. Both are
    watched by one ResizeObserver, and neither is affected by anything the
@@ -2747,6 +2763,55 @@ body.is-resizing-panes * {
 .cm-table-widget.cm-table-selected table {
   outline: 2px solid var(--interactive-accent);
   outline-offset: -1px;
+}
+
+/* One rendered formula inside a cell. Deliberately almost empty: KaTeX is
+   all-em internally and .katex's own font-size and line-height are what make
+   maths in a cell look like maths in the note, so overriding either here would
+   make the two disagree. What this DOES say is that a formula is one atom —
+   KaTeX's `.katex .base { white-space: nowrap }` already says so for each
+   base, and saying it for the whole span keeps a formula from being split
+   across lines. The fitter reads that through min-content as the column's
+   floor, which is right: a wrapped formula is not a formula. */
+.cm-table-math {
+  white-space: nowrap;
+}
+
+/* …and the other half of that floor: what happens when the column does not get
+   it. The fitter caps what any one column may DEMAND at COMFORT_EM, so a
+   formula wider than ~12em is handed a column narrower than itself; its
+   last-resort `overflow-wrap: break-word` then does nothing, because the rule
+   above makes the formula unbreakable. Measured on a five-column table holding
+   one `\sum … \int` formula: without this rule the formula's box ran 18.9px
+   past its cell at a 1400px window and 62.4px at 520px, and the two rendered
+   bands differ pixel-for-pixel — i.e. that ink was landing on the neighbouring
+   column's prose, not merely overhanging in layout.
+
+   So the CELL scrolls. Not the formula: `overflow` on the formula's own span
+   would make it an inline-block, whose baseline is its bottom margin edge
+   rather than its text's — every formula would then sit off the text beside it
+   and grow the row holding it, and `vertical-align: bottom` does not recover a
+   formula taller than the line box. A table cell is not an inline box, so
+   scrolling it costs no alignment: measured, a formula's rect and the rect of
+   the text node beside it in the same cell are identical (top 482.98 / bottom
+   500.98 for both), rows holding a formula stay the height plain rows are, and
+   the fitter's own per-column min-content/max-content come out the same with
+   the rule live as with it neutralised.
+
+   The cost is that an over-wide formula is CLIPPED with no visible affordance
+   on overlay-scrollbar platforms — recoverable by scrolling the cell, but
+   nothing says so. See tableFit.ts's COMFORT_EM: an unbreakable column arguably
+   should not be capped at all. Left as is deliberately; changing the cap is a
+   fitter change, and this rule is what stops the clipping being illegible
+   overlap instead.
+
+   Scoped by :has() rather than applied to every cell: an ordinary cell can
+   never overflow (the fitter breaks its longest word instead), so this would
+   be a no-op there — and a cell being EDITED holds its raw source, not a
+   formula, so it correctly stops matching and wraps as it always has. */
+.cm-table-widget th:has(.cm-table-math),
+.cm-table-widget td:has(.cm-table-math) {
+  overflow-x: auto;
 }
 
 .cm-table-widget code {

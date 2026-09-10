@@ -15,12 +15,17 @@ export function readJSON<T>(key: string, fallback: T): T {
     }
 }
 
-/** JSON-stringify and persist a value to localStorage. */
-export function writeJSON(key: string, value: unknown): void {
+/** JSON-stringify and persist a value to localStorage. Reports whether it
+ *  landed — quota and private-mode failures are swallowed here, and a caller
+ *  that is about to DELETE the value's old home (tabSessions' one-way legacy
+ *  migration) has to know the new one actually took. */
+export function writeJSON(key: string, value: unknown): boolean {
     try {
         localStorage.setItem(key, JSON.stringify(value));
+        return true;
     } catch (err) {
         console.error(`Failed to persist "${key}":`, err);
+        return false;
     }
 }
 
@@ -42,14 +47,54 @@ const records = new Map<string, Record<string, unknown>>();
 export function readRecord<T>(key: string): Record<string, T> {
     let record = records.get(key);
     if (!record) {
-        record = readJSON<Record<string, unknown>>(key, {});
+        const stored = readJSON<unknown>(key, {});
+        // readJSON only falls back when the JSON is unparseable. localStorage is
+        // user-editable, so `"hello"`, `42` and `[1,2,3]` all parse fine and
+        // then reach callers that MUTATE the result: `delete record[id]` on a
+        // String object throws in strict mode, and every caller of this is
+        // inside a React effect, so that threw before the first paint and left
+        // an empty #root that no reload could clear (the bad value is still
+        // there). A record is an object and not an array, or it is nothing.
+        record = stored && typeof stored === 'object' && !Array.isArray(stored)
+            ? stored as Record<string, unknown>
+            : {};
         records.set(key, record);
     }
     return record as Record<string, T>;
 }
 
-/** Persist the in-memory record for `key` (after mutating it in place). */
-export function flushRecord(key: string): void {
+/** Persist the in-memory record for `key` (after mutating it in place).
+ *  Reports whether the write landed, for the same reason writeJSON does. */
+export function flushRecord(key: string): boolean {
     const record = records.get(key);
-    if (record) writeJSON(key, record);
+    return record ? writeJSON(key, record) : false;
+}
+
+/* ── The vault a path-keyed record entry belongs to ──
+   Path-keyed records are keyed by a VAULT-RELATIVE path, and two vaults share
+   paths freely — `Notes/index.md` names a different file in each. That was a
+   theoretical collision while a switch emptied the workspace for good; per-vault
+   tab sessions make "the same path open in two vaults" routine, so switching
+   back would scroll a note to an offset measured in a different file.
+
+   Everything else in the app drops its per-vault caches on a switch
+   (clearLinkCache, the search cache, the object-URL registry); these records
+   deliberately OUTLIVE the session instead, so they carry the vault in the key
+   rather than being cleared. A vault whose id could not be recorded degrades to
+   the bare path — which is exactly what every entry written before this looked
+   like. */
+
+let recordScope = '';
+
+/** Point the path-keyed records at `vaultId`'s entries. */
+export function setRecordScope(vaultId: string | null): void {
+    recordScope = vaultId ?? '';
+}
+
+/** `path` as it is keyed inside a path-keyed record, under the open vault. */
+export function scopedKey(path: string): string {
+    // U+0000 as the separator: a vault id is a UUID and a path cannot contain a
+    // NUL, so the two halves can never be confused. Written as an ESCAPE, never
+    // as a literal control character in the source.
+    return recordScope ? `${recordScope}\u0000${path}` : path;
 }

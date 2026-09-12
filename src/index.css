@@ -2133,6 +2133,122 @@ body.is-resizing-panes * {
   user-select: none;
 }
 
+/* ── Page thumbnails (PdfThumbnails.tsx) — the reader and the annotate canvas ──
+   The strip is windowed and absolutely positioned; the document beside it just
+   starts where the strip ends. */
+.pdf-viewer,
+.pdf-annotate-pane {
+  /* THUMB_WIDTH (108) plus 14px either side — keep the two in step. */
+  --pdf-thumbs-width: 136px;
+}
+
+.pdf-thumbs {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--pdf-thumbs-width);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--background-secondary);
+  border-right: 1px solid var(--background-modifier-border);
+  z-index: 6;
+}
+
+.pdf-thumbs-inner {
+  position: relative;
+}
+
+.pdf-thumb {
+  position: absolute;
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pdf-thumb-page {
+  display: block;
+  overflow: hidden;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--background-modifier-border), 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: box-shadow 0.12s ease;
+}
+
+.pdf-thumb-page img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.pdf-thumb:hover .pdf-thumb-page {
+  box-shadow: 0 0 0 1px var(--text-faint), 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.pdf-thumb.is-current .pdf-thumb-page {
+  box-shadow: 0 0 0 2px var(--interactive-accent), 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.pdf-thumb-label {
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.pdf-thumb.is-current .pdf-thumb-label {
+  color: var(--interactive-accent);
+  font-weight: 600;
+}
+
+.pdf-viewer.has-thumbs .pdf-viewer-scroll {
+  left: var(--pdf-thumbs-width);
+}
+
+/* The annotate canvas gets its own box so the strip can narrow it; its stacking
+   context keeps tldraw's internal layers under the page box and the strip. */
+.pdf-annotate-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.pdf-annotate-pane.has-thumbs .pdf-annotate-canvas {
+  left: var(--pdf-thumbs-width);
+}
+
+.pdf-viewer-thumbs-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 4px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.pdf-viewer-thumbs-toggle:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.pdf-viewer-thumbs-toggle.is-on {
+  color: var(--interactive-accent);
+}
+
 /* tldraw's own dark canvas (hsl(240,5%,6.5%) ≈ #101011) reads as a hole next
    to the app's #202020 chrome — pin it to the app palette. Dark only: the
    light canvas already blends in. */

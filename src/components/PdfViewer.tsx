@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
-import { readRecord, flushRecord, scopedKey } from '../utils/storage';
+import { readPdfViewPos, readThumbnailsOpen, writePdfViewPos, writeThumbnailsOpen } from '../utils/pdfViewState';
+import PdfThumbnails, { ThumbnailsToggle, type PdfThumbnailsHandle } from './PdfThumbnails';
 import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
 import { pdfWorker } from '../utils/pdfWorker';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
@@ -53,15 +54,6 @@ interface PdfViewerProps {
     isActive: boolean;
 }
 
-interface PdfViewPos {
-    /** 0-based index of the page under the top edge of the viewport. */
-    page: number;
-    /** How far into that page the top edge sits, as a fraction of its height. */
-    offset: number;
-    /** Zoom factor on top of fit-width (1 = fit width). */
-    zoom?: number;
-}
-
 interface DocState {
     doc: PDFDocumentProxy;
     /** Per-page size at scale 1, in PDF points. */
@@ -93,7 +85,6 @@ interface PageState {
     linksPromise?: Promise<void>;
 }
 
-const STORAGE_KEY = 'pdfViewPositions';
 /** Vertical padding above the first / below the last page, px. */
 const PAD_V = 20;
 /** Gap between pages, px. */
@@ -298,9 +289,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     // Read once per mount: where this file was last left, and at what zoom.
     // Keyed by vault as well as path — two vaults can both hold `refs/spec.pdf`
     // and page 47 of one is nowhere in the other (see utils/storage.ts).
-    const [saved] = useState<PdfViewPos | undefined>(
-        () => readRecord<PdfViewPos>(STORAGE_KEY)[scopedKey(filePath)]
-    );
+    const [saved] = useState(() => readPdfViewPos(filePath));
     const [zoom, setZoom] = useState<number>(() => clampZoom(saved?.zoom ?? 1));
     const [docState, setDocState] = useState<DocState | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -330,6 +319,13 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     /** The 0-based page the box is displaying. Usually the page under the top
      *  edge, but not at the document's bottom — see updateWindow. */
     const shownPageRef = useRef(0);
+    /** The page strip, and the page it opens on. Its current page is pushed
+     *  through the handle from the scroll pass, never through a prop — see
+     *  components/PdfThumbnails.tsx for why. */
+    const [thumbsOpen, setThumbsOpen] = useState(readThumbnailsOpen);
+    const [thumbsStart, setThumbsStart] = useState(() => saved?.page ?? 0);
+    const thumbsRef = useRef<PdfThumbnailsHandle | null>(null);
+    useEffect(() => { writeThumbnailsOpen(thumbsOpen); }, [thumbsOpen]);
     const pageStatesRef = useRef<Map<number, PageState>>(new Map());
     const textLayersRef = useRef<Set<InstanceType<typeof pdfjs.TextLayer>>>(new Set());
     const docStateRef = useRef<DocState | null>(null);
@@ -348,11 +344,8 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     const persistTimerRef = useRef<number | null>(null);
     const persistNow = useCallback(() => {
         persistTimerRef.current = null;
-        // The record is held parsed in memory — mutate and write, no re-parse.
-        const all = readRecord<PdfViewPos>(STORAGE_KEY);
         const { page, offset } = currentPosRef.current;
-        all[scopedKey(filePath)] = { page, offset: Math.round(offset * 1000) / 1000, zoom: zoomRef.current };
-        flushRecord(STORAGE_KEY);
+        writePdfViewPos(filePath, { page, offset, zoom: zoomRef.current });
     }, [filePath]);
 
     const schedulePersist = useCallback(() => {
@@ -561,6 +554,45 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         // page i, where "which page is under the top edge" still answers i-1.
         // Jumping to page 9 would then leave the box reading 8.
         el.scrollTop = Math.ceil(L.tops[i] + offset * L.scale);
+    }, []);
+
+    /**
+     * One page for the thumbnail strip, as a small JPEG.
+     *
+     * Straight from the document, not through the render window: a thumbnail
+     * must not take a canvas slot or a page state that the scroll pass evicts
+     * and cleans up on its own schedule. It lets pdf.js drop what it parsed for
+     * the page afterwards — unless the reader is holding that page, in which
+     * case the reader's own cleanup decides.
+     */
+    const renderThumbnail = useCallback(async (index: number, scale: number) => {
+        const doc = docStateRef.current?.doc;
+        if (!doc) throw new Error('The document is not open');
+        const page = await doc.getPage(index + 1);
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.ceil(viewport.width));
+        canvas.height = Math.max(1, Math.ceil(viewport.height));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('No 2D canvas context for a thumbnail');
+        await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+        const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.8));
+        canvas.width = 0;
+        canvas.height = 0;
+        const st = pageStatesRef.current.get(index);
+        if (!st?.pagePromise || st.cleaned) page.cleanup();
+        if (!blob) throw new Error('Could not encode a thumbnail');
+        return URL.createObjectURL(blob);
+    }, []);
+
+    const thumbSizes = useMemo(
+        () => docState?.dims.map(d => ({ width: d.w, height: d.h })) ?? [],
+        [docState],
+    );
+
+    const toggleThumbs = useCallback(() => {
+        setThumbsStart(shownPageRef.current);
+        setThumbsOpen(open => !open);
     }, []);
 
     /** Act on a clicked link: jump to its destination, or run its named action.
@@ -825,6 +857,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         const maxScroll = el.scrollHeight - el.clientHeight;
         const shown = maxScroll > 1 && top >= maxScroll - 1 ? last : first;
         shownPageRef.current = shown;
+        thumbsRef.current?.setCurrentPage(shown);
         // Written straight to the DOM rather than through state — see
         // pageInputRef. Never while it's focused: that would fight the typing.
         const input = pageInputRef.current;
@@ -1126,7 +1159,17 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     }
 
     return (
-        <div className="pdf-viewer" ref={rootRef}>
+        <div className={`pdf-viewer${thumbsOpen ? ' has-thumbs' : ''}`} ref={rootRef}>
+            {thumbsOpen && docState && (
+                <PdfThumbnails
+                    key={docState.gen}
+                    ref={thumbsRef}
+                    sizes={thumbSizes}
+                    renderThumbnail={renderThumbnail}
+                    onSelect={scrollToPage}
+                    initialPage={thumbsStart}
+                />
+            )}
             <div
                 className="pdf-viewer-scroll"
                 ref={scrollRef}
@@ -1164,6 +1207,9 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
             </div>
             {layout && (
                 <div className="pdf-viewer-controls">
+                    <div className="pdf-viewer-pill">
+                        <ThumbnailsToggle open={thumbsOpen} onToggle={toggleThumbs} />
+                    </div>
                     <div className="pdf-viewer-pill pdf-viewer-pages">
                         <input
                             ref={pageInputRef}

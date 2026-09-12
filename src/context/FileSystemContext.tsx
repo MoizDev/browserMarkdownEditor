@@ -6,7 +6,11 @@ import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from '../utils/entryStyle';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath } from '../utils/paths';
-import type { FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult } from '../types';
+import { sortTrashChildren, sortTrashRoot } from '../utils/trash';
+import type {
+    FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult,
+    TrashItem, TrashRestoreMode, TrashRestoreResult,
+} from '../types';
 
 const FileSystemContext = createContext<FileSystemContextValue | null>(null);
 
@@ -24,6 +28,23 @@ async function entryExists(dir: FileSystemDirectoryHandle, name: string): Promis
     try { await dir.getFileHandle(name); return true; } catch { /* not a file here */ }
     try { await dir.getDirectoryHandle(name); return true; } catch { /* nor a directory */ }
     return false;
+}
+
+/**
+ * WHAT `name` is in `dir` — its kind and its handle — or null if it is nothing.
+ *
+ * `entryExists` answers whether, not which, and the two calls that displace an
+ * entry standing in a put-back's way need both: the kind decides whether the
+ * copy is recursive, and getting it wrong means a `removeEntry` that throws
+ * and a duplicate left behind.
+ */
+async function liveEntry(
+    dir: FileSystemDirectoryHandle,
+    name: string,
+): Promise<{ name: string; kind: 'file' | 'directory'; handle: FileSystemFileHandle | FileSystemDirectoryHandle } | null> {
+    try { return { name, kind: 'directory', handle: await dir.getDirectoryHandle(name) }; } catch { /* not a directory */ }
+    try { return { name, kind: 'file', handle: await dir.getFileHandle(name) }; } catch { /* nor a file */ }
+    return null;
 }
 
 /**
@@ -102,6 +123,67 @@ async function copyDirRecursive(srcDir: FileSystemDirectoryHandle, destDir: File
 }
 
 /**
+ * Move `entry` out of `dir` and into `bucket` — a `.Garbage`, or the
+ * `.Garbage/.Assets` retired pictures are parked in — under a name free there.
+ * Returns the name it was filed under.
+ *
+ * IT EITHER HAPPENED OR IT DIDN'T. Anything that throws — a copy that dies
+ * partway, or a `removeEntry` refused because a file inside is still being
+ * written — takes the copy back out again before rethrowing. Without that, the
+ * realistic failure (the copy SUCCEEDS and the removal is refused) left a
+ * complete second copy of the folder in `.Garbage`, and every retry added
+ * another numbered one: megabytes to gigabytes of trash indexed under names
+ * indistinguishable, in Finder, from a good backup. Removing it is safe
+ * precisely because it is ours — `freeEntryName` certified the name free a
+ * moment earlier and nothing else may be copying at the same time (App
+ * serializes every one of these through one in-flight ref) — so this can only
+ * unmake what it just made. It is not a licence to prune `.Garbage`, which
+ * nothing here does.
+ *
+ * Shared by `moveToTrash` and by the bin's "Replace", which displaces the live
+ * entry a put-back would land on instead of overwriting it: one rollback,
+ * written once, for both.
+ */
+async function displaceInto(
+    bucket: FileSystemDirectoryHandle,
+    dir: FileSystemDirectoryHandle,
+    entry: { name: string; kind: 'file' | 'directory'; handle: FileSystemFileHandle | FileSystemDirectoryHandle },
+): Promise<string> {
+    // What this call has written, so a failure can take it back out. Recorded
+    // before a single byte, so a copy that dies on its first file is unmade
+    // just as surely as one that dies on its last.
+    let wrote: { dir: FileSystemDirectoryHandle; name: string } | null = null;
+    try {
+        // Deleting the same name twice must not destroy the first copy.
+        const name = await freeEntryName(bucket, entry.name, entry.kind);
+        wrote = { dir: bucket, name };
+
+        if (entry.kind === 'file') {
+            await copyFileInto(bucket, name, await (entry.handle as FileSystemFileHandle).getFile());
+        } else {
+            const grave = await bucket.getDirectoryHandle(name, { create: true });
+            await copyDirRecursive(entry.handle as FileSystemDirectoryHandle, grave);
+        }
+
+        // Remove the original. Recursively for a folder — it still holds
+        // everything that was just copied out of it.
+        await dir.removeEntry(entry.name, { recursive: entry.kind === 'directory' });
+        return name;
+    } catch (err) {
+        if (wrote) {
+            try {
+                await wrote.dir.removeEntry(wrote.name, { recursive: entry.kind === 'directory' });
+            } catch (undoErr) {
+                // Nothing is lost — the original is still there — so say so and
+                // leave it rather than trying harder at a failing disk.
+                console.error('Could not remove the abandoned copy:', undoErr);
+            }
+        }
+        throw err;
+    }
+}
+
+/**
  * Recursively traverses a FileSystemDirectoryHandle and returns a nested tree.
  */
 async function buildFileTree(dirHandle: FileSystemDirectoryHandle, path = ''): Promise<FileTreeNode[]> {
@@ -150,6 +232,267 @@ async function buildFileTree(dirHandle: FileSystemDirectoryHandle, path = ''): P
     });
 
     return children;
+}
+
+/* ── The trash bin's crawl ───────────────────────────────────────────────────
+ * Everything trashed anywhere in the vault, gathered into ONE flat list, on
+ * demand. A deletion leaves no record but the copy itself sitting in the
+ * `.Garbage` beside where it came from, so finding them all means walking the
+ * whole vault — and this is the only place in the app that walks INTO those
+ * folders (buildFileTree hides them, and nothing else looks).
+ *
+ * DELIBERATELY UNCACHED, unlike the other two whole-vault walks
+ * (utils/graph.ts, utils/vaultSearch.ts, both `(lastModified, size)`-validated
+ * per AGENTS.md): those run after EVERY save, where an uncached walk would be a
+ * full vault read per keystroke-triggered autosave. This one runs when the
+ * reader clicks the bin and at no other time — it must not subscribe to
+ * `saveEpoch` — and the wait was chosen over a second vault-sized index in a
+ * tab that already holds one. It reads metadata only: a name, a size and an
+ * mtime per entry, never a file's bytes.
+ *
+ * THE ONE RULE, applied at every depth: an item belongs to the parent of the
+ * OUTERMOST `.Garbage` on its path — carried down these functions as
+ * `ownerDir`/`ownerPath` from the first `.Garbage` entered and never
+ * recomputed, which is the whole of the definition. A trashed folder keeps its own
+ * `.Garbage` inside it, so `math/.Garbage/homework/.Garbage/old.md` is a real
+ * path and means "old.md was deleted from homework, and then homework itself
+ * was deleted". It is listed at the bin's ROOT and goes back to `math/`, flat —
+ * never into a recreated `homework`, which is not a folder the reader has.
+ *
+ * A directory that cannot be read is logged and skipped rather than thrown
+ * from: one locked folder must not cost the reader the rest of their trash.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/** A file's metadata, tolerant of a read that fails mid-crawl — a file being
+ *  written as the walk passes it must not take the whole bin down. */
+async function statFile(handle: FileSystemFileHandle): Promise<{ mtime: number; size: number }> {
+    try {
+        const file = await handle.getFile();
+        return { mtime: file.lastModified, size: file.size };
+    } catch {
+        return { mtime: 0, size: 0 };
+    }
+}
+
+/** Retired pictures — `<owner>/.Garbage/.Assets/*`, parked there by retireAsset
+ *  when the last note stopped embedding them. Listed one by one rather than as
+ *  a folder (that folder is the app's bookkeeping, not something the reader
+ *  deleted), and each goes back into `<owner>/.Assets`: an embed resolves from
+ *  nowhere else, so a picture put back beside the notes would be one nothing
+ *  could display. */
+async function collectRetired(
+    assetsDir: FileSystemDirectoryHandle,
+    assetsPath: string,
+    ownerDir: FileSystemDirectoryHandle,
+    ownerPath: string,
+    out: TrashItem[],
+): Promise<void> {
+    try {
+        for await (const [name, handle] of assetsDir.entries()) {
+            if (handle.kind !== 'file' || name === '.DS_Store' || !isAssetName(name)) continue;
+            const { mtime, size } = await statFile(handle);
+            const sourcePath = joinVaultPath(assetsPath, name);
+            out.push({
+                id: sourcePath, name, kind: 'file', origin: 'retired', sourcePath,
+                handle, parentHandle: assetsDir,
+                restorePath: ownerPath, restoreDirHandle: ownerDir,
+                deletedAt: mtime, size,
+            });
+        }
+    } catch (err) {
+        console.warn('Could not read the retired pictures in', assetsPath, err);
+    }
+}
+
+/** Everything one `.Garbage` holds, as rows of the bin's root list. */
+async function collectGarbage(
+    garbageDir: FileSystemDirectoryHandle,
+    garbagePath: string,
+    ownerDir: FileSystemDirectoryHandle,
+    ownerPath: string,
+    out: TrashItem[],
+): Promise<void> {
+    try {
+        for await (const [name, handle] of garbageDir.entries()) {
+            if (name === '.DS_Store' || !isAssetName(name)) continue;
+            const sourcePath = joinVaultPath(garbagePath, name);
+
+            if (handle.kind === 'directory') {
+                if (name === ASSETS_DIR) {
+                    await collectRetired(handle, sourcePath, ownerDir, ownerPath, out);
+                    continue;
+                }
+                // A `.Garbage` directly inside a `.Garbage` is unreachable today
+                // — moveToTrash refuses to trash either hidden folder — so this
+                // is defensive. Treated as more of the same bucket rather than
+                // as a folder somebody deleted, because drawing it as one would
+                // invite a put-back that recreated a `.Garbage` in the vault.
+                if (name === TRASH_DIR) {
+                    await collectGarbage(handle, sourcePath, ownerDir, ownerPath, out);
+                    continue;
+                }
+                out.push(await buildTrashedDir(handle, sourcePath, garbageDir, ownerDir, ownerPath, out));
+                continue;
+            }
+
+            const { mtime, size } = await statFile(handle);
+            out.push({
+                id: sourcePath, name, kind: 'file', origin: 'trashed', sourcePath,
+                handle, parentHandle: garbageDir,
+                restorePath: ownerPath, restoreDirHandle: ownerDir,
+                deletedAt: mtime, size,
+            });
+        }
+    } catch (err) {
+        console.warn('Could not read the trash at', garbagePath, err);
+    }
+}
+
+/** What a trashed folder's own `.Assets` adds to its weight and its age. Not
+ *  listed: those pictures are the folder's, and they travel back with it. */
+async function measureLiveAssets(assetsDir: FileSystemDirectoryHandle): Promise<{ newest: number; size: number }> {
+    let newest = 0;
+    let size = 0;
+    try {
+        for await (const [name, handle] of assetsDir.entries()) {
+            // .DS_Store skipped the way every other walker here skips it: it is
+            // Finder's, not the reader's, and weighing it would put a folder's
+            // deletion time at whenever macOS last touched that file.
+            if (handle.kind !== 'file' || name === '.DS_Store') continue;
+            const stat = await statFile(handle);
+            newest = Math.max(newest, stat.mtime);
+            size += stat.size;
+        }
+    } catch (err) {
+        console.warn('Could not measure a trashed folder’s pictures:', err);
+    }
+    return { newest, size };
+}
+
+/** One trashed folder, and what drilling into it shows. Its deletion time is
+ *  the newest mtime anywhere inside it, which is when the copy was made. */
+async function buildTrashedDir(
+    dir: FileSystemDirectoryHandle,
+    path: string,
+    parentHandle: FileSystemDirectoryHandle,
+    ownerDir: FileSystemDirectoryHandle,
+    ownerPath: string,
+    out: TrashItem[],
+): Promise<TrashItem> {
+    const children: TrashItem[] = [];
+    let newest = 0;
+    let size = 0;
+
+    try {
+        for await (const [name, handle] of dir.entries()) {
+            if (name === '.DS_Store' || !isAssetName(name)) continue;
+            const childPath = joinVaultPath(path, name);
+
+            if (handle.kind === 'directory') {
+                if (name === TRASH_DIR) {
+                    // Deleted from this folder BEFORE the folder itself was, so
+                    // it was never part of what the reader threw away here.
+                    // Hoisted to the bin's root, where it reads as the
+                    // standalone deletion it was — and goes back to the owner,
+                    // not into this folder.
+                    await collectGarbage(handle, childPath, ownerDir, ownerPath, out);
+                    continue;
+                }
+                if (name === ASSETS_DIR) {
+                    const measured = await measureLiveAssets(handle);
+                    newest = Math.max(newest, measured.newest);
+                    size += measured.size;
+                    continue;
+                }
+                const sub = await buildTrashedDir(handle, childPath, dir, ownerDir, ownerPath, out);
+                newest = Math.max(newest, sub.deletedAt);
+                size += sub.size;
+                children.push(sub);
+                continue;
+            }
+
+            const stat = await statFile(handle);
+            newest = Math.max(newest, stat.mtime);
+            size += stat.size;
+            children.push({
+                id: childPath, name, kind: 'file', origin: 'trashed', sourcePath: childPath,
+                handle, parentHandle: dir,
+                restorePath: ownerPath, restoreDirHandle: ownerDir,
+                deletedAt: stat.mtime, size: stat.size,
+            });
+        }
+    } catch (err) {
+        console.warn('Could not read the trashed folder at', path, err);
+    }
+
+    return {
+        id: path, name: dir.name, kind: 'directory', origin: 'trashed', sourcePath: path,
+        handle: dir, parentHandle,
+        restorePath: ownerPath, restoreDirHandle: ownerDir,
+        deletedAt: newest, size,
+        children: sortTrashChildren(children),
+    };
+}
+
+/**
+ * The bin row for an entry a "Replace" has just displaced into `bucket`.
+ *
+ * Read back off disk rather than assembled from what was displaced: the copy
+ * is what the bin now holds, and its name is whatever `freeEntryName` settled
+ * on. Returns undefined if it cannot be read — the put-back itself succeeded,
+ * and the row will be there the next time the bin is opened (which re-crawls
+ * from scratch anyway).
+ */
+async function describeDisplaced(
+    bucket: FileSystemDirectoryHandle,
+    bucketPath: string,
+    name: string,
+    kind: 'file' | 'directory',
+    origin: TrashItem['origin'],
+    ownerDir: FileSystemDirectoryHandle,
+    ownerPath: string,
+): Promise<TrashItem | undefined> {
+    const sourcePath = joinVaultPath(bucketPath, name);
+    try {
+        if (kind === 'file') {
+            const handle = await bucket.getFileHandle(name);
+            const { mtime, size } = await statFile(handle);
+            return {
+                id: sourcePath, name, kind: 'file', origin, sourcePath,
+                handle, parentHandle: bucket,
+                restorePath: ownerPath, restoreDirHandle: ownerDir,
+                deletedAt: mtime || Date.now(), size,
+            };
+        }
+        const handle = await bucket.getDirectoryHandle(name);
+        // Any nested `.Garbage` this folder carries would be hoisted rows of
+        // their own; they are dropped rather than guessed at, and turn up on
+        // the bin's next open.
+        const hoisted: TrashItem[] = [];
+        return await buildTrashedDir(handle, sourcePath, bucket, ownerDir, ownerPath, hoisted);
+    } catch (err) {
+        console.warn('Could not describe the displaced entry at', sourcePath, err);
+        return undefined;
+    }
+}
+
+/** The live tree, looking for `.Garbage` folders. Never descends into one (that
+ *  is collectGarbage's job) and never into a live `.Assets`. */
+async function walkForTrash(dir: FileSystemDirectoryHandle, path: string, out: TrashItem[]): Promise<void> {
+    try {
+        for await (const [name, handle] of dir.entries()) {
+            if (handle.kind !== 'directory' || !isAssetName(name)) continue;
+            if (name === ASSETS_DIR) continue;             // live pictures, not trash
+            const childPath = joinVaultPath(path, name);
+            if (name === TRASH_DIR) {
+                await collectGarbage(handle, childPath, dir, path, out);
+                continue;
+            }
+            await walkForTrash(handle, childPath, out);
+        }
+    } catch (err) {
+        console.warn('Could not walk', path || 'the vault root', 'for trash:', err);
+    }
 }
 
 export function FileSystemProvider({ children }: { children: ReactNode }) {
@@ -919,21 +1262,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * lands in the trash is what the reader last had rather than what was last
      * autosaved.
      *
-     * IT EITHER HAPPENED OR IT DIDN'T. Anything that throws — a copy that dies
-     * partway, or a `removeEntry` refused because a file inside is still being
-     * written — takes the copy back out again before reporting failure. Without
-     * that, the realistic failure (the copy SUCCEEDS and the removal is refused)
-     * left a complete second copy of the folder in `.Garbage`, and every retry
-     * added another numbered one: megabytes to gigabytes of trash indexed under
-     * names indistinguishable, in Finder, from a good backup. Removing it is
-     * safe precisely because it is ours — `freeEntryName` certified the name
-     * free a moment earlier and nothing else may be trashing at the same time
-     * (App.handleTrash serializes) — so this can only unmake what it just made.
-     * It is not a licence to prune `.Garbage`, which nothing here does.
-     *
-     * The rollback can never run once the original is gone: `refreshTree`
-     * handles its own errors, so `removeEntry` succeeding is the last thing that
-     * can fail.
+     * IT EITHER HAPPENED OR IT DIDN'T — the copy is taken back out again on any
+     * failure, which is `displaceInto`'s doing and documented there. Its
+     * rollback can never run once the original is gone: `refreshTree` handles
+     * its own errors, so `removeEntry` succeeding is the last thing that can
+     * fail.
      */
     const moveToTrash = useCallback(async (node: FileTreeNode) => {
         if (!rootHandle || !node.parentHandle) return false;
@@ -945,27 +1278,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         // copyDirRecursive walking into the copy it is making, without bound.
         if (node.kind === 'directory' && (node.name === TRASH_DIR || node.name === ASSETS_DIR)) return false;
 
-        // What this call has put into `.Garbage`, so a failure can take it back
-        // out. Recorded before a single byte is written, so a copy that dies
-        // on its first file is unmade just as surely as one that dies on its last.
-        let wrote: { dir: FileSystemDirectoryHandle; name: string } | null = null;
-
         try {
             const trashDir = await node.parentHandle.getDirectoryHandle(TRASH_DIR, { create: true });
-            // Deleting the same name twice must not destroy the first copy.
-            const trashName = await freeEntryName(trashDir, node.name, node.kind);
-            wrote = { dir: trashDir, name: trashName };
-
-            if (node.kind === 'file') {
-                await copyFileInto(trashDir, trashName, await node.handle.getFile());
-            } else {
-                const grave = await trashDir.getDirectoryHandle(trashName, { create: true });
-                await copyDirRecursive(node.handle, grave);
-            }
-
-            // Remove original. Recursively for a folder — it still holds
-            // everything that was just copied out of it.
-            await node.parentHandle.removeEntry(node.name, { recursive: node.kind === 'directory' });
+            await displaceInto(trashDir, node.parentHandle, node);
             // The pictures that folder held can only have been shown by notes
             // inside it (resolution never looks sideways or down), and those are
             // closed. A url that can never be displayed again is a pinned blob —
@@ -975,18 +1290,220 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             return true;
         } catch (err) {
             console.error('Failed to move item to trash:', err);
-            if (wrote) {
-                try {
-                    await wrote.dir.removeEntry(wrote.name, { recursive: node.kind === 'directory' });
-                } catch (undoErr) {
-                    // Nothing is lost — the original is still there — so say so
-                    // and leave it rather than trying harder at a failing disk.
-                    console.error('Could not remove the abandoned trash copy:', undoErr);
-                }
-            }
             return false;
         }
     }, [rootHandle, refreshTree, revokeAssetUrlsUnder]);
+
+    /**
+     * Everything trashed anywhere in this vault, newest deletion first — the
+     * bin's root list. Built fresh on every call; see the crawl above for why
+     * there is deliberately no cache and what the flattening rules are.
+     */
+    const listTrash = useCallback(async (): Promise<TrashItem[]> => {
+        if (!rootHandle) return [];
+        const out: TrashItem[] = [];
+        await walkForTrash(rootHandle, '', out);
+        return sortTrashRoot(out);
+    }, [rootHandle]);
+
+    /**
+     * Put one item back where the `.Garbage` holding it sits — `item.restorePath`,
+     * which the crawl set to the parent of the OUTERMOST `.Garbage` on its path.
+     * A file three folders deep inside something that was deleted as a unit
+     * therefore comes back flat, beside that `.Garbage`, rather than under a
+     * recreation of an ancestry the reader no longer has.
+     *
+     * Structurally `moveToTrash` in reverse, and deliberately NOT `moveFile` /
+     * `renameFile`: those are the documented `freeEntryName` exceptions, so a
+     * file put back onto a taken name would silently truncate the live file and
+     * a folder would silently merge into the live one — neither with a rollback.
+     * Here a taken name is reported ('collision') with nothing touched, and
+     * answered by the caller.
+     *
+     * 'replace' DISPLACES rather than erases: the entry standing in the way is
+     * moved into that folder's own `.Garbage` first (a retired picture into its
+     * `.Garbage/.Assets`, which is where a retired picture lives) and handed
+     * back, so the bin can list it. Nothing the user made is destroyed outright
+     * — deleteFromTrash is the one call in here that does that, and only when
+     * asked in so many words.
+     */
+    const restoreFromTrash = useCallback(async (item: TrashItem, mode: TrashRestoreMode): Promise<TrashRestoreResult> => {
+        if (!rootHandle) return { status: 'error' };
+        // Mirrors moveToTrash's guard, and is unreachable for the same reason:
+        // the crawl lists neither hidden folder as an item. If it ever were
+        // reached, the failure is copyDirRecursive walking into its own copy.
+        if (!isAssetName(item.name)) return { status: 'error' };
+        if (item.kind === 'directory' && (item.name === TRASH_DIR || item.name === ASSETS_DIR)) return { status: 'error' };
+
+        // What this call has written at the destination, so a failure can take
+        // it back out — the same record-before-the-first-byte rule displaceInto
+        // keeps, for the same reason.
+        let wrote: { dir: FileSystemDirectoryHandle; name: string } | null = null;
+
+        try {
+            const home = item.restoreDirHandle;
+            // A retired picture goes back into `.Assets`. Probed rather than
+            // created, cheapest miss first (restoreAsset's shape): a folder with
+            // no `.Assets` at all cannot have a colliding name, and creating one
+            // here would leave an empty folder behind if the reader then
+            // cancelled at the collision question.
+            let destDir: FileSystemDirectoryHandle | null = home;
+            if (item.origin === 'retired') {
+                try {
+                    destDir = await home.getDirectoryHandle(ASSETS_DIR);
+                } catch {
+                    destDir = null;
+                }
+            }
+
+            const taken = destDir ? await entryExists(destDir, item.name) : false;
+            if (taken && mode === 'auto') return { status: 'collision' };
+
+            let displaced: TrashItem | undefined;
+            if (taken && destDir && mode === 'replace') {
+                const live = await liveEntry(destDir, item.name);
+                if (!live) return { status: 'error' };
+                // A displaced picture is a RETIRED picture: it belongs in the
+                // bucket retireAsset uses, not beside the trashed notes, or
+                // putting it back later would land it outside `.Assets`.
+                const bucket = item.origin === 'retired'
+                    ? await retiredAssetsDir(home, true)
+                    : await destDir.getDirectoryHandle(TRASH_DIR, { create: true });
+                const bucketPath = item.origin === 'retired'
+                    ? joinVaultPath(joinVaultPath(item.restorePath, TRASH_DIR), ASSETS_DIR)
+                    : joinVaultPath(item.restorePath, TRASH_DIR);
+                const filedAs = await displaceInto(bucket, destDir, live);
+                // Same reason moveToTrash revokes: the pictures a displaced
+                // FOLDER held can only have been shown by notes inside it, and
+                // App has just closed those — a url nothing can display again is
+                // a pinned blob.
+                if (live.kind === 'directory') revokeAssetUrlsUnder(joinVaultPath(item.restorePath, item.name));
+                displaced = await describeDisplaced(
+                    bucket, bucketPath, filedAs, live.kind, item.origin, home, item.restorePath);
+            }
+
+            const finalName = taken && destDir && mode === 'keep-both'
+                ? await freeEntryName(destDir, item.name, item.kind)
+                : item.name;
+
+            // Only now is there anything to restore, and only now is creating
+            // the folder's `.Assets` warranted.
+            if (!destDir) {
+                destDir = await home.getDirectoryHandle(ASSETS_DIR, { create: true });
+                // The probe above read a MISSING `.Assets` as "no collision is
+                // possible", which is the one path here where a name was never
+                // certified free — and if the create-lookup hands back a folder
+                // that does exist after all (the no-create read failed for some
+                // other reason, or something outside this tab made it in the
+                // meantime), copyFileInto's `getFileHandle(create: true)` would
+                // open-or-TRUNCATE whatever is standing there. Ask again now
+                // that the real directory is in hand.
+                if (await entryExists(destDir, finalName)) return { status: 'collision' };
+            }
+
+            wrote = { dir: destDir, name: finalName };
+            if (item.kind === 'file') {
+                await copyFileInto(destDir, finalName, await (item.handle as FileSystemFileHandle).getFile());
+            } else {
+                const copy = await destDir.getDirectoryHandle(finalName, { create: true });
+                await copyDirRecursive(item.handle as FileSystemDirectoryHandle, copy);
+            }
+
+            await item.parentHandle.removeEntry(item.name, { recursive: item.kind === 'directory' });
+            await refreshTree(rootHandle);
+            return { status: 'ok', name: finalName, displaced };
+        } catch (err) {
+            console.error('Failed to put the item back:', err);
+            if (wrote) {
+                try {
+                    await wrote.dir.removeEntry(wrote.name, { recursive: item.kind === 'directory' });
+                } catch (undoErr) {
+                    console.error('Could not remove the abandoned restored copy:', undoErr);
+                }
+            }
+            // A 'replace' that displaced something and THEN failed to copy
+            // leaves that entry in the trash rather than putting it back: it is
+            // one more row in the bin, one click from home, which is a better
+            // failure than a second copy-and-delete run to undo the first while
+            // the disk is already refusing writes. Nothing is lost either way.
+            return { status: 'error' };
+        }
+    }, [rootHandle, refreshTree, revokeAssetUrlsUnder]);
+
+    /**
+     * Erase one item from the trash for good. With `emptyTrash`, the only thing
+     * in this app that destroys something the user made with no copy left
+     * anywhere — which is why both are behind a question App words plainly.
+     *
+     * No `refreshTree`: nothing inside a `.Garbage` is in the file tree.
+     */
+    const deleteFromTrash = useCallback(async (item: TrashItem) => {
+        if (!isAssetName(item.name)) return false;
+        // The same refusal restoreFromTrash keeps, and it belongs here more than
+        // there: this one is `removeEntry(..., { recursive: true })`, so an item
+        // that ever leaked a `.Garbage`/`.Assets` name would erase a whole
+        // bucket rather than the thing the reader pointed at. Unreachable today
+        // — the crawl diverts both names before it builds an item.
+        if (item.kind === 'directory' && (item.name === TRASH_DIR || item.name === ASSETS_DIR)) return false;
+        try {
+            await item.parentHandle.removeEntry(item.name, { recursive: item.kind === 'directory' });
+            return true;
+        } catch (err) {
+            console.error('Failed to delete the item for good:', err);
+            return false;
+        }
+    }, []);
+
+    /**
+     * Remove every `.Garbage` in the vault, retired pictures and all. Returns
+     * how many folders were removed AND how many refused.
+     *
+     * Each removal is its own try/catch, so one folder held open by something
+     * else does not cost the reader the rest of the emptying — and the names
+     * are collected before anything is removed, because removing entries while
+     * an `entries()` iterator is walking them is not something the API
+     * promises anything about. `failed` is what keeps that tolerance honest: a
+     * caller that saw only the count would empty the panel's list and say the
+     * bin was emptied while the folders that refused still held their files.
+     */
+    const emptyTrash = useCallback(async () => {
+        if (!rootHandle) return { removed: 0, failed: 0 };
+        let removed = 0;
+        let failed = 0;
+
+        const sweep = async (dir: FileSystemDirectoryHandle): Promise<void> => {
+            const live: FileSystemDirectoryHandle[] = [];
+            let hasTrash = false;
+            try {
+                for await (const [name, handle] of dir.entries()) {
+                    if (handle.kind !== 'directory' || !isAssetName(name)) continue;
+                    if (name === ASSETS_DIR) continue;
+                    if (name === TRASH_DIR) { hasTrash = true; continue; }
+                    live.push(handle);
+                }
+            } catch (err) {
+                console.warn('Could not read a folder while emptying the trash:', err);
+                // Unread, so unknown: counted as a failure rather than passed
+                // over, since a `.Garbage` it holds is still on disk either way.
+                failed++;
+                return;
+            }
+
+            if (hasTrash) {
+                try {
+                    await dir.removeEntry(TRASH_DIR, { recursive: true });
+                    removed++;
+                } catch (err) {
+                    console.error('Could not empty the trash in', dir.name, err);
+                    failed++;
+                }
+            }
+            for (const sub of live) await sweep(sub);
+        };
+
+        await sweep(rootHandle);
+        return { removed, failed };
+    }, [rootHandle]);
 
     /**
      * Move a file from its current parent to a target directory handle.
@@ -1083,6 +1600,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         restoreAsset,
         restoreVault,
         moveToTrash,
+        listTrash,
+        restoreFromTrash,
+        deleteFromTrash,
+        emptyTrash,
         moveFile,
         renameFile,
     };

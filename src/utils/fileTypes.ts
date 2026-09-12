@@ -36,6 +36,17 @@ export function ensureNotebookExt(name: string): string {
     return isNotebookFile(name) ? name : `${name}${NOTEBOOK_EXT}`;
 }
 
+/**
+ * An image a plain `<img>` can show — what the trash bin previews inline.
+ *
+ * Deliberately narrower than "not text": a PDF is not text either, and
+ * previewing one would mean pulling pdf.js into the main bundle (see
+ * components/prefetchPanes.ts for why that split is load-bearing).
+ */
+export function isImageFile(name: string): boolean {
+    return /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(name);
+}
+
 /* ── PDFs ────────────────────────────────────────────────────────────────
  * A PDF opens in a pane with two modes: View (the real PDF — scrollable,
  * text selectable) and Annotate (a tldraw canvas over rasterized pages).

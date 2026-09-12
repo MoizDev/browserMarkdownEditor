@@ -131,6 +131,16 @@ export function Trash2({ size = 16, className = "", ...props }: IconProps) {
     );
 }
 
+/** An arrow curling back to where it started — "put this back where it was". */
+export function RotateCcw({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="M3 2v6h6" />
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L3 8" />
+        </svg>
+    );
+}
+
 export function Settings({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>

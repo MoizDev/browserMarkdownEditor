@@ -249,6 +249,62 @@ export interface RecentVault extends StoredVault {
 export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy';
 
 /* ─────────────────────────────────────────────────────────────────────────
+ * TRASH
+ * What the bin's crawl of every `.Garbage` in the vault produces. Built FRESH
+ * on every open of the bin — nothing about the trash is written down, cached or
+ * carried between openings, because a deletion's only record is the copy itself
+ * sitting in the `.Garbage` beside where it came from. FileSystemContext's
+ * `walkForTrash` and the banner above it hold the listing and path rules;
+ * utils/trash.ts holds what the list does afterwards (order, pruning, formats).
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** One restorable thing found by the `.Garbage` crawl. */
+export interface TrashItem {
+  /** Unique within one crawl, and the React key: the source path. */
+  id: string;
+  name: string;
+  kind: 'file' | 'directory';
+  /**
+   * 'retired' = an image the app moved out of `.Assets` by itself once the last
+   * note stopped embedding it (see retireAsset). It goes back INTO `.Assets`,
+   * not beside it: an embed only ever resolves from there, so a retired picture
+   * put back alongside the notes would be a file nothing could display.
+   */
+  origin: 'trashed' | 'retired';
+  /** Vault-relative path of the copy on disk, `.Garbage` segments and all. */
+  sourcePath: string;
+  handle: FileSystemFileHandle | FileSystemDirectoryHandle;
+  /** The directory on disk holding it — what `removeEntry` is called on. */
+  parentHandle: FileSystemDirectoryHandle;
+  /** Vault-relative path of the folder a put-back lands in: the parent of the
+   *  OUTERMOST `.Garbage` on `sourcePath`. '' is the vault root. */
+  restorePath: string;
+  restoreDirHandle: FileSystemDirectoryHandle;
+  /** ms epoch — the newest `lastModified` in this item's subtree, which is when
+   *  the copy was made, i.e. when it was deleted. 0 if nothing was readable. */
+  deletedAt: number;
+  /** Bytes. For a folder, the total of what it holds — its own `.Assets`
+   *  included, its nested `.Garbage` excluded (that is listed separately). */
+  size: number;
+  /** Directories only: what drilling into it shows. Dot-folders are never in
+   *  here — see `buildTrashedDir` in FileSystemContext. */
+  children?: TrashItem[];
+}
+
+/** How a put-back should deal with a destination name that is already taken.
+ *  'auto' = don't: report the collision and let the user decide. */
+export type TrashRestoreMode = 'auto' | 'replace' | 'keep-both';
+
+/** What a put-back did. 'collision' means NOTHING was touched — the name is
+ *  taken and the mode was 'auto'. `displaced` is the live entry a 'replace'
+ *  moved into that folder's own `.Garbage` (never erased), so the bin can list
+ *  it as the newest thing in the trash. */
+export type TrashRestoreResult =
+  | { status: 'ok'; name: string; displaced?: TrashItem }
+  | { status: 'collision' }
+  | { status: 'error' };
+
+/* ─────────────────────────────────────────────────────────────────────────
  * SETTINGS
  * The DEFAULTS object is the canonical shape (SettingsPanel.jsx:3) and is what
  * onResetDefaults receives (App.jsx:138 handleResetDefaults). Each field also
@@ -339,6 +395,22 @@ export interface FileSystemContextValue {
   restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
+  /** Crawl every `.Garbage` in the vault and return the bin's flat root list,
+   *  newest-deleted first. Uncached by design — see the crawl's own comment. */
+  listTrash: () => Promise<TrashItem[]>;
+  /** Put one item back beside the `.Garbage` it was found in. Never overwrites
+   *  without being told to; 'replace' moves the entry it displaces into that
+   *  folder's own `.Garbage` rather than erasing it, and hands it back so the
+   *  bin can list it. */
+  restoreFromTrash: (item: TrashItem, mode: TrashRestoreMode) => Promise<TrashRestoreResult>;
+  /** Erase one item from `.Garbage` for good — one of only two calls in the app
+   *  that destroy something the user made with no copy surviving. */
+  deleteFromTrash: (item: TrashItem) => Promise<boolean>;
+  /** Remove every `.Garbage` in the vault. Each removal stands alone, so one
+   *  folder something else is holding open does not cost the rest: `failed`
+   *  counts those, and a caller that ignores it would tell the reader the bin
+   *  was emptied while trash was still on disk. */
+  emptyTrash: () => Promise<{ removed: number; failed: number }>;
   moveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>; // :297
   renameFile: (sourceNode: FileTreeNode, newName: string) => Promise<boolean>; // :329
 }

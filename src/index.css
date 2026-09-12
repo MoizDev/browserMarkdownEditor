@@ -658,7 +658,14 @@ body {
   background: linear-gradient(to right, transparent, var(--tree-row-bg) 16px);
 }
 
-.tree-item:hover .tree-item-actions {
+/* …and whenever the keyboard is on one of them. Without the second selector the
+   buttons keep `opacity: 0` while focused — which fades the focus ring too — so
+   tabbing through a list moved focus onto invisible controls and Enter fired
+   whichever one it happened to be sitting on. That is a nuisance in the file
+   tree and worse in the Trash panel, whose rows put Delete permanently, the
+   app's one irreversible action, second in the tab order. */
+.tree-item:hover .tree-item-actions,
+.tree-item:focus-within .tree-item-actions {
   opacity: 1;
 }
 
@@ -676,9 +683,33 @@ body {
   transition: color 0.12s, background 0.12s;
 }
 
-.tree-action-btn:hover {
+.tree-action-btn:hover:not(:disabled) {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
+}
+
+/* Nothing in the file tree ever disables one of these; the Trash panel's rows
+   do while an operation is in flight, and so does the sidebar's bin with no
+   vault open. A control that cannot act must not light up under the pointer —
+   the same `:not(:disabled)` treatment .context-menu-item gets. */
+.tree-action-btn:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+/* TreeNode has been putting this class on its Move-to-Trash buttons with
+   nothing in this file to answer it — the modifier existed only in the markup.
+   Same red as .context-menu-item.is-danger, which already paints that very
+   command in the right-click menu, so the app keeps ONE colour for "this
+   destroys something" and the Trash panel's Delete-permanently button reuses
+   this rather than inventing a second danger class.
+
+   Hover only, never at rest: a row of icon buttons that is red before you reach
+   it reads as an error state, and the context menu's rows carry a label to
+   justify their standing colour where a bare 13px glyph does not. */
+.trash-btn:hover:not(:disabled) {
+  color: #e06c75;
+  background: rgba(224, 108, 117, 0.12);
 }
 
 /* Inline rename/create input */
@@ -1329,6 +1360,41 @@ body.is-resizing-panes * {
   flex-shrink: 0;
 }
 
+/* ── The Settings row, which is the only one that carries a second button ──
+   Search, Neural Brain and Help Guide above it are still bare .theme-toggle-btn
+   children of the container and are deliberately left that way: one row gained
+   the bin, not the group.
+
+   flex:1 is not tidiness. .theme-toggle-btn is `width: 100%`, which as a flex
+   item becomes its flex BASIS, so the labelled button asks for the whole row on
+   its own and the bin is fitted only by shrinking it — and a flex item's
+   `min-width: auto` is its content width, a floor the label cannot go under.
+   At the 180px sidebar minimum (the resize clamp) that leaves the row 152px
+   against a 28px bin, so the two would fight instead of sharing. Basis 0 plus
+   min-width 0 makes the label take what is left over instead. */
+.sidebar-bottom-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar-bottom-row .theme-toggle-btn {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 28px, not .tree-action-btn's 22. It has to read as the same object as the
+   labelled button beside it, and that button is 6px + a 16px glyph + 6px = 28px
+   tall (its `padding: 6px 8px` against a 16px icon, which out-measures the 13px
+   label's line box). A 28px square puts exactly that same 6px around exactly
+   that same 16px glyph; 22px would sit 3px short of the row and hover would
+   light a chip visibly smaller than its neighbour's. */
+.sidebar-trash-btn {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
 /* ── Settings Panel Overlay ── */
 .settings-overlay {
   position: fixed;
@@ -1757,6 +1823,307 @@ body.is-resizing-panes * {
 .settings-reset-btn:hover {
   background: var(--interactive-accent);
   color: #fff;
+}
+
+/* =============================================================
+   Trash panel (components/TrashPanel.tsx)
+   Everything in every folder's .Garbage, in one modal: a list on the left, a
+   read-only preview on the right.
+   ============================================================= */
+
+/* .settings-overlay, MINUS the blur — and that omission is the requirement, not
+   an oversight to be tidied back into line with Settings. The point of this
+   panel is deciding whether a file is the one you meant to lose, and the vault
+   behind it is the only context for that: dimmed so the modal reads as raised,
+   still legible so the tree row you deleted from is still there. */
+.trash-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  /* Settings' band: the two are peers and never open together. Below
+     ConfirmDialog's 1100, which matters here more than it does for Settings —
+     Delete permanently and Empty bin both raise a question, and the question
+     has to cover the panel that asked it. */
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* .settings-panel's surface, but a DEFINITE height rather than a max: the list
+   and the preview scroll independently, and `max-height` would let the box
+   shrink to whichever pane happened to be shorter — so the panel would resize
+   under the pointer as rows are put back or deleted.
+
+   No light-theme override, unlike .vault-menu and .context-menu. Those two are
+   raised over the sidebar, where --background-primary-alt IS the sidebar's own
+   #f2f3f5 and the surface disappears. This floats centred over the editor and
+   over a 50%-black scrim, so the same value reads as a lit sheet in both
+   themes. Adding one here would only make it brighter than it needs to be. */
+.trash-panel {
+  width: min(900px, 92vw);
+  height: min(78vh, 680px);
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.trash-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.trash-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+/* The × is .settings-close-btn itself, not a clone of it. */
+
+.trash-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* The list gets the larger half. Measured at 42%: a row's three fixed items —
+   the 22px icon, the origin folder, and a timestamp reserving 62px of clearance
+   for the hover buttons — left a 37-character name 32px to render in at a
+   1400px window, and nothing at all below 800px, where the row then overflowed
+   its own pane. The name is what the reader is scanning for; the preview pane
+   answers one question and can afford the narrower side. */
+.trash-list-pane {
+  flex: 0 0 58%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--background-modifier-border);
+}
+
+.trash-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.trash-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.trash-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-bg);
+  border-radius: 4px;
+}
+
+.trash-preview-pane {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 14px 16px;
+}
+
+/* Rows compose .tree-item, so they arrive with its fixed height and its
+   content-visibility box — a vault that has been used for a year can have
+   thousands of these too.
+
+   RESTATING --tree-row-bg IS THE LOAD-BEARING LINE. .tree-item-actions fades
+   into `var(--tree-row-bg)`, whose default is --background-secondary: the
+   SIDEBAR's colour. Left alone, the hover buttons in this panel would sit on a
+   strip of the file tree's grey over the modal's lighter surface. Each state
+   below restates it for the same reason the tree's own states do. */
+.trash-row {
+  --tree-row-bg: var(--background-primary-alt);
+  padding-left: 10px;
+  color: var(--text-normal);
+}
+
+.trash-row:hover {
+  background: var(--background-modifier-hover);
+  --tree-row-bg: var(--background-modifier-hover);
+}
+
+/* After :hover, so the row being previewed keeps saying so while the pointer is
+   over it — the same ordering .tree-item.is-active relies on. */
+.trash-row.is-selected {
+  background: var(--background-modifier-active);
+  --tree-row-bg: var(--background-modifier-active);
+}
+
+/* Keyboard focus on a row, the same treatment SearchPanel's result rows get —
+   these are `role="button"` `tabIndex={0}` rows and the whole panel is
+   keyboard-reachable, so the UA's own ring on a row that paints its own
+   backgrounds is not enough to see. */
+.trash-row:focus-visible {
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+/* Takes the row's spare width, and yields it LAST. Without the grow it sat at
+   its content width and was the only item that could shrink, so every shortfall
+   came out of the one column that identifies the file. */
+.trash-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Where it was deleted from. Capped AND allowed to shrink: the cap stops a deep
+   origin folder from eating the name at a comfortable width, and the shrink is
+   what keeps the row inside its pane in a narrow window instead of overflowing
+   it — an ellipsized folder is still a recognizable one. */
+.trash-row-dir {
+  margin-left: 6px;
+  max-width: 40%;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Right-aligned, but held 62px clear of the row's right edge, and that number
+   is measured off .tree-item-actions rather than chosen: the actions float at
+   `right: 8px` — the row's own padding — over two 22px buttons with a 2px gap
+   (46px), behind a 16px fade. 62px is where that gradient is still fully
+   transparent, so the timestamp is untouched on hover instead of dissolving
+   under the buttons that appear on top of it. Re-derive it if the row ever
+   gains or loses an action. */
+.trash-row-time {
+  /* A real gap, not `margin-left: auto`: the name grows into the row's spare
+     width now, so there is none left for an auto margin to take and the folder
+     and the date rendered flush against each other. */
+  margin-left: 10px;
+  padding-right: 62px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.trash-breadcrumb {
+  padding: 8px 12px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.trash-crumb {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.trash-crumb:hover {
+  text-decoration: underline;
+}
+
+/* The house empty state, same as .search-hint. */
+.trash-empty {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* The same line inside the preview pane, which already carries the padding —
+   so this one takes none. Sharing .trash-empty's `padding: 10px 12px` indented
+   every preview line 12px past the title above it and turned the title's 8px
+   gap into 18px. */
+.trash-preview-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* "No preview for this kind of file." and the size-and-date line under it are
+   two of these in a row, and with the padding gone they would be flush. */
+.trash-preview-empty + .trash-preview-empty {
+  margin-top: 4px;
+}
+
+.trash-preview-title {
+  margin: 0 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Deliberately monospace and pre-wrap: this is the file as it is ON DISK, not a
+   rendered note. Nothing here is an editor, so markdown must not look like one.
+   overflow-wrap is what keeps a minified line or a long URL inside the pane. */
+.trash-preview-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-normal);
+}
+
+.trash-preview-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.trash-footer {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+/* .confirm-btn's shape wearing the app's one destructive red (.trash-btn,
+   .context-menu-item.is-danger). The only control in the app that deletes
+   without a copy surviving somewhere, so the red is at rest and not only on
+   hover — unlike the row buttons, this one is read before it is reached. */
+.trash-empty-btn {
+  padding: 7px 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: #e06c75;
+  font-size: 13px;
+  font-family: var(--font-text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.trash-empty-btn:hover {
+  background: rgba(224, 108, 117, 0.12);
+  border-color: rgba(224, 108, 117, 0.35);
+}
+
+.trash-empty-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+/* An empty bin cannot be emptied. The :hover half is not redundant — a disabled
+   button still matches :hover, so without it the rule above would light up a
+   red box under a pointer that cannot do anything with it. */
+.trash-empty-btn:disabled,
+.trash-empty-btn:disabled:hover {
+  background: var(--background-secondary);
+  border-color: var(--background-modifier-border);
+  color: var(--text-faint);
+  cursor: default;
 }
 
 /* ── Empty state ── */

@@ -5,7 +5,7 @@ import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache } from './ut
 import { readJSON, setRecordScope, writeJSON } from './utils/storage';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
-import { assetEmbeds, referencesAsset } from './utils/assets';
+import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
 import { collectFiles } from './utils/tree';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
@@ -54,8 +54,9 @@ import ConfirmDialog from './components/ConfirmDialog';
 import ContextMenu from './components/ContextMenu';
 import EditorPane from './components/EditorPane';
 import SettingsPanel from './components/SettingsPanel';
+import TrashPanel from './components/TrashPanel';
 import GraphView from './components/GraphView';
-import { Settings, HelpCircle, Network, FileTextOutline, PanelLeft, Search } from './components/icons';
+import { Settings, HelpCircle, Network, FileTextOutline, PanelLeft, Search, Trash2 } from './components/icons';
 import type {
   ActiveFile,
   FileTreeNode,
@@ -70,6 +71,8 @@ import type {
   CaretStyle,
   EditorRevealRequest,
   TextRange,
+  TrashItem,
+  TrashRestoreResult,
 } from './types';
 
 /**
@@ -151,6 +154,12 @@ interface AppDialog extends DialogRequest {
   onConfirm: () => void;
   /** Absent on a notice, which has nothing to decline. */
   onCancel?: () => void;
+  /** The third answer, and its label, on the one question that has one — see
+   *  `askChoice`. Deliberately NOT on `DialogRequest`: ConfirmDialog draws the
+   *  third button only when it has both, so an `altLabel` handed to `ask` or
+   *  `tell` would type-check and then silently render nothing. */
+  altLabel?: string;
+  onAlt?: () => void;
 }
 
 /**
@@ -244,6 +253,10 @@ export default function App() {
     restoreAsset,
     restoreVault,
     moveToTrash,
+    listTrash,
+    restoreFromTrash,
+    deleteFromTrash,
+    emptyTrash,
     moveFile,
     renameFile,
   } = useFileSystem();
@@ -290,6 +303,11 @@ export default function App() {
   const [treeFontSize, setTreeFontSize] = useState<number>(() => parseInt(localStorage.getItem('treeFontSize') || '13', 10));
   const [editorPadding, setEditorPadding] = useState<number>(() => parseInt(localStorage.getItem('editorPadding') || '6', 10));
   const [showSettings, setShowSettings] = useState<boolean>(false);
+  /** Whether the Trash bin is on screen. Its rows hold handles crawled out of
+   *  ONE vault, so the panel closes when the vault does (see the effect beside
+   *  the context menu's) — a put-back clicked after a switch would otherwise
+   *  write into the vault the reader has left. */
+  const [showTrash, setShowTrash] = useState<boolean>(false);
 
   // Spaces a Tab inserts — and how far Tab indents a list item. Clamped on the
   // way in: localStorage is user-editable and a NaN would reach CodeMirror.
@@ -461,19 +479,68 @@ export default function App() {
   // that opens another one is never fighting the first for the screen.
   const [dialog, setDialog] = useState<AppDialog | null>(null);
 
+  // The one on screen, for `raise` below. A ref and not the state, because all
+  // three helpers must stay STABLE (`notify` reaches every memoized
+  // DocumentPane) and reading `dialog` would put it in their deps.
+  const dialogRef = useRef<AppDialog | null>(null);
+
+  /**
+   * Put a question on screen, settling whatever was already there.
+   *
+   * One slot holds one dialog, and each of these hands back a promise the caller
+   * is awaiting — so a second question arriving while one is up used to replace
+   * it and leave the first promise pending FOR THE SESSION. Whoever was awaiting
+   * it never reached its `finally`, so the in-flight ref it holds (`trashInFlight`
+   * covers the question as well as the copy) stayed true and every later Move to
+   * Trash and every Trash-bin operation silently did nothing. Reachable: any
+   * background job that reports through `tell` — a notebook's PDF export runs for
+   * seconds with no overlay — landing while the bin's confirmation is open.
+   *
+   * Dismissing the displaced one is the honest reading: its question was taken
+   * off the screen before it could be answered, so its caller hears "no".
+   */
+  const raise = useCallback((next: AppDialog) => {
+    // Settled FIRST, so that its own `setDialog(null)` cannot land on top of the
+    // dialog installed below — both writes batch, and the last one must win.
+    const prev = dialogRef.current;
+    if (prev) (prev.onCancel ?? prev.onConfirm)();
+    dialogRef.current = next;
+    setDialog(next);
+  }, []);
+
+  const settle = useCallback(() => { dialogRef.current = null; setDialog(null); }, []);
+
   const ask = useCallback((question: DialogRequest) => new Promise<boolean>(resolve => {
-    setDialog({
+    raise({
       ...question,
-      onConfirm: () => { setDialog(null); resolve(true); },
-      onCancel: () => { setDialog(null); resolve(false); },
+      onConfirm: () => { settle(); resolve(true); },
+      onCancel: () => { settle(); resolve(false); },
     });
-  }), []);
+  }), [raise, settle]);
+
+  /**
+   * A question with THREE answers, for the one place a yes/no cannot say what
+   * the reader means: putting something back out of the Trash onto a name that
+   * is taken is "replace it", "keep both", or "leave it where it is", and
+   * folding either of the first two into the other would decide for them.
+   * Escape and a click outside still cancel — the alternative is never a
+   * dismissal.
+   */
+  const askChoice = useCallback((question: DialogRequest & { altLabel: string }) =>
+    new Promise<'confirm' | 'alt' | 'cancel'>(resolve => {
+      raise({
+        ...question,
+        onConfirm: () => { settle(); resolve('confirm'); },
+        onAlt: () => { settle(); resolve('alt'); },
+        onCancel: () => { settle(); resolve('cancel'); },
+      });
+    }), [raise, settle]);
 
   /** Report something and wait for it to be read. One button, so Escape and a
    *  click outside mean the same as pressing it. */
   const tell = useCallback((notice: DialogRequest) => new Promise<void>(resolve => {
-    setDialog({ ...notice, onConfirm: () => { setDialog(null); resolve(); } });
-  }), []);
+    raise({ ...notice, onConfirm: () => { settle(); resolve(); } });
+  }), [raise, settle]);
 
   // ── The app's own right-click menu ──────────────────────────────────────
   // One menu is on screen at a time, and every raiser — the editor, a table
@@ -488,6 +555,12 @@ export default function App() {
   // of those go away when the workspace switches out from under them. Leaving
   // the menu on screen would leave rows that act on something unmounted.
   useEffect(() => { closeContextMenu(); }, [mainView, rootHandle]);
+
+  // Same hazard, one surface further out: every row in the Trash panel closes
+  // over a handle from the vault it was crawled in, and nothing in those
+  // handles goes stale when the vault does — a put-back clicked afterwards
+  // would copy a file into a folder of the vault the reader just left.
+  useEffect(() => { setShowTrash(false); }, [rootHandle]);
 
   /** Say something went wrong, in the app's own dialog. One button, because
    *  there is nothing to decide. STABLE — it is handed to EditorPane and on to
@@ -1906,6 +1979,235 @@ export default function App() {
     }
   }, [moveToTrash, removeTab, flushTab, ask, tell, writeEntryStyles]);
 
+  /* ── The Trash bin ──────────────────────────────────────────────────────
+   * The panel draws the list and owns nothing else: every one of these asks
+   * the question, takes the SAME in-flight ref `handleTrash` does, and drains
+   * the asset-reconcile queue first.
+   *
+   * The shared ref is deliberate. All four are copy-then-delete over the same
+   * vault, so two at once is the abandoned-half-written-copy hazard
+   * handleTrash documents — and the guard has to cover the QUESTION as well as
+   * the copy, because only one dialog fits on screen: a second `ask` raised
+   * while one is up leaves the first promise unresolved for the session.
+   * Draining `reconcileQueueRef` matters for the same reason it does there —
+   * a retire may be moving a picture between `.Assets` and `.Garbage/.Assets`
+   * at that moment, which is exactly what the bin is reading and writing.
+   * ─────────────────────────────────────────────────────────────────────── */
+
+  /** Put one trashed item back beside the `.Garbage` it was found in. */
+  const handleTrashRestore = useCallback(async (item: TrashItem): Promise<TrashRestoreResult> => {
+    if (trashInFlightRef.current) return { status: 'error' };
+    trashInFlightRef.current = true;
+    try {
+      await reconcileQueueRef.current;
+      // Where the clash actually is — a retired picture goes back INSIDE that
+      // folder's `.Assets`, so naming the folder itself would send the reader
+      // looking at the wrong one.
+      const where = item.origin === 'retired'
+        ? joinVaultPath(item.restorePath, ASSETS_DIR)
+        : (item.restorePath || 'the vault root');
+      // Which open documents a 'replace' would take with it: the entry standing
+      // at the destination name, and — when that entry is a FOLDER — every
+      // document open from inside it. Both, by one prefix test, because App
+      // cannot know which kind is in the way until the copy resolves it, and a
+      // file has no children for the `/` branch to match anyway. A retired
+      // picture's destination is `.Assets`, which nothing opens as a tab. The
+      // Help guide is excluded: its pseudo-path is a bare name (`help-guide`),
+      // so a vault folder of that name would otherwise close it.
+      const taken = item.origin === 'retired' ? null : joinVaultPath(item.restorePath, item.name);
+      const doomed = (tab: typeof tabsRef.current[number]) =>
+        !!taken && !tab.file.isHelp &&
+        (tab.file.path === taken || tab.file.path.startsWith(`${taken}/`));
+      // Asked for without permission to overwrite: a taken name comes back as
+      // a collision with nothing touched, and the reader decides.
+      let result = await restoreFromTrash(item, 'auto');
+
+      if (result.status === 'collision') {
+        const choice = await askChoice({
+          title: 'That name is taken',
+          confirmLabel: 'Replace',
+          altLabel: 'Keep both',
+          danger: true,
+          body: (
+            <>
+              {/* `where` is a real path everywhere except one case — a file
+                  trashed from the vault root — where it is prose, and prose set
+                  in monospace reads as a folder nobody has. */}
+              {item.restorePath || item.origin === 'retired' ? <code>{where}</code> : 'The vault root'}
+              {' '}already holds something called <strong>{item.name}</strong>.
+              Replacing it moves what is there now into that folder’s own <code>.Garbage</code> —
+              it will be waiting here in the Trash, not erased. Keeping both puts this one back
+              under a numbered name.
+            </>
+          ),
+        });
+        if (choice === 'cancel') return { status: 'collision' };
+
+        if (choice === 'confirm') {
+          // Write out what is still in the save debounce, so the copy that gets
+          // displaced into `.Garbage` carries the reader's last words rather
+          // than the disk's — handleTrash's reason, and its ordering.
+          await Promise.all(tabsRef.current.filter(doomed).map(t => flushTab(t.file.path)));
+          // …and re-drain the reconcile queue: the question above took real time,
+          // and a retire can have queued a picture move into the very
+          // `.Garbage/.Assets` a retired put-back is about to read.
+          await reconcileQueueRef.current;
+        }
+        result = await restoreFromTrash(item, choice === 'confirm' ? 'replace' : 'keep-both');
+        // The displaced entry's bytes have just moved into `.Garbage`, and every
+        // tab that was open from it still holds a handle resolving to that
+        // DIRECTORY ENTRY — which the restored copy now occupies. Left open,
+        // the next keystroke in one of them writes the displaced bytes straight
+        // over the note that was just put back (measured: putting a trashed
+        // `homework` back over a live one restored its `hw1.md`, and one
+        // keystroke in the still-open tab turned it back into the live file's
+        // text). releaseOverwritten's hazard exactly. Closed WITHOUT flushing —
+        // that already happened above, before the copy.
+        if (choice === 'confirm' && result.status === 'ok') {
+          for (const tab of tabsRef.current) if (doomed(tab)) removeTab(tab.file.path, false);
+          // The displaced entry's icon and colour go into the Trash with it, or
+          // the item that just took its path inherits a look nobody chose —
+          // handleTrash's reason for forgetting them at trash time.
+          if (taken) {
+            const remaining = forgetEntry(getEntryStyles(), taken);
+            if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
+          }
+        }
+      }
+
+      if (result.status === 'error') {
+        await tell({
+          title: 'Nothing was put back',
+          confirmLabel: 'OK',
+          body: (
+            <>
+              <strong>{item.name}</strong> is still in the Trash, and nothing was left half-done.
+              The details are in the browser console. Try again in a moment.
+            </>
+          ),
+        });
+        return result;
+      }
+
+      if (result.status === 'ok') {
+        // A numbered rename must never be silent — "Keep both" says there will
+        // be a number, not what it is. Re-armed over any pending "Saved", the
+        // way handleTrash re-arms it.
+        if (result.name !== item.name) {
+          if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
+          setSaveStatus(`Put back as “${result.name}”`);
+          saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 4000);
+        }
+      }
+      return result;
+    } finally {
+      trashInFlightRef.current = false;
+    }
+  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles]);
+
+  /** Erase one trashed item. One of the app's two points of no return. */
+  const handleTrashDelete = useCallback(async (item: TrashItem) => {
+    if (trashInFlightRef.current) return false;
+    trashInFlightRef.current = true;
+    try {
+      const confirmed = await ask({
+        title: 'Delete for good?',
+        confirmLabel: 'Delete permanently',
+        danger: true,
+        body: (
+          <>
+            <strong>{item.name}</strong>{item.kind === 'directory' ? ' and everything inside it' : ''} is
+            erased from your disk. This is one of the only two things in this app that cannot be
+            undone — there is no second copy anywhere.
+          </>
+        ),
+      });
+      if (!confirmed) return false;
+
+      await reconcileQueueRef.current;
+      const done = await deleteFromTrash(item);
+      if (!done) {
+        await tell({
+          title: 'Nothing was deleted',
+          confirmLabel: 'OK',
+          body: (
+            <>
+              <strong>{item.name}</strong> is still in the Trash. Something inside it may be in use;
+              the details are in the browser console.
+            </>
+          ),
+        });
+      }
+      return done;
+    } finally {
+      trashInFlightRef.current = false;
+    }
+  }, [ask, tell, deleteFromTrash]);
+
+  /** Erase every `.Garbage` in the vault. The other point of no return. */
+  const handleTrashEmpty = useCallback(async (count: number) => {
+    if (trashInFlightRef.current) return false;
+    trashInFlightRef.current = true;
+    try {
+      const confirmed = await ask({
+        title: 'Empty the Trash?',
+        confirmLabel: 'Empty bin',
+        danger: true,
+        body: (
+          <>
+            All {count} item{count === 1 ? '' : 's'} here are erased from your disk, and so is
+            every <code>.Garbage</code> folder in this vault — deleted notes, deleted folders, and
+            pictures your notes stopped using. There is no second copy of any of it, and nothing
+            brings it back.
+          </>
+        ),
+      });
+      if (!confirmed) return false;
+
+      await reconcileQueueRef.current;
+      const { removed, failed } = await emptyTrash();
+      if (!removed && count > 0) {
+        await tell({
+          title: 'Nothing was deleted',
+          confirmLabel: 'OK',
+          body: <>The Trash is still where it was. The details are in the browser console.</>,
+        });
+        return false;
+      }
+      // Partly done is not done, and the panel would otherwise clear its list
+      // and say the bin was empty while those folders still held their files.
+      if (failed) {
+        await tell({
+          title: 'Some of it is still there',
+          confirmLabel: 'OK',
+          body: (
+            <>
+              {failed} folder{failed === 1 ? '' : 's'} would not empty — something inside may be in
+              use. The rest is gone. Open the Trash again to see what is left; the details are in
+              the browser console.
+            </>
+          ),
+        });
+        return false;
+      }
+      return true;
+    } finally {
+      trashInFlightRef.current = false;
+    }
+  }, [ask, tell, emptyTrash]);
+
+  /** The bin's read-only preview of a trashed text file. */
+  const handleTrashReadText = useCallback(
+    (item: TrashItem) => readFile(item.handle as FileSystemFileHandle), [readFile]);
+
+  /** The bytes behind the bin's picture preview. Here rather than in the panel
+   *  so no component calls the File System Access API itself (AGENTS.md). The
+   *  cast is sound for the same reason `handleTrashReadText`'s is: the crawl only
+   *  ever hands a file handle to an item whose `kind` is 'file', and the preview
+   *  asks for nothing else. */
+  const handleTrashReadFile = useCallback(
+    (item: TrashItem) => (item.handle as FileSystemFileHandle).getFile(), []);
+
   /**
    * Follow every open document through a rename or a move.
    *
@@ -2245,14 +2547,30 @@ export default function App() {
             <HelpCircle size={16} />
             Help Guide
           </button>
-          <button
-            className="theme-toggle-btn settings-btn"
-            onClick={() => setShowSettings(true)}
-            title="Settings"
-          >
-            <Settings size={16} />
-            Settings
-          </button>
+          {/* The bin rides the Settings row rather than taking a row of its
+              own: it is the one control down here with nothing to say in words,
+              and a fifth full-width row of chrome for it would push the tree up
+              for a button most sessions never press. The three rows above are
+              deliberately untouched. */}
+          <div className="sidebar-bottom-row">
+            <button
+              className="theme-toggle-btn settings-btn"
+              onClick={() => setShowSettings(true)}
+              title="Settings"
+            >
+              <Settings size={16} />
+              Settings
+            </button>
+            <button
+              className="tree-action-btn sidebar-trash-btn"
+              onClick={() => setShowTrash(true)}
+              title="Trash — everything deleted in this vault"
+              aria-label="Trash"
+              disabled={!rootHandle}
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
         </div>
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
@@ -2325,6 +2643,20 @@ export default function App() {
           onClose={() => setShowSettings(false)}
         />
       )}
+      {/* Over the workspace like Settings, and before ConfirmDialog for the
+          same reason the menu is: nearly everything this panel does raises a
+          question, and the dialog has to cover the panel that asked it. */}
+      {showTrash && (
+        <TrashPanel
+          onClose={() => setShowTrash(false)}
+          onCrawl={listTrash}
+          onRestore={handleTrashRestore}
+          onDelete={handleTrashDelete}
+          onEmpty={handleTrashEmpty}
+          onReadText={handleTrashReadText}
+          onReadFile={handleTrashReadFile}
+        />
+      )}
       {/* Before the dialog, so ConfirmDialog still covers it: a menu row can
           raise a question (Move to Trash), and the menu closes first anyway. */}
       {contextMenu && <ContextMenu request={contextMenu} onClose={closeContextMenu} />}
@@ -2336,6 +2668,8 @@ export default function App() {
           title={dialog.title}
           confirmLabel={dialog.confirmLabel}
           danger={dialog.danger}
+          altLabel={dialog.altLabel}
+          onAlt={dialog.onAlt}
           onConfirm={dialog.onConfirm}
           onCancel={dialog.onCancel}
         >

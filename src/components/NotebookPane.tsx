@@ -10,7 +10,7 @@ import { parseNotebookFile, serializeNotebookFile, type NotebookUiState } from '
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
-import { CANVAS_COMPONENTS, applyCanvasUi, applyPenDefaults, readCanvasUi } from './canvasPen';
+import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi } from './canvasPen';
 import { subscribePenScale } from '../utils/penStyle';
 
 interface NotebookPaneProps {
@@ -471,6 +471,7 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
                 assets={assetStore}
                 onMount={handleMount}
                 components={CANVAS_COMPONENTS}
+                shapeUtils={CANVAS_SHAPE_UTILS}
                 colorScheme={NOTEBOOK_COLOR_SCHEME}
                 licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
             />

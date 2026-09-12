@@ -34,6 +34,7 @@ import { clampTabSize } from './editor/lists';
 import { retryMissingAssets } from './editor/imageWidget';
 import { getNotebookExporter, clearNotebookRenderData, moveNotebookRenderData } from './utils/notebookRenderCache';
 import { readLocation, vaultLinkName, writeLocation } from './utils/appUrl';
+import { setActiveFilePath } from './utils/activeFile';
 import {
   ENTRY_STYLE_FILE, LEGACY_STYLE_FILE, emptyEntryStyles, forgetEntry, parseEntryStyles,
   renameEntry, serializeEntryStyles, withEntryStyle, type IconNode,
@@ -47,6 +48,7 @@ import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/
 import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
+import { prefetchPanes } from './components/prefetchPanes';
 import ConfirmDialog from './components/ConfirmDialog';
 import ContextMenu from './components/ContextMenu';
 import EditorPane from './components/EditorPane';
@@ -268,6 +270,10 @@ export default function App() {
   // It is what the file tree highlights and what the graph view centres on;
   // the editor derives its own from the layout, pane by pane.
   const activeFile = activeTab?.file ?? null;
+  /* Published to a store as well as held in state: the file tree reads "am I
+     the active row" from it per row, so switching tabs re-renders the two rows
+     that changed instead of every row in the vault. See utils/activeFile.ts. */
+  useEffect(() => { setActiveFilePath(activeFile?.path ?? null); }, [activeFile]);
 
   // Main pane view ('editor' or 'graph' — the Neural Brain view)
   const [mainView, setMainView] = useState<MainView>('editor');
@@ -502,6 +508,11 @@ export default function App() {
    *  the tree starts re-rendering while the user types. */
   const [searchOpen, setSearchOpen] = useState(false);
   const closeSearch = useCallback(() => setSearchOpen(false), []);
+
+  /** Stable for the app's life. As an inline arrow this handed `FileExplorer` a
+   *  fresh prop on EVERY App render, which defeated its `React.memo` outright —
+   *  the one thing that memo exists to prevent. */
+  const collapseSidebar = useCallback(() => setSidebarCollapsed(true), []);
 
   // Expanded folder paths (persisted via localStorage)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
@@ -1472,6 +1483,26 @@ export default function App() {
   }, [recentVaults]);
 
   /**
+   * Warm the heavy panes for the kinds of file this vault actually holds.
+   *
+   * Walks `fileTree`, which is already in memory — no disk reads — and only
+   * when the tree changes shape enough to matter. `prefetchPanes` itself is
+   * idle-scheduled and fetches each chunk once, so calling it after every
+   * refresh costs nothing.
+   */
+  useEffect(() => {
+    if (!fileTree.length) return;
+    const kinds = { pdf: false, drawing: false, notebook: false };
+    for (const file of collectFiles(fileTree)) {
+      if (isPdfFile(file.name)) kinds.pdf = true;
+      else if (isNotebookFile(file.name)) kinds.notebook = true;
+      else if (isCanvasFile(file.name)) kinds.drawing = true;
+      if (kinds.pdf && kinds.drawing && kinds.notebook) break;
+    }
+    prefetchPanes(kinds);
+  }, [fileTree]);
+
+  /**
    * Open the file the address bar names, once there is a tree to find it in.
    *
    * Deliberately AFTER the session restore rather than inside it: a link is an
@@ -2074,7 +2105,6 @@ export default function App() {
         <FileExplorer
           rootHandle={rootHandle}
           fileTree={fileTree}
-          activeFilePath={activeFile?.path || null}
           onFileClick={handleFileClick}
           onCreateFile={handleCreateFile}
           onCreateFolder={handleCreateFolder}
@@ -2084,7 +2114,7 @@ export default function App() {
           recentVaultLimit={recentVaultLimit}
           onOpenRecentVault={openRecentVault}
           onForgetRecentVault={forgetRecentVault}
-          onCollapse={() => setSidebarCollapsed(true)}
+          onCollapse={collapseSidebar}
           searchOpen={searchOpen}
           onCloseSearch={closeSearch}
           onTrash={handleTrash}

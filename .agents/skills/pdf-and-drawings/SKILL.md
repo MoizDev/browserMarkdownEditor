@@ -61,6 +61,18 @@ as live tldraw shapes.
 - `pdfBuildClient` keeps one warm `Worker` for the app's life, and on `worker.onerror` rejects every
   in-flight build and nulls the worker so the next call re-spawns it.
 
+## One pdf.js worker for the whole app — `utils/pdfWorker.ts`
+
+pdf.js spawns a worker **per `getDocument`** unless it is handed one, and a loading task only tears
+down a worker it created itself (`task._worker` is set only when the caller passed none) — so passing
+a shared one is safe, and is the whole fix. Opening a single PDF used to start two workers: `PdfPane`
+probes the file's role via `readPdfRole` before it knows which view to show, then `PdfViewer` opens
+the same bytes again; each boot loads and compiles ~1MB of worker script before a byte is read.
+**Pass `worker: pdfWorker()` to every `getDocument`.** That module is also the one place that sets
+`GlobalWorkerOptions.workerSrc` — importing it is how the PDF modules get the assignment. Verified by
+counting `new Worker(...)`: one for the session, zero more per PDF opened. `prefetchPanes` starts it
+at idle (dynamically, or pdf.js lands in the main bundle), so the boot is off the first click.
+
 ## Deliberate module fragmentation is for bundle size — do not collapse it
 
 pdf-lib (~400kB) + pdf.js must stay out of the main bundle for markdown-only sessions. There is no
@@ -97,11 +109,35 @@ requires reading it.
   positioned span, so a dense 300-page book runs to hundreds of MB). Above 300 the *eager* pass is
   skipped, but layers are still built on demand for every page that scrolls into view and still never
   freed. **Do not "fix" this by lowering the limit or windowing the layers without an explicit
-  decision — both trade away ⌘F completeness.** (`content-visibility: auto` on `.pdf-viewer-page`
-  looks like the free answer and **is not**: measured 533.8MB → 542.1MB, slightly worse, because Blink
-  does not tear down layout structures already built.) The eager pass is keyed on a `hasLayout`
-  boolean rather than the `layout` object identity, so a zoom or resize does not restart 300
-  iterations.
+  decision — both trade away ⌘F completeness.** The eager pass is keyed on a `hasLayout` boolean rather
+  than the `layout` object identity, so a zoom or resize does not restart 300 iterations.
+- **`content-visibility: auto` on `.pdf-viewer-page` buys TIME, not MEMORY** — know which problem you
+  are measuring before judging it. Memory: it does nothing (measured 533.8MB → 542.1MB, slightly
+  *worse*, because Blink does not tear down layout structures already built), so it is no answer to the
+  text layers above. Per-frame cost: it is decisive, because every zoom step changes `--scale-factor`
+  and so restyles every text-layer span and repaints the whole column — 40 pages of style, layout and
+  compositor commit to change what two of them show. Measured on a 40-page document at 4x CPU: blocked
+  main thread per zoom step 223ms → 122ms, a 4-step `-` burst 452ms → 177ms, 45fps → 55fps. It needs no
+  `contain-intrinsic-size` here: each page div carries explicit inline width/height from the layout, so
+  a skipped page still reserves exactly the right box. Verified it does not cost ⌘F: with and without,
+  find lands on the same page at the same rect (`window.find` → identical geometry, A/B'd in-page).
+- **A page's bitmap is capped at `MAX_CANVAS_PIXELS` (2^24 device px, ~67MB), and past the cap the page
+  is rendered ONE BAND AT A TIME.** A canvas used to grow with the zoom even though the viewport only
+  ever showed a sliver: measured at 4x zoom, two canvases of 9440x12216 — 231 megapixels, **~923MB** of
+  backing store — which is what made zooming out of a 40-page document run at 7fps with 1.3s of blocked
+  main thread. `pageRegion` answers with the visible strip grown by as much margin as the budget still
+  affords (`rect`), the strictly visible part that must be painted (`need`), and `rect` pulled in by
+  half that margin (`trigger`). A re-render is worth doing once `need` escapes `trigger` — deflating is
+  what stops a one-pixel scroll from re-rendering, and only deflating sides that are not already a page
+  edge is what keeps it from asking to re-render what it just rendered. Band rendering is a translate
+  on top of the dpr scale in pdf.js's `transform`; the canvas is then pinned over its band with inline
+  `left/top/width/height`, which is why `.pdf-viewer-page > canvas` uses `top/left`, not `inset: 0`.
+  **Capping the SCALE instead would have been ~10 lines and is the wrong trade** — zoom exists to read
+  fine print, so going soft at high zoom defeats the gesture. Now flat with zoom: 923MB → 63MB.
+- **Rasterize off-screen, then blit.** Sizing a canvas wipes it, so rendering in place left the page
+  blank white for the length of every zoom step — and, now that a scroll at zoom can re-render, for
+  those too. The spare canvas is skipped on a page's FIRST render, where there is nothing to preserve
+  and it would only double the cold-open cost.
 - Canvas **bitmaps are windowed**: only pages within `EVICT_BEYOND` (3) of the viewport hold one
   (~25-31MB each at Retina fit-width); scrolled-away canvases are freed and re-rendered on approach,
   and pages further than `CLEANUP_BEYOND` (12) also get `page.cleanup()` so pdf.js releases their

@@ -60,12 +60,29 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   at and then narrowed by the positions that actually came back, so a note deleted on disk since
   takes its share with it and the rest divide it up — exactly as closing that pane would have.
 - **The whole stored session is read synchronously, before the restore pass yields to its file
-  reads** — persistence is un-gated the moment the pass claims its refs, so a value read after the
-  awaits could already have been rewritten by it, and a split would come back silently flattened.
+  reads** — the claim is what un-gates persistence, so a value read after the awaits could already
+  have been rewritten, and a split would come back silently flattened. `restoringRef` (below) now
+  also shuts persistence for the reads, but one snapshot makes that unreachable, not merely unreached.
 - `restoreLayout` gives any path a stored group can't account for a tab of its own; a session written
   before split tabs restores as all-singletons. A path whose file is gone is simply skipped.
 - **An empty `paths` is a real session** — "I closed everything in this vault" — and must survive a
   switch. Nothing may treat it as absence on the way *in*.
+- **The restore pass is the ONLY thing that opens documents when a vault loads.** The address bar's
+  note (`initialLocation`, captured once) is folded INTO it: consumed by the first vault the page
+  restores, applied only when `findLinkedVault` — the resolver FileSystemContext picked the vault
+  with — resolves the link to `currentVaultId`, read alongside the saved paths (one they lack becomes
+  a trailing singleton through `restoreLayout`) and focused as its `wantActive`. 5de752e opened it
+  with a second, racing `handleFileClick` instead; the pass saw that tab after its reads and bailed
+  *after the claim*, so the persist effect filed the one tab as the vault's whole session. Measured:
+  four documents in three tabs (one a 65/35 split) reloaded as one tab, the stored `paths` rewritten
+  from four to that one. Persistence is live from the claim, so **an early return after it, with tabs
+  on screen, leaves the next commit to file those tabs as the vault's whole session** — which is why
+  what is opened while the reads are in flight (a tree click) is **merged** (`mergeLayouts`: the saved
+  tabs first, as left, then what was opened, keeping its focus and its in-memory `OpenTab`), never
+  deferred to, and why the reads themselves are the one stretch where **nothing is persisted at all**
+  (`restoringRef`, a per-pass token released just before the merge is dispatched, and in `finally`).
+  Without that gate a click 100ms into a 600ms-per-file restore held the stored session at that one
+  tab for 2.4s, and a reload inside the window lost the rest for good.
 - Everything read back is shape-guarded (`isStoredSession`); localStorage is user-editable and holds
   whatever an older build wrote, and a malformed entry reads as `null`.
 - Restored PDF tabs get `content: ''` exactly like `handleFileClick` (their buffer is a tldraw
@@ -123,9 +140,25 @@ mount path and `restoreVault` call `recordVault` FIRST and walk after, which is 
 reload and the permission button looked fine. Above the claim, the pass simply waits for the id;
 nothing is left un-gated, because the persist effect's own first line is the same check.
 
-The pass still re-checks the vault after its file reads, alongside the "did the user open something
-already" guard: the switch empties the tab set, so that guard alone waves the old vault's tabs
-straight through.
+The pass re-checks the vault (handle AND id, via `rootHandleRef`/`currentVaultIdRef`) after its file
+reads and **before** the merge, and that check alone keeps a mid-restore switch's OLD tabs out of the
+new vault: the switch empties the tab set, so the merge would lay them straight over it. Asset
+baselines are seeded only after it, for the same reason — the switch has just cleared that map.
+`restoringRef` is reset at **every claim**, so a pass still reading the vault just left cannot hold
+the incoming vault's gate. A pass whose reads ALL fail still dispatches a merge when `layoutRef` says
+something was opened meanwhile, because the gate held that commit's own write back; and when
+`layoutRef` has not caught up yet the pass returns instead, leaving the flush that updates it to run
+the persist effect immediately after the `finally` — that ref's effect is declared above it. One
+write either way, which is what makes the stale ref harmless rather than merely unlikely.
+
+**What the gate costs, and why it is still the right trade.** A note opened during the reads and then
+abandoned by a vault SWITCH inside the same window is never filed under the outgoing vault: its write
+was gated, and the pass then returns at the vault re-check without dispatching a merge (measured — a
+tree click 150ms into a 2.4s restore, switching away at 400ms, left the stored session at its
+original four paths). Only the memory that a tab was open is lost, never a file, and the alternative
+is writing a session from the gated path — which is exactly the hazard the gate exists for. A read
+that never settles is the same trade taken to its limit: nothing in that vault is persisted until
+some other vault's claim resets the token (see above), which is the safe direction to fail.
 
 # Split tabs (`utils/tabGroups.ts`, `DocumentPane.tsx`, `EditorPane.tsx`)
 

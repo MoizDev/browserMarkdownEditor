@@ -47,8 +47,8 @@ npm run preview    # serve a production build
 ```
 
 **There is no test suite and no test runner.** `typecheck` and `lint` are the only static gates;
-everything behavioural is verified by driving the app headlessly — see the `verify-in-browser` skill,
-and use it before saying a change works.
+everything behavioural is verified by Playwright driving the app in headless Chromium — see the
+`verify-in-browser` skill, and use it before saying a change works.
 
 **Env:** `VITE_TLDRAW_LICENSE_KEY` — production only; a missing key never shows up in `npm run dev`.
 
@@ -75,8 +75,8 @@ and use it before saying a change works.
 - **Paths are vault-root-relative with no vault-name prefix**, centralized in `utils/paths.ts`;
   `buildFileTree` and every create/move/rename tab handler must agree or tabs stop deduping.
 - **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault: the FS Access
-  API takes no path. On load it outranks the stored handle, a lapsed grant becomes a one-button
-  screen (`requestPermission` needs a gesture), and it is read ONCE — a writer effect then owns it.
+  API takes no path. Read ONCE on load (a writer effect then owns it), it outranks the stored handle;
+  its `file` is opened only BY the session restore, in the vault it names — never by a second opener.
 - **Open documents are a flat list (`tabs`) plus a separate tab *layout*;** `activeTabPath` is
   derived. The save funnel `updateTabContent(path, content)` is **path-explicit and the only one** —
   several documents are editable at once and canvas panes serialize after their pane has gone. The

@@ -93,8 +93,8 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   This origin holds the vault's handle with permission granted, so a hole is read/write over the whole
   vault. Do not open a third.
 - **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
-  (`utils/graph.ts`, `utils/vaultSearch.ts`) and holds one file's text at a time. Both run after *every*
-  save — an uncached walk is a full vault read per keystroke-triggered autosave.
+  (`utils/graph.ts`, `utils/vaultSearch.ts`) and holds one file's text at a time — both run after *every*
+  save, and an uncached walk is a full vault read per autosave. The bin's crawl is the one exception.
 - **The decoration pass runs per keystroke, per arrow key, on every open pane** — memoize on immutable
   identity or measure it; read mode stays a pure function of the document (`live-preview`).
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,

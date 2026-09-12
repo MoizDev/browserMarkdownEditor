@@ -81,7 +81,8 @@ so the list you switch vaults with looks like the tree you set up.
 
 ### Searching the Vault
 **Search** sits at the bottom of the sidebar, under the theme switch, alongside
-Neural Brain and Settings. It looks through every note in the vault — file names
+Neural Brain, Help Guide and Settings — with the Trash bin's icon at the
+right-hand end of the Settings row. It looks through every note in the vault — file names
 *and* the text inside them — and replaces the file tree while it is open. Picking
 a result opens that note and scrolls to the line it matched, then puts the tree
 back. Notebooks, drawings and PDFs match on their names only, since what is in
@@ -302,15 +303,32 @@ Deleting a picture — with the bin, with \`Backspace\`, or just by deleting the
 Nothing is lost by this:
 - An image another note **in the same folder** still shows is left exactly where it is.
 - Undo (\`Cmd + Z\` / \`Ctrl + Z\`) brings the picture back — the image file comes back out of \`.Garbage\` with it.
-- And anything that was retired is still sitting in \`.Garbage\`, recoverable by hand.
+- And anything that was retired is still sitting in \`.Garbage\`: it is listed in the Trash bin like anything else, and putting it back returns it to \`.Assets\`, where your notes can show it again.
 
 ### Opening Media
 If you click on \`.pdf\`, \`.jpg\`, \`.jpeg\`, or \`.png\` files directly within the file tree, they will automatically open in a new browser tab for viewing rather than attempting to load as text.
 
 ### The Trash System
-To prevent accidental permanent data loss, deleting a file does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Garbage\` folder located in the same directory as the file — deleting \`Maths/Calculus/notes.md\` puts it in \`Maths/Calculus/.Garbage\`, so a deletion stays next to the notes it came from. Deleting the same name twice keeps both copies (the second becomes \`notes (1).md\`). You can manually recover these files using your computer's native file explorer (Finder or Windows Explorer) if needed.
+To prevent accidental permanent data loss, deleting a file does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Garbage\` folder located in the same directory as the file — deleting \`Maths/Calculus/notes.md\` puts it in \`Maths/Calculus/.Garbage\`, so a deletion stays next to the notes it came from. Deleting the same name twice keeps both copies (the second becomes \`notes (1).md\`).
 
-Deleting a **folder** works exactly the same way, and takes everything inside it along: deleting \`Maths/Calculus\` puts the whole folder in \`Maths/.Garbage/Calculus\`, with its notes, its sub-folders and the pictures from its own \`.Assets\` still in place — so in most cases you can drag it back out in Finder and it works again just as it did. (A picture stored higher up the vault, from an older version of the app, stays where it is and is not copied along.) Any notes from that folder you had open are saved first and then closed, so nothing you had just typed is left behind. A large folder takes a moment to copy; the top bar says so while it does.
+Deleting a **folder** works exactly the same way, and takes everything inside it along: deleting \`Maths/Calculus\` puts the whole folder in \`Maths/.Garbage/Calculus\`, with its notes, its sub-folders and the pictures from its own \`.Assets\` still in place — so a recovered folder works again just as it did. (A picture stored higher up the vault, from an older version of the app, stays where it is and is not copied along.) Any notes from that folder you had open are saved first and then closed, so nothing you had just typed is left behind. A large folder takes a moment to copy; the top bar says so while it does.
+
+### The Trash Bin
+The **bin icon** at the bottom of the sidebar, at the right-hand end of the Settings row, shows everything you have deleted in the vault you have open — without your going near Finder or Windows Explorer.
+
+Opening it looks through every \`.Garbage\` folder in the vault, from the root down. Nothing about your trash is written down or remembered between openings, so what you see is always what is actually on disk — and a big vault takes a moment to look through. The window says so while it works.
+
+**What you see.** One list of everything trashed anywhere in the vault, newest deletion first, each row naming the folder it came out of (which is where it goes back to) and when it went. A deleted **folder** is a single row: click it to look inside, and use the trail at the top to come back out. Anything you deleted from that folder *before* you deleted the folder itself is listed on its own at the top level instead of inside it — it was a separate deletion, so it is offered back separately. Clicking a note shows it read-only beside the list, which is how you tell \`notes.md\` from \`notes (1).md\` before putting either back. Notebooks, drawings and PDFs are listed with their size and date but not drawn.
+
+**Put back** (the arrow on a row) returns an item to the folder holding the \`.Garbage\` it was found in. It does not rebuild the folders it used to live in: a note from four levels inside a folder you deleted comes back beside that folder's old home, not under a recreation of an ancestry you no longer have. Put back a single note out of a deleted folder and only that note leaves the bin — the rest of the folder stays there. A picture the app retired for you goes back into \`.Assets\`, where your notes can show it again.
+
+If something of that name is already there, you are asked: **Replace**, **Keep both**, or leave it. Replacing does not erase what is there now — it moves it into that folder's own \`.Garbage\`, where it appears at the top of this list. Keeping both puts yours back under a numbered name, and the top bar tells you which.
+
+One thing does not come back: an icon or colour you had given a file or folder is forgotten when you delete it, so a restored item looks like any other.
+
+**Delete permanently** (the bin on a row) and **Empty bin** (bottom left) are the only two things in this application that actually erase anything. Empty bin removes every \`.Garbage\` folder in the vault at once, retired pictures included. Both ask first, and neither can be undone.
+
+**Escape** closes the window, and so does clicking the dimmed area around it. If you would rather dig a file out by hand, you still can: every \`.Garbage\` is an ordinary folder sitting beside what it holds, so Finder or Windows Explorer reaches it too.
 
 ---
 

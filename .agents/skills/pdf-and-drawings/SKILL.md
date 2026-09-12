@@ -166,9 +166,20 @@ requires reading it.
   comparing against the live page instead would let a scroll-while-focused yank the view back. At the
   document's bottom the box shows the last *visible* page, not the one under the top edge: a short
   final page can never reach the top edge, so otherwise jumping to it would snap the box back one.
-- **Position persistence**: the viewer tracks `{page, offset-into-page}` (+ zoom) on scroll and
-  persists it per vault path to localStorage `pdfViewPositions` (debounced); geometry changes (zoom,
-  resize, reload, the byte-swap after an annotated save) re-anchor scroll from that record.
+- **Position persistence**: `{page, offset-into-page, zoom}` per vault path, in ONE record shared
+  with the annotate canvas (`utils/pdfViewState.ts`) — pressing annotate lands on the page being read,
+  and leaving it reopens the reader where writing stopped. Geometry changes (zoom, resize, reload, the
+  byte-swap after an annotated save) re-anchor scroll from it. **The reader reads it while RENDERING**,
+  in the same commit that unmounts the canvas, so the canvas updates the in-memory record every view
+  pass (`writePdfViewPos(…, false)`) and only debounces the flush to storage; a debounced in-memory
+  write reopened the reader behind.
+- **Page thumbnails** (`components/PdfThumbnails.tsx`, both modes, toggled from the controls, open
+  state app-wide in localStorage): **windowed** (rows exist only near view; heights come from page
+  aspect ratios, so nothing is measured), **one render at a time** nearest the middle, re-decided after
+  each (a scrolled-past row is never rendered), JPEG object URLs capped at 160. The current page is
+  pushed through an **imperative handle**, never a prop — a prop would re-render the host, and for the
+  reader that is every page div. The reader keys it on `docState.gen` so a reload gets a fresh cache,
+  and its renders go straight to the document rather than through the render window's page states.
 
 ## The pen is a forked draw shape — `components/tightDrawShape.tsx`
 
@@ -249,11 +260,28 @@ selectable text.
 only ever be a bitmap; at 400% a 2x raster is mush under a pen whose ink is vector and stays crisp.
 A debounced pass re-rasterizes the pages **inside the viewport** at `zoom x devicePixelRatio`,
 stepped and capped at `MAX_PAGE_SCALE` (6x — a Letter page is then ~70MB decoded), and drops pages
-you have left back to `PAGE_RENDER_SCALE`. It is bounded to visible pages because **every** page is
-held rasterized for the canvas's life. It rides a **second, session-scoped** store listener: a pan or
-zoom must not mark the file dirty, which is also why the swap goes through `refreshPageAsset`'s
-`mergeRemoteChanges`. The pass is serialized behind an in-flight flag — overlapping runs would render
-one page at two scales and leak the loser's object URL.
+you have left back to `PAGE_RENDER_SCALE`. The swap goes through `refreshPageAsset`'s
+`mergeRemoteChanges` so it never marks the file dirty. The pass is serialized behind an in-flight flag —
+overlapping runs would render one page at two scales and leak the loser's object URL.
+
+**Pages are rasterized only as they come near the view**, nearest the middle first, re-deciding after
+each page (so jumping to page 300 renders page 300). It used to render EVERY page in order before the
+first was needed, and `zoomToFit()` on a first open — on a long PDF, every page at once, unreadably
+small. Now the camera opens on the reader's page at the reader's fit-width size (`cameraFor`), always,
+overriding the snapshot's camera, which knows nothing of where the reader has been since.
+
+**The camera is held to the document.** `setCameraOptions` constraints with `behavior: 'contain'`,
+bounds = the whole page stack, `baseZoom: 'fit-x'` and **no horizontal padding**: below fit-width the
+page is pinned centred, above it the camera clamps to the real page edges, so fit-width is edge to edge
+and zooming further simply goes further in. **Swipes are vertical-only**: a capture-phase `wheel`
+listener on `.pdf-annotate-canvas` (an ancestor of tldraw's own) swallows every non-ctrl wheel and
+applies only `deltaY`; pinches arrive as ctrl+wheel and pass through to tldraw's zoom. Because the
+bottom is clamped, the page box shows the last visible page once the view is held against the end of
+the document — the reader's rule, or typing the last page reads back an earlier one.
+
+View tracking (page box, strip, position record, the missing-page and sharpen passes) runs off a
+tldraw **`react()` on `getViewportPageBounds()`** — it fires when the view moves, not on every pointer
+move while drawing, which is what the session-scope store listener it replaced fired on.
 
 The serialize debounce is 1500ms — far longer than a drawing's 400ms — because a PDF export
 rebuilds the whole document on the main thread. `flush()` buckets shapes by page **once** (not a

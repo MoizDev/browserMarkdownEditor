@@ -243,11 +243,17 @@ intend to hand in.
 ### PDFs
 A PDF opens in a reader: scroll it, select its text, search it with \`Cmd + F\`,
 follow its links, and jump to a page with the box at the bottom. Pinch or hold
-\`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys.
+\`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button beside the
+page box opens a **strip of page thumbnails** down the left; click one to go to
+that page.
 
 \`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
 **writing on it** — the same toggle every other file has. Draw on it as you would
-on a notebook.
+on a notebook. It opens **on the page you were reading**, with the same page box
+and thumbnail strip, and switching back to reading returns you to wherever you
+stopped writing. Swiping scrolls the page up and down like a PDF, and pinching
+zooms — at full width the page fills the screen edge to edge, and you can zoom in
+past that. The page can never be swiped off screen.
 
 **The marks go into that PDF, not into a copy.** There is no second
 "(annotated)" file to keep track of, and nothing to remember to open next time:

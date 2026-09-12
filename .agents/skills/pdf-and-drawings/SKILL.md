@@ -61,6 +61,18 @@ as live tldraw shapes.
 - `pdfBuildClient` keeps one warm `Worker` for the app's life, and on `worker.onerror` rejects every
   in-flight build and nulls the worker so the next call re-spawns it.
 
+## One pdf.js worker for the whole app — `utils/pdfWorker.ts`
+
+pdf.js spawns a worker **per `getDocument`** unless it is handed one, and a loading task only tears
+down a worker it created itself (`task._worker` is set only when the caller passed none) — so passing
+a shared one is safe, and is the whole fix. Opening a single PDF used to start two workers: `PdfPane`
+probes the file's role via `readPdfRole` before it knows which view to show, then `PdfViewer` opens
+the same bytes again; each boot loads and compiles ~1MB of worker script before a byte is read.
+**Pass `worker: pdfWorker()` to every `getDocument`.** That module is also the one place that sets
+`GlobalWorkerOptions.workerSrc` — importing it is how the PDF modules get the assignment. Verified by
+counting `new Worker(...)`: one for the session, zero more per PDF opened. `prefetchPanes` starts it
+at idle (dynamically, or pdf.js lands in the main bundle), so the boot is off the first click.
+
 ## Deliberate module fragmentation is for bundle size — do not collapse it
 
 pdf-lib (~400kB) + pdf.js must stay out of the main bundle for markdown-only sessions. There is no
@@ -97,11 +109,35 @@ requires reading it.
   positioned span, so a dense 300-page book runs to hundreds of MB). Above 300 the *eager* pass is
   skipped, but layers are still built on demand for every page that scrolls into view and still never
   freed. **Do not "fix" this by lowering the limit or windowing the layers without an explicit
-  decision — both trade away ⌘F completeness.** (`content-visibility: auto` on `.pdf-viewer-page`
-  looks like the free answer and **is not**: measured 533.8MB → 542.1MB, slightly worse, because Blink
-  does not tear down layout structures already built.) The eager pass is keyed on a `hasLayout`
-  boolean rather than the `layout` object identity, so a zoom or resize does not restart 300
-  iterations.
+  decision — both trade away ⌘F completeness.** The eager pass is keyed on a `hasLayout` boolean rather
+  than the `layout` object identity, so a zoom or resize does not restart 300 iterations.
+- **`content-visibility: auto` on `.pdf-viewer-page` buys TIME, not MEMORY** — know which problem you
+  are measuring before judging it. Memory: it does nothing (measured 533.8MB → 542.1MB, slightly
+  *worse*, because Blink does not tear down layout structures already built), so it is no answer to the
+  text layers above. Per-frame cost: it is decisive, because every zoom step changes `--scale-factor`
+  and so restyles every text-layer span and repaints the whole column — 40 pages of style, layout and
+  compositor commit to change what two of them show. Measured on a 40-page document at 4x CPU: blocked
+  main thread per zoom step 223ms → 122ms, a 4-step `-` burst 452ms → 177ms, 45fps → 55fps. It needs no
+  `contain-intrinsic-size` here: each page div carries explicit inline width/height from the layout, so
+  a skipped page still reserves exactly the right box. Verified it does not cost ⌘F: with and without,
+  find lands on the same page at the same rect (`window.find` → identical geometry, A/B'd in-page).
+- **A page's bitmap is capped at `MAX_CANVAS_PIXELS` (2^24 device px, ~67MB), and past the cap the page
+  is rendered ONE BAND AT A TIME.** A canvas used to grow with the zoom even though the viewport only
+  ever showed a sliver: measured at 4x zoom, two canvases of 9440x12216 — 231 megapixels, **~923MB** of
+  backing store — which is what made zooming out of a 40-page document run at 7fps with 1.3s of blocked
+  main thread. `pageRegion` answers with the visible strip grown by as much margin as the budget still
+  affords (`rect`), the strictly visible part that must be painted (`need`), and `rect` pulled in by
+  half that margin (`trigger`). A re-render is worth doing once `need` escapes `trigger` — deflating is
+  what stops a one-pixel scroll from re-rendering, and only deflating sides that are not already a page
+  edge is what keeps it from asking to re-render what it just rendered. Band rendering is a translate
+  on top of the dpr scale in pdf.js's `transform`; the canvas is then pinned over its band with inline
+  `left/top/width/height`, which is why `.pdf-viewer-page > canvas` uses `top/left`, not `inset: 0`.
+  **Capping the SCALE instead would have been ~10 lines and is the wrong trade** — zoom exists to read
+  fine print, so going soft at high zoom defeats the gesture. Now flat with zoom: 923MB → 63MB.
+- **Rasterize off-screen, then blit.** Sizing a canvas wipes it, so rendering in place left the page
+  blank white for the length of every zoom step — and, now that a scroll at zoom can re-render, for
+  those too. The spare canvas is skipped on a page's FIRST render, where there is nothing to preserve
+  and it would only double the cold-open cost.
 - Canvas **bitmaps are windowed**: only pages within `EVICT_BEYOND` (3) of the viewport hold one
   (~25-31MB each at Retina fit-width); scrolled-away canvases are freed and re-rendered on approach,
   and pages further than `CLEANUP_BEYOND` (12) also get `page.cleanup()` so pdf.js releases their
@@ -133,6 +169,38 @@ requires reading it.
 - **Position persistence**: the viewer tracks `{page, offset-into-page}` (+ zoom) on scroll and
   persists it per vault path to localStorage `pdfViewPositions` (debounced); geometry changes (zoom,
   resize, reload, the byte-swap after an annotated save) re-anchor scroll from that record.
+
+## The pen is a forked draw shape — `components/tightDrawShape.tsx`
+
+All three canvases pass `shapeUtils={CANVAS_SHAPE_UTILS}`, which substitutes tldraw's draw shape (same
+`type: 'draw'`, so `mergeArraysAndReplaceDefaults` swaps rather than adds). It exists for ONE number.
+
+- **`streamline` is the only thing that decides how far ink trails the pen**, and tldraw does not
+  expose it: `getFreehandOptions` is module-private in `lib/shapes/draw/getPath.js`, called from
+  DrawShapeUtil's own methods, taking nothing from the editor. There is no hook. Re-rendering the
+  shape is the only route.
+- **Measure it on the CENTRELINE, never the rendered outline.** `getStrokePoints` gives the smoothed
+  centreline before any width is applied; comparing its last point to the last raw input point is the
+  honest number. Measuring the outline's leading edge instead conflates tracking with stroke
+  thickness — a fatter stroke reaches nearer the nib while tracking no better, which is exactly how an
+  earlier attempt "proved" a 2x win that was not there. Width has *zero* effect on tracking: identical
+  lag at 3, 4.6, 6 and 10px.
+- Measured at 12px between input points: streamline 0.64 → 7.79px behind the pen, 0.62 → 7.05px,
+  0.40 → 2.10px, **0.01 (ours) → 0.00px**.
+- **`dash` stays `'solid'`** (pinned in `canvasPen.ts`) because it is what keeps stroke width even.
+  tldraw only consults `isPen` when dash is `'draw'`, so a stylus never reaches `realPressureSettings`
+  here — that branch buys 0.74px and costs pressure-varying width.
+- **Four methods are overridden and every one of them matters**: `component` (the ink), `getGeometry`
+  (or clicking a stroke misses it by ~5px), `getIndicatorPath` (or the selection outline floats beside
+  the ink), and `toSvg` (or the notebook's PDF export quietly uses tldraw's smoothing and differs from
+  the screen). Each delegates to `super` unless `dash === 'solid'`, so what is owned across upgrades is
+  one branch, not a renderer.
+- **`components/PenDevPanel.tsx` is how this number gets chosen** — dev-only, portalled to `<body>`,
+  slider plus presets, applying to the NEXT stroke so a canvas can hold strokes at several settings
+  side by side. It is gated on `import.meta.env.DEV` and carries its own CSS in a `<style>` tag rather
+  than `index.css`, so markup, logic and styles all leave the production build together (verified by
+  grepping `dist`). **Reach for it before touching `PEN_STREAMLINE`**: the arithmetic predicted 0.35-0.45
+  would be the floor and drawing on a real tablet disproved it.
 
 ## Panes
 

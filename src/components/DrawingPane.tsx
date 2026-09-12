@@ -3,7 +3,7 @@ import { Tldraw, getSnapshot } from 'tldraw';
 import type { Editor, TLEditorSnapshot } from 'tldraw';
 import 'tldraw/tldraw.css';
 import type { Theme } from '../types';
-import { CANVAS_COMPONENTS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
 import { subscribePenScale } from '../utils/penStyle';
 
 interface DrawingPaneProps {
@@ -149,6 +149,7 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
                 snapshot={snapshot}
                 onMount={handleMount}
                 components={CANVAS_COMPONENTS}
+                shapeUtils={CANVAS_SHAPE_UTILS}
                 colorScheme={theme === 'light' ? 'light' : 'dark'}
                 // Required once deployed, not cosmetic: on a non-localhost HTTPS
                 // origin, tldraw with no key reports `unlicensed-production` and

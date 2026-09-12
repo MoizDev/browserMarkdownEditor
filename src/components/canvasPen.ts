@@ -11,6 +11,8 @@ import type { Editor, TLShape } from 'tldraw';
 import { DefaultDashStyle, DefaultSizeStyle } from 'tldraw';
 import { getPenScale, seedPenScale } from '../utils/penStyle';
 import CanvasStylePanel from './CanvasStylePanel';
+import { TightDrawShapeUtil } from './tightDrawShape';
+import PenDevPanel from './PenDevPanel';
 
 /**
  * What a canvas file remembers about how you were drawing in it.
@@ -62,8 +64,23 @@ export function applyCanvasUi(editor: Editor, ui: CanvasUiState | undefined): vo
     }
 }
 
-/** What every canvas in the app passes to <Tldraw components={...}>. */
-export const CANVAS_COMPONENTS = { StylePanel: CanvasStylePanel };
+/**
+ * What every canvas in the app passes to <Tldraw components={...}>.
+ *
+ * The pen tuning panel rides along in development only. `import.meta.env.DEV`
+ * is a build-time literal, so in production the key is `undefined`, the import
+ * is unreferenced, and the panel is dropped from the bundle rather than shipped
+ * and hidden.
+ */
+export const CANVAS_COMPONENTS = {
+    StylePanel: CanvasStylePanel,
+    InFrontOfTheCanvas: import.meta.env.DEV ? PenDevPanel : undefined,
+};
+
+/** Ditto for <Tldraw shapeUtils={...}>. tldraw merges these over its own by
+ *  `type`, and this one is still `type: 'draw'`, so it substitutes rather than
+ *  adds — see tightDrawShape.tsx for what it changes and why. */
+export const CANVAS_SHAPE_UTILS = [TightDrawShapeUtil];
 
 /**
  * Make the pen behave the way the panel promises.
@@ -79,6 +96,13 @@ export const CANVAS_COMPONENTS = { StylePanel: CanvasStylePanel };
 export function applyPenDefaults(editor: Editor): () => void {
     // Only the width is ours to decide; a file that already stored a colour
     // keeps it, which is why this does not touch DefaultColorStyle.
+    //
+    // Dash stays 'solid': it is what keeps stroke width even, which is the whole
+    // point of the width slider. tldraw only consults `isPen` when dash is
+    // 'draw', so a stylus here never reaches realPressureSettings — but that
+    // branch buys only 0.74px of the 7.79px the ink trails (MEASURED on the
+    // smoothed centreline), and costs pressure-varying width. The trailing is
+    // `streamline`, and utils/tightDrawShape.tsx is where that is fixed.
     editor.run(() => {
         editor.setStyleForNextShapes(DefaultDashStyle, 'solid');
         editor.setStyleForNextShapes(DefaultSizeStyle, 's');

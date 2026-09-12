@@ -170,6 +170,38 @@ requires reading it.
   persists it per vault path to localStorage `pdfViewPositions` (debounced); geometry changes (zoom,
   resize, reload, the byte-swap after an annotated save) re-anchor scroll from that record.
 
+## The pen is a forked draw shape — `components/tightDrawShape.tsx`
+
+All three canvases pass `shapeUtils={CANVAS_SHAPE_UTILS}`, which substitutes tldraw's draw shape (same
+`type: 'draw'`, so `mergeArraysAndReplaceDefaults` swaps rather than adds). It exists for ONE number.
+
+- **`streamline` is the only thing that decides how far ink trails the pen**, and tldraw does not
+  expose it: `getFreehandOptions` is module-private in `lib/shapes/draw/getPath.js`, called from
+  DrawShapeUtil's own methods, taking nothing from the editor. There is no hook. Re-rendering the
+  shape is the only route.
+- **Measure it on the CENTRELINE, never the rendered outline.** `getStrokePoints` gives the smoothed
+  centreline before any width is applied; comparing its last point to the last raw input point is the
+  honest number. Measuring the outline's leading edge instead conflates tracking with stroke
+  thickness — a fatter stroke reaches nearer the nib while tracking no better, which is exactly how an
+  earlier attempt "proved" a 2x win that was not there. Width has *zero* effect on tracking: identical
+  lag at 3, 4.6, 6 and 10px.
+- Measured at 12px between input points: streamline 0.64 → 7.79px behind the pen, 0.62 → 7.05px,
+  0.40 → 2.10px, **0.01 (ours) → 0.00px**.
+- **`dash` stays `'solid'`** (pinned in `canvasPen.ts`) because it is what keeps stroke width even.
+  tldraw only consults `isPen` when dash is `'draw'`, so a stylus never reaches `realPressureSettings`
+  here — that branch buys 0.74px and costs pressure-varying width.
+- **Four methods are overridden and every one of them matters**: `component` (the ink), `getGeometry`
+  (or clicking a stroke misses it by ~5px), `getIndicatorPath` (or the selection outline floats beside
+  the ink), and `toSvg` (or the notebook's PDF export quietly uses tldraw's smoothing and differs from
+  the screen). Each delegates to `super` unless `dash === 'solid'`, so what is owned across upgrades is
+  one branch, not a renderer.
+- **`components/PenDevPanel.tsx` is how this number gets chosen** — dev-only, portalled to `<body>`,
+  slider plus presets, applying to the NEXT stroke so a canvas can hold strokes at several settings
+  side by side. It is gated on `import.meta.env.DEV` and carries its own CSS in a `<style>` tag rather
+  than `index.css`, so markup, logic and styles all leave the production build together (verified by
+  grepping `dist`). **Reach for it before touching `PEN_STREAMLINE`**: the arithmetic predicted 0.35-0.45
+  would be the floor and drawing on a real tablet disproved it.
+
 ## Panes
 
 - **One `PdfPane` is mounted per open PDF tab** (EditorPane maps over PDF tabs), hidden via

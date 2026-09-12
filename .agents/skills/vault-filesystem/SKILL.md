@@ -9,6 +9,7 @@ description: How this app reads and writes the user's real files — the File Sy
 Everything else goes through `useFileSystem()`: `readFile`/`writeFile`, binary
 `readFileBytes`/`writeFileBytes`, `createFile`/`createFolder`, `moveFile`/`renameFile`/`moveToTrash`,
 `importFiles`, `getAssetUrl`/`saveAsset`/`retireAsset`/`restoreAsset`,
+`listTrash`/`restoreFromTrash`/`deleteFromTrash`/`emptyTrash`,
 `pickDirectory`/`restoreVault`/`openRecentVault`/`openFolderAsVault`.
 
 There is no backend and no undo stack behind these calls — a mistake here destroys the user's notes.
@@ -66,6 +67,59 @@ existed.
    pseudo-path is a bare name, so a vault folder called `help-guide` closed the Help tab. Left open,
    those tabs draw notes that no longer exist, hold handles that resolve to nothing, and are written
    straight back into the stored session.
+
+## The Trash bin (`listTrash` + `utils/trash.ts` + `components/TrashPanel.tsx`)
+
+The sidebar's bin icon (right-hand end of the Settings row) opens a modal listing everything trashed
+anywhere in the open vault. **`walkForTrash` and the four mutually-recursive collectors under it
+(`collectGarbage`, `buildTrashedDir`, `collectRetired`, `measureLiveAssets`) in
+`FileSystemContext.tsx` are the only code in the app that walks INTO a `.Garbage`** — `buildFileTree`
+hides them and nothing else looks.
+
+- **The crawl is DELIBERATELY UNCACHED**, a stated exception to AGENTS.md's whole-vault-walk rule. It
+  runs on a click and never on a save, so the `(lastModified, size)` cache `graph.ts`/`vaultSearch.ts`
+  need would only be a second vault-sized index in a tab that already holds one. It must **never
+  subscribe to `saveEpoch`**, holds metadata only (name, size, mtime — never a file's bytes), and the
+  panel re-crawls on every open and after nothing else. An unreadable folder is logged and skipped:
+  one locked directory must not cost the reader the rest of their trash.
+- **THE ONE RULE: an item belongs to the parent of the OUTERMOST `.Garbage` on its path** — the crawl
+  carries it down as `ownerDir`/`ownerPath` from the first `.Garbage` it enters and never recomputes
+  it, which is the whole of the definition. That is what makes a deeply nested child restore
+  **flat**, beside that `.Garbage`, instead of under a recreation of an ancestry the user no longer
+  has. There is deliberately nothing persisted about where anything came from — a `.Garbage` sits
+  beside what it holds, so the answer is derivable from the path at any "tier" of vault.
+- **The four listing rules**, applied at every depth: a file or a non-dot folder directly in
+  `F/.Garbage` is a root row (a folder being drillable); `F/.Garbage/.Assets/*` are **retired**
+  pictures, listed individually and restored into `F/.Assets` (an embed resolves from nowhere else);
+  `F/.Garbage/homework/.Assets` is that folder's **live** pictures — **never listed**, they travel
+  back with it, and count only towards its size; and anything inside a **nested** `.Garbage`
+  (`F/.Garbage/homework/.Garbage/old.md`) is **hoisted to the bin root** with destination `F/`,
+  because it was deleted from `homework` *before* `homework` was and was never part of that deletion.
+- **Put-back never goes through `moveFile`/`renameFile`** — they are the documented `freeEntryName`
+  exceptions, so a colliding file would be silently truncated and a colliding folder silently merged,
+  neither with a rollback. `restoreFromTrash` mirrors `moveToTrash` instead: mode `'auto'` reports
+  `'collision'` with **nothing touched**, and App answers it with the app's only three-way question
+  (`askChoice` → `ConfirmDialog`'s optional `altLabel`/`onAlt`).
+- **"Replace" DISPLACES, it does not erase**: the live entry is moved into that folder's own
+  `.Garbage` (a picture into its `.Garbage/.Assets`, which is where a retired picture lives) and
+  handed back as `displaced` so the bin lists it. `deleteFromTrash`/`emptyTrash` are the only two
+  calls in the app that destroy something the user made with no copy surviving.
+- **`displaceInto(bucket, dir, entry)` is shared with `moveToTrash`** and owns the
+  record-before-the-first-byte rollback documented below. Change it and you change both.
+- **The three MUTATING bin handlers take `App`'s existing `trashInFlightRef`** (the one `handleTrash`
+  uses) and drain `reconcileQueueRef.current` before each write — they are copy-then-delete over the
+  same vault. The crawl and the preview reads take neither: they are read-only. Only one dialog fits
+  on screen, so `ask`/`askChoice`/`tell` all go through `raise`, which settles the question it
+  displaces as a cancel — otherwise the displaced promise never resolves and the in-flight ref its
+  caller holds stays true for the session, silently killing every later Trash operation. A 'replace'
+  also closes every tab at the displaced path **or under it**: those handles resolve to the directory
+  entry the restored copy now occupies, so one keystroke would overwrite what was just put back. The
+  panel also closes on `rootHandle` change: every row holds handles from one vault.
+- **Nothing about an item's appearance comes back** — `forgetEntry` dropped its icon/colour when it
+  was trashed, and nothing records it. Panel-side: rows compose `.tree-item` (for
+  `content-visibility`), `dropTrashSubtree` prunes a restored/erased subtree from the root list **and**
+  every `children` array (a restored folder takes its hoisted rows with it), and the preview is text
+  and images ONLY — previewing a PDF or a drawing would pull pdf.js/tldraw into the main bundle.
 
 ## Nothing overwrites an existing file by accident
 

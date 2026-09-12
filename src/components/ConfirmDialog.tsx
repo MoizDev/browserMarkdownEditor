@@ -35,9 +35,24 @@ interface ConfirmDialogProps {
      * same thing it does, because there is nothing else they could mean.
      */
     onCancel?: () => void;
+    /**
+     * A SECOND way of going ahead, drawn between Cancel and the confirm button,
+     * and only when `onAlt` comes with it.
+     *
+     * It exists because one question in the app genuinely has three answers: a
+     * put-back from the Trash whose name is already taken can replace what is
+     * there or keep both, and cancelling is neither. Folding that into a second
+     * hand-rolled overlay is exactly what the doc comment above says this
+     * component exists to prevent.
+     */
+    altLabel?: string;
+    /** What the third button does. Never a dismissal — Escape and the click
+     *  outside still mean `onCancel`, because backing out is what those mean
+     *  everywhere else in the app. */
+    onAlt?: () => void;
 }
 
-export default function ConfirmDialog({ title, children, confirmLabel, danger, onConfirm, onCancel }: ConfirmDialogProps) {
+export default function ConfirmDialog({ title, children, confirmLabel, danger, onConfirm, onCancel, altLabel, onAlt }: ConfirmDialogProps) {
     const titleId = useId();
     const confirmRef = useRef<HTMLButtonElement | null>(null);
 
@@ -93,6 +108,9 @@ export default function ConfirmDialog({ title, children, confirmLabel, danger, o
                 <div className="confirm-actions">
                     {onCancel && (
                         <button className="confirm-btn" onClick={onCancel}>Cancel</button>
+                    )}
+                    {altLabel && onAlt && (
+                        <button className="confirm-btn" onClick={onAlt}>{altLabel}</button>
                     )}
                     <button
                         ref={confirmRef}

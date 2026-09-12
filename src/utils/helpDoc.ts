@@ -22,7 +22,7 @@ The folder icon at the top of the file tree remembers every folder you have open
 
 Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`. You do not need the file dialog for that — right-click the folder in the file tree and choose **Open as Vault**, and it opens as the vault straight away and joins the recent list, so the folder icon is the way back out.
 
-Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's tabs, the way they were split, the pane widths and the note you were reading straight back, without your reopening a thing. A note you deleted from disk in the meantime is simply not among them. That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row.
+Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's tabs, the way they were split, the pane widths and the note you were reading straight back, without your reopening a thing — and so does reloading the page. A note you deleted from disk in the meantime is simply not among them. That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row.
 
 ### Security & Permissions
 Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
@@ -38,6 +38,14 @@ The left sidebar displays your vault's folder structure. You can click on any \`
 The address bar tracks what is open — \`#vault=Notes&file=Math/HW1.md\` — so you
 can copy it at any moment and get back to exactly that note. Paste one into a new
 tab, bookmark it, or put it in another note.
+
+Opening a link never costs you your tabs. The vault comes back with every tab you
+had open in it, split and sized the way you left them, and the note the link names
+is brought to the front — added as one more tab if it was not open already.
+Reloading the page is the same thing, since the address bar is a link to what you
+were reading. The note half of a link only counts in the vault the link names: if
+that vault cannot be found and another one opens instead, it opens just as you
+left it.
 
 A link works on the machine and browser you opened the vault in. Browsers do not
 let a page open a folder just because it can name one, so what a link carries is

@@ -555,3 +555,27 @@ export function restoreLayout(
     const layout: TabLayout = { groups, activeId: groups[0]?.id ?? null };
     return wantActive && available.has(wantActive) ? focusTab(layout, wantActive) : layout;
 }
+
+/**
+ * A restored session with whatever was opened while it loaded laid over it.
+ *
+ * `base` keeps its order, splits and widths; each group of `opened` follows,
+ * minus any path `base` already holds — dropped through closePath, so a split
+ * that loses a pane rescales exactly as closing that pane would have. Focus
+ * goes to what `opened` had focused (the reader's last gesture), else stays
+ * where `base` put it. Group ids are session-unique (newGroupId), so the two
+ * sets cannot collide.
+ *
+ * Merging rather than letting one side win is the point: the restore pass
+ * used to defer to anything opened during its reads, and by then it had
+ * already un-gated persistence — so deferring wrote that one tab over the
+ * whole stored session (see App's restore pass).
+ */
+export function mergeLayouts(base: TabLayout, opened: TabLayout): TabLayout {
+    if (opened.groups.length === 0) return base;
+    const wantFocus = focusedPath(opened);
+    let rest = opened;
+    for (const group of base.groups) for (const path of group.paths) rest = closePath(rest, path);
+    const merged: TabLayout = { groups: [...base.groups, ...rest.groups], activeId: base.activeId ?? rest.activeId };
+    return wantFocus ? focusTab(merged, wantFocus) : merged;
+}

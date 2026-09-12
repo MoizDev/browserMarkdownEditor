@@ -21,6 +21,7 @@ import {
   focusedPath as focusedPathOf,
   groupById,
   mergeIntoActive,
+  mergeLayouts,
   openTab as openTabIn,
   renamePath,
   reorderGroups,
@@ -33,7 +34,7 @@ import {
 import { clampTabSize } from './editor/lists';
 import { retryMissingAssets } from './editor/imageWidget';
 import { getNotebookExporter, clearNotebookRenderData, moveNotebookRenderData } from './utils/notebookRenderCache';
-import { readLocation, vaultLinkName, writeLocation } from './utils/appUrl';
+import { findLinkedVault, readLocation, vaultLinkName, writeLocation } from './utils/appUrl';
 import {
   ENTRY_STYLE_FILE, LEGACY_STYLE_FILE, emptyEntryStyles, forgetEntry, parseEntryStyles,
   renameEntry, serializeEntryStyles, withEntryStyle, type IconNode,
@@ -554,6 +555,18 @@ export default function App() {
    */
   const sessionRootRef = useRef<FileSystemDirectoryHandle | null>(null);
   const sessionVaultIdRef = useRef<string | null | undefined>(undefined);
+  /**
+   * The restore pass still READING the claimed vault's files, if one is — and
+   * while it is, nothing is persisted. Claiming the two refs above is what
+   * un-gates persistence, and the claim comes before the reads, so a note opened
+   * in that window was written out as the vault's whole session until the merge
+   * wrote it back (measured: a tree click 100ms into a restore reading 600ms per
+   * file held the stored session at that one tab for 2.4s, and a reload inside
+   * the window came back with only it — all four saved documents, split and
+   * all, gone for good). A token rather than a flag, so a pass that outlives a
+   * switch cannot release the gate a later pass holds.
+   */
+  const restoringRef = useRef<object | null>(null);
 
   // The open vault, for the async restore pass to re-check after its awaits —
   // BOTH halves of it, because `currentVaultId` lags `rootHandle` by a commit on
@@ -607,6 +620,7 @@ export default function App() {
     if (!currentVaultId) return;                              // no id → nowhere to file it
     if (sessionRootRef.current !== rootHandle) return;        // the workspace is still the old vault's
     if (sessionVaultIdRef.current !== currentVaultId) return; // …or this vault's restore has not run yet
+    if (restoringRef.current) return;                         // …or is still reading (see restoringRef)
     writeSession(currentVaultId, {
       paths: layout.groups.flatMap(g => g.paths),
       groups: layout.groups.map(g => g.paths),
@@ -1350,8 +1364,24 @@ export default function App() {
     []
   );
 
+  /**
+   * The address bar AS THE PAGE LOADED, captured once.
+   *
+   * Not re-read later: the URL writer further down rewrites the hash as the
+   * app settles, and one render where a vault is open but the labelled list has
+   * not caught up used to clear it — wiping the link before its note had been
+   * opened. Reading a link that is being kept up to date is the mistake; the
+   * instruction is what arrived, once. Declared here because its one reader is
+   * the restore pass below.
+   */
+  const [initialLocation] = useState(readLocation);
+  /** Consumed by the first vault this page restores (see the restore pass). */
+  const linkPendingRef = useRef(true);
+
   // Auto-restore THIS VAULT'S tabs once its file tree has loaded — on a cold
-  // start and on every switch back to it.
+  // start and on every switch back to it. The ONLY thing that opens documents
+  // when a vault loads: the note a link names is folded in rather than opened
+  // beside it, which raced this pass and cost the vault its tabs (see below).
   useEffect(() => {
     // Nothing to restore against yet — and NOTE that this return is above the
     // claim below, so a vault can set `currentVaultId` and never claim (an
@@ -1391,67 +1421,147 @@ export default function App() {
     // top is the one that precedes it, deliberately: see there.)
     sessionRootRef.current = rootHandle;
     sessionVaultIdRef.current = currentVaultId;
+    // Every claim starts with persistence open: a pass still reading an earlier
+    // vault's files must not hold this one's gate — a vault with nothing to
+    // read would otherwise persist nothing until that pass finished.
+    restoringRef.current = null;
+    const vaultFiles = collectFiles(fileTree);
+
+    // The note the address bar names, when it belongs HERE. Consumed at the
+    // claim, so it applies to the first vault this page restores and never
+    // again on a later switch back to it. Resolved through the same
+    // findLinkedVault FileSystemContext picked the vault with, so the two
+    // agree: an unknown name that fell back to the last-used vault, another
+    // vault chosen from the "Open 'X'" screen, or a hash naming no vault at all
+    // opens that vault as it was left — the old opener instead opened the
+    // link's path out of whichever vault loaded, if a file happened to sit
+    // there. (The one blur: two known vaults sharing the link's name, with no
+    // id suffix to part them — the link names both, and which it resolves to
+    // here follows the list's order at this claim.) Text and PDF only,
+    // handleFileClick's own test for "opens as a tab": anything else would be
+    // a window.open on page load.
+    const link = linkPendingRef.current ? initialLocation : null;
+    linkPendingRef.current = false;
+    const linkedNode = link?.file && findLinkedVault(link.vault, recentVaults)?.id === currentVaultId
+      ? vaultFiles.find(f => f.path === link.file && (isTextFile(f.name) || isPdfFile(f.name)))
+      : undefined;
 
     // Read the session WHOLE and synchronously, before the file reads below
-    // yield: persistence is un-gated the moment the refs are claimed, so
-    // anything that fires it while the reads are in flight would have rewritten
-    // the entry — and the split would come back silently flattened. Deciding
-    // the whole restore from one snapshot is what makes that unreachable rather
-    // than merely unreached.
+    // yield: the refs just claimed are what the persist effect checks, so a
+    // value read after the awaits could already have been rewritten — and the
+    // split would come back silently flattened. restoringRef now also shuts
+    // persistence for the reads, but deciding the whole restore from one
+    // snapshot is what makes that unreachable rather than merely unreached.
     const stored = readSession(currentVaultId);
-    // An empty `paths` is a real session ("I closed everything here"); there is
-    // simply nothing to open for it.
-    if (!stored || stored.paths.length === 0) return;
+    // A linked note the session does not hold joins it at the end, like any
+    // newly opened note — restoreLayout gives a path no stored group accounts
+    // for a tab of its own. An empty `paths` is a real session ("I closed
+    // everything here"); there is simply nothing of its own to open for it. A
+    // Set, because a path listed twice (a hand-edited record) would mint two
+    // tabs for one document — restoreLayout dedupes the layout, not the tabs.
+    const paths = stored ? [...new Set(stored.paths)] : [];
+    if (linkedNode && !paths.includes(linkedNode.path)) paths.push(linkedNode.path);
+    if (paths.length === 0) return;
 
+    // Persistence stays shut from here until the merge is dispatched — see
+    // restoringRef. Released in `finally` too, so no exit leaves it shut.
+    const token = {};
+    restoringRef.current = token;
+    const release = () => { if (restoringRef.current === token) restoringRef.current = null; };
     (async () => {
-      const vaultFiles = collectFiles(fileTree);
-      const restored: OpenTab[] = [];
-      for (const path of stored.paths) {
-        if (path === 'help-guide') {
-          restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
-          continue;
+      try {
+        const restored: OpenTab[] = [];
+        for (const path of paths) {
+          if (path === 'help-guide') {
+            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
+            continue;
+          }
+          const node = vaultFiles.find(f => f.path === path);
+          if (!node) continue; // file deleted/moved externally — skip it
+          try {
+            // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
+            // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
+            // fill the buffer with garbage.
+            const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
+            restored.push({ id: newTabId(), file: node, content, mode: 'read', dirty: false });
+          } catch (err) {
+            console.error('Failed to restore tab:', path, err);
+          }
         }
-        const node = vaultFiles.find(f => f.path === path);
-        if (!node) continue; // file deleted/moved externally — skip it
-        try {
-          // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
-          // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
-          // fill the buffer with garbage.
-          const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
-          rememberAssetRefs(node, content);   // see handleFileClick
-          restored.push({ id: newTabId(), file: node, content, mode: 'read', dirty: false });
-        } catch (err) {
-          console.error('Failed to restore tab:', path, err);
+        // Nothing of the session came back (every note in it deleted since, or
+        // unreadable) and nothing was opened meanwhile: the stored session is
+        // left as it was. Something that WAS opened still goes through the
+        // merge, with nothing to lay it over — the gate held its write back, and
+        // the merge's new layout is the only thing that will write it now.
+        if (restored.length === 0 && layoutRef.current.groups.length === 0) return;
+        // The reads above yield to the event loop: the vault may have been
+        // switched in the meantime, and the switch effect empties the tab set,
+        // so the merge below would drop the OLD vault's notes (handles and all)
+        // into the new vault's workspace. The HANDLE is checked as well as the
+        // id, and it is the half that catches it: `currentVaultId` lags
+        // `rootHandle` by a commit, so a switch whose reads land in that window
+        // passes an id test comparing the outgoing id with itself (measured:
+        // with a 600ms-per-file read, switching away mid-restore put vault A's
+        // three tabs on screen over vault B's tree, autosaving through A's
+        // handles).
+        if (rootHandleRef.current !== rootHandle) return;
+        if (currentVaultIdRef.current !== currentVaultId) return;
+        // Asset baselines (see handleFileClick) only now that the workspace is
+        // known to still be this vault's: seeded during the reads, a switch
+        // mid-restore left the old vault's in the map the switch had just
+        // cleared. A document already open keeps the baseline its own open took
+        // — asked of the map itself, which every open of an asset-tracking
+        // document seeds before its setTabs and every close clears, not of
+        // tabsRef, which only catches up once a commit's effects have run.
+        // (tracksAssets keeps help, PDFs, drawings and notebooks out of the map
+        // entirely, so for those this is a no-op whichever way the test goes.)
+        for (const tab of restored) {
+          if (!assetRefsRef.current.has(tab.file.path)) rememberAssetRefs(tab.file, tab.content);
         }
+        // Which of these shared a tab as split panes. A session written before
+        // split tabs existed has no record of it, and restoreLayout gives every
+        // document a tab of its own — exactly what used to happen. The link is
+        // an instruction and the session only a default, so the link's note is
+        // what comes to the front — when it actually came back. Built out here,
+        // not in an updater, because StrictMode runs updaters twice.
+        const restoredPaths = restored.map(t => t.file.path);
+        const restoredLayout = restoreLayout(
+          restoredPaths,
+          stored?.groups,
+          stored?.focus,
+          stored?.sizes,
+          linkedNode && restoredPaths.includes(linkedNode.path) ? linkedNode.path : stored?.active ?? null,
+        );
+        // Anything opened while the reads were in flight — a click in the file
+        // tree — is MERGED, never deferred to. Deferring is what turned
+        // 5de752e's separate link opener into data loss: it opened the linked
+        // note a moment before these reads finished, this pass saw a tab and
+        // gave up, and since the refs were already claimed the persist effect
+        // filed that one tab as the vault's whole session (measured: four
+        // documents in three tabs, one a 65/35 split, came back from a reload as
+        // the one tab the address bar named, with the stored `paths` rewritten
+        // from four to that one — so every reload after it restored nothing more
+        // either). The saved tabs come first, as they were left; what was opened
+        // follows (mergeLayouts), keeping the focus; and a document open on both
+        // sides keeps its in-memory tab, which may hold edits. The gate opens
+        // BEFORE the merge is dispatched, so the commit carrying it writes the
+        // session. One ordering still writes a lone tab first: a click that
+        // committed just before this line, its effects not yet run, has them
+        // flushed ahead of the merge's render — one tab stored for the task or
+        // two until the merge's own write. flushSync would close that, but it
+        // warns on the path that never awaits (this block then runs inside the
+        // effect), and only a reload landing in that gap could cost anything.
+        release();
+        setTabs(prev => {
+          const open = new Set(prev.map(t => t.file.path));
+          return [...restored.filter(t => !open.has(t.file.path)), ...prev];
+        });
+        setLayout(prev => mergeLayouts(restoredLayout, prev));
+      } finally {
+        release();
       }
-      if (restored.length === 0) return;
-      // The reads above yield to the event loop; if the user opened something
-      // in the meantime, leave their workspace alone rather than clobber it.
-      if (tabsRef.current.length > 0) return;
-      // Or switched vaults in the meantime — the switch effect empties the tab
-      // set, so the check above would wave these through and drop the OLD
-      // vault's notes (handles and all) into the new vault's workspace. The
-      // HANDLE is checked as well as the id, and it is the half that catches it:
-      // `currentVaultId` lags `rootHandle` by a commit, so a switch whose reads
-      // land in that window passes an id test comparing the outgoing id with
-      // itself (measured: with a 600ms-per-file read, switching away mid-restore
-      // put vault A's three tabs on screen over vault B's tree, autosaving
-      // through A's handles).
-      if (rootHandleRef.current !== rootHandle) return;
-      if (currentVaultIdRef.current !== currentVaultId) return;
-      setTabs(restored);
-      // Which of these shared a tab as split panes. A session written before
-      // split tabs existed has no record of it, and restoreLayout gives every
-      // document a tab of its own — exactly what used to happen.
-      setLayout(restoreLayout(
-        restored.map(t => t.file.path),
-        stored.groups,
-        stored.focus,
-        stored.sizes,
-        stored.active,
-      ));
     })();
-  }, [fileTree, rootHandle, currentVaultId, readFile, rememberAssetRefs]);
+  }, [fileTree, rootHandle, currentVaultId, readFile, rememberAssetRefs, recentVaults, initialLocation]);
 
   // A vault taken off the recent list (the minus in the vault menu) mints a new
   // id if it is ever opened again, so its stored session would be unreachable
@@ -1470,43 +1580,6 @@ export default function App() {
     if (!sawVaultList.current) return;   // the list has not loaded yet
     pruneSessions(recentVaults.map(v => v.id));
   }, [recentVaults]);
-
-  /**
-   * Open the file the address bar names, once there is a tree to find it in.
-   *
-   * Deliberately AFTER the session restore rather than inside it: a link is an
-   * instruction and the restored session is only a default, so whatever the link
-   * names has to end up in front — and `handleFileClick` focuses what it opens,
-   * which the restore above would undo if this ran first. Its own ref gate makes
-   * it once-per-load, because the tree is rebuilt after every save.
-   */
-  /**
-   * The address bar AS THE PAGE LOADED, captured once.
-   *
-   * Not re-read later: the effect below rewrites the hash as the app settles,
-   * and one render where a vault is open but the labelled list has not caught
-   * up used to clear it — wiping the link while this was still waiting for a
-   * tree to find its file in. Reading a link that is being kept up to date is
-   * the mistake; the instruction is what arrived, once.
-   */
-  const [initialLocation] = useState(readLocation);
-
-  const linkedFileOpened = useRef(false);
-  useEffect(() => {
-    if (linkedFileOpened.current || !fileTree.length) return;
-    const wanted = initialLocation.file;
-    if (!wanted) { linkedFileOpened.current = true; return; }
-    const node = collectFiles(fileTree).find(f => f.path === wanted);
-    // Not found is not yet a failure: the tree may still be the OLD vault's,
-    // one render before the switch lands. Only give up once a vault is open and
-    // its tree has been walked.
-    if (!node) {
-      if (rootHandle) linkedFileOpened.current = true;
-      return;
-    }
-    linkedFileOpened.current = true;
-    void handleFileClick(node);
-  }, [fileTree, rootHandle, handleFileClick, initialLocation]);
 
   /**
    * Keep the address bar describing what is open, so it can be copied at any

@@ -1,14 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
+import { pdfWorker } from '../utils/pdfWorker';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
-
-// Same assignment as utils/pdfAnnotation.ts — whichever module loads first
-// wins, and both hand pdf.js the identical bundled worker URL.
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 /**
  * The view half of a PDF: a pdf.js-rendered continuous scroll of pages.
@@ -77,12 +73,13 @@ interface DocState {
 interface PageState {
     pagePromise?: Promise<PDFPageProxy>;
     renderTask?: RenderTask;
-    /** Scale of the bitmap currently in this page's canvas. */
-    renderedScale?: number;
-    /** Scale the in-flight render is producing (to avoid cancelling it needlessly). */
-    renderingScale?: number;
-    /** Latest scale the window pass asked for; the render loop chases it. */
-    wantScale?: number;
+    /** What the bitmap in this page's canvas actually shows. */
+    rendered?: RenderTarget;
+    /** What the in-flight render will produce, so the window pass can tell
+     *  whether cancelling it would gain anything. */
+    rendering?: RenderTarget;
+    /** Latest ask from the window pass; the render loop chases it. */
+    want?: RenderTarget;
     /** False once evicted — tells an in-flight render loop to stop. */
     wantRender?: boolean;
     /** A render loop is currently running for this page. */
@@ -102,6 +99,10 @@ const PAD_V = 20;
 /** Gap between pages, px. */
 const PAGE_GAP = 14;
 /** Horizontal breathing room subtracted from the container for fit-width. */
+/** Matches the zoom gesture's own settle: long enough that an animated resize
+ *  re-fits once at the size it lands on, short enough to feel immediate. */
+const RESIZE_SETTLE_MS = 180;
+
 const SIDE_GUTTER = 28;
 /** Render canvases this many pages beyond the visible range. */
 const RENDER_AHEAD = 1;
@@ -124,6 +125,144 @@ const CLEANUP_BEYOND = 12;
 const TEXT_EAGER_LIMIT = 300;
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 4;
+
+/**
+ * Device-pixel ceiling for one page's bitmap.
+ *
+ * MEASURED: without it, this 40-page document at 4x zoom held two canvases of
+ * 9440x12216 — 231 megapixels, ~923MB of backing store — and zooming back out
+ * of it ran at 7fps with 1.3s of blocked main thread. The canvas grew with the
+ * zoom even though the viewport only ever showed a sliver of it.
+ *
+ * 2^24 px is ~67MB a page, in the same range as pdf.js's own viewer (its
+ * `maxCanvasPixels` default is 2^25). Past the ceiling a page is rendered A
+ * BAND AT A TIME rather than rendered softer — zoom exists to read fine print,
+ * so buying speed with sharpness would defeat the gesture. See pageRegion.
+ */
+const MAX_CANVAS_PIXELS = 2 ** 24;
+
+/** Backing-store multiplier. Capped at 2: past it the sharpness gain is
+ *  invisible but the bitmap cost doubles again. */
+const canvasDpr = () => Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+
+/** Where every page sits, for one (document, container width, zoom). */
+interface Layout {
+    gen: number;
+    /** pdf.js render scale: PDF points → CSS pixels. */
+    scale: number;
+    pages: Array<{ w: number; h: number }>;
+    /** Each page's top edge in scroller content coordinates. */
+    tops: number[];
+    maxPageW: number;
+}
+
+/** A band of one page, in that page's own CSS pixels at the current layout
+ *  scale — the origin is the page's top-left corner, not the document's. */
+interface PageRect {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+}
+
+/** One rasterization request, and everything needed to decide whether a bitmap
+ *  already in hand answers it. */
+interface RenderTarget {
+    scale: number;
+    /** The band to rasterize; `null` for the whole page, which is the case at
+     *  every zoom that fits inside MAX_CANVAS_PIXELS. */
+    rect: PageRect | null;
+    /** The strictly visible part of it, which is what must end up painted. */
+    need: PageRect | null;
+    /** `rect` pulled in by half its own margin (except where it already meets
+     *  a page edge): once the visible band escapes THIS, re-rendering buys
+     *  something. Deflating rather than using `rect` itself is what keeps a
+     *  scroll from re-rendering the instant it moves one pixel. */
+    trigger: PageRect | null;
+}
+
+const contains = (outer: PageRect, inner: PageRect): boolean =>
+    inner.x >= outer.x - 0.5 && inner.y >= outer.y - 0.5
+    && inner.x + inner.w <= outer.x + outer.w + 0.5
+    && inner.y + inner.h <= outer.y + outer.h + 0.5;
+
+/** Would the bitmap `have` describes still answer `want`? */
+function satisfies(have: RenderTarget | undefined, want: RenderTarget): boolean {
+    if (!have || have.scale !== want.scale) return false;
+    // The whole page is wanted: only a whole-page bitmap will do, or zooming
+    // back out would leave a band stretched across the page.
+    if (want.rect === null) return have.rect === null;
+    // A whole-page bitmap covers any band of it.
+    if (have.rect === null) return true;
+    return have.trigger !== null && want.need !== null && contains(have.trigger, want.need);
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * Which band of page `i` to rasterize, given where the reader is looking.
+ *
+ * Returns whole-page targets while the page fits the bitmap budget — the
+ * ordinary case, and the one where nothing about scrolling should re-render.
+ * Past it, the band is the visible strip grown by as much margin as the budget
+ * still affords, so scrolling at zoom moves around inside paint already done.
+ */
+function pageRegion(L: Layout, el: HTMLElement, i: number): Omit<RenderTarget, 'scale'> {
+    const { w, h } = L.pages[i];
+    const dpr = canvasDpr();
+    if (w * h * dpr * dpr <= MAX_CANVAS_PIXELS) return { rect: null, need: null, trigger: null };
+
+    // Pages are centred in the inner column, so the page's own origin sits at
+    // `left` in scroller content coordinates.
+    const left = (Math.max(el.clientWidth, L.maxPageW) - w) / 2;
+    const x = clamp(el.scrollLeft - left, 0, w);
+    const y = clamp(el.scrollTop - L.tops[i], 0, h);
+    const need: PageRect = {
+        x,
+        y,
+        // At least a pixel: a page that is in the render window but not yet on
+        // screen has an empty intersection, and a zero-sized canvas is invalid.
+        w: Math.max(1, clamp(el.scrollLeft - left + el.clientWidth, 0, w) - x),
+        h: Math.max(1, clamp(el.scrollTop - L.tops[i] + el.clientHeight, 0, h) - y),
+    };
+
+    // Grow it as far as the budget allows: solve (need.w + 2m)(need.h + 2m) =
+    // budget for the margin m. `room` floors at zero for the (tiny viewport,
+    // huge dpr) case where the visible strip alone is already over budget —
+    // then the band is the strip, which is the least that can be rendered.
+    const budget = MAX_CANVAS_PIXELS / (dpr * dpr);
+    const room = Math.max(0, budget - need.w * need.h);
+    const span = need.w + need.h;
+    const m = (Math.sqrt(span * span + 4 * room) - span) / 4;
+    const rx = Math.max(0, need.x - m);
+    const ry = Math.max(0, need.y - m);
+    const rect: PageRect = {
+        x: rx,
+        y: ry,
+        w: Math.min(w, need.x + need.w + m) - rx,
+        h: Math.min(h, need.y + need.h + m) - ry,
+    };
+
+    // Half the margin back off each side that is not already a page edge —
+    // which keeps `need` inside `trigger` the moment the render lands, so this
+    // can never ask for a re-render of what was just rendered.
+    const edge = (lo: number, hi: number, limit: number) =>
+        [lo <= 0.5 ? lo : lo + m / 2, hi >= limit - 0.5 ? hi : hi - m / 2] as const;
+    const [tx0, tx1] = edge(rect.x, rect.x + rect.w, w);
+    const [ty0, ty1] = edge(rect.y, rect.y + rect.h, h);
+    const trigger: PageRect = { x: tx0, y: ty0, w: tx1 - tx0, h: ty1 - ty0 };
+    return { rect, need, trigger };
+}
+
+/** Put the canvas where its bitmap belongs: filling the page, or pinned over
+ *  the band it was rendered for. */
+function placeCanvas(canvas: HTMLCanvasElement, rect: PageRect | null): void {
+    const s = canvas.style;
+    s.left = rect ? `${rect.x}px` : '';
+    s.top = rect ? `${rect.y}px` : '';
+    s.width = rect ? `${rect.w}px` : '';
+    s.height = rect ? `${rect.h}px` : '';
+}
 
 // Rounded finely (not to 2dp): a pinch step near MIN_ZOOM is ~0.4%, and a
 // coarser rounding would swallow it and leave the gesture stuck.
@@ -166,6 +305,10 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     const [docState, setDocState] = useState<DocState | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [containerWidth, setContainerWidth] = useState(0);
+    /** Read by the ResizeObserver, which is created once and must not close over
+     *  a stale width when deciding "is this the first measurement". */
+    const containerWidthRef = useRef(0);
+    useEffect(() => { containerWidthRef.current = containerWidth; }, [containerWidth]);
 
     const rootRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -241,7 +384,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         const pageStates = pageStatesRef.current;
         // pdf.js takes ownership of (and detaches) the buffer it's handed —
         // always give it a copy so `data` stays readable for the next load.
-        const task = pdfjs.getDocument({ data: data.slice() });
+        const task = pdfjs.getDocument({ data: data.slice(), worker: pdfWorker() });
 
         (async () => {
             try {
@@ -287,18 +430,38 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     }, [data]);
 
     // ── Fit-width layout ─────────────────────────────────────────────────────
+    /*
+     * The observed width is COALESCED, exactly as the pinch-zoom gesture below
+     * coalesces its own: committing it re-fits the document and restarts the
+     * rasterization of every windowed page, and a resize does not arrive once —
+     * it arrives on every frame of whatever is animating.
+     *
+     * The sidebar's 150ms width transition is the case that made this matter:
+     * collapsing the drawer replayed a full re-fit ~9 times, measured at ~500ms
+     * of blocked main thread for a gesture that changes nothing about the
+     * document. Pages are centred in the scroller, so they simply re-centre
+     * while the burst is in flight and re-fit once it quiets.
+     *
+     * The FIRST measurement commits immediately: there is no layout yet, and
+     * making the reader wait 180ms to see page one would be a worse trade than
+     * the one this is making.
+     */
     useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const commit = (w: number) => setContainerWidth(prev => (Math.abs(prev - w) < 1 ? prev : w));
         const ro = new ResizeObserver(entries => {
             const w = Math.round(entries[0].contentRect.width);
-            setContainerWidth(prev => (Math.abs(prev - w) < 1 ? prev : w));
+            if (containerWidthRef.current <= 0) { commit(w); return; }
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => { timer = null; commit(w); }, RESIZE_SETTLE_MS);
         });
         ro.observe(el);
-        return () => ro.disconnect();
+        return () => { ro.disconnect(); if (timer) clearTimeout(timer); };
     }, []);
 
-    const layout = useMemo(() => {
+    const layout = useMemo<Layout | null>(() => {
         if (!docState || containerWidth <= 0) return null;
         const avail = Math.max(120, containerWidth - SIDE_GUTTER * 2);
         const maxW = Math.max(...docState.dims.map(d => d.w));
@@ -335,6 +498,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         if (canvas && canvas.width > 0) {
             canvas.width = 0;
             canvas.height = 0;
+            placeCanvas(canvas, null);
         }
     }, []);
 
@@ -482,44 +646,69 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         return st.linksPromise;
     }, [getState, getPage, createLinkElement]);
 
-    /** Render one page's canvas, chasing wantScale until it matches (a zoom
-     *  mid-render cancels the task and the loop goes again at the new scale). */
+    /** Render one page's canvas, chasing `st.want` until the bitmap answers it
+     *  (a zoom or a scroll mid-render cancels the task and the loop goes again
+     *  against the new target). */
     const renderLoop = useCallback(async (i: number, st: PageState) => {
         st.busy = true;
         const gen = docGenRef.current;
         try {
-            while (st.wantRender && st.wantScale !== undefined && st.renderedScale !== st.wantScale) {
-                const scale = st.wantScale;
+            while (st.wantRender && st.want && !satisfies(st.rendered, st.want)) {
+                const target = st.want;
                 const page = await getPage(i);
                 if (docGenRef.current !== gen || !st.wantRender) return;
                 const canvas = canvasElsRef.current[i];
                 if (!canvas) return;
 
-                const vp = page.getViewport({ scale });
-                // Cap the backing-store multiplier: past 2x the sharpness gain is
-                // invisible but the bitmap cost doubles again.
-                const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
-                canvas.width = Math.max(1, Math.floor(vp.width * dpr));
-                canvas.height = Math.max(1, Math.floor(vp.height * dpr));
-                const ctx = canvas.getContext('2d');
+                const { rect } = target;
+                const vp = page.getViewport({ scale: target.scale });
+                const dpr = canvasDpr();
+                const cw = Math.max(1, Math.floor((rect ? rect.w : vp.width) * dpr));
+                const ch = Math.max(1, Math.floor((rect ? rect.h : vp.height) * dpr));
+
+                // Rasterize OFF-SCREEN once there is something on screen worth
+                // keeping: sizing a canvas wipes it, so rendering in place left
+                // the page blank white for the length of every zoom step and,
+                // now that a scroll at zoom can re-render, for those too. The
+                // spare bitmap is skipped on a page's first render, where there
+                // is nothing to preserve and it would only double the cold cost.
+                const work = st.rendered ? document.createElement('canvas') : canvas;
+                work.width = cw;
+                work.height = ch;
+                const ctx = work.getContext('2d');
                 if (!ctx) return;
 
                 const task = page.render({
-                    canvas,
+                    canvas: work,
                     canvasContext: ctx,
                     viewport: vp,
-                    transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+                    // Band rendering is a translate on top of the dpr scale: the
+                    // viewport stays the whole page, and the canvas catches the
+                    // part of it that starts at the band's corner.
+                    transform: rect
+                        ? [dpr, 0, 0, dpr, -rect.x * dpr, -rect.y * dpr]
+                        : (dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined),
                 });
                 st.renderTask = task;
-                st.renderingScale = scale;
+                st.rendering = target;
                 try {
                     await task.promise;
-                    st.renderedScale = scale;
+                    if (work !== canvas) {
+                        canvas.width = cw;
+                        canvas.height = ch;
+                        canvas.getContext('2d')?.drawImage(work, 0, 0);
+                    }
+                    placeCanvas(canvas, rect);
+                    st.rendered = target;
                 } catch (err) {
                     if (!(err instanceof pdfjs.RenderingCancelledException)) throw err;
                 } finally {
                     st.renderTask = undefined;
-                    st.renderingScale = undefined;
+                    st.rendering = undefined;
+                    if (work !== canvas) {
+                        work.width = 0;
+                        work.height = 0;
+                    }
                 }
                 if (docGenRef.current !== gen) return;
             }
@@ -531,26 +720,27 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
             st.busy = false;
             if (!st.wantRender) {
                 clearCanvas(i);
-                st.renderedScale = undefined;
+                st.rendered = undefined;
             }
         }
     }, [getPage, ensureText, ensureLinks, clearCanvas]);
 
     const ensurePage = useCallback((i: number) => {
         const L = layoutRef.current;
-        if (!L) return;
+        const el = scrollRef.current;
+        if (!L || !el) return;
         const st = getState(i);
-        st.wantScale = L.scale;
+        st.want = { scale: L.scale, ...pageRegion(L, el, i) };
         st.wantRender = true;
         // Back in the window — eligible to be released again once it leaves.
         st.cleaned = false;
         if (st.busy) {
-            // Already rendering: if it's producing a stale scale, cancel so the
-            // loop re-runs at the right one.
-            if (st.renderTask && st.renderingScale !== st.wantScale) st.renderTask.cancel();
+            // Already rendering: if what it will produce no longer answers the
+            // ask, cancel so the loop re-runs against the new one.
+            if (st.renderTask && !satisfies(st.rendering, st.want)) st.renderTask.cancel();
             return;
         }
-        if (st.renderedScale === st.wantScale) {
+        if (satisfies(st.rendered, st.want)) {
             void ensureText(i);
             void ensureLinks(i);
             return;
@@ -560,12 +750,12 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
 
     const evictPage = useCallback((i: number) => {
         const st = pageStatesRef.current.get(i);
-        if (!st || (!st.wantRender && st.renderedScale === undefined)) return;
+        if (!st || (!st.wantRender && !st.rendered)) return;
         st.wantRender = false;
         st.renderTask?.cancel();
         if (!st.busy) {
             clearCanvas(i);
-            st.renderedScale = undefined;
+            st.rendered = undefined;
         }
     }, [clearCanvas]);
 

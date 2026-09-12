@@ -505,7 +505,20 @@ body {
 /* =============================================================
    Tree Items
    ============================================================= */
+/* SKIP THE ROWS NOBODY IS LOOKING AT.
+   A browsed-open vault is thousands of rows, and every one of them was being
+   laid out and painted — on each frame of the sidebar's 150ms width transition,
+   which is what made collapsing it feel broken (measured: ~210ms of blocked
+   main thread to move a drawer, with zero React work behind it).
+
+   `content-visibility: auto` lets the browser skip layout and paint for rows
+   outside the scroller, and the intrinsic size makes that free of side effects
+   here: rows are a FIXED height, so the scrollbar geometry it substitutes is
+   exactly what the real row would have produced. Ctrl+F still finds them —
+   `auto` keeps content searchable, unlike `hidden`. */
 .tree-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--nav-item-height);
   display: flex;
   align-items: center;
   height: var(--nav-item-height);
@@ -1902,11 +1915,23 @@ body.is-resizing-panes * {
   margin-right: auto;
   background: #fff;
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
+  /* Skip the pages nobody is looking at. A zoom step restyles every text-layer
+     span and repaints the whole column, so a 40-page document paid 40 pages of
+     style, layout and compositor commit to change what two of them show —
+     measured at 61ms of Commit plus 68ms in the keydown, per step. No
+     contain-intrinsic-size: each page carries an explicit width/height from the
+     layout, so a skipped one still reserves exactly the right box, and
+     find-in-page still reaches the text inside it. */
+  content-visibility: auto;
 }
 
+/* Top/left rather than `inset: 0`, because at high zoom the canvas holds one
+   BAND of the page and is pinned over it with inline left/top/width/height
+   (see MAX_CANVAS_PIXELS); a `right`/`bottom` here would only be ignored. */
 .pdf-viewer-page > canvas {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
   display: block;

@@ -8,6 +8,7 @@ import {
 import { setDraggedNode, takeDraggedNode } from '../utils/treeDrag';
 import { isTabDrag } from '../utils/tabDrag';
 import { openContextMenu } from '../utils/contextMenu';
+import { isActiveFilePath, subscribeActiveFile } from '../utils/activeFile';
 import LucideGlyph from './LucideGlyph';
 import { getEntryStyle, getEntryStyles, subscribeEntryStyles } from '../utils/entryStyleStore';
 import { entryColorVar, type IconNode } from '../utils/entryStyle';
@@ -16,7 +17,6 @@ import type { FileTreeNode } from '../types';
 
 interface TreeNodeProps {
     node: FileTreeNode;
-    activeFilePath: string | null;
     onFileClick: (node: FileTreeNode) => void;
     /** Create a file called `name` inside `handle`, which sits at `path`.
      *  THREE arguments, matching App.handleCreateFile: it opens the new file
@@ -46,7 +46,7 @@ interface TreeNodeProps {
 }
 
 
-function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, onStyleEntry, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
+function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, onStyleEntry, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
     /* This row's own icon and colour, read from the store rather than taken as
        a prop — see utils/folderStyleStore.ts. The snapshot is the STORED object,
        so a row whose folder was not the one that changed sees an unchanged
@@ -60,7 +60,13 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
        for one folder's change. This row already re-renders when its OWN style
        does, which is the only time the artwork it needs can have arrived. */
     const customIconNodes = style?.icon ? getEntryStyles().icons[style.icon] : undefined;
-    const isActive = node.kind === 'file' && node.path === activeFilePath;
+    /* Subscribed as a BOOLEAN, not taken as a prop. `activeFilePath` used to
+       travel the whole recursion, so switching tabs changed a prop on every row
+       and re-rendered all of them to move one highlight. See utils/activeFile.ts. */
+    const isActive = useSyncExternalStore(
+        subscribeActiveFile,
+        useCallback(() => node.kind === 'file' && isActiveFilePath(node.path), [node.kind, node.path]),
+    );
     const paddingLeft = 12 + depth * 16;
     const expanded = expandedPaths.has(node.path);
     const [dragOver, setDragOver] = useState(false);
@@ -511,7 +517,6 @@ function TreeNode({ node, activeFilePath, onFileClick, onCreateFile, onCreateFol
                         <MemoTreeNode
                             key={child.path}
                             node={child}
-                            activeFilePath={activeFilePath}
                             onFileClick={onFileClick}
                             onCreateFile={onCreateFile}
                             onCreateFolder={onCreateFolder}

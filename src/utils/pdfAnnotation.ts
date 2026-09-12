@@ -20,10 +20,7 @@
 
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-
-// Vite bundles the worker as a separate chunk; hand pdf.js its real URL.
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+import { pdfWorker } from './pdfWorker';
 
 // Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
 // The shared names come from pdfFormat.ts rather than from pdfBuild directly —
@@ -75,7 +72,7 @@ export interface AnnotatedPdfContents {
 async function withPdf<T>(bytes: Uint8Array, read: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
     // pdf.js takes ownership of (and detaches) the buffer it is handed, which
     // would corrupt a caller still holding the same bytes. Always give it a copy.
-    const task = pdfjs.getDocument({ data: bytes.slice() });
+    const task = pdfjs.getDocument({ data: bytes.slice(), worker: pdfWorker() });
     try {
         return await read(await task.promise);
     } finally {
@@ -232,7 +229,7 @@ export interface PdfPageSource {
 export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource> {
     // Not withPdf(): the document must outlive this call so pages can be
     // rasterized on demand. close() is the caller's responsibility.
-    const task = pdfjs.getDocument({ data: original.slice() });
+    const task = pdfjs.getDocument({ data: original.slice(), worker: pdfWorker() });
     const doc = await task.promise;
 
     const sizes: PdfPageSize[] = [];

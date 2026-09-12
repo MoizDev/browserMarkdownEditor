@@ -11,6 +11,7 @@ import {
     ancestorsOf, clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor,
     requestCreate, subscribeCreateRequest, type CreateKind,
 } from '../utils/createRequest';
+import { getActiveFilePath } from '../utils/activeFile';
 import { collectFiles } from '../utils/tree';
 import { createVaultTextCache } from '../utils/vaultSearch';
 import type { VaultTextCache } from '../utils/vaultSearch';
@@ -51,7 +52,6 @@ function vaultMenuPosFor(button: HTMLElement): VaultMenuPos {
 interface FileExplorerProps {
     rootHandle: FileSystemDirectoryHandle | null;
     fileTree: FileTreeNode[];
-    activeFilePath: string | null;
     onFileClick: (node: FileTreeNode) => void;
     onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath?: string) => void | Promise<void>;
     onCreateFolder: (parentHandle: FileSystemDirectoryHandle | null, name: string) => void | Promise<void>;
@@ -95,7 +95,6 @@ interface FileExplorerProps {
 function FileExplorer({
     rootHandle,
     fileTree,
-    activeFilePath,
     onFileClick,
     onCreateFile,
     onCreateFolder,
@@ -194,25 +193,30 @@ function FileExplorer({
      * With nothing open — or a file whose folder cannot be resolved — the root
      * is still the answer.
      */
-    const createTarget = useMemo(() => {
-        if (!activeFilePath) return '';
-        const node = collectFiles(fileTree).find(f => f.path === activeFilePath);
+    const createTarget = () => {
+        // Read at CLICK time rather than memoized per render: as a memo this
+        // re-ran on every tab switch, which meant subscribing the explorer to
+        // the active file for a value only a button press ever looks at.
+        const active = getActiveFilePath();
+        if (!active) return '';
+        const node = collectFiles(fileTree).find(f => f.path === active);
         if (!node) return '';
         const slash = node.path.lastIndexOf('/');
         return slash === -1 ? '' : node.path.slice(0, slash);
-    }, [activeFilePath, fileTree]);
+    };
 
     /** Open the inline "new file/folder" name box in `createTarget`, leaving
      *  search mode if needed (the box lives in the tree view, which search
      *  temporarily replaces). */
     const startCreateInRoot = (kind: CreateKind) => {
         onCloseSearch();
+        const target = createTarget();
         // Every folder on the way down has to be open, or the row that renders
         // the box is not mounted to see the request. The target opens itself.
-        for (const ancestor of ancestorsOf(createTarget)) {
+        for (const ancestor of ancestorsOf(target)) {
             if (!expandedPaths.has(ancestor)) onToggleExpand(ancestor);
         }
-        requestCreate(createTarget, kind);
+        requestCreate(target, kind);
     };
 
     const handleSearchResult = (node: FileTreeFileNode, range: TextRange | null) => {
@@ -453,7 +457,6 @@ function FileExplorer({
                         <TreeNode
                             key={node.path}
                             node={node}
-                            activeFilePath={activeFilePath}
                             onFileClick={onFileClick}
                             // Straight through — no wrapper. The two that used
                             // to sit here each raised a window.prompt() for the

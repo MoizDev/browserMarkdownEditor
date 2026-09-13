@@ -151,6 +151,27 @@ export function firstMathFrom(analysis: DocAnalysis, from: number): number {
     return lo;
 }
 
+/**
+ * True when some math region intersects [from, to) without being contained in
+ * it — the node is really LaTeX. The rule buildDecorations' tree walk applies to
+ * every node, and headingFold.ts applies to every heading, so a section
+ * boundary can never fall inside a formula the live preview draws as one widget.
+ * Nodes that CONTAIN a whole region (a paragraph, a heading line) are not.
+ *
+ * Binary-searched rather than scanned: the tree walk runs this for EVERY node
+ * of the whole tree, so a linear scan made it O(nodes x regions) — ~186M
+ * comparisons and ~138ms per keystroke on a large math note (see firstMathFrom).
+ */
+export function mathSkipsRange(analysis: DocAnalysis, from: number, to: number): boolean {
+    const regions = analysis.mathRegions;
+    for (let i = firstMathFrom(analysis, from); i < regions.length; i++) {
+        const r = regions[i];
+        if (r.from >= to) break;
+        if (!(from <= r.from && to >= r.to)) return true;
+    }
+    return false;
+}
+
 /** True when [from, to) overlaps any math region. */
 export function overlapsMath(analysis: DocAnalysis, from: number, to: number): boolean {
     const i = firstMathFrom(analysis, from);

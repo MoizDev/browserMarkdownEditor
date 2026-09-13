@@ -301,7 +301,13 @@ export default function App() {
   // Font size and padding settings (persisted via localStorage)
   const [editorFontSize, setEditorFontSize] = useState<number>(() => parseInt(localStorage.getItem('editorFontSize') || '16', 10));
   const [treeFontSize, setTreeFontSize] = useState<number>(() => parseInt(localStorage.getItem('treeFontSize') || '13', 10));
-  const [editorPadding, setEditorPadding] = useState<number>(() => parseInt(localStorage.getItem('editorPadding') || '6', 10));
+  // Clamped to the slider's range on the way in: localStorage is user-editable,
+  // and a `NaN%` voids index.css's `max(var(--editor-padding), …)` outright —
+  // the editor's left padding drops to 0 and the collapse arrow is clipped.
+  const [editorPadding, setEditorPadding] = useState<number>(() => {
+    const stored = parseInt(localStorage.getItem('editorPadding') || '6', 10);
+    return Number.isFinite(stored) ? Math.min(20, Math.max(0, stored)) : 6;
+  });
   const [showSettings, setShowSettings] = useState<boolean>(false);
   /** Whether the Trash bin is on screen. Its rows hold handles crawled out of
    *  ONE vault, so the panel closes when the vault does (see the effect beside
@@ -661,8 +667,8 @@ export default function App() {
   const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(rootHandle);
   useEffect(() => { rootHandleRef.current = rootHandle; }, [rootHandle]);
 
-  // Which vault the two path-keyed records (fileScrollPositions,
-  // pdfViewPositions) file their entries under. Declared BEFORE the restore
+  // Which vault the path-keyed records (fileScrollPositions, pdfViewPositions,
+  // collapsedHeadings) file their entries under. Declared BEFORE the restore
   // pass so no pane it opens can read a record under the outgoing vault's
   // scope — `Notes/index.md` names a different file in every vault, and with
   // per-vault sessions both of them are routinely open.

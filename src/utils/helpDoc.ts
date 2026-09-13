@@ -154,6 +154,15 @@ Even in Edit Mode, the editor uses a "Live Preview" system. Markdown syntax (lik
 
 Two things are deliberately never revealed that way, because they are objects rather than text: an **embedded image** and a **table**. Putting the cursor on either one does not turn it back into markdown for you to retype — you work on the thing itself, and the file goes on holding ordinary Markdown. See *Working With an Image* and *Tables*.
 
+### Collapsing a Section
+In Read Mode, point at a heading — or at the margin just to its left — and a small arrow appears beside it. Click the arrow to collapse everything under that heading, up to the next heading of the same or a higher level: a \`##\` section takes its \`###\` sub-sections with it and ends at the next \`##\` or \`#\`. Click it again to bring the section back.
+
+A collapsed heading keeps its arrow on show, pointing right, and has a small **…** after its title; clicking either one expands the section. Each sub-section remembers its own state, so a \`###\` you collapsed is still collapsed when you expand the \`##\` around it.
+
+Collapsing only changes what you see — the file itself is never touched. A note remembers which of its sections are collapsed when you switch tabs or reload. Edit Mode always shows the whole note, and switching back to Read Mode collapses the same sections again; a heading you delete while editing is simply forgotten. Jumping to a search result inside a collapsed section opens it.
+
+Only \`#\`-style headings at the top level of a note collapse — not ones inside a quote or a list — and a heading with nothing under it has no arrow.
+
 ### Auto-Save
 You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
 

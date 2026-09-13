@@ -96,7 +96,7 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   (`utils/graph.ts`, `utils/vaultSearch.ts`) and holds one file's text at a time — both run after *every*
   save, and an uncached walk is a full vault read per autosave. The bin's crawl is the one exception.
 - **The decoration pass runs per keystroke, per arrow key, on every open pane** — memoize on immutable
-  identity or measure it; read mode stays a pure function of the document (`live-preview`).
+  identity or measure it; read mode stays a pure function of the document + its folds (`live-preview`).
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,
   asset reconciles, the recent-vaults read-modify-write and every vault switch each hold an in-flight
   ref or a promise queue: `StrictMode` double-runs effects and users click twice mid-copy.
@@ -126,9 +126,9 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   the two that changed, not all 2,300.
 - **Anything repeated thousands of times carries `content-visibility: auto`** (`.tree-item`,
   `.pdf-viewer-page`) plus a known box — or all of them lay out and paint on every ancestor's frame.
-- **The two path-keyed position records** (`fileScrollPositions`, `pdfViewPositions`) are held parsed
-  in memory via `readRecord`/`flushRecord` in `utils/storage.ts`, keyed by its `scopedKey` — two
-  vaults share paths freely. Never pruned (recency capping was **rejected**), so they grow per vault.
+- **The three path-keyed records** (`fileScrollPositions`, `pdfViewPositions`, `collapsedHeadings`) are
+  held parsed in memory via `readRecord`/`flushRecord` in `utils/storage.ts`, keyed by its `scopedKey` —
+  two vaults share paths freely. Never pruned (recency capping was **rejected**), so they grow per vault.
 - **Settings → CSS variables.** Appearance state persists to `localStorage` and is applied by setting
   CSS variables on `document.documentElement`. Two are not variables: **Tab size** (a CodeMirror
   compartment) and **Recent vaults shown** (a plain prop); both are clamped on read, since

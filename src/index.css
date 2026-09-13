@@ -1307,6 +1307,12 @@ body.is-resizing-panes * {
   height: 100%;
   width: 100%;
   outline: none;
+  /* The room a collapsible heading's arrow needs in the left margin (see
+     "Collapsible sections"): the 20px button, its 4px gap to the text, and
+     8px for the split divider's grab strip, which reaches 5px into the pane to
+     its right — at 24px it covered the button's left edge and a click there
+     grabbed the divider (measured). */
+  --heading-fold-gutter: 32px;
 }
 
 .view-content .cm-editor .cm-scroller {
@@ -1319,7 +1325,10 @@ body.is-resizing-panes * {
   /* Restrict max readable length */
   margin: 0 auto;
   /* Center it */
-  padding-left: var(--editor-padding, 6%);
+  /* Never narrower than the heading-fold arrow that lives in this margin — in
+     BOTH modes, so ⌘E never shifts the text sideways. A 0% margin setting
+     therefore means "the arrow's width", and a narrow split cannot clip it. */
+  padding-left: max(var(--editor-padding, 6%), var(--heading-fold-gutter));
   /* Responsive padding to prevent edge collision */
   padding-right: var(--editor-padding, 6%);
 }
@@ -3034,39 +3043,163 @@ body.is-resizing-panes * {
   line-height: 1.3;
 }
 
+/* `--heading-scale` is also read by the collapsible-section widgets below:
+   cmTheme's highlight style scales the heading's TEXT by the same factor again,
+   inside a span those line-level widgets are not in. */
 .cm-live-heading-1 {
-  font-size: 1.3em;
+  --heading-scale: 1.3;
+  font-size: calc(var(--heading-scale) * 1em);
   font-weight: 700;
   padding: 4px 0 2px;
 }
 
 .cm-live-heading-2 {
-  font-size: 1.2em;
+  --heading-scale: 1.2;
+  font-size: calc(var(--heading-scale) * 1em);
   font-weight: 600;
   padding: 3px 0 2px;
 }
 
 .cm-live-heading-3 {
-  font-size: 1.12em;
+  --heading-scale: 1.12;
+  font-size: calc(var(--heading-scale) * 1em);
   font-weight: 600;
   padding: 2px 0 1px;
 }
 
 .cm-live-heading-4 {
-  font-size: 1.05em;
+  --heading-scale: 1.05;
+  font-size: calc(var(--heading-scale) * 1em);
   font-weight: 600;
   padding: 2px 0 1px;
 }
 
 .cm-live-heading-5 {
-  font-size: 1em;
+  --heading-scale: 1;
+  font-size: calc(var(--heading-scale) * 1em);
   font-weight: 600;
 }
 
 .cm-live-heading-6 {
-  font-size: 1em;
+  --heading-scale: 1;
+  font-size: calc(var(--heading-scale) * 1em);
   font-weight: 600;
   color: var(--text-muted);
+}
+
+/* ── Collapsible sections (editor/headingFold.ts, Reading mode only) ──
+   The arrow shows while the pointer is anywhere on the heading line OR in the
+   empty margin to its left. The margin half is a transparent pad: a
+   pseudo-element of the line itself, so hovering it IS hovering the line. It
+   is clipped by this pane's own .cm-scroller, so it never reaches a
+   neighbouring pane or the sidebar, and left overflow is never scrollable. */
+.cm-heading-foldable {
+  position: relative;
+}
+
+.cm-heading-foldable::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 100%;
+  width: 100vw;
+}
+
+/* Zero width and exactly cap-height tall, standing ON the baseline (with no
+   in-flow content an inline-block's baseline is its bottom edge): the button
+   centred inside it is centred on the heading's capitals — at every level, in
+   any font, on the FIRST row however the heading wraps. A line-height-tall,
+   top-aligned box put the arrow 3.5-4.5px above them on H1 and 2.8px on H2
+   (measured from pixels), because a heading's leading and padding do not split
+   evenly around its text. */
+.cm-heading-fold-anchor {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: 1cap;
+  vertical-align: baseline;
+}
+
+/* Both widgets are children of the LINE, outside the highlight span that
+   scales the heading's text a second time (cmTheme), so on their own `1cap`
+   measures a smaller font than the one on screen: the arrow and pill rode
+   2-2.5px low on H1 (measured). Re-applying the line's scale gives them the
+   text's own size. The button inside is sized in px, so only `cap` moves. */
+.cm-heading-fold-anchor,
+.cm-heading-fold-placeholder {
+  font-size: calc(var(--heading-scale, 1) * 1em);
+}
+
+.cm-heading-fold-toggle {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+/* A collapsed section keeps its arrow on show, so hidden content is never a
+   secret. */
+.cm-heading-foldable:hover .cm-heading-fold-toggle,
+.cm-heading-fold-toggle[aria-expanded="false"] {
+  opacity: 1;
+}
+
+.cm-heading-fold-toggle:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.cm-heading-fold-toggle svg {
+  display: block;
+  transition: transform 120ms ease;
+}
+
+.cm-heading-fold-toggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+
+/* The capitals' height plus 2px each way, its middle on theirs, by the anchor's
+   trick: holding only a block SVG it has no line box, so its baseline is its
+   bottom edge, and dropping that edge 2px below the text's baseline centres
+   it on the cap height at any heading size or font. The dots are drawn, not
+   typed: a "…" glyph sits on its baseline, and as text the pill rode 3-3.5px
+   low with its dots a further 3-4px below its middle (measured). */
+.cm-heading-fold-placeholder {
+  display: inline-block;
+  box-sizing: content-box;
+  height: 1cap;
+  padding: 2px 6px;
+  margin-left: 0.35em;
+  vertical-align: -2px;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.cm-heading-fold-placeholder svg {
+  display: block;
+  width: 1cap;
+  height: 100%;
+}
+
+.cm-heading-fold-placeholder:hover {
+  background: var(--background-modifier-active);
+  color: var(--text-normal);
 }
 
 /* ── Table Widget ──

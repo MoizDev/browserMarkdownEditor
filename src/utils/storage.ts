@@ -30,12 +30,12 @@ export function writeJSON(key: string, value: unknown): boolean {
 }
 
 /* ── Cached record accessors ──
-   For the two path-keyed records that are written on a scroll debounce
-   (fileScrollPositions, pdfViewPositions). Both used to do a full
-   getItem + JSON.parse of the ENTIRE record, mutate one key, then stringify the
-   whole thing again — every 300-400ms for as long as the user was scrolling,
-   synchronously on the main thread, over a record that grows by one entry per
-   file ever opened.
+   For the path-keyed records that are written on a debounce
+   (fileScrollPositions, pdfViewPositions, collapsedHeadings). The first two
+   used to do a full getItem + JSON.parse of the ENTIRE record, mutate one key,
+   then stringify the whole thing again — every 300-400ms for as long as the
+   user was scrolling, synchronously on the main thread, over a record that
+   grows by one entry per file ever opened.
 
    Holding the parsed object in memory removes the repeated parse entirely; the
    write is unchanged. Safe because each key has exactly one writer in the app,

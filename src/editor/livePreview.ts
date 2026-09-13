@@ -6,7 +6,7 @@ import { EditorSelection, Prec, RangeSet, RangeValue } from '@codemirror/state';
 import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
-import { analyzeDoc, firstMathFrom, overlapsMath, latexSourceDecorations } from './latexSource';
+import { analyzeDoc, mathSkipsRange, overlapsMath, latexSourceDecorations } from './latexSource';
 import { parseListMarker } from './lists';
 import type { ListMarker } from './lists';
 import { CopyCodeWidget } from './copyCodeWidget';
@@ -360,15 +360,9 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
             // A markdown construct inside (or straddling) a math region is
             // really LaTeX — skip it. Nodes that CONTAIN the whole region
             // (paragraph, list item, heading line…) still process normally.
-            //
-            // Binary-searched rather than scanned: this runs for EVERY node of
-            // the whole tree, so a linear scan made it O(nodes x regions) —
-            // ~186M comparisons and ~138ms per keystroke on a large math note.
-            for (let i = firstMathFrom(analysis, from); i < mathRegions.length; i++) {
-                const r = mathRegions[i];
-                if (r.from >= to) break;
-                if (!(from <= r.from && to >= r.to)) return false;
-            }
+            // Binary-searched, since this runs for every node of the tree —
+            // see mathSkipsRange, which headingFold shares.
+            if (mathSkipsRange(analysis, from, to)) return false;
 
             // === HEADINGS ===
             // ATXHeading1 through ATXHeading6

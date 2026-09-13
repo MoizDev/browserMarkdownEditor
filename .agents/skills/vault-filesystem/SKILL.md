@@ -274,9 +274,9 @@ raising the setting later still has history to show.
   landed — a refused one says so in the menu rather than leaving a dead click. **It forgets more
   than the row now**: `StoredVault.id` is also the key of this vault's per-vault browser storage —
   its tab session (`utils/tabSessions.ts`) and, through `storage.ts`'s `scopedKey`, its scroll and
-  PDF-page positions. A forgotten folder re-opened is a new id, so it comes back with an empty
-  workspace. That is the intended reading of "forget". Only the **session** is actually deleted
-  (`pruneSessions`, off the recent list, by an effect in `App`); the two path-keyed position records
+  PDF-page positions and collapsed headings. A forgotten folder re-opened is a new id, so it comes back
+  with an empty workspace. That is the intended reading of "forget". Only the **session** is actually
+  deleted (`pruneSessions`, off the recent list, by an effect in `App`); the three path-keyed records
   are never pruned, so their scoped entries merely become unreachable — and scoping multiplies their
   growth by the number of vaults, which the "never pruned" decision in AGENTS.md predates. Scoping
   also orphaned every entry written **before** it, once, on the first load of the build that added

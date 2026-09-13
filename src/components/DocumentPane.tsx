@@ -15,6 +15,8 @@ import { indentSettings, listIndentKeymap } from '../editor/lists';
 import { wikiLinkAutocomplete } from '../editor/wikiLinkComplete';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import { mathEditingExtensions } from '../editor/latexSource';
+import { foldedHeadingKeys, headingFold, headingFoldField, isHeadingKeyList, sameHeadingKeys } from '../editor/headingFold';
+import type { HeadingKey } from '../editor/headingFold';
 import { revealHighlightField, setRevealHighlight } from '../editor/revealHighlight';
 import { insertTableAtCursor } from '../editor/tableEdit';
 import { useFileSystem } from '../context/FileSystemContext';
@@ -79,6 +81,57 @@ function rememberScroll(path: string, top: number): void {
     slot.pending = top;
     if (slot.timer) clearTimeout(slot.timer);
     slot.timer = setTimeout(() => { slot.timer = null; flushScroll(path); }, 300);
+}
+
+/** localStorage key: per-file collapsed heading sections (editor/headingFold.ts). */
+const COLLAPSED_HEADINGS_KEY = 'collapsedHeadings';
+
+/* ── Collapsed-section persistence, keyed by PATH for the scroll reason ────
+   The listener that notices a fold is baked into the EditorState exactly as
+   the scroll handler is, so its debounce is held per path for the reason given
+   above. The STATE is remembered rather than its keys: turning positions into
+   keys walks the note's lines, which belongs in the debounced flush and not in
+   every keystroke that moves a collapsed heading down the page. An entry is
+   deleted once nothing is collapsed, so the record only grows by the notes that
+   actually have a collapsed section. */
+const foldDebounce = new Map<string, { timer: ReturnType<typeof setTimeout> | null; pending: EditorState | null }>();
+
+/** Write the document's collapsed headings now, cancelling any pending debounce. */
+function flushFolds(path: string): void {
+    const slot = foldDebounce.get(path);
+    if (!slot) return;
+    if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
+    if (slot.pending) {
+        const record = readRecord<HeadingKey[]>(COLLAPSED_HEADINGS_KEY);
+        const key = scopedKey(path);
+        const keys = foldedHeadingKeys(slot.pending);
+        // Typing above a collapsed heading moves it without changing its key:
+        // that is a debounce tick, not a write of the whole record.
+        if (!sameHeadingKeys(record[key], keys)) {
+            if (keys.length > 0) record[key] = keys;
+            else delete record[key];
+            flushRecord(COLLAPSED_HEADINGS_KEY);
+        }
+        slot.pending = null;
+    }
+    foldDebounce.delete(path);
+}
+
+/** Debounced fold persistence for one document. */
+function rememberFolds(path: string, state: EditorState): void {
+    let slot = foldDebounce.get(path);
+    if (!slot) { slot = { timer: null, pending: null }; foldDebounce.set(path, slot); }
+    const armed = slot;
+    armed.pending = state;
+    if (armed.timer) clearTimeout(armed.timer);
+    armed.timer = setTimeout(() => { armed.timer = null; flushFolds(path); }, 400);
+}
+
+/** The collapsed headings stored for `path` — shape-guarded, since localStorage
+ *  is user-editable. */
+function storedFoldKeys(path: string): readonly HeadingKey[] {
+    const keys = readRecord<unknown>(COLLAPSED_HEADINGS_KEY)[scopedKey(path)];
+    return isHeadingKeyList(keys) ? keys : [];
 }
 
 /* ── One set of compartments for every pane ───────────────────────────────
@@ -438,11 +491,25 @@ function DocumentPane({
             readOnlyCompartment.of(EditorView.editable.of(mode !== 'read')),
             wikiLinkAutocomplete(() => getTargetsRef.current()),
             livePreviewCompartment.of(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
+            // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
+            // that, which would forget every collapsed section (headingFold.ts).
+            headingFold(storedFoldKeys(path)),
             markdownFormatExtension,
             revealHighlightField,
             EditorView.updateListener.of((update) => {
                 if (update.docChanged) {
                     onContentChangeRef.current(path, update.state.doc.toString());
+                }
+                // Keyed by path, like scroll. `folded` changes identity only
+                // when a section folds, unfolds or moves; an edit at or above
+                // the last collapsed heading may also rename one in place.
+                const before = update.startState.field(headingFoldField, false);
+                const after = update.state.field(headingFoldField, false);
+                if (before && after && (before.folded !== after.folded || (
+                    update.docChanged && before.folded.length > 0
+                    && update.changes.touchesRange(0, update.startState.doc.lineAt(before.folded[before.folded.length - 1]).to) !== false
+                ))) {
+                    rememberFolds(path, update.state);
                 }
             }),
             EditorView.domEventHandlers({
@@ -499,6 +566,18 @@ function DocumentPane({
                     // Keyed by path, not by this pane: see scrollDebounce above.
                     rememberScroll(path, view.scrollDOM.scrollTop);
                 },
+                drop(event) {
+                    // A dropped .md replaces the whole note, and the pane's
+                    // onDrop does that. Claimed here so CodeMirror's own drop
+                    // handler never runs: it checks readOnly, not editable, so
+                    // even in Reading mode it first inserted the file's text at
+                    // the drop point, making the replace a second transaction
+                    // that collapsed headings could not be carried through
+                    // (measured: both folds lost). The event still bubbles to
+                    // onDrop, which reads the file.
+                    const item = event.dataTransfer?.items?.[0];
+                    return item?.kind === 'file' && !!item.getAsFile()?.name.endsWith('.md');
+                },
                 mousedown(event) {
                     // Navigate when a rendered [[wikilink]] is clicked.
                     const el = (event.target as HTMLElement).closest?.('.cm-wikilink');
@@ -535,6 +614,8 @@ function DocumentPane({
                     setRevealHighlight.of(null),
                 ],
             });
+            // Nothing for collapsed headings: their field is in no compartment,
+            // and reads the mode from the editable facet re-stated above.
         }
 
         // Restore where this file was left. Scheduled from the callback ref,
@@ -559,8 +640,10 @@ function DocumentPane({
         // Scrolling and then switching tabs inside the debounce must not lose
         // where the reader was — write it now rather than drop it. Keyed by
         // path, so this finds the timer the handler actually armed even when
-        // that handler belongs to an earlier pane for this document.
+        // that handler belongs to an earlier pane for this document. The same
+        // holds for a section collapsed just before the switch.
         flushScroll(path);
+        flushFolds(path);
         if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
     }, [path, stateKey, stateCache]);
 

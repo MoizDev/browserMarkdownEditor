@@ -1,6 +1,6 @@
 ---
 name: live-preview
-description: The live-preview editor subsystem (src/editor/) — how buildDecorations works and what it costs, math regions, the embedded-image object, list indentation, and the widget/Decoration rules. Load before adding or changing anything the editor renders, any CodeMirror extension, or any keymap.
+description: The live-preview editor subsystem (src/editor/) — how buildDecorations works and what it costs, math regions, the embedded-image object, list indentation, collapsible headings, and the widget/Decoration rules. Load before adding or changing anything the editor renders, any CodeMirror extension, or any keymap.
 ---
 
 # Live-preview editor subsystem (`src/editor/`)
@@ -34,6 +34,9 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   asynchronously, so on a large file the tree covers only a prefix at open and the parser advances
   during idle time via otherwise-empty transactions. Missing this leaves everything past the initial
   prefix raw.
+- **It is not the only decoration source in read mode.** Collapsed heading sections are a second,
+  independent `StateField` (`headingFold.ts`, see *Collapsible headings* below) — the one read-mode
+  decoration that depends on something besides the document.
 
 ## The hot path
 
@@ -192,6 +195,65 @@ accident.
 - `retryMissingAssets()` re-runs *only* the failed resolutions when an asset comes back (undo).
   Rebuilding the widgets instead would flash every other image in the document through its
   placeholder.
+
+# Collapsible headings (`headingFold.ts`)
+
+Reading mode only: a top-level `#` heading with something under it gets a margin arrow that collapses
+its section — up to the next heading of the same or a higher level — behind a "…" pill. Nothing is
+written to the file.
+
+- **Its `StateField` is a module singleton OUTSIDE `livePreviewCompartment`**, added once in
+  `DocumentPane`'s `createTabState` and seeded per document through `headingFoldField.init`. ⌘E
+  reconfigures that compartment, and a field minted inside it would forget every fold on each mode
+  switch. **Mode is read from the state** (`!EditorView.editable`), so a cached state needs nothing
+  new re-stated on adoption: the existing `readOnlyCompartment` reconfigure flips the facet, and the
+  field rebuilds on the flip. Edit mode emits `Decoration.none`; a keystroke costs only the mapping of
+  the folded positions. It declines HMR for the reason `livePreview.ts` does.
+- **Sections come from the Document's DIRECT children**, never a line scan, memoized on `(doc, tree)`.
+  A heading inside a blockquote, a list, code or a math region (`mathSkipsRange` in `latexSource.ts`,
+  the same predicate the tree walk applies) is content and never ends a section; setext headings are
+  content. The hidden range ends at the line end of the section's last block, so the blank lines
+  before the next heading stay visible, and a heading with nothing but blank lines under it has no
+  arrow. Only CLOSED sections get one — ended by a heading, or any once the parse covers the document.
+- **The fold wins by containment, not coordination.** Meeting a point decoration, `@codemirror/state`'s
+  `SpanCursor` forwards every set past that point's END, so every point that STARTS inside the fold's
+  replace — tables, images, math, mermaid, HIDEs, a hidden line's line decoration — in any set, is
+  skipped. A point ending exactly where the fold starts (the HIDE of a heading's trailing `**`) is met
+  first and forwards only to its own end, which the fold outlives. The converse is this file's one
+  hazard: **no live-preview point may start before a heading's line end and end after it**, or it
+  swallows the fold — which is why a heading inside a math region is not a heading. The toggle is a
+  `side: -1` widget, so it sorts before the `# ` HIDE.
+- **Fold state is heading-line starts**, mapped `mapPos(pos, 1, MapMode.TrackAfter)`: Enter before a
+  heading carries its fold down, editing its text keeps it, deleting its first character (which
+  removing the line always does) drops it rather than letting it slide onto the next heading —
+  unless the SAME transaction inserts an identical line (Alt-↑/↓ moves a neighbour by deleting and
+  re-inserting the heading; a dropped file replaces every line): `reanchorFolds` carries the n-th
+  deleted copy to the n-th inserted one. **Pruning runs only in reading mode and only where
+  `syntaxTree(state).length` covers the line** — an edit-mode keystroke never prunes, and a partial
+  parse never drops a fold. `folded` keeps its identity unless its contents change: the rebuild and
+  the persistence listener both test by it, and an idle parse chunk must not schedule a write.
+- **A non-pointer selection landing strictly inside a hidden range expands every section hiding it**
+  — the path by which vault-search reveal and ⌘F reach folded text. Select-all expands nothing; a
+  `select.pointer` selection never does (it cannot hit a drawn fold, and one in the visible text of a
+  section still open at the parse edge deleted that collapse). A search opens a note with only ~3000
+  characters parsed, so the reveal is **held in the field** until every collapsed section before it
+  is closed, and decided in the update that first draws the fold.
+- **Persisted by `DocumentPane` in the path-keyed `collapsedHeadings` record** as
+  `[lineText, occurrence]` keys (occurrence = earlier identical lines): no tree needed, exact for an
+  unchanged file, and a heading renamed on disk just loses its state. Debounced per PATH (the scroll
+  rule), resolved inside `init` — so a restored fold the opening parse closes is drawn before the
+  scroll restore, one further down when the background parse reaches it — deleted when nothing is
+  collapsed, and not migrated on rename, like scroll offsets.
+- **Both widgets find their heading with `posAtDOM` at click time and read nothing from `this`**:
+  every toggle is one of two `eq` values, so CodeMirror reuses their DOM across headings. The toggle
+  is re-dressed by `updateDOM` (`aria-expanded` drives the chevron's CSS rotation, so it animates). A
+  click also dispatches `scrollIntoView(heading, { y: 'start', yMargin: <its current offset> })`:
+  expanding after a collapse near the note's end otherwise threw the clicked heading off screen.
+- **Both widgets are centred on the heading's capitals with `cap` units** — they sit at line level,
+  outside the highlight span in which cmTheme scales heading text a second time, so they re-apply the
+  line's `--heading-scale` first. The arrow's room is `.cm-content`'s
+  `max(var(--editor-padding), var(--heading-fold-gutter))` left padding, applied in both modes so ⌘E
+  never shifts the text, and wide enough to clear a split divider's grab strip.
 
 # Links: read mode emits real `<a>` elements
 

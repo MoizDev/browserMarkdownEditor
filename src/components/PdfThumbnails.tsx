@@ -19,14 +19,18 @@
 //    reader keeps its page number out of React state for exactly this reason,
 //    since re-rendering it means re-rendering every page div.
 //
-// Keyed by its host on the document, so `sizes` and `renderThumbnail` are fixed
-// for the life of one strip and a reloaded document gets a fresh cache.
+// A host keys it on whatever makes existing thumbnails wrong wholesale (a
+// reloaded PDF, a notebook re-ruled or rotated). Pages appended to the end need
+// no remount, and a page whose content changed is refreshed through
+// `invalidate`, which keeps the old image up until its replacement is ready.
 
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 export interface PdfThumbnailsHandle {
     /** Mark `index` as the page on screen and bring its row into view. */
     setCurrentPage(index: number): void;
+    /** These pages' content changed: re-render them as they come into view. */
+    invalidate(pages: Iterable<number>): void;
 }
 
 interface PdfThumbnailsProps {
@@ -74,6 +78,12 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
 
     const urlsRef = useRef<Map<number, string>>(new Map());
     const failedRef = useRef<Set<number>>(new Set());
+    /** Pages whose image no longer matches their content. Kept on screen until
+     *  replaced, so a refresh never blanks a thumbnail. */
+    const staleRef = useRef<Set<number>>(new Set());
+    /** Bumped per invalidation, so a render that started before one does not
+     *  clear the staleness it could not have seen. */
+    const staleGenRef = useRef<Map<number, number>>(new Map());
     const aliveRef = useRef(true);
     const pumpingRef = useRef(false);
     const renderRef = useRef(renderThumbnail);
@@ -100,6 +110,7 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
         for (const i of farthest.slice(0, urls.size - MAX_CACHED)) {
             URL.revokeObjectURL(urls.get(i)!);
             urls.delete(i);
+            staleRef.current.delete(i);
         }
     }, []);
 
@@ -113,15 +124,20 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
                 const mid = (from + to) / 2;
                 let next = -1;
                 for (let i = Math.max(0, from - OVERSCAN), best = Infinity; i <= Math.min(n - 1, to + OVERSCAN); i++) {
-                    if (urlsRef.current.has(i) || failedRef.current.has(i)) continue;
+                    if ((urlsRef.current.has(i) && !staleRef.current.has(i)) || failedRef.current.has(i)) continue;
                     if (Math.abs(i - mid) < best) { best = Math.abs(i - mid); next = i; }
                 }
                 if (next < 0) return;
                 const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+                const generation = staleGenRef.current.get(next) ?? 0;
                 try {
                     const url = await renderRef.current(next, (THUMB_WIDTH * dpr) / (sizes[next].width || 1));
                     if (!aliveRef.current) { URL.revokeObjectURL(url); return; }
+                    // Swap, never blank: the old image stays up until this one exists.
+                    const old = urlsRef.current.get(next);
+                    if (old) URL.revokeObjectURL(old);
                     urlsRef.current.set(next, url);
+                    if ((staleGenRef.current.get(next) ?? 0) === generation) staleRef.current.delete(next);
                     evict();
                     setVersion(v => v + 1);
                 } catch (err) {
@@ -172,7 +188,15 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
             setCurrent(i);
             reveal(i);
         },
-    }), [clampPage, reveal]);
+        invalidate(pages: Iterable<number>) {
+            for (const i of pages) {
+                failedRef.current.delete(i);
+                staleRef.current.add(i);
+                staleGenRef.current.set(i, (staleGenRef.current.get(i) ?? 0) + 1);
+            }
+            void pump();
+        },
+    }), [clampPage, reveal, pump]);
 
     // Open on the page being read, then keep the visible range true as the
     // strip itself is resized (a window resize, a split being dragged).

@@ -19,6 +19,7 @@ import { foldedHeadingKeys, headingFold, headingFoldField, isHeadingKeyList, sam
 import type { HeadingKey } from '../editor/headingFold';
 import { revealHighlightField, setRevealHighlight } from '../editor/revealHighlight';
 import { insertTableAtCursor } from '../editor/tableEdit';
+import { onTableInsertRequest, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
@@ -178,9 +179,6 @@ function isEditable(state: EditorState): boolean {
 const READ_MODE_REASON = 'Switch to editing with ⌘E';
 const NO_SELECTION_REASON = 'Nothing is selected';
 
-/** The size picker's extent — 10 columns by 8 rows, Google Docs' own shape. */
-const TABLE_GRID_COLS = 10;
-const TABLE_GRID_ROWS = 8;
 
 /**
  * The rows of the menu a right-click in note text raises.
@@ -400,6 +398,18 @@ function DocumentPane({
     const isCanvas = isDrawing || isNotebook || isPdf;
 
     const viewRef = useRef<EditorView | null>(null);
+
+    // The top bar's table button cannot reach this view (EditorPane holds none),
+    // so it raises a request, and only the pane FOCUSED on that document acts on
+    // it: two panes showing the same note must not both insert. A ref, because
+    // the subscription is made once per document and focus moves under it.
+    const isFocusedRef = useRef(isFocused);
+    useEffect(() => { isFocusedRef.current = isFocused; }, [isFocused]);
+    useEffect(() => onTableInsertRequest((request) => {
+        const view = viewRef.current;
+        if (!view || !isFocusedRef.current || request.path !== tab.file.path) return;
+        insertTableAtCursor(view, request.rows, request.cols);
+    }), [tab.file.path]);
     const revealClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Live prop mirrors: the view is built once, so everything it calls has to

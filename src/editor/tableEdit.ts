@@ -9,7 +9,7 @@ import {
     blankRowText, blankTableText, delimiterCellText, escapeNewPipes, parseTableLayout,
     protectTrailingBackslash, tableLayoutAt,
 } from './tableModel';
-import type { RowSpan, TableLayout } from './tableModel';
+import type { ColumnAlign, RowSpan, TableLayout } from './tableModel';
 // A deliberate cycle: tableWidget imports this module's session functions and
 // this module imports its two DOM readers back. It exists so that "leaving a
 // cell re-renders it" — an HTML path — stays in tableWidget beside the CELL_HTML
@@ -557,6 +557,107 @@ export function deleteColumn(view: EditorView, dom: HTMLElement, col: number): b
     return true;
 }
 
+/**
+ * Swap body row `row` with its neighbour above (-1) or below (+1).
+ *
+ * The two LINES trade places byte for byte, so each row keeps its own padding,
+ * escapes and trailing whitespace; nothing is re-serialized. The header is not a
+ * body row and nothing moves above it, because GFM has no second header.
+ */
+export function moveRow(view: EditorView, dom: HTMLElement, row: number, delta: -1 | 1): boolean {
+    if (!canWrite(view)) return false;
+    const layout = locate(view, dom);
+    const target = row + delta;
+    if (!layout || row < 1 || target < 1 || row >= layout.rows.length || target >= layout.rows.length) return false;
+
+    const upper = layout.rows[Math.min(row, target)];
+    const lower = layout.rows[Math.max(row, target)];
+    const upperText = view.state.sliceDoc(upper.from, upper.to);
+    const lowerText = view.state.sliceDoc(lower.from, lower.to);
+    const col = session && session.dom === dom ? session.col : 0;
+    endCellEdit();
+    view.dispatch({
+        changes: [
+            { from: upper.from, to: upper.to, insert: lowerText },
+            { from: lower.from, to: lower.to, insert: upperText },
+        ],
+        userEvent: 'input',
+    });
+    focusAfterEdit(view, layout.from, target, col);
+    return true;
+}
+
+/**
+ * Swap column `col` with its neighbour to the left (-1) or right (+1), on every
+ * line including the delimiter, so the column's alignment travels with it.
+ *
+ * Each line trades the two raw segments between its pipes, padding and all. A
+ * row too SHORT to hold both is the one case needing more than a swap: its last
+ * present cell moves out into a new one and leaves an empty cell behind, so the
+ * value still sits under the heading it belonged to.
+ */
+export function moveColumn(view: EditorView, dom: HTMLElement, col: number, delta: -1 | 1): boolean {
+    if (!canWrite(view)) return false;
+    const layout = locate(view, dom);
+    const target = col + delta;
+    if (!layout || col < 0 || target < 0 || col >= layout.columns || target >= layout.columns) return false;
+
+    const left = Math.min(col, target);
+    const changes: Edit[] = [];
+    for (const { span, delimiter } of linesOf(layout)) {
+        const present = span.pipes.length - 1;
+        const segment = (i: number) => ({ from: span.pipes[i] + 1, to: span.pipes[i + 1] });
+        if (left + 1 < present) {
+            const a = segment(left);
+            const b = segment(left + 1);
+            changes.push({ from: a.from, to: a.to, insert: view.state.sliceDoc(b.from, b.to) });
+            changes.push({ from: b.from, to: b.to, insert: view.state.sliceDoc(a.from, a.to) });
+        } else if (left < present) {
+            const a = segment(left);
+            // An empty DELIMITER cell is not a delimiter: that row would stop
+            // matching and the whole table would fall back to text.
+            changes.push({ from: a.from, to: a.to, insert: delimiter ? ` ${delimiterCellText(null)} ` : '  ' });
+            changes.push({ from: a.to + 1, insert: view.state.sliceDoc(a.from, a.to) + '|' });
+        }
+    }
+    if (changes.length === 0) return false;
+
+    const row = session && session.dom === dom ? session.row : 0;
+    endCellEdit();
+    view.dispatch({ changes, userEvent: 'input' });
+    focusAfterEdit(view, layout.from, row, target);
+    return true;
+}
+
+/**
+ * Set a column's alignment by rewriting that one cell of the delimiter row
+ * (`---`, `:---:` or `---:`) and nothing else. `null` is GFM's default, which
+ * renders left.
+ */
+export function setColumnAlign(view: EditorView, dom: HTMLElement, col: number, align: ColumnAlign): boolean {
+    if (!canWrite(view)) return false;
+    const layout = locate(view, dom);
+    if (!layout || col < 0 || col >= layout.columns) return false;
+
+    const { delimiter } = layout;
+    const text = delimiterCellText(align);
+    const present = delimiter.pipes.length - 1;
+    const change: Edit = col < present
+        ? { from: delimiter.cells[col].from, to: delimiter.cells[col].to, insert: text }
+        // A delimiter row too short to reach this column is padded out to it,
+        // the way insertColumn pads a short row.
+        : {
+            from: delimiter.pipes[present] + 1,
+            insert: ` ${delimiterCellText(null)} |`.repeat(col - present) + ` ${text} |`,
+        };
+
+    const row = session && session.dom === dom ? session.row : 0;
+    endCellEdit();
+    view.dispatch({ changes: change, userEvent: 'input' });
+    focusAfterEdit(view, layout.from, row, col);
+    return true;
+}
+
 export function deleteTable(view: EditorView, dom: HTMLElement): boolean {
     if (!canWrite(view)) return false;
     const layout = locate(view, dom);
@@ -759,11 +860,14 @@ function onCellKeyDown(view: EditorView, dom: HTMLElement, event: KeyboardEvent)
             return;
         case 'ArrowUp':
             event.preventDefault();
+            // Alt moves the row, as Alt+Up moves a line everywhere else in the editor.
+            if (event.altKey) { moveRow(view, dom, current.row, -1); return; }
             if (current.row > 0) focusTableCell(dom, current.row - 1, current.col, 'end');
             else leaveTable(view, dom, 'from');
             return;
         case 'ArrowDown':
             event.preventDefault();
+            if (event.altKey) { moveRow(view, dom, current.row, 1); return; }
             if (shape && current.row + 1 < shape.rows) focusTableCell(dom, current.row + 1, current.col, 'end');
             else leaveTable(view, dom, 'to');
             return;
@@ -910,6 +1014,68 @@ export function tableMenuEntries(view: EditorView, target: HTMLElement): Context
             kind: 'command', id: 'table-delete', label: 'Delete table', danger: true,
             run: () => { deleteTable(view, dom); },
         },
+    ];
+}
+
+/* ── The grips' menus ───────────────────────────────────────────────────
+   What a row's grip and a column's grip offer (see tableWidget's gripButton).
+   Built when the grip is pressed, like the cell menu, and acting through the
+   same commands, so a grip is a shortcut to the table's existing operations
+   plus the three that only make sense for a whole row or column: move, align. */
+
+const HEADER_REASON = "A table's first row is its header.";
+
+/** A command row, carrying its `reason` only while it is disabled. */
+function command(id: string, label: string, run: () => void, blocked: string | false = false, danger = false): ContextMenuEntry {
+    return {
+        kind: 'command', id, label, run, danger,
+        disabled: blocked !== false,
+        reason: blocked === false ? undefined : blocked,
+    };
+}
+
+export function rowMenuEntries(view: EditorView, dom: HTMLElement, row: number): ContextMenuEntry[] {
+    const rows = shapeOf(dom)?.rows ?? 0;
+    const header = row === 0;
+    return [
+        command('row-above', 'Insert row above', () => { insertRow(view, dom, row - 1); }, header && HEADER_REASON),
+        command('row-below', 'Insert row below', () => { insertRow(view, dom, row); }),
+        { kind: 'separator', id: 'sep-move' },
+        command('row-up', 'Move row up', () => { moveRow(view, dom, row, -1); },
+            header ? HEADER_REASON : row <= 1 && 'This is already the first row under the header.'),
+        command('row-down', 'Move row down', () => { moveRow(view, dom, row, 1); },
+            header ? HEADER_REASON : row >= rows - 1 && 'This is already the last row.'),
+        { kind: 'separator', id: 'sep-delete' },
+        command('row-delete', 'Delete row', () => { deleteRow(view, dom, row); },
+            header ? HEADER_REASON : rows <= 2 && 'A table needs at least one row. Use Delete table.'),
+        command('table-delete', 'Delete table', () => { deleteTable(view, dom); }, false, true),
+    ];
+}
+
+export function columnMenuEntries(view: EditorView, dom: HTMLElement, col: number): ContextMenuEntry[] {
+    const columns = shapeOf(dom)?.columns ?? 0;
+    // GFM's unmarked column renders left, so it counts as left here too.
+    const current = locate(view, dom)?.align[col] ?? 'left';
+    const align = (value: 'left' | 'center' | 'right', label: string) => command(
+        `align-${value}`, label, () => { setColumnAlign(view, dom, col, value); },
+        current === value && `This column is already ${value === 'center' ? 'centred' : `${value}-aligned`}.`,
+    );
+    return [
+        command('col-left', 'Insert column left', () => { insertColumn(view, dom, col - 1); }),
+        command('col-right', 'Insert column right', () => { insertColumn(view, dom, col); }),
+        { kind: 'separator', id: 'sep-move' },
+        command('col-move-left', 'Move column left', () => { moveColumn(view, dom, col, -1); },
+            col <= 0 && 'This is already the first column.'),
+        command('col-move-right', 'Move column right', () => { moveColumn(view, dom, col, 1); },
+            col >= columns - 1 && 'This is already the last column.'),
+        { kind: 'separator', id: 'sep-align' },
+        align('left', 'Align left'),
+        align('center', 'Align centre'),
+        align('right', 'Align right'),
+        { kind: 'separator', id: 'sep-delete' },
+        command('col-delete', 'Delete column', () => { deleteColumn(view, dom, col); },
+            columns <= 1 && 'A table needs at least one column. Use Delete table.'),
+        command('table-delete', 'Delete table', () => { deleteTable(view, dom); }, false, true),
     ];
 }
 

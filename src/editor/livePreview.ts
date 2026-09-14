@@ -15,7 +15,7 @@ import { ImageWidget, imageEmbedActions, imageEmbedKeymap } from './imageWidget'
 import type { ImageContext, ImageEmbedActions } from './imageWidget';
 import { embedPattern } from '../utils/assets';
 import { TableWidget } from './tableWidget';
-import { cellAt, findTables, parseTableLayout } from './tableModel';
+import { blankRowText, cellAt, delimiterCellText, findTables, parseTableLayout, rowColumnCount, tableLayoutAt } from './tableModel';
 import { focusTableCell, tableDomAt } from './tableEdit';
 import { MermaidWidget } from './mermaidWidget';
 
@@ -1148,7 +1148,45 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         return true;
     };
 
+    /**
+     * Enter at the end of a lone header row, such as `| Name | Grade |`, writes
+     * the `| --- | --- |` row and an empty body row beneath it and puts the caret
+     * in the first body cell. The table exists as soon as the reader has said
+     * what its columns are, instead of after two more hand-typed lines of pipes.
+     *
+     * Deliberately narrow, because Enter is the most-pressed key there is:
+     *  - only at the very END of the line, with nothing selected;
+     *  - only for a pipe-fenced line that is not itself a delimiter row;
+     *  - never when the next line is pipe-fenced too, which is a table already
+     *    being written out by hand;
+     *  - never on a line that already belongs to a table, where Enter just
+     *    means a new line;
+     *  - never inside code, where a table is quoted rather than tabulated.
+     * The write is tagged `input`, not `input.type`, so tableAdoptListener
+     * leaves it alone; this places its own caret.
+     */
+    const completeHeaderRow = (view: EditorView): boolean => {
+        const { state } = view;
+        if (!writable(state)) return false;
+        const pos = loneCaret(state);
+        if (pos === null) return false;
+        const line = state.doc.lineAt(pos);
+        if (pos !== line.to) return false;
+        const columns = rowColumnCount(line.text);
+        if (columns === 0 || /^\|[\s:|-]+\|\s*$/.test(line.text)) return false;
+        if (line.number < state.doc.lines && state.doc.line(line.number + 1).text.startsWith('|')) return false;
+        if (tableLayoutAt(state.doc, pos)) return false;
+        if (analyzeDoc(state).codeRanges.some(r => r.from <= line.from && r.to >= line.to)) return false;
+
+        const insert = '\n|' + ` ${delimiterCellText(null)} |`.repeat(columns) + '\n' + blankRowText(columns);
+        view.dispatch({ changes: { from: line.to, insert }, userEvent: 'input' });
+        const dom = tableDomAt(view, line.from);
+        if (dom) focusTableCell(dom, 1, 0, 'start');
+        return true;
+    };
+
     return Prec.high(keymap.of([
+        { key: 'Enter', run: completeHeaderRow },
         { key: 'ArrowDown', run: enterFromLineAbove },
         { key: 'ArrowUp', run: enterFromLineBelow },
         { key: 'ArrowRight', run: view => enterFromEdge(view, 'from') },

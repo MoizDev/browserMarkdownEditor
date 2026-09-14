@@ -3,7 +3,8 @@ import type { EditorView } from '@codemirror/view';
 import { createFitProbes, observeTableFit, rekeyTableFit, releaseTableFit, retuneTableFit } from './tableFit';
 import { parseGrid } from './tableModel';
 import type { ColumnAlign, Grid } from './tableModel';
-import { activeCellSession, attachCellEditing, endCellEdit, insertColumn, insertRow } from './tableEdit';
+import { activeCellSession, attachCellEditing, columnMenuEntries, endCellEdit, insertColumn, insertRow, rowMenuEntries } from './tableEdit';
+import { openContextMenu } from '../utils/contextMenu';
 import { findMathRegions } from './latexSource';
 import type { MathRegion } from './latexSource';
 import { renderMath } from './mathWidget';
@@ -641,7 +642,81 @@ function buildControls(view: EditorView, container: HTMLElement): HTMLElement {
         const model = tableModelOf(container);
         if (model) insertRow(view, container, model.cellText.length - 1);
     }));
+    controls.appendChild(gripButton(view, container, 'row'));
+    controls.appendChild(gripButton(view, container, 'col'));
     return controls;
+}
+
+/**
+ * A row's or a column's handle: the grip beside the row, or above the column,
+ * that the pointer is over. Pressing it opens that row's or column's menu.
+ *
+ * It sits OUTSIDE the table's box (left of the rows, above the header), so
+ * unlike the corner chips it never covers a cell and can never take a click
+ * meant for one. It is flush against that edge with no gap: the pointer going
+ * from a cell to its grip must never leave the widget on the way, or the
+ * pointerleave that hides the grips would fire first.
+ *
+ * Which row or column it acts on is written onto it by the reveal pass
+ * (`data-index`) and read at the press, never captured here, for the reason
+ * every control on this element reads the model: the element outlives the
+ * widget instance that built it.
+ */
+function gripButton(view: EditorView, container: HTMLElement, axis: 'row' | 'col'): HTMLButtonElement {
+    const label = axis === 'row' ? 'Row options' : 'Column options';
+    const button = document.createElement('button');
+    button.className = `cm-table-grip cm-table-grip-${axis}`;
+    button.type = 'button';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    // Never a tab stop, for the chips' reason: inside a table Tab walks cells.
+    button.tabIndex = -1;
+    button.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+    });
+    button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const index = Number(button.dataset.index);
+        if (!Number.isInteger(index) || !tableModelOf(container)?.canEdit) return;
+        const box = button.getBoundingClientRect();
+        // Shade the row or column the menu is about, for as long as it is open.
+        const marked = Array.from(container.querySelectorAll<HTMLElement>(`.cm-table-cell[data-${axis}="${index}"]`));
+        for (const cell of marked) cell.classList.add('cm-table-target');
+        container.classList.add('cm-table-grip-open');
+        openContextMenu({
+            x: box.left,
+            y: box.bottom + 2,
+            entries: axis === 'row' ? rowMenuEntries(view, container, index) : columnMenuEntries(view, container, index),
+            label,
+            opener: null,
+            onClose: () => {
+                // Cells a command rebuilt are already gone; clearing them is harmless.
+                for (const cell of marked) cell.classList.remove('cm-table-target');
+                container.classList.remove('cm-table-grip-open');
+            },
+        });
+    });
+    return button;
+}
+
+/** Put the grips against the row and column of `cell`, or hide both. */
+function placeGrips(container: HTMLElement, box: DOMRect, cell: HTMLElement | null): void {
+    const rowGrip = container.querySelector<HTMLElement>('.cm-table-grip-row');
+    const colGrip = container.querySelector<HTMLElement>('.cm-table-grip-col');
+    // A cell a shape change replaced under a still pointer is not a target.
+    const live = rowGrip && colGrip && cell?.isConnected && container.contains(cell) ? cell : null;
+    container.classList.toggle('cm-table-near-cell', !!live);
+    if (!live || !rowGrip || !colGrip) return;
+    const cellBox = live.getBoundingClientRect();
+    const rowBox = live.parentElement?.getBoundingClientRect() ?? cellBox;
+    const tableTop = live.closest('table')?.getBoundingClientRect().top ?? box.top;
+    rowGrip.dataset.index = live.dataset.row ?? '';
+    colGrip.dataset.index = live.dataset.col ?? '';
+    rowGrip.style.top = `${rowBox.top - box.top + rowBox.height / 2}px`;
+    colGrip.style.left = `${cellBox.left - box.left + cellBox.width / 2}px`;
+    colGrip.style.top = `${tableTop - box.top}px`;
 }
 
 /**
@@ -675,6 +750,11 @@ function attachEdgeReveal(container: HTMLElement): void {
     let frame = 0;
     let clientX = 0;
     let clientY = 0;
+    /** The cell last under the pointer, which the grips follow. Kept while the
+     *  pointer is on a grip or a chip, which sit over or beside cells. */
+    let hovered: HTMLElement | null = null;
+    /** The grips live outside the box, so "inside" has to include them. */
+    let overGrip = false;
 
     const measure = () => {
         frame = 0;
@@ -682,18 +762,23 @@ function attachEdgeReveal(container: HTMLElement): void {
         // arrives: a re-fit, an added row or a window resize all move it under a
         // pointer that never moved.
         const rect = container.getBoundingClientRect();
-        const inside = clientX >= rect.left && clientX <= rect.right
+        const inBox = clientX >= rect.left && clientX <= rect.right
             && clientY >= rect.top && clientY <= rect.bottom;
-        container.classList.toggle('cm-table-near-right', inside && rect.right - clientX <= EDGE_BAND_PX);
-        container.classList.toggle('cm-table-near-bottom', inside && rect.bottom - clientY <= EDGE_BAND_PX);
+        container.classList.toggle('cm-table-near-right', inBox && rect.right - clientX <= EDGE_BAND_PX);
+        container.classList.toggle('cm-table-near-bottom', inBox && rect.bottom - clientY <= EDGE_BAND_PX);
+        placeGrips(container, rect, inBox || overGrip ? hovered : null);
     };
 
     container.addEventListener('pointermove', (event) => {
         // A table with no chips has nothing to reveal, and measuring its box
         // would be layout work for nothing. `canEdit` on the model is exactly
-        // "does this table carry a controls layer" — updateDOM adds and removes
+        // "does this table carry a controls layer": updateDOM adds and removes
         // the two together.
         if (!tableModelOf(container)?.canEdit) return;
+        const target = event.target as HTMLElement | null;
+        overGrip = !!target?.closest('.cm-table-grip');
+        const cell = target?.closest('.cm-table-cell') as HTMLElement | null;
+        if (cell && container.contains(cell)) hovered = cell;
         clientX = event.clientX;
         clientY = event.clientY;
         // At most one box read per frame: pointermove outruns paint.
@@ -703,6 +788,8 @@ function attachEdgeReveal(container: HTMLElement): void {
     container.addEventListener('pointerleave', () => {
         if (frame) cancelAnimationFrame(frame);
         frame = 0;
-        container.classList.remove('cm-table-near-right', 'cm-table-near-bottom');
+        hovered = null;
+        overGrip = false;
+        container.classList.remove('cm-table-near-right', 'cm-table-near-bottom', 'cm-table-near-cell');
     });
 }

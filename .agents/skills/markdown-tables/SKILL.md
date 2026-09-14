@@ -174,7 +174,8 @@ that compounds whitespace into the saved file on every keystroke.
 rewritten by a cell edit); rendering closes a real defect — a table whose file says `---:`
 displaying left-aligned in the reader's only editor. The classes need **two-class specificity**
 (`.cm-table-widget th.cm-table-align-center`), because the `text-align: left` beside them is
-`.cm-table-widget th`. There is no alignment *editing* UI.
+`.cm-table-widget th`. Alignment is edited from a column's grip (`setColumnAlign`), which rewrites that one
+delimiter cell and nothing else.
 
 ## The cell menu and the corner chips
 
@@ -225,6 +226,34 @@ guard written as `view.state.readOnly` is always `false`; and `editable.of(false
 a programmatic `view.dispatch`, so such a guard would let *Insert table…* really insert a table into
 a document the reader is only reading. Note the predicate exists twice — `lists.ts`'s and
 `tableEdit.ts`'s `canWrite` — as independent copies; change both.
+
+## Grips, moving, aligning, and three ways in
+
+- **A grip per axis, moved to the row and column under the pointer** (`gripButton`, `placeGrips`,
+  both driven by `attachEdgeReveal`'s one per-frame measure). They sit **outside** the table's box,
+  left of the rows and above the header, so unlike the corner chips they can never take a cell's
+  click. They are **flush** against that edge: any gap and the pointer leaves the widget on its way
+  to one, firing the `pointerleave` that hides it. The target index is written onto the grip as
+  `data-index` by the reveal pass and read at the press, never captured. The hovered cell comes from
+  the `pointermove` target, so no row or cell box is scanned.
+- **Their menus are `rowMenuEntries` / `columnMenuEntries`**, raised through the ordinary context-menu
+  store and shading the target with `cm-table-target` until `onClose`.
+- **`moveRow` swaps two LINES byte for byte; `moveColumn` swaps two raw segments per line, delimiter
+  included**, so alignment travels with its column. A row too short to hold both segments is the one
+  non-swap case: its last cell moves out into a new one and leaves a blank, and a blank DELIMITER cell
+  is written as ` --- `, never empty, or that row stops matching and the table falls back to text.
+  **`setColumnAlign`** replaces one delimiter cell, padding a short delimiter row out to it. All three
+  end the session before dispatching, like every structural command. **Alt+↑/↓** in a cell is
+  `moveRow`.
+- **Enter on a lone header row completes the table** (`completeHeaderRow` in `livePreview.ts`'s
+  `tableEntryKeymap`): the delimiter row and one blank body row, caret in the first body cell. Column
+  count comes from `rowColumnCount`, which uses `pipeOffsets` (the one escape loop). It declines
+  mid-line, on a delimiter-shaped line, when the next line is pipe-fenced, on a line already in a
+  table, and on a line inside a code range. Tagged `input`, not `input.type`, so the adoption rule
+  ignores it.
+- **The top bar's table button** (`TableInsertButton`) cannot reach a view, so a pick is a one-shot
+  request (`utils/tableInsertRequest.ts`) answered by the FOCUSED `DocumentPane` for that path through
+  `insertTableAtCursor`. The size grid's maxima live in that module, shared with the editor menu's grid.
 
 ## How a table gets its width (`tableFit.ts`)
 

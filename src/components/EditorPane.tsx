@@ -5,6 +5,7 @@ import ConfirmDialog from './ConfirmDialog';
 import DocumentPane from './DocumentPane';
 import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
+import TableInsertButton from './TableInsertButton';
 import { Link, Eye, Edit2, PenTool, Download } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
 import { isPdfFile, isCanvasFile, isNotebookFile } from '../utils/fileTypes';
@@ -662,6 +663,11 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                 {/* Read/edit and linked-mentions are markdown concepts — a canvas has neither. */}
                 {activeFile && !activeFile.isHelp && !isCanvas && (
                     <>
+                        <TableInsertButton
+                            path={activeFile.path}
+                            disabled={editorMode === 'read'}
+                            reason="Switch to editing (⌘E) to insert a table"
+                        />
                         <button
                             className="view-header-action"
                             onClick={() => onToggleMode(activeFile.path)}

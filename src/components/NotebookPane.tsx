@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
 import type { Editor, TLAssetStore, TLShape, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
@@ -12,6 +12,10 @@ import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
 import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi } from './canvasPen';
 import { subscribePenScale } from '../utils/penStyle';
+import { readThumbnailsOpen, writeThumbnailsOpen } from '../utils/pdfViewState';
+import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
+import PageControls, { type PageControlsHandle } from './PageControls';
+import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView, type PageBox, type PageLock } from './pagedCanvas';
 
 interface NotebookPaneProps {
     /** The notebook's vault path. Every change is reported against it explicitly
@@ -57,13 +61,14 @@ const FULL_INK_SHAPE_LIMIT = 1000;
 const APPEND_MARGIN_FRACTION = 0.2;
 
 /**
- * Space left around the page when a notebook is first framed.
+ * Space kept above a page the view is put at, and above and below the stack.
  *
- * tldraw takes this off each AXIS, not each side, so the gap actually seen is
- * half of it — measured: 64 left ~29px above the page and put the paper toolbar
- * on its first rules. 128 gives the ~64px that clears the toolbar.
+ * Wider than the PDF annotator's, because a notebook's paper toolbar floats over
+ * the top of the canvas. It took over from a 128px fitting inset doing the same
+ * job, which was measured: a ~29px gap put the toolbar on the page's first
+ * rules, and ~64px cleared it.
  */
-const FIT_INSET = 128;
+const TOP_GUTTER = 56;
 
 function pageShapeId(index: number): TLShapeId {
     return createShapeId(`notebook-page-${index}`);
@@ -101,6 +106,23 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
     const serializeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     /** Shape ids of the page backdrops — never exported, never counted as ink. */
     const pageShapeIdsRef = useRef<Set<TLShapeId>>(new Set());
+
+    // The page strip, page box and camera lock the PDF annotator has, from the
+    // same shared pieces (pagedCanvas.ts). The page on screen lives in refs and
+    // reaches the box and the strip through their handles, never state: a
+    // scroll would otherwise re-render tldraw at every page boundary.
+    const [thumbsOpen, setThumbsOpen] = useState(readThumbnailsOpen);
+    useEffect(() => { writeThumbnailsOpen(thumbsOpen); }, [thumbsOpen]);
+    /** Where the strip opens: the current page when it is toggled on. */
+    const [thumbsStart, setThumbsStart] = useState(0);
+    const thumbsRef = useRef<PdfThumbnailsHandle | null>(null);
+    const controlsRef = useRef<PageControlsHandle | null>(null);
+    const shownPageRef = useRef(0);
+    /** The box tldraw lives in, where swipes are caught before tldraw sees them. */
+    const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+    /** The page stack as last laid out, and the camera lock that follows it. */
+    const boxesRef = useRef<PageBox[]>([]);
+    const lockRef = useRef<PageLock | null>(null);
 
     /**
      * The paper as one SVG data URI, shared by every page.
@@ -225,6 +247,10 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
             editor.sendToBack(wanted);
             pageShapeIdsRef.current = new Set(wanted);
         }), { ignoreShapeLock: true });
+        // The one place the stack changes (open, growth, removal, re-ruling),
+        // so the one place the camera's bounds have to follow it.
+        boxesRef.current = boxes;
+        lockRef.current?.setPages(boxes);
     }, []);
 
     /**
@@ -285,13 +311,57 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         // A new notebook opens ready to write on, not ready to select.
         if (!uiRef.current?.toolId) editor.setCurrentTool('draw');
 
-        // Frame the first page on a first-ever open; a reopen restores the
-        // camera from the snapshot, and fitting would throw away where the user
-        // had got to.
+        // Scrolls like a PDF: vertical swipes only, full width edge to edge, and
+        // the view cannot leave the pages. layOutPages keeps its bounds in step.
+        lockRef.current = lockCameraToPages(editor, canvasWrapRef.current, boxesRef.current, TOP_GUTTER);
+        // A first-ever open starts at the top of page 1, full width. A reopen
+        // keeps the snapshot's camera, re-applied so the lock clamps it.
         if (!parsed.snapshot) {
-            const size = paperPageSize(paperRef.current);
-            editor.zoomToBounds(new Box(0, 0, size.width, size.height), { inset: FIT_INSET });
+            editor.setCamera(cameraFor(boxesRef.current[0], editor.getViewportScreenBounds().width, fitWidthZoom(editor, boxesRef.current), 0, TOP_GUTTER));
+        } else {
+            editor.setCamera(editor.getCamera());
         }
+
+        let firstView = true;
+        const stopViewWatch = watchPageView(editor, () => boxesRef.current, ({ shown }) => {
+            if (shown === shownPageRef.current && !firstView) return;
+            firstView = false;
+            shownPageRef.current = shown;
+            controlsRef.current?.setPage(shown);
+            thumbsRef.current?.setCurrentPage(shown);
+        }, TOP_GUTTER);
+
+        // A thumbnail shows the writing, so writing has to reach the strip. The
+        // pages each changed shape touches are collected and handed over once
+        // the pen pauses: redrawing per stroke point would cost more than the
+        // stroke. A removed shape leaves only its record, so its `y` is used
+        // alongside the live bounds of anything still on the canvas.
+        const touched = new Set<number>();
+        let thumbTimer: ReturnType<typeof setTimeout> | null = null;
+        const touch = (minY: number, maxY: number) => {
+            const boxes = boxesRef.current;
+            for (let i = pageAt(boxes, minY); i < boxes.length && boxes[i].y <= maxY; i++) touched.add(i);
+        };
+        const unlistenThumbs = editor.store.listen(({ changes }) => {
+            const records = [
+                ...Object.values(changes.added),
+                ...Object.values(changes.updated).flat(),
+                ...Object.values(changes.removed),
+            ];
+            for (const record of records) {
+                if (record.typeName !== 'shape' || pageShapeIdsRef.current.has(record.id)) continue;
+                const bounds = editor.getShapePageBounds(record.id);
+                if (bounds) touch(bounds.minY, bounds.maxY);
+                touch(record.y, record.y);
+            }
+            if (touched.size === 0 || boxesRef.current.length === 0) return;
+            if (thumbTimer) clearTimeout(thumbTimer);
+            thumbTimer = setTimeout(() => {
+                thumbTimer = null;
+                thumbsRef.current?.invalidate(touched);
+                touched.clear();
+            }, 700);
+        }, { scope: 'document' });
 
         const readUi = () => readCanvasUi(editor);
         let lastUi = JSON.stringify(readUi());
@@ -332,6 +402,11 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
             unlistenDoc();
             unlistenSession();
             unlistenPen();
+            stopViewWatch();
+            unlistenThumbs();
+            if (thumbTimer) clearTimeout(thumbTimer);
+            lockRef.current?.dispose();
+            lockRef.current = null;
             // Unmounting mid-debounce (tab switch, tab close) must not drop the
             // last strokes — flush them while the editor is still alive.
             if (serializeTimerRef.current) {
@@ -463,23 +538,118 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         persist();
     }, [layOutPages, persist]);
 
+    /** Put page `index` at the top of the view, centred, at the current zoom. */
+    const jumpToPage = useCallback((index: number) => {
+        const editor = editorRef.current;
+        const boxes = boxesRef.current;
+        if (!editor || boxes.length === 0) return;
+        const box = boxes[Math.min(boxes.length - 1, Math.max(0, index))];
+        editor.setCamera(cameraFor(box, editor.getViewportScreenBounds().width, editor.getZoomLevel(), 0, TOP_GUTTER));
+    }, []);
+
+    /** One page, paper and writing, as a small JPEG for the strip: the page's
+     *  region through tldraw's own export, as the PDF export renders it. */
+    const renderThumbnail = useCallback(async (index: number, scale: number) => {
+        const editor = editorRef.current;
+        const box = boxesRef.current[index];
+        if (!editor || !box) throw new Error('The notebook is not open');
+        const bounds = new Box(box.x, box.y, box.width, box.height);
+        const ids = [...editor.getCurrentPageShapeIds()].filter(id => {
+            const b = editor.getShapePageBounds(id);
+            return !!b && Box.Collides(b, bounds);
+        });
+        const { blob } = await editor.toImage(ids, {
+            bounds,
+            scale,
+            pixelRatio: 1,
+            padding: 0,
+            background: true,
+            darkMode: false,
+            format: 'jpeg',
+            quality: 0.8,
+        });
+        return URL.createObjectURL(blob);
+    }, []);
+
+    const toggleThumbs = useCallback(() => {
+        setThumbsStart(shownPageRef.current);
+        setThumbsOpen(open => !open);
+    }, []);
+
+    const pageSize = useMemo(() => paperPageSize(paper), [paper]);
+    const thumbSizes = useMemo(
+        () => Array.from({ length: paper.pageCount }, () => pageSize),
+        [paper.pageCount, pageSize],
+    );
+    /** What makes every existing thumbnail wrong at once. Deliberately NOT the
+     *  page count: an appended page leaves the others valid. */
+    const paperLook = `${paper.size}|${paper.orientation}|${paper.ruling}|${paper.spacing}|${paper.margin}`;
+    const toolbar = useMemo(
+        () => ({ paper, onChange: changePaper, onRemovePage: removeLastPage }),
+        [paper, changePaper, removeLastPage],
+    );
+
     return (
-        <div className="drawing-pane notebook-pane">
-            <NotebookToolbar paper={paper} onChange={changePaper} onRemovePage={removeLastPage} />
-            <Tldraw
-                snapshot={parsed.snapshot}
-                assets={assetStore}
-                onMount={handleMount}
-                components={CANVAS_COMPONENTS}
-                shapeUtils={CANVAS_SHAPE_UTILS}
-                colorScheme={NOTEBOOK_COLOR_SCHEME}
-                licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
+        <div className={`drawing-pane notebook-pane${thumbsOpen ? ' has-thumbs' : ''}`}>
+            {thumbsOpen && (
+                <PdfThumbnails
+                    key={paperLook}
+                    ref={thumbsRef}
+                    sizes={thumbSizes}
+                    renderThumbnail={renderThumbnail}
+                    onSelect={jumpToPage}
+                    initialPage={thumbsStart}
+                />
+            )}
+            <div className="paged-canvas" ref={canvasWrapRef}>
+                <NotebookToolbarContext.Provider value={toolbar}>
+                    <Tldraw
+                        snapshot={parsed.snapshot}
+                        assets={assetStore}
+                        onMount={handleMount}
+                        components={NOTEBOOK_COMPONENTS}
+                        shapeUtils={CANVAS_SHAPE_UTILS}
+                        colorScheme={NOTEBOOK_COLOR_SCHEME}
+                        licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
+                    />
+                </NotebookToolbarContext.Provider>
+            </div>
+            <PageControls
+                ref={controlsRef}
+                pageCount={paper.pageCount}
+                thumbsOpen={thumbsOpen}
+                onToggleThumbs={toggleThumbs}
+                onJump={jumpToPage}
             />
         </div>
     );
 }
 
 /** Paper settings, over the canvas's top-left where tldraw leaves room. */
+/** What the paper toolbar needs, handed to it through tldraw's own UI tree. */
+interface NotebookToolbarState {
+    paper: NotebookPaper;
+    onChange: (patch: Partial<NotebookPaper>) => void;
+    onRemovePage: () => void;
+}
+
+const NotebookToolbarContext = createContext<NotebookToolbarState | null>(null);
+
+/**
+ * The paper toolbar, mounted in tldraw's TopPanel slot rather than laid over the
+ * canvas by hand. tldraw's layout keeps its top-centre panel clear of its own
+ * top-left menu at any width. A toolbar centred over the canvas with CSS slid
+ * under that menu as soon as the page strip narrowed the canvas, hiding the
+ * ruling picker. It is a stable component reading context because `components`
+ * must not change identity from one render to the next.
+ */
+function NotebookTopPanel() {
+    const state = useContext(NotebookToolbarContext);
+    return state ? <NotebookToolbar {...state} /> : null;
+}
+
+const NOTEBOOK_COMPONENTS = { ...CANVAS_COMPONENTS, TopPanel: NotebookTopPanel };
+
 function NotebookToolbar({ paper, onChange, onRemovePage }: {
     paper: NotebookPaper;
     onChange: (patch: Partial<NotebookPaper>) => void;

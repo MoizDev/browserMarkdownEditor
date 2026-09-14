@@ -180,6 +180,13 @@ requires reading it.
   pushed through an **imperative handle**, never a prop — a prop would re-render the host, and for the
   reader that is every page div. The reader keys it on `docState.gen` so a reload gets a fresh cache,
   and its renders go straight to the document rather than through the render window's page states.
+- **Invert is a view-only CSS filter** (`PdfInvertToggle`, a live store in `pdfViewState.ts` so every PDF
+  on screen and both modes flip together). `invert(0.88) hue-rotate(180deg)`: paper lands on the app's
+  dark grey, and colours keep roughly their hue. The reader filters the page `<canvas>` elements only,
+  never the page box, so text selection and links keep their colours. Annotating filters tldraw's
+  `.tl-shapes` layer, pages AND ink together, because inverting only the pages leaves default black
+  ink invisible; the background, selection overlays and tldraw's UI are other layers. Nothing is
+  re-rendered on a toggle, and exports render shapes themselves, so a saved PDF never sees it.
 
 ## The pen is a forked draw shape — `components/tightDrawShape.tsx`
 
@@ -270,16 +277,17 @@ first was needed, and `zoomToFit()` on a first open — on a long PDF, every pag
 small. Now the camera opens on the reader's page at the reader's fit-width size (`cameraFor`), always,
 overriding the snapshot's camera, which knows nothing of where the reader has been since.
 
-**The camera is held to the document.** `setCameraOptions` constraints with `behavior: 'contain'`,
+**The camera is held to the document** (`lockCameraToPages` in `components/pagedCanvas.ts`, shared with
+notebooks). `setCameraOptions` constraints with `behavior: 'contain'`,
 bounds = the whole page stack, `baseZoom: 'fit-x'` and **no horizontal padding**: below fit-width the
 page is pinned centred, above it the camera clamps to the real page edges, so fit-width is edge to edge
 and zooming further simply goes further in. **Swipes are vertical-only**: a capture-phase `wheel`
-listener on `.pdf-annotate-canvas` (an ancestor of tldraw's own) swallows every non-ctrl wheel and
+listener on `.paged-canvas` (an ancestor of tldraw's own) swallows every non-ctrl wheel and
 applies only `deltaY`; pinches arrive as ctrl+wheel and pass through to tldraw's zoom. Because the
 bottom is clamped, the page box shows the last visible page once the view is held against the end of
 the document — the reader's rule, or typing the last page reads back an earlier one.
 
-View tracking (page box, strip, position record, the missing-page and sharpen passes) runs off a
+View tracking (`watchPageView`: page box, strip, position record, missing-page and sharpen passes) runs off a
 tldraw **`react()` on `getViewportPageBounds()`** — it fires when the view moves, not on every pointer
 move while drawing, which is what the session-scope store listener it replaced fired on.
 
@@ -322,6 +330,20 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
 - **Pages grow as you write** (`growIfNeeded`, run just before each serialize): ink within 20% of the
   last page's bottom appends however many pages the overflow needs. Pages are only ever ADDED —
   removing an "empty" one would discard a page left blank on purpose.
+- **It scrolls like a PDF and has the annotator's page strip and page box** (`pagedCanvas.ts`,
+  `PageControls`, `PdfThumbnails`). `layOutPages` is the one place the page stack changes, so it is
+  where `lockRef.setPages` re-bounds the camera. A thumbnail is the page's region through
+  `editor.toImage` with `bounds`, as the PDF export renders it. A document-scope store listener
+  collects the pages each changed shape touches (live bounds, plus the record's `y`, which is all a
+  removed shape leaves) and calls the strip's `invalidate` 700ms after the pen pauses; the old image
+  stays up until its replacement lands. The strip is keyed on the paper's LOOK, not its page count:
+  an appended page leaves every existing thumbnail valid. A first open starts at page 1, full width;
+  a reopen keeps the snapshot's camera, re-applied so the lock clamps it. The page box is judged just
+  under the gutter, not at the view's top edge: a notebook's gutter (56px, to clear its toolbar) is
+  wider than the gap between pages, so the edge sits in the page above and "jump to 3" read back 2.
+  **The paper toolbar is tldraw's `TopPanel`** (a stable component fed by context), not an overlay
+  centred with CSS: that one slid under tldraw's top-left menu the moment the strip narrowed the
+  canvas, hiding the ruling picker.
 - **Re-papering reaches the store as a `mergeRemoteChanges`**, so the save listener does NOT see it;
   `changePaper` calls `persist()` itself. One `persist` writes paper + snapshot + pickers together,
   because they share a file.

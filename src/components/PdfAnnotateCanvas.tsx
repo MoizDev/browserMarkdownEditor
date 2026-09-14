@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore, react } from 'tldraw';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
 import type { Editor, TLAssetId, TLAssetStore, TLEditorSnapshot, TLImageShape, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
 import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type PdfPageSource } from '../utils/pdfAnnotation';
@@ -7,8 +7,14 @@ import { setPdfRenderData } from '../utils/pdfRenderCache';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
-import { flushPdfViewPositions, readPdfViewPos, readThumbnailsOpen, writePdfViewPos, writeThumbnailsOpen } from '../utils/pdfViewState';
-import PdfThumbnails, { ThumbnailsToggle, type PdfThumbnailsHandle } from './PdfThumbnails';
+import {
+    flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,
+    writePdfViewPos, writeThumbnailsOpen,
+} from '../utils/pdfViewState';
+import PdfInvertToggle from './PdfInvertToggle';
+import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
+import PageControls, { type PageControlsHandle } from './PageControls';
+import { cameraFor, fitWidthZoom, lockCameraToPages, watchPageView } from './pagedCanvas';
 
 interface PdfAnnotateCanvasProps {
     filePath: string;
@@ -98,21 +104,6 @@ const PAGE_SCALE_STEP = 1;
 /** Long enough that a pinch or a wheel burst refines once, at the scale it
  *  settles on, rather than at every value it passed through. */
 const REFINE_DEBOUNCE_MS = 350;
-
-/** Air above and below the document, and above a page the view is put at.
- *  None at the sides: at fit-width a page runs edge to edge. */
-const TOP_GUTTER = 16;
-
-/** The camera that puts `box` at the top of the view, centred, at zoom `z`. */
-function cameraFor(box: { x: number; y: number; width: number; height: number }, screenWidth: number, z: number, offset = 0) {
-    return {
-        x: screenWidth / (2 * z) - (box.x + box.width / 2),
-        // Mid-page, the top edge goes back exactly where it was left; at the
-        // start of a page it gets a little air.
-        y: (offset > 0 ? 0 : TOP_GUTTER / z) - (box.y + offset * box.height),
-        z,
-    };
-}
 
 /** One page's rasterized backdrop, and how sharp it currently is. */
 interface PageImage {
@@ -209,15 +200,18 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     // held in state: a pan would otherwise re-render this component — tldraw
     // included — at every page boundary.
     const [thumbsOpen, setThumbsOpen] = useState(readThumbnailsOpen);
+    /** Pages AND ink shown inverted: the filter is on tldraw's shapes layer, so
+     *  black ink stays readable on a darkened page. Display only; the export
+     *  renders shapes itself and never sees the filter. See index.css. */
+    const inverted = useSyncExternalStore(subscribePdfInverted, getPdfInverted);
     useEffect(() => { writeThumbnailsOpen(thumbsOpen); }, [thumbsOpen]);
     /** Where the strip opens: the reader's page on mount, the current one on a toggle. */
     const [thumbsStart, setThumbsStart] = useState(0);
     const thumbsRef = useRef<PdfThumbnailsHandle | null>(null);
-    const pageInputRef = useRef<HTMLInputElement | null>(null);
-    const pageInputFocusValueRef = useRef('');
-    /** 0-based page under the top of the view. */
+    const controlsRef = useRef<PageControlsHandle | null>(null);
+    /** 0-based page shown in the page box. */
     const shownPageRef = useRef(0);
-    /** The box tldraw lives in — where swipes are caught before tldraw sees them. */
+    /** The box tldraw lives in, where swipes are caught before tldraw sees them. */
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
 
     /**
@@ -361,48 +355,14 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         // restored the snapshot's camera, which knew nothing of where the reader
         // had got to since. The position record is shared with the reader
         // (utils/pdfViewState.ts), so the two modes hand one page back and forth.
-        const maxPageWidth = Math.max(...pages.map(p => p.width));
-        const docBottom = boxes[boxes.length - 1].y + boxes[boxes.length - 1].height;
-        const fitZoom = () => Math.max(0.05, editor.getViewportScreenBounds().width / maxPageWidth);
-
-        // The view cannot leave the document. tldraw's canvas is infinite, which
-        // is how a swipe could carry the page clean off screen. `contain`: below
-        // fit-width the page is pinned, centred; above it, the camera is clamped
-        // to the document's real edges — so fit-width is the page edge to edge,
-        // and zooming further just goes further in. Vertically the same, with a
-        // little air at the very top and bottom.
-        editor.setCameraOptions({
-            constraints: {
-                bounds: { x: 0, y: 0, w: maxPageWidth, h: docBottom },
-                padding: { x: 0, y: TOP_GUTTER },
-                origin: { x: 0.5, y: 0 },
-                initialZoom: 'fit-x',
-                baseZoom: 'fit-x',
-                behavior: 'contain',
-            },
-        });
-
-        // Two-finger swipes scroll the document up and down and do nothing else,
-        // the way a PDF scrolls — tldraw would pan on both axes. A pinch arrives
-        // as a ctrl+wheel and is left to tldraw's own zoom. Caught in the CAPTURE
-        // phase on an ancestor, so tldraw's wheel handler never sees a swipe.
-        const wrap = canvasWrapRef.current;
-        const onWheel = (e: WheelEvent) => {
-            if (e.ctrlKey || e.metaKey) return;
-            // A long tldraw menu scrolls itself.
-            if ((e.target as Element | null)?.closest?.('.tlui-menu, .tlui-popover__content')) return;
-            e.preventDefault();
-            e.stopPropagation();
-            const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? editor.getViewportScreenBounds().height : 1;
-            const { x, y, z } = editor.getCamera();
-            editor.setCamera({ x, y: y - (e.deltaY * unit) / z, z });
-        };
-        wrap?.addEventListener('wheel', onWheel, { capture: true, passive: false });
+        // Scrolls like a PDF: vertical swipes only, full width edge to edge, and
+        // the view cannot leave the document. Shared with notebooks.
+        const lock = lockCameraToPages(editor, canvasWrapRef.current, boxes);
         const savedPos = readPdfViewPos(filePath);
         editor.setCamera(cameraFor(
             boxes[Math.min(boxes.length - 1, savedPos?.page ?? 0)],
             editor.getViewportScreenBounds().width,
-            fitZoom() * (savedPos?.zoom ?? 1),
+            fitWidthZoom(editor, boxes) * (savedPos?.zoom ?? 1),
             savedPos?.offset ?? 0,
         ));
 
@@ -520,60 +480,23 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             refineTimer = setTimeout(() => { refineTimer = null; void refinePages(true); }, REFINE_DEBOUNCE_MS);
         };
 
-        /** First page whose bottom edge is below `y`. A gap between pages counts
-         *  as the page after it, as it does in the reader. */
-        const pageAt = (y: number) => {
-            let lo = 0, hi = boxes.length - 1;
-            while (lo < hi) {
-                const mid = (lo + hi) >> 1;
-                if (boxes[mid].y + boxes[mid].height <= y) lo = mid + 1;
-                else hi = mid;
-            }
-            return lo;
-        };
-
         // Where the view is: for the page box, the strip, and the record the
         // reader reopens from. The record changes in memory on every pass and
-        // reaches storage on a debounce — see writePdfViewPos for why memory
+        // reaches storage on a debounce; see writePdfViewPos for why memory
         // cannot be the one that lags.
         let persistTimer: ReturnType<typeof setTimeout> | null = null;
-        const trackView = () => {
-            const view = editor.getViewportPageBounds();
-            const page = pageAt(view.minY);
-            const box = boxes[page];
-            // The page SHOWN is the one under the top edge — except once the view
-            // is held against the end of a document taller than it, where the
-            // last pages can never reach the top, and typing "40" would otherwise
-            // read back "38". Same rule as the reader.
-            const shown = view.maxY >= docBottom && view.height < docBottom ? pageAt(view.maxY - 1) : page;
-            const input = pageInputRef.current;
-            if (shown !== shownPageRef.current || (input && !input.value)) {
+        let firstView = true;
+        const stopViewWatch = watchPageView(editor, () => boxes, ({ top, offset, shown }) => {
+            if (shown !== shownPageRef.current || firstView) {
+                firstView = false;
                 shownPageRef.current = shown;
-                if (input && document.activeElement !== input) input.value = String(shown + 1);
+                controlsRef.current?.setPage(shown);
                 thumbsRef.current?.setCurrentPage(shown);
             }
-            writePdfViewPos(filePath, {
-                page,
-                offset: Math.min(1, Math.max(0, (view.minY - box.y) / box.height)),
-                zoom: editor.getZoomLevel() / fitZoom(),
-            }, false);
+            writePdfViewPos(filePath, { page: top, offset, zoom: editor.getZoomLevel() / fitWidthZoom(editor, boxes) }, false);
             if (persistTimer) clearTimeout(persistTimer);
             persistTimer = setTimeout(() => { persistTimer = null; flushPdfViewPositions(); }, 400);
-        };
-
-        // Reads only the camera and the viewport's size, so this runs when the
-        // VIEW moves — not on every pointer move while drawing, which is what
-        // the session-scope store listener it replaces fired on.
-        let viewFrame = 0;
-        const stopViewReaction = react('pdf annotate view', () => {
-            editor.getViewportPageBounds();
-            if (!viewFrame) {
-                viewFrame = requestAnimationFrame(() => {
-                    viewFrame = 0;
-                    trackView();
-                    void refinePages(false);
-                });
-            }
+            void refinePages(false);
             scheduleRefine();
         });
 
@@ -709,9 +632,8 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         return () => {
             unlisten();
             disposePen();
-            stopViewReaction();
-            cancelAnimationFrame(viewFrame);
-            wrap?.removeEventListener('wheel', onWheel, { capture: true });
+            stopViewWatch();
+            lock.dispose();
             if (refineTimer) clearTimeout(refineTimer);
             if (persistTimer) { clearTimeout(persistTimer); flushPdfViewPositions(); }
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
@@ -738,25 +660,6 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         editor.setCamera(cameraFor(box, editor.getViewportScreenBounds().width, editor.getZoomLevel()));
     }, [boxes]);
 
-    const resetPageInput = useCallback(() => {
-        const input = pageInputRef.current;
-        if (input) input.value = String(shownPageRef.current + 1);
-    }, []);
-
-    /** Go to the typed page. Out of range clamps — "999" in a 40-page document
-     *  plainly means the end — and anything unreadable puts the box back. */
-    const commitPageInput = useCallback((onlyIfChanged: boolean) => {
-        const input = pageInputRef.current;
-        if (!input || (onlyIfChanged && input.value === pageInputFocusValueRef.current)) return;
-        const typed = Number.parseInt(input.value, 10);
-        if (!Number.isFinite(typed)) { resetPageInput(); return; }
-        const page = Math.min(boxes.length, Math.max(1, typed));
-        input.value = String(page);
-        // So the blur that follows an Enter does not jump a second time.
-        pageInputFocusValueRef.current = input.value;
-        jumpToPage(page - 1);
-    }, [boxes.length, jumpToPage, resetPageInput]);
-
     const toggleThumbs = useCallback(() => {
         setThumbsStart(shownPageRef.current);
         setThumbsOpen(open => !open);
@@ -775,7 +678,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     }
 
     return (
-        <div className={`drawing-pane pdf-annotate-pane${thumbsOpen ? ' has-thumbs' : ''}`}>
+        <div className={`drawing-pane pdf-annotate-pane${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`}>
             {thumbsOpen && (
                 <PdfThumbnails
                     ref={thumbsRef}
@@ -785,7 +688,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                     initialPage={thumbsStart}
                 />
             )}
-            <div className="pdf-annotate-canvas" ref={canvasWrapRef}>
+            <div className="paged-canvas" ref={canvasWrapRef}>
                 <Tldraw
                     snapshot={parsed.snapshot}
                     assets={assetStore}
@@ -796,42 +699,15 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                     licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                 />
             </div>
-            <div className="pdf-viewer-controls">
-                <div className="pdf-viewer-pill">
-                    <ThumbnailsToggle open={thumbsOpen} onToggle={toggleThumbs} />
-                </div>
-                <div className="pdf-viewer-pill pdf-viewer-pages">
-                    <input
-                        ref={pageInputRef}
-                        className="pdf-viewer-page-input"
-                        type="text"
-                        inputMode="numeric"
-                        autoComplete="off"
-                        spellCheck={false}
-                        style={{ width: `${Math.max(2, String(pages.length).length)}ch` }}
-                        title="Current page — type a number and press Enter to jump"
-                        aria-label="Page number"
-                        onFocus={e => {
-                            pageInputFocusValueRef.current = e.currentTarget.value;
-                            e.currentTarget.select();
-                        }}
-                        onKeyDown={e => {
-                            // Digits and Backspace are tldraw shortcuts too.
-                            e.stopPropagation();
-                            if (e.key === 'Enter') {
-                                commitPageInput(false);
-                                e.currentTarget.blur();
-                            } else if (e.key === 'Escape') {
-                                resetPageInput();
-                                pageInputFocusValueRef.current = e.currentTarget.value;
-                                e.currentTarget.blur();
-                            }
-                        }}
-                        onBlur={() => commitPageInput(true)}
-                    />
-                    <span className="pdf-viewer-page-total">/ {pages.length}</span>
-                </div>
-            </div>
+            <PageControls
+                ref={controlsRef}
+                pageCount={pages.length}
+                thumbsOpen={thumbsOpen}
+                onToggleThumbs={toggleThumbs}
+                onJump={jumpToPage}
+            >
+                <PdfInvertToggle />
+            </PageControls>
         </div>
     );
 }

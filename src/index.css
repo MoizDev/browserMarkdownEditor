@@ -2513,8 +2513,9 @@ body.is-resizing-panes * {
    The strip is windowed and absolutely positioned; the document beside it just
    starts where the strip ends. */
 .pdf-viewer,
-.pdf-annotate-pane {
-  /* THUMB_WIDTH (108) plus 14px either side — keep the two in step. */
+.pdf-annotate-pane,
+.notebook-pane {
+  /* THUMB_WIDTH (108) plus 14px either side. Keep the two in step. */
   --pdf-thumbs-width: 136px;
 }
 
@@ -2592,19 +2593,22 @@ body.is-resizing-panes * {
   left: var(--pdf-thumbs-width);
 }
 
-/* The annotate canvas gets its own box so the strip can narrow it; its stacking
-   context keeps tldraw's internal layers under the page box and the strip. */
-.pdf-annotate-canvas {
+/* A paged canvas (the PDF annotator, a notebook) gets its own box so the strip
+   can narrow it. Its stacking context keeps tldraw's internal layers under the
+   page box and the strip, and it is the ancestor pagedCanvas.ts catches swipes
+   on. */
+.paged-canvas {
   position: absolute;
   inset: 0;
   z-index: 0;
 }
 
-.pdf-annotate-pane.has-thumbs .pdf-annotate-canvas {
+.has-thumbs > .paged-canvas {
   left: var(--pdf-thumbs-width);
 }
 
-.pdf-viewer-thumbs-toggle {
+.pdf-viewer-thumbs-toggle,
+.pdf-viewer-invert-toggle {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2616,13 +2620,60 @@ body.is-resizing-panes * {
   cursor: pointer;
 }
 
-.pdf-viewer-thumbs-toggle:hover {
+.pdf-viewer-thumbs-toggle:hover,
+.pdf-viewer-invert-toggle:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
-.pdf-viewer-thumbs-toggle.is-on {
+.pdf-viewer-thumbs-toggle.is-on,
+.pdf-viewer-invert-toggle.is-on {
   color: var(--interactive-accent);
+}
+
+/* ── Inverted pages (PdfInvertToggle) ──
+   A VIEW preference and nothing more: the file and its exported PDF keep their
+   colours. Done as a CSS filter, so it is instant, costs no re-render, and leaves
+   pdf.js's cached bitmaps alone. invert(0.88) rather than a full invert, so white
+   paper lands on the app's own dark grey and black text on a soft white instead
+   of glaring pure black and white; hue-rotate(180deg) puts colours back near
+   their own hue, so a red figure still reads as red.
+
+   Reader: the page canvases only, never the page box, so the text layer's
+   selection highlight and the link layer keep their real colours.
+   Annotating: tldraw's shapes layer, which holds the pages AND the ink. Inverting
+   the pages alone would leave default black ink invisible on a dark page. The
+   background (the grey around the pages), the selection overlays and tldraw's
+   menus are other layers and stay as they are. */
+.pdf-viewer,
+.pdf-annotate-pane {
+  --pdf-invert: invert(0.88) hue-rotate(180deg);
+}
+
+.pdf-viewer.is-inverted .pdf-viewer-page > canvas,
+.pdf-annotate-pane.is-inverted .tl-shapes,
+.is-inverted .pdf-thumb-page img {
+  filter: var(--pdf-invert);
+}
+
+/* What inverted white paper looks like, for the parts of a page not yet drawn
+   (before a render lands, or outside a band at high zoom). */
+.pdf-viewer.is-inverted .pdf-viewer-page,
+.is-inverted .pdf-thumb-page {
+  background: #1f1f1f;
+}
+
+/* A darker surround while pages are inverted. An inverted page lands on the
+   app's own dark grey, which is what surrounds it too, so without this the gap
+   between pages vanished and a document read as one endless sheet (plainest
+   when annotating, where there is no page shadow at all). Three classes, which
+   outranks the (0,2,0) rule that maps tldraw's background to --canvas-surround. */
+.pdf-viewer.is-inverted .pdf-viewer-scroll {
+  background: #101010;
+}
+
+.pdf-annotate-pane.is-inverted .tl-container {
+  --tl-color-background: #101010;
 }
 
 /* tldraw's own dark canvas (hsl(240,5%,6.5%) ≈ #101011) reads as a hole next
@@ -2665,12 +2716,13 @@ body.is-resizing-panes * {
    it leaves clear at every window size. z-index sits above tldraw's canvas but
    below its panels, so a style popover still opens over this rather than
    under it. */
+/* Rendered in tldraw's TopPanel slot (NotebookPane's NotebookTopPanel), so it is
+   laid out in flow there and tldraw keeps it clear of its own top-left menu.
+   `pointer-events: auto` because tldraw's UI layer does not take clicks itself. */
 .notebook-toolbar {
-  position: absolute;
-  top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 300;
+  position: relative;
+  margin-top: 8px;
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3643,6 +3695,83 @@ body.is-resizing-panes * {
   pointer-events: auto;
 }
 
+/* ── Row and column grips (tableWidget.ts gripButton) ──
+   One per axis, moved by the reveal pass to the row and column under the
+   pointer. OUTSIDE the table's box and flush against it: never over a cell, so
+   they cannot take a cell's click, and no gap for the pointer to fall through on
+   its way to one. Inert until revealed, for the corner chips' reason: opacity 0
+   still hit-tests. The fill is a custom property for the chips' reason too, so
+   the light-theme override cannot outrank :hover. */
+.cm-table-grip {
+  --table-chip-bg: var(--background-primary-alt);
+  position: absolute;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--table-chip-bg);
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s, background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+:root[data-theme="light"] .cm-table-grip {
+  --table-chip-bg: var(--background-primary);
+}
+
+/* Six dots, drawn rather than typed: no font carries a grip glyph everywhere.
+   Each 4px tile holds one dot, so the box's size decides the count. */
+.cm-table-grip::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  background-image: radial-gradient(circle, currentColor 1px, transparent 1.4px);
+  background-size: 4px 4px;
+}
+
+.cm-table-grip-row {
+  left: 0;
+  width: 14px;
+  height: 22px;
+  transform: translate(-100%, -50%);
+}
+
+.cm-table-grip-row::before {
+  width: 8px;
+  height: 12px;
+}
+
+.cm-table-grip-col {
+  width: 22px;
+  height: 14px;
+  transform: translate(-50%, -100%);
+}
+
+.cm-table-grip-col::before {
+  width: 12px;
+  height: 8px;
+}
+
+.cm-table-grip:hover {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.cm-table-near-cell .cm-table-grip,
+.cm-table-grip-open .cm-table-grip {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The row or column a grip's menu is acting on. Three classes, which outranks
+   the striped body rows' (0,2,2). */
+.cm-table-widget .cm-table-cell.cm-table-target {
+  background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+}
+
 /* ── Inline Formatting ── */
 .cm-live-bold {
   font-weight: 700;
@@ -4311,6 +4440,23 @@ li[aria-selected] .cm-completionMatchedText {
 .view-header-action.active {
   color: var(--text-accent);
   background: var(--background-modifier-hover);
+}
+
+.view-header-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: transparent;
+}
+
+/* The top bar's Insert table button and its size picker (TableInsertButton).
+   The picker is fixed to the viewport from the button's own box, so a clipping
+   ancestor in the header cannot cut it off. */
+.table-insert {
+  display: flex;
+}
+
+.table-insert-panel {
+  position: fixed;
 }
 
 .view-header-action-count {

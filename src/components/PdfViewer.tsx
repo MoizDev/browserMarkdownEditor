@@ -1,8 +1,11 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
-import { readPdfViewPos, readThumbnailsOpen, writePdfViewPos, writeThumbnailsOpen } from '../utils/pdfViewState';
+import {
+    getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted, writePdfViewPos, writeThumbnailsOpen,
+} from '../utils/pdfViewState';
 import PdfThumbnails, { ThumbnailsToggle, type PdfThumbnailsHandle } from './PdfThumbnails';
+import PdfInvertToggle from './PdfInvertToggle';
 import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
 import { pdfWorker } from '../utils/pdfWorker';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
@@ -323,6 +326,9 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
      *  through the handle from the scroll pass, never through a prop — see
      *  components/PdfThumbnails.tsx for why. */
     const [thumbsOpen, setThumbsOpen] = useState(readThumbnailsOpen);
+    /** Pages shown inverted. A CSS filter on the page canvases only (see index.css),
+     *  so toggling it re-renders nothing and the text layer's selection keeps its colour. */
+    const inverted = useSyncExternalStore(subscribePdfInverted, getPdfInverted);
     const [thumbsStart, setThumbsStart] = useState(() => saved?.page ?? 0);
     const thumbsRef = useRef<PdfThumbnailsHandle | null>(null);
     useEffect(() => { writeThumbnailsOpen(thumbsOpen); }, [thumbsOpen]);
@@ -1159,7 +1165,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
     }
 
     return (
-        <div className={`pdf-viewer${thumbsOpen ? ' has-thumbs' : ''}`} ref={rootRef}>
+        <div className={`pdf-viewer${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`} ref={rootRef}>
             {thumbsOpen && docState && (
                 <PdfThumbnails
                     key={docState.gen}
@@ -1209,6 +1215,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
                 <div className="pdf-viewer-controls">
                     <div className="pdf-viewer-pill">
                         <ThumbnailsToggle open={thumbsOpen} onToggle={toggleThumbs} />
+                        <PdfInvertToggle />
                     </div>
                     <div className="pdf-viewer-pill pdf-viewer-pages">
                         <input

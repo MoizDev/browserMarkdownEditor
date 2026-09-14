@@ -76,3 +76,43 @@ export function writeThumbnailsOpen(open: boolean): void {
         localStorage.setItem(THUMBNAILS_KEY, String(open));
     } catch { /* the toggle still works for this session */ }
 }
+
+/* ── Inverted pages ──────────────────────────────────────────────────────── */
+
+const INVERT_KEY = 'pdfInverted';
+
+/**
+ * Whether PDF pages are shown inverted, for reading in the dark.
+ *
+ * App-wide like the thumbnail strip's open state, but a LIVE store rather than
+ * a value read at mount: two PDFs can be on screen side by side, and the reader
+ * and the annotate canvas hand one document back and forth, so a toggle in one
+ * has to show in the others at once. A view preference only; nothing about a
+ * file or its exported PDF changes (see the .is-inverted rules in index.css).
+ */
+let inverted = (() => {
+    try {
+        return localStorage.getItem(INVERT_KEY) === 'true';
+    } catch {
+        return false;
+    }
+})();
+const invertListeners = new Set<() => void>();
+
+export function getPdfInverted(): boolean {
+    return inverted;
+}
+
+export function setPdfInverted(next: boolean): void {
+    if (next === inverted) return;
+    inverted = next;
+    try {
+        localStorage.setItem(INVERT_KEY, String(next));
+    } catch { /* still applies for this session */ }
+    for (const listener of invertListeners) listener();
+}
+
+export function subscribePdfInverted(listener: () => void): () => void {
+    invertListeners.add(listener);
+    return () => { invertListeners.delete(listener); };
+}

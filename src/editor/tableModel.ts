@@ -466,3 +466,20 @@ export function blankTableText(rows: number, cols: number): string {
     for (let i = 1; i < Math.max(2, rows); i++) lines.push(blankRowText(columns));
     return lines.join('\n');
 }
+
+/**
+ * How many cells a lone `| a | b |` line has, or 0 when it is not a pipe-fenced
+ * row the table pattern would accept as a header.
+ *
+ * Counted with pipeOffsets, so `\|` never adds a column: the same escape loop
+ * every other reader of a row goes through, rather than a second copy of it.
+ */
+export function rowColumnCount(line: string): number {
+    const text = line.trimEnd();
+    // `.+` between the pipes: `||` is not a row.
+    if (text.length < 3 || !text.startsWith('|') || !text.endsWith('|')) return 0;
+    const pipes = pipeOffsets(text);
+    // The closing pipe has to be a real one, not the second half of `\|`.
+    if (pipes[pipes.length - 1] !== text.length - 1) return 0;
+    return Math.max(0, pipes.length - 1);
+}

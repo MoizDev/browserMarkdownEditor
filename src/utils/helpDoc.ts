@@ -201,6 +201,12 @@ here to a paper pad, and what to reach for when you are doing an assignment by
 hand rather than taking notes in Markdown. Make one with the notebook icon at
 the top of the sidebar.
 
+A notebook scrolls like a PDF: swipe up and down to move through the pages, and
+pinch to zoom. At full width the page fills the screen edge to edge, and the
+pages can never be swiped off screen. The page box at the bottom right jumps to
+a page, and the button beside it opens a **strip of page thumbnails** down the
+left, showing what is written on each one.
+
 The bar across the top of a notebook is its paper:
 
 - **Lined / Grid / Dotted / Blank** — the ruling. Changing it re-papers what you
@@ -255,7 +261,9 @@ A PDF opens in a reader: scroll it, select its text, search it with \`Cmd + F\`,
 follow its links, and jump to a page with the box at the bottom. Pinch or hold
 \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button beside the
 page box opens a **strip of page thumbnails** down the left; click one to go to
-that page.
+that page. The button next to it **inverts the pages** so they are easy on the
+eyes in the dark, while reading and while writing on them. It only changes how
+they look: the file, and any PDF made from it, keeps its real colours.
 
 \`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
 **writing on it** — the same toggle every other file has. Draw on it as you would
@@ -416,7 +424,9 @@ A table stays a table. Click a cell and type in it; arrow up into it from the li
 Getting around, and editing:
 - **Tab** and **Shift + Tab** step to the next and previous cell, wrapping onto the next row; from the very last cell, Tab adds a row and lands in it. **Enter** moves down a row, and from the last row it adds one too. **Escape** leaves the table, with the cursor just after it.
 - **Shift + Enter** breaks a line inside a cell. It writes \`<br>\`, which is the only way Markdown has of doing that.
-- The two small **+** buttons at the corners — top right and bottom left — add a column and a row. They appear while the pointer is over the table, or while you are typing in it.
+- The two small **+** buttons at the corners, top right and bottom left, add a column and a row at the end. Each appears when the pointer comes near its edge.
+- **Hover a row or a column** and a small grip appears beside it: left of the row, above the column. Click it to insert, **move** or delete that row or column, and on a column to **align** it left, centre or right. The alignment is written into the file as GFM's \`:---\`, \`:---:\` and \`---:\`.
+- **Alt + ↑** and **Alt + ↓** move the row you are typing in up and down.
 - **Right-click a cell** for everything else: *Cut*, *Copy* and *Paste* within that cell, *Insert row above* / *below*, *Insert column left* / *right*, *Delete row*, *Delete column*, *Delete table*. None of them asks you to confirm, because a single \`Cmd + Z\` / \`Ctrl + Z\` undoes any of them.
 - The cell you are in shows its **raw text**, just as the file has it: a cell holding \`**bold**\` shows the asterisks while you are in it and the bold word again once you leave. That is the same thing the editor does when you put the cursor on a bold word anywhere else.
 - **Maths renders in a cell.** Write \`$x^2$\` and the cell shows the formula, exactly as it would in the body of a note; step into the cell and the \`$…$\` comes back, like any other markup. A \`$$…$$\` inside a cell is drawn inline rather than as a centred block, because a cell is one line.
@@ -425,7 +435,7 @@ Getting around, and editing:
 - The colons in the second row are honoured: \`| :--- |\` is left-aligned, \`| :---: |\` centred, \`| ---: |\` right-aligned. Editing a cell never disturbs them.
 - Nothing you did not edit is rewritten. Change one cell and every other row comes back byte for byte, spacing included — a table you have lined up by hand stays lined up.
 
-To make a new one, right-click in a note and choose **Insert table…**, then sweep across the grid to the size you want and click (the first row is the header, so the smallest table is two rows). Or just start typing one: the moment the header row, the \`| --- |\` row and one body row are all there it renders, and you carry on typing in the last cell. Pasting a Markdown table in does the same.
+To make a new one, click the **table button** in the top bar, or right-click in a note and choose **Insert table…**, then sweep across the grid to the size you want and click (the first row is the header, so the smallest table is two rows). If you already know your columns, type the header row, such as \`| Name | Grade |\`, and press **Enter**: the \`| --- |\` row and an empty row appear, with the cursor in the first cell. Or just start typing one: the moment the header row, the \`| --- |\` row and one body row are all there it renders, and you carry on typing in the last cell. Pasting a Markdown table in does the same.
 
 A table written inside a code fence stays as text — it is being quoted, not tabulated:
 

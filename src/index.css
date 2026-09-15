@@ -2191,6 +2191,15 @@ body.is-resizing-panes * {
   height: 100%;
 }
 
+/* No halo around typed text. tldraw rings every glyph with text-shadows in
+   --tl-color-background so a label stays legible over shapes. This app remaps
+   that colour to its own surround, which on a white notebook or PDF page in the
+   dark theme is a dark ring around dark text: it read as a border on every
+   letter. Covers whiteboards, notebooks and PDF annotation (all .drawing-pane). */
+.drawing-pane .tl-container {
+  --tl-text-outline: none;
+}
+
 /* A PDF pane floats over the slot its document occupies rather than living
    inside it: one pane exists per OPEN PDF tab and the ones that are off screen
    are hidden, not unmounted, so their document and reading position survive

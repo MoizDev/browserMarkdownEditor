@@ -29,6 +29,28 @@ const COLORS: TLDefaultColorStyle[] = [
     'green', 'light-green', 'light-red', 'red',
 ];
 
+/* ── Collapsed or open ─────────────────────────────────────────────────────
+   One app-wide preference, remembered, and a live store rather than state per
+   panel: a split can show two canvases at once, and hiding the panel in one
+   should hide it in both. Collapsed, the panel shrinks to a single button
+   showing the current colour, so what the pen will draw with stays visible. */
+const COLLAPSED_KEY = 'canvasStylePanelCollapsed';
+let collapsed = (() => {
+    try { return localStorage.getItem(COLLAPSED_KEY) === 'true'; } catch { return false; }
+})();
+const collapseListeners = new Set<() => void>();
+const getCollapsed = () => collapsed;
+function setCollapsed(next: boolean): void {
+    if (next === collapsed) return;
+    collapsed = next;
+    try { localStorage.setItem(COLLAPSED_KEY, String(next)); } catch { /* this session only */ }
+    for (const listener of collapseListeners) listener();
+}
+function subscribeCollapsed(listener: () => void): () => void {
+    collapseListeners.add(listener);
+    return () => { collapseListeners.delete(listener); };
+}
+
 /** Reads live so the swatch highlight follows a selection, not just a click. */
 function useCurrentColor(editor: Editor): TLDefaultColorStyle {
     return useValue(
@@ -63,6 +85,7 @@ export default function CanvasStylePanel() {
     // once in a split, each remembering its own pen.
     const readScale = useCallback(() => getPenScale(editor), [editor]);
     const scale = useSyncExternalStore(subscribePenScale, readScale, readScale);
+    const isCollapsed = useSyncExternalStore(subscribeCollapsed, getCollapsed, getCollapsed);
 
     const pickColor = useCallback((next: TLDefaultColorStyle) => {
         editor.run(() => {
@@ -93,8 +116,42 @@ export default function CanvasStylePanel() {
         }
     }, [editor]);
 
+    if (isCollapsed) {
+        return (
+            <button
+                type="button"
+                className="canvas-style-panel is-collapsed"
+                data-testid="canvas-style-panel"
+                onClick={() => setCollapsed(false)}
+                title="Show colours and pen width"
+                aria-label="Show colours and pen width"
+                aria-expanded={false}
+            >
+                <span className="canvas-style-current" style={{ ['--swatch' as string]: swatches[color] ?? swatches.black }} />
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9" />
+                </svg>
+            </button>
+        );
+    }
+
     return (
         <div className="canvas-style-panel" data-testid="canvas-style-panel">
+            <div className="canvas-style-header">
+                <span>Pen</span>
+                <button
+                    type="button"
+                    className="canvas-style-toggle"
+                    onClick={() => setCollapsed(true)}
+                    title="Hide colours and pen width"
+                    aria-label="Hide colours and pen width"
+                    aria-expanded={true}
+                >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <polyline points="18 15 12 9 6 15" />
+                    </svg>
+                </button>
+            </div>
             <div className="canvas-style-colors">
                 {COLORS.map(name => (
                     <button

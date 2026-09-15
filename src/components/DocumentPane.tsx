@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { Compartment, EditorState } from '@codemirror/state';
+import type { ChangeDesc } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { LanguageDescription } from '@codemirror/language';
@@ -18,6 +19,16 @@ import { mathEditingExtensions } from '../editor/latexSource';
 import { foldedHeadingKeys, headingFold, headingFoldField, isHeadingKeyList, sameHeadingKeys } from '../editor/headingFold';
 import type { HeadingKey } from '../editor/headingFold';
 import { revealHighlightField, setRevealHighlight } from '../editor/revealHighlight';
+import {
+    captureScrollAnchor,
+    holdScrollAnchor,
+    isHoldingScrollAnchor,
+    isScrollAnchor,
+    mapScrollAnchor,
+    releaseScrollAnchor,
+    scrollAnchorTracking,
+} from '../editor/scrollAnchor';
+import type { ScrollAnchor } from '../editor/scrollAnchor';
 import { insertTableAtCursor } from '../editor/tableEdit';
 import { onTableInsertRequest, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
@@ -36,8 +47,10 @@ const DrawingPane = lazy(() => import('./DrawingPane'));
 // Lazy for the same reason DrawingPane is: opening a note must not load tldraw.
 const NotebookPane = lazy(() => import('./NotebookPane'));
 
-/** localStorage key: per-file editor scroll offsets. */
-const SCROLL_POSITIONS_KEY = 'fileScrollPositions';
+/** localStorage key: per-file editor scroll places (editor/scrollAnchor.ts). */
+const SCROLL_ANCHORS_KEY = 'fileScrollAnchors';
+/** The raw-scrollTop record the anchors replaced; see scrollAnchorRecord. */
+const LEGACY_SCROLL_POSITIONS_KEY = 'fileScrollPositions';
 
 /* ── Scroll persistence, keyed by PATH rather than by pane ─────────────────
    The scroll handler is baked into the document's EditorState (below), and a
@@ -50,11 +63,18 @@ const SCROLL_POSITIONS_KEY = 'fileScrollPositions';
    `pending` is remembered rather than re-read because by the time an unmount
    runs the scroller is detached and reports 0.
 
+   What is remembered is a place in the TEXT — the line block at the top edge
+   and how far into it (editor/scrollAnchor.ts) — because a pixel offset
+   measured while reading means something else to the fresh view a return
+   builds. A returning view HOLDS that place until the reader takes over, and
+   nothing is remembered while it holds: its scroll events are the restore
+   landing, and saving those is how every return used to creep further down.
+
    The in-memory map stays keyed by the BARE path — it lives for one session,
    inside one vault. Only the stored record is `scopedKey`'d, because it
    outlives the switch and `Notes/index.md` names a different file in every
    vault (see utils/storage.ts). */
-const scrollDebounce = new Map<string, { timer: ReturnType<typeof setTimeout> | null; pending: number | null }>();
+const scrollDebounce = new Map<string, { timer: ReturnType<typeof setTimeout> | null; pending: ScrollAnchor | null }>();
 
 function scrollSlot(path: string) {
     let slot = scrollDebounce.get(path);
@@ -62,26 +82,80 @@ function scrollSlot(path: string) {
     return slot;
 }
 
-/** Write the remembered offset now, cancelling any pending debounce. */
+let legacyScrollPositionsDropped = false;
+
+/** The stored anchors record. The raw-scrollTop record they replaced is
+ *  deleted on first use rather than read: its pixels are exactly the wrong
+ *  answer on a long note, and nothing prunes it — so every note opens at its
+ *  top once and remembers correctly from then on. One-way, like tabSessions'
+ *  migration off its flat keys. */
+function scrollAnchorRecord(): Record<string, unknown> {
+    if (!legacyScrollPositionsDropped) {
+        legacyScrollPositionsDropped = true;
+        try {
+            localStorage.removeItem(LEGACY_SCROLL_POSITIONS_KEY);
+        } catch {
+            // Storage blocked outright: nothing reads the old key anyway.
+        }
+    }
+    return readRecord<unknown>(SCROLL_ANCHORS_KEY);
+}
+
+/** Write the remembered place now, cancelling any pending debounce. */
 function flushScroll(path: string): void {
     const slot = scrollDebounce.get(path);
     if (!slot) return;
     if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
     if (slot.pending !== null) {
+        const { pos, offset } = slot.pending;
         // Held parsed in memory — mutate and write, no full re-parse per tick.
-        readRecord<number>(SCROLL_POSITIONS_KEY)[scopedKey(path)] = slot.pending;
-        flushRecord(SCROLL_POSITIONS_KEY);
+        // A tenth of a pixel is already finer than the hold's 1px tolerance.
+        scrollAnchorRecord()[scopedKey(path)] = { pos, offset: Math.round(offset * 10) / 10 };
+        flushRecord(SCROLL_ANCHORS_KEY);
         slot.pending = null;
     }
     scrollDebounce.delete(path);
 }
 
-/** Debounced scroll persistence for one document. */
-function rememberScroll(path: string, top: number): void {
+/** (Re)start the debounce that writes `path`'s remembered place. */
+function armScrollFlush(path: string): void {
     const slot = scrollSlot(path);
-    slot.pending = top;
     if (slot.timer) clearTimeout(slot.timer);
     slot.timer = setTimeout(() => { slot.timer = null; flushScroll(path); }, 300);
+}
+
+/** Debounced scroll persistence for one document. The place is captured in
+ *  CodeMirror's next measure (the one it runs right after scroll handlers),
+ *  not read here: see captureScrollAnchor. */
+function rememberScroll(path: string, view: EditorView): void {
+    if (isHoldingScrollAnchor(view)) return;
+    captureScrollAnchor(view, `scroll-anchor:${path}`, (anchor) => {
+        scrollSlot(path).pending = anchor;
+        armScrollFlush(path);
+    });
+}
+
+/** Where `path` was left. The debounced capture comes first: a pane mounting
+ *  in the same commit another unmounts reads this before that pane's cleanup
+ *  has flushed it. Then the stored entry, shape-guarded — localStorage is
+ *  user-editable, and a malformed entry just opens the note at its top. */
+function rememberedScroll(path: string): ScrollAnchor | null {
+    const pending = scrollDebounce.get(path)?.pending;
+    if (pending) return pending;
+    const stored = scrollAnchorRecord()[scopedKey(path)];
+    return isScrollAnchor(stored) ? stored : null;
+}
+
+/** Carry the remembered place through an edit made in the app, so text added
+ *  or removed above it does not change which line comes back. Runs on every
+ *  keystroke, so it re-arms the write only when the place actually moved. */
+function mapRememberedScroll(path: string, changes: ChangeDesc): void {
+    const current = rememberedScroll(path);
+    if (!current) return;
+    const mapped = mapScrollAnchor(current, changes);
+    if (mapped === current) return;
+    scrollSlot(path).pending = mapped;
+    armScrollFlush(path);
 }
 
 /** localStorage key: per-file collapsed heading sections (editor/headingFold.ts). */
@@ -504,11 +578,16 @@ function DocumentPane({
             // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
             // that, which would forget every collapsed section (headingFold.ts).
             headingFold(storedFoldKeys(path)),
+            // Outside every compartment for the same reason: a reconfigure
+            // (⌘E, the theme) must not drop a restored place still being held.
+            scrollAnchorTracking,
             markdownFormatExtension,
             revealHighlightField,
             EditorView.updateListener.of((update) => {
                 if (update.docChanged) {
                     onContentChangeRef.current(path, update.state.doc.toString());
+                    // Keyed by path, like everything else baked in here.
+                    mapRememberedScroll(path, update.changes);
                 }
                 // Keyed by path, like scroll. `folded` changes identity only
                 // when a section folds, unfolds or moves; an edit at or above
@@ -574,7 +653,10 @@ function DocumentPane({
                 },
                 scroll(event, view) {
                     // Keyed by path, not by this pane: see scrollDebounce above.
-                    rememberScroll(path, view.scrollDOM.scrollTop);
+                    // Also called by CodeMirror's IntersectionObserver at mount,
+                    // at scrollTop 0 — harmless only because a holding view
+                    // remembers nothing.
+                    rememberScroll(path, view);
                 },
                 drop(event) {
                     // A dropped .md replaces the whole note, and the pane's
@@ -628,13 +710,14 @@ function DocumentPane({
             // and reads the mode from the editable facet re-stated above.
         }
 
-        // Restore where this file was left. Scheduled from the callback ref,
-        // which runs BEFORE effects — so the reveal effect below, whose own
-        // frame is scheduled after this one, still lands last and wins.
-        const savedScrollTop = readRecord<number>(SCROLL_POSITIONS_KEY)[scopedKey(path)];
-        requestAnimationFrame(() => {
-            if (viewRef.current === view) view.scrollDOM.scrollTop = savedScrollTop ?? 0;
-        });
+        // Put back where this document was left, and keep it there while the
+        // background parse draws what lies around it. After the reconfigure
+        // above, so the landing is laid out with this mode's decorations;
+        // synchronous, so no frame is painted at the note's top first. The
+        // reveal effect below runs later, in its own frame, and releases the
+        // hold before it scrolls, so it still wins.
+        const anchor = rememberedScroll(path);
+        if (anchor) holdScrollAnchor(view, anchor);
     };
 
     // Hand the document's state back to the cache on the way out. Nothing to
@@ -705,8 +788,9 @@ function DocumentPane({
     // Jump to a search match: select it, scroll it to the vertical center, and
     // flash a highlight decoration (visible even in read mode, where the view
     // may refuse focus so the selection alone could be invisible). Dispatched
-    // inside requestAnimationFrame so it runs after the scroll-position restore
-    // above (rAFs fire in schedule order).
+    // inside requestAnimationFrame, after the view is laid out; the restored
+    // place the callback ref is holding is released first, or its re-pin would
+    // drag the view straight back from the match.
     useEffect(() => {
         if (!revealRequest || revealRequest.path !== path) return;
         const { from, to } = revealRequest;
@@ -715,6 +799,7 @@ function DocumentPane({
         requestAnimationFrame(() => {
             const view = viewRef.current;
             if (!view) return;
+            releaseScrollAnchor(view);
             // The doc may be shorter than the searched text was (e.g. it
             // changed on disk since indexing) — clamp rather than throw.
             const docLen = view.state.doc.length;

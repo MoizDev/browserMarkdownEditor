@@ -687,7 +687,7 @@ export default function App() {
   const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(rootHandle);
   useEffect(() => { rootHandleRef.current = rootHandle; }, [rootHandle]);
 
-  // Which vault the path-keyed records (fileScrollPositions, pdfViewPositions,
+  // Which vault the path-keyed records (fileScrollAnchors, pdfViewPositions,
   // collapsedHeadings) file their entries under. Declared BEFORE the restore
   // pass so no pane it opens can read a record under the outgoing vault's
   // scope — `Notes/index.md` names a different file in every vault, and with
@@ -1676,7 +1676,7 @@ export default function App() {
   // A vault taken off the recent list (the minus in the vault menu) mints a new
   // id if it is ever opened again, so its stored session would be unreachable
   // weight. Nothing prunes by staleness — a vault returned to a year later
-  // still opens where it was left, the same call fileScrollPositions makes.
+  // still opens where it was left, the same call fileScrollAnchors makes.
   // "Has the list ever loaded" rather than "is it empty now", because those are
   // not the same question and an emptiness test answers the wrong one: forgetting
   // the LAST row is a real transition to zero, and skipping it left that vault's

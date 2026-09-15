@@ -31,7 +31,7 @@ export function writeJSON(key: string, value: unknown): boolean {
 
 /* ── Cached record accessors ──
    For the path-keyed records that are written on a debounce
-   (fileScrollPositions, pdfViewPositions, collapsedHeadings). The first two
+   (fileScrollAnchors, pdfViewPositions, collapsedHeadings). The first two
    used to do a full getItem + JSON.parse of the ENTIRE record, mutate one key,
    then stringify the whole thing again — every 300-400ms for as long as the
    user was scrolling, synchronously on the main thread, over a record that

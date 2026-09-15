@@ -242,8 +242,9 @@ written to the file.
   `[lineText, occurrence]` keys (occurrence = earlier identical lines): no tree needed, exact for an
   unchanged file, and a heading renamed on disk just loses its state. Debounced per PATH (the scroll
   rule), resolved inside `init` — so a restored fold the opening parse closes is drawn before the
-  scroll restore, one further down when the background parse reaches it — deleted when nothing is
-  collapsed, and not migrated on rename, like scroll offsets.
+  scroll restore, and one further down when the background parse reaches it, which the scroll
+  anchor's hold re-pins through — deleted when nothing is collapsed, and not migrated on rename, like
+  scroll anchors.
 - **Both widgets find their heading with `posAtDOM` at click time and read nothing from `this`**:
   every toggle is one of two `eq` values, so CodeMirror reuses their DOM across headings. The toggle
   is re-dressed by `updateDOM` (`aria-expanded` drives the chevron's CSS rotation, so it animates). A

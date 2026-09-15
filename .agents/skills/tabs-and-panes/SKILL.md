@@ -90,7 +90,7 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   string, because the layout's identity already moves only when the tab bar does.
 - **A forgotten vault's session is pruned** (`pruneSessions` off `recentVaults`), because
   `forgetVault` means the folder mints a fresh id if it is ever opened again. Nothing prunes by
-  staleness — the same call `fileScrollPositions` makes. The effect gates on "has the list ever
+  staleness — the same call `fileScrollAnchors` makes. The effect gates on "has the list ever
   loaded" (a ref), **not** on `recentVaults.length === 0`: forgetting the last removable row is a
   real transition to zero, and an emptiness test silently skipped it.
 
@@ -205,6 +205,18 @@ rectangle.
   per-document state that a baked handler needs goes **by path** instead, which is what
   `DocumentPane`'s `scrollDebounce` is: a per-instance timer meant the live pane's unmount flush could
   never find the timer the adopted handler had armed.
+- **A document's scroll place is a text anchor `{pos, offset}`, never pixels** (`editor/scrollAnchor.ts`,
+  record `fileScrollAnchors`). A fresh view only *estimates* the heights it has not drawn — 116,331px
+  for text that measured 154,032px once read through — so a replayed `scrollTop` reopened ~1,450 lines
+  low. A mounting pane **holds** the anchor (`scrollAnchorTracking`) until reader input, a
+  `scrollIntoView` transaction or a reveal, and the scroll handler saves nothing while it holds —
+  which is why a return cannot creep. The hold corrects TWICE per height/viewport change: a
+  `requestMeasure` pin, and `settle` after the loop, because CodeMirror's own scroll anchoring rewrites
+  a same-loop write — drop either and frames paint off the place. A jump dispatched as a
+  `scrollIntoView` *effect* from outside the editor must call `releaseScrollAnchor` first; the hold
+  cannot see effects. `offset` is negative only on the first line (its top padding).
+  `scrollSnapshot()`'s target cannot be built from stored data. A pane restores from
+  `scrollDebounce`'s `pending` before the record.
 - **The CodeMirror compartments are module-level singletons, and must stay that way.** A Compartment
   is an identity key, not state, so views share them freely — but a state OUTLIVES the pane that
   built it, and a reconfigure effect naming a compartment its state has never heard of is silently

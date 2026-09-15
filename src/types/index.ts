@@ -324,6 +324,7 @@ export interface SettingsDefaults {
   accentColor: string;                   // ('' = per-theme default accent)
   codeBlockColor: string;                // ('' = follow the accent color)
   recentVaultLimit: number;              // (10) vaults the vault menu lists
+  showVaultInTitle: boolean;             // (true) browser tab titled with the open vault's name
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

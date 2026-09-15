@@ -229,6 +229,11 @@ function isCmdLetter(e: KeyboardEvent, letter: string): boolean {
   return (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === letter;
 }
 
+/** The tab title whenever it is not the vault's name — before a vault opens,
+ *  and always once Settings → Vault turns that off. Must match index.html's
+ *  <title>, which is what the tab shows before React mounts. */
+const APP_TITLE = 'Markdown Editor';
+
 export default function App() {
   const {
     rootHandle,
@@ -325,6 +330,9 @@ export default function App() {
     () => clampRecentVaultLimit(parseInt(localStorage.getItem('recentVaultLimit') || String(DEFAULT_RECENT_VAULT_LIMIT), 10))
   );
 
+  // Whether the browser tab is titled with the open vault's name (default on).
+  const [showVaultInTitle, setShowVaultInTitle] = useState<boolean>(() => (localStorage.getItem('showVaultInTitle') ?? 'true') === 'true');
+
   // Caret (text cursor) appearance settings — persisted via localStorage.
   // caretStyle: 'line' (thin bar) or 'block' (thick terminal-style block).
   // smoothCaret: glide the caret between positions like MS Word.
@@ -376,6 +384,17 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('recentVaultLimit', String(recentVaultLimit));
   }, [recentVaultLimit]);
+
+  useEffect(() => {
+    localStorage.setItem('showVaultInTitle', String(showVaultInTitle));
+  }, [showVaultInTitle]);
+
+  // The tab reads as the vault it holds, so tabs open on different vaults can
+  // be told apart. `rootHandle.name` is the folder name the file tree's header
+  // shows; an OPFS root's is '' and falls back rather than blanking the tab.
+  useEffect(() => {
+    document.title = showVaultInTitle && rootHandle?.name ? rootHandle.name : APP_TITLE;
+  }, [rootHandle, showVaultInTitle]);
 
   // Translate the caret settings into CSS variables the CodeMirror theme reads.
   useEffect(() => {
@@ -471,6 +490,7 @@ export default function App() {
     setAccentColor(defaults.accentColor);
     setCodeBlockColor(defaults.codeBlockColor);
     setRecentVaultLimit(defaults.recentVaultLimit);
+    setShowVaultInTitle(defaults.showVaultInTitle);
   }, []);
 
   // ── The app's own modal question ────────────────────────────────────────
@@ -2416,7 +2436,7 @@ export default function App() {
               <line x1="16" y1="17" x2="8" y2="17" />
             </svg>
           </div>
-          <h1 className="welcome-title">Markdown Editor</h1>
+          <h1 className="welcome-title">{APP_TITLE}</h1>
           {/* A link named a vault this browser knows, but the grant has lapsed.
               Browsers only let requestPermission ask from a user gesture, so
               the link cannot open itself — this button is that gesture. */}
@@ -2633,6 +2653,7 @@ export default function App() {
           accentColor={accentColor}
           codeBlockColor={codeBlockColor}
           recentVaultLimit={recentVaultLimit}
+          showVaultInTitle={showVaultInTitle}
           onEditorFontSizeChange={setEditorFontSize}
           onTreeFontSizeChange={setTreeFontSize}
           onEditorPaddingChange={setEditorPadding}
@@ -2645,6 +2666,7 @@ export default function App() {
           onAccentColorChange={setAccentColor}
           onCodeBlockColorChange={setCodeBlockColor}
           onRecentVaultLimitChange={setRecentVaultLimit}
+          onShowVaultInTitleChange={setShowVaultInTitle}
           onResetDefaults={handleResetDefaults}
           onClose={() => setShowSettings(false)}
         />

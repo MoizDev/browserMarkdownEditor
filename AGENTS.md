@@ -130,11 +130,11 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   held parsed in memory via `readRecord`/`flushRecord` in `utils/storage.ts`, keyed by its `scopedKey` —
   two vaults share paths freely. Never pruned (recency capping was **rejected**), so they grow per vault.
 - **Settings → CSS variables.** Appearance state persists to `localStorage` and is applied by setting
-  CSS variables on `document.documentElement`. Two are not variables: **Tab size** (a CodeMirror
-  compartment) and **Recent vaults shown** (a plain prop); both are clamped on read, since
-  `localStorage` is user-editable and a `NaN` reaches `' '.repeat()` / `Array.slice`. Theme is
-  `data-theme` on `<html>` (**absent = dark**); custom accent/code colors are inline `<html>` style
-  overrides that intentionally outrank both theme blocks.
+  CSS variables on `document.documentElement`. Three are not: **Tab size** (a CodeMirror compartment)
+  and **Recent vaults shown** (a plain prop), both clamped on read since `localStorage` is user-editable
+  and a `NaN` reaches `' '.repeat()` / `Array.slice`; and **Vault name as tab title** (`document.title`).
+  Theme is `data-theme` on `<html>` (**absent = dark**); custom accent/code colors are inline `<html>`
+  style overrides that intentionally outrank both theme blocks.
 - **`React.StrictMode` is on** (`main.tsx`), so effects run twice in dev — write effects to tolerate
   it, including the async read-modify-write ones.
 - **ESLint config carries intentional relaxations** (`eslint.config.ts`): `no-unused-vars` ignores

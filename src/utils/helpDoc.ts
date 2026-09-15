@@ -18,6 +18,7 @@ The folder icon at the top of the file tree remembers every folder you have open
 - **Click** it to drop down your recent vaults and pick one — no file dialog involved.
 - **Double-click** it to browse for a folder instead (or choose "Open folder…" at the bottom of that list). Anything you open this way joins the list.
 - Vaults are listed newest first, by folder name alone; two vaults whose folders share a name show the parent folder too. Settings → Vault controls how many are listed.
+- The browser tab is titled with the name of the vault you have open, so tabs on different vaults are easy to tell apart. Turn **Vault name as tab title** off in Settings → Vault and the tab keeps the title "Markdown Editor" instead.
 - The **minus** at the left of a row takes that vault off the list, so the folders you actually switch between are not buried under ones you opened once. It forgets the row only — the folder and everything in it stays exactly where it is, and opening it again puts the row back. There is no minus beside the vault you have open, because the app re-lists that one every time it loads. (From the keyboard: **Delete** on the highlighted row does the same thing.)
 
 Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`. You do not need the file dialog for that — right-click the folder in the file tree and choose **Open as Vault**, and it opens as the vault straight away and joins the recent list, so the folder icon is the way back out.

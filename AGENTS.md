@@ -126,7 +126,7 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   the two that changed, not all 2,300.
 - **Anything repeated thousands of times carries `content-visibility: auto`** (`.tree-item`,
   `.pdf-viewer-page`) plus a known box — or all of them lay out and paint on every ancestor's frame.
-- **The three path-keyed records** (`fileScrollPositions`, `pdfViewPositions`, `collapsedHeadings`) are
+- **The three path-keyed records** (`fileScrollAnchors`, `pdfViewPositions`, `collapsedHeadings`) are
   held parsed in memory via `readRecord`/`flushRecord` in `utils/storage.ts`, keyed by its `scopedKey` —
   two vaults share paths freely. Never pruned (recency capping was **rejected**), so they grow per vault.
 - **Settings → CSS variables.** Appearance state persists to `localStorage` and is applied by setting

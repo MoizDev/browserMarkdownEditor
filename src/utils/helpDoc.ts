@@ -167,7 +167,7 @@ Only \`#\`-style headings at the top level of a note collapse — not ones insid
 You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
 
 ### Scroll Persistence
-When you scroll down a long document, the application remembers your position. If you switch to another file and then come back, the editor will automatically snap back down to exactly where you left off.
+The application remembers where you were reading in every note: the line at the top of the editor, and how far into it you had scrolled. Switch to another tab and back, close the note and open it again, or reload the app, and that line comes back to the top of the editor — whether you were in Reading mode or editing when you left. If that line is now inside a section you have collapsed, the note opens at that section's heading instead, and the section stays collapsed; if Reading mode draws it as part of a table or maths block, the note opens at the top of that block.
 
 ### Right-click
 Right-clicking in a note, or anywhere in the file tree, opens the application's own menu instead of the browser's. Escape closes it, and so does clicking somewhere else or scrolling.

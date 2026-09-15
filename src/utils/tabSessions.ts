@@ -173,7 +173,7 @@ export function writeSession(vaultId: string, session: StoredSession): void {
  * A forgotten vault mints a fresh id if it is ever opened again, so its entry
  * here is unreachable weight. Sessions are never pruned by STALENESS — a vault
  * you come back to a year later still opens where you left it, the same
- * decision `fileScrollPositions` records.
+ * decision `fileScrollAnchors` records.
  */
 export function pruneSessions(keepIds: string[]): void {
     // The recent list arrives newest-first and is itself capped at

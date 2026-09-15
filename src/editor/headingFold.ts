@@ -620,8 +620,9 @@ function resolveHeadingKeys(doc: Text, keys: readonly HeadingKey[]): readonly nu
  * The collapsible-headings extension for one document, starting with the
  * sections `keys` name collapsed. Resolved before the first state exists, so
  * every restored fold whose section the opening parse (the note's first ~3000
- * characters) already closes is drawn before the scroll position is restored;
- * one further down is drawn when the background parse reaches its end. A key
+ * characters) already closes is drawn before the scroll place is restored;
+ * one further down is drawn when the background parse reaches its end, and the
+ * restored place's hold (scrollAnchor.ts) re-pins through it. A key
  * that resolves to a line that is not a foldable heading draws nothing, and the
  * first reading-mode rebuild whose parse covers it prunes it.
  */

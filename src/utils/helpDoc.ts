@@ -246,7 +246,7 @@ default. The dot beside it is the actual width, in the actual colour, so you can
 see what you are about to draw with. Drag the slider or pick a colour with
 something selected and it re-inks that instead of only the next stroke.
 
-**Every file keeps its own pen.** A notebook you annotate in fine red stays fine
+**The pen panel hides.** The arrow at its top folds it down to a single dot in your current colour; click the dot to open it again. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine
 and red; the PDF you were marking up in thick blue is still thick and blue when
 you come back to it, however many other things you drew in between. A brand new
 file starts at the width you were last using, since that is usually the one you

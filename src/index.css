@@ -2775,6 +2775,51 @@ body.is-resizing-panes * {
   pointer-events: all;
 }
 
+/* Hide / show. Collapsed, the panel is one button showing the current colour. */
+.canvas-style-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -3px -3px -4px 2px;
+  font-size: 11px;
+  color: var(--canvas-chrome-muted);
+}
+
+.canvas-style-toggle {
+  display: flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--canvas-chrome-muted);
+  cursor: pointer;
+}
+
+.canvas-style-toggle:hover,
+.canvas-style-panel.is-collapsed:hover {
+  background: var(--canvas-chrome-hover);
+  color: var(--canvas-chrome-text);
+}
+
+.canvas-style-panel.is-collapsed {
+  width: auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 7px 6px 8px;
+  color: var(--canvas-chrome-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.canvas-style-current {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: 0 0 0 1px var(--canvas-chrome-border);
+}
+
 .canvas-style-colors {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

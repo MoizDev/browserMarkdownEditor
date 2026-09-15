@@ -2634,10 +2634,10 @@ body.is-resizing-panes * {
 /* ── Inverted pages (PdfInvertToggle) ──
    A VIEW preference and nothing more: the file and its exported PDF keep their
    colours. Done as a CSS filter, so it is instant, costs no re-render, and leaves
-   pdf.js's cached bitmaps alone. invert(0.88) rather than a full invert, so white
-   paper lands on the app's own dark grey and black text on a soft white instead
-   of glaring pure black and white; hue-rotate(180deg) puts colours back near
-   their own hue, so a red figure still reads as red.
+   pdf.js's cached bitmaps alone. A FULL invert: white paper becomes black and
+   black text white. A partial one (0.88) was tried first and read as washed-out
+   grey, not as an inverted page. hue-rotate(180deg) puts colours back near their
+   own hue, so a red figure still reads as red.
 
    Reader: the page canvases only, never the page box, so the text layer's
    selection highlight and the link layer keep their real colours.
@@ -2647,7 +2647,7 @@ body.is-resizing-panes * {
    menus are other layers and stay as they are. */
 .pdf-viewer,
 .pdf-annotate-pane {
-  --pdf-invert: invert(0.88) hue-rotate(180deg);
+  --pdf-invert: invert(1) hue-rotate(180deg);
 }
 
 .pdf-viewer.is-inverted .pdf-viewer-page > canvas,
@@ -2657,23 +2657,12 @@ body.is-resizing-panes * {
 }
 
 /* What inverted white paper looks like, for the parts of a page not yet drawn
-   (before a render lands, or outside a band at high zoom). */
+   (before a render lands, or outside a band at high zoom). The surround is left
+   as the app's own background: against black pages it already separates them,
+   so the page breaks stay visible without darkening it. */
 .pdf-viewer.is-inverted .pdf-viewer-page,
 .is-inverted .pdf-thumb-page {
-  background: #1f1f1f;
-}
-
-/* A darker surround while pages are inverted. An inverted page lands on the
-   app's own dark grey, which is what surrounds it too, so without this the gap
-   between pages vanished and a document read as one endless sheet (plainest
-   when annotating, where there is no page shadow at all). Three classes, which
-   outranks the (0,2,0) rule that maps tldraw's background to --canvas-surround. */
-.pdf-viewer.is-inverted .pdf-viewer-scroll {
-  background: #101010;
-}
-
-.pdf-annotate-pane.is-inverted .tl-container {
-  --tl-color-background: #101010;
+  background: #000;
 }
 
 /* tldraw's own dark canvas (hsl(240,5%,6.5%) ≈ #101011) reads as a hole next

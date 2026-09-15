@@ -181,8 +181,9 @@ requires reading it.
   reader that is every page div. The reader keys it on `docState.gen` so a reload gets a fresh cache,
   and its renders go straight to the document rather than through the render window's page states.
 - **Invert is a view-only CSS filter** (`PdfInvertToggle`, a live store in `pdfViewState.ts` so every PDF
-  on screen and both modes flip together). `invert(0.88) hue-rotate(180deg)`: paper lands on the app's
-  dark grey, and colours keep roughly their hue. The reader filters the page `<canvas>` elements only,
+  on screen and both modes flip together). `invert(1) hue-rotate(180deg)`: paper goes black, text white,
+  and colours keep roughly their hue. A partial invert (0.88) shipped first and read as washed-out
+  grey rather than inverted; keep it full. The reader filters the page `<canvas>` elements only,
   never the page box, so text selection and links keep their colours. Annotating filters tldraw's
   `.tl-shapes` layer, pages AND ink together, because inverting only the pages leaves default black
   ink invisible; the background, selection overlays and tldraw's UI are other layers. Nothing is

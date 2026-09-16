@@ -186,8 +186,10 @@ requires reading it.
   grey rather than inverted; keep it full. The reader filters the page `<canvas>` elements only,
   never the page box, so text selection and links keep their colours. Annotating filters tldraw's
   `.tl-shapes` layer, pages AND ink together, because inverting only the pages leaves default black
-  ink invisible; the background, selection overlays and tldraw's UI are other layers. Nothing is
-  re-rendered on a toggle, and exports render shapes themselves, so a saved PDF never sees it.
+  ink invisible; the background, selection overlays and tldraw's UI are other layers. **Notebooks use
+  the same toggle, the same store and the same `.tl-shapes` filter**, so ruling and writing flip
+  together. Nothing is re-rendered on a toggle, and exports render shapes themselves, so a saved PDF
+  never sees it: a notebook exported while dark is still printed on white paper.
 
 ## The pen is a forked draw shape — `components/tightDrawShape.tsx`
 

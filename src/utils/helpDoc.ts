@@ -202,6 +202,11 @@ here to a paper pad, and what to reach for when you are doing an assignment by
 hand rather than taking notes in Markdown. Make one with the notebook icon at
 the top of the sidebar.
 
+A notebook has the same dark pages a PDF does: the button beside the thumbnails
+one turns the paper black and the writing light, for working at night. It only
+changes how the notebook looks on screen, and a PDF exported from it is still
+printed on white paper.
+
 A notebook scrolls like a PDF: swipe up and down to move through the pages, and
 pinch to zoom. At full width the page fills the screen edge to edge, and the
 pages can never be swiped off screen. The page box at the bottom right jumps to

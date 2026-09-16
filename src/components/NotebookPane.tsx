@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
 import type { Editor, TLAssetStore, TLShape, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
@@ -12,7 +12,8 @@ import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
 import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi } from './canvasPen';
 import { subscribePenScale } from '../utils/penStyle';
-import { readThumbnailsOpen, writeThumbnailsOpen } from '../utils/pdfViewState';
+import { getPdfInverted, readThumbnailsOpen, subscribePdfInverted, writeThumbnailsOpen } from '../utils/pdfViewState';
+import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
 import PageControls, { type PageControlsHandle } from './PageControls';
 import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView, type PageBox, type PageLock } from './pagedCanvas';
@@ -112,6 +113,10 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
     // reaches the box and the strip through their handles, never state: a
     // scroll would otherwise re-render tldraw at every page boundary.
     const [thumbsOpen, setThumbsOpen] = useState(readThumbnailsOpen);
+    /** Dark paper: the same filter, toggle and remembered preference a PDF uses,
+     *  on tldraw's shapes layer so the ruling and the writing flip together.
+     *  Display only, so an exported PDF is still printed on white paper. */
+    const inverted = useSyncExternalStore(subscribePdfInverted, getPdfInverted);
     useEffect(() => { writeThumbnailsOpen(thumbsOpen); }, [thumbsOpen]);
     /** Where the strip opens: the current page when it is toggled on. */
     const [thumbsStart, setThumbsStart] = useState(0);
@@ -590,7 +595,7 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
     );
 
     return (
-        <div className={`drawing-pane notebook-pane${thumbsOpen ? ' has-thumbs' : ''}`}>
+        <div className={`drawing-pane notebook-pane${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`}>
             {thumbsOpen && (
                 <PdfThumbnails
                     key={paperLook}
@@ -620,7 +625,9 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
                 thumbsOpen={thumbsOpen}
                 onToggleThumbs={toggleThumbs}
                 onJump={jumpToPage}
-            />
+            >
+                <PdfInvertToggle />
+            </PageControls>
         </div>
     );
 }

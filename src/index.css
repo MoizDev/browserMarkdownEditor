@@ -2655,12 +2655,14 @@ body.is-resizing-panes * {
    background (the grey around the pages), the selection overlays and tldraw's
    menus are other layers and stay as they are. */
 .pdf-viewer,
-.pdf-annotate-pane {
+.pdf-annotate-pane,
+.notebook-pane {
   --pdf-invert: invert(1) hue-rotate(180deg);
 }
 
 .pdf-viewer.is-inverted .pdf-viewer-page > canvas,
 .pdf-annotate-pane.is-inverted .tl-shapes,
+.notebook-pane.is-inverted .tl-shapes,
 .is-inverted .pdf-thumb-page img {
   filter: var(--pdf-invert);
 }

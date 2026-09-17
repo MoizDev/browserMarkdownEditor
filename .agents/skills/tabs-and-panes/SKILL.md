@@ -212,9 +212,15 @@ rectangle.
   `scrollIntoView` transaction or a reveal, and the scroll handler saves nothing while it holds —
   which is why a return cannot creep. The hold corrects TWICE per height/viewport change: a
   `requestMeasure` pin, and `settle` after the loop, because CodeMirror's own scroll anchoring rewrites
-  a same-loop write — drop either and frames paint off the place. A jump dispatched as a
-  `scrollIntoView` *effect* from outside the editor must call `releaseScrollAnchor` first; the hold
-  cannot see effects. `offset` is negative only on the first line (its top padding).
+  a same-loop write — drop either and frames paint off the place. The same hold has a second kind:
+  a **search jump** (vault-search reveal, and ⌘F via `search({ scrollToMatch: revealMatchEffect })`)
+  dispatches a `revealMatch` effect, which the extension turns into the centring scroll and holds
+  CENTRED until reader input — mermaid SVGs, pictures and the post-open parse otherwise moved the
+  match off screen. Only the restore kind pauses saving (a held match IS the reader's place). The hold
+  cannot see a bare `scrollIntoView` *effect*: a jump from outside the editor must be a `revealMatch`,
+  and a widget that changes size after `toDOM` must `view.requestMeasure()` or the hold never hears
+  it. The reveal `parseForReveal`s up to the match first (100ms budget). `offset` is negative only on
+  the first line (its top padding).
   `scrollSnapshot()`'s target cannot be built from stored data. A pane restores from
   `scrollDebounce`'s `pending` before the record.
 - **The CodeMirror compartments are module-level singletons, and must stay that way.** A Compartment

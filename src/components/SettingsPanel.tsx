@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { DEFAULT_RECENT_VAULT_LIMIT, MAX_STORED_VAULTS } from '../utils/recentVaults';
 import type { CaretStyle, SettingsDefaults } from '../types';
 
@@ -49,12 +49,46 @@ export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadd
     // when the user commits the name, and it auto-resets on "Reset to Defaults".
     const fontInputRef = useRef<HTMLInputElement | null>(null);
     const applyFont = () => onFontFamilyChange((fontInputRef.current?.value || '').trim());
+    const titleId = useId();
+
+    // A modal dialog (`aria-modal`, which DocumentPane's ⌘F guard also reads)
+    // has to hold the keyboard, or a screen reader is told to ignore the very
+    // place focus still is — the sidebar button that opened it. TrashPanel's
+    // treatment: take it on open, from the opener read during the first render,
+    // and hand it back on the way out; Escape closes.
+    const panelRef = useRef<HTMLDivElement | null>(null);
+    const [opener] = useState<HTMLElement | null>(() => document.activeElement as HTMLElement | null);
+    useEffect(() => {
+        panelRef.current?.focus({ preventScroll: true });
+        return () => { if (opener?.isConnected) opener.focus({ preventScroll: true }); };
+    }, [opener]);
+    // And take it back whenever it falls on the floor: committing a font
+    // remounts that field (it is keyed on the font), which drops the keyboard
+    // on <body> with the dialog still open — and Escape, handled on the panel,
+    // then did nothing (measured). Every commit, as TrashPanel does.
+    useEffect(() => {
+        const active = document.activeElement;
+        if (!active || active === document.body) panelRef.current?.focus({ preventScroll: true });
+    });
 
     return (
         <div className="settings-overlay" onClick={onClose}>
-            <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
+            <div
+                className="settings-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={titleId}
+                tabIndex={-1}
+                ref={panelRef}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                    if (e.key !== 'Escape' || e.defaultPrevented) return;
+                    e.preventDefault();
+                    onClose();
+                }}
+            >
                 <div className="settings-header">
-                    <h3 className="settings-title">Settings</h3>
+                    <h3 className="settings-title" id={titleId}>Settings</h3>
                     <button className="settings-close-btn" onClick={onClose}>×</button>
                 </div>
                 <div className="settings-body">

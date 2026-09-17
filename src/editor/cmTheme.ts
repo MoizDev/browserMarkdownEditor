@@ -4,6 +4,133 @@ import { tags } from '@lezer/highlight';
 import type { Extension } from '@codemirror/state';
 
 /**
+ * The note's search panel (⌘F — editor/noteSearch.ts), shared by both themes.
+ *
+ * Left to CodeMirror's base theme it was a grey form bolted under the note:
+ * gradient buttons at 70% type, 1px #888 borders, a browser-blue focus ring,
+ * white native checkboxes on the dark theme and cyan / magenta matches — hardly
+ * seen while it only opened in Edit mode, and in front of every reader once ⌘F
+ * reached Reading mode too. Drawn instead from the app's own variables, after
+ * the sidebar's search box (`.search-input` in index.css), so one object serves
+ * both themes; matches take the marker yellow the vault search's snippets and
+ * its jump flash already use.
+ *
+ * Selectors carry `.cm-panel.cm-search` wherever the base theme's own rule does
+ * (`& input, & button, & label`, `[name=close]`): a bare `.cm-button` loses to
+ * those on specificity, and only ties go to a theme over a base theme.
+ */
+const searchPanelStyles = {
+    '.cm-panels': {
+        backgroundColor: 'var(--background-secondary)',
+        color: 'var(--text-normal)',
+    },
+    '.cm-panels.cm-panels-top': {
+        borderBottom: '1px solid var(--background-modifier-border)',
+    },
+    '.cm-panels.cm-panels-bottom': {
+        borderTop: '1px solid var(--background-modifier-border)',
+    },
+    '.cm-panel.cm-search': {
+        padding: '5px 44px 5px 12px',
+        fontFamily: 'var(--font-ui)',
+        fontSize: 'var(--nav-item-size)',
+    },
+    '.cm-panel.cm-search input, .cm-panel.cm-search button, .cm-panel.cm-search label': {
+        margin: '3px 6px 3px 0',
+    },
+    '.cm-panel.cm-search .cm-textfield': {
+        boxSizing: 'border-box',
+        width: '220px',
+        height: '26px',
+        padding: '0 8px',
+        fontFamily: 'inherit',
+        fontSize: 'inherit',
+        color: 'var(--text-normal)',
+        backgroundColor: 'var(--background-primary)',
+        border: '1px solid var(--background-modifier-border)',
+        borderRadius: 'var(--radius-s)',
+        outline: 'none',
+        transition: 'border-color 0.15s',
+    },
+    '.cm-panel.cm-search .cm-textfield:focus': {
+        borderColor: 'var(--interactive-accent)',
+    },
+    '.cm-panel.cm-search .cm-textfield::placeholder': {
+        color: 'var(--text-faint)',
+    },
+    '.cm-panel.cm-search .cm-button': {
+        boxSizing: 'border-box',
+        height: '26px',
+        padding: '0 10px',
+        fontFamily: 'inherit',
+        fontSize: 'inherit',
+        color: 'var(--text-normal)',
+        backgroundColor: 'var(--background-primary)',
+        backgroundImage: 'none',
+        border: '1px solid var(--background-modifier-border)',
+        borderRadius: 'var(--radius-s)',
+        cursor: 'pointer',
+    },
+    '.cm-panel.cm-search .cm-button:hover, .cm-panel.cm-search .cm-button:active': {
+        backgroundColor: 'var(--background-modifier-hover)',
+        backgroundImage: 'none',
+    },
+    '.cm-panel.cm-search button:focus-visible': {
+        outline: '1px solid var(--interactive-accent)',
+        outlineOffset: '-1px',
+    },
+    // As tall as a button and centred on it: left inline, a label's text sat
+    // on its own baseline, 2px above the buttons' (measured in a screenshot).
+    // The gap before each option sits on the label BEFORE it, not on the
+    // checkbox: in a narrow pane the options wrap onto their own row, and a
+    // left margin there left it 4px right of the fields above (measured).
+    '.cm-panel.cm-search label': {
+        display: 'inline-flex',
+        alignItems: 'center',
+        height: '26px',
+        margin: '3px 10px 3px 0',
+        verticalAlign: 'middle',
+        fontSize: 'inherit',
+        color: 'var(--text-muted)',
+        cursor: 'pointer',
+    },
+    '.cm-panel.cm-search input[type=checkbox]': {
+        margin: '0 5px 0 0',
+        accentColor: 'var(--interactive-accent)',
+        cursor: 'pointer',
+    },
+    // The buttons' ring, not Chrome's default blue one touching the label.
+    '.cm-panel.cm-search input[type=checkbox]:focus-visible': {
+        outline: '1px solid var(--interactive-accent)',
+        outlineOffset: '1px',
+    },
+    '.cm-panel.cm-search [name=close]': {
+        top: '8px',
+        right: '10px',
+        width: '26px',
+        height: '26px',
+        fontSize: '18px',
+        lineHeight: '24px',
+        color: 'var(--text-muted)',
+        borderRadius: 'var(--radius-s)',
+        cursor: 'pointer',
+    },
+    '.cm-panel.cm-search [name=close]:hover': {
+        color: 'var(--text-normal)',
+        backgroundColor: 'var(--background-modifier-hover)',
+    },
+    '.cm-searchMatch': {
+        backgroundColor: 'var(--text-highlight-bg)',
+        borderRadius: '2px',
+    },
+    // After .cm-searchMatch, which the selected match also carries: the tie
+    // goes to the later rule.
+    '.cm-searchMatch-selected': {
+        backgroundColor: 'rgba(255, 128, 0, 0.55)',
+    },
+};
+
+/**
  * CodeMirror 6 theme matching Obsidian's default dark theme.
  */
 export const obsidianDarkTheme: Extension = EditorView.theme({
@@ -70,6 +197,9 @@ export const obsidianDarkTheme: Extension = EditorView.theme({
     '.cm-scroller::-webkit-scrollbar-thumb:hover': {
         background: 'rgba(255,255,255,0.18)',
     },
+    ...searchPanelStyles,
+    // Native form controls (the panel's checkboxes) drawn for a dark page.
+    '.cm-panels': { ...searchPanelStyles['.cm-panels'], colorScheme: 'dark' },
 }, { dark: true });
 
 /**
@@ -184,6 +314,7 @@ export const obsidianLightTheme: Extension = EditorView.theme({
     '.cm-scroller::-webkit-scrollbar-thumb:hover': {
         background: 'rgba(0,0,0,0.2)',
     },
+    ...searchPanelStyles,
 }, { dark: false });
 
 /**

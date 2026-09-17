@@ -96,3 +96,11 @@ store; `App` reads it with `useSyncExternalStore` and renders `<ContextMenu>` on
   component — only it knows the row it hangs off — and the stylesheet supplies chrome only.
   `TableSizeGrid` floors rows at `MIN_ROWS`, uses a roving tabindex, and lets ArrowLeft at column 1
   bubble so `ContextMenu` can close the flyout.
+- **A floating surface that owns the keyboard says so in its markup, because the note's ⌘F reads
+  it.** `DocumentPane`'s `keyIsForNote` hands ⌘F/⌘G/F3 to the note in front unless focus is in a
+  text field or inside `[role="menu"]`, `[role="dialog"]` or `[role="listbox"]`, and stands down
+  entirely while any `[aria-modal="true"]` is in the document. So a new **modal** carries
+  `role="dialog" aria-modal="true"` — and, like `ConfirmDialog`, `TrashPanel` and `SettingsPanel`,
+  takes the keyboard on open, hands it back to its opener on close and closes on Escape (an
+  `aria-modal` that leaves focus behind it tells a screen reader to ignore where focus is). Without
+  the attribute, ⌘F behind it opens the search of the note underneath (Settings, until #17).

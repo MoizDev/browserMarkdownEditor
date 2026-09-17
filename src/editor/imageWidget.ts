@@ -3,6 +3,7 @@ import { EditorSelection, Facet, Prec } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
 import { embedPattern, embedText } from '../utils/assets';
 import type { AssetUrlResolver } from '../types';
+import { canWrite } from './readingMode';
 
 /* ── An embedded image is an OBJECT, not text ─────────────────────────────
  *
@@ -460,7 +461,7 @@ function applyState(
  * with a dialog would be wrong.
  */
 function deleteSelectedImage(view: EditorView): boolean {
-    if (!view.state.facet(EditorView.editable)) return false;
+    if (!canWrite(view.state)) return false;
     const actions = view.state.facet(imageEmbedActions);
     if (!actions) return false;
 

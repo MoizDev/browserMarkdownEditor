@@ -128,7 +128,7 @@ The two documents now share one tab, side by side. Keep going and you can have u
 Anything can go in a pane: two notes, a note beside a PDF you are reading, a whiteboard beside the notes you are taking from it.
 
 ### Working in a Split
-Each pane has a strip at the top with its file's name. The pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘S and the buttons in the top-right act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
+Each pane has a strip at the top with its file's name. The pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F, ⌘S and the buttons in the top-right act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
 
 That strip also holds the two ways back out:
 - **Move to its own tab** returns that pane to being an ordinary tab.
@@ -149,10 +149,12 @@ The widths you set are remembered with the tab, and come back the next time you 
 
 ### Edit Mode vs. Read Mode
 The application features two distinct viewing modes:
-- **Read Mode (Default):** Files open in this mode by default. Markdown syntax is fully rendered and hidden, and the document is locked from accidental edits.
+- **Read Mode (Default):** Files open in this mode by default. Markdown syntax is fully rendered and hidden, and the document is locked from accidental edits. You can still select, copy and search it with \`Cmd + F\` / \`Ctrl + F\` (see *Finding Text in a Note*).
 - **Edit Mode:** Clicking the toggle button (or pressing \`Cmd + E\` / \`Ctrl + E\`) switches the editor to Edit Mode. You can now type and edit.
 
 Reading is the mode in which a link is a link: in Read Mode a web address is clickable, and in Edit Mode it is text you can edit. See *Links*.
+
+**Dropping a Markdown file onto a note.** Drag a \`.md\` file from your computer onto a note in Edit Mode and the note's text is replaced by the file's; \`Cmd + Z\` / \`Ctrl + Z\` in the note brings the old text back. A note in Read Mode is never replaced this way — the application tells you so instead, and \`Cmd + E\` / \`Ctrl + E\` switches to editing.
 
 ### Live Preview
 Even in Edit Mode, the editor uses a "Live Preview" system. Markdown syntax (like bold asterisks or heading hashes) is hidden on lines you are not actively editing. When your cursor moves to a line, the raw syntax is revealed so you can modify it.
@@ -164,9 +166,18 @@ In Read Mode, point at a heading — or at the margin just to its left — and a
 
 A collapsed heading keeps its arrow on show, pointing right, and has a small **…** after its title; clicking either one expands the section. Each sub-section remembers its own state, so a \`###\` you collapsed is still collapsed when you expand the \`##\` around it.
 
-Collapsing only changes what you see — the file itself is never touched. A note remembers which of its sections are collapsed when you switch tabs or reload. Edit Mode always shows the whole note, and switching back to Read Mode collapses the same sections again; a heading you delete while editing is simply forgotten. Jumping to a search result inside a collapsed section opens it.
+Collapsing only changes what you see — the file itself is never touched. A note remembers which of its sections are collapsed when you switch tabs or reload. Edit Mode always shows the whole note, and switching back to Read Mode collapses the same sections again; a heading you delete while editing is simply forgotten. Jumping to a search result inside a collapsed section opens it, and so does a match found with \`Cmd + F\` / \`Ctrl + F\`.
 
 Only \`#\`-style headings at the top level of a note collapse — not ones inside a quote or a list — and a heading with nothing under it has no arrow.
+
+### Finding Text in a Note
+Press \`Cmd + F\` / \`Ctrl + F\` with a note in front of you — in Read Mode or Edit Mode — and a search bar opens along the bottom of that note. It searches the whole note, not just the part on screen, including sections you have collapsed: a match inside one opens it.
+- Type what you are looking for and press \`Enter\` (or **next**) for the next match, \`Shift + Enter\` (or **previous**) for the one before. \`Cmd + G\` / \`Ctrl + G\` and \`Shift + Cmd + G\` / \`Shift + Ctrl + G\` do the same, whether you are in the bar or back in the note.
+- **all** selects every match. **match case**, **regexp** and **by word** narrow what counts.
+- **Replace** is only there in Edit Mode, because Read Mode never changes the note. Switch modes with the bar open and it appears or disappears; what you typed is kept.
+- \`Escape\` closes the bar while you are in it, and so does its **×**.
+
+In a split, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; a PDF keeps the browser's own find (see *PDFs*).
 
 ### Auto-Save
 You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
@@ -267,11 +278,11 @@ sheet in every direction, for diagrams and thinking rather than for a page you
 intend to hand in.
 
 ### PDFs
-A PDF opens in a reader: scroll it, select its text, search it with \`Cmd + F\`,
-follow its links, and jump to a page with the box at the bottom. Pinch or hold
-\`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button beside the
-page box opens a **strip of page thumbnails** down the left; click one to go to
-that page. The button next to it **inverts the pages** so they are easy on the
+A PDF opens in a reader: scroll it, select its text, search it with the browser's
+own \`Cmd + F\`, follow its links, and jump to a page with the box at the bottom.
+Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
+beside the page box opens a **strip of page thumbnails** down the left; click one
+to go to that page. The button next to it **inverts the pages** so they are easy on the
 eyes in the dark, while reading and while writing on them. It only changes how
 they look: the file, and any PDF made from it, keeps its real colours.
 

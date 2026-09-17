@@ -6,6 +6,7 @@ import { ensureSyntaxTree, getIndentUnit, indentString, indentUnit, syntaxTree }
 import { indentLess, indentMore } from '@codemirror/commands';
 import { acceptCompletion } from '@codemirror/autocomplete';
 import type { SyntaxNode, Tree } from '@lezer/common';
+import { canWrite } from './readingMode';
 
 /* ─────────────────────────────────────────────────────────────────────────
  * MARKDOWN LISTS — the one place that knows what a list line looks like
@@ -422,7 +423,7 @@ function shiftListItem(view: EditorView, dir: 1 | -1): boolean {
     const { state } = view;
     // Read mode leaves the view non-editable but still able to see keys; a Tab
     // that reaches us there must not rewrite the document.
-    if (state.readOnly || !state.facet(EditorView.editable)) return false;
+    if (!canWrite(state)) return false;
     // Multiple cursors have no single "the item" to move.
     if (state.selection.ranges.length > 1) return plainTab(view, dir);
 

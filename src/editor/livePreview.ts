@@ -19,6 +19,7 @@ import { blankRowText, cellAt, delimiterCellText, findTables, parseTableLayout, 
 import { focusTableCell, tableDomAt } from './tableEdit';
 import { MermaidWidget } from './mermaidWidget';
 import { HIDE } from './hiddenMarker';
+import { canWrite } from './readingMode';
 
 /* ── Shared decoration values ──
    A Decoration is positionless and immutable — .range() produces the positioned
@@ -1073,12 +1074,6 @@ export function createLivePreviewPlugin(
  * halves of it.
  */
 
-/** The house predicate for "may this document be written to" — see tableEdit's
- *  canWrite. EditorState.readOnly is never set anywhere in src/. */
-function writable(state: EditorState): boolean {
-    return !state.readOnly && state.facet(EditorView.editable);
-}
-
 /** The one empty caret, or null — every binding below wants exactly that. */
 function loneCaret(state: EditorState): number | null {
     const { ranges, main } = state.selection;
@@ -1149,7 +1144,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
     };
 
     const enterFromLineAbove = (view: EditorView): boolean => {
-        if (!writable(view.state)) return false;
+        if (!canWrite(view.state)) return false;
         const pos = loneCaret(view.state);
         if (pos === null) return false;
         const line = view.state.doc.lineAt(pos);
@@ -1161,7 +1156,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
     };
 
     const enterFromLineBelow = (view: EditorView): boolean => {
-        if (!writable(view.state)) return false;
+        if (!canWrite(view.state)) return false;
         const pos = loneCaret(view.state);
         if (pos === null) return false;
         const line = view.state.doc.lineAt(pos);
@@ -1173,7 +1168,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
     };
 
     const enterFromEdge = (view: EditorView, side: 'from' | 'to'): boolean => {
-        if (!writable(view.state)) return false;
+        if (!canWrite(view.state)) return false;
         const pos = loneCaret(view.state);
         if (pos === null) return false;
         const table = tablesIn(view, field).find(t => (side === 'from' ? t.from : t.to) === pos);
@@ -1182,7 +1177,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
     };
 
     const selectBeside = (view: EditorView, side: 'from' | 'to'): boolean => {
-        if (!writable(view.state)) return false;
+        if (!canWrite(view.state)) return false;
         const pos = loneCaret(view.state);
         // Already exactly a table? Then this is the second press: let the
         // default command delete the selection.
@@ -1212,7 +1207,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
      */
     const completeHeaderRow = (view: EditorView): boolean => {
         const { state } = view;
-        if (!writable(state)) return false;
+        if (!canWrite(state)) return false;
         const pos = loneCaret(state);
         if (pos === null) return false;
         const line = state.doc.lineAt(pos);
@@ -1275,7 +1270,7 @@ function tableAdoptListener(field: StateField<LivePreview>): Extension {
         // also what keeps the listener out of the way while a cell is focused —
         // including the moment right after a write-back, when Chromium has
         // blurred the cell to BODY and the repair has not run yet.
-        if (!view.hasFocus || !writable(view.state)) return;
+        if (!view.hasFocus || !canWrite(view.state)) return;
         const tables = view.state.field(field, false)?.tables ?? [];
         if (tables.length === 0) return;
         const pos = loneCaret(view.state);

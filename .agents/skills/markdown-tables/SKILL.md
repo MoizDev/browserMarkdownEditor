@@ -220,12 +220,11 @@ the cell's *rendered* HTML back, which is an HTML path, and doing it in `tableEd
 The rule that keeps the cycle safe: **neither side may touch the other's exports at
 module-evaluation time.** Every use on both sides is inside a function body.
 
-**"Read-only" here is `EditorView.editable` and nothing else** — `!state.readOnly &&
-state.facet(EditorView.editable)`. `EditorState.readOnly` is never set anywhere in `src/`, so a
-guard written as `view.state.readOnly` is always `false`; and `editable.of(false)` does **not** block
-a programmatic `view.dispatch`, so such a guard would let *Insert table…* really insert a table into
-a document the reader is only reading. Note the predicate exists twice — `lists.ts`'s and
-`tableEdit.ts`'s `canWrite` — as independent copies; change both.
+**"May this document be written to" is `canWrite(state)` in `editor/readingMode.ts`** — one copy;
+import it, never re-derive it from either facet. Reading mode sets `EditorView.editable: false` *and*
+`EditorState.readOnly: true`, but neither blocks a programmatic `view.dispatch`, so every write the
+table code dispatches itself must test it: an unguarded one lets *Insert table…* really insert a
+table into a note the reader is only reading.
 
 ## Grips, moving, aligning, and three ways in
 

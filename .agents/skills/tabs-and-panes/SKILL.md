@@ -83,6 +83,21 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   (`restoringRef`, a per-pass token released just before the merge is dispatched, and in `finally`).
   Without that gate a click 100ms into a 600ms-per-file restore held the stored session at that one
   tab for 2.4s, and a reload inside the window lost the rest for good.
+- **The documents being restored follow a rename/move and never come back out of the Trash** (issue
+  #9: a note renamed after its read came back as an `a.md` tab over a tree showing `a2.md`, every
+  keystroke logging `Auto-save failed`; a trashed one reopened). They are not in `tabsRef` until the
+  merge, so the pass publishes `restorePendingRef` (`utils/pendingRestore.ts`: each document's stored
+  *origin* and *current* path, plus an `epoch`), which `retargetTabs`, `handleTrash` and the bin's
+  Replace update **synchronously** beside their own tab fix-ups. Those four run inside
+  `trackVaultMove` (`vaultMovesRef`) — never around a dialog — because each is copy → `removeEntry` →
+  a full `refreshTree` walk → only then the fix-up. Reads resolve each entry's current path from the
+  root. Then the pass waits for no move in flight — ANY move, related or not, so trashing a big
+  unrelated folder mid-restore holds every restored tab (and the persist gate) for the whole copy
+  (measured: reads done at 7.68s, tabs at 7.84s when the trash ended; accepted) — re-resolves every survivor from the root (fresh
+  handles; a note deleted outside the app drops), repeats if the epoch moved, and from there to the
+  dispatch has **no await** — one reopens the bug. The layout is built by `restoreLayout` in origin
+  space and `relabelPaths`'d to current paths **simultaneously**; chained `renamePath` would let its
+  overwrite branch delete a live pane (`b→c` then `a→b`).
 - Everything read back is shape-guarded (`isStoredSession`); localStorage is user-editable and holds
   whatever an older build wrote, and a malformed entry reads as `null`.
 - Restored PDF tabs get `content: ''` exactly like `handleFileClick` (their buffer is a tldraw
@@ -140,9 +155,10 @@ mount path and `restoreVault` call `recordVault` FIRST and walk after, which is 
 reload and the permission button looked fine. Above the claim, the pass simply waits for the id;
 nothing is left un-gated, because the persist effect's own first line is the same check.
 
-The pass re-checks the vault (handle AND id, via `rootHandleRef`/`currentVaultIdRef`) after its file
-reads and **before** the merge, and that check alone keeps a mid-restore switch's OLD tabs out of the
-new vault: the switch empties the tab set, so the merge would lay them straight over it. Asset
+The pass re-checks the vault (handle AND id, via `rootHandleRef`/`currentVaultIdRef`) after its final
+re-validation (its last await) and **before** the merge, and that check alone keeps a mid-restore
+switch's OLD tabs out of the new vault: the switch empties the tab set, so the merge would lay them
+straight over it. Asset
 baselines are seeded only after it, for the same reason — the switch has just cleared that map.
 `restoringRef` is reset at **every claim**, so a pass still reading the vault just left cannot hold
 the incoming vault's gate. A pass whose reads ALL fail still dispatches a merge when `layoutRef` says

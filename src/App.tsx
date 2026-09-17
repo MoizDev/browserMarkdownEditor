@@ -7,6 +7,7 @@ import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
 import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
 import { collectFiles } from './utils/tree';
+import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { isTextFile } from './utils/vaultSearch';
 import {
@@ -23,6 +24,7 @@ import {
   mergeIntoActive,
   mergeLayouts,
   openTab as openTabIn,
+  relabelPaths,
   renamePath,
   reorderGroups,
   restoreLayout,
@@ -677,6 +679,38 @@ export default function App() {
    * switch cannot release the gate a later pass holds.
    */
   const restoringRef = useRef<object | null>(null);
+  /**
+   * The documents that restore pass is bringing back, while it is (see
+   * utils/pendingRestore). They are not in `tabsRef` until the merge, so
+   * without this a rename, move or trash in the window never reached them:
+   * the note came back under its old path with a dead handle, or came back out
+   * of the Trash (issue #9). `retargetTabs`, `handleTrash` and the bin's
+   * Replace update it synchronously beside their own tab fix-ups.
+   */
+  const restorePendingRef = useRef<PendingRestore | null>(null);
+  /**
+   * Every rename, move, trash and bin Replace still RUNNING, from its first
+   * filesystem call to the end of its tab fix-up. Each is copy → removeEntry →
+   * a full refreshTree walk → only then the fix-up, so for that whole span the
+   * old entry is gone and nothing has re-pointed anything yet. The restore pass
+   * waits for this to empty before its last re-validation and its merge.
+   */
+  const vaultMovesRef = useRef<Set<Promise<unknown>>>(new Set());
+  const trackVaultMove = useCallback(<T,>(work: () => Promise<T>): Promise<T> => {
+    const p = work();
+    vaultMovesRef.current.add(p);
+    // Removed on rejection too: a span left registered would hold the restore
+    // (and its persistence gate) open for the rest of the session.
+    const done = () => { vaultMovesRef.current.delete(p); };
+    p.then(done, done);
+    return p;
+  }, []);
+  /** The in-flight restore's registry — only when it is restoring THIS vault,
+   *  so a pass outliving a switch is never edited by the next vault's moves. */
+  const pendingFor = useCallback((root: FileSystemDirectoryHandle | null): PendingRestore | null => {
+    const pending = restorePendingRef.current;
+    return pending && root && pending.root === root ? pending : null;
+  }, []);
 
   // The open vault, for the async restore pass to re-check after its awaits —
   // BOTH halves of it, because `currentVaultId` lags `rootHandle` by a commit on
@@ -1578,25 +1612,122 @@ export default function App() {
     const token = {};
     restoringRef.current = token;
     const release = () => { if (restoringRef.current === token) restoringRef.current = null; };
+    // Published BEFORE the first await, so a rename, move or trash landing
+    // anywhere in the reads below reaches these documents (see
+    // restorePendingRef). A path the tree no longer holds is dropped here —
+    // deleted or moved outside the app since the session was written.
+    const root = rootHandle!;
+    const pending: PendingRestore = {
+      root,
+      epoch: 0,
+      entries: paths.map(p => {
+        const help = p === 'help-guide';
+        return {
+          origin: p,
+          path: p,
+          help,
+          content: help ? HELP_DOC_CONTENT : undefined,
+          dropped: !help && !vaultFiles.some(f => f.path === p),
+        };
+      }),
+    };
+    restorePendingRef.current = pending;
     (async () => {
       try {
-        const restored: OpenTab[] = [];
-        for (const path of paths) {
-          if (path === 'help-guide') {
-            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
-            continue;
-          }
-          const node = vaultFiles.find(f => f.path === path);
-          if (!node) continue; // file deleted/moved externally — skip it
-          try {
+        for (const entry of pending.entries) {
+          if (entry.help || entry.dropped) continue;
+          for (;;) {
+            // Resolved by the entry's CURRENT path from the vault root, not
+            // through the claim-time tree's handle: a rename that already ran
+            // re-pointed the entry, and the old node's handle names an entry
+            // that no longer exists.
+            const path = entry.path;
             // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
             // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
             // fill the buffer with garbage.
-            const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
-            restored.push({ id: newTabId(), file: node, content, mode: 'read', dirty: false });
-          } catch (err) {
-            console.error('Failed to restore tab:', path, err);
+            if (isPdfFile(path.slice(path.lastIndexOf('/') + 1))) {
+              entry.content = '';
+              break;
+            }
+            try {
+              const { handle } = await resolveVaultFile(root, path);
+              const text = await readFile(handle);
+              // Read at the old path and renamed since is still right: a rename
+              // or move is a byte-for-byte copy.
+              if (!entry.dropped) entry.content = text;
+            } catch (err) {
+              // A read racing a rename fails on the entry the copy just removed.
+              // Once the move's fix-up has run the entry names where the note
+              // went — read it there, rather than leave out a note the reader
+              // only renamed. The path is compared even with no move left in
+              // flight: one can have finished while the failed read settled.
+              if (vaultMovesRef.current.size) await Promise.allSettled([...vaultMovesRef.current]);
+              if (!entry.dropped && entry.path !== path) continue;
+              if (!entry.dropped) {
+                console.error('Failed to restore tab:', path, err);
+                entry.dropped = true;
+              }
+            }
+            break;
           }
+        }
+
+        // SETTLE, then re-validate every survivor against the vault as it is
+        // NOW, and repeat until nothing moved underneath. The reads above held
+        // the session for as long as they took, and the tree stayed usable
+        // throughout (issue #9: a note renamed after its read came back at the
+        // old path — tree showing `a2.md`, tab saying `a.md`, "Auto-save
+        // failed" on every keystroke). Waiting for no move in flight covers the
+        // span where the old entry is gone and the registry not yet re-pointed;
+        // re-resolving from the root hands each document a handle that exists
+        // (and drops one deleted outside the app); the epoch catches a move
+        // that started and finished inside these awaits.
+        const live = new Map<PendingRestoreEntry, FileTreeFileNode>();
+        for (;;) {
+          while (vaultMovesRef.current.size) await Promise.allSettled([...vaultMovesRef.current]);
+          const seen = pending.epoch;
+          live.clear();
+          for (const entry of pending.entries) {
+            if (entry.help || entry.dropped || entry.content === undefined) continue;
+            try {
+              const { handle, parentHandle } = await resolveVaultFile(root, entry.path);
+              live.set(entry, { name: handle.name, kind: 'file', path: entry.path, handle, parentHandle });
+            } catch {
+              // Gone (or a folder now) — left out, like a note deleted since the
+              // session was written.
+            }
+          }
+          if (pending.epoch === seen && vaultMovesRef.current.size === 0) break;
+        }
+        // ── NO AWAIT from here to the merge's dispatch. ──
+        // The loop above just proved the vault quiet; JS being single-threaded
+        // is what keeps it so until the merge is queued. An await anywhere
+        // below reopens issue #9. (One window stays, accepted: a move that
+        // STARTS after this dispatch but runs its fix-up before React commits
+        // the merge and tabsRef catches up. Every such move is several FS
+        // round-trips plus a full refreshTree walk, against a commit already
+        // queued — not reachable in practice.)
+
+        const restored: OpenTab[] = [];
+        const origins: string[] = [];
+        const relabel = new Map<string, string>();
+        // One document per path, whatever the registry missed: a move's
+        // overwritten set comes from the tree as last walked, and a stale one
+        // could leave two entries at one path — two tabs for one document, and
+        // a relabel that is no longer injective.
+        const claimed = new Set<string>();
+        for (const entry of pending.entries) {
+          if (claimed.has(entry.path)) continue;
+          if (entry.help) {
+            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path: entry.path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
+          } else {
+            const node = live.get(entry);
+            if (!node) continue;
+            restored.push({ id: newTabId(), file: node, content: entry.content!, mode: 'read', dirty: false });
+            if (entry.path !== entry.origin) relabel.set(entry.origin, entry.path);
+          }
+          claimed.add(entry.path);
+          origins.push(entry.origin);
         }
         // Nothing of the session came back (every note in it deleted since, or
         // unreadable) and nothing was opened meanwhile: the stored session is
@@ -1604,7 +1735,7 @@ export default function App() {
         // merge, with nothing to lay it over — the gate held its write back, and
         // the merge's new layout is the only thing that will write it now.
         if (restored.length === 0 && layoutRef.current.groups.length === 0) return;
-        // The reads above yield to the event loop: the vault may have been
+        // The awaits above yield to the event loop: the vault may have been
         // switched in the meantime, and the switch effect empties the tab set,
         // so the merge below would drop the OLD vault's notes (handles and all)
         // into the new vault's workspace. The HANDLE is checked as well as the
@@ -1613,9 +1744,16 @@ export default function App() {
         // passes an id test comparing the outgoing id with itself (measured:
         // with a 600ms-per-file read, switching away mid-restore put vault A's
         // three tabs on screen over vault B's tree, autosaving through A's
-        // handles).
+        // handles). After the LAST await, which is now the re-validation.
         if (rootHandleRef.current !== rootHandle) return;
         if (currentVaultIdRef.current !== currentVaultId) return;
+        // A later pass took the registry over (a switch away and back while
+        // this one read): it restores the same session with a registry the
+        // mutations still update, while this one's has gone deaf to them.
+        if (restorePendingRef.current !== pending) return;
+        // From here these are about to be ordinary tabs; the mutations go back
+        // to finding them through tabsRef.
+        restorePendingRef.current = null;
         // Asset baselines (see handleFileClick) only now that the workspace is
         // known to still be this vault's: seeded during the reads, a switch
         // mid-restore left the old vault's in the map the switch had just
@@ -1634,14 +1772,18 @@ export default function App() {
         // an instruction and the session only a default, so the link's note is
         // what comes to the front — when it actually came back. Built out here,
         // not in an updater, because StrictMode runs updaters twice.
-        const restoredPaths = restored.map(t => t.file.path);
-        const restoredLayout = restoreLayout(
-          restoredPaths,
+        // Built in the STORED paths' space, which is the only one the stored
+        // groups, focus and widths speak, then relabelled all at once to where
+        // each document is now — so a split whose note was renamed mid-restore
+        // keeps its panes, focus and widths (see relabelPaths for why not
+        // renamePath one at a time).
+        const restoredLayout = relabelPaths(restoreLayout(
+          origins,
           stored?.groups,
           stored?.focus,
           stored?.sizes,
-          linkedNode && restoredPaths.includes(linkedNode.path) ? linkedNode.path : stored?.active ?? null,
-        );
+          linkedNode && origins.includes(linkedNode.path) ? linkedNode.path : stored?.active ?? null,
+        ), relabel);
         // Anything opened while the reads were in flight — a click in the file
         // tree — is MERGED, never deferred to. Deferring is what turned
         // 5de752e's separate link opener into data loss: it opened the linked
@@ -1669,6 +1811,7 @@ export default function App() {
         setLayout(prev => mergeLayouts(restoredLayout, prev));
       } finally {
         release();
+        if (restorePendingRef.current === pending) restorePendingRef.current = null;
       }
     })();
   }, [fileTree, rootHandle, currentVaultId, readFile, rememberAssetRefs, recentVaults, initialLocation]);
@@ -1940,33 +2083,60 @@ export default function App() {
       });
       if (!confirmed) return;
 
-      // Write out what is still in the save debounce BEFORE the copy starts.
-      // The tabs inside a folder stay live and editable for the whole copy, and
-      // their save timers stay armed — so a debounced write would land on an
-      // original that `removeEntry` then destroys, AFTER the walk had already
-      // copied the older bytes. Whether the edit survived came down to where the
-      // note happened to fall in an arbitrary `entries()` order. Flushed rather
-      // than merely cancelled: the copy then carries the reader's last words,
-      // which is what a trash folder is for.
-      await Promise.all(tabsRef.current
-        .filter(t => doomed(t.file.path))
-        .map(t => flushTab(t.file.path)));
-      // …and let the asset reconciles those saves queued run to completion, so
-      // nothing moves a picture between `.Assets` and `.Garbage/.Assets` while
-      // copyDirRecursive is walking one of them.
-      await reconcileQueueRef.current;
+      // Tracked from here — NOT around the question above, nor the notice below:
+      // a restore pass must never sit waiting on a dialog (see vaultMovesRef).
+      const moved = await trackVaultMove(async () => {
+        // Write out what is still in the save debounce BEFORE the copy starts.
+        // The tabs inside a folder stay live and editable for the whole copy, and
+        // their save timers stay armed — so a debounced write would land on an
+        // original that `removeEntry` then destroys, AFTER the walk had already
+        // copied the older bytes. Whether the edit survived came down to where the
+        // note happened to fall in an arbitrary `entries()` order. Flushed rather
+        // than merely cancelled: the copy then carries the reader's last words,
+        // which is what a trash folder is for.
+        await Promise.all(tabsRef.current
+          .filter(t => doomed(t.file.path))
+          .map(t => flushTab(t.file.path)));
+        // …and let the asset reconciles those saves queued run to completion, so
+        // nothing moves a picture between `.Assets` and `.Garbage/.Assets` while
+        // copyDirRecursive is walking one of them.
+        await reconcileQueueRef.current;
 
-      // The copy has no other outward sign, and an app that looks frozen is one
-      // people click again. Re-armed over any "Saved" the flush above left, whose
-      // own timer would otherwise clear this line mid-copy.
-      if (saveStatusTimerRef.current) {
-        clearTimeout(saveStatusTimerRef.current);
-        saveStatusTimerRef.current = null;
-      }
-      setSaveStatus(`Moving "${node.name}" to Trash…`);
+        // The copy has no other outward sign, and an app that looks frozen is one
+        // people click again. Re-armed over any "Saved" the flush above left, whose
+        // own timer would otherwise clear this line mid-copy.
+        if (saveStatusTimerRef.current) {
+          clearTimeout(saveStatusTimerRef.current);
+          saveStatusTimerRef.current = null;
+        }
+        setSaveStatus(`Moving "${node.name}" to Trash…`);
 
-      const moved = await moveToTrash(node);
-      setSaveStatus('');
+        const trashed = await moveToTrash(node);
+        setSaveStatus('');
+        if (!trashed) return false;
+
+        // A trashed row's icon and colour go with it, and a folder's takes
+        // everything inside it — otherwise the entry sits in the file forever, and
+        // something later given the same name inherits a look nobody chose.
+        const remaining = forgetEntry(getEntryStyles(), node.path);
+        if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
+
+        // A note a restore pass is still bringing back must not come back out of
+        // the Trash as an open tab (issue #9) — it is not in tabsRef yet, so the
+        // loop below cannot reach it. Only on success: a failed move moved nothing.
+        const pending = pendingFor(rootHandleRef.current);
+        if (pending) dropPending(pending, doomed);
+
+        // What the deletion took with it. Read AFTER the move, not before: the
+        // predicate is a path test and does not move, but a document opened while
+        // the copy was running has to be closed too.
+        // Closed WITHOUT flushing — that already happened above, and their handles
+        // are gone now.
+        for (const tab of tabsRef.current) {
+          if (doomed(tab.file.path)) removeTab(tab.file.path, false);
+        }
+        return true;
+      });
       if (!moved) {
         // Never silence: from the outside a click that does nothing is
         // indistinguishable from a broken button. And the reassurance is worth
@@ -1983,27 +2153,11 @@ export default function App() {
             </>
           ),
         });
-        return;
-      }
-
-      // A trashed row's icon and colour go with it, and a folder's takes
-      // everything inside it — otherwise the entry sits in the file forever, and
-      // something later given the same name inherits a look nobody chose.
-      const remaining = forgetEntry(getEntryStyles(), node.path);
-      if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
-
-      // What the deletion took with it. Read AFTER the move, not before: the
-      // predicate is a path test and does not move, but a document opened while
-      // the copy was running has to be closed too.
-      // Closed WITHOUT flushing — that already happened above, and their handles
-      // are gone now.
-      for (const tab of tabsRef.current) {
-        if (doomed(tab.file.path)) removeTab(tab.file.path, false);
       }
     } finally {
       trashInFlightRef.current = false;
     }
-  }, [moveToTrash, removeTab, flushTab, ask, tell, writeEntryStyles]);
+  }, [moveToTrash, removeTab, flushTab, ask, tell, writeEntryStyles, trackVaultMove, pendingFor]);
 
   /* ── The Trash bin ──────────────────────────────────────────────────────
    * The panel draws the list and owns nothing else: every one of these asks
@@ -2070,34 +2224,50 @@ export default function App() {
         if (choice === 'cancel') return { status: 'collision' };
 
         if (choice === 'confirm') {
-          // Write out what is still in the save debounce, so the copy that gets
-          // displaced into `.Garbage` carries the reader's last words rather
-          // than the disk's — handleTrash's reason, and its ordering.
-          await Promise.all(tabsRef.current.filter(doomed).map(t => flushTab(t.file.path)));
-          // …and re-drain the reconcile queue: the question above took real time,
-          // and a retire can have queued a picture move into the very
-          // `.Garbage/.Assets` a retired put-back is about to read.
-          await reconcileQueueRef.current;
-        }
-        result = await restoreFromTrash(item, choice === 'confirm' ? 'replace' : 'keep-both');
-        // The displaced entry's bytes have just moved into `.Garbage`, and every
-        // tab that was open from it still holds a handle resolving to that
-        // DIRECTORY ENTRY — which the restored copy now occupies. Left open,
-        // the next keystroke in one of them writes the displaced bytes straight
-        // over the note that was just put back (measured: putting a trashed
-        // `homework` back over a live one restored its `hw1.md`, and one
-        // keystroke in the still-open tab turned it back into the live file's
-        // text). releaseOverwritten's hazard exactly. Closed WITHOUT flushing —
-        // that already happened above, before the copy.
-        if (choice === 'confirm' && result.status === 'ok') {
-          for (const tab of tabsRef.current) if (doomed(tab)) removeTab(tab.file.path, false);
-          // The displaced entry's icon and colour go into the Trash with it, or
-          // the item that just took its path inherits a look nobody chose —
-          // handleTrash's reason for forgetting them at trash time.
-          if (taken) {
-            const remaining = forgetEntry(getEntryStyles(), taken);
-            if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
-          }
+          // Tracked (see vaultMovesRef): a Replace displaces documents exactly
+          // as a trash does, and the path it frees is filled again at once — so
+          // a restore pass's re-check at the merge would find it standing and
+          // could not tell it holds different bytes. Only the registry drop
+          // below catches that.
+          result = await trackVaultMove(async () => {
+            // Write out what is still in the save debounce, so the copy that
+            // gets displaced into `.Garbage` carries the reader's last words
+            // rather than the disk's — handleTrash's reason, and its ordering.
+            await Promise.all(tabsRef.current.filter(doomed).map(t => flushTab(t.file.path)));
+            // …and re-drain the reconcile queue: the question above took real
+            // time, and a retire can have queued a picture move into the very
+            // `.Garbage/.Assets` a retired put-back is about to read.
+            await reconcileQueueRef.current;
+            const replaced = await restoreFromTrash(item, 'replace');
+            // The displaced entry's bytes have just moved into `.Garbage`, and
+            // every tab that was open from it still holds a handle resolving to
+            // that DIRECTORY ENTRY — which the restored copy now occupies. Left
+            // open, the next keystroke in one of them writes the displaced bytes
+            // straight over the note that was just put back (measured: putting a
+            // trashed `homework` back over a live one restored its `hw1.md`, and
+            // one keystroke in the still-open tab turned it back into the live
+            // file's text). releaseOverwritten's hazard exactly. Closed WITHOUT
+            // flushing — that already happened above, before the copy.
+            if (replaced.status === 'ok') {
+              for (const tab of tabsRef.current) if (doomed(tab)) removeTab(tab.file.path, false);
+              // A document a restore pass is still bringing back from there has
+              // been displaced just the same (issue #9); tabsRef cannot reach it.
+              const pending = pendingFor(rootHandleRef.current);
+              if (pending && taken) {
+                dropPending(pending, path => path === taken || path.startsWith(`${taken}/`));
+              }
+              // The displaced entry's icon and colour go into the Trash with it,
+              // or the item that just took its path inherits a look nobody
+              // chose — handleTrash's reason for forgetting them at trash time.
+              if (taken) {
+                const remaining = forgetEntry(getEntryStyles(), taken);
+                if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
+              }
+            }
+            return replaced;
+          });
+        } else {
+          result = await restoreFromTrash(item, 'keep-both');
         }
       }
 
@@ -2129,7 +2299,7 @@ export default function App() {
     } finally {
       trashInFlightRef.current = false;
     }
-  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles]);
+  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor]);
 
   /** Erase one trashed item. One of the app's two points of no return. */
   const handleTrashDelete = useCallback(async (item: TrashItem) => {
@@ -2257,6 +2427,15 @@ export default function App() {
     const prefix = `${node.path}/`;
     /** Where a path under `node` ends up. */
     const to = (path: string) => (isFolder ? newPath + path.slice(node.path.length) : newPath);
+    const sources = isFolder ? collectFiles(node.children).map(f => f.path) : [node.path];
+
+    // The documents a restore pass is still bringing back are not in tabsRef
+    // yet, so nothing below reaches them — they came back at the old path with
+    // a dead handle (issue #9). The pass waits out this whole move (see
+    // vaultMovesRef), so re-pointing them here, with no await before it, is in
+    // time.
+    const pending = pendingFor(rootHandle);
+    if (pending) retargetPending(pending, node.path, isFolder, newPath, sources.map(to));
 
     // Every open document this move carries…
     const moving = tabsRef.current
@@ -2280,7 +2459,6 @@ export default function App() {
     if (restyled !== getEntryStyles()) void writeEntryStyles(restyled);
 
     const open = new Set(tabsRef.current.map(t => t.file.path));
-    const sources = isFolder ? collectFiles(node.children).map(f => f.path) : [node.path];
     for (const source of sources) {
       const dest = to(source);
       if (open.has(dest)) releaseOverwritten(dest, source);
@@ -2314,7 +2492,7 @@ export default function App() {
         console.error('Could not follow a document to its new path:', from, '→', dest, err);
       }
     }
-  }, [rootHandle, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles]);
 
   /**
    * Keep the tree's disclosure state with the folder it describes.
@@ -2344,17 +2522,19 @@ export default function App() {
     });
   }, []);
 
-  const handleRenameFile = useCallback(async (node: FileTreeNode, newName: string) => {
+  // Both tracked from the first FS call to the end of retargetTabs — see
+  // vaultMovesRef for what the restore pass waits on and why.
+  const handleRenameFile = useCallback((node: FileTreeNode, newName: string) => trackVaultMove(async () => {
     const success = await renameFile(node, newName);
     if (!success) return;
     const newPath = joinVaultPath(parentVaultPath(node.path), newName);
     retargetExpanded(node, newPath);
     await retargetTabs(node, newPath);
-  }, [renameFile, retargetTabs, retargetExpanded]);
+  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove]);
 
   // Wrap moveFile so a moved document's tab tracks its new path and handle —
   // including every document inside a moved FOLDER.
-  const handleMoveFile = useCallback(async (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath = '') => {
+  const handleMoveFile = useCallback((sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath = '') => trackVaultMove(async () => {
     const success = await moveFile(sourceNode, targetDirHandle);
     if (success) {
       const newPath = joinVaultPath(targetPath, sourceNode.name);
@@ -2362,7 +2542,7 @@ export default function App() {
       await retargetTabs(sourceNode, newPath);
     }
     return success;
-  }, [moveFile, retargetTabs, retargetExpanded]);
+  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove]);
 
   // Global keyboard shortcuts
   useEffect(() => {

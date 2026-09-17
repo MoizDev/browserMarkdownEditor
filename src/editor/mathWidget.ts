@@ -19,7 +19,7 @@ function normalizeForKatex(latex: string): string {
  * Render `latex` into `el` with this app's one set of KaTeX options.
  *
  * Exported because the table cell renderer needs the SAME call, and a second
- * copy of these options is the "three things exist twice" hazard in miniature.
+ * copy of these options is the "exists twice" hazard (AGENTS.md) in miniature.
  * It is a DOM builder, not a second innerHTML sink: katex.render builds its
  * tree with createElement/createTextNode, so no note text is ever parsed as
  * markup here (see tableWidget.ts's allowlist note, which is the app's only

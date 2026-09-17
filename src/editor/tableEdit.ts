@@ -2,6 +2,10 @@ import { EditorView } from '@codemirror/view';
 import { redo, undo } from '@codemirror/commands';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
+// Every write below asks canWrite first: neither half of Reading mode blocks a
+// programmatic dispatch, so an unguarded one would really edit a table in a
+// note that is only being read (readingMode.ts).
+import { canWrite } from './readingMode';
 import {
     CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED, copyText, readClipboardText,
 } from '../utils/clipboard';
@@ -83,20 +87,6 @@ let notify: (message: string) => void = (message) => { console.warn(message); };
 
 export function setTableNotify(next: (message: string) => void): void {
     notify = next;
-}
-
-/**
- * "Read-only" in this app is EditorView.editable and nothing else.
- *
- * Reading mode is `readOnlyCompartment.of(EditorView.editable.of(mode !==
- * 'read'))`, despite the compartment's name; EditorState.readOnly is never set
- * anywhere in src/, so testing it alone is always false — and
- * EditorView.editable.of(false) does NOT block a programmatic dispatch, so a
- * command guarded that way would really edit a document the user is only
- * reading. This is the lists.ts:425 predicate, and every guard here uses it.
- */
-function canWrite(view: EditorView): boolean {
-    return !view.state.readOnly && view.state.facet(EditorView.editable);
 }
 
 /**
@@ -470,7 +460,7 @@ function linesOf(layout: TableLayout): { span: RowSpan; delimiter: boolean }[] {
 }
 
 export function insertRow(view: EditorView, dom: HTMLElement, afterRow: number): boolean {
-    if (!canWrite(view)) return false;
+    if (!canWrite(view.state)) return false;
     // Precondition, and the reason tableMenuEntries disables "Insert row above"
     // on the header: GFM cannot express a row above the header at all.
     if (afterRow < 0) return false;
@@ -490,7 +480,7 @@ export function insertRow(view: EditorView, dom: HTMLElement, afterRow: number):
 }
 
 export function deleteRow(view: EditorView, dom: HTMLElement, row: number): boolean {
-    if (!canWrite(view)) return false;
+    if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
     if (!layout) return false;
     // The header is not a row anyone can delete, and taking the last body row
@@ -508,7 +498,7 @@ export function deleteRow(view: EditorView, dom: HTMLElement, row: number): bool
 }
 
 export function insertColumn(view: EditorView, dom: HTMLElement, afterCol: number): boolean {
-    if (!canWrite(view)) return false;
+    if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
     if (!layout || afterCol < -1 || afterCol >= layout.columns) return false;
 
@@ -533,7 +523,7 @@ export function insertColumn(view: EditorView, dom: HTMLElement, afterCol: numbe
 }
 
 export function deleteColumn(view: EditorView, dom: HTMLElement, col: number): boolean {
-    if (!canWrite(view)) return false;
+    if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
     if (!layout || layout.columns <= 1 || col < 0 || col >= layout.columns) return false;
 
@@ -565,7 +555,7 @@ export function deleteColumn(view: EditorView, dom: HTMLElement, col: number): b
  * body row and nothing moves above it, because GFM has no second header.
  */
 export function moveRow(view: EditorView, dom: HTMLElement, row: number, delta: -1 | 1): boolean {
-    if (!canWrite(view)) return false;
+    if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
     const target = row + delta;
     if (!layout || row < 1 || target < 1 || row >= layout.rows.length || target >= layout.rows.length) return false;
@@ -597,7 +587,7 @@ export function moveRow(view: EditorView, dom: HTMLElement, row: number, delta: 
  * value still sits under the heading it belonged to.
  */
 export function moveColumn(view: EditorView, dom: HTMLElement, col: number, delta: -1 | 1): boolean {
-    if (!canWrite(view)) return false;
+    if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
     const target = col + delta;
     if (!layout || col < 0 || target < 0 || col >= layout.columns || target >= layout.columns) return false;
@@ -635,7 +625,7 @@ export function moveColumn(view: EditorView, dom: HTMLElement, col: number, delt
  * renders left.
  */
 export function setColumnAlign(view: EditorView, dom: HTMLElement, col: number, align: ColumnAlign): boolean {
-    if (!canWrite(view)) return false;
+    if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
     if (!layout || col < 0 || col >= layout.columns) return false;
 
@@ -659,7 +649,7 @@ export function setColumnAlign(view: EditorView, dom: HTMLElement, col: number, 
 }
 
 export function deleteTable(view: EditorView, dom: HTMLElement): boolean {
-    if (!canWrite(view)) return false;
+    if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
     if (!layout) return false;
 
@@ -678,7 +668,7 @@ export function deleteTable(view: EditorView, dom: HTMLElement): boolean {
 }
 
 export function insertTableAtCursor(view: EditorView, rows: number, cols: number): boolean {
-    if (!canWrite(view)) return false;
+    if (!canWrite(view.state)) return false;
     const head = view.state.selection.main.head;
     // A caret parked on a table's own edge is sitting on one of that table's
     // LINES — `from` is the header line's start, and atomic motion parks the
@@ -893,7 +883,7 @@ function replaceInCell(
     view: EditorView, dom: HTMLElement, row: number, col: number,
     from: number, to: number, insert: string,
 ): void {
-    if (!canWrite(view)) return;
+    if (!canWrite(view.state)) return;
     let layout = locate(view, dom);
     if (!layout) return;
     // A cell the row is too short to have has no span to replace. writeBack
@@ -934,7 +924,7 @@ function replaceInCell(
 export function tableMenuEntries(view: EditorView, target: HTMLElement): ContextMenuEntry[] | null {
     // Reading mode has no table menu of its own — the event falls through to
     // the editor's, which is where Copy and Select all still make sense.
-    if (!canWrite(view)) return null;
+    if (!canWrite(view.state)) return null;
     const cell = target.closest('.cm-table-cell') as HTMLElement | null;
     const dom = cell?.closest('.cm-table-widget') as HTMLElement | null;
     if (!cell || !dom) return null;

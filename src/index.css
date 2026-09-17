@@ -1513,6 +1513,14 @@ body.is-resizing-panes * {
 
 /* Obsidian-style modal: wide, capped to the viewport, header pinned and the
    body scrolling — so however many settings accrue, nothing ever clips. */
+/* Focused as a whole on open (tabIndex -1) so the dialog holds the keyboard;
+   the container is not a control, so no ring — opened from the keyboard it drew
+   Chrome's default blue one around the whole panel. The Trash panel likewise. */
+.settings-panel:focus,
+.trash-panel:focus {
+  outline: none;
+}
+
 .settings-panel {
   background: var(--background-primary-alt);
   border: 1px solid var(--background-modifier-border);

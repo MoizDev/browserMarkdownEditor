@@ -30,6 +30,8 @@ import {
 } from '../editor/scrollAnchor';
 import type { ScrollAnchor } from '../editor/scrollAnchor';
 import { insertTableAtCursor } from '../editor/tableEdit';
+import { canWrite, modeExtensions } from '../editor/readingMode';
+import { noteSearchKeymap, rebuildSearchPanelForMode, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
 import { onTableInsertRequest, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readRecord, flushRecord, scopedKey } from '../utils/storage';
@@ -232,24 +234,43 @@ function themeExtensions(theme: Theme) {
         : [obsidianDarkTheme, obsidianHighlightStyle];
 }
 
-/* ── The editor's own right-click menu ────────────────────────────────────
-   What Reading mode actually IS, said once so every row below agrees.
-
-   It is `EditorView.editable`, and nothing else: readOnlyCompartment (below)
-   holds `EditorView.editable.of(mode !== 'read')` despite its name, and
-   `EditorState.readOnly` is never set anywhere in this app. Two things follow,
-   and both bite if this is written as `state.readOnly` — the obvious reading.
-   That flag is always false, so Cut, Paste and Insert table… would all be
-   ENABLED while the reader is only reading; and `editable.of(false)` does not
-   block a programmatic `view.dispatch`, so the enabled Insert table… would
-   really insert a table into a document nobody was editing, with no visible
-   cause. `readOnly` is still tested, because it is the half of the predicate
-   that would matter the day anything does set it (the same test lists.ts:425
-   makes). */
-function isEditable(state: EditorState): boolean {
-    return !state.readOnly && state.facet(EditorView.editable);
+/**
+ * Whether a keydown that reached `window` is meant for this note — the guard
+ * in front of the search keys (editor/noteSearch.ts), which have to be caught
+ * outside the editor because a note being read never holds focus.
+ *
+ * - Already `defaultPrevented`: CodeMirror (Edit mode, focus in the text), the
+ *   open search panel or a dialog took it — acting again would jump twice.
+ * - A modal is open: the note is not what the reader is looking at.
+ * - Inside the view: its text, a table cell (CodeMirror ignores keys raised in
+ *   a widget, so Edit mode's ⌘F in a cell used to reach the browser too).
+ * - A text field, menu, dialog or listbox owns its keyboard — the sidebar's
+ *   search box and a rename field keep the browser's find.
+ * - Anything else has no find of its own, so the note in front gets it:
+ *   `<body>` (where a click in Reading-mode text, a tree row or a tab leaves
+ *   the keyboard — none is focusable), and any button, in the pane's chrome or
+ *   the sidebar's. The sidebar counts: Help Guide keeps the keyboard after
+ *   opening the guide, whose own text says to press ⌘F (measured: the
+ *   browser's find opened instead while this stopped at `.editor-pane`).
+ */
+function keyIsForNote(event: KeyboardEvent, view: EditorView): boolean {
+    // Every search key is ⌘/Ctrl-something or F3 — a superset test, so a typed
+    // letter in Edit mode never pays for the document query below.
+    if (!event.metaKey && !event.ctrlKey && event.key !== 'F3') return false;
+    if (event.defaultPrevented || event.isComposing) return false;
+    if (document.querySelector('[aria-modal="true"]')) return false;
+    const target = event.target;
+    if (!(target instanceof Element)) return false;
+    if (view.dom.contains(target)) return true;
+    if (target instanceof HTMLElement && target.isContentEditable) return false;
+    return !target.closest('input, textarea, select, [role="dialog"], [role="menu"], [role="listbox"]');
 }
 
+/* ── The editor's own right-click menu ────────────────────────────────────
+   Rows that write test `canWrite` (editor/readingMode.ts), never either facet
+   alone: neither half of Reading mode blocks a programmatic `view.dispatch`,
+   so an unguarded Insert table… would really insert a table into a note
+   nobody was editing, with no visible cause. */
 const READ_MODE_REASON = 'Switch to editing with ⌘E';
 const NO_SELECTION_REASON = 'Nothing is selected';
 
@@ -269,7 +290,7 @@ const NO_SELECTION_REASON = 'Nothing is selected';
  * anything.
  */
 function editorMenuEntries(view: EditorView, notify: (message: string) => void): ContextMenuEntry[] {
-    const editable = isEditable(view.state);
+    const editable = canWrite(view.state);
     const empty = view.state.selection.main.empty;
 
     return [
@@ -290,7 +311,7 @@ function editorMenuEntries(view: EditorView, notify: (message: string) => void):
                     return;
                 }
                 const now = view.state.selection.main;
-                if (now.empty || !isEditable(view.state)) return;
+                if (now.empty || !canWrite(view.state)) return;
                 view.dispatch({ changes: { from: now.from, to: now.to, insert: '' }, selection: { anchor: now.from } });
                 view.focus();
             },
@@ -325,7 +346,7 @@ function editorMenuEntries(view: EditorView, notify: (message: string) => void):
                 // works) is the whole handling.
                 const read = await readClipboardText();
                 if (!read.ok) { notify(CLIPBOARD_READ_BLOCKED); return; }
-                if (!isEditable(view.state)) return;
+                if (!canWrite(view.state)) return;
                 const range = view.state.selection.main;
                 view.dispatch({
                     changes: { from: range.from, to: range.to, insert: read.text },
@@ -371,7 +392,7 @@ interface DocumentPaneProps {
      *  keys the pane by, so a pane and its state are one thing. It is NOT the
      *  path: see EditorPane's paneKey. */
     stateKey: string;
-    /** The pane the header actions, ⌘E and ⌘S mean. */
+    /** The pane the header actions, ⌘E, ⌘F and ⌘S mean. */
     isFocused: boolean;
     /** True once this tab holds more than one document: each pane then names
      *  itself, because side by side there is nothing else that could. */
@@ -410,8 +431,8 @@ interface DocumentPaneProps {
     onOpenNote: OpenNoteByNameHandler;
     onImageDelete: (request: PaneImageDelete) => void;
     /** Say something to the reader — the app's own dialog, from App's `tell`.
-     *  A refused clipboard is the only thing that uses it today, and it is the
-     *  difference between a menu row that explains itself and a dead click.
+     *  A refused clipboard and a refused `.md` drop use it, and it is the
+     *  difference between a gesture that explains itself and a dead one.
      *  Must be STABLE: this component is memoized so the tree of panes does
      *  not re-render on every keystroke. */
     onNotify: (message: string) => void;
@@ -472,6 +493,8 @@ function DocumentPane({
     const isCanvas = isDrawing || isNotebook || isPdf;
 
     const viewRef = useRef<EditorView | null>(null);
+    /** True only while setEditorContainer builds the view — see there. */
+    const buildingViewRef = useRef(false);
 
     // The top bar's table button cannot reach this view (EditorPane holds none),
     // so it raises a request, and only the pane FOCUSED on that document acts on
@@ -484,6 +507,27 @@ function DocumentPane({
         if (!view || !isFocusedRef.current || request.path !== tab.file.path) return;
         insertTableAtCursor(view, request.rows, request.cols);
     }), [tab.file.path]);
+
+    // ⌘F, ⌘G and F3 for this note, from outside the editor: a note being read
+    // never holds focus, so CodeMirror's own searchKeymap cannot see them
+    // (editor/noteSearch.ts). Only the FOCUSED pane acts, for the table-insert
+    // reason — two panes must not both open. Bubble phase, so the content and
+    // the panel have had their turn and `keyIsForNote` sees what they took. A
+    // canvas pane builds no view and never listens, so a PDF keeps the
+    // browser's find, which its text layer makes real. Registered by the pane,
+    // not baked into the EditorState, so the outlives-the-pane rule does not
+    // apply.
+    useEffect(() => {
+        if (isCanvas) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            const view = viewRef.current;
+            if (!view || !isFocusedRef.current || !keyIsForNote(event, view)) return;
+            runNoteSearchKey(view, event);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [isCanvas]);
+
     const revealClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Live prop mirrors: the view is built once, so everything it calls has to
@@ -572,7 +616,10 @@ function DocumentPane({
                 ...closeBracketsKeymap,
                 ...searchKeymap,
             ]),
-            readOnlyCompartment.of(EditorView.editable.of(mode !== 'read')),
+            // The search keys again, for a note that cannot take focus — run
+            // by the window listener below, never by CodeMirror itself.
+            noteSearchKeymap,
+            readOnlyCompartment.of(modeExtensions(mode)),
             wikiLinkAutocomplete(() => getTargetsRef.current()),
             livePreviewCompartment.of(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
             // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
@@ -660,13 +707,16 @@ function DocumentPane({
                 },
                 drop(event) {
                     // A dropped .md replaces the whole note, and the pane's
-                    // onDrop does that. Claimed here so CodeMirror's own drop
-                    // handler never runs: it checks readOnly, not editable, so
-                    // even in Reading mode it first inserted the file's text at
-                    // the drop point, making the replace a second transaction
-                    // that collapsed headings could not be carried through
-                    // (measured: both folds lost). The event still bubbles to
-                    // onDrop, which reads the file.
+                    // onDrop does that — or refuses it, in Reading mode.
+                    // Claimed here, in both modes, so CodeMirror's own drop
+                    // handler never runs for it: in Edit mode it would first
+                    // insert the file's text at the drop point, making the
+                    // replace a second transaction that collapsed headings
+                    // could not be carried through (measured: both folds
+                    // lost). Every OTHER drop — text, a non-.md file — reaches
+                    // that handler, which refuses it in Reading mode on
+                    // readOnly. The event still bubbles to onDrop, which reads
+                    // the file.
                     const item = event.dataTransfer?.items?.[0];
                     return item?.kind === 'file' && !!item.getAsFile()?.name.endsWith('.md');
                 },
@@ -691,33 +741,54 @@ function DocumentPane({
     const setEditorContainer = (node: HTMLDivElement | null) => {
         if (!node || viewRef.current) return;
         const cached = stateCache.get(stateKey);
-        const view = new EditorView({ state: cached ?? createTabState(tab.content), parent: node });
-        viewRef.current = view;
+        // A cached state whose search panel was left open focuses that panel's
+        // Find field as the view is built (SearchPanel.mount). That is not the
+        // reader choosing this pane, so the slot's focus handler must not take
+        // it as such — measured: in a split, returning to the tab made the pane
+        // with the open panel the focused one, and ⌘E/⌘S then acted on the other
+        // note — and the keyboard goes back to where it was.
+        const keyboardBefore = document.activeElement;
+        buildingViewRef.current = true;
+        try {
+            const view = new EditorView({ state: cached ?? createTabState(tab.content), parent: node });
+            viewRef.current = view;
+            returnKeyboard(view, keyboardBefore);
 
-        if (cached) {
-            view.dispatch({
-                effects: [
-                    themeCompartment.reconfigure(themeExtensions(theme)),
-                    readOnlyCompartment.reconfigure(EditorView.editable.of(mode !== 'read')),
-                    livePreviewCompartment.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
-                    indentCompartment.reconfigure(indentSettings(tabSize)),
-                    // A leftover search flash from the last time this document
-                    // was on screen.
-                    setRevealHighlight.of(null),
-                ],
-            });
-            // Nothing for collapsed headings: their field is in no compartment,
-            // and reads the mode from the editable facet re-stated above.
+            if (cached) {
+                const wasReadOnly = view.state.readOnly;
+                view.dispatch({
+                    effects: [
+                        themeCompartment.reconfigure(themeExtensions(theme)),
+                        readOnlyCompartment.reconfigure(modeExtensions(mode)),
+                        livePreviewCompartment.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
+                        indentCompartment.reconfigure(indentSettings(tabSize)),
+                        // A leftover search flash from the last time this document
+                        // was on screen.
+                        setRevealHighlight.of(null),
+                    ],
+                });
+                // Nothing for collapsed headings: their field is in no compartment,
+                // and reads the mode from the editable facet re-stated above.
+                //
+                // An open search panel follows the mode re-stated above, for the
+                // same both-places reason (tabs-and-panes). Nothing changes a tab's
+                // mode while no pane shows it today — the graph view, which could,
+                // unmounts EditorPane and this cache with it — so this guards the
+                // day something does, rather than a path in use.
+                rebuildSearchPanelForMode(view, wasReadOnly);
+            }
+
+            // Put back where this document was left, and keep it there while the
+            // background parse draws what lies around it. After the reconfigure
+            // above, so the landing is laid out with this mode's decorations;
+            // synchronous, so no frame is painted at the note's top first. The
+            // reveal effect below runs later, in its own frame, and releases the
+            // hold before it scrolls, so it still wins.
+            const anchor = rememberedScroll(path);
+            if (anchor) holdScrollAnchor(view, anchor);
+        } finally {
+            buildingViewRef.current = false;
         }
-
-        // Put back where this document was left, and keep it there while the
-        // background parse draws what lies around it. After the reconfigure
-        // above, so the landing is laid out with this mode's decorations;
-        // synchronous, so no frame is painted at the note's top first. The
-        // reveal effect below runs later, in its own frame, and releases the
-        // hold before it scrolls, so it still wins.
-        const anchor = rememberedScroll(path);
-        if (anchor) holdScrollAnchor(view, anchor);
     };
 
     // Hand the document's state back to the cache on the way out. Nothing to
@@ -767,12 +838,17 @@ function DocumentPane({
 
     useEffect(() => {
         if (!settled.current) return;
-        viewRef.current?.dispatch({
+        const view = viewRef.current;
+        if (!view) return;
+        const wasReadOnly = view.state.readOnly;
+        view.dispatch({
             effects: [
-                readOnlyCompartment.reconfigure(EditorView.editable.of(mode !== 'read')),
+                readOnlyCompartment.reconfigure(modeExtensions(mode)),
                 livePreviewCompartment.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
             ],
         });
+        // An open search panel gains or loses its Replace row with the mode.
+        rebuildSearchPanelForMode(view, wasReadOnly);
     }, [mode, stableGetAssetUrl, imageActions]);
 
     // Declared LAST on purpose — effects run in declaration order, so the three
@@ -829,13 +905,16 @@ function DocumentPane({
     // header — is what makes it the focused one. mousedown as well as focus,
     // because a canvas pane may never take DOM focus at all.
     const takeFocus = () => { if (!isFocused) onFocusPane(path); };
+    // …except a focus the view moved while it was being built (see
+    // setEditorContainer): that one arrives synchronously, mid-construction.
+    const takeFocusFromEvent = () => { if (!buildingViewRef.current) takeFocus(); };
 
     return (
         <div
             className={`editor-slot${isFocused ? ' is-focused' : ''}`}
             style={widthStyle}
             onMouseDownCapture={takeFocus}
-            onFocusCapture={takeFocus}
+            onFocusCapture={takeFocusFromEvent}
         >
             {showHeader && (
                 <div
@@ -949,20 +1028,61 @@ function DocumentPane({
                                 entries: editorMenuEntries(view, onNotify),
                             });
                         }}
+                        /* A dropped .md replaces this pane's whole note. That is a
+                           programmatic dispatch, which neither half of Reading
+                           mode blocks — until #17's fix a file dropped on a note
+                           being read replaced it, and autosave wrote it to disk.
+                           So Reading mode refuses here, and SAYS so: a drop that
+                           does nothing looks broken. Both cancels stay
+                           unconditional (an uncancelled file drop navigates the
+                           app away with every unsaved buffer), and the cursor is
+                           not turned into a no-drop one: `dropEffect = 'none'`
+                           would swallow the drop, and the explanation with it. */
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={async (e) => {
                             e.preventDefault();
                             const item = e.dataTransfer.items?.[0];
                             if (!item || item.kind !== 'file') return;
+                            // Before any await: the items are unreadable once
+                            // this handler returns.
                             const dropped = item.getAsFile();
                             if (!dropped || !dropped.name.endsWith('.md')) return;
-                            const text = await dropped.text();
-                            // Overwrite this pane's document; the update listener
-                            // marks its tab dirty and schedules the save.
                             const view = viewRef.current;
-                            if (view) {
-                                view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+                            if (!view) return;
+                            // Dropping onto a pane is acting on it, as a click
+                            // is — and a drop brings no mousedown. Without this,
+                            // in a split the ⌘E the refusal names toggled the
+                            // OTHER pane (measured). A keyboard still in another
+                            // pane is let go too: dragging from the desktop does
+                            // not move it, and the refusal's dialog hands focus
+                            // back to its opener on close, whose focus event
+                            // made that other pane the focused one again
+                            // (measured, typing in the right pane, dropping on
+                            // the left).
+                            const slot = e.currentTarget.closest('.editor-slot');
+                            const keyboard = document.activeElement;
+                            if (keyboard instanceof HTMLElement && keyboard !== document.body && !slot?.contains(keyboard)) {
+                                keyboard.blur();
                             }
+                            takeFocus();
+                            // Decided before the read, so a refused file is
+                            // never read at all.
+                            if (!canWrite(view.state)) {
+                                // The guide is read-only in every mode: ⌘E
+                                // skips it, so naming ⌘E would be a dead end.
+                                onNotify(file.isHelp
+                                    ? `“${dropped.name}” did not replace the Help Guide, which cannot be edited.`
+                                    : `“${dropped.name}” did not replace “${file.name}”, which is open for reading. ${READ_MODE_REASON}, then drop the file again.`);
+                                return;
+                            }
+                            const text = await dropped.text();
+                            // Re-read after the await, as Paste does: a ⌘E
+                            // pressed during the read is the reader's latest word.
+                            const now = viewRef.current;
+                            if (!now || !canWrite(now.state)) return;
+                            // The update listener marks the tab dirty and
+                            // schedules the save.
+                            now.dispatch({ changes: { from: 0, to: now.state.doc.length, insert: text } });
                         }}
                     />
                 )}

@@ -248,8 +248,10 @@ export function holdScrollAnchor(view: EditorView, anchor: ScrollAnchor): void {
  *  after. Required of any jump dispatched as a `scrollIntoView` effect that is
  *  not started by input inside the editor (the search reveal is one): the hold
  *  cannot see such an effect, and its re-pin would drag the view back. Jumps
- *  from inside (a heading-fold click, ⌘F) are already released by their
- *  pointerdown/keydown. */
+ *  from inside (a heading-fold click, Enter in the search panel) are already
+ *  released by their pointerdown/keydown. The search keys pressed OUTSIDE the
+ *  editor (noteSearch.ts — a reading view never has the keyboard) release
+ *  before jumping; ⌘F only opens the panel, and deliberately does not. */
 export function releaseScrollAnchor(view: EditorView): void {
     const hold = view.plugin(scrollAnchorPlugin);
     if (hold) hold.anchor = null;

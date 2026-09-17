@@ -77,7 +77,7 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   `$ { ( [`.
 - `mathWidget.ts` holds **the app's one KaTeX call**, `renderMath(el, latex, displayMode)`, and it is
   **exported** — the table cell renderer needs the same options, and a second copy of them is the
-  "three things exist twice" hazard in miniature. `normalizeForKatex` stays module-private.
+  "exists twice" hazard (AGENTS.md) in miniature. `normalizeForKatex` stays module-private.
   `output: 'html'` is not cosmetic: it suppresses the parallel MathML layer, so `el.textContent`
   holds the visible glyphs once — which a table cell's caret arithmetic depends on (and costs the
   MathML an `aria-hidden` tree would otherwise have provided, which is why the cell labels its span).
@@ -99,9 +99,31 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   `ignoreEvent()` returning **`false`** is what makes a widget clickable-into: `MathWidget`,
   `MermaidWidget` and `HorizontalRuleWidget` do; `CopyCodeWidget` returns `true` to keep its button's
   clicks; `TableWidget` deliberately keeps the default (see `markdown-tables`).
+- `readingMode.ts` says what Reading mode IS: `modeExtensions(mode)` = `EditorView.editable` **and**
+  `EditorState.readOnly`, both in `DocumentPane`'s `readOnlyCompartment`. `readOnly` is what
+  CodeMirror's own editing paths check (the search panel's Replace row and commands, drop, paste);
+  `editable` is what keeps a reading view unfocusable. Neither blocks a programmatic dispatch, so
+  `canWrite(state)` is **the only write predicate** — import it. `headingFold`'s `isReading`
+  (`!editable`) asks a different question ("is this Reading mode") and stays separate.
+- `noteSearch.ts`: the search keys (⌘F, ⌘G/⇧⌘G, F3/⇧F3) for a note that cannot take focus.
+  CodeMirror runs a keymap only for keys aimed at `.cm-content`, which a reading view never holds, so
+  these sit in a private keymap scope CodeMirror never runs, and `DocumentPane`'s `window` keydown
+  listener runs it for the **focused** note pane (guard: `keyIsForNote` — not `defaultPrevented`, no
+  `aria-modal`, target in the view or anything that is not a text field, menu, dialog or listbox:
+  `<body>`, a header button, a *sidebar* button). Jumps call `releaseScrollAnchor` first; ⌘F-open
+  deliberately does not. **Escape is left out** on purpose — other surfaces close on an unstopped
+  Escape. `SearchPanel` reads `readOnly` once, in its constructor, so an open panel is **rebuilt on
+  every mode flip** (`rebuildSearchPanelForMode`, in the mode effect *and* the adopt path), restoring
+  the exact query, the focused control and its caret. **A panel takes the keyboard as it mounts**
+  (`SearchPanel.mount()` selects Find) — on a rebuild and whenever a pane adopts a state with the
+  panel open — so both hand it back (`returnKeyboard`), and the slot ignores focus events raised
+  while its view is being built, or a split's focused pane would move on a tab return.
+  A modal overlay must carry `aria-modal="true"` or ⌘F behind it searches the note.
 - `cmTheme.ts`: Obsidian dark/light themes + One Dark/One Light code-token palettes. The **caret is
   driven entirely by CSS variables** set from Settings (line/block, thickness, smooth glide) — the
-  native caret is hidden and `drawSelection()` renders `.cm-cursor`.
+  native caret is hidden and `drawSelection()` renders `.cm-cursor`. The search panel (a bottom panel)
+  and its match marks are styled by ONE `searchPanelStyles` object spread into both themes, from the
+  app's CSS variables; its selectors carry `.cm-panel.cm-search` because the base theme's do.
 - `revealHighlight.ts` backs the search-result "you are here" flash, cleared on doc change, selection
   or tab swap. `formatKeymap.ts` implements `⌘B`/`⌘I` wrap-selection **with a `domEventHandlers`
   keydown fallback**, specifically because the browser's contenteditable layer can otherwise eat

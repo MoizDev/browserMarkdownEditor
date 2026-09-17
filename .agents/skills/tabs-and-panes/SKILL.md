@@ -222,7 +222,8 @@ rectangle.
   built it, and a reconfigure effect naming a compartment its state has never heard of is silently
   dropped. Per-pane compartments would give an adopted document a theme, mode and tab size frozen at
   whatever the pane that last held it had. Anything a *setting* feeds is therefore reconfigured in
-  **both** places: its own effect (for the live view) and the moment a cached state is adopted.
+  **both** places: its own effect (for the live view) and the moment a cached state is adopted —
+  and so is an open search panel rebuilt, since its Replace row is fixed per mode (`noteSearch.ts`).
 - **A canvas document builds no view**: a drawing renders its tldraw pane inside the slot, and a
   PDF's surface is a `PdfPane` that EditorPane positions *over* the slot. See the `pdf-and-drawings`
   skill for why the PDF panes stay outside the panes, and for the two consequences of floating over a

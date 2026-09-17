@@ -144,7 +144,6 @@ everything behavioural is verified by Playwright driving the app in headless Chr
 - **Match the house comment style.** This codebase explains *why*, beside the code, with the measured
   evidence that forced the decision ("measured: 7 tabs → 0", "~186M comparisons per keystroke"); a
   comment restating what the line does is not it. Narrow, hard-won facts belong there.
-- **Three things exist twice, as independent copies — change both halves.** "Is this name taken by
-  either kind" is `App.nameTaken` *and* `FileSystemContext.entryExists`; the editable-view test is
-  `lists.ts`'s *and* `tableEdit.ts`'s `canWrite`; ruled-paper colours are `paper.ts`'s SVG *and*
-  `pdfBuild.ts`'s pdf-lib constants.
+- **Two things exist twice, as independent copies — change both halves.** "Is this name taken by
+  either kind" is `App.nameTaken` *and* `FileSystemContext.entryExists`; ruled-paper colours are
+  `paper.ts`'s SVG *and* `pdfBuild.ts`'s pdf-lib constants.

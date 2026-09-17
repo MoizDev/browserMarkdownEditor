@@ -23,7 +23,7 @@ The folder icon at the top of the file tree remembers every folder you have open
 
 Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`. You do not need the file dialog for that — right-click the folder in the file tree and choose **Open as Vault**, and it opens as the vault straight away and joins the recent list, so the folder icon is the way back out.
 
-Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's tabs, the way they were split, the pane widths and the note you were reading straight back, without your reopening a thing — and so does reloading the page. A note you deleted from disk in the meantime is simply not among them. That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row.
+Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's tabs, the way they were split, the pane widths and the note you were reading straight back, without your reopening a thing — and so does reloading the page. A note you deleted from disk in the meantime is simply not among them; one that is there but can't be read at that moment still comes back, as a tab that says so (see **Tabs** below). That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row.
 
 ### Security & Permissions
 Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
@@ -111,6 +111,8 @@ To create something *inside* a particular folder, right-click that folder (or us
 
 ### Tabs
 Every file you open gets a tab along the top of the editor. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app — and, because every vault keeps its own set, whenever you come back to that vault. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
+
+If a note can't be read when your tabs come back — another program is writing it, a synced file isn't downloaded yet, or it's locked — its tab still comes back, marked with a warning sign, and says so instead of showing the note. Nothing in the file is changed. Press **Try again** once it is readable, or click the note in the file tree, which tries again too. It stays among your saved tabs either way; only a note that is really gone from the vault is dropped.
 
 ### Putting Two Notes Side by Side
 Any tab can be merged into the tab you are looking at, so that both are on screen at once:

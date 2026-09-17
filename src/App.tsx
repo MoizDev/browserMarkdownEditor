@@ -117,6 +117,19 @@ function tracksAssets(file: ActiveFile): boolean {
   return !file.isHelp && !!file.parentHandle && isTextFile(file.name) && !isCanvasFile(file.name);
 }
 
+/** A read that failed because the file is no longer there — the one failure
+ *  that means a saved tab should be dropped rather than kept (see
+ *  OpenTab.readError). Same test FileSystemContext uses for a missing vault. */
+function isNotFound(err: unknown): boolean {
+  return (err as DOMException)?.name === 'NotFoundError';
+}
+
+/** A short, human line for why a read failed — shown in the unreadable pane. */
+function describeReadError(err: unknown): string {
+  const message = (err as DOMException)?.message;
+  return typeof message === 'string' && message ? message : String(err);
+}
+
 /**
  * Structural equality for two link graphs.
  *
@@ -846,9 +859,12 @@ export default function App() {
       for (const note of neighbours) {
         if (orphaned.size === 0) break;
         // An open tab is read from its BUFFER, so an unsaved reference counts
-        // just as much as a saved one.
+        // just as much as a saved one — unless it could not be read at all
+        // (OpenTab.readError): that buffer is no text, so it answers "keep".
         const open = tabsRef.current.find(t => t.file.path === note.path);
-        const text = open ? open.content : await readFile(note.handle).catch(() => null);
+        const text = open
+          ? (open.readError ? null : open.content)
+          : await readFile(note.handle).catch(() => null);
         // A note that can't be read might say anything, so it is taken to say
         // "keep": a stale file costs nothing next to deleting a picture that is
         // still on screen somewhere.
@@ -888,6 +904,8 @@ export default function App() {
       .then(() => reconcileAssetsRef.current(file, before, after));
   }, []);
 
+  const retryUnreadTabRef = useRef<(path: string) => Promise<boolean>>(async () => false);
+
   // Returns whether the file was actually opened (as a tab or externally).
   const handleFileClick = useCallback(async (node: FileTreeNode): Promise<boolean> => {
     try {
@@ -902,8 +920,14 @@ export default function App() {
       // Already open? Just focus it — don't re-read (preserves the tab's
       // unsaved edits and its own undo history). Its pane comes to the front
       // whether it is a tab of its own or one pane of a split.
-      if (tabsRef.current.some(t => t.file.path === node.path)) {
+      const open = tabsRef.current.find(t => t.file.path === node.path);
+      if (open) {
         setLayout(l => focusTab(l, node.path));
+        // Clicking a note whose tab could not be read is asking for it again.
+        // Awaited, so a caller that acts on the opened document next (a search
+        // result's reveal) lands on the remounted, readable pane rather than
+        // being consumed by the unreadable one.
+        if (open.readError) await retryUnreadTabRef.current(node.path);
         return true;
       }
 
@@ -1170,6 +1194,10 @@ export default function App() {
 
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || tab.file.isHelp || !tab.file.handle) return;
+    // A tab restored without its text (OpenTab.readError) has an empty buffer
+    // that is NOT the file: ⌘S forces a flush of the focused tab, and writing
+    // that '' would erase a note the app merely failed to read.
+    if (tab.readError) return;
     if (!tab.dirty && !force) return;
     // contentOverride exists for callers who have fresher content than the tab
     // does: setTabs is async, so a caller that just produced new content would
@@ -1246,7 +1274,9 @@ export default function App() {
   // way the text must land in the document it came from — never in whichever
   // pane happens to have focus by then.
   const updateTabContent = useCallback((path: string, content: string) => {
-    setTabs(prev => prev.map(t => t.file.path === path ? { ...t, content, dirty: true } : t));
+    // Never into an unreadable tab's buffer: nothing edits one (its pane builds
+    // no editor), but the funnel guards itself — see OpenTab.readError.
+    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true } : t));
     scheduleSave(path);
   }, [scheduleSave]);
 
@@ -1261,7 +1291,7 @@ export default function App() {
    * setTabs above hasn't committed yet when flushTab runs.
    */
   const flushTabNow = useCallback(async (path: string, content: string) => {
-    setTabs(prev => prev.map(t => t.file.path === path ? { ...t, content, dirty: true } : t));
+    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true } : t));
     await flushTab(path, true, content);
   }, [flushTab]);
 
@@ -1325,6 +1355,66 @@ export default function App() {
 
   const closeTab = useCallback((path: string) => removeTab(path, true), [removeTab]);
 
+  /**
+   * Read an unreadable tab's file again (see OpenTab.readError). Resolves true
+   * when the tab now holds the file's text.
+   *
+   * Serialized per document — a double click, or the pane's button and a tree
+   * click together, would otherwise race two reads into one tab. The updaters
+   * match on the tab's id, not its path: a close, rename or vault switch can
+   * land mid-read, and must turn the result into a no-op rather than hand the
+   * text to whatever answers to that path by then. A success remounts the pane
+   * (EditorPane keys it on readError), so its view is built from the real text
+   * exactly as on a fresh open.
+   */
+  const retryingReadsRef = useRef(new Set<string>());
+  const retryUnreadTab = useCallback(async (path: string): Promise<boolean> => {
+    const tab = tabsRef.current.find(t => t.file.path === path);
+    if (!tab?.readError || !tab.file.handle) return !!tab && !tab.readError;
+    if (retryingReadsRef.current.has(tab.id)) return false;
+    retryingReadsRef.current.add(tab.id);
+    try {
+      const content = await readFile(tab.file.handle as FileSystemFileHandle);
+      const current = tabsRef.current.find(t => t.id === tab.id);
+      if (!current) return false;
+      // The asset-diff baseline the restore held back, taken under the path the
+      // document answers to NOW.
+      if (tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) {
+        rememberAssetRefs(current.file, content);
+      }
+      setTabs(prev => prev.map(t =>
+        t.id === tab.id && t.readError ? { ...t, content, readError: undefined } : t));
+      return true;
+    } catch (err) {
+      const current = tabsRef.current.find(t => t.id === tab.id);
+      // Closed, or its vault switched away, while the read was out: nothing
+      // left to update or to tell anyone about.
+      if (!current) return false;
+      // NotFoundError on the handle this read started with only means "gone" if
+      // the tab still holds that handle: a rename or move mid-read retargets
+      // the tab and removes the old entry, and must not close a note that
+      // merely moved.
+      if (isNotFound(err) && current.file.handle === tab.file.handle) {
+        removeTab(current.file.path, false);
+        void tell({
+          title: 'That note is gone',
+          confirmLabel: 'OK',
+          body: <><strong>{current.file.name}</strong> is no longer in this vault, so its tab has been closed.</>,
+        });
+      } else {
+        console.warn('Could not read the file again:', path, err);
+        setTabs(prev => prev.map(t =>
+          t.id === tab.id && t.readError ? { ...t, readError: describeReadError(err) } : t));
+      }
+      return false;
+    } finally {
+      retryingReadsRef.current.delete(tab.id);
+    }
+  }, [readFile, rememberAssetRefs, removeTab, tell]);
+  // handleFileClick is declared long before this, and reads it through a ref
+  // (the rebuildGraphRef pattern) rather than growing a dependency.
+  useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab]);
+
   /** Close a whole tab — every document in it. A merged tab is one tab, so its
    *  × takes all of its panes; each pane's own × closes just that one. */
   const closeTabGroup = useCallback((id: string) => {
@@ -1354,7 +1444,7 @@ export default function App() {
   const toggleTabMode = useCallback((path: string | null) => {
     if (!path) return;
     setTabs(prev => prev.map(t =>
-      t.file.path === path && !t.file.isHelp
+      t.file.path === path && !t.file.isHelp && !t.readError
         ? { ...t, mode: t.mode === 'edit' ? 'read' : 'edit' }
         : t));
   }, []);
@@ -1469,10 +1559,12 @@ export default function App() {
 
   // Search reads open-tab buffers through this accessor (via tabsRef) so its
   // results reflect unsaved edits without re-rendering the sidebar on typing.
-  const getOpenTabContent = useCallback(
-    (path: string) => tabsRef.current.find(t => t.file.path === path)?.content ?? null,
-    []
-  );
+  // An unreadable tab (OpenTab.readError) answers null, like a closed note, so
+  // search reads the file from disk rather than matching an empty buffer.
+  const getOpenTabContent = useCallback((path: string) => {
+    const tab = tabsRef.current.find(t => t.file.path === path);
+    return tab && !tab.readError ? tab.content : null;
+  }, []);
 
   /**
    * The address bar AS THE PAGE LOADED, captured once.
@@ -1587,22 +1679,51 @@ export default function App() {
             continue;
           }
           const node = vaultFiles.find(f => f.path === path);
-          if (!node) continue; // file deleted/moved externally — skip it
-          try {
-            // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
-            // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
-            // fill the buffer with garbage.
-            const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
+          if (!node) continue; // file deleted/moved externally — gone, so dropped
+          // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
+          // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
+          // fill the buffer with garbage.
+          if (isPdfFile(node.name)) {
+            restored.push({ id: newTabId(), file: node, content: '', mode: 'read', dirty: false });
+            continue;
+          }
+          // GONE and UNREADABLE are different answers, and only the first may
+          // drop the path. This used to skip both alike, and whatever skips a
+          // path here drops it from the vault's saved tabs for good: the layout
+          // below is rebuilt from what came back, and the persist effect then
+          // files that as the whole session — so one momentary failure (a sync
+          // client or another editor mid-write, a cloud file not downloaded, a
+          // lock) lost the tab and its place in a split on every later reload.
+          // Anything but NotFoundError gets one immediate second read — a fresh
+          // getFile() is exactly what cures Chromium's "file changed after
+          // getFile" NotReadableError — and then comes back as a tab that says
+          // it could not be read, holding no text (OpenTab.readError).
+          let content: string | null = null;
+          let failure: unknown = null;
+          for (let attempt = 0; attempt < 2 && content === null; attempt++) {
+            try {
+              content = await readFile(node.handle as FileSystemFileHandle);
+            } catch (err) {
+              failure = err;
+              if (isNotFound(err)) break;
+            }
+          }
+          if (content !== null) {
             restored.push({ id: newTabId(), file: node, content, mode: 'read', dirty: false });
-          } catch (err) {
-            console.error('Failed to restore tab:', path, err);
+          } else if (!isNotFound(failure)) {
+            console.warn('Could not read a restored tab; keeping it:', path, failure);
+            restored.push({
+              id: newTabId(), file: node, content: '', mode: 'read', dirty: false,
+              readError: describeReadError(failure),
+            });
           }
         }
-        // Nothing of the session came back (every note in it deleted since, or
-        // unreadable) and nothing was opened meanwhile: the stored session is
-        // left as it was. Something that WAS opened still goes through the
-        // merge, with nothing to lay it over — the gate held its write back, and
-        // the merge's new layout is the only thing that will write it now.
+        // Nothing of the session came back (every note in it gone since — an
+        // unreadable one still comes back, as a tab saying so) and nothing was
+        // opened meanwhile: the stored session is left as it was. Something
+        // that WAS opened still goes through the merge, with nothing to lay it
+        // over — the gate held its write back, and the merge's new layout is
+        // the only thing that will write it now.
         if (restored.length === 0 && layoutRef.current.groups.length === 0) return;
         // The reads above yield to the event loop: the vault may have been
         // switched in the meantime, and the switch effect empties the tab set,
@@ -1625,7 +1746,10 @@ export default function App() {
         // tabsRef, which only catches up once a commit's effects have run.
         // (tracksAssets keeps help, PDFs, drawings and notebooks out of the map
         // entirely, so for those this is a no-op whichever way the test goes.)
+        // An unreadable tab takes none: '' as a baseline would have its first
+        // save after a retry diff every embed as removed. The retry seeds it.
         for (const tab of restored) {
+          if (tab.readError) continue;
           if (!assetRefsRef.current.has(tab.file.path)) rememberAssetRefs(tab.file, tab.content);
         }
         // Which of these shared a tab as split panes. A session written before
@@ -2627,6 +2751,7 @@ export default function App() {
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
             onFlushNow={flushTabNow}
+            onRetryRead={retryUnreadTab}
             onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}
             onOpenNote={openNoteByName}

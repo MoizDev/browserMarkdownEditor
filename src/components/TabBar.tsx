@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Columns, FileText, Notebook, PenTool, X } from './icons';
+import { AlertCircle, Columns, FileText, Notebook, PenTool, X } from './icons';
 import { isDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import { TAB_DRAG_TYPE } from '../utils/tabDrag';
 import type { OpenTab, TabGroup } from '../types';
@@ -23,7 +23,11 @@ interface TabBarProps {
 
 /** The same file-type icons the explorer uses, so a tab and its tree row read
  *  as the same thing. */
-function tabIcon(tab: OpenTab | undefined) {
+function tabIcon(tab: OpenTab | undefined, unreadable: boolean) {
+    // A document restored without its text (OpenTab.readError) says so here
+    // too, or a tab in the background gives no sign until it is selected — and
+    // a split says so for ANY of its panes, not only the focused one.
+    if (unreadable) return <AlertCircle size={13} />;
     if (tab && !tab.file.isHelp && isNotebookFile(tab.file.name)) return <Notebook size={13} />;
     if (tab && !tab.file.isHelp && isDrawingFile(tab.file.name)) return <PenTool size={13} />;
     return <FileText size={13} />;
@@ -101,15 +105,20 @@ export default function TabBar({ tabs, groups, activeGroupId, draggingGroupId, o
                 // the pane headers' business.
                 const dirty = group.paths.some(p => byPath.get(p)?.dirty);
                 const names = group.paths.map(p => byPath.get(p)?.file.name ?? p);
+                const unreadable = group.paths.some(p => byPath.get(p)?.readError);
+                const paneNames = group.paths.map((p, j) =>
+                    byPath.get(p)?.readError ? `${names[j]} (couldn’t be read)` : names[j]);
                 return (
                     <React.Fragment key={group.id}>
                         {draggingGroupId !== null && dropIndex === i && <span className="tab-drop-indicator" />}
                         <div
                             ref={isActive ? activeRef : undefined}
-                            className={`tab${isActive ? ' is-active' : ''}${draggingGroupId === group.id ? ' is-dragging' : ''}`}
+                            className={`tab${isActive ? ' is-active' : ''}${unreadable ? ' is-unreadable' : ''}${draggingGroupId === group.id ? ' is-dragging' : ''}`}
                             role="tab"
                             aria-selected={isActive}
-                            title={panes > 1 ? `${panes} panes:\n${names.join('\n')}` : group.activePath}
+                            title={panes > 1
+                                ? `${panes} panes:\n${paneNames.join('\n')}`
+                                : unreadable ? `${group.activePath}\nCouldn’t be read — press Try again, or click it in the file tree` : group.activePath}
                             draggable
                             onClick={() => onSelectGroup(group.id)}
                             onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }} // no middle-click autoscroll
@@ -122,7 +131,7 @@ export default function TabBar({ tabs, groups, activeGroupId, draggingGroupId, o
                             {/* The grab handle the drag is described by — the
                                 whole tab is draggable, but the icon is the part
                                 that looks like it. */}
-                            <span className="tab-icon" aria-hidden="true">{tabIcon(tab)}</span>
+                            <span className="tab-icon" aria-hidden="true">{tabIcon(tab, unreadable)}</span>
                             <span className="tab-title">{tab?.file.name ?? group.activePath}</span>
                             {panes > 1 && (
                                 <span className="tab-split-badge" aria-label={`${panes} panes`}>

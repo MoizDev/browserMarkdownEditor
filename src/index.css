@@ -979,6 +979,13 @@ body {
   color: var(--text-muted);
 }
 
+/* A document restored without its text (OpenTab.readError). Muted rather than
+   faint so the warning glyph reads from a background tab — but not the danger
+   red, which this app keeps for actions that destroy something. */
+.tab.is-unreadable .tab-icon {
+  color: var(--text-muted);
+}
+
 /* How many documents a merged tab holds. Only ever present on a split tab, so
    an ordinary tab reads exactly as it always did. */
 .tab-split-badge {
@@ -2243,6 +2250,92 @@ body.is-resizing-panes * {
 
 .pdf-pane-action:hover {
   background: var(--interactive-accent-hover);
+}
+
+.pdf-pane-action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.pdf-pane-action:disabled:hover {
+  background: var(--interactive-accent);
+}
+
+/* The pane of a document the restore could not read (OpenTab.readError). Fills
+   its slot and scrolls rather than clipping, since a pane in a five-way split
+   can be narrow and short; the text keeps a readable measure when it is wide. */
+.unread-pane {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  /* Top-anchored at a height every pane shares, not centred: centring put each
+     pane's message at a height set by its own name's wrapping, so two in one
+     split sat visibly out of line. Anchoring also never pushes overflow past
+     the top edge, out of reach of the scrollbar, in a short pane. */
+  justify-content: flex-start;
+  align-items: safe center;
+  container-type: inline-size;
+}
+
+/* The anchor's offset is a spacer that SHRINKS, not padding: a fixed 28vh put
+   Try again below the fold of a 420px window's split while ~120px sat empty
+   above it. It and its negative margin take back the message padding and the
+   flex gap it would add, and only it gives way: the text and button do not
+   shrink, or their overflow clips them mid-sentence first. */
+.unread-pane::before {
+  content: '';
+  flex: 0 1 calc(min(28vh, 220px) - 24px);
+  margin-bottom: -10px;
+}
+
+.unread-pane > * {
+  flex-shrink: 0;
+}
+
+.unread-pane > span {
+  max-width: 420px;
+  text-wrap: balance;
+}
+
+/* A pane in a five-way split can be ~150px wide, where the hint alone ran
+   taller than the pane and pushed Try again out of sight; the title, the
+   error itself and the button are what such a pane has room for. */
+@container (max-width: 260px) {
+  .unread-pane-hint {
+    display: none;
+  }
+
+  /* A long name, or Chromium's long NotReadableError text, ran 6–8 lines at
+     ~150px; both carry their full text as a tooltip. */
+  .unread-pane > .unread-pane-title,
+  .unread-pane > .unread-pane-detail {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+    /* The clamp's ellipsis is drawn past the last glyph and was cut at the
+       box edge (measured: 158px of content in 155px); 3px holds it — 2px did
+       not, 4px overflowed again at 99px. */
+    padding-inline: 3px;
+  }
+}
+
+.unread-pane-title {
+  color: var(--text-normal);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.unread-pane-hint {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.unread-pane-detail {
+  color: var(--text-faint);
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 /* Status messages nested inside a pane must fill it to center properly (the

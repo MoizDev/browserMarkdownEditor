@@ -64,7 +64,28 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   have been rewritten, and a split would come back silently flattened. `restoringRef` (below) now
   also shuts persistence for the reads, but one snapshot makes that unreachable, not merely unreached.
 - `restoreLayout` gives any path a stored group can't account for a tab of its own; a session written
-  before split tabs restores as all-singletons. A path whose file is gone is simply skipped.
+  before split tabs restores as all-singletons.
+- **Only a GONE file is dropped from the session; an UNREADABLE one comes back as a tab.** Gone = no
+  tree node, or `readFile` throws `NotFoundError`. Anything else gets one immediate re-read (a fresh
+  `getFile()` cures Chromium's "changed after getFile" `NotReadableError`), then is pushed as an
+  `OpenTab` with `readError` and `content: ''`. The old catch skipped it like a deleted file, and a
+  skipped path is gone for good: the layout is rebuilt from what came back and the persist effect
+  files that as the whole session (issue #8). As a real tab it keeps its pane, width, close, rename
+  and persistence for free — a layout-only path would get no pane and blank the editor.
+- **A `readError` tab holds NO file text, and every consumer of `content` must know it** — ⌘S
+  force-flushes the focused tab and would write `''` over the note. Guarded at `flushTab` (the write
+  gate), `updateTabContent`/`flushTabNow`, `toggleTabMode`, `getOpenTabContent` (search reads disk
+  instead), the asset-reconcile neighbour scan (treated as unreadable → keep), and the restore's
+  asset-baseline seeding; DocumentPane mounts no view, drawing or notebook for it, and EditorPane
+  hides the header's document actions. A new reader of `tab.content` joins that list.
+- **Retry (`App.retryUnreadTab`)** — the pane's Try again, or clicking the note in the tree
+  (`handleFileClick`, through `retryUnreadTabRef`, AWAITED so a search result's reveal lands on the
+  remounted pane). Serialized per tab id by an in-flight `Set`; its updaters match on **id**, so a
+  close/rename/switch mid-read no-ops. Success seeds the asset baseline and clears `readError`;
+  `NotFoundError` closes the tab and says so via `tell` — only if the tab still holds the handle
+  the read began with, since a rename/move mid-read removes the old entry. The pane's
+  React key carries `|unread`, so success REMOUNTS it and the view is built from the real text as on
+  a fresh open; `stateKey` is unchanged, safe because the unreadable pane never cached a state.
 - **An empty `paths` is a real session** — "I closed everything in this vault" — and must survive a
   switch. Nothing may treat it as absence on the way *in*.
 - **The restore pass is the ONLY thing that opens documents when a vault loads.** The address bar's
@@ -145,7 +166,7 @@ reads and **before** the merge, and that check alone keeps a mid-restore switch'
 new vault: the switch empties the tab set, so the merge would lay them straight over it. Asset
 baselines are seeded only after it, for the same reason — the switch has just cleared that map.
 `restoringRef` is reset at **every claim**, so a pass still reading the vault just left cannot hold
-the incoming vault's gate. A pass whose reads ALL fail still dispatches a merge when `layoutRef` says
+the incoming vault's gate. A pass whose notes are ALL gone still dispatches a merge when `layoutRef` says
 something was opened meanwhile, because the gate held that commit's own write back; and when
 `layoutRef` has not caught up yet the pass returns instead, leaving the flush that updates it to run
 the persist effect immediately after the `finally` — that ref's effect is declared above it. One

@@ -68,10 +68,15 @@ runs **once per vault**, on a cold start and again on every switch back to it.
 - **An empty `paths` is a real session** — "I closed everything in this vault" — and must survive a
   switch. Nothing may treat it as absence on the way *in*.
 - **The restore pass is the ONLY thing that opens documents when a vault loads.** The address bar's
-  note (`initialLocation`, captured once) is folded INTO it: consumed by the first vault the page
-  restores, applied only when `findLinkedVault` — the resolver FileSystemContext picked the vault
-  with — resolves the link to `currentVaultId`, read alongside the saved paths (one they lack becomes
-  a trailing singleton through `restoreLayout`) and focused as its `wantActive`. 5de752e opened it
+  note (`initialLocation`, captured once) is folded INTO it: applied only when `findLinkedVault` — the
+  resolver FileSystemContext picked the vault with — resolves the link to `currentVaultId`, and
+  spent by the first claim of a vault it names (a fallback vault leaves it pending, so opening the
+  named folder later in the page load still opens the note; a link with no vault or no file is spent
+  at once). That resolve is only sound because `recordVault` sets the id and the labelled list in
+  ONE batch — with the id first, a folder opened for the first time was absent from the list at the
+  claim and the note was dropped (issue #6); never set the id ahead of the list again. The note is
+  read alongside the saved paths (one they lack becomes a trailing singleton through
+  `restoreLayout`) and focused as its `wantActive`. 5de752e opened it
   with a second, racing `handleFileClick` instead; the pass saw that tab after its reads and bailed
   *after the claim*, so the persist effect filed the one tab as the vault's whole session. Measured:
   four documents in three tabs (one a 65/35 split) reloaded as one tab, the stored `paths` rewritten

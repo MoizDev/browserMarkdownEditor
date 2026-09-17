@@ -267,8 +267,10 @@ raising the setting later still has history to show.
   first click of a double-click. Keyboard activation reports `detail === 0` and lists; an empty list
   goes straight to the picker rather than making the user open a menu to reach it.
 - **Each row carries a minus that forgets it** (`forgetRecentVault` on the context → the same
-  serialized `forgetVault`). Every write to the list publishes through `publishVaults`, which
-  re-labels first: a qualified `parent/name` is earned only while two listed vaults share a folder
+  serialized `forgetVault`). Every write to the list publishes through `publishVaults` — or, in
+  `recordVault` alone, through the same `menuVaults` builder, so the list and `currentVaultId` are
+  set in one batch (App resolves a link against the list at the render the id arrives; issue #6) —
+  which re-labels first: a qualified `parent/name` is earned only while two listed vaults share a folder
   name, so dropping one of a pair has to leave the survivor as the bare name. Nothing on disk is
   touched, so there is no confirm in front of it, and `forgetRecentVault` reports whether the write
   landed — a refused one says so in the menu rather than leaving a dead click. **It forgets more
@@ -329,7 +331,9 @@ raising the setting later still has history to show.
   covering the tree — and `App.handleFileClick` on one of those rows opens A's handle under B's path.
   During the walk the app therefore stays wholly on the old vault, which is coherent: a row clicked
   then opens the old vault's file from the old vault. The one lag left is `recordVault`, deliberately
-  still after the commit — `currentVaultId` trails by a tick and nothing reads it in between.
+  still after the commit — `currentVaultId` (arriving together with the list) trails by
+  `rememberVault` plus the labelling round trips. The one reader that can notice is the record scope:
+  a file opened by hand in that window reads the old vault's saved position (App's `setRecordScope`).
 - Opening a row **re-requests permission when Chrome has let the grant lapse** (legal because it's a
   click), then touches the folder before committing the app to it — a vault deleted or moved since
   would otherwise just blank the sidebar. That entry is dropped from the list instead, and every

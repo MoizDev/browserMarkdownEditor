@@ -46,15 +46,17 @@ is brought to the front — added as one more tab if it was not open already.
 Reloading the page is the same thing, since the address bar is a link to what you
 were reading. The note half of a link only counts in the vault the link names: if
 that vault cannot be found and another one opens instead, it opens just as you
-left it.
+left it, and opening the vault the link names afterwards — without reloading the
+page — still brings its note to the front.
 
 A link works on the machine and browser you opened the vault in. Browsers do not
 let a page open a folder just because it can name one, so what a link carries is
 not a location on your disk: it is the name of a vault this browser has already
 been given access to. Opening a link to a vault whose permission has lapsed shows
 a single **Open '<vault>'** button, because only a click can ask for that access
-back. On a machine that has never opened the vault, the link cannot find it — open
-the folder once and the link works from then on.
+back. On a machine that has never opened the vault, the link cannot find it yet:
+open that folder — **Open Vault**, or **Open folder…** in the vault menu — and the
+note the link names opens with it. From then on the link finds the vault by itself.
 
 ### Giving a File or Folder an Icon and a Colour
 Right-click anything in the sidebar — a folder, a note, a notebook, a drawing —

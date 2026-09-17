@@ -495,6 +495,22 @@ async function walkForTrash(dir: FileSystemDirectoryHandle, path: string, out: T
     }
 }
 
+/**
+ * A stored list as the vault menu shows it: labelled, and pathed against `root`.
+ *
+ * Labelling is never optional and never cacheable: `label` is qualified to
+ * "parent/name" only while two listed vaults share a folder name, so any change
+ * to the list can free — or take — a survivor's bare name. Building every
+ * published list here is what stops a future writer from setting the state
+ * directly and shipping stale labels. The root is passed in rather than read
+ * from state: every caller has just decided what it is, and the one on mount
+ * runs before the state it would read has settled.
+ */
+async function menuVaults(list: StoredVault[], root?: FileSystemDirectoryHandle | null): Promise<RecentVault[]> {
+    const labelled = await labelVaults(list);
+    return root ? withVaultPaths(labelled, root) : labelled;
+}
+
 export function FileSystemProvider({ children }: { children: ReactNode }) {
     const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
     const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
@@ -583,20 +599,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, [loadTree]);
 
     /**
-     * Publish a stored list to the menu.
-     *
-     * Labelling is never optional and never cacheable: `label` is qualified to
-     * "parent/name" only while two listed vaults share a folder name, so any
-     * change to the list can free — or take — a survivor's bare name. Going
-     * through one function is what stops a future writer from setting the state
-     * directly and shipping stale labels.
+     * Publish a stored list to the menu. Every write to `recentVaults` goes
+     * through here or, in `recordVault` alone, through `menuVaults` directly —
+     * only so that it can set the list in the same batch as the current id.
      */
     const publishVaults = useCallback(async (list: StoredVault[], root?: FileSystemDirectoryHandle | null) => {
-        const labelled = await labelVaults(list);
-        // The root is passed in rather than read from state: every caller has
-        // just decided what it is, and the one on mount runs before the state
-        // it would read has settled.
-        setRecentVaults(root ? await withVaultPaths(labelled, root) : labelled);
+        setRecentVaults(await menuVaults(list, root));
     }, []);
 
     /**
@@ -604,16 +612,27 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * becomes the one the vault menu marks as current. Every path that changes
      * `rootHandle` goes through here, including the silent restore on mount —
      * the list would otherwise be missing the vault the user is looking at.
+     *
+     * The list is built BEFORE the id is set, and the two setters sit with no
+     * await between them, so React commits them in one render: no commit ever
+     * carries this vault's id with a list that does not hold it yet. App's
+     * restore pass resolves the address bar's link against `recentVaults` at
+     * the very render it claims the vault, and with the id set first a folder
+     * opened for the first time was not in the list yet — the link's note was
+     * dropped, unless the labelling round trips happened to beat React to the
+     * render (issue #6). The id lands those round trips later instead, which
+     * everything already tolerates: it lags `rootHandle` on every open anyway.
      */
     const recordVault = useCallback(async (handle: FileSystemDirectoryHandle) => {
         try {
             const { list, id } = await rememberVault(handle);
+            const vaults = await menuVaults(list, handle);
             setCurrentVaultId(id);
-            await publishVaults(list, handle);
+            setRecentVaults(vaults);
         } catch (err) {
             console.warn('Could not record the opened vault:', err);
         }
-    }, [publishVaults]);
+    }, []);
 
     /**
      * On mount, try to restore the previously saved directory handle from IndexedDB.

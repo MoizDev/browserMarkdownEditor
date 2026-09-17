@@ -679,8 +679,9 @@ export default function App() {
   const restoringRef = useRef<object | null>(null);
 
   // The open vault, for the async restore pass to re-check after its awaits —
-  // BOTH halves of it, because `currentVaultId` lags `rootHandle` by a commit on
-  // every path that commits the tree before awaiting `recordVault`. The id alone
+  // BOTH halves of it, because `currentVaultId` lags `rootHandle` — by
+  // recordVault's IndexedDB write and labelling round trips — on every path
+  // that commits the tree before awaiting `recordVault`. The id alone
   // cannot tell that pass a switch happened underneath it (see there).
   const currentVaultIdRef = useRef<string | null>(currentVaultId);
   useEffect(() => { currentVaultIdRef.current = currentVaultId; }, [currentVaultId]);
@@ -694,8 +695,8 @@ export default function App() {
   // per-vault sessions both of them are routinely open.
   //
   // That covers the panes THIS app opens, and not the one window it cannot:
-  // `currentVaultId` lands a commit after `rootHandle`+`fileTree` on the
-  // switch paths, so the new vault's tree is clickable while the scope still
+  // `currentVaultId` lands recordVault's round trips after `rootHandle`+`fileTree`
+  // on the switch paths, so the new vault's tree is clickable while the scope still
   // names the old one, and a file opened by hand right then reads the other
   // vault's offset for the same path. Deliberately not "fixed" by clearing the
   // scope on switch: pane unmounts run one commit AFTER the switch effect, so
@@ -1485,7 +1486,9 @@ export default function App() {
    * the restore pass below.
    */
   const [initialLocation] = useState(readLocation);
-  /** Consumed by the first vault this page restores (see the restore pass). */
+  /** Spent by the first restore of a vault the link names, or by the first
+   *  restore of any vault when it names no vault or no note — a vault the app
+   *  fell back to leaves it waiting (see the restore pass). */
   const linkPendingRef = useRef(true);
 
   // Auto-restore THIS VAULT'S tabs once its file tree has loaded — on a cold
@@ -1537,11 +1540,9 @@ export default function App() {
     restoringRef.current = null;
     const vaultFiles = collectFiles(fileTree);
 
-    // The note the address bar names, when it belongs HERE. Consumed at the
-    // claim, so it applies to the first vault this page restores and never
-    // again on a later switch back to it. Resolved through the same
-    // findLinkedVault FileSystemContext picked the vault with, so the two
-    // agree: an unknown name that fell back to the last-used vault, another
+    // The note the address bar names, when it belongs HERE. Resolved through
+    // the same findLinkedVault FileSystemContext picked the vault with, so the
+    // two agree: an unknown name that fell back to the last-used vault, another
     // vault chosen from the "Open 'X'" screen, or a hash naming no vault at all
     // opens that vault as it was left — the old opener instead opened the
     // link's path out of whichever vault loaded, if a file happened to sit
@@ -1550,9 +1551,22 @@ export default function App() {
     // here follows the list's order at this claim.) Text and PDF only,
     // handleFileClick's own test for "opens as a tab": anything else would be
     // a window.open on page load.
+    //
+    // Spent at the first claim of a vault it NAMES, so it never applies again
+    // on a later switch back — even when that vault turned out not to hold
+    // the note. Until then it waits: a vault the app fell back to (or one the
+    // user picked instead) does not spend it, so opening the named folder
+    // later in this page load — typically the first time this browser sees it
+    // — still brings the note up. Spending it at the first claim of ANY vault
+    // lost it to the fallback (issue #6). A link naming no vault or no note can
+    // never apply, so it is spent at once. The list it is resolved against
+    // always holds the vault being claimed: recordVault sets the id and the
+    // list in one batch. With the id first, a folder opened for the first time
+    // was missing from the list at this render and the note was dropped.
     const link = linkPendingRef.current ? initialLocation : null;
-    linkPendingRef.current = false;
-    const linkedNode = link?.file && findLinkedVault(link.vault, recentVaults)?.id === currentVaultId
+    const linkHere = !!link?.file && findLinkedVault(link.vault, recentVaults)?.id === currentVaultId;
+    if (!link?.file || !link.vault || linkHere) linkPendingRef.current = false;
+    const linkedNode = link?.file && linkHere
       ? vaultFiles.find(f => f.path === link.file && (isTextFile(f.name) || isPdfFile(f.name)))
       : undefined;
 
@@ -1725,10 +1739,12 @@ export default function App() {
     if (!vault) {
       // Two reasons there may be no vault to name, and neither is a reason to
       // clear the hash. Before a vault is open, the link is what the "Open 'X'"
-      // button is about to act on. And `currentVaultId` is set by recordVault
-      // BEFORE the tree walk, so "an id but no entry in the list" is one
-      // transient render while the labelled list catches up — clearing there
-      // wiped the link mid-open, and the file it named never got opened.
+      // button is about to act on. And "an id but no entry in the list" is not
+      // a vault without a name: recordVault now sets the two in one batch, but
+      // it once set the id first, and clearing in that transient render wiped
+      // the link mid-open — the file it named never got opened. Kept for any
+      // list write that could still land apart from the id (a forget racing an
+      // open), where the right move is again to wait for the next commit.
       if (!rootHandle || currentVaultId) return;
       writeLocation({});
       return;

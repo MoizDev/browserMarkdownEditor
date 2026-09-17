@@ -1,8 +1,8 @@
 // The documents a vault's restore pass is still bringing back, reachable from
 // the vault mutations while it does (issue #9).
 //
-// The restore pass reads its session's files one at a time, and the file tree
-// is on screen and usable throughout. Rename, move and trash are copy-then-
+// The restore pass reads its session's files before it opens any of them, and
+// the file tree is on screen and usable throughout. Rename, move and trash are copy-then-
 // delete, and the fix-ups that follow them walk the OPEN tabs — which the
 // documents still being restored are not yet among. So a note renamed in that
 // window came back at its old path, holding a handle to an entry that no longer

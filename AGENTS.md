@@ -74,8 +74,8 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   app-owned name and the only root-only one (`vault-filesystem`, `entry-styles`).
 - **Paths are vault-root-relative with no vault-name prefix**, centralized in `utils/paths.ts`;
   `buildFileTree` and every create/move/rename tab handler must agree or tabs stop deduping.
-- **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault: the FS Access
-  API takes no path. Read ONCE on load (a writer effect then owns it), it outranks the stored handle;
+- **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault. Read ONCE on
+  load (a writer then owns it, keeping the link's `file` until consumed), it outranks the stored handle;
   its `file` is opened only BY the session restore, in the vault it names — never by a second opener.
 - **Open documents are a flat list (`tabs`) plus a separate tab *layout*;** `activeTabPath` is
   derived. The save funnel `updateTabContent(path, content)` is **path-explicit and the only one** —

@@ -31,11 +31,11 @@ import { analyzeDoc, mathSkipsRange } from './latexSource';
    END, dropping each range that ends inside it — so every point that STARTS
    inside the fold (table, image, math, mermaid, a copy button, a HIDE, a hidden
    line's line decoration) is skipped, in any set. A point that ends exactly
-   where the fold starts — the HIDE of `## Title **bold**`'s trailing `**` — is
-   met first and forwards only to its own end, which the fold outlives, so both
-   are drawn. The one hazard is the converse: a live-preview point starting
-   BEFORE a heading's line end and ending after it would be met first and
-   swallow or overlap the fold. Nothing does today, because a heading inside a
+   where the fold starts — the HIDE of `## Title **bold**`'s trailing `**`, or
+   of a closing `##` run — is met first and forwards only to its own end,
+   which the fold outlives, so both are drawn. The one hazard is the converse:
+   a live-preview point starting BEFORE a heading's line end and ending after
+   it would be met first and swallow or overlap the fold. Nothing does today, because a heading inside a
    math region is not a heading here (mathSkipsRange).
 
    Fold state is heading-line START positions, mapped with MapMode.TrackAfter
@@ -253,10 +253,17 @@ function dressToggle(button: HTMLElement, folded: boolean): void {
 /**
  * The arrow in the margin left of a foldable heading.
  *
- * A zero-width inline-block anchor, cap-height tall and standing on the
- * baseline, holds an absolutely positioned button — so the arrow centres on the
- * heading's capitals on its FIRST row at every level and however the heading
- * wraps, and adds no width to the text.
+ * Three nested elements, not two — `anchor` > `pin` > `button` — because
+ * issue #20 ruled out the anchor being `display: inline-block`: an
+ * inline-block is exactly the kind of box a hidden marker's zero-width
+ * `<img class="cm-widgetBuffer">` can wrap a line before, which left row 1
+ * blank on a heading whose first word was wider than the pane. `anchor` is now
+ * a plain, in-flow inline span (relative, nudged up `-0.5cap` to sit level
+ * with the capitals) so it is never itself a break candidate; `pin` is
+ * `font-size: 0` so it takes no line-height of its own and only exists to
+ * anchor the absolutely-positioned `button` at `top: 0`. Together they still
+ * centre the arrow on the heading's capitals on its FIRST row at every level
+ * and however the heading wraps, and add no width to the text.
  */
 class HeadingFoldToggle extends WidgetType {
     constructor(readonly folded: boolean) {
@@ -270,6 +277,8 @@ class HeadingFoldToggle extends WidgetType {
     override toDOM(view: EditorView): HTMLElement {
         const anchor = document.createElement('span');
         anchor.className = 'cm-heading-fold-anchor';
+        const pin = document.createElement('span');
+        pin.className = 'cm-heading-fold-pin';
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'cm-heading-fold-toggle';
@@ -285,7 +294,8 @@ class HeadingFoldToggle extends WidgetType {
             e.preventDefault();
             toggleFoldAt(view, anchor, 'toggle');
         };
-        anchor.appendChild(button);
+        pin.appendChild(button);
+        anchor.appendChild(pin);
         return anchor;
     }
 

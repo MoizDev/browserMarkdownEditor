@@ -18,6 +18,7 @@ import { TableWidget } from './tableWidget';
 import { blankRowText, cellAt, delimiterCellText, findTables, parseTableLayout, rowColumnCount, tableLayoutAt } from './tableModel';
 import { focusTableCell, tableDomAt } from './tableEdit';
 import { MermaidWidget } from './mermaidWidget';
+import { HIDE } from './hiddenMarker';
 
 /* ── Shared decoration values ──
    A Decoration is positionless and immutable — .range() produces the positioned
@@ -25,8 +26,10 @@ import { MermaidWidget } from './mermaidWidget';
    per rebuild allocated a fresh spec object AND a fresh Decoration for each of
    ~10k-39k decorations per rebuild (measured), i.e. megabytes of identical
    garbage per keystroke. Sharing also lets CodeMirror's decoration diff
-   short-circuit on instance identity, so it does less DOM work too. */
-const HIDE = Decoration.replace({});
+   short-circuit on instance identity, so it does less DOM work too.
+   HIDE, the most shared of them, lives in ./hiddenMarker: its widget's
+   cm-live-hidden class is what lets index.css take the buffers beside it out
+   of the text flow (issue #20). */
 const BOLD = Decoration.mark({ class: 'cm-live-bold' });
 const ITALIC = Decoration.mark({ class: 'cm-live-italic' });
 const STRIKE = Decoration.mark({ class: 'cm-live-strikethrough' });
@@ -378,13 +381,52 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 // If editing and cursor is on the line, let the raw prefix `# ` show
                 if (editorMode !== 'read' && cursorOnLine(state, from, to)) return;
 
-                const headerText = line.text;
-                const hashEnd = headerText.indexOf(' ') + 1; // position after "# "
+                // Geometry comes from the parser's HeaderMarks, never a search of
+                // the line (issue #18: `indexOf(' ')` found the first space, which
+                // in `> ## Q` or `- ## Q` was the one after `>`/`-`, not the
+                // heading's own; it found one space of indentation on
+                // `   ## Q`; it found nothing on a bare `#`, so hashEnd was 0 and
+                // the whole line stayed raw; and it never looked at a CLOSING
+                // `##` run at all. Opening mark is always the first child, a
+                // closing run (if any) the last — a `#` inside the title (`C#`)
+                // is neither.)
+                const heading = node.node;
+                const open = heading.firstChild;
+                if (!open || open.name !== 'HeaderMark') return;
+                const last = heading.lastChild;
+                const close = last && last.name === 'HeaderMark' && last.from > open.from ? last : null;
 
-                if (hashEnd > 0) {
-                    // Hide the "# " prefix
-                    decorations.push(HIDE.range(line.from, line.from + hashEnd));
+                // Every hide stays inside the heading's own line: a collapsed
+                // section's pill starts at line.to (headingFold.ts), and a HIDE
+                // reaching past it would swallow the fold. The node ends at its
+                // line's end by construction, so clamping to line.to is a no-op
+                // for a real heading and only guards a pathological tree.
+                const lineEnd = Math.min(to, line.to);
+                const text = line.text;
+                const blank = (pos: number) => {
+                    const c = text.charCodeAt(pos - line.from);
+                    return c === 32 || c === 9;
+                };
+                const contentEnd = close ? close.from : lineEnd;
+                let titleFrom = open.to;
+                while (titleFrom < contentEnd && blank(titleFrom)) titleFrom++;
+                let titleTo = contentEnd;
+                while (titleTo > titleFrom && blank(titleTo - 1)) titleTo--;
+
+                // Only a TOP-LEVEL heading owns what precedes its own mark (its
+                // 0-3 spaces of indentation): in a quote or list item that space
+                // is the `> ` / `- ` those branches already hide, and a second
+                // hide starting inside theirs would overlap it.
+                const hideFrom = heading.parent?.name === 'Document' ? line.from : open.from;
+
+                if (titleFrom >= titleTo) {
+                    // Empty heading (`#`, `##  `, `## ##`) hides whole, exactly as
+                    // `# ` (no title at all) has always vanished.
+                    decorations.push(HIDE.range(hideFrom, lineEnd));
+                    return false;
                 }
+                decorations.push(HIDE.range(hideFrom, titleFrom));
+                if (titleTo < lineEnd) decorations.push(HIDE.range(titleTo, lineEnd));
 
                 // Recurse into children so inline syntax inside the heading
                 // (emphasis, bold, code, links) is rendered rather than left raw.
@@ -881,7 +923,10 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         decorations.push(HIDE.range(innerEnd, to));
 
         const mark = wikiLinkMark(target);
-        if (pipeIndex >= 0) {
+        // `[[a|]]` has an empty alias: hiding `a|` would leave an empty mark,
+        // which CodeMirror throws on ("Mark decorations may not be empty") and
+        // which blanked the whole app. Show it as written instead.
+        if (pipeIndex >= 0 && innerStart + pipeIndex + 1 < innerEnd) {
             // Hide "target|" and show only the alias text.
             const pipePos = innerStart + pipeIndex;
             decorations.push(HIDE.range(innerStart, pipePos + 1));

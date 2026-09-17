@@ -6,7 +6,7 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { LanguageDescription } from '@codemirror/language';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { searchKeymap } from '@codemirror/search';
+import { search, searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
 import { createLivePreviewPlugin } from '../editor/livePreview';
@@ -25,7 +25,9 @@ import {
     isHoldingScrollAnchor,
     isScrollAnchor,
     mapScrollAnchor,
-    releaseScrollAnchor,
+    parseForReveal,
+    revealMatch,
+    revealMatchEffect,
     scrollAnchorTracking,
 } from '../editor/scrollAnchor';
 import type { ScrollAnchor } from '../editor/scrollAnchor';
@@ -587,6 +589,10 @@ function DocumentPane({
                 ...closeBracketsKeymap,
                 ...searchKeymap,
             ]),
+            // ⌘F's jump is a revealMatch, as the vault-search reveal is: centred
+            // and held while pictures and diagrams above it load (the default,
+            // a one-shot nearest-edge scroll, left a match 1,445px below view).
+            search({ scrollToMatch: revealMatchEffect }),
             readOnlyCompartment.of(EditorView.editable.of(mode !== 'read')),
             wikiLinkAutocomplete(() => getTargetsRef.current()),
             livePreviewCompartment.of(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
@@ -729,8 +735,8 @@ function DocumentPane({
         // background parse draws what lies around it. After the reconfigure
         // above, so the landing is laid out with this mode's decorations;
         // synchronous, so no frame is painted at the note's top first. The
-        // reveal effect below runs later, in its own frame, and releases the
-        // hold before it scrolls, so it still wins.
+        // reveal effect below runs later, in its own frame, and its revealMatch
+        // replaces this hold with its own, so it still wins.
         const anchor = rememberedScroll(path);
         if (anchor) holdScrollAnchor(view, anchor);
     };
@@ -800,12 +806,12 @@ function DocumentPane({
         return () => { settled.current = false; };
     }, []);
 
-    // Jump to a search match: select it, scroll it to the vertical center, and
-    // flash a highlight decoration (visible even in read mode, where the view
-    // may refuse focus so the selection alone could be invisible). Dispatched
-    // inside requestAnimationFrame, after the view is laid out; the restored
-    // place the callback ref is holding is released first, or its re-pin would
-    // drag the view straight back from the match.
+    // Jump to a search match: select it, centre it and hold it there while
+    // what surrounds it is still being drawn (revealMatch, editor/scrollAnchor.ts),
+    // and flash a highlight decoration (visible even in read mode, where the
+    // view may refuse focus so the selection alone could be invisible).
+    // Dispatched inside requestAnimationFrame, after the view is laid out; the
+    // revealMatch replaces any restored place the callback ref is holding.
     useEffect(() => {
         if (!revealRequest || revealRequest.path !== path) return;
         const { from, to } = revealRequest;
@@ -814,28 +820,33 @@ function DocumentPane({
         requestAnimationFrame(() => {
             const view = viewRef.current;
             if (!view) return;
-            releaseScrollAnchor(view);
             // The doc may be shorter than the searched text was (e.g. it
             // changed on disk since indexing) — clamp rather than throw.
             const docLen = view.state.doc.length;
             const safeFrom = Math.min(from, docLen);
             const safeTo = Math.min(to, docLen);
+            // A note this jump just opened is parsed only to ~3,000 characters;
+            // without this its headings, code panels and collapsed sections
+            // around the match were redrawn after the scroll (a 34KB note landed
+            // 61px off centre, 256px with a section collapsed above the match).
+            parseForReveal(view, safeTo);
             view.dispatch({
                 selection: { anchor: safeFrom, head: safeTo },
                 effects: [
-                    EditorView.scrollIntoView(safeFrom, { y: 'center' }),
+                    revealMatch.of({ from: safeFrom, to: safeTo }),
                     setRevealHighlight.of({ from: safeFrom, to: safeTo }),
                 ],
             });
             view.focus();
-        });
 
-        // Let the flash fade after a moment. An earlier reveal's pending fade is
-        // cancelled so it can't cut this one short.
-        if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
-        revealClearTimerRef.current = setTimeout(() => {
-            viewRef.current?.dispatch({ effects: setRevealHighlight.of(null) });
-        }, 1600);
+            // Let the flash fade after a moment — timed from the dispatch, so the
+            // parse above does not eat into it. An earlier reveal's pending fade
+            // is cancelled so it can't cut this one short.
+            if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
+            revealClearTimerRef.current = setTimeout(() => {
+                viewRef.current?.dispatch({ effects: setRevealHighlight.of(null) });
+            }, 1600);
+        });
         // No effect cleanup: it would cancel the pending fade when
         // onRevealHandled() nulls the request and re-runs this effect.
     }, [revealRequest, path, onRevealHandled]);

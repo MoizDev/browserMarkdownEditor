@@ -292,6 +292,15 @@ export class ImageWidget extends WidgetType {
         const img = document.createElement('img');
         img.style.display = 'none';
         img.draggable = false;
+        // A picture's height is known only once the browser has read the file,
+        // long after CodeMirror drew this widget, and CodeMirror ignores what
+        // changes inside a widget until its next measure. Ask for that measure,
+        // or a search jump held centred never hears the picture grow (a match
+        // below a dozen of them landed 1,445px under centre). Here, once per
+        // <img>: updateDOM keeps the element, so it never adds a second pair.
+        const remeasure = () => view.requestMeasure();
+        img.addEventListener('load', remeasure);
+        img.addEventListener('error', remeasure);
 
         const placeholder = document.createElement('span');
         placeholder.className = 'cm-image-placeholder';
@@ -365,6 +374,8 @@ export class ImageWidget extends WidgetType {
                     placeholder.classList.add('error');
                     placeholder.style.display = '';
                     container.classList.remove('cm-image-loaded');
+                    // No <img> load to hear: the placeholder's text changed size.
+                    view.requestMeasure();
                 }
             });
         };

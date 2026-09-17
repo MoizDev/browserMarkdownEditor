@@ -65,6 +65,14 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   positioned value — so sharing is the supported pattern, and rebuilding them per call site cost
   thousands of identical objects per rebuild (measured ~39k decorations on a 400KB note). Identical
   instances also let CodeMirror's decoration diff short-circuit.
+- **`HIDE` is a `HiddenMarkerWidget` span (`cm-live-hidden`, `hiddenMarker.ts`), not a widgetless
+  replace**: the zero-width `<img class="cm-widgetBuffer">`s CodeMirror draws beside every replace are line-break
+  opportunities, so a too-wide first word after a hidden `# `/`> `/`- ` wrapped under a blank row 1
+  (#20). `index.css` takes only the buffers beside `.cm-live-hidden` out of flow — except on a line that
+  is all hidden syntax, where they are its only line box (out of flow, ArrowDown skipped a bare `#`)
+  — safe ONLY because every HIDE is revealed whenever a
+  selection touches it in edit mode; a HIDE that stays hidden under the caret breaks that. Heading
+  marks are hidden from the tree's `HeaderMark`s (opening and closing), never a search of the line.
 - `livePreview.ts` **declines HMR** (`import.meta.hot.decline()`): the cached decoration logic means
   a hot swap wouldn't take, so it forces a full reload in dev instead.
 
@@ -99,6 +107,9 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   `ignoreEvent()` returning **`false`** is what makes a widget clickable-into: `MathWidget`,
   `MermaidWidget` and `HorizontalRuleWidget` do; `CopyCodeWidget` returns `true` to keep its button's
   clicks; `TableWidget` deliberately keeps the default (see `markdown-tables`).
+- **A widget whose size changes after `toDOM` must call `view.requestMeasure()`** (a mermaid SVG
+  landing, a picture's `load`/`error`, a "not found" placeholder): CodeMirror ignores mutations inside
+  widgets, and the search jump's centre hold (`scrollAnchor.ts`) only hears measured height changes.
 - `cmTheme.ts`: Obsidian dark/light themes + One Dark/One Light code-token palettes. The **caret is
   driven entirely by CSS variables** set from Settings (line/block, thickness, smooth glide) — the
   native caret is hidden and `drawSelection()` renders `.cm-cursor`.
@@ -218,8 +229,9 @@ written to the file.
 - **The fold wins by containment, not coordination.** Meeting a point decoration, `@codemirror/state`'s
   `SpanCursor` forwards every set past that point's END, so every point that STARTS inside the fold's
   replace — tables, images, math, mermaid, HIDEs, a hidden line's line decoration — in any set, is
-  skipped. A point ending exactly where the fold starts (the HIDE of a heading's trailing `**`) is met
-  first and forwards only to its own end, which the fold outlives. The converse is this file's one
+  skipped. A point ending exactly where the fold starts (the HIDE of a heading's trailing `**` or
+  closing `##` run) is met first and forwards only to its own end, which the fold outlives. The
+  converse is this file's one
   hazard: **no live-preview point may start before a heading's line end and end after it**, or it
   swallows the fold — which is why a heading inside a math region is not a heading. The toggle is a
   `side: -1` widget, so it sorts before the `# ` HIDE.
@@ -250,6 +262,9 @@ written to the file.
   is re-dressed by `updateDOM` (`aria-expanded` drives the chevron's CSS rotation, so it animates). A
   click also dispatches `scrollIntoView(heading, { y: 'start', yMargin: <its current offset> })`:
   expanding after a collapse near the note's end otherwise threw the clicked heading off screen.
+- **The arrow's anchor is a plain inline span, never `inline-block`** (`anchor`, nudged
+  `top: -0.5cap`, holds a `font-size: 0` `pin` holding the absolute button): an inline-block is a line-break opportunity, which put a
+  too-wide first word on row 2 under a blank row 1 (#20) — same reason as `HIDE`'s buffers above.
 - **Both widgets are centred on the heading's capitals with `cap` units** — they sit at line level,
   outside the highlight span in which cmTheme scales heading text a second time, so they re-apply the
   line's `--heading-scale` first. The arrow's room is `.cm-content`'s

@@ -1,6 +1,8 @@
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import type { ViewUpdate } from '@codemirror/view';
-import type { ChangeDesc, Extension } from '@codemirror/state';
+import { EditorState, StateEffect } from '@codemirror/state';
+import type { ChangeDesc, Extension, SelectionRange } from '@codemirror/state';
+import { forceParsing } from '@codemirror/language';
 
 /* ── Where a note was being read, as a place in the TEXT ──────────────────
    A note's place used to be its raw `scrollTop`, and that number changes
@@ -68,14 +70,6 @@ function anchorHeight(view: EditorView, anchor: ScrollAnchor): number {
     return block.top + Math.max(floor, Math.min(anchor.offset, Math.max(0, block.height - 1)));
 }
 
-/** How far the scroller must move to put `anchor` at the top edge. Neither
- *  half runs a pending measure (`documentTop` and `lineBlockAt` read the
- *  current layout as it stands), so this is legal from an update listener. */
-function distanceToAnchor(view: EditorView, anchor: ScrollAnchor): number {
-    const edge = topEdgeHeight(view);
-    return anchorHeight(view, anchor) - edge;
-}
-
 /** Move by `delta`, ignoring sub-pixel noise. Also what ends every re-pin: a
  *  write that changes nothing (a place past the bottom, clamped) raises no
  *  scroll event and no update, so nothing asks again. */
@@ -131,25 +125,110 @@ export function mapScrollAnchor(anchor: ScrollAnchor, changes: ChangeDesc): Scro
  * what it handles. `dragover` because a drag held near the scroller's edge
  * autoscrolls it with no pointer event reaching the editor. Deliberately NOT
  * here: a window or divider resize, or ⌘E from outside the editor — the
- * re-pin keeps the top line through those.
+ * re-pin keeps the top line (or the match) through those. A ⌘F Enter is a
+ * keydown too: it releases the previous jump in the capture phase, before the
+ * command dispatches the next one.
  */
 const READER_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown', 'dragover', 'drop'] as const;
 
-class ScrollAnchorHold {
-    anchor: ScrollAnchor | null = null;
-    private readonly view: EditorView;
-    private readonly release = (): void => { this.anchor = null; };
+/* ── Holding a search match at the centre ────────────────────────────────
+   A jump to a match (vault search, ⌘F) used to be one centring scroll, made
+   with the heights CodeMirror knew at that moment. What is drawn after it
+   moves the match, because CodeMirror's measure keeps the TOP line still, not
+   the match: twelve mermaid diagrams above a match swapped their placeholders
+   for SVGs ~230ms after the click and left it 733px below centre, pictures
+   left ⌘F's match 1,445px below it, and a note opened by the jump (parsed
+   only to ~3,000 characters) redrew its headings, code panels and collapsed
+   sections under the match and settled 61px (collapsed: 256px) off. So a jump
+   is the same hold as a restore, with a different target: the match's line
+   kept at the middle of the scroller until the reader takes over. */
 
+/** A restored place kept at the top edge, or a revealed match kept centred. */
+type HoldTarget =
+    | { kind: 'top'; anchor: ScrollAnchor }
+    | {
+        kind: 'centre';
+        pos: number;
+        /** px from the top of `pos`'s line block down to the height that belongs
+         *  at the scroller's middle, as last measured; null until then. */
+        inBlock: number | null;
+    };
+
+/**
+ * Jump to a match and keep it centred. Dispatched with the selection; the
+ * transaction extender below adds the scroll itself, so the vault-search
+ * reveal and ⌘F (`search({ scrollToMatch: revealMatchEffect })`) take one path.
+ */
+export const revealMatch = StateEffect.define<{ from: number; to: number }>({
+    map: (value, mapping) => ({ from: mapping.mapPos(value.from), to: mapping.mapPos(value.to) }),
+});
+
+const isReveal = (e: StateEffect<unknown>): e is StateEffect<{ from: number; to: number }> => e.is(revealMatch);
+
+/** `@codemirror/search`'s `scrollToMatch`. Module-level: it is baked into every
+ *  EditorState, which outlives the pane that built it (AGENTS.md). */
+export const revealMatchEffect = (range: SelectionRange): StateEffect<unknown> =>
+    revealMatch.of({ from: range.from, to: range.to });
+
+const revealScroll = EditorState.transactionExtender.of((tr) => {
+    const effects = tr.effects
+        .filter(isReveal)
+        .map((e) => EditorView.scrollIntoView(e.value.from, { y: 'center' }));
+    return effects.length > 0 ? { effects } : null;
+});
+
+/**
+ * The document height that belongs at the scroller's middle for a centre hold.
+ * Only a MEASURING caller (a measure request's read) may ask the DOM where the
+ * match's glyph is — `coordsAtPos` outside that phase forces a layout per
+ * update; everyone else reuses the offset into its line block that the last
+ * read found, which survives the block moving. A match drawn taller than the
+ * scroller (inside a widget) puts its top at the top edge instead, as
+ * CodeMirror's own centring does.
+ */
+function centreHeight(view: EditorView, target: Extract<HoldTarget, { kind: 'centre' }>, measuring: boolean): number {
+    const pos = Math.min(target.pos, view.state.doc.length);
+    const block = view.lineBlockAt(pos);
+    if (measuring) {
+        const rect = view.coordsAtPos(pos, 1);
+        if (rect) {
+            const half = view.scrollDOM.clientHeight / 2;
+            const top = rect.top - view.documentTop;
+            const mid = rect.bottom - rect.top > half * 2 ? top + half : (top + rect.bottom - view.documentTop) / 2;
+            target.inBlock = mid - block.top;
+        }
+    }
+    return block.top + (target.inBlock ?? Math.min(block.height, view.defaultLineHeight) / 2);
+}
+
+/** How far the scroller must move to put the target where it belongs. Neither
+ *  kind runs a pending measure unless `measuring` (see centreHeight), so this
+ *  is legal from an update listener. */
+function distanceToTarget(view: EditorView, target: HoldTarget, measuring: boolean): number {
+    const edge = topEdgeHeight(view);
+    if (target.kind === 'top') return anchorHeight(view, target.anchor) - edge;
+    return centreHeight(view, target, measuring) - view.scrollDOM.clientHeight / 2 - edge;
+}
+
+class ScrollAnchorHold {
+    private held: HoldTarget | null = null;
+    private readonly view: EditorView;
+    private readonly release = (): void => { this.target = null; };
     /**
-     * One request object, re-requested by key. CodeMirror runs measure
-     * requests only once the viewport has stopped moving, so the read sees the
-     * heights of whatever was just drawn around the anchor, and a write lands
-     * while the loop can still draw the lines it scrolls to.
+     * CodeMirror hears a widget's growth only at its next measure, and its DOM
+     * observer ignores mutations inside widgets; a widget that forgets to ask
+     * (a font swap, a picture decoded late) would leave the hold deaf. The
+     * content's own box changes on every such growth, so while anything is
+     * held, that asks for the measure the pin rides.
      */
+    private readonly resize = typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => this.view.requestMeasure());
+
     private readonly pin: MeasureRequest<number> = {
         key: this,
-        read: (view) => (this.anchor ? distanceToAnchor(view, this.anchor) : 0),
-        write: (delta, view) => { if (this.anchor) nudge(view, delta); },
+        read: (view) => (this.held ? distanceToTarget(view, this.held, true) : 0),
+        write: (delta, view) => { if (this.held) nudge(view, delta); },
     };
 
     constructor(view: EditorView) {
@@ -157,6 +236,18 @@ class ScrollAnchorHold {
         for (const type of READER_INPUT) {
             view.dom.addEventListener(type, this.release, { capture: true, passive: true });
         }
+    }
+
+    get target(): HoldTarget | null {
+        return this.held;
+    }
+
+    set target(target: HoldTarget | null) {
+        if ((this.held == null) !== (target == null)) {
+            if (target) this.resize?.observe(this.view.contentDOM);
+            else this.resize?.disconnect();
+        }
+        this.held = target;
     }
 
     /**
@@ -172,23 +263,37 @@ class ScrollAnchorHold {
      * note's top only to throw it away.
      */
     hold(anchor: ScrollAnchor): void {
-        const delta = distanceToAnchor(this.view, anchor);
-        this.anchor = anchor;
+        const target: HoldTarget = { kind: 'top', anchor };
+        const delta = distanceToTarget(this.view, target, false);
+        this.target = target;
         nudge(this.view, delta);
         this.view.requestMeasure(this.pin);
     }
 
     update(update: ViewUpdate): void {
-        if (!this.anchor) return;
-        // Paste, list and LaTeX commands scroll to the caret on purpose. Only
-        // the `scrollIntoView: true` flag is visible here: a jump dispatched as
-        // an `EditorView.scrollIntoView` EFFECT is not, which is why such a
-        // jump must release first (see releaseScrollAnchor).
-        if (update.transactions.some((tr) => tr.scrollIntoView)) {
-            this.anchor = null;
-            return;
+        for (const tr of update.transactions) {
+            if (this.held && tr.docChanged) {
+                this.target = this.held.kind === 'top'
+                    ? { kind: 'top', anchor: mapScrollAnchor(this.held.anchor, tr.changes) }
+                    : { ...this.held, pos: tr.changes.mapPos(this.held.pos, 1) };
+            }
+            // A new jump replaces whatever was held — a restore still settling
+            // included; its scroll is the extender's effect, not the flag below.
+            const reveal = tr.effects.find(isReveal);
+            if (reveal) {
+                this.target = { kind: 'centre', pos: reveal.value.from, inBlock: null };
+                this.view.requestMeasure(this.pin);
+                continue;
+            }
+            // Paste, list and LaTeX commands scroll to the caret on purpose. Only
+            // the `scrollIntoView: true` flag is visible here: a jump dispatched
+            // as a bare `EditorView.scrollIntoView` EFFECT is not, and the re-pin
+            // would drag it back unless reader input released the hold first (a
+            // heading-fold click) — a jump from outside the editor must be a
+            // revealMatch.
+            if (tr.scrollIntoView) this.target = null;
         }
-        if (update.docChanged) this.anchor = mapScrollAnchor(this.anchor, update.changes);
+        if (!this.held) return;
         if (update.docChanged || update.heightChanged || update.geometryChanged || update.viewportChanged) {
             this.view.requestMeasure(this.pin);
         }
@@ -214,14 +319,14 @@ class ScrollAnchorHold {
      * restarted more than 5 times"), which the unmodified app painted too.
      */
     settle(update: ViewUpdate): void {
-        if (!this.anchor || update.transactions.length > 0) return;
+        if (!this.held || update.transactions.length > 0) return;
         if (update.heightChanged || update.geometryChanged || update.viewportChanged) {
-            nudge(this.view, distanceToAnchor(this.view, this.anchor));
+            nudge(this.view, distanceToTarget(this.view, this.held, false));
         }
     }
 
     destroy(): void {
-        this.anchor = null;
+        this.target = null;
         for (const type of READER_INPUT) {
             this.view.dom.removeEventListener(type, this.release, { capture: true });
         }
@@ -233,32 +338,40 @@ const scrollAnchorPlugin = ViewPlugin.fromClass(ScrollAnchorHold, {
 });
 
 /**
- * Per-view hold of a restored scroll place. A module singleton with no config,
- * like headingFoldField, and to be added OUTSIDE every compartment: a
- * reconfigure (⌘E, the theme) must not drop a hold in progress.
+ * Per-view hold of a restored scroll place or a revealed match, plus the
+ * scroll a `revealMatch` asks for. A module singleton with no config, like
+ * headingFoldField, and to be added OUTSIDE every compartment: a reconfigure
+ * (⌘E, the theme) must not drop a hold in progress.
  */
-export const scrollAnchorTracking: Extension = scrollAnchorPlugin;
+export const scrollAnchorTracking: Extension = [scrollAnchorPlugin, revealScroll];
 
 /** Restore `anchor` in `view` and hold it until the reader takes over. */
 export function holdScrollAnchor(view: EditorView, anchor: ScrollAnchor): void {
     view.plugin(scrollAnchorPlugin)?.hold(anchor);
 }
 
-/** Let go of a hold — for a programmatic scroll that must win, dispatched right
- *  after. Required of any jump dispatched as a `scrollIntoView` effect that is
- *  not started by input inside the editor (the search reveal is one): the hold
- *  cannot see such an effect, and its re-pin would drag the view back. Jumps
- *  from inside (a heading-fold click, ⌘F) are already released by their
- *  pointerdown/keydown. */
-export function releaseScrollAnchor(view: EditorView): void {
-    const hold = view.plugin(scrollAnchorPlugin);
-    if (hold) hold.anchor = null;
+/** True while `view` is still holding a RESTORED place: the scroll events it
+ *  raises are the restore's, not the reader's, and must not be remembered. Not
+ *  a held match — that is where the reader now is, and pausing the save would
+ *  lose the jump's landing place on the next tab switch. */
+export function isHoldingScrollAnchor(view: EditorView): boolean {
+    return view.plugin(scrollAnchorPlugin)?.target?.kind === 'top';
 }
 
-/** True while `view` is still holding a restored place: the scroll events it
- *  raises are the restore's, not the reader's, and must not be remembered. */
-export function isHoldingScrollAnchor(view: EditorView): boolean {
-    return view.plugin(scrollAnchorPlugin)?.anchor != null;
+/** Characters past the match's line to parse before a reveal: live preview and
+ *  collapsed sections draw from the tree, and a note the jump just opened is
+ *  parsed only to its first ~3,000 characters — what sits just below the match
+ *  shares the screen with it. */
+const REVEAL_PARSE_MARGIN = 3000;
+/** ms a reveal may block on that parse — lists.ts' PARSE_TIMEOUT. Whatever is
+ *  left parses in the background and the centre hold absorbs it. */
+const REVEAL_PARSE_BUDGET = 100;
+
+/** Parse up to just past `to` before a reveal dispatches, so its first centring
+ *  lands on real heights instead of raw markdown. Never from inside an update. */
+export function parseForReveal(view: EditorView, to: number): void {
+    const { doc } = view.state;
+    forceParsing(view, Math.min(doc.length, doc.lineAt(Math.min(to, doc.length)).to + REVEAL_PARSE_MARGIN), REVEAL_PARSE_BUDGET);
 }
 
 // A hot swap would mint a second plugin while every cached EditorState still

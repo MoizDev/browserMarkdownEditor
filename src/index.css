@@ -3277,6 +3277,47 @@ body.is-resizing-panes * {
   color: var(--text-muted);
 }
 
+/* ── Issue #20: hidden-marker line breaks ──
+   CodeMirror draws a zero-width `<img class="cm-widgetBuffer">` on each side of
+   a replaced range (needed so a caret can land beside it) and an `<img>` is a
+   line-break opportunity — so a too-wide first word after a hidden `# ` / `> `
+   / `- ` (livePreview.ts's HIDE, editor/hiddenMarker.ts) or beside the heading-
+   fold arrow could wrap onto row 2, leaving row 1 of the line blank. Taking
+   only THESE buffers out of flow fixes that; they are still rendered
+   (`position: absolute` keeps the box, just out of the line's flow), and it is
+   safe only because every HIDE is revealed the instant a caret or selection
+   touches it (livePreview.ts's cursorOnLine/cursorInRange), so no caret ever
+   needs to sit beside one of these buffers while it's absolute. Buffers beside
+   images/maths/tables are untouched — confirmed `position: static`. */
+.cm-content .cm-widgetBuffer:has(+ .cm-live-hidden),
+.cm-content .cm-live-hidden + .cm-widgetBuffer,
+.cm-content .cm-heading-fold-anchor + .cm-widgetBuffer {
+  position: absolute;
+}
+
+/* ...except on a line that holds nothing else: hidden syntax only (a hidden
+   fence line, an empty `>` inside a multi-paragraph quote, `- `, `# `, a bare
+   `#`), plus the fold arrow in Reading mode. Such a line has no first word to
+   wrap, and its buffers are its only in-flow content — out of flow it had no
+   line box, so ArrowDown skipped straight over it (moving vertically reads
+   positions from line boxes) and a bare `#`'s fold arrow sat a row above its
+   line (measured −9.5px from the line's top vs 17.5px on `# Real`). Kept in
+   flow, both behave as before #20's rule. */
+.cm-content .cm-line:not(:has(> :not(.cm-widgetBuffer, .cm-live-hidden, .cm-heading-fold-anchor, br))) > .cm-widgetBuffer {
+  position: static;
+}
+
+/* A fully-hidden HEADING line (a bare `#`, `# `) still reads one level short:
+   its buffers give it a line box at the LINE's font size, while a real
+   heading's text sits in a highlight span that applies --heading-scale a
+   second time (cmTheme's heading token). `1lh` is the line's own
+   (single-scaled) line-height, so scaling it once more reaches a real
+   heading's row without repeating cmTheme's math (a bare `# ` in Edit mode
+   was 27.03px against 35.16px with the caret on it). */
+.cm-content .cm-line.cm-live-heading:has(.cm-live-hidden) {
+  min-height: calc(var(--heading-scale, 1) * 1lh);
+}
+
 /* ── Collapsible sections (editor/headingFold.ts, Reading mode only) ──
    The arrow shows while the pointer is anywhere on the heading line OR in the
    empty margin to its left. The margin half is a transparent pad: a
@@ -3296,19 +3337,28 @@ body.is-resizing-panes * {
   width: 100vw;
 }
 
-/* Zero width and exactly cap-height tall, standing ON the baseline (with no
-   in-flow content an inline-block's baseline is its bottom edge): the button
-   centred inside it is centred on the heading's capitals — at every level, in
-   any font, on the FIRST row however the heading wraps. A line-height-tall,
-   top-aligned box put the arrow 3.5-4.5px above them on H1 and 2.8px on H2
-   (measured from pixels), because a heading's leading and padding do not split
-   evenly around its text. */
+/* Issue #20: this used to be `display: inline-block` — zero width, exactly
+   cap-height tall, standing ON the baseline, so the button centred inside it
+   landed on the heading's capitals at every level. But an inline-block is
+   exactly the kind of box a hidden marker's zero-width
+   `<img class="cm-widgetBuffer">` can wrap a line before, so on a heading
+   whose first word was wider than the pane the anchor (plus the buffer beside
+   it) broke onto row 1 while the word wrapped to row 2, leaving row 1 blank.
+   It is now a plain, in-flow, non-replaced inline span — never itself a break
+   candidate — nudged up `-0.5cap` so its (zero-height, see .cm-heading-fold-pin
+   below) reference point sits level with the capitals instead of the
+   baseline. */
 .cm-heading-fold-anchor {
-  display: inline-block;
   position: relative;
-  width: 0;
-  height: 1cap;
-  vertical-align: baseline;
+  top: -0.5cap;
+}
+
+/* Font-size 0 so this contributes no line-height of its own — it exists only
+   to be the `position: relative` ancestor .cm-heading-fold-toggle's `top: 0`
+   is measured against, i.e. the anchor's own (already cap-centred) point. */
+.cm-heading-fold-pin {
+  position: relative;
+  font-size: 0;
 }
 
 /* Both widgets are children of the LINE, outside the highlight span that
@@ -3323,7 +3373,7 @@ body.is-resizing-panes * {
 
 .cm-heading-fold-toggle {
   position: absolute;
-  top: 50%;
+  top: 0;
   right: 4px;
   transform: translateY(-50%);
   width: 20px;

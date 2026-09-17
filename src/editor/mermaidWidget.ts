@@ -1,4 +1,5 @@
 import { WidgetType } from '@codemirror/view';
+import type { EditorView } from '@codemirror/view';
 
 /**
  * Mermaid is loaded ON FIRST USE, not at startup.
@@ -28,8 +29,9 @@ const getMermaid = () => (mermaidPromise ??= import('mermaid').then(m => m.defau
 const svgCache = new Map<string, string>();
 const SVG_CACHE_MAX = 100;
 
-/** Live widget containers, so a theme toggle can re-render diagrams in place. */
-const liveWidgets = new Map<HTMLElement, string>();
+/** Live widget containers — with their source and the view drawing them — so a
+ *  theme toggle can re-render diagrams in place. */
+const liveWidgets = new Map<HTMLElement, { code: string; view: EditorView }>();
 
 let renderSeq = 0;
 
@@ -59,7 +61,7 @@ function cachePut(key: string, svg: string) {
  * compact message rather than mermaid's default bomb graphic — invalid
  * source usually just means the user is mid-edit somewhere else.
  */
-async function renderInto(el: HTMLElement, code: string): Promise<void> {
+async function renderInto(el: HTMLElement, code: string, view: EditorView): Promise<void> {
     /* THE APP'S SECOND innerHTML SINK for note text, and the only one not
        covered by tableWidget's attribute-free allowlist: `svg` below is
        mermaid's rendering of a note's ```mermaid block. It is safe only because
@@ -73,6 +75,8 @@ async function renderInto(el: HTMLElement, code: string): Promise<void> {
     const cached = svgCache.get(key);
     if (cached) {
         el.innerHTML = cached;
+        // A theme re-render swaps one SVG for another of a different size.
+        view.requestMeasure();
         return;
     }
 
@@ -97,19 +101,25 @@ async function renderInto(el: HTMLElement, code: string): Promise<void> {
         cachePut(key, svg);
         // The widget may have been re-targeted while we awaited (rapid edits);
         // only paint if this element still wants this exact source.
-        if (liveWidgets.get(el) === code) {
+        if (liveWidgets.get(el)?.code === code) {
             el.classList.remove('cm-mermaid-loading');
             el.innerHTML = svg;
+            // CodeMirror ignores mutations inside a widget and would learn the
+            // SVG's height only at its next measure — which a search jump held
+            // centred must hear: twelve placeholders turning into diagrams ~230ms
+            // after a jump left the match 733px below centre.
+            view.requestMeasure();
         }
     } catch (e) {
         // A failed render can leave mermaid's scratch element in <body>.
         document.getElementById(id)?.remove();
         document.getElementById(`d${id}`)?.remove();
-        if (liveWidgets.get(el) === code) {
+        if (liveWidgets.get(el)?.code === code) {
             el.classList.remove('cm-mermaid-loading');
             el.classList.add('cm-mermaid-error');
             const msg = e instanceof Error ? e.message : String(e);
             el.textContent = `Mermaid: ${msg}`;
+            view.requestMeasure();
         }
     }
 }
@@ -124,9 +134,9 @@ async function renderInto(el: HTMLElement, code: string): Promise<void> {
 // subsequent theme toggle run a full mermaid render against a node nobody can
 // see. Dropping disconnected elements here costs nothing and closes both.
 new MutationObserver(() => {
-    for (const [el, code] of liveWidgets) {
+    for (const [el, { code, view }] of liveWidgets) {
         if (!el.isConnected) { liveWidgets.delete(el); continue; }
-        void renderInto(el, code);
+        void renderInto(el, code, view);
     }
 }).observe(document.documentElement, { attributeFilter: ['data-theme'] });
 
@@ -154,11 +164,11 @@ export class MermaidWidget extends WidgetType {
         return other.code === this.code;
     }
 
-    toDOM(): HTMLElement {
+    toDOM(view: EditorView): HTMLElement {
         const el = document.createElement('div');
         el.className = 'cm-mermaid-widget';
-        liveWidgets.set(el, this.code);
-        void renderInto(el, this.code);
+        liveWidgets.set(el, { code: this.code, view });
+        void renderInto(el, this.code, view);
         return el;
     }
 

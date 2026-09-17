@@ -1481,12 +1481,25 @@ export default function App() {
    * app settles, and one render where a vault is open but the labelled list has
    * not caught up used to clear it — wiping the link before its note had been
    * opened. Reading a link that is being kept up to date is the mistake; the
-   * instruction is what arrived, once. Declared here because its one reader is
-   * the restore pass below.
+   * instruction is what arrived, once. Declared here because its readers are
+   * the restore pass below and the URL writer after it.
    */
   const [initialLocation] = useState(readLocation);
-  /** Consumed by the first vault this page restores (see the restore pass). */
+  /** Consumed by the first vault this page restores (see the restore pass);
+   *  until then the URL writer never blanks the hash. */
   const linkPendingRef = useRef(true);
+  /**
+   * The link's note until the restore pass has dealt with it, so the URL
+   * writer keeps naming it. Without this the writer wrote the vault ALONE from
+   * the moment recordVault listed it — before the tree walk, let alone the
+   * reads — until the merge made the note active; a reload or a copied address
+   * in that window lost a note only the link had named, since the session never
+   * held it either (restoringRef holds its write back until the merge). State,
+   * not a ref: when the link opens nothing in its own vault (a missing or
+   * non-document file, every read failing) no tab changes, and the writer
+   * still has to re-run to drop `file`.
+   */
+  const [pendingLinkFile, setPendingLinkFile] = useState<string | null>(initialLocation.file ?? null);
 
   // Auto-restore THIS VAULT'S tabs once its file tree has loaded — on a cold
   // start and on every switch back to it. The ONLY thing that opens documents
@@ -1555,6 +1568,8 @@ export default function App() {
     const linkedNode = link?.file && findLinkedVault(link.vault, recentVaults)?.id === currentVaultId
       ? vaultFiles.find(f => f.path === link.file && (isTextFile(f.name) || isPdfFile(f.name)))
       : undefined;
+    // Nothing will open for it, so nothing must keep it in the address bar.
+    if (link && !linkedNode) setPendingLinkFile(null);
 
     // Read the session WHOLE and synchronously, before the file reads below
     // yield: the refs just claimed are what the persist effect checks, so a
@@ -1580,24 +1595,29 @@ export default function App() {
     const release = () => { if (restoringRef.current === token) restoringRef.current = null; };
     (async () => {
       try {
-        const restored: OpenTab[] = [];
-        for (const path of paths) {
+        // Read concurrently, not one after another: the workspace (the link's
+        // note included) stayed empty for the SUM of the reads (measured, issue
+        // #7: 600ms per read, four saved notes and the link's, ~3.05s from tree
+        // to tabs) and now waits on the slowest one (same setup: ~0.62s). Still one merge after all of them — Promise.all
+        // keeps `paths` order, so restoreLayout sees exactly what it did.
+        const results = await Promise.all(paths.map(async (path): Promise<OpenTab | null> => {
           if (path === 'help-guide') {
-            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
-            continue;
+            return { id: newTabId(), file: { name: 'Help Guide', isHelp: true, path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false };
           }
           const node = vaultFiles.find(f => f.path === path);
-          if (!node) continue; // file deleted/moved externally — skip it
+          if (!node) return null; // file deleted/moved externally — skip it
           try {
             // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
             // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
             // fill the buffer with garbage.
             const content = isPdfFile(node.name) ? '' : await readFile(node.handle as FileSystemFileHandle);
-            restored.push({ id: newTabId(), file: node, content, mode: 'read', dirty: false });
+            return { id: newTabId(), file: node, content, mode: 'read', dirty: false };
           } catch (err) {
             console.error('Failed to restore tab:', path, err);
+            return null;
           }
-        }
+        }));
+        const restored = results.filter((t): t is OpenTab => t !== null);
         // Nothing of the session came back (every note in it deleted since, or
         // unreadable) and nothing was opened meanwhile: the stored session is
         // left as it was. Something that WAS opened still goes through the
@@ -1658,9 +1678,8 @@ export default function App() {
         // session. One ordering still writes a lone tab first: a click that
         // committed just before this line, its effects not yet run, has them
         // flushed ahead of the merge's render — one tab stored for the task or
-        // two until the merge's own write. flushSync would close that, but it
-        // warns on the path that never awaits (this block then runs inside the
-        // effect), and only a reload landing in that gap could cost anything.
+        // two until the merge's own write. flushSync is not used to close it:
+        // only a reload landing in that gap could cost anything.
         release();
         setTabs(prev => {
           const open = new Set(prev.map(t => t.file.path));
@@ -1669,6 +1688,10 @@ export default function App() {
         setLayout(prev => mergeLayouts(restoredLayout, prev));
       } finally {
         release();
+        // The link has been dealt with, whichever way this ended. On success
+        // this lands in the merge's batch, so the writer sees the note active
+        // and nothing pending in one commit — no flash of the bare vault.
+        if (linkedNode) setPendingLinkFile(null);
       }
     })();
   }, [fileTree, rootHandle, currentVaultId, readFile, rememberAssetRefs, recentVaults, initialLocation]);
@@ -1719,26 +1742,41 @@ export default function App() {
    * something a person reads and types — and only carries an id suffix when two
    * known vaults share a folder name. See utils/appUrl.ts for why a link cannot
    * carry a path on disk, which is the thing it would obviously want to.
+   *
+   * With no vault document active yet (the help guide has no link, so it does
+   * not count), the link's note stays named until the restore pass has
+   * consumed it (see pendingLinkFile) — but only in the vault the link resolves
+   * to, the restore pass's own test, so a link that fell back to another vault
+   * never pins its `file` there. An open document outranks it: the bar
+   * describes what is open.
    */
   useEffect(() => {
     const vault = recentVaults.find(v => v.id === currentVaultId);
     if (!vault) {
-      // Two reasons there may be no vault to name, and neither is a reason to
+      // Three reasons there may be no vault to name, and none is a reason to
       // clear the hash. Before a vault is open, the link is what the "Open 'X'"
       // button is about to act on. And `currentVaultId` is set by recordVault
       // BEFORE the tree walk, so "an id but no entry in the list" is one
       // transient render while the labelled list catches up — clearing there
-      // wiped the link mid-open, and the file it named never got opened.
-      if (!rootHandle || currentVaultId) return;
+      // wiped the link mid-open, and the file it named never got opened. And
+      // the mount path commits `rootHandle` a render BEFORE recordVault's id:
+      // "a handle but no id" while the link is still unclaimed blanked the
+      // whole hash for that await (measured: ~30ms into 5 of 6 slowed reloads,
+      // so a reload there lost the link outright).
+      if (!rootHandle || currentVaultId || linkPendingRef.current) return;
       writeLocation({});
       return;
     }
     writeLocation({
       vault: vaultLinkName(vault, recentVaults),
       // The help guide is not a file in the vault, so it has no link.
-      file: activeFile && !activeFile.isHelp ? activeFile.path : undefined,
+      file: activeFile && !activeFile.isHelp
+        ? activeFile.path
+        : pendingLinkFile && findLinkedVault(initialLocation.vault, recentVaults)?.id === vault.id
+          ? pendingLinkFile
+          : undefined,
     });
-  }, [rootHandle, currentVaultId, recentVaults, activeFile]);
+  }, [rootHandle, currentVaultId, recentVaults, activeFile, pendingLinkFile, initialLocation]);
 
   const handleHelpClick = useCallback(() => {
     const path = 'help-guide';

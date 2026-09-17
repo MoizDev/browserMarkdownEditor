@@ -83,6 +83,15 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   (`restoringRef`, a per-pass token released just before the merge is dispatched, and in `finally`).
   Without that gate a click 100ms into a 600ms-per-file restore held the stored session at that one
   tab for 2.4s, and a reload inside the window lost the rest for good.
+  The reads run **concurrently** (`Promise.all`, `paths` order kept, so `restoreLayout` is unchanged)
+  and are still merged **once** — the window lasts the slowest read, not their sum (issue #7).
+- **The link's `file` stays in the address bar until the pass consumes it** (`pendingLinkFile`,
+  state so the URL writer re-runs): cleared at the claim when the link does not apply, else in the
+  pass's `finally` — on success in the merge's batch, so the bar never flashes the bare vault. The
+  writer shows it only while no vault document is active (help has no link) and the link resolves to
+  this vault, and never blanks the hash while `linkPendingRef` is unclaimed (the mount path commits
+  `rootHandle` a render before the id). Before it, the bar dropped `file` from `recordVault` (ahead of
+  the tree walk) to the merge, and a reload there lost a note the gated session had never held.
 - Everything read back is shape-guarded (`isStoredSession`); localStorage is user-editable and holds
   whatever an older build wrote, and a malformed entry reads as `null`.
 - Restored PDF tabs get `content: ''` exactly like `handleFileClick` (their buffer is a tldraw

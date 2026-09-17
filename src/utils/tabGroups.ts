@@ -464,6 +464,39 @@ export function renamePath(layout: TabLayout, from: string, to: string): TabLayo
     return { groups, activeId };
 }
 
+/**
+ * Rename several documents AT ONCE — each path `to` names becomes what it maps
+ * to, in one step. What the restore pass needs when notes it was still loading
+ * were renamed or moved meanwhile (issue #9): it rebuilds the layout from the
+ * session's stored paths, and then relabels that into where they are now.
+ *
+ * Not renamePath in a loop. That one's overwrite branch removes a pane already
+ * holding the destination, which for a chain is exactly wrong: the reader
+ * renamed `b→c` and then `a→b`, and the stored panes are `a` and `b`. Applied
+ * `a→b` first, the overwrite deletes pane `b` — a live document's — and `b→c`
+ * then carries `a`'s pane off to `c`. Getting the order right means a
+ * topological sort (and a cycle has none); a simultaneous relabel has no order
+ * to get wrong. `to` must be INJECTIVE over the layout's paths — the
+ * restore's registry guarantees it by dropping whatever a move overwrote.
+ *
+ * Positions never move, so `sizes` (indexed against `paths`) stays aligned and
+ * passes through untouched. Returns the SAME layout when nothing changed.
+ */
+export function relabelPaths(layout: TabLayout, to: ReadonlyMap<string, string>): TabLayout {
+    if (to.size === 0) return layout;
+    let changed = false;
+    const groups = layout.groups.map(g => {
+        if (!g.paths.some(p => to.has(p))) return g;
+        changed = true;
+        return {
+            ...g,
+            paths: g.paths.map(p => to.get(p) ?? p),
+            activePath: to.get(g.activePath) ?? g.activePath,
+        };
+    });
+    return changed ? { ...layout, groups } : layout;
+}
+
 /** localStorage holds whatever an older build (or a hand edit) wrote. */
 function isPathMatrix(value: unknown): value is string[][] {
     return Array.isArray(value)

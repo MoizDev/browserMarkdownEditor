@@ -37,7 +37,7 @@ import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
 import { isDrawingFile, isNotebookFile, isPdfFile } from '../utils/fileTypes';
-import { FileText, Notebook, PenTool, PopOut, X } from './icons';
+import { AlertCircle, FileText, Notebook, PenTool, PopOut, X } from './icons';
 import type { EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
 
 // tldraw is a heavy dependency (canvas engine + its own UI). Loading it lazily
@@ -404,6 +404,9 @@ interface DocumentPaneProps {
     /** Path-explicit: several documents are editable at once, and a debounced
      *  canvas save can land after this pane has gone away. */
     onContentChange: (path: string, content: string) => void;
+    /** Read this document's file again when the restore could not
+     *  (OpenTab.readError); resolves true once it holds the text. Stable. */
+    onRetryRead: (path: string) => Promise<boolean>;
     onFocusPane: (path: string) => void;
     onClosePane: (path: string) => void;
     onSplitOffPane: (path: string) => void;
@@ -451,6 +454,7 @@ function DocumentPane({
     stateCache,
     getWikiLinkTargets,
     onContentChange,
+    onRetryRead,
     onFocusPane,
     onClosePane,
     onSplitOffPane,
@@ -470,6 +474,17 @@ function DocumentPane({
     const isNotebook = !file.isHelp && isNotebookFile(file.name);
     const isPdf = !file.isHelp && isPdfFile(file.name);
     const isCanvas = isDrawing || isNotebook || isPdf;
+    /** Restored without its text (OpenTab.readError): this pane shows only
+     *  that, and builds no view, drawing or notebook — each would take the
+     *  empty buffer for the document and save it over the file. */
+    const unreadable = !!tab.readError;
+    const [retrying, setRetrying] = useState(false);
+    // A success remounts this pane (EditorPane keys it on readError), so only a
+    // failed attempt comes back to a mounted component to clear the flag.
+    const retryRead = async () => {
+        setRetrying(true);
+        if (!await onRetryRead(path)) setRetrying(false);
+    };
 
     const viewRef = useRef<EditorView | null>(null);
 
@@ -850,7 +865,7 @@ function DocumentPane({
                     onDrop={(e) => e.preventDefault()}
                 >
                     <span className="editor-slot-icon" aria-hidden="true">
-                        {isNotebook ? <Notebook size={12} /> : isDrawing ? <PenTool size={12} /> : <FileText size={12} />}
+                        {unreadable ? <AlertCircle size={12} /> : isNotebook ? <Notebook size={12} /> : isDrawing ? <PenTool size={12} /> : <FileText size={12} />}
                     </span>
                     <span className="editor-slot-title" title={path}>{file.name}</span>
                     {tab.dirty && <span className="editor-slot-dot" aria-hidden="true" />}
@@ -873,7 +888,32 @@ function DocumentPane({
                 </div>
             )}
             <div className="editor-slot-body">
-                {!isCanvas && (
+                {unreadable && (
+                    <div
+                        className="pdf-pane-message unread-pane"
+                        // status, not alert: this pane remounts on every tab
+                        // switch, and an alert would be read out each time.
+                        role="status"
+                        // Nothing else in this slot cancels a desktop drop,
+                        // and an uncancelled one navigates the app away (see
+                        // the header's note).
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => e.preventDefault()}
+                    >
+                        <span className="unread-pane-title" title={file.name}>
+                            Couldn’t read <strong>{file.name}</strong>
+                        </span>
+                        <span className="unread-pane-hint">
+                            Another program may be using it, it may not be downloaded yet, or it
+                            can’t be opened right now. Nothing was changed, and its tab is kept.
+                        </span>
+                        <span className="unread-pane-detail" title={tab.readError}>{tab.readError}</span>
+                        <button className="pdf-pane-action" disabled={retrying} onClick={retryRead}>
+                            {retrying ? 'Trying…' : 'Try again'}
+                        </button>
+                    </div>
+                )}
+                {!isCanvas && !unreadable && (
                     <div
                         className="view-content"
                         ref={setEditorContainer}
@@ -966,7 +1006,7 @@ function DocumentPane({
                         }}
                     />
                 )}
-                {isDrawing && (
+                {isDrawing && !unreadable && (
                     <Suspense fallback={<div className="drawing-pane drawing-pane-loading">Loading whiteboard…</div>}>
                         {/* Keyed on path: each drawing gets its own tldraw
                             instance, loaded from its own snapshot. */}
@@ -979,7 +1019,7 @@ function DocumentPane({
                         />
                     </Suspense>
                 )}
-                {isNotebook && (
+                {isNotebook && !unreadable && (
                     <Suspense fallback={<div className="drawing-pane drawing-pane-loading">Loading notebook…</div>}>
                         {/* Keyed on path, like a drawing: each notebook gets its
                             own tldraw instance, loaded from its own file. */}

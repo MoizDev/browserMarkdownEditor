@@ -28,7 +28,13 @@ export interface PendingRestoreEntry {
   readonly help: boolean;
   /** Set once read (a PDF's is '' without reading). undefined = not read, yet or ever. */
   content?: string;
-  /** Trashed, displaced, overwritten, unreadable or gone — never merged. */
+  /**
+   * Why the file could not be read, when it exists but every read failed. Such
+   * an entry is still merged, as a tab saying so (OpenTab.readError) — only a
+   * gone file may leave the session.
+   */
+  readError?: string;
+  /** Trashed, displaced, overwritten or gone — never merged. */
   dropped: boolean;
 }
 

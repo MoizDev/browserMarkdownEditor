@@ -44,6 +44,9 @@ interface EditorPaneProps {
     onContentChange: (path: string, content: string) => void;
     /** Buffer content and write it immediately, skipping the save debounce. */
     onFlushNow: (path: string, content: string) => void;
+    /** Read an unreadable tab's file again (OpenTab.readError); resolves true
+     *  once the tab holds its text. Stable, for DocumentPane's memo. */
+    onRetryRead: (path: string) => Promise<boolean>;
     /** Start annotating a plain PDF: creates "<name> (annotated).pdf" and opens it. */
     /** A notebook's exported PDF sends you to the notebook — see PdfPane. */
     onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void;
@@ -184,7 +187,7 @@ interface PaneResize {
  * confirmation, and the PDF panes, which are deliberately NOT inside a pane so
  * they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onOpenNotebookSource, onExportNotebook, onOpenNote, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const group = activeGroupOf(layout);
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
@@ -256,6 +259,9 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
     const focusedTab = focusedPath ? byPath.get(focusedPath) ?? null : null;
     const activeFile: ActiveFile | null = focusedTab?.file ?? null;
     const editorMode: EditorMode = focusedTab?.mode ?? 'read';
+    /** The focused document could not be read (OpenTab.readError): its pane
+     *  shows only that, so none of the header's document actions apply. */
+    const unreadable = !!focusedTab?.readError;
 
     const isDrawing = !!activeFile && !activeFile.isHelp && isCanvasFile(activeFile.name);
     const isNotebook = !!activeFile && !activeFile.isHelp && isNotebookFile(activeFile.name);
@@ -638,7 +644,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                 {saveStatus && <span className="save-status">{saveStatus}</span>}
                 {/* A notebook is the editable original; the PDF is an output,
                     so this writes rather than switching to it. */}
-                {isNotebook && activeFile && (
+                {isNotebook && activeFile && !unreadable && (
                     <button
                         className="view-header-action"
                         onClick={() => onExportNotebook(activeFile)}
@@ -650,7 +656,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                 )}
                 {/* A PDF reuses the per-tab mode: read = view the real PDF
                     (text selectable), edit = draw on it, in that same file. */}
-                {isAnnotatable && activeFile && (
+                {isAnnotatable && activeFile && !unreadable && (
                     <button
                         className="view-header-action"
                         onClick={() => onToggleMode(activeFile.path)}
@@ -661,7 +667,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                     </button>
                 )}
                 {/* Read/edit and linked-mentions are markdown concepts — a canvas has neither. */}
-                {activeFile && !activeFile.isHelp && !isCanvas && (
+                {activeFile && !activeFile.isHelp && !isCanvas && !unreadable && (
                     <>
                         <TableInsertButton
                             path={activeFile.path}
@@ -698,7 +704,14 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
             <div className="editor-split" ref={splitRef}>
                 {paneTabs.map((tab, i) => (
                     <DocumentPane
-                        key={paneKey(tab)}
+                        // An unreadable document's pane is keyed apart from its
+                        // readable self, so a retry that succeeds REMOUNTS it
+                        // and every mount-time step (the view built from the
+                        // real text, the scroll-anchor hold) runs as on a fresh
+                        // open. stateKey stays the same: the unreadable pane
+                        // never builds a view, so there is nothing cached under
+                        // it to adopt.
+                        key={`${paneKey(tab)}${tab.readError ? '|unread' : ''}`}
                         stateKey={paneKey(tab)}
                         tab={tab}
                         isFocused={tab.file.path === focusedPath}
@@ -709,6 +722,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         stateCache={stateCache}
                         getWikiLinkTargets={getWikiLinkTargets}
                         onContentChange={onContentChange}
+                        onRetryRead={onRetryRead}
                         onFocusPane={onFocusPane}
                         onClosePane={onClosePane}
                         onSplitOffPane={onSplitOffPane}
@@ -887,7 +901,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                     Undo (⌘Z) brings both back.
                 </ConfirmDialog>
             )}
-            {showBacklinks && activeFile && !activeFile.isHelp && (
+            {showBacklinks && activeFile && !activeFile.isHelp && !unreadable && (
                 <BacklinksPanel
                     nodes={backlinkNodes}
                     onOpenNode={onOpenNode}

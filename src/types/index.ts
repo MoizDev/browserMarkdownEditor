@@ -98,6 +98,20 @@ export interface OpenTab {
   content: string;         // in-memory text, edited live
   mode: EditorMode;        // 'read' | 'edit', remembered per tab
   dirty: boolean;          // has unsaved edits since the last disk write
+  /**
+   * Set only when the session restore (or a retry of it) could not read a file
+   * that is still in the vault — a sync client or another editor mid-write, a
+   * cloud file not downloaded, a lock. The tab is kept, rather than skipped, so
+   * the path survives in the stored session: skipping it once used to drop it
+   * from the vault's saved tabs for good (issue #8).
+   *
+   * While it is set, `content` is '' and is NOT the file's text. Nothing may
+   * write it, search it, diff it for assets, or build an editor or canvas from
+   * it — ⌘S force-flushes the focused tab, and would put '' over the note.
+   *
+   * Session-only, like `id`: the stored session records only paths.
+   */
+  readError?: string;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

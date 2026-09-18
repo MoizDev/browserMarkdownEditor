@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Columns, FileText, Notebook, PenTool, X } from './icons';
-import { isDrawingFile, isNotebookFile } from '../utils/fileTypes';
+import { AlertCircle, Columns, X } from './icons';
 import { TAB_DRAG_TYPE } from '../utils/tabDrag';
 import type { OpenTab, TabGroup } from '../types';
 
@@ -19,18 +18,6 @@ interface TabBarProps {
     onReorderGroups: (id: string, toIndex: number) => void;
     onDragStart: (id: string) => void;
     onDragEnd: () => void;
-}
-
-/** The same file-type icons the explorer uses, so a tab and its tree row read
- *  as the same thing. */
-function tabIcon(tab: OpenTab | undefined, unreadable: boolean) {
-    // A document restored without its text (OpenTab.readError) says so here
-    // too, or a tab in the background gives no sign until it is selected — and
-    // a split says so for ANY of its panes, not only the focused one.
-    if (unreadable) return <AlertCircle size={13} />;
-    if (tab && !tab.file.isHelp && isNotebookFile(tab.file.name)) return <Notebook size={13} />;
-    if (tab && !tab.file.isHelp && isDrawingFile(tab.file.name)) return <PenTool size={13} />;
-    return <FileText size={13} />;
 }
 
 /**
@@ -128,10 +115,15 @@ export default function TabBar({ tabs, groups, activeGroupId, draggingGroupId, o
                             onDrop={handleDrop}
                             onDragEnd={cleanupDrag}
                         >
-                            {/* The grab handle the drag is described by — the
-                                whole tab is draggable, but the icon is the part
-                                that looks like it. */}
-                            <span className="tab-icon" aria-hidden="true">{tabIcon(tab, unreadable)}</span>
+                            {/* No file-type icon, as Obsidian's tabs have none.
+                                The one icon left is the warning sign of a document
+                                restored without its text (OpenTab.readError):
+                                without it a tab in the background gives no sign
+                                until it is selected. A split shows it for ANY of
+                                its panes, not only the focused one. */}
+                            {unreadable && (
+                                <span className="tab-icon" aria-hidden="true"><AlertCircle size={13} /></span>
+                            )}
                             <span className="tab-title">{tab?.file.name ?? group.activePath}</span>
                             {panes > 1 && (
                                 <span className="tab-split-badge" aria-label={`${panes} panes`}>
@@ -148,7 +140,7 @@ export default function TabBar({ tabs, groups, activeGroupId, draggingGroupId, o
                                     onClick={(e) => { e.stopPropagation(); onCloseGroup(group.id); }}
                                     onMouseDown={(e) => e.stopPropagation()}
                                 >
-                                    <X size={12} />
+                                    <X size={16} strokeWidth={1.75} />
                                 </button>
                             </span>
                         </div>

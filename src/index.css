@@ -53,13 +53,36 @@
 
   /* ── Sizing ── */
   --nav-item-height: 28px;
-  --header-height: 36px;
+  --header-height: 40px;
   /* The strip naming one pane of a split tab. Only drawn when a tab holds more
      than one document — but the PDF panes, which float over their slot rather
      than sitting inside it, have to offset themselves by it in CSS. */
   --pane-header-height: 26px;
   --radius-s: 4px;
   --radius-m: 6px;
+
+  /* ── Tab strip ──
+     Obsidian's own tab bar, measured pixel by pixel off its Retina screenshots
+     (strip #333 / #fcfcfc, 200px slots, a 33px active tab 7px below the
+     strip's top) and matched against them at 2x. Literals rather than the generic
+     tokens because those are near Obsidian's but not it — --text-muted is
+     #999 against the tabs' #b3b3b3, --background-modifier-border #363636
+     would vanish on a #333 strip. The active tab is the one surface tied to a
+     generic token: it IS the page below it, so it follows
+     --background-primary whatever that becomes. No tab surface uses the
+     accent; Obsidian's don't either. */
+  --tab-container-background: #333333;
+  --tab-background-active: var(--background-primary);
+  --tab-background-hover: rgba(255, 255, 255, 0.075);
+  --tab-outline-color: transparent;
+  --tab-divider-color: #3f3f3f;
+  --tab-text-color: #b3b3b3;
+  --tab-text-color-active: #dadada;
+  --tab-width: 200px;
+  --tab-min-width: 120px;
+  --tab-height: 33px;
+  --tab-curve: 6px;
+  --tab-radius-active: 5px;
 }
 
 /* =============================================================
@@ -93,6 +116,15 @@
   --scrollbar-bg: transparent;
   --scrollbar-thumb-bg: rgba(0, 0, 0, 0.1);
   --scrollbar-active-thumb: rgba(0, 0, 0, 0.2);
+
+  /* ── Tab strip ── (measured, as above; --tab-background-active needs no
+     restating — it resolves here, against this block's #fff) */
+  --tab-container-background: #fcfcfc;
+  --tab-background-hover: rgba(0, 0, 0, 0.075);
+  --tab-outline-color: #e4e4e4;
+  --tab-divider-color: #dadada;
+  --tab-text-color: #5c5c5c;
+  --tab-text-color-active: #222222;
 }
 
 /* ── Reset ── */
@@ -260,7 +292,11 @@ body {
 .workspace-resize-handle {
   width: 4px;
   cursor: col-resize;
-  background: transparent;
+  /* Its top is the tab strip's: a transparent handle showed the page colour
+     through the strip as a 4px notch the full header tall (measured: #1e1e1e
+     between the sidebar's edge and the #333 strip), breaking the light rule. */
+  background: linear-gradient(var(--tab-container-background) calc(var(--header-height) - 1px),
+    var(--tab-outline-color) 0 var(--header-height), transparent 0);
   transition: background 0.2s;
   flex-shrink: 0;
   z-index: 10;
@@ -293,7 +329,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 8px 6px 14px;
+  /* No bottom padding: centres the actions 22.5px down, on the tab strip's
+     title line beside it, not on this header's own middle (19.5 — measured
+     3px higher than the strip's titles and actions). */
+  padding: 6px 8px 0 14px;
   height: var(--header-height);
   flex-shrink: 0;
   border-bottom: 1px solid var(--background-modifier-border);
@@ -908,10 +947,19 @@ body {
 .view-header {
   display: flex;
   align-items: center;
+  /* Exactly this and no more: .pdf-pane and .editor-empty-overlay take it as
+     their top. */
   height: var(--header-height);
-  padding: 0 8px;
-  background: var(--background-primary);
-  border-bottom: 1px solid var(--background-modifier-border);
+  /* The 5px top puts the actions' centre on the tab titles' line (22.5px down,
+     as measured), not on the strip's geometric centre — the tab bar cancels
+     it with a matching negative margin and spans the full height. */
+  padding: 5px 8px 0 0;
+  background: var(--tab-container-background);
+  /* The strip's bottom rule, as an INSET SHADOW rather than a border: a
+     child's background paints over it, so the active tab — which reaches the
+     header's bottom edge — breaks the rule exactly under itself and flows
+     into the page, as Obsidian's does. Transparent in dark, like Obsidian's. */
+  box-shadow: inset 0 -1px 0 var(--tab-outline-color);
   flex-shrink: 0;
   gap: 6px;
 }
@@ -934,14 +982,19 @@ body {
   flex-shrink: 0;
 }
 
-/* ── Tab bar (open documents) ── */
+/* ── Tab bar (open documents) ──
+   Obsidian's tab strip: inactive tabs sit on the strip itself, split by short
+   dividers; the active one is a raised folder tab in the page's own colour
+   whose sides flare out into the strip's bottom rule. */
 .tab-bar {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 2px;
-  height: var(--header-height);
+  align-items: flex-end;
+  align-self: stretch;
+  margin-top: -5px;             /* cancels .view-header's top padding */
+  padding: 0 8px 0 18px;
+  scroll-padding-inline: 18px 8px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -949,45 +1002,149 @@ body {
 .tab-bar::-webkit-scrollbar { height: 0; }
 
 .tab {
-  display: inline-flex;
+  position: relative;
+  isolation: isolate;           /* keeps the hover pill's z-index: -1 inside the tab */
+  display: flex;
   align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  max-width: 210px;
-  height: calc(var(--header-height) - 8px);
-  padding: 0 8px;
-  border-radius: var(--radius-s);
-  color: var(--text-muted);
+  gap: 4px;
+  /* 200px slots, measured, that do not grow into free space; crowded, they
+     shrink equally to a floor, and past it the strip scrolls. */
+  flex: 0 1 var(--tab-width);
+  min-width: var(--tab-min-width);
+  height: var(--tab-height);
+  /* The 4px bottom lifts the content's centre to 14.5px below the tab's top —
+     above its middle, where Obsidian's titles sit (measured against its
+     screenshots at 2x: titles, × and dividers land on the same device rows). */
+  padding: 0 6px 4px 9px;
+  border-radius: var(--tab-radius-active) var(--tab-radius-active) 0 0;
   background: transparent;
+  color: var(--tab-text-color);
   font-size: 13px;
+  font-weight: 400;
+  /* Not the app-wide `antialiased`: that thins the strokes, and the titles
+     measured 14% (light) / 25% (dark) lighter in ink than Obsidian's — with
+     `auto`, within 1% of both references. */
+  -webkit-font-smoothing: auto;
   user-select: none;
   cursor: pointer;
-  transition: background 0.08s ease, color 0.08s ease;
+  transition: color 0.08s ease;
 }
 
-/* The part of a tab that looks like something to grab. The whole tab is
-   draggable — dropped on the strip it reorders, dropped on the panes below it
-   merges into the tab on screen (see .editor-split-dropzone). */
+/* Inactive tabs: a rounded hover pill (::before) and the divider at the right
+   edge (::after). The active tab spends the same two pseudo-elements on its
+   flares, so these selectors and those stay disjoint. */
+.tab:not(.is-active)::before {
+  content: '';
+  position: absolute;
+  inset: 4px 2px 5px;
+  border-radius: var(--radius-s);
+  background: var(--tab-background-hover);
+  opacity: 0;
+  z-index: -1;
+  pointer-events: none;
+  transition: opacity 0.08s ease;
+}
+.tab:not(.is-active):hover::before { opacity: 1; }
+
+.tab:not(.is-active)::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: 5px;                     /* 12–32px down the strip, centred on the titles */
+  width: 1px;
+  height: 20px;
+  background: var(--tab-divider-color);
+  pointer-events: none;
+  transition: opacity 0.08s ease;
+}
+/* On a 2x screen Obsidian's divider sits on HALF pixels: centred on the
+   boundary between two tabs, 12.5–32.5px down. Chrome snaps a half-pixel
+   top/right to a whole CSS pixel (measured: 5.5px landed as 6), so the half is
+   a transform — and only where a device pixel exists for it, or a 1x screen
+   would get a blurred 2px line. */
+@media (resolution: 2dppx) {
+  .tab:not(.is-active)::after { transform: translate(-0.5px, 0.5px); }
+}
+/* No divider beside the active tab or a hovered one — either side of it. The
+   last tab keeps its own. The drop-indicator variant covers a drag in flight,
+   when the caret sits between a tab and its neighbour. */
+.tab:not(.is-active):hover::after,
+.tab:has(+ .tab.is-active)::after,
+.tab:has(+ .tab-drop-indicator + .tab.is-active)::after,
+.tab:has(+ .tab:not(.is-active):hover)::after { opacity: 0; }
+
+.tab.is-active {
+  z-index: 1;                   /* its flares overlap both neighbours */
+  background: var(--tab-background-active);
+  /* The outline sits OUTSIDE the tab, as Obsidian's does: the page-coloured
+     box is the same 200×33 in both themes, and light adds its 1px ring
+     around it (the strip's overflow clips the part below the foot). */
+  box-shadow: 0 0 0 1px var(--tab-outline-color);
+  color: var(--tab-text-color-active);
+}
+
+/* The flares: a concave quarter-ring either side of the active tab's foot,
+   curving its side outline into the strip's bottom rule. Each box also covers
+   the outline's 1px column for its height, so the outline turns rather than
+   running on straight to the bottom. Inside the ring shows the strip,
+   outside it the tab's colour; the half-pixel ramps between the stops keep the
+   curve from stair-stepping at 2x. */
+.tab.is-active::before,
+.tab.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  width: var(--tab-curve);
+  height: var(--tab-curve);
+  pointer-events: none;
+}
+.tab.is-active::before {
+  left: calc(var(--tab-curve) * -1);
+  background: radial-gradient(circle at 0 0,
+    transparent calc(var(--tab-curve) - 1.25px),
+    var(--tab-outline-color) calc(var(--tab-curve) - 0.75px),
+    var(--tab-outline-color) calc(var(--tab-curve) - 0.25px),
+    var(--tab-background-active) calc(var(--tab-curve) + 0.25px));
+}
+.tab.is-active::after {
+  right: calc(var(--tab-curve) * -1);
+  background: radial-gradient(circle at 100% 0,
+    transparent calc(var(--tab-curve) - 1.25px),
+    var(--tab-outline-color) calc(var(--tab-curve) - 0.75px),
+    var(--tab-outline-color) calc(var(--tab-curve) - 0.25px),
+    var(--tab-background-active) calc(var(--tab-curve) + 0.25px));
+}
+
+.tab.is-dragging { opacity: 0.4; }
+/* Chrome keeps :hover on a drag's source, which drew the pill and × (and hid
+   the dirty dot) on the ghost left behind; an inactive one reads as at rest.
+   Specific enough to outrank the :hover rules. */
+.tab.is-dragging:not(.is-active):hover::before,
+.tab.is-dragging:not(.is-active):hover .tab-close { opacity: 0; }
+.tab.is-dragging:not(.is-active):hover .tab-dirty-dot { opacity: 0.7; }
+
+/* Only ever an unreadable document's warning sign (OpenTab.readError): a tab
+   carries no file-type icon, as Obsidian's don't. In the tab's own colour
+   rather than the danger red, which this app keeps for actions that destroy
+   something. */
 .tab-icon {
   display: inline-flex;
   flex-shrink: 0;
-  color: var(--text-faint);
+  color: inherit;
 }
 
-.tab:hover .tab-icon,
-.tab.is-active .tab-icon {
-  color: var(--text-muted);
-}
-
-/* A document restored without its text (OpenTab.readError). Muted rather than
-   faint so the warning glyph reads from a background tab — but not the danger
-   red, which this app keeps for actions that destroy something. */
-.tab.is-unreadable .tab-icon {
-  color: var(--text-muted);
+.tab-title {
+  flex: 1 1 auto;               /* also what pins the close button to the right edge */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* How many documents a merged tab holds. Only ever present on a split tab, so
-   an ordinary tab reads exactly as it always did. */
+   an ordinary tab reads exactly as it always did. Tinted from the text rather
+   than --background-modifier-border, which is #363636 — invisible on the
+   #333 strip. */
 .tab-split-badge {
   display: inline-flex;
   align-items: center;
@@ -996,8 +1153,8 @@ body {
   height: 16px;
   padding: 0 5px;
   border-radius: 8px;
-  background: var(--background-modifier-border);
-  color: var(--text-muted);
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  color: inherit;
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
@@ -1007,24 +1164,13 @@ body {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
 }
-.tab:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
-.tab.is-active {
-  background: var(--background-modifier-active);
-  color: var(--text-normal);
-  box-shadow: inset 0 -2px 0 var(--interactive-accent);
-}
-.tab.is-dragging { opacity: 0.4; }
 
-.tab-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+/* 20px square, 6px in from the edge: the ×'s centre lands the measured 16px
+   from the tab's right edge. */
 .tab-trailing {
   position: relative;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -1047,23 +1193,39 @@ body {
   border: none;
   border-radius: var(--radius-s);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--tab-text-color);
   cursor: pointer;
   opacity: 0;
 }
+/* Full strength, in the inactive title's colour — as the reference draws it. */
 .tab:hover .tab-close,
-.tab.is-active .tab-close { opacity: 0.65; }
-.tab-close:hover { opacity: 1 !important; color: var(--text-normal); background: var(--background-modifier-hover); }
+.tab.is-active .tab-close { opacity: 1; }
+/* Half a pixel down, onto the reference's rows at 2x (a margin would snap to
+   a whole one). A diagonal glyph is antialiased anyway, so 1x loses nothing. */
+.tab-close svg { transform: translateY(0.5px); }
+.tab-close:hover { color: var(--tab-text-color-active); background: var(--tab-background-hover); }
+.tab-close:focus-visible {
+  opacity: 1;
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
 /* Hide the dirty dot whenever the close button is visible so they don't overlap. */
 .tab:hover .tab-dirty-dot,
 .tab.is-active .tab-dirty-dot { opacity: 0; }
 
+/* Zero net width (the negative margins), so the tabs hold still while one is
+   dragged; on the dividers' line, over whichever divider it lands on. */
 .tab-drop-indicator {
+  position: relative;
+  z-index: 2;
   flex: 0 0 auto;
+  align-self: flex-end;
   width: 2px;
-  height: calc(var(--header-height) - 10px);
+  height: 20px;
+  margin: 0 -1px 8px;
   background: var(--interactive-accent);
   border-radius: 1px;
+  pointer-events: none;         /* it overlaps both neighbours by 1px; a drop on it lands on them */
 }
 
 /* ── The panes of the tab on screen ──
@@ -2204,6 +2366,13 @@ body.is-resizing-panes * {
 .drawing-pane .tl-container {
   width: 100%;
   height: 100%;
+}
+/* tldraw rings a focused canvas with a 1px outline OUTSIDE its box — over the
+   tab strip's last row, since the pane stacks above it: a line (measured
+   #edf0f2 / #1a1a1c across the full width) cut the active tab off from its
+   page. Drawn inside instead. */
+.drawing-pane .tl-container__focused {
+  outline-offset: -1px;
 }
 
 /* No halo around typed text. tldraw rings every glyph with text-shadows in
@@ -4628,14 +4797,16 @@ li[aria-selected] .cm-completionMatchedText {
   transition: color 0.15s, background 0.15s;
 }
 
+/* The tab strip's own hover token, not --background-modifier-hover: these sit
+   on the strip, and dark's #2a2d2e would be a pill DARKER than its #333. */
 .view-header-action:hover {
   color: var(--text-normal);
-  background: var(--background-modifier-hover);
+  background: var(--tab-background-hover);
 }
 
 .view-header-action.active {
   color: var(--text-accent);
-  background: var(--background-modifier-hover);
+  background: var(--tab-background-hover);
 }
 
 .view-header-action:disabled {
@@ -4656,8 +4827,9 @@ li[aria-selected] .cm-completionMatchedText {
 }
 
 .view-header-action-count {
-  background: var(--background-modifier-border);
-  color: var(--text-muted);
+  /* Tinted from the text, as .tab-split-badge is: #363636 vanishes on the strip. */
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  color: var(--tab-text-color);  /* --text-muted on that tint was ~3.4:1 in dark */
   border-radius: 9px;
   padding: 0 6px;
   font-size: 10px;

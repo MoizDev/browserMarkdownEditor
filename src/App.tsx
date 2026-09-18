@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo, useSyncExternalStore } from 'react';
+import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { HELP_DOC_CONTENT } from './utils/helpDoc';
 import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache } from './utils/graph';
@@ -34,6 +35,7 @@ import {
   visiblePaths,
 } from './utils/tabGroups';
 import { clampTabSize } from './editor/lists';
+import type { WikiLinkTarget } from './editor/wikiLinkComplete';
 import { retryMissingAssets } from './editor/imageWidget';
 import { getNotebookExporter, clearNotebookRenderData, moveNotebookRenderData } from './utils/notebookRenderCache';
 import { findLinkedVault, readLocation, vaultLinkName, writeLocation } from './utils/appUrl';
@@ -103,8 +105,13 @@ function externalOpenUrl(path: string, file: File): string {
 }
 
 /** Session-unique document ids (see OpenTab.id). Never persisted — the stored
- *  session records paths, so these are re-minted on restore and only have to be
- *  unique among the documents open at one moment. */
+ *  session records paths, so these are re-minted on restore. They must never
+ *  REPEAT within a page load, not merely differ among the documents open at one
+ *  moment: the editor-state cache can still hold a closed document's state
+ *  until EditorPane next prunes it (after a stay in the graph view, which
+ *  unmounts it), and a recycled id would hand that state — text and undo
+ *  history — to a different document. The monotonic counter guarantees it;
+ *  keep it that way. */
 let docSeq = 0;
 function newTabId(): string {
   return `d${(++docSeq).toString(36)}`;
@@ -314,6 +321,45 @@ export default function App() {
 
   // The link graph powering the Neural Brain view and backlinks panel
   const [graph, setGraph] = useState<GraphData>(EMPTY_GRAPH);
+
+  // ── Per-document editor state ────────────────────────────────────────────
+  // Each document's full EditorState (doc + undo history + selection + an open
+  // search panel) is cached by DOCUMENT — `${OpenTab.id}|${path}`, EditorPane's
+  // paneKey — and adopted by whichever pane shows it next, so undo survives tab
+  // switches and being dragged into a split, and can never reach across
+  // documents. By id rather than by path because a rename that overwrites an
+  // open file leaves two documents answering to one path for a commit, and
+  // keyed by path the survivor adopted the loser's text and undo history —
+  // then saved it over the file that had just replaced it (see OpenTab.id).
+  //
+  // Held HERE rather than in EditorPane because the graph view REPLACES
+  // EditorPane, and a cache it owned went with it — measured: ⌘Z did nothing
+  // after a trip to the Neural Brain view and back (issue #34). EditorPane
+  // still prunes it to the open documents, so an entry for a document closed
+  // while the graph is up waits for its next mount; it cannot be adopted
+  // meanwhile, since ids never repeat (see newTabId).
+  const [editorStates] = useState(() => new Map<string, EditorState>());
+
+  // The [[ autocomplete's targets, deduped by link name since wikilinks
+  // resolve by name, not path. It is baked into each document's EditorState
+  // (outside any compartment), and that state is cached above and outlives
+  // EditorPane, so the getter must be stable for the APP's life: one created in
+  // EditorPane would go on reading that EditorPane's graph once a graph-view
+  // trip unmounted it, and a note created afterwards would never be offered.
+  // Same rule as openNoteByName, and the same ref-mirror to keep it current.
+  const graphRef = useRef<GraphData>(graph);
+  useEffect(() => { graphRef.current = graph; }, [graph]);
+  const [getWikiLinkTargets] = useState(() => (): WikiLinkTarget[] => {
+    const seen = new Set<string>();
+    const targets: WikiLinkTarget[] = [];
+    for (const node of graphRef.current.nodes) {
+      const key = node.name.toLowerCase();
+      if (!node.name || seen.has(key)) continue;
+      seen.add(key);
+      targets.push({ name: node.name, unresolved: node.unresolved });
+    }
+    return targets;
+  });
 
   // The global light/dark theme state
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'dark');
@@ -2989,6 +3035,8 @@ export default function App() {
             onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}
             onOpenNote={openNoteByName}
+            stateCache={editorStates}
+            getWikiLinkTargets={getWikiLinkTargets}
             onNotify={notify}
             onConfirm={ask}
             graph={graph}

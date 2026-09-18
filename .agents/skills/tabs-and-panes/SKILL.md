@@ -154,7 +154,8 @@ folder, and the editor's state cache is keyed by a string carrying that path, so
 share could serve the old vault's buffer for the new vault's file. The effect is keyed on a
 `rootHandle` change and guarded to fire only on a *real* switch — the `null → vault` assignment at
 startup must not clear the tabs the restore pass is about to bring back. Clearing the tabs is also
-what drops their cached editor states, since `EditorPane` prunes that map to the open set.
+what drops their cached editor states, since `EditorPane` prunes that map to the open set — on its
+next mount, if the graph view is up.
 
 **Two refs say WHICH VAULT the workspace on screen is the session of** — `sessionRootRef`
 (the handle) and `sessionVaultIdRef` (the id) — written together by the restore pass and checked by
@@ -227,8 +228,15 @@ rectangle.
   `paneKey` — `OpenTab.id | path` — so a pane shows one document for its whole life and there is no
   tab-swap logic in it at all; switching tabs mounts and unmounts panes.
 - **The `EditorState` cache is what makes that free.** A pane caches its state on the way out and
-  adopts it on the way in, so undo history and selection survive every tab switch exactly as they did
-  when one view was re-pointed — and still never reach across documents.
+  adopts it on the way in, so undo history, selection and an open search panel survive every tab
+  switch exactly as they did when one view was re-pointed — and still never reach across documents.
+  The map is **owned by `App`, not `EditorPane`**, because the graph view *replaces* `EditorPane`: a
+  cache it owned died with it, and a trip to the Neural Brain view threw away every open note's undo
+  (issue #34). `EditorPane` only hands it down and prunes it to the open set; while the graph is up
+  that prune waits for its next mount, which is harmless only because `OpenTab.id` never repeats
+  within a page load (`newTabId`'s counter — never make it recycle). A tab's mode CAN change while no
+  pane shows it (App's ⌘E works in the graph view), which is why adopting re-states the mode and
+  rebuilds the search panel for it.
 - **A pane and its cached state are keyed by `paneKey` — `OpenTab.id | path` — and a path alone would
   be wrong.** Both halves earn their place. The **id** because a rename that overwrites an open file
   leaves two different documents answering to one path for a single commit: keyed by path, React
@@ -254,7 +262,10 @@ rectangle.
   updated the moment its pane unmounts. `openNoteByName` was not stable (it closed over `mdFiles`,
   rebuilt on every tree refresh), so a `[[wikilink]]` in any note whose pane had been unmounted once
   silently did nothing for every note created, renamed or moved since — it is now stable in
-  `App.tsx`, reading the index through a ref, which is where that kind of fix belongs. Genuinely
+  `App.tsx`, reading the index through a ref, which is where that kind of fix belongs. "The app's
+  life" means App-level, not `EditorPane`-level: the states outlive `EditorPane` too, so the `[[`
+  autocomplete source (`getWikiLinkTargets`), had it stayed in `EditorPane`, would have gone on
+  reading an unmounted `EditorPane`'s graph after a graph-view trip — it is App's now. Genuinely
   per-document state that a baked handler needs goes **by path** instead, which is what
   `DocumentPane`'s `scrollDebounce` is: a per-instance timer meant the live pane's unmount flush could
   never find the timer the adopted handler had armed.

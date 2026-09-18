@@ -229,9 +229,10 @@ All three canvases pass `shapeUtils={CANVAS_SHAPE_UTILS}`, which substitutes tld
   `.pdf-pane-hidden` (visibility) when off screen — so *tab* switches keep the document and reading
   position. Note the limit of that guarantee: `App.tsx` renders
   `mainView === 'graph' ? <GraphView/> : <EditorPane/>`, so opening the Neural Brain view unmounts
-  `EditorPane` and with it every pane, every pane's `EditorView`, and the per-path state cache — i.e.
-  a graph visit *does* drop per-tab undo history and reload open PDFs. That is existing behaviour, not
-  a designed one.
+  `EditorPane` and with it every pane and every `PdfPane`. Markdown notes come back intact (their
+  `EditorState` cache is App's — undo, selection and search panel survive), but every open PDF
+  reloads, which a tab switch never costs it. (Drawings, notebooks and the annotate canvas are torn
+  down by a tab switch anyway.) That is existing behaviour, not a designed one.
 - Panes lazy-activate on first being shown (a restored background PDF touches neither disk nor pdf.js
   until then). Only the annotate canvas is torn down when its tab is backgrounded: unmounting tldraw
   is what flushes pending strokes. The view re-read is driven by **this tab's `dirty` falling edge**,

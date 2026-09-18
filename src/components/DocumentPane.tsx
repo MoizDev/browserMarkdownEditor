@@ -416,13 +416,16 @@ interface DocumentPaneProps {
     /** Spaces a Tab inserts — and how far Tab indents a list item. */
     tabSize: number;
     /**
-     * Per-document EditorStates (doc + undo history + selection), owned by
-     * EditorPane and shared by every pane, so a document that leaves the screen
-     * and comes back is exactly where it was left. Keyed by `tab.id` — the
-     * document, not its path, which a rename can hand to a different document
-     * (see OpenTab.id).
+     * Per-document EditorStates (doc + undo history + selection + search
+     * panel), owned by App — so they survive the graph view, which unmounts
+     * EditorPane — and shared by every pane, so a document that leaves the
+     * screen and comes back is exactly where it was left. Keyed by `tab.id` —
+     * the document, not its path, which a rename can hand to a different
+     * document (see OpenTab.id).
      */
     stateCache: Map<string, EditorState>;
+    /** Baked into the EditorState, which outlives this pane and EditorPane
+     *  both, so the caller keeps it stable for the app's life (App does). */
     getWikiLinkTargets: () => WikiLinkTarget[];
     /** Path-explicit: several documents are editable at once, and a debounced
      *  canvas save can land after this pane has gone away. */
@@ -792,10 +795,10 @@ function DocumentPane({
                 // and reads the mode from the editable facet re-stated above.
                 //
                 // An open search panel follows the mode re-stated above, for the
-                // same both-places reason (tabs-and-panes). Nothing changes a tab's
-                // mode while no pane shows it today — the graph view, which could,
-                // unmounts EditorPane and this cache with it — so this guards the
-                // day something does, rather than a path in use.
+                // same both-places reason (tabs-and-panes). A path in use: the
+                // cache is App's and survives the graph view, where App's ⌘E
+                // still toggles the active tab's mode with no pane showing it —
+                // so a document can come back in a mode its state was not left in.
                 rebuildSearchPanelForMode(view, wasReadOnly);
             }
 

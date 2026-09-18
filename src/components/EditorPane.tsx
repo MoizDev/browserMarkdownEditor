@@ -53,6 +53,13 @@ interface EditorPaneProps {
     /** Write the active notebook out as a PDF beside it. */
     onExportNotebook: (file: ActiveFile) => void;
     onOpenNote: OpenNoteByNameHandler;
+    /** Every open document's EditorState, OWNED BY App so it outlives this
+     *  component — the graph view unmounts it. This component only hands it to
+     *  the panes and prunes it to the open documents. */
+    stateCache: Map<string, EditorState>;
+    /** The [[ autocomplete's source. Baked into each cached state, so it must
+     *  be stable for the app's life (App's is). */
+    getWikiLinkTargets: () => WikiLinkTarget[];
     /** Say something to the reader in the app's own dialog — App's `tell`,
      *  threaded down to the panes because a right-click menu row that cannot
      *  reach the clipboard has to say so. Stable, or DocumentPane's memo (and
@@ -182,12 +189,12 @@ interface PaneResize {
  * A tab shows one document in the ordinary case and up to five side by side
  * once tabs have been merged (see utils/tabGroups.ts). Each pane is a
  * DocumentPane owning its own CodeMirror view; this component owns what is
- * shared between them — the per-path EditorState cache, the tab bar, the
- * top-bar actions (which act on the focused pane), the image-delete
- * confirmation, and the PDF panes, which are deliberately NOT inside a pane so
- * they can outlive it.
+ * shared between them — handing App's per-document EditorState cache to the
+ * panes and pruning it, the tab bar, the top-bar actions (which act on the
+ * focused pane), the image-delete confirmation, and the PDF panes, which are
+ * deliberately NOT inside a pane so they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectGroup, onCloseGroup, onReorderGroups, onMergeGroups, onResizePanes, onFocusPane, onClosePane, onSplitOffPane, onToggleMode, onContentChange, onFlushNow, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const group = activeGroupOf(layout);
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
@@ -275,19 +282,6 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
     /** True whenever a non-CodeMirror surface owns the focused pane. */
     const isCanvas = isDrawing || isPdf;
 
-    // ── Per-document editor state ──────────────────────────────────────────
-    // Each document's full EditorState (doc + undo history + selection) is
-    // cached here by DOCUMENT (OpenTab.id), and adopted by whichever pane shows
-    // it next — so undo survives tab switches and being dragged into a split,
-    // and can never reach across documents.
-    //
-    // By id rather than by path, which is the same reason the panes below are
-    // keyed by it: a rename that overwrites an open file leaves two different
-    // documents answering to one path for a commit, and keyed by path the
-    // survivor adopted the loser's text and undo history — then saved it over
-    // the file that had just replaced it (see OpenTab.id).
-    const [stateCache] = useState(() => new Map<string, EditorState>());
-
     // ── Linked mentions popover ────────────────────────────────────────────
     const [showBacklinks, setShowBacklinks] = useState(false);
     const [popoverPos, setPopoverPos] = useState<PopoverPos | null>(null);
@@ -334,23 +328,6 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
         };
     }, [showBacklinks]);
 
-    // The [[ autocomplete reads targets through this ref so its (created-once)
-    // extension always sees the current vault, deduped by link name since
-    // wikilinks resolve by name, not path. One stable getter for every pane.
-    const graphRef = useRef<GraphData>(graph);
-    useEffect(() => { graphRef.current = graph; }, [graph]);
-    const [getWikiLinkTargets] = useState(() => () => {
-        const seen = new Set<string>();
-        const targets: WikiLinkTarget[] = [];
-        for (const node of graphRef.current.nodes) {
-            const key = node.name.toLowerCase();
-            if (!node.name || seen.has(key)) continue;
-            seen.add(key);
-            targets.push({ name: node.name, unresolved: node.unresolved });
-        }
-        return targets;
-    });
-
     // ── Embedded images ────────────────────────────────────────────────────
     // Deleting one is the editor's only action that needs the app: it has to be
     // confirmed first, since the picture goes to .Garbage with it. The document
@@ -380,8 +357,12 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
         setImageDelete(prev => (prev && visible.has(prev.path) ? prev : null));
     }, [visibleKey]);
 
-    // Drop cached editor states for documents that are no longer open. Keyed on
-    // the joined key string so it doesn't run on every keystroke.
+    // Drop cached editor states for documents that are no longer open — the
+    // only thing that ever empties App's cache. Keyed on the joined key string
+    // so it doesn't run on every keystroke. It does not run while the graph
+    // view has this component unmounted; its first run on the way back clears
+    // whatever closed meanwhile, which nothing could adopt in between (ids
+    // never repeat — see App's newTabId).
     const openTabsKey = tabs.map(paneKey).join('\n');
     useEffect(() => {
         const open = new Set(openTabsKey ? openTabsKey.split('\n') : []);

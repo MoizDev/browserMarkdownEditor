@@ -501,11 +501,12 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         );
     }
 
+    const noteCount = nodes.filter(n => !n.unresolved).length;
     return (
         <div className="graph-view">
             <div className="graph-toolbar">
                 <span className="graph-stats">
-                    {nodes.filter(n => !n.unresolved).length} notes · {links.length} links
+                    {noteCount} note{noteCount === 1 ? '' : 's'} · {links.length} link{links.length === 1 ? '' : 's'}
                 </span>
                 <button className="graph-reset-btn" onClick={resetView} title="Reset view">Reset view</button>
             </div>

@@ -81,9 +81,9 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   derived. The save funnel `updateTabContent(path, content)` is **path-explicit and the only one** —
   several documents are editable at once and canvas panes serialize after their pane has gone. The
   session is per vault id (`utils/tabSessions.ts`); a switch empties the workspace without losing it.
-- **A CodeMirror `EditorState` outlives the pane that built it**, and so does everything baked into
-  it (`domEventHandlers`, the update listener); anything such a handler reaches must be **stable for
-  the app's life**. A per-pane ref does not rescue that, it hides the staleness.
+- **A CodeMirror `EditorState` outlives its pane — and `EditorPane`, which the graph view unmounts** (the
+  cache is App's) — and so does everything baked into it (`domEventHandlers`, the update listener): all
+  it reaches must be **stable for the app's life**, i.e. App-level. A per-pane ref only hides staleness.
 - **Images and tables are deliberate abstractions over the app's own markdown** — the raw text is
   unreachable by design and the file on disk stays ordinary markdown (`markdown-tables` has the how).
 - **The app draws its own context menu and its own `confirm()`; prefer them to native dialogs.**

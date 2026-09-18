@@ -1324,6 +1324,13 @@ body.is-resizing-panes * {
 
 .view-content .cm-editor .cm-scroller {
   overflow: auto;
+  /* The query container the bottom buffer below measures (`cqh`). `size`, not
+     `inline-size`, because the buffer is a share of the pane's HEIGHT. Safe:
+     the scroller's height never comes from its content (100% of .cm-editor,
+     itself 100% of the absolutely-inset .view-content), and nothing
+     `position: fixed` lives inside it — CodeMirror's tooltips and the ⌘F panel
+     are .cm-editor children, siblings of this scroller. */
+  container-type: size;
 }
 
 /* Readable Line Length constraints */
@@ -1338,6 +1345,19 @@ body.is-resizing-panes * {
   padding-left: max(var(--editor-padding, 6%), var(--heading-fold-gutter));
   /* Responsive padding to prevent edge collision */
   padding-right: var(--editor-padding, 6%);
+  /* Issue #32's page-less-document buffer: half the pane's visible height
+     below the last line, so the end of a note can be read at mid-screen
+     instead of against the bottom edge. `cqh` (the scroller above), not `vh`:
+     a split or the open ⌘F bar shortens the scroller, and each gets half of
+     ITS height. 24px floor = cmTheme's own bottom padding, for a pane too short
+     for half to be more. Whole px because CodeMirror `parseInt`s this computed
+     padding in every measure (viewState.measure), so a fraction would leave
+     its height map off by it. A note shorter than the buffer still doesn't
+     scroll: the base theme's `min-height: 100%` + `border-box` makes the
+     content max(pane, text + padding) tall. Chosen over `scrollPastEnd()`,
+     which pads by the editor's height minus one line — every two-line note
+     scrolls and the last line can reach the top edge over an empty pane. */
+  padding-bottom: max(24px, round(down, 50cqh, 1px));
 }
 
 /* ── Theme Toggle ── */

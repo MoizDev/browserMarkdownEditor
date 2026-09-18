@@ -37,9 +37,10 @@ store; `App` reads it with `useSyncExternalStore` and renders `<ContextMenu>` on
   event dispatch refuses events raised inside a widget — the one place a menu is most wanted. It uses
   the **loose `posAtCoords` overload** deliberately: the precise one returns `null` for the last,
   empty line of a document, which broke "Insert table…" at end-of-note.
-- **Escape is on `window`, in the CAPTURE phase, and both prevented and stopped.** `VaultMenu`'s
-  bubble-phase Escape is fine in the sidebar and wrong here: this menu is drawn over CodeMirror, which
-  binds Escape itself, and focus is usually still in a pane behind it. That is the bug
+- **Escape is on `window`, in the CAPTURE phase, and both prevented and stopped.** The bubble-phase
+  `dismissOnEscape` that `VaultMenu` uses (below) yields to whoever handled Escape first — right in the
+  sidebar, wrong here: this menu is drawn over CodeMirror, which binds Escape itself, and focus is
+  usually still in a pane behind it. That is the bug
   `ConfirmDialog.tsx` was written to fix. The cell's own Escape does both too.
 - **A scroll dismisses it, and a resize does.** Unlike `VaultMenu`, which hangs off a button, this one
   hangs off a **point in the viewport** — a scroll moves the thing it was aimed at out from under it,
@@ -104,3 +105,12 @@ store; `App` reads it with `useSyncExternalStore` and renders `<ContextMenu>` on
   takes the keyboard on open, hands it back to its opener on close and closes on Escape (an
   `aria-modal` that leaves focus behind it tells a screen reader to ignore where focus is). Without
   the attribute, ⌘F behind it opens the search of the note underneath (Settings, until #17).
+- **A non-modal floating surface closes on Escape through `utils/escapeDismiss.ts`, never a `keydown`
+  listener of its own** (`VaultMenu`, the backlinks popover). `dismissOnEscape(close)` in the effect
+  that opens it, its return value in that effect's cleanup — registration order is the stacking order,
+  so never let the effect re-run while open. Bubble phase; skips an Escape already `defaultPrevented`
+  (CodeMirror's search panel, autocomplete, a selection collapse, a rename field); of several open,
+  closes only the newest, and prevents the press it takes — one press, one thing (#36). The other
+  half: **anything that consumes Escape must `preventDefault()` it**, or the surface behind closes on
+  the same press. Capture-and-stopped (this menu, `ConfirmDialog`, `TableInsertButton`) is for a
+  surface drawn over CodeMirror or a modal, which must win outright.

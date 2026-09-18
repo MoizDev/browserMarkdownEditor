@@ -3,6 +3,7 @@ import { Check, FolderIcon, Minus } from './icons';
 import LucideGlyph from './LucideGlyph';
 import { entryColorVar } from '../utils/entryStyle';
 import { getEntryStyles, subscribeEntryStyles } from '../utils/entryStyleStore';
+import { dismissOnEscape } from '../utils/escapeDismiss';
 import type { CSSProperties } from 'react';
 import type { RecentVault, VaultOpenResult } from '../types';
 
@@ -95,7 +96,10 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
     // Dismiss on outside-click, Escape, or window resize (which invalidates the
     // anchor rect this menu was positioned from). Mirrors the backlinks popover
     // — the anchor button is excluded so its own click can toggle the menu shut
-    // instead of being closed here and immediately reopened.
+    // instead of being closed here and immediately reopened. Escape goes through
+    // `dismissOnEscape`: it yields to an Escape something else already handled,
+    // and of several open surfaces closes only the newest (#36). `onClose` is
+    // stable, so this registers once per open — which is what orders the stack.
     useEffect(() => {
         const onPointerDown = (e: PointerEvent) => {
             const target = e.target as HTMLElement;
@@ -103,13 +107,12 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
             restoreFocusRef.current = false;
             onClose();
         };
-        const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
         document.addEventListener('pointerdown', onPointerDown, true);
-        document.addEventListener('keydown', onKeyDown);
+        const stopEscape = dismissOnEscape(onClose);
         window.addEventListener('resize', onClose);
         return () => {
             document.removeEventListener('pointerdown', onPointerDown, true);
-            document.removeEventListener('keydown', onKeyDown);
+            stopEscape();
             window.removeEventListener('resize', onClose);
         };
     }, [onClose]);

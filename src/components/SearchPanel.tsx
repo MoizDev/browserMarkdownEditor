@@ -103,6 +103,9 @@ export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpen
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.nativeEvent.isComposing) return; // IME candidate confirmation
         if (e.key === 'Escape') {
+            // Handled: `dismissOnEscape` surfaces skip a prevented Escape, so
+            // one press closes only this (#36).
+            e.preventDefault();
             onClose();
         } else if (e.key === 'Enter' && results.files.length > 0) {
             openResult(results.files[0]);

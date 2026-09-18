@@ -59,13 +59,13 @@ function place(point: number, size: number, limit: number): number {
  * handler hung off a CodeMirror widget, which knows nothing about React. See
  * utils/contextMenu.ts for why that store shape is the only one that works.
  *
- * Modelled on VaultMenu — the app's only other dismissible popover — with
- * three differences that all come from WHERE this one sits. It hangs from a
- * point in the viewport rather than from a button, so a scroll invalidates its
- * position and must dismiss it; it can be raised anywhere, so it flips on both
- * axes instead of only leftwards; and it is drawn over CodeMirror, which binds
- * Escape itself — so Escape here is capture-phase and stopped, the treatment
- * ConfirmDialog.tsx:58-67 already documents.
+ * Modelled on VaultMenu (the backlinks popover is the third dismissible
+ * surface), with three differences that all come from WHERE this one sits. It
+ * hangs from a point in the viewport rather than from a button, so a scroll
+ * invalidates its position and must dismiss it; it can be raised anywhere, so
+ * it flips on both axes instead of only leftwards; and it is drawn over
+ * CodeMirror, which binds Escape itself — so Escape here is capture-phase and
+ * stopped, the treatment ConfirmDialog.tsx already documents.
  */
 export default function ContextMenu({ request, onClose }: ContextMenuProps) {
     const menuRef = useRef<HTMLDivElement | null>(null);
@@ -157,16 +157,18 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         setPanelPos({ left, top: place(flyout.anchor.top, rect.height, window.innerHeight) });
     }, [flyout]);
 
-    /* Dismissal. Mirrors VaultMenu.tsx:61-77, with the two listeners a menu
+    /* Dismissal. Mirrors VaultMenu's, with the two listeners a menu
        anchored to a VIEWPORT POINT needs and the vault button's menu did not:
        a scroll moves the thing the menu was aimed at out from under it, and
        this menu is routinely raised inside a scrollable editor.
 
        Escape is on `window`, in the CAPTURE phase, and both prevented and
-       stopped. VaultMenu's bubble-phase Escape is fine in the sidebar and
-       wrong here: CodeMirror binds Escape too, and focus is usually still in
-       (or one Tab away from) a pane behind this menu — which is the exact bug
-       ConfirmDialog.tsx:58-67 was written to fix. */
+       stopped. The bubble-phase `dismissOnEscape` (utils/escapeDismiss.ts)
+       that VaultMenu and the backlinks popover use yields to whatever handled
+       Escape first — right for a surface beside the editor, wrong here:
+       CodeMirror binds Escape too, and focus is usually still in (or one Tab
+       away from) a pane behind this menu, so the pane would take the press
+       this menu owns — the exact bug ConfirmDialog.tsx was written to fix. */
     useEffect(() => {
         const inside = (node: EventTarget | null): boolean =>
             node instanceof Node

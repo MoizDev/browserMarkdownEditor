@@ -243,6 +243,9 @@ function FileExplorer({
             }
             clearCreateRequest();
         } else if (e.key === 'Escape') {
+            // Handled: `dismissOnEscape` surfaces skip a prevented Escape, so
+            // one press closes only this (#36).
+            e.preventDefault();
             clearCreateRequest();
         }
     };

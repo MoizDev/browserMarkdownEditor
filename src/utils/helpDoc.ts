@@ -175,7 +175,7 @@ Press \`Cmd + F\` / \`Ctrl + F\` with a note in front of you — in Read Mode or
 - Type what you are looking for and press \`Enter\` (or **next**) for the next match, \`Shift + Enter\` (or **previous**) for the one before. \`Cmd + G\` / \`Ctrl + G\` and \`Shift + Cmd + G\` / \`Shift + Ctrl + G\` do the same, whether you are in the bar or back in the note.
 - **all** selects every match. **match case**, **regexp** and **by word** narrow what counts.
 - **Replace** is only there in Edit Mode, because Read Mode never changes the note. Switch modes with the bar open and it appears or disappears; what you typed is kept.
-- \`Escape\` closes the bar while you are in it, and so does its **×**.
+- \`Escape\` closes the bar while you are in it, and so does its **×**. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the bar and a second closes the list.
 
 In a split, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; a PDF keeps the browser's own find (see *PDFs*).
 

@@ -8,6 +8,7 @@ import TabBar from './TabBar';
 import TableInsertButton from './TableInsertButton';
 import { Link, Eye, Edit2, PenTool, Download } from './icons';
 import { getBacklinkNodes } from '../utils/graph';
+import { dismissOnEscape } from '../utils/escapeDismiss';
 import { isPdfFile, isCanvasFile, isNotebookFile } from '../utils/fileTypes';
 import { activeGroup as activeGroupOf, canMergeIntoActive, paneSizes, MAX_SPLIT_PANES } from '../utils/tabGroups';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
@@ -300,6 +301,15 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
 
     const closeBacklinks = useCallback(() => setShowBacklinks(false), []);
 
+    // The popover lives only while its toggle does (the header's markdown-only
+    // actions). Focus moving to Help, a canvas or an unreadable tab by keyboard
+    // closes it rather than leaving it hidden but still OPEN — still registered
+    // with `dismissOnEscape`, where it took the next Escape unseen and, being
+    // newest, outranked a vault menu that was on screen (#36 review). Adjusted
+    // during render, React's pattern for state that follows a prop.
+    const backlinksAvailable = !!activeFile && !activeFile.isHelp && !isCanvas && !unreadable;
+    if (showBacklinks && !backlinksAvailable) setShowBacklinks(false);
+
     const toggleBacklinks = useCallback(() => {
         setShowBacklinks(prev => {
             const next = !prev;
@@ -314,7 +324,10 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
         });
     }, []);
 
-    // Dismiss the popover on outside-click, Escape, or window resize.
+    // Dismiss the popover on outside-click, Escape, or window resize. Escape
+    // goes through `dismissOnEscape`, so one that the note's search bar, a
+    // selection or a newer surface already handled leaves the popover open
+    // (#36). Registered only while open: registration order is its stacking.
     useEffect(() => {
         if (!showBacklinks) return;
         const onPointerDown = (e: PointerEvent) => {
@@ -322,17 +335,16 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
             if (target.closest('.backlinks-popover') || target.closest('.backlinks-toggle')) return;
             setShowBacklinks(false);
         };
-        const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowBacklinks(false); };
         const onResize = () => setShowBacklinks(false);
         document.addEventListener('pointerdown', onPointerDown, true);
-        document.addEventListener('keydown', onKeyDown);
+        const stopEscape = dismissOnEscape(closeBacklinks);
         window.addEventListener('resize', onResize);
         return () => {
             document.removeEventListener('pointerdown', onPointerDown, true);
-            document.removeEventListener('keydown', onKeyDown);
+            stopEscape();
             window.removeEventListener('resize', onResize);
         };
-    }, [showBacklinks]);
+    }, [showBacklinks, closeBacklinks]);
 
     // The [[ autocomplete reads targets through this ref so its (created-once)
     // extension always sees the current vault, deduped by link name since
@@ -901,7 +913,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                     Undo (⌘Z) brings both back.
                 </ConfirmDialog>
             )}
-            {showBacklinks && activeFile && !activeFile.isHelp && !unreadable && (
+            {showBacklinks && backlinksAvailable && (
                 <BacklinksPanel
                     nodes={backlinkNodes}
                     onOpenNode={onOpenNode}

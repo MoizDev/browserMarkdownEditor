@@ -22,9 +22,12 @@ import {
    run by DocumentPane's window listener for the focused note pane only —
    after CodeMirror has had its turn, so nothing is handled twice.
 
-   Escape is deliberately absent. Several app surfaces close on an Escape
-   nobody stopped (the backlinks popover, the vault menu), and the panel's own
-   Escape already works whenever the keyboard is in the panel. */
+   Escape is deliberately absent. The backlinks popover and the vault menu
+   close on an Escape nobody handled (utils/escapeDismiss.ts), so one bound
+   here would close the bar from a pane that merely has it open — reaching
+   past those surfaces. The panel's own keymap already handles, and prevents,
+   Escape whenever the keyboard is in the panel, which is what lets those
+   surfaces stay open on that press (#36). */
 const SCOPE = 'note-search';
 
 /** Add to the note's state, beside `searchKeymap`: `runScopeHandlers` reads

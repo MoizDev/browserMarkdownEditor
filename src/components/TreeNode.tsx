@@ -138,6 +138,9 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
         if (e.key === 'Enter') {
             handleRenameSubmit();
         } else if (e.key === 'Escape') {
+            // Handled: `dismissOnEscape` surfaces skip a prevented Escape, so
+            // one press closes only this (#36).
+            e.preventDefault();
             setRenameValue(node.name);
             setIsRenaming(false);
         }
@@ -179,6 +182,7 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
             if (kind === 'folder') await onCreateFolder(node.handle, name);
             else await onCreateFile(node.handle, nameForKind(kind, name), node.path);
         } else if (e.key === 'Escape') {
+            e.preventDefault(); // handled — see handleRenameKeyDown
             clearCreateRequest();
         }
     };

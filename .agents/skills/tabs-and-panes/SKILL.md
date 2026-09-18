@@ -299,6 +299,20 @@ rectangle.
   skill for why the PDF panes stay outside the panes, and for the two consequences of floating over a
   slot (a surface must report focus for the slot itself; a hidden pane keeps the geometry it was last
   shown at).
+- **A tab-bar select or close hands the keyboard to the focused note's `.cm-scroller`** (#35 — a
+  tab is a `<div>`, so the click left `<body>` and Space/PageDown scrolled nothing). EditorPane's
+  `handKeyboardToNote` runs in a `requestAnimationFrame` (an effect loses to StrictMode destroying
+  and rebuilding the new pane's view) and never takes it from something that types (a caret, Find,
+  a rename field) or a menu/dialog — but DOES take it from a button, which the × / middle-click
+  `preventDefault` would otherwise leave holding Space. Each note pane registers its target via
+  `registerKeyboardTarget`. The scroller in BOTH modes — Edit mode's text would arm Space to type
+  off screen. A pane kind that should scroll by keyboard registers one. Around it:
+  `noteSearch.keyboardAfterSearchClose` covers ⌘F's Escape in Reading mode; `scrollAnchor`'s hold
+  lets only scroll keys aimed at the scroller release it (⌘E just after a click drifted 58–78
+  lines); `editor/tabIntoText.ts` makes Tab enter the text where the reader is, not at a stale
+  caret. The registry is EditorPane's, unlike the state cache: panes register from an effect and
+  nothing of it is baked into a state, so it rebuilds with EditorPane after a graph-view trip. The
+  two extensions ARE baked in, and are safe there only because they touch nothing but their view.
 - **The drop zone is a layer over the panes, present only while a tab is actually in flight.**
   CodeMirror handles `drop` itself and would insert the dragged text; a PDF pane would swallow it
   outright. Which half of which pane the pointer is in decides the insertion index, painted with the

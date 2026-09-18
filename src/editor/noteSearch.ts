@@ -1,5 +1,4 @@
-import { keymap, runScopeHandlers } from '@codemirror/view';
-import type { EditorView } from '@codemirror/view';
+import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
 import {
     closeSearchPanel,
     findNext,
@@ -12,7 +11,7 @@ import {
 
 /* ── The search keys, for a note that cannot take focus ───────────────────
    CodeMirror runs a keymap only for key presses aimed at `.cm-content`, and a
-   note in Reading mode cannot be focused (editor/readingMode.ts) — so its
+   note's text cannot be focused in Reading mode (editor/readingMode.ts) — so its
    `searchKeymap` never saw ⌘F there, and Chrome's find bar opened instead.
    That bar only searches what is in the page: the lines drawn near the
    viewport (measured: 47 of an 805-line note) and nothing under a collapsed
@@ -108,9 +107,11 @@ export function rebuildSearchPanelForMode(view: EditorView, wasReadOnly: boolean
  * as it MOUNTS (`SearchPanel.mount()` selects its Find field) — on a mode
  * switch above, and whenever a pane builds its view from a cached state whose
  * panel was left open. Neither is the reader asking for the keyboard: returning
- * to a tab put it in Find, so Space and PageDown stopped scrolling the note and
- * the next keystroke replaced the query. `before` is where the keyboard was
- * before the view moved it.
+ * to a tab put it in Find, so the next keystroke replaced the query. `before`
+ * is where the keyboard was before the view moved it — `<body>`, after a
+ * tab-bar click, which scrolls nothing either; EditorPane's handKeyboardToNote
+ * then gives it to the note's scroller, and that is what lets Space and
+ * PageDown scroll the note.
  */
 export function returnKeyboard(view: EditorView, before: Element | null): void {
     const now = view.root.activeElement;
@@ -118,3 +119,31 @@ export function returnKeyboard(view: EditorView, before: Element | null): void {
     now.blur();
     if (before instanceof HTMLElement && before.isConnected) before.focus({ preventScroll: true });
 }
+
+/**
+ * Give the keyboard to the note's scroller when its search bar closes with the
+ * keyboard in it and nowhere else to go. Escape (or the bar's ×) runs
+ * `closeSearchPanel`, whose `view.focus()` is a no-op in Reading mode — the
+ * text cannot take focus — so the Find field was removed with the keyboard in
+ * it and it fell to `<body>`: tab click → ⌘F → Escape → PageDown did nothing,
+ * the dead keys of #35 one step further on (measured: scrollTop 3021 → 3021).
+ *
+ * Only on CLOSE, so a panel that has just taken the keyboard is never robbed;
+ * and only from `<body>`, so Edit mode — whose close already put the caret back
+ * in the text — and a keyboard held anywhere else are left alone. Touches
+ * nothing but `update.view`, so it is safe to bake into a state that outlives
+ * its pane.
+ *
+ * `rebuildSearchPanelForMode`'s close-then-open passes through here too: from
+ * `<body>` the scroller is focused for a moment, until the reopened panel takes
+ * the keyboard and `returnKeyboard` puts it back. That is a real focus event,
+ * harmless only because a mode changes on the FOCUSED pane alone (App's ⌘E,
+ * the header toggle) and a view being built ignores it (`buildingViewRef`) —
+ * anything that switches a background pane's mode would move a split's focus.
+ */
+export const keyboardAfterSearchClose = EditorView.updateListener.of((update) => {
+    if (!searchPanelOpen(update.startState) || searchPanelOpen(update.state)) return;
+    const active = update.view.root.activeElement;
+    if (active && active !== update.view.dom.ownerDocument.body) return;
+    update.view.scrollDOM.focus({ preventScroll: true });
+});

@@ -138,7 +138,21 @@ export default function TabBar({ tabs, groups, activeGroupId, draggingGroupId, o
                                     aria-label={panes > 1 ? `Close ${panes} panes` : `Close ${names[0]}`}
                                     draggable={false}
                                     onClick={(e) => { e.stopPropagation(); onCloseGroup(group.id); }}
-                                    onMouseDown={(e) => e.stopPropagation()}
+                                    // Not focused by the press, like a middle-click close:
+                                    // a focused × is removed with its tab, dropping the
+                                    // keyboard — an Edit-mode caret in the note in front
+                                    // lost it to closing a BACKGROUND tab (#35 review).
+                                    // So a rename or page field keeps its keyboard (and
+                                    // its edit) too, and a press on × never drags the tab.
+                                    // Except from ANOTHER × reached by Tab: kept, its
+                                    // ring stayed lit while this one was pressed — two
+                                    // × looking engaged at once (#35 review 3).
+                                    onMouseDown={(e) => {
+                                        e.stopPropagation();
+                                        e.preventDefault();
+                                        const held = document.activeElement;
+                                        if (held instanceof HTMLElement && held !== e.currentTarget && held.classList.contains('tab-close')) held.blur();
+                                    }}
                                 >
                                     <X size={16} strokeWidth={1.75} />
                                 </button>

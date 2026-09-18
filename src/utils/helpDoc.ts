@@ -179,6 +179,9 @@ Press \`Cmd + F\` / \`Ctrl + F\` with a note in front of you — in Read Mode or
 
 In a split, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; a PDF keeps the browser's own find (see *PDFs*).
 
+### Room Below the Last Line
+A note scrolls on past its last line by about half the height of its pane, so the end of what you are reading or writing can sit in the middle of the screen instead of against the bottom edge. A note shorter than that doesn't scroll at all. In Edit Mode, clicking in that space puts the cursor at the end of the note.
+
 ### Auto-Save
 You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
 

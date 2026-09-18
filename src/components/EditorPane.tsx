@@ -283,6 +283,67 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
     /** True whenever a non-CodeMirror surface owns the focused pane. */
     const isCanvas = isDrawing || isPdf;
 
+    // ── The keyboard after a tab-bar click ─────────────────────────────────
+    // A tab is a plain `<div>`, so clicking one leaves the keyboard on `<body>`,
+    // and Chromium then sends Space, PageDown and the arrows to whatever was
+    // clicked last — the tab bar, which scrolls nothing. A note opened from its
+    // tab ignored every scroll key until the reader clicked its text (#35).
+    //
+    // What should hold the keyboard is the pane's to know (it owns the view),
+    // when is this component's (it owns the tab bar) — so each note pane
+    // registers a "take the keyboard" function here, by path: one pane per
+    // path is on screen at a time. A canvas pane registers nothing, and keeps
+    // what it does today.
+    const [keyboardTargets] = useState(() => new Map<string, () => void>());
+    const registerKeyboardTarget = useCallback((path: string, take: () => void) => {
+        keyboardTargets.set(path, take);
+        // Only its OWN entry: a late cleanup (StrictMode's re-run, an unreadable
+        // pane remounting readable) must not delete the newer pane's.
+        return () => { if (keyboardTargets.get(path) === take) keyboardTargets.delete(path); };
+    }, [keyboardTargets]);
+    const focusedPathRef = useRef<string | null>(null);
+    useEffect(() => { focusedPathRef.current = focusedPath; }, [focusedPath]);
+
+    /*
+     * Give the keyboard to the focused note once a tab-bar gesture has settled.
+     *
+     * In a frame, not an effect: the switch mounts a new pane, and StrictMode
+     * double-runs that pane's effects AFTER this component's — its cleanup
+     * destroys the view it just built and the ref callback builds another, so
+     * a scroller focused from an effect here is gone a moment later and the
+     * keyboard is back on `<body>`. By the next frame both are done, and the
+     * pane's function reads its view when called, so it reaches the live one.
+     *
+     * Never from something that TYPES — an Edit-mode caret, the Find field (or
+     * its bar's buttons), a rename field — or a menu or dialog: a middle-click
+     * or × close is `preventDefault`ed so those keep it, and a cached state's
+     * search panel, which focuses Find as it mounts, has already been handed
+     * back by `returnKeyboard`. Anything else is taken, a button included: that same
+     * `preventDefault` left a header button (the mode toggle, the graph view's)
+     * holding the keyboard through a × close, and Space then pressed it —
+     * measured: the note that came to the front flipped into Edit mode, or the
+     * graph opened. Clicking the tab already in front re-renders nothing but
+     * still moved the keyboard to `<body>` — the frame covers it with no
+     * special case.
+     */
+    const handKeyboardToNote = useCallback(() => {
+        requestAnimationFrame(() => {
+            const active = document.activeElement;
+            if (active instanceof HTMLElement && (active.isContentEditable
+                || active.closest('input, textarea, select, .cm-panels, [role="dialog"], [role="menu"], [role="listbox"]'))) return;
+            const path = focusedPathRef.current;
+            if (path) keyboardTargets.get(path)?.();
+        });
+    }, [keyboardTargets]);
+    const selectFromTabBar = useCallback((id: string) => {
+        onSelectGroup(id);
+        handKeyboardToNote();
+    }, [onSelectGroup, handKeyboardToNote]);
+    const closeFromTabBar = useCallback((id: string) => {
+        onCloseGroup(id);
+        handKeyboardToNote();
+    }, [onCloseGroup, handKeyboardToNote]);
+
     // ── Linked mentions popover ────────────────────────────────────────────
     const [showBacklinks, setShowBacklinks] = useState(false);
     const [popoverPos, setPopoverPos] = useState<PopoverPos | null>(null);
@@ -628,8 +689,8 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                     groups={layout.groups}
                     activeGroupId={layout.activeId}
                     draggingGroupId={draggingGroupId}
-                    onSelectGroup={onSelectGroup}
-                    onCloseGroup={onCloseGroup}
+                    onSelectGroup={selectFromTabBar}
+                    onCloseGroup={closeFromTabBar}
                     onReorderGroups={onReorderGroups}
                     onDragStart={setDraggingGroupId}
                     onDragEnd={endDrag}
@@ -713,6 +774,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         theme={theme}
                         tabSize={tabSize}
                         stateCache={stateCache}
+                        registerKeyboardTarget={registerKeyboardTarget}
                         getWikiLinkTargets={getWikiLinkTargets}
                         onContentChange={onContentChange}
                         onRetryRead={onRetryRead}

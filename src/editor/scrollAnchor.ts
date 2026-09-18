@@ -128,8 +128,18 @@ export function mapScrollAnchor(anchor: ScrollAnchor, changes: ChangeDesc): Scro
  * re-pin keeps the top line (or the match) through those. A ⌘F Enter is a
  * keydown too: it releases the previous jump in the capture phase, before the
  * command dispatches the next one.
+ *
+ * A key aimed at `scrollDOM` ITSELF releases only if it scrolls. The scroller
+ * holds the keyboard after a tab click (#35), so every chord pressed then —
+ * ⌘E, ⌘\, a bare Shift — reaches this listener where it used to land on
+ * `<body>`, and a ⌘E within ~100ms of the click, while the note was still
+ * drawing its pictures and diagrams, let the top line drift (measured: 4 of 8
+ * trials moved 58–78 lines, and saved the drifted place; 0 of 8 before).
  */
 const READER_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown', 'dragover', 'drop'] as const;
+/** What the browser scrolls a focused scroller with — with any modifier, since
+ *  ⌘↓ / ⌘↑ jump to an end on a Mac. */
+const SCROLL_KEYS = new Set([' ', 'PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 
 /* ── Holding a search match at the centre ────────────────────────────────
    A jump to a match (vault search, ⌘F) used to be one centring scroll, made
@@ -213,7 +223,10 @@ function distanceToTarget(view: EditorView, target: HoldTarget, measuring: boole
 class ScrollAnchorHold {
     private held: HoldTarget | null = null;
     private readonly view: EditorView;
-    private readonly release = (): void => { this.target = null; };
+    private readonly release = (event: Event): void => {
+        if (event instanceof KeyboardEvent && event.target === this.view.scrollDOM && !SCROLL_KEYS.has(event.key)) return;
+        this.target = null;
+    };
     /**
      * CodeMirror hears a widget's growth only at its next measure, and its DOM
      * observer ignores mutations inside widgets; a widget that forgets to ask

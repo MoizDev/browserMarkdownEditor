@@ -33,7 +33,8 @@ import {
 import type { ScrollAnchor } from '../editor/scrollAnchor';
 import { insertTableAtCursor } from '../editor/tableEdit';
 import { canWrite, modeExtensions } from '../editor/readingMode';
-import { noteSearchKeymap, rebuildSearchPanelForMode, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
+import { keyboardAfterSearchClose, noteSearchKeymap, rebuildSearchPanelForMode, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
+import { tabIntoText } from '../editor/tabIntoText';
 import { onTableInsertRequest, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readRecord, flushRecord, scopedKey } from '../utils/storage';
@@ -239,18 +240,20 @@ function themeExtensions(theme: Theme) {
 /**
  * Whether a keydown that reached `window` is meant for this note — the guard
  * in front of the search keys (editor/noteSearch.ts), which have to be caught
- * outside the editor because a note being read never holds focus.
+ * outside the editor because the text of a note being read never holds focus.
  *
  * - Already `defaultPrevented`: CodeMirror (Edit mode, focus in the text), the
  *   open search panel or a dialog took it — acting again would jump twice.
  * - A modal is open: the note is not what the reader is looking at.
  * - Inside the view: its text, a table cell (CodeMirror ignores keys raised in
- *   a widget, so Edit mode's ⌘F in a cell used to reach the browser too).
+ *   a widget, so Edit mode's ⌘F in a cell used to reach the browser too), and
+ *   its scroller, which holds the keyboard after a tab-bar click (EditorPane's
+ *   handKeyboardToNote) and after the search bar closes in Reading mode.
  * - A text field, menu, dialog or listbox owns its keyboard — the sidebar's
  *   search box and a rename field keep the browser's find.
  * - Anything else has no find of its own, so the note in front gets it:
- *   `<body>` (where a click in Reading-mode text, a tree row or a tab leaves
- *   the keyboard — none is focusable), and any button, in the pane's chrome or
+ *   `<body>` (where a click in Reading-mode text or a tree row leaves the
+ *   keyboard — neither is focusable), and any button, in the pane's chrome or
  *   the sidebar's. The sidebar counts: Help Guide keeps the keyboard after
  *   opening the guide, whose own text says to press ⌘F (measured: the
  *   browser's find opened instead while this stopped at `.editor-pane`).
@@ -424,6 +427,12 @@ interface DocumentPaneProps {
      * document (see OpenTab.id).
      */
     stateCache: Map<string, EditorState>;
+    /** Register what takes the keyboard when a tab-bar click brings this note
+     *  to the front (see EditorPane's handKeyboardToNote); returns the
+     *  unregister. Stable, for the memo. Called from an effect and never baked
+     *  into the EditorState, so it may be EditorPane's: it lives and dies with
+     *  the panes that register in it, graph-view trips included. */
+    registerKeyboardTarget: (path: string, take: () => void) => () => void;
     /** Baked into the EditorState, which outlives this pane and EditorPane
      *  both, so the caller keeps it stable for the app's life (App does). */
     getWikiLinkTargets: () => WikiLinkTarget[];
@@ -456,9 +465,10 @@ interface DocumentPaneProps {
  * Everything document-scoped lives here — the CodeMirror view, its
  * compartments, the paste/scroll/wikilink handlers and the drawing canvas — so
  * that showing N documents side by side is N of these rather than a special
- * case inside the editor. React keys the component by path, which is why there
- * is no tab-swap logic in it at all: a pane shows one document for its whole
- * life, and switching tabs mounts and unmounts panes instead of re-pointing one.
+ * case inside the editor. React keys the component by document (`paneKey`,
+ * `OpenTab.id | path`), which is why there is no tab-swap logic in it at all:
+ * a pane shows one document for its whole life, and switching tabs mounts and
+ * unmounts panes instead of re-pointing one.
  *
  * The state cache is what makes that free. A pane caches its EditorState on the
  * way out and adopts it on the way in, so undo history and selection survive
@@ -478,6 +488,7 @@ function DocumentPane({
     theme,
     tabSize,
     stateCache,
+    registerKeyboardTarget,
     getWikiLinkTargets,
     onContentChange,
     onRetryRead,
@@ -547,6 +558,20 @@ function DocumentPane({
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [isCanvas]);
+
+    // What a tab-bar click hands the keyboard to: the note's SCROLLER, in both
+    // modes. Not the text — Reading mode's cannot be focused at all, and Edit
+    // mode's would arm Space to type at a caret that may be pages away, and
+    // turn PageDown and the arrows into caret moves. CodeMirror already gives
+    // `.cm-scroller` `tabIndex = -1` and runs none of its key handling there,
+    // so the browser just scrolls it (and Tab goes into the text where the
+    // reader is — editor/tabIntoText.ts); ⌘F still finds this note from it
+    // (`keyIsForNote`: inside the view). Reads `viewRef` when CALLED, so it
+    // reaches the view StrictMode's rebuild left, not the one it destroyed.
+    useEffect(() => {
+        if (isCanvas || unreadable) return;
+        return registerKeyboardTarget(path, () => viewRef.current?.scrollDOM.focus({ preventScroll: true }));
+    }, [path, isCanvas, unreadable, registerKeyboardTarget]);
 
     const revealClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -643,6 +668,8 @@ function DocumentPane({
             // The search keys again, for a note that cannot take focus — run
             // by the window listener below, never by CodeMirror itself.
             noteSearchKeymap,
+            keyboardAfterSearchClose,
+            tabIntoText,
             readOnlyCompartment.of(modeExtensions(mode)),
             wikiLinkAutocomplete(() => getTargetsRef.current()),
             livePreviewCompartment.of(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),

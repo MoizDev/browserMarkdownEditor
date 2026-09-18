@@ -1495,6 +1495,15 @@ body.is-resizing-panes * {
   container-type: size;
 }
 
+/* The scroller is focused by the app, to receive Space and PageDown after a
+   tab click (EditorPane's handKeyboardToNote) or once ⌘F's bar closes in
+   Reading mode (noteSearch's keyboardAfterSearchClose) — it is not a control,
+   and not Tab-reachable (`tabIndex -1`), so a ring round the whole note would
+   only be noise. */
+.view-content .cm-editor .cm-scroller:focus {
+  outline: none;
+}
+
 /* Readable Line Length constraints */
 .view-content .cm-editor .cm-content {
   max-width: 900px;

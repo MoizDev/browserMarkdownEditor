@@ -129,8 +129,16 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   the focused control and its caret. **A panel takes the keyboard as it mounts**
   (`SearchPanel.mount()` selects Find) — on a rebuild and whenever a pane adopts a state with the
   panel open — so both hand it back (`returnKeyboard`), and the slot ignores focus events raised
-  while its view is being built, or a split's focused pane would move on a tab return.
+  while its view is being built, or a split's focused pane would move on a tab return. Closing it
+  in Reading mode removes Find with the keyboard inside (`closeSearchPanel`'s `view.focus()` is a
+  no-op there), so `keyboardAfterSearchClose` hands a keyboard left on `<body>` to `.cm-scroller`.
   A modal overlay must carry `aria-modal="true"` or ⌘F behind it searches the note.
+- `tabIntoText.ts`: Tab on a focused `.cm-scroller` in Edit mode (where a tab click leaves the
+  keyboard, `tabs-and-panes`) focuses the text itself, moving an off-screen caret to the END of the
+  first non-blank, single-line block wholly in view (none: Tab does nothing). **`BlockType` cannot
+  find a table or diagram here**: they are inline replacements over whole lines, merged into one
+  `Text` block — a block spanning several doc lines is the tell. A listener on `scrollDOM`:
+  CodeMirror binds `domEventHandlers` to the content.
 - `cmTheme.ts`: Obsidian dark/light themes + One Dark/One Light code-token palettes. The **caret is
   driven entirely by CSS variables** set from Settings (line/block, thickness, smooth glide) — the
   native caret is hidden and `drawSelection()` renders `.cm-cursor`. The search panel (a bottom panel)

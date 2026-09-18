@@ -114,6 +114,8 @@ To create something *inside* a particular folder, right-click that folder (or us
 ### Tabs
 Every file you open gets a tab along the top of the editor. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app — and, because every vault keeps its own set, whenever you come back to that vault. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
 
+Clicking a tab puts the keyboard on that note, so \`Space\`, \`Page Down\` and the arrow keys scroll it straight away, in Read Mode and while editing. To type, click in the text — or, in Edit Mode, press \`Tab\`, which puts the cursor at the end of the first line of text on screen (or leaves it where it is, if it is already on screen; with only a table or picture on screen, scroll a little first).
+
 If a note can't be read when your tabs come back — another program is writing it, a synced file isn't downloaded yet, or it's locked — its tab still comes back, marked with a warning sign, and says so instead of showing the note. Nothing in the file is changed. Press **Try again** once it is readable, or click the note in the file tree, which tries again too. It stays among your saved tabs either way; only a note that is really gone from the vault is dropped.
 
 ### Putting Two Notes Side by Side
@@ -175,7 +177,7 @@ Press \`Cmd + F\` / \`Ctrl + F\` with a note in front of you — in Read Mode or
 - Type what you are looking for and press \`Enter\` (or **next**) for the next match, \`Shift + Enter\` (or **previous**) for the one before. \`Cmd + G\` / \`Ctrl + G\` and \`Shift + Cmd + G\` / \`Shift + Ctrl + G\` do the same, whether you are in the bar or back in the note.
 - **all** selects every match. **match case**, **regexp** and **by word** narrow what counts.
 - **Replace** is only there in Edit Mode, because Read Mode never changes the note. Switch modes with the bar open and it appears or disappears; what you typed is kept.
-- \`Escape\` closes the bar while you are in it, and so does its **×**. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the bar and a second closes the list.
+- \`Escape\` closes the bar while you are in it, and so does its **×**. The keys then work on the note again: in Read Mode \`Space\` and \`Page Down\` scroll it, and in Edit Mode you are back typing where you were. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the bar and a second closes the list.
 
 In a split, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; a PDF keeps the browser's own find (see *PDFs*).
 

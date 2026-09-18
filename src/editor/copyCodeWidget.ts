@@ -34,6 +34,13 @@ export class CopyCodeWidget extends WidgetType {
         btn.title = 'Copy code';
         btn.setAttribute('aria-label', 'Copy code');
         btn.innerHTML = COPY_ICON;
+        // Never a tab stop, like every other widget button (headingFold,
+        // tableWidget, imageWidget): after a tab click the note's scroller
+        // holds the keyboard (#35), and in Reading mode Tab went to the first of
+        // these in the DOM — often in the margin drawn ABOVE the screen, so the
+        // view jumped 1–2 screens to it (measured: scrollTop 18139 → 17523) and
+        // Space then pressed Copy instead of scrolling.
+        btn.tabIndex = -1;
 
         // A click must copy, not relocate the caret into the code block.
         btn.onmousedown = (e) => e.preventDefault();

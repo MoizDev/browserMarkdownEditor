@@ -41,7 +41,7 @@ import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
-import { isDrawingFile, isNotebookFile, isPdfFile } from '../utils/fileTypes';
+import { isDrawingFile, isNotebookFile, isPdfFile, noteDisplayName } from '../utils/fileTypes';
 import { AlertCircle, FileText, Notebook, PenTool, PopOut, X } from './icons';
 import type { EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
 
@@ -987,12 +987,15 @@ function DocumentPane({
                     <span className="editor-slot-icon" aria-hidden="true">
                         {unreadable ? <AlertCircle size={12} /> : isNotebook ? <Notebook size={12} /> : isDrawing ? <PenTool size={12} /> : <FileText size={12} />}
                     </span>
-                    <span className="editor-slot-title" title={path}>{file.name}</span>
+                    {/* The same display name the tab strip shows — a pane header
+                        that still said "Notes.md" over a tab saying "Notes" would
+                        be the inconsistency. `title` is already the full path. */}
+                    <span className="editor-slot-title" title={path}>{noteDisplayName(file.name)}</span>
                     {tab.dirty && <span className="editor-slot-dot" aria-hidden="true" />}
                     <button
                         className="editor-slot-action"
                         title="Move to its own tab"
-                        aria-label={`Move ${file.name} to its own tab`}
+                        aria-label={`Move ${noteDisplayName(file.name)} to its own tab`}
                         onClick={() => onSplitOffPane(path)}
                     >
                         <PopOut size={12} />
@@ -1000,7 +1003,7 @@ function DocumentPane({
                     <button
                         className="editor-slot-action"
                         title="Close this pane"
-                        aria-label={`Close ${file.name}`}
+                        aria-label={`Close ${noteDisplayName(file.name)}`}
                         onClick={() => onClosePane(path)}
                     >
                         <X size={12} />

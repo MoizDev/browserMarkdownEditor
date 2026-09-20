@@ -173,6 +173,17 @@ requires reading it.
   in the same commit that unmounts the canvas, so the canvas updates the in-memory record every view
   pass (`writePdfViewPos(…, false)`) and only debounces the flush to storage; a debounced in-memory
   write reopened the reader behind.
+- **The air between the tab strip and page 1 is an inset on the scroll BOX**, never content:
+  `.pdf-viewer-scroll`/`.pdf-thumbs` take `top: var(--pdf-top-gap)` (16px, = `pagedCanvas.ts`'s
+  `PAGE_TOP_GUTTER`, so page 1 opens with the same air in both modes — **only page 1**: Annotate's
+  gutter is inside the camera bounds, View's inset is outside the content and holds at every scroll
+  position, so deep in a document the annotated page still meets the strip). The viewer's
+  own `PAD_V = 20` proves why: it is inside the scrollable content, and the re-anchor effect always
+  scrolls *to* `layout.tops[page]`, so it is scrolled straight past on every open and every restore.
+  **Do not give page 1 a `margin-top`** — DOM positions would then disagree with `tops[]`, which every
+  scroll, window and anchor decision reads, and that drift is what gets persisted. **Do not re-anchor
+  to `tops[page] - gap`** either: self-consistent for page 0 only, and for any later page it lands
+  above that page's edge, which is the "jump to 9, box reads 8" trap the `Math.ceil` above closes.
 - **Page thumbnails** (`components/PdfThumbnails.tsx`, both modes, toggled from the controls, open
   state app-wide in localStorage): **windowed** (rows exist only near view; heights come from page
   aspect ratios, so nothing is measured), **one render at a time** nearest the middle, re-decided after
@@ -398,7 +409,20 @@ canvases. Split across two files because `react-refresh/only-export-components` 
   correctness, and `index.css` themes everything around the page by remapping tldraw's own
   `--tl-color-*` on `.notebook-pane`/`.pdf-annotate-pane .tl-container` (plus the
   `--canvas-chrome-*` variables). Restyle the variables, not the widgets. A `.tldraw` whiteboard is
-  excluded on purpose: no pages, so its whole surface is the drawing surface.
+  excluded from the *chrome* theming on purpose: no pages, so its whole surface is the drawing
+  surface — and that surface takes exactly one remap of its own,
+  `--tl-color-background: var(--background-primary)` on
+  `.drawing-pane:not(.notebook-pane):not(.pdf-annotate-pane) .tl-container`, because the whiteboard
+  IS the page under the active tab and must be the tab's colour. The `:not()`s are load-bearing:
+  notebooks and PDF-annotate panes also wear `.drawing-pane`, so **without** them this rule and the
+  `--canvas-surround` one below would tie at (0,2,0) on the same element and source order would
+  decide. With them the two are disjoint, (0,4,0) against (0,2,0), and order stops mattering.
+- **One `tlui-` selector exists, and it is the exception that proves the rule above**:
+  `.drawing-pane .tlui-layout__top__left { padding-top }`, because tldraw notches the menu zone into
+  the top-left corner with no margin and it butted the tab strip. Padding the layout *column* rather
+  than the widget keeps the zone's bottom-right-only radius correct and leaves `__top__right` (the
+  style panel, which sets its own margin) and `__top__center` (the notebook toolbar) alone;
+  `CenteredTopPanelContainer` measures only `offsetWidth`, so a `padding-top` moves nothing it reads.
 
 # Drawings (`DrawingPane.tsx`, tldraw)
 

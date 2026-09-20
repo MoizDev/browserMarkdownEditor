@@ -75,11 +75,18 @@
   --tab-background-active: var(--background-primary);
   --tab-background-hover: rgba(255, 255, 255, 0.075);
   --tab-outline-color: transparent;
+  /* The header's bottom rule: the sidebar header, the tab strip and the resize
+     handle between them all draw this ONE line, so it must be one colour and
+     must NOT be --tab-outline-color, which is transparent in dark on purpose
+     (the active tab wears no ring there). One definition only —
+     --background-modifier-border is already redefined per theme and var()
+     resolves at computed-value time, so this follows both. */
+  --tab-rule-color: var(--background-modifier-border);
   --tab-divider-color: #3f3f3f;
   --tab-text-color: #b3b3b3;
   --tab-text-color-active: #dadada;
   --tab-width: 200px;
-  --tab-min-width: 120px;
+  --tab-min-width: 80px;
   --tab-height: 33px;
   --tab-curve: 6px;
   --tab-radius-active: 5px;
@@ -121,7 +128,11 @@
      restating — it resolves here, against this block's #fff) */
   --tab-container-background: #fcfcfc;
   --tab-background-hover: rgba(0, 0, 0, 0.075);
-  --tab-outline-color: #e4e4e4;
+  /* #dadce0, i.e. --background-modifier-border, not its own #e4e4e4: the active
+     tab's ring, its flares and the header rule are the same grey, so the line
+     that runs from the sidebar across the resize handle into the strip does not
+     change shade halfway. */
+  --tab-outline-color: #dadce0;
   --tab-divider-color: #dadada;
   --tab-text-color: #5c5c5c;
   --tab-text-color-active: #222222;
@@ -296,7 +307,7 @@ body {
      through the strip as a 4px notch the full header tall (measured: #1e1e1e
      between the sidebar's edge and the #333 strip), breaking the light rule. */
   background: linear-gradient(var(--tab-container-background) calc(var(--header-height) - 1px),
-    var(--tab-outline-color) 0 var(--header-height), transparent 0);
+    var(--tab-rule-color) 0 var(--header-height), transparent 0);
   transition: background 0.2s;
   flex-shrink: 0;
   z-index: 10;
@@ -335,7 +346,10 @@ body {
   padding: 6px 8px 0 14px;
   height: var(--header-height);
   flex-shrink: 0;
-  border-bottom: 1px solid var(--background-modifier-border);
+  /* --tab-rule-color, not the border token it currently resolves to: this is
+     the left half of the ONE line that runs on across the resize handle into
+     the tab strip, and the three owners have to move together. */
+  border-bottom: 1px solid var(--tab-rule-color);
 }
 
 .nav-header-title {
@@ -958,34 +972,51 @@ body {
   /* The strip's bottom rule, as an INSET SHADOW rather than a border: a
      child's background paints over it, so the active tab — which reaches the
      header's bottom edge — breaks the rule exactly under itself and flows
-     into the page, as Obsidian's does. Transparent in dark, like Obsidian's. */
-  box-shadow: inset 0 -1px 0 var(--tab-outline-color);
+     into the page, as Obsidian's does. --tab-rule-color, not the outline: the
+     same line is drawn by .nav-header and .workspace-resize-handle, so it is
+     one colour across the seam and visible in BOTH themes. */
+  box-shadow: inset 0 -1px 0 var(--tab-rule-color);
   flex-shrink: 0;
   gap: 6px;
-}
-
-.view-header-title {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .save-status {
   font-size: 11px;
   color: var(--text-accent);
-  margin-left: auto;
   flex-shrink: 0;
+  /* A reserved slot, for the same reason .view-header-actions has one — it sits
+     between the strip and the actions, so any width it takes comes out of
+     .tab-bar. It is 'Saved' after EVERY autosave (2s, App.tsx), and measured at
+     15 tabs that cost the strip 37.98px, every tab 2px, and the last tab 35.46px
+     of travel, twice a minute while typing. 40px holds 'Saved' (31.98px at 11px,
+     plus room for a wider chosen font) so the common case never reflows. A
+     min-width, not a width: the rare long strings ('Put back as “…”', 'Moving
+     “…” to Trash…') still show whole, and they accompany a tree change the
+     reader is already watching, once. */
+  min-width: 40px;
 }
 
 /* ── Tab bar (open documents) ──
    Obsidian's tab strip: inactive tabs sit on the strip itself, split by short
    dividers; the active one is a raised folder tab in the page's own colour
    whose sides flare out into the strip's bottom rule. */
+
+/* The strip's left edge fades instead of guillotining a title, but ONLY once it
+   is actually scrolled: the first tab's active flare sits at x=12..18, inside
+   .tab-bar's own 18px left padding, so a permanent mask would eat the flare's
+   crisp curve while nothing is even clipped. A scroll-driven animation costs no
+   JS and no per-frame React; scroll() timelines are Chromium-only, which this
+   app is by design. */
+@property --tab-fade-start {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes tab-strip-fade {
+  from { --tab-fade-start: 0px; }
+  to   { --tab-fade-start: 24px; }
+}
+
 .tab-bar {
   flex: 1;
   min-width: 0;
@@ -994,10 +1025,26 @@ body {
   align-self: stretch;
   margin-top: -5px;             /* cancels .view-header's top padding */
   padding: 0 8px 0 18px;
-  scroll-padding-inline: 18px 8px;
+  /* 32, not the 18px of padding beside it: TabBar's scrollIntoView({ inline:
+     'nearest' }) honours this, and anything it parks inside the 24px fade
+     arrives dimmed. 24 (the fade's end) + 6 (--tab-curve) + 2, so a tab scrolled
+     in from the left lands with its flare — the crisp curve the fade exists to
+     protect — clear of the ramp. The 2 is deliberate: at exactly 30 the flare's
+     leftmost column lands ON the ramp's last pixel, and a fractional scrollLeft
+     would put a sliver of it inside. */
+  scroll-padding-inline: 32px 8px;
   overflow-x: auto;
+  /* Load-bearing: it clips the active tab's 1px ring below y=40. The mask does
+     not replace it. */
   overflow-y: hidden;
   scrollbar-width: none;
+  /* No background of its own — the strip's colour is .view-header's — so the
+     mask fades only the tabs and reveals --tab-container-background behind
+     them. */
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--tab-fade-start), #000 100%);
+  animation: tab-strip-fade linear both;
+  animation-timeline: scroll(self inline);
+  animation-range: 0 24px;
 }
 .tab-bar::-webkit-scrollbar { height: 0; }
 
@@ -1008,7 +1055,16 @@ body {
   align-items: center;
   gap: 4px;
   /* 200px slots, measured, that do not grow into free space; crowded, they
-     shrink equally to a floor, and past it the strip scrolls. */
+     shrink equally to an 80px floor, and past it the strip scrolls. 15px of
+     padding, the 20px .tab-trailing and the 4px gap are fixed, so the floor
+     leaves 41px of title — measured, 4 characters plus the ellipsis. Settled by
+     eye at 32 tabs in a ~1000px strip, where the old 120 fitted 8 and 64 fitted
+     15: at 64 the title box was 28px and six differently-named notes all read
+     "Ex…", while 80 fits 12 and separates names that differ in their first
+     letters. It does NOT separate prefixed ones — "MAT137 problem set" and
+     "MAT137 problem set 2" both read "MAT…" — but the widths that would (~100px,
+     6 characters) fit 9, which is barely the 8 this was raised to beat. The
+     tooltip is the answer for a crowded strip, not a wider floor. */
   flex: 0 1 var(--tab-width);
   min-width: var(--tab-min-width);
   height: var(--tab-height);
@@ -1033,11 +1089,36 @@ body {
 /* Inactive tabs: a rounded hover pill (::before) and the divider at the right
    edge (::after). The active tab spends the same two pseudo-elements on its
    flares, so these selectors and those stay disjoint. */
+/* A tab carrying BOTH the unreadable warning and the split badge overruns the
+   floor: measured, its .tab-trailing hangs 3.42px past the tab, and nothing
+   clips it — the active tab's flares live OUTSIDE its box, so `overflow:
+   hidden` is not available — so the × lands on its neighbour. +8px, the
+   smallest step that clears it (measured 4.58px of slack), and tied to the
+   floor so the two move together.
+   NOT `min-width: auto`: a flex item's automatic minimum size here resolves to
+   the chrome PLUS the title's whole max-content width — measured 282px for a
+   29-character name, 125px for "Notes" — which makes the one tab whose
+   document failed to load three times its neighbours and pushes two more off
+   the strip. (Forcing .tab-title to `flex: 1 1 0` does not change it.) */
+.tab:has(.tab-icon):has(.tab-split-badge) {
+  min-width: calc(var(--tab-min-width) + 8px);
+}
+
 .tab:not(.is-active)::before {
   content: '';
   position: absolute;
-  inset: 4px 2px 5px;
-  border-radius: var(--radius-s);
+  /* The tab's own box, exactly — same footprint and same radius as .tab.is-active.
+     It was inset 4px 2px 5px: a 24px pill in a 33px tab, sitting 1.5px below its
+     own title, 1px from the active tab's outward box-shadow ring on one side and
+     2-3px from the divider's `right: -1px` band on the other. Filling the tab
+     makes it read as a highlight and makes both shoulders 0 by construction.
+     The 1px at the bottom is the header's rule: .view-header draws it as an
+     inset shadow, which a child's background paints over, and at inset 0 the
+     pill tinted it #dadce0 -> #cbcdd0 in light — a visible step in the one line
+     the issue asks to be uniform. One row short of the foot is imperceptible
+     and leaves both shoulders 0 regardless. */
+  inset: 0 0 1px;
+  border-radius: var(--tab-radius-active) var(--tab-radius-active) 0 0;
   background: var(--tab-background-hover);
   opacity: 0;
   z-index: -1;
@@ -1067,11 +1148,16 @@ body {
 }
 /* No divider beside the active tab or a hovered one — either side of it. The
    last tab keeps its own. The drop-indicator variant covers a drag in flight,
-   when the caret sits between a tab and its neighbour. */
+   when the caret sits between a tab and its neighbour.
+   The last selector's subject MUST be :not(.is-active): unqualified it also
+   matches the active tab when the tab to its right is hovered, and at (0,4,1)
+   it outranks .tab.is-active::after's (0,2,1) — zeroing the active tab's right
+   flare. The two above it are safe: they require the NEXT tab to be active,
+   which the subject cannot also be. */
 .tab:not(.is-active):hover::after,
 .tab:has(+ .tab.is-active)::after,
 .tab:has(+ .tab-drop-indicator + .tab.is-active)::after,
-.tab:has(+ .tab:not(.is-active):hover)::after { opacity: 0; }
+.tab:not(.is-active):has(+ .tab:not(.is-active):hover)::after { opacity: 0; }
 
 .tab.is-active {
   z-index: 1;                   /* its flares overlap both neighbours */
@@ -1130,7 +1216,6 @@ body {
 .tab-icon {
   display: inline-flex;
   flex-shrink: 0;
-  color: inherit;
 }
 
 .tab-title {
@@ -2573,6 +2658,14 @@ body.is-resizing-panes * {
 .pdf-viewer-scroll {
   position: absolute;
   inset: 0;
+  /* Air between the tab strip and the first page. Not padding on
+     .pdf-viewer-inner and NOT a margin on the first page: the re-anchor effect
+     scrolls to layout.tops[page], so anything inside the scrollable content is
+     scrolled straight past (PAD_V = 20 already is). Insetting the scroll BOX
+     puts the air outside the content, leaving tops[], PAD_V, PAGE_GAP, the
+     windowing math and the {page, offset} persistence untouched. After inset,
+     so it wins. */
+  top: var(--pdf-top-gap);
   overflow: auto;
   outline: none;
   overscroll-behavior: contain;
@@ -2825,11 +2918,21 @@ body.is-resizing-panes * {
 .notebook-pane {
   /* THUMB_WIDTH (108) plus 14px either side. Keep the two in step. */
   --pdf-thumbs-width: 136px;
+  /* 16 because that is pagedCanvas.ts's PAGE_TOP_GUTTER — the air Annotate
+     already had and View did not, so page 1 opens with the same air in both
+     modes (measured: View page top 56.00, Annotate 55.87). Only page 1:
+     Annotate's gutter is inside the camera bounds, so deeper in the document
+     its page still meets the strip, while this inset holds at every scroll
+     position. ⌘E itself never jumped — the round trip returns scrollTop to the
+     byte — so this is about matching air, not about fixing a jump. */
+  --pdf-top-gap: 16px;
 }
 
 .pdf-thumbs {
   position: absolute;
-  top: 0;
+  /* The same inset as the document column, so the rail's top edge lines up
+     with it instead of butting the tab strip. */
+  top: var(--pdf-top-gap);
   left: 0;
   bottom: 0;
   width: var(--pdf-thumbs-width);
@@ -2975,12 +3078,27 @@ body.is-resizing-panes * {
   background: #000;
 }
 
-/* tldraw's own dark canvas (hsl(240,5%,6.5%) ≈ #101011) reads as a hole next
-   to the app's #202020 chrome — pin it to the app palette. Dark only: the
-   light canvas already blends in. */
-.drawing-pane .tl-theme__dark {
-  --tl-color-background: var(--background-secondary);
+/* The whiteboard canvas IS the page under the active tab, so it takes the same
+   token the tab does (--tab-background-active is --background-primary). tldraw's
+   stock light canvas is hsl(210,20%,98%) = #f8f9fa and its dark one needed an
+   override anyway; remapping the variable rather than restyling .tl-background
+   also recolours the menu zone's 2px cut-out border, which was painting the old
+   canvas colour against the tab. The paged canvases keep --canvas-surround:
+   .notebook-pane and .pdf-annotate-pane both carry .drawing-pane, hence the
+   :not()s — which also make this order-independent against the block that gives
+   them --canvas-surround further down. */
+.drawing-pane:not(.notebook-pane):not(.pdf-annotate-pane) .tl-container {
+  --tl-color-background: var(--background-primary);
 }
+
+/* tldraw notches its menu zone into the top-left corner with no margin, so it
+   butts the tab strip. Pad the layout column rather than the widget: the zone's
+   own bottom-right-only radius stays correct, and __top__right (the style panel,
+   which already sets margin: 8px) and __top__center (the notebook toolbar) are
+   untouched. CenteredTopPanelContainer measures only offsetWidth, so a
+   padding-top moves nothing it depends on. This is the file's only tlui-
+   selector: a variable remap cannot add spacing. */
+.drawing-pane .tlui-layout__top__left { padding-top: 8px; }
 
 /* tldraw ships 32px SVG-image cursors (chunky cross while drawing, cartoon
    hand, etc.) and swaps them per tool by pointing --tl-cursor at these vars.
@@ -4811,6 +4929,23 @@ li[aria-selected] .cm-completionMatchedText {
 /* =============================================================
    Top-bar action button (Linked mentions toggle)
    ============================================================= */
+
+/* The right-hand actions, in a slot wide enough for the widest document kind, so
+   the tab strip's right edge does not move when you switch between a note (Insert
+   table + read/edit + linked mentions) and a PDF (one toggle) or a drawing (none).
+   Measured at the widest: 29 + 6 + 29 + 6 + 58 = 128px, where a .view-header-action
+   is a 15px icon in 2x7px of padding and the linked-mentions button adds a 5px gap
+   plus a two-digit count badge. Right-aligned, so the buttons stay pinned to the
+   header's edge however few of them there are. */
+.view-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-width: 128px;
+  justify-content: flex-end;
+}
+
 .view-header-action {
   display: flex;
   align-items: center;

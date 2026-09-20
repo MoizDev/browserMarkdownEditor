@@ -33,7 +33,9 @@ Modern browsers require you to explicitly grant permission every time you open a
 ## 2. File Organization & Navigation
 
 ### File Tree
-The left sidebar displays your vault's folder structure. You can click on any \`.md\` file to open it in the editor.
+The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
+
+Notes are listed under the name you gave them, without the \`.md\` — \`Recipes.md\` on disk reads **Recipes** here, and in its tab. Everything else keeps its extension, so a PDF, a whiteboard and a notebook still say what they are. Hover a row to see its full path, extension and all. Renaming a note shows you the full \`.md\` name again, with just the part before the dot selected, so the extension is there to keep or change deliberately.
 
 ### Links to a Note
 The address bar tracks what is open — \`#vault=Notes&file=Math/HW1.md\` — so you
@@ -112,7 +114,9 @@ To create something *inside* a particular folder, right-click that folder (or us
 ## 3. Tabs and Split View
 
 ### Tabs
-Every file you open gets a tab along the top of the editor. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app — and, because every vault keeps its own set, whenever you come back to that vault. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
+Every file you open gets a tab along the top of the editor. A note's tab shows its name without the \`.md\`, like the file tree does; hover a tab to see the file's full path. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app — and, because every vault keeps its own set, whenever you come back to that vault. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
+
+Open enough of them and the tabs share the strip out between themselves, getting narrower so more stay in sight; past that the strip scrolls, and its left edge fades rather than cutting a name off mid-letter.
 
 Clicking a tab puts the keyboard on that note, so \`Space\`, \`Page Down\` and the arrow keys scroll it straight away, in Read Mode and while editing. To type, click in the text — or, in Edit Mode, press \`Tab\`, which puts the cursor at the end of the first line of text on screen (or leaves it where it is, if it is already on screen; with only a table or picture on screen, scroll a little first).
 
@@ -130,7 +134,7 @@ The two documents now share one tab, side by side. Keep going and you can have u
 Anything can go in a pane: two notes, a note beside a PDF you are reading, a whiteboard beside the notes you are taking from it.
 
 ### Working in a Split
-Each pane has a strip at the top with its file's name. The pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F, ⌘S and the buttons in the top-right act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
+Each pane has a strip at the top with its file's name, a note's without the \`.md\` as in the tab strip. The pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F, ⌘S and the buttons in the top-right act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
 
 That strip also holds the two ways back out:
 - **Move to its own tab** returns that pane to being an ordinary tab.

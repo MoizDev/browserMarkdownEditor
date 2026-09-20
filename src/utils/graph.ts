@@ -11,6 +11,7 @@
  */
 
 import { collectFiles } from './tree';
+import { isMarkdownFile, noteDisplayName } from './fileTypes';
 import type {
     FileTreeNode,
     FileTreeFileNode,
@@ -23,7 +24,7 @@ import type {
 /** Strip directory + .md extension to get a note's display name. */
 export function baseName(pathOrName: string): string {
     const seg = String(pathOrName).split('/').pop() || '';
-    return seg.replace(/\.md$/i, '');
+    return noteDisplayName(seg);
 }
 
 /**
@@ -56,7 +57,7 @@ export function extractLinks(text: string): string[] {
 
 /** Flatten the file tree into a list of markdown file nodes. */
 export function collectMarkdownFiles(fileTree: FileTreeNode[]): FileTreeFileNode[] {
-    return collectFiles(fileTree).filter(f => /\.md$/i.test(f.name));
+    return collectFiles(fileTree).filter(f => isMarkdownFile(f.name));
 }
 
 /* ── Extracted-link cache ──

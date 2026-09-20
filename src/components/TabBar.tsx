@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Columns, X } from './icons';
 import { TAB_DRAG_TYPE } from '../utils/tabDrag';
+import { noteDisplayName } from '../utils/fileTypes';
 import type { OpenTab, TabGroup } from '../types';
 
 interface TabBarProps {
@@ -91,20 +92,27 @@ export default function TabBar({ tabs, groups, activeGroupId, draggingGroupId, o
                 // means "this tab has unsaved work", and which pane it is in is
                 // the pane headers' business.
                 const dirty = group.paths.some(p => byPath.get(p)?.dirty);
-                const names = group.paths.map(p => byPath.get(p)?.file.name ?? p);
+                // Stripped like the title below, so the × button's accessible
+                // name says what is actually on screen. Falls back to the PATH,
+                // which is left whole.
+                const activeName = tab ? noteDisplayName(tab.file.name) : group.activePath;
                 const unreadable = group.paths.some(p => byPath.get(p)?.readError);
-                const paneNames = group.paths.map((p, j) =>
-                    byPath.get(p)?.readError ? `${names[j]} (couldn’t be read)` : names[j]);
+                // PATHS, not display names: a merged tab's `title` is the only
+                // place its documents stay identifiable, and two notes called
+                // "Notes" in different folders are one line apart in it. Matches
+                // the single-pane branch below, which is group.activePath.
+                const panePaths = group.paths.map(p =>
+                    byPath.get(p)?.readError ? `${p} (couldn’t be read)` : p);
                 return (
                     <React.Fragment key={group.id}>
                         {draggingGroupId !== null && dropIndex === i && <span className="tab-drop-indicator" />}
                         <div
                             ref={isActive ? activeRef : undefined}
-                            className={`tab${isActive ? ' is-active' : ''}${unreadable ? ' is-unreadable' : ''}${draggingGroupId === group.id ? ' is-dragging' : ''}`}
+                            className={`tab${isActive ? ' is-active' : ''}${draggingGroupId === group.id ? ' is-dragging' : ''}`}
                             role="tab"
                             aria-selected={isActive}
                             title={panes > 1
-                                ? `${panes} panes:\n${paneNames.join('\n')}`
+                                ? `${panes} panes:\n${panePaths.join('\n')}`
                                 : unreadable ? `${group.activePath}\nCouldn’t be read — press Try again, or click it in the file tree` : group.activePath}
                             draggable
                             onClick={() => onSelectGroup(group.id)}
@@ -124,7 +132,19 @@ export default function TabBar({ tabs, groups, activeGroupId, draggingGroupId, o
                             {unreadable && (
                                 <span className="tab-icon" aria-hidden="true"><AlertCircle size={13} /></span>
                             )}
-                            <span className="tab-title">{tab?.file.name ?? group.activePath}</span>
+                            {/* A note's tab says what the note is CALLED, not what
+                                its file is named — the same convention graph.ts's
+                                baseName has always applied to the graph, backlinks
+                                and [[ autocomplete, so the strip was the odd one
+                                out. Only `.md` goes: a PDF, drawing or notebook tab
+                                keeps its extension, which is how you tell the kinds
+                                apart now that no tab carries a type icon — until the
+                                strip is crowded, where the extension is the first
+                                thing the ellipsis eats and the tooltip is the only
+                                answer (measured at the 80px floor: 4 characters). The full
+                                path stays one hover away, in `title` above —
+                                whether this tab holds one document or five. */}
+                            <span className="tab-title">{activeName}</span>
                             {panes > 1 && (
                                 <span className="tab-split-badge" aria-label={`${panes} panes`}>
                                     <Columns size={10} aria-hidden="true" />
@@ -135,7 +155,7 @@ export default function TabBar({ tabs, groups, activeGroupId, draggingGroupId, o
                                 {dirty && <span className="tab-dirty-dot" aria-hidden="true" />}
                                 <button
                                     className="tab-close"
-                                    aria-label={panes > 1 ? `Close ${panes} panes` : `Close ${names[0]}`}
+                                    aria-label={panes > 1 ? `Close ${panes} panes` : `Close ${activeName}`}
                                     draggable={false}
                                     onClick={(e) => { e.stopPropagation(); onCloseGroup(group.id); }}
                                     // Not focused by the press, like a middle-click close:

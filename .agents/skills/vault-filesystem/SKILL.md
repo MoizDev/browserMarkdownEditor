@@ -133,6 +133,15 @@ the first copy at the exact moment the user was relying on it being kept.
 `moveFile`/`renameFile` are the **deliberate** exceptions — an explicit move onto a name is the user
 saying so.
 
+**What a note is CALLED is not what its file is named.** `noteDisplayName` (`utils/fileTypes.ts`,
+`/\.md$/i`, which `graph.ts`'s `baseName` delegates to) strips `.md` for the tab strip, the pane
+headers and the tree's label — display only. Nothing that writes to disk may take its result:
+`TreeNode`'s rename input is deliberately a separate JSX branch seeded from the full `node.name`,
+because `renameValue` reaches `renameFile` **verbatim**, and that is one of the exceptions above — a
+stripped name there creates an extensionless `A` and deletes `A.md`. The anchor is load-bearing too:
+a `lastIndexOf('.')` strip turns the help tab's bare `Help Guide` into `Help Guid`, and `.md` is the
+only extension hidden anywhere (a PDF, drawing or notebook keeps its own).
+
 **When the overwritten name is open, its tab is released without a flush and its pane closed**
 (`App.releaseOverwritten`) — otherwise one path ends up in two tabs, drawing one document under two
 names, and flushing the dead buffer would write it straight back over the file that just replaced it.

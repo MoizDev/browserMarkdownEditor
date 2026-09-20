@@ -695,62 +695,74 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                     onDragStart={setDraggingGroupId}
                     onDragEnd={endDrag}
                 />
-                {saveStatus && <span className="save-status">{saveStatus}</span>}
-                {/* A notebook is the editable original; the PDF is an output,
-                    so this writes rather than switching to it. */}
-                {isNotebook && activeFile && !unreadable && (
-                    <button
-                        className="view-header-action"
-                        onClick={() => onExportNotebook(activeFile)}
-                        title="Export to PDF — writes a .pdf beside this notebook"
-                        aria-label="Export this notebook to PDF"
-                    >
-                        <Download size={15} />
-                    </button>
-                )}
-                {/* A PDF reuses the per-tab mode: read = view the real PDF
-                    (text selectable), edit = draw on it, in that same file. */}
-                {isAnnotatable && activeFile && !unreadable && (
-                    <button
-                        className="view-header-action"
-                        onClick={() => onToggleMode(activeFile.path)}
-                        title={editorMode === 'read' ? 'Viewing — switch to annotating (⌘E)' : 'Annotating — switch to viewing (⌘E)'}
-                        aria-label="Toggle view/annotate mode"
-                    >
-                        {editorMode === 'read' ? <PenTool size={15} /> : <Eye size={15} />}
-                    </button>
-                )}
-                {/* Read/edit and linked-mentions are markdown concepts — a canvas has neither. */}
-                {activeFile && !activeFile.isHelp && !isCanvas && !unreadable && (
-                    <>
-                        <TableInsertButton
-                            path={activeFile.path}
-                            disabled={editorMode === 'read'}
-                            reason="Switch to editing (⌘E) to insert a table"
-                        />
+                {/* Always mounted, never conditional: this sits between the strip
+                    and the actions, so appearing and vanishing on every autosave
+                    pumped 38px in and out of .tab-bar on a 2s cycle while the
+                    reader typed. Its slot is reserved in CSS. */}
+                <span className="save-status">{saveStatus}</span>
+                {/* Every header action lives in one slot, whose width is reserved in
+                    CSS for the widest document kind. How many actions there are is
+                    genuinely per-kind — a note has three, a PDF and a notebook one,
+                    a drawing and the help guide none — so without the reserve the
+                    tab strip's right edge (and with it every tab) jumped sideways on
+                    each switch between a note and anything else. */}
+                <div className="view-header-actions">
+                    {/* A notebook is the editable original; the PDF is an output,
+                        so this writes rather than switching to it. */}
+                    {isNotebook && activeFile && !unreadable && (
+                        <button
+                            className="view-header-action"
+                            onClick={() => onExportNotebook(activeFile)}
+                            title="Export to PDF — writes a .pdf beside this notebook"
+                            aria-label="Export this notebook to PDF"
+                        >
+                            <Download size={15} />
+                        </button>
+                    )}
+                    {/* A PDF reuses the per-tab mode: read = view the real PDF
+                        (text selectable), edit = draw on it, in that same file. */}
+                    {isAnnotatable && activeFile && !unreadable && (
                         <button
                             className="view-header-action"
                             onClick={() => onToggleMode(activeFile.path)}
-                            title={editorMode === 'read' ? 'Reading — switch to edit (⌘E)' : 'Editing — switch to reading (⌘E)'}
-                            aria-label="Toggle read/edit mode"
+                            title={editorMode === 'read' ? 'Viewing — switch to annotating (⌘E)' : 'Annotating — switch to viewing (⌘E)'}
+                            aria-label="Toggle view/annotate mode"
                         >
-                            {editorMode === 'read' ? <Eye size={15} /> : <Edit2 size={15} />}
+                            {editorMode === 'read' ? <PenTool size={15} /> : <Eye size={15} />}
                         </button>
-                        <button
-                            ref={backlinksBtnRef}
-                            className={`view-header-action backlinks-toggle${showBacklinks ? ' active' : ''}`}
-                            onClick={toggleBacklinks}
-                            title="Linked mentions"
-                            aria-label="Linked mentions"
-                            aria-expanded={showBacklinks}
-                        >
-                            <Link size={15} />
-                            {backlinkNodes.length > 0 && (
-                                <span className="view-header-action-count">{backlinkNodes.length}</span>
-                            )}
-                        </button>
-                    </>
-                )}
+                    )}
+                    {/* Read/edit and linked-mentions are markdown concepts — a canvas has neither. */}
+                    {activeFile && !activeFile.isHelp && !isCanvas && !unreadable && (
+                        <>
+                            <TableInsertButton
+                                path={activeFile.path}
+                                disabled={editorMode === 'read'}
+                                reason="Switch to editing (⌘E) to insert a table"
+                            />
+                            <button
+                                className="view-header-action"
+                                onClick={() => onToggleMode(activeFile.path)}
+                                title={editorMode === 'read' ? 'Reading — switch to edit (⌘E)' : 'Editing — switch to reading (⌘E)'}
+                                aria-label="Toggle read/edit mode"
+                            >
+                                {editorMode === 'read' ? <Eye size={15} /> : <Edit2 size={15} />}
+                            </button>
+                            <button
+                                ref={backlinksBtnRef}
+                                className={`view-header-action backlinks-toggle${showBacklinks ? ' active' : ''}`}
+                                onClick={toggleBacklinks}
+                                title="Linked mentions"
+                                aria-label="Linked mentions"
+                                aria-expanded={showBacklinks}
+                            >
+                                <Link size={15} />
+                                {backlinkNodes.length > 0 && (
+                                    <span className="view-header-action-count">{backlinkNodes.length}</span>
+                                )}
+                            </button>
+                        </>
+                    )}
+                </div>
             </div>
 
             {/* The panes of the tab on screen: columns, left to right, as wide

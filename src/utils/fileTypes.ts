@@ -36,6 +36,28 @@ export function ensureNotebookExt(name: string): string {
     return isNotebookFile(name) ? name : `${name}${NOTEBOOK_EXT}`;
 }
 
+export const MD_EXT = '.md';
+
+export function isMarkdownFile(name: string): boolean {
+    return name.toLowerCase().endsWith(MD_EXT);
+}
+
+/**
+ * What a note is CALLED, as opposed to what its file is named: "Notes.md" -> "Notes".
+ * Display only — never pass the result to anything that writes to disk.
+ *
+ * Anchored on `.md` and on nothing else, deliberately: the Help guide's tab is a bare
+ * name ("Help Guide"), and a vault may hold extensionless or .txt files that open in the
+ * editor just the same (utils/vaultSearch.ts's isTextFile is a deny-list, not an .md
+ * allow-list). A lastIndexOf('.') strip turns "Help Guide" into "Help Guid".
+ */
+export function noteDisplayName(name: string): string {
+    // A file named exactly ".md" strips to nothing, and nothing is an unclickable
+    // tab and a blank tree row. buildFileTree hides no dotfile but its own, so such
+    // a file does reach the UI; showing it whole is the only reading that is legible.
+    return name.replace(/\.md$/i, '') || name;
+}
+
 /**
  * An image a plain `<img>` can show — what the trash bin previews inline.
  *

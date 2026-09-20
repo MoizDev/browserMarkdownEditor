@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool, Notebook } from './icons';
-import { isDrawingFile, isNotebookFile } from '../utils/fileTypes';
+import { isDrawingFile, isNotebookFile, noteDisplayName } from '../utils/fileTypes';
 import {
     clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor, requestCreate,
     subscribeCreateRequest, type CreateKind,
@@ -382,6 +382,14 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                             ref={renameInputRef}
                             className="inline-rename-input"
                             type="text"
+                            // `renameValue` reaches FileSystemContext.renameFile
+                            // VERBATIM, and that is one of the documented
+                            // freeEntryName exceptions: it overwrites. So the box
+                            // shows the real name, extension and all — a display
+                            // name here would rename "A.md" to an extensionless
+                            // "A" and removeEntry the original. The extension is
+                            // already hidden presentationally: the effect above
+                            // pre-selects everything before the last dot.
                             value={renameValue}
                             onChange={(e) => setRenameValue(e.target.value)}
                             onKeyDown={handleRenameKeyDown}
@@ -390,7 +398,15 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                         />
                     </div>
                 ) : (
-                    <span className="tree-item-label">{node.name}</span>
+                    <span
+                        className="tree-item-label"
+                        // For the same reason a tab and a pane header carry one:
+                        // this row hides the `.md`, and the tree is where names
+                        // are given and changed, so the real one has to stay a
+                        // hover away. The path rather than the name — it also
+                        // rescues a row the sidebar's width has ellipsised.
+                        title={node.path}
+                    >{noteDisplayName(node.name)}</span>
                 )}
                 {!isRenaming && (
                     <span className="tree-item-actions">

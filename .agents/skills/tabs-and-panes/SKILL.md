@@ -323,7 +323,18 @@ rectangle.
 - **Only a tab with more than one pane draws pane headers**, so an ordinary tab is laid out exactly
   as it always was. The header names its document and carries the two inverses of a merge: close this
   pane, or move it back to a tab of its own. The tab-bar entry shows its focused pane's name plus a
-  count badge, and its × closes every document in it (a merged tab is one tab).
+  count badge, and its × closes every document in it (a merged tab is one tab). Both surfaces name a
+  note through `noteDisplayName` (`.md` hidden, display only — see the `vault-filesystem` skill),
+  while the `title` tooltip stays the full path, which is where the real name remains reachable —
+  **including a merged tab's**, whose tooltip lists one path per pane, not the stripped names.
+- **Everything right of the strip lives in one reserved-width slot** (`.view-header-actions`, a
+  `min-width` sized for the widest kind). The action count is genuinely per-kind — a note has three
+  (insert table, read/edit, linked mentions), a PDF and a notebook one, a drawing and the help guide
+  none — so without the reserve `.tab-bar`'s right edge, and with it every tab, jumped sideways on
+  each switch between a note and anything else. `.save-status` sits *outside* that slot with a
+  reserved `min-width` of its own: it is always mounted (never conditionally rendered) and wide
+  enough for `'Saved'`, because appearing and vanishing after every autosave pumped ~38px in and out
+  of `.tab-bar` on a 2s cycle. `min-width`, not `width` — the rare long strings still show whole.
 
 ## The dividers
 

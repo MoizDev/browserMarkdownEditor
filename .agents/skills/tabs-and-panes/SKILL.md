@@ -274,7 +274,14 @@ a resizable pane one number rather than a rectangle.
   `preventDefault`, so no `drop` event). `+` and `⌄` follow the LAST TAB (`.tab-group-actions`'
   `margin-right: auto` against a content-sized `flex: 0 1 auto` strip), as the reference images draw
   them; they are flex siblings of the scroller, so a crowded strip shrinks under them rather than
-  scrolling beneath them.
+  scrolling beneath them. That content-sized strip only sizes to the tabs' 200px slots because
+  `.tab` carries a DEFINITE `width: var(--tab-width)`: a `flex-basis` is invisible to a flex
+  container's intrinsic sizing, so with the basis alone the strip sized to the titles and every tab
+  collapsed to roughly the average title width (measured: 116px at 3 tabs in a 1176px pane). So the
+  buttons follow the last tab's 200px SLOT, not its text — a lone short tab pushes them ~120px
+  right of its title, which is the reference look, not a bug. The `flex: 0 1 var(--tab-width)` beside
+  the width is redundant (a definite width resolves `flex-basis: auto` to itself); the width is the
+  one that must not go.
 
 - **A pane is a `DocumentPane`, and it owns a CodeMirror view of its own.** The editor used to be one
   created-once `EditorView` re-pointed at each tab's cached state; showing five documents at once

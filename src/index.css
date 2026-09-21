@@ -1167,6 +1167,19 @@ body {
      6 characters) fit 9, which is barely the 8 this was raised to beat. The
      tooltip is the answer for a crowded strip, not a wider floor. */
   flex: 0 1 var(--tab-width);
+  /* The same 200px again as a DEFINITE width, and THIS is the declaration the
+     slot above actually depends on: only a width feeds a flex container's
+     intrinsic sizing — a basis is invisible to it. The strip is content-sized
+     (`flex: 0 1 auto`, so +/⌄ follow the last tab), so with the basis alone
+     each shrinkable tab contributed only its title's max-content width, the
+     strip sized to Σ of those, and the tabs shrank equally into it: measured
+     in a 1176px pane, 110.8px at one tab and 116px at three, and a short title
+     beside a 200px-plus one left BOTH at 155.4px. The basis above is then
+     redundant (a definite width resolves `flex-basis: auto` to itself —
+     measured identical at 3/9/12/32 tabs and at the floor); it is kept because
+     it is what the slot comment above describes. Shrinking, the 80px floor and
+     the scroll past it are unchanged either way. */
+  width: var(--tab-width);
   /* An explicit floor, NOT `min-width: auto`: a flex item's automatic minimum
      size here resolves to the chrome PLUS the title's whole max-content width —
      measured 282px for a 29-character name, 125px for "Notes" — which makes the

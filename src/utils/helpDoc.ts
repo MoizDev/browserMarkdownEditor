@@ -118,7 +118,7 @@ Every file you open gets a tab along the top of the editor. A note's tab shows i
 
 At the right of the strip sit two small buttons. **+** starts a new note — it asks for the name in the app's own box, the same one \`Cmd + N\` / \`Ctrl + N\` opens — and puts it in front of you. **⌄** lists everything open in the strip, so you can jump to a tab whose name has scrolled out of sight.
 
-Open enough of them and the tabs share the strip out between themselves, getting narrower so more stay in sight; past that the strip scrolls, and its left edge fades rather than cutting a name off mid-letter.
+Tabs keep a comfortable width while there is room for it, however short their names are. Open enough of them and they share the strip out between themselves, getting narrower so more stay in sight; past that the strip scrolls, and its left edge fades rather than cutting a name off mid-letter. That sharing happens per pane, so splitting the editor squeezes a pane's tabs straight away, and they widen again as the pane does.
 
 Clicking a tab puts the keyboard on that note, so \`Space\`, \`Page Down\` and the arrow keys scroll it straight away, in Read Mode and while editing. To type, click in the text — or, in Edit Mode, press \`Tab\`, which puts the cursor at the end of the first line of text on screen (or leaves it where it is, if it is already on screen; with only a table or picture on screen, scroll a little first).
 

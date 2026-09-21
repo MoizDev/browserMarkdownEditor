@@ -252,14 +252,16 @@ All three canvases pass `shapeUtils={CANVAS_SHAPE_UTILS}`, which substitutes tld
 - The PDF panes stay **outside** the pane slots on purpose — one is mounted per open PDF tab and
   merely hidden when off screen, which is what keeps a tab switch from reloading the document, and a
   pane that only exists while its tab is shown could never do that. Its column arrives as an inline
-  `left`/`width` pair; the offset below the pane headers is CSS (`.pdf-pane-split`), because that
-  height is the stylesheet's to know. `isVisible` (drawn, activated, canvas mounted) and `isFocused`
+  `left`/`width` pair; the offset below the strip and the pane header is CSS (`.pdf-pane`'s `top`),
+  because those heights are the stylesheet's to know — ONE offset, not two, since every pane wears a
+  header now, at one pane as at five. `isVisible` (drawn, activated, canvas mounted) and `isFocused`
   (the +/− zoom keys) are separate, because two PDFs can be on screen at once. Two consequences of
   floating over a slot rather than sitting in it, both load-bearing:
   - **A surface positioned over a slot has to report focus for that slot itself.** `DocumentPane`
     takes focus from a mousedown anywhere in `.editor-slot`, which a PDF's clicks never reach — so
-    clicking a PDF left ⌘E, ⌘S, the top-bar View/Annotate toggle and the +/− zoom keys all acting on
-    whichever neighbour was focused before, with the 26px pane header the only way to hand focus over.
+    clicking a PDF left ⌘E, ⌘S, the pane header's View/Annotate toggle and the +/− zoom keys all
+    acting on whichever neighbour was focused before, with the 32px pane header the only way to hand
+    focus over.
     `PdfPane` therefore calls `onFocusPane` from a capture-phase pointerdown on its own root.
     **Anything else EditorPane ever floats over a slot inherits this and must do the same.**
   - **A hidden pane keeps the geometry it was last shown at.** `.pdf-pane-hidden` is only

@@ -26,8 +26,15 @@ export interface ContextMenuCommand {
     kind: 'command';
     /** Unique within one menu; React keys the row by it. */
     id: string;
-    /** A STATIC string. Never note text, never a file's contents — the menu is
-     *  not an HTML sink and must not become one by accident. */
+    /**
+     * Rendered as a React text child, so a file NAME is safe here — the tab
+     * strip's ⌄ lists a pane's tabs by name, and the vault menu names vaults.
+     *
+     * Never note CONTENTS and never markup: the menu is not an HTML sink and
+     * must not become one by accident. This origin holds the vault's handle
+     * with permission granted, so a hole here is read/write over the whole
+     * vault (see AGENTS.md on the two deliberate innerHTML sinks).
+     */
     label: string;
     run: () => void | Promise<void>;
     danger?: boolean;

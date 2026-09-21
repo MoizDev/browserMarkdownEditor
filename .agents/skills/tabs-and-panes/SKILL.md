@@ -1,32 +1,48 @@
 ---
 name: tabs-and-panes
-description: The multi-tab / split-pane model — the flat document list vs. the tab layout, autosave, session persistence, pane keying and the EditorState cache, and the divider-resize gesture. Load before changing tabs, panes, the tab bar, the save funnel, or what is restored on reload.
+description: The multi-pane / per-pane-tabs model — the flat document list vs. the pane layout, autosave, session persistence, pane keying and the EditorState cache, the per-pane header and history, and the divider-resize gesture. Load before changing tabs, panes, the tab strip, the save funnel, or what is restored on reload.
 ---
 
-# Tabs: a flat document list + a tab LAYOUT
+# Tabs: a flat document list + a pane LAYOUT
 
 The app moved from a single `(activeFile + fileContent + editorMode)` trio to a tab list, and then
 to **two structures rather than one**:
 
 - **`tabs: OpenTab[]`** — every open document, flat. Autosave, the asset diff, vault search, rename
   and move all index it by path, and none of them care how the documents are arranged.
-- **`layout: TabLayout`** (`utils/tabGroups.ts`) — what the tab bar shows. One `TabGroup` per tab,
-  holding one path in the ordinary case and up to `MAX_SPLIT_PANES` (5) once tabs have been **merged
-  into a split view**.
+- **`layout: TabLayout`** (`utils/tabPanes.ts`) — how they are arranged. `{ panes, activeId, sizes? }`:
+  one `TabPane` per COLUMN, up to `MAX_PANES` (5), **all drawn at once**, each holding its own
+  ordered `paths` (its tabs) and showing one of them (`activePath`). One pane with several tabs is
+  the ordinary strip. The widths are one row on the LAYOUT, not inside a pane.
+
+  > **This is a transposition of the model that came before it**, where a tab-bar entry held N
+  > side-by-side panes and only the active entry was drawn. Same two-level shape, axes swapped.
+  > Comments and commits written before it read "group" for what is now a *tab* — grep
+  > `tabPanes.ts`, never trust an old line about "merging tabs".
 
 `activeTabPath` — the focused document — is *derived* (`focusedPath(layout)`), and
 `activeFile`/content/mode are derived from it. Each tab's content lives in memory, so switching tabs
 never re-reads disk or loses unsaved edits; `dirty` drives the tab dot.
 
-- **The two structures are kept in step by construction.** Every open path is in exactly one group;
-  App pairs each `setTabs` with the matching layout transition. Nothing in `tabGroups.ts` reads
+- **The two structures are kept in step by construction.** Every open path is in exactly one pane,
+  ONCE; App pairs each `setTabs` with the matching layout transition. Nothing in `tabPanes.ts` reads
   `tabs`, so a violation degrades to a pane with no document rather than to corruption. Folding the
-  two together would have put a group walk in front of every save, search and asset lookup for a
-  feature none of them are about.
-- **Groups and the active id are ONE piece of state**, and every operation is a pure
+  two together would have put a pane walk in front of every save, search and asset lookup for a
+  feature none of them are about. The "once" is load-bearing far beyond this file: the `EditorState`
+  cache, the keyboard-target registry and `scrollDebounce`/`foldDebounce` are keyed by path alone, so
+  `moveTabToPane` and `splitToPane` must never leave one path in two panes.
+- **The panes, the active id and the widths are ONE piece of state**, and every operation is a pure
   `(layout, …) => layout` applied inside the updater. Two `useState`s would let an update leave
-  `activeId` naming a group the same update removed — exactly what the double-click-to-open race
-  produces.
+  `activeId` naming a pane the same update removed, or a width row indexed against a pane list it no
+  longer describes — the first is exactly what the double-click-to-open race produces.
+- **Each pane carries a session-only back/forward `history` beside its `activePath`**, maintained by
+  the one writer `showInPane`, whose invariant is `history[historyIndex] === activePath`. If they
+  come apart, `canGoBack`/`canGoForward` read false — two dead arrows, never a jump to a document the
+  pane is not holding. `showInPane` only PUSHES when `history[historyIndex]` is not already the
+  target: after `forgetInHistory` it is, and pushing there duplicated the survivor (`[A] → [A, A]`),
+  which left ← enabled and doing nothing. `closePath` and the source side of `moveTabToPane` `forgetInHistory`;
+  `renamePath`/`relabelPaths` relabel it. Not persisted: a restored pane starts at `[activePath]`,
+  which is why both arrows are grey right after a reload.
 
 ## Autosave and the save funnel
 
@@ -44,7 +60,8 @@ never re-reads disk or loses unsaved edits; `dirty` drives the tab dot.
 ## Session persistence is PER VAULT
 
 `utils/tabSessions.ts` owns one localStorage record, `vaultSessions: Record<vaultId, StoredSession>`
-— `{paths, groups, focus, sizes, active}` — and is that record's **only writer**, which is
+— `{v: 2, paths, groups, focus, sizes, active}`, where `groups[i]` is **pane i's tabs** and `sizes`
+is one row for the whole layout — and is that record's **only writer**, which is
 `readRecord`/`flushRecord`'s stated safety condition. The key is `StoredVault.id`. The restore pass
 runs **once per vault**, on a cold start and again on every switch back to it.
 
@@ -55,23 +72,35 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   has nowhere to lose it. Migration from the flat keys is **one-way** and deletes them: a per-vault
   map cannot be written back into flat keys without lying to an older build about whose session it
   is, so a downgrade restores nothing rather than restoring wrongly.
-- **`sizes` is `null` for the tabs nobody resized**, which is most of them; absence encodes "equal
-  columns" all the way down. Stored widths are validated at the pane count the session was *written*
-  at and then narrowed by the positions that actually came back, so a note deleted on disk since
-  takes its share with it and the rest divide it up — exactly as closing that pane would have.
+- **The record is VERSIONED, and v1 is read one way only.** A record with no `v` predates the
+  transposition, where each `groups` row was one tab's side-by-side panes; read under the new meaning
+  each row would become a COLUMN, so eight ordinary tabs would reopen as eight columns, far past the
+  cap. `migrateV1` collapses it to **one pane holding every document that was open**, focused where
+  it was — an arrangement lost, never a document — and the next persist writes v2. It runs inside
+  `readSession` *after* `migrateLegacy`, so the flat-key path (which writes the v1 shape by
+  definition) funnels through it too.
+- **`sizes` is `null` for the layouts nobody resized**, which is most of them; absence encodes "equal
+  columns" all the way down. Stored widths are validated at the column count the session was
+  *written* at and then narrowed by the rows that actually became columns, so a column whose every
+  note was deleted on disk takes its share with it and the rest divide it up — exactly as closing it
+  would have.
 - **The whole stored session is read synchronously, before the restore pass yields to its file
   reads** — the claim is what un-gates persistence, so a value read after the awaits could already
   have been rewritten, and a split would come back silently flattened. `restoringRef` (below) now
   also shuts persistence for the reads, but one snapshot makes that unreachable, not merely unreached.
-- `restoreLayout` gives any path a stored group can't account for a tab of its own; a session written
-  before split tabs restores as all-singletons.
+- **`restoreLayout` drops NOTHING.** Rows past `MAX_PANES`, and any path no row accounts for, become
+  TABS OF THE LAST COLUMN rather than being closed — the layout is rebuilt from what came back and
+  the persist effect files that as the whole session, so a path dropped here is a document gone from
+  the vault's tabs for good (issue #8). `mergeLayouts` appends the same way, into `base`'s focused
+  pane: what was opened during the reads is a click, not an arrangement, and appending columns could
+  breach the cap.
 - **Only a GONE file is dropped from the session; an UNREADABLE one comes back as a tab.** Gone = no
   tree node, or the read throws `NotFoundError` (after following any rename in flight). Anything else
   gets one immediate re-read (a fresh `getFile()` cures Chromium's "changed after getFile"
   `NotReadableError`), then its `PendingRestoreEntry.readError` is set — it survives re-validation
   like a read entry — and it is merged as an `OpenTab` with `readError` and `content: ''`. The old catch skipped it like a deleted file, and a
   skipped path is gone for good: the layout is rebuilt from what came back and the persist effect
-  files that as the whole session (issue #8). As a real tab it keeps its pane, width, close, rename
+  files that as the whole session (issue #8). As a real tab it keeps its place, close, rename
   and persistence for free — a layout-only path would get no pane and blank the editor.
 - **A `readError` tab holds NO file text, and every consumer of `content` must know it** — ⌘S
   force-flushes the focused tab and would write `''` over the note. Guarded at `flushTab` (the write
@@ -97,12 +126,12 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   at once). That resolve is only sound because `recordVault` sets the id and the labelled list in
   ONE batch — with the id first, a folder opened for the first time was absent from the list at the
   claim and the note was dropped (issue #6); never set the id ahead of the list again. The note is
-  read alongside the saved paths (one they lack becomes a trailing singleton through
-  `restoreLayout`) and focused as its `wantActive`. 5de752e opened it
+  read alongside the saved paths (one they lack is appended as a tab of the last
+  column by `restoreLayout`) and focused as its `wantActive`. 5de752e opened it
   with a second, racing `handleFileClick` instead; the pass saw that tab after its reads and bailed
-  *after the claim*, so the persist effect filed the one tab as the vault's whole session. Measured:
-  four documents in three tabs (one a 65/35 split) reloaded as one tab, the stored `paths` rewritten
-  from four to that one. Persistence is live from the claim, so **an early return after it, with tabs
+  *after the claim*, so the persist effect filed the one tab as the vault's whole session. Measured, under the
+  pre-transposition model but with the hazard unchanged: four documents in three tabs, one a 65/35
+  split, reloaded as one tab, the stored `paths` rewritten from four to that one. Persistence is live from the claim, so **an early return after it, with tabs
   on screen, leaves the next commit to file those tabs as the vault's whole session** — which is why
   what is opened while the reads are in flight (a tree click) is **merged** (`mergeLayouts`: the saved
   tabs first, as left, then what was opened, keeping its focus and its in-memory `OpenTab`), never
@@ -139,7 +168,7 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   whatever an older build wrote, and a malformed entry reads as `null`.
 - Restored PDF tabs get `content: ''` exactly like `handleFileClick` (their buffer is a tldraw
   snapshot, never file bytes). The persist effect is keyed on `layout` rather than a joined path
-  string, because the layout's identity already moves only when the tab bar does.
+  string, because the layout's identity already moves only when the arrangement does.
 - **A forgotten vault's session is pruned** (`pruneSessions` off `recentVaults`), because
   `forgetVault` means the folder mints a fresh id if it is ever opened again. Nothing prunes by
   staleness — the same call `fileScrollAnchors` makes. The effect gates on "has the list ever
@@ -214,13 +243,38 @@ is writing a session from the gated path — which is exactly the hazard the gat
 that never settles is the same trade taken to its limit: nothing in that vault is persisted until
 some other vault's claim resets the token (see above), which is the safe direction to fail.
 
-# Split tabs (`utils/tabGroups.ts`, `DocumentPane.tsx`, `EditorPane.tsx`)
+# Panes (`utils/tabPanes.ts`, `TabBar.tsx`, `EditorPane.tsx`, `DocumentPane.tsx`)
 
-Dragging a tab out of the strip and dropping it on the panes below merges it into the tab on screen;
-the panes are columns, left to right, even until the divider between two of them is dragged, and a
-tab holds at most five. **Splitting is deliberately only ever vertical**, which is what lets a pane's
-rectangle be a plain share of the width — and what makes a resizable pane one number rather than a
-rectangle.
+Dragging a tab out of a strip and dropping it on the page gives it a COLUMN of its own; dragging it
+into another pane's strip moves it there as a tab. The columns run left to right, even until the
+divider between two of them is dragged, and there are at most five. **Splitting is deliberately only
+ever vertical**, which is what lets a pane's rectangle be a plain share of the width — and what makes
+a resizable pane one number rather than a rectangle.
+
+- **ONE filtered array drives the strip and the columns.** `EditorPane` computes
+  `panes = layout.panes.filter(p => byPath.has(p.activePath))` (defensive, as it always was) and
+  `paneTabs`/`widths` from it, then hands `panes` to `TabBar` and `paneTabs[i]` to column `i`. That
+  single array is what guarantees tab-group index === column index; two independent walks would drift
+  the moment one of them filtered something the other kept.
+- **The tab groups line up with the columns because they read the same variables.** `--pane-w-<i>` /
+  `--pane-x-<i>` live on `.editor-pane`, which contains BOTH `.view-header` and `.editor-split`, so a
+  group sized `flex-grow: var(--pane-w-i, 1)` against a zero basis tiles exactly as its column does —
+  including live during a divider drag, which writes those variables with no React render. Both sides
+  use a **module-level frozen style array** (`TAB_GROUP_STYLE`, `PANE_WIDTH_STYLE`) so the drag
+  re-renders nothing. `.editor-split-divider`'s `margin-left: -3px` and `::before { left: 3px }`
+  cancel, so the rule sits at `--pane-x-<i>` and a group boundary drawn at its own `left: 0` is
+  continuous with it. The horizontal insets therefore live INSIDE each group's scroller, never on
+  `.view-header`: padding there would move every boundary. `box-sizing: border-box` must stay global
+  for the same reason.
+- **`--pane-w-0` now exists at a single pane too** (`widthStyle` is passed at every count), so the
+  strip and the column use one mechanism from one pane to five, and `.pdf-pane` no longer needs a
+  split-only class.
+- **A group's drop handlers are on `.tab-group`, not on `.tab-group-strip`**, so the `+`/`⌄` beside
+  the strip take a drop too — on the strip alone that ~56px refused one silently (no
+  `preventDefault`, so no `drop` event). `+` and `⌄` follow the LAST TAB (`.tab-group-actions`'
+  `margin-right: auto` against a content-sized `flex: 0 1 auto` strip), as the reference images draw
+  them; they are flex siblings of the scroller, so a crowded strip shrinks under them rather than
+  scrolling beneath them.
 
 - **A pane is a `DocumentPane`, and it owns a CodeMirror view of its own.** The editor used to be one
   created-once `EditorView` re-pointed at each tab's cached state; showing five documents at once
@@ -320,21 +374,35 @@ rectangle.
   (`utils/tabDrag.ts`) so the explorer — a drop target for everything, reading the drag long before
   any drop — stays inert as a tab passes over it; `types` is the only thing readable during
   `dragover`.
-- **Only a tab with more than one pane draws pane headers**, so an ordinary tab is laid out exactly
-  as it always was. The header names its document and carries the two inverses of a merge: close this
-  pane, or move it back to a tab of its own. The tab-bar entry shows its focused pane's name plus a
-  count badge, and its × closes every document in it (a merged tab is one tab). Both surfaces name a
-  note through `noteDisplayName` (`.md` hidden, display only — see the `vault-filesystem` skill),
-  while the `title` tooltip stays the full path, which is where the real name remains reachable —
-  **including a merged tab's**, whose tooltip lists one path per pane, not the stripped names.
-- **Everything right of the strip lives in one reserved-width slot** (`.view-header-actions`, a
-  `min-width` sized for the widest kind). The action count is genuinely per-kind — a note has three
-  (insert table, read/edit, linked mentions), a PDF and a notebook one, a drawing and the help guide
-  none — so without the reserve `.tab-bar`'s right edge, and with it every tab, jumped sideways on
-  each switch between a note and anything else. `.save-status` sits *outside* that slot with a
-  reserved `min-width` of its own: it is always mounted (never conditionally rendered) and wide
-  enough for `'Saved'`, because appearing and vanishing after every autosave pumped ~38px in and out
-  of `.tab-bar` on a 2s cycle. `min-width`, not `width` — the rare long strings still show whole.
+- **EVERY pane draws a header, including a lone one.** That is a product decision (match the
+  reference images), not an accident: do not reinstate a `paneCount > 1` gate. It costs the
+  single-pane case `--pane-header-height` of vertical chrome, and it is why `.pdf-pane` offsets by
+  `header + pane header` unconditionally while `.editor-empty-overlay` (no panes, so no pane header)
+  still offsets by the header alone. The header is `[← →] [centred title + dirty dot] [mode] [⋯]`;
+  the focus underline is scoped to `.editor-split.is-split`, since a permanent accent line under one
+  pane is noise.
+- **The pane header owns what used to sit right of the strip.** Read/edit (or view/annotate) is the
+  book button, per pane rather than "the focused one". `⋯` raises the app's own context menu with
+  Insert table… (a `kind: 'grid'` row), Export to PDF for a notebook, and Close this pane — the
+  images show no × in the header. **`⋯` focuses its pane BEFORE it opens**, because the table-insert
+  request is answered only by the focused `DocumentPane` for that path; raised in an unfocused pane
+  it would publish into nothing.
+- **A tab group is `[scrolling tabs] [+] [⌄]`.** `+` selects that pane and then opens a new note into
+  it (`openTab` opens into the FOCUSED pane, so the selection is what makes "in this column" true);
+  `⌄` lists that pane's tabs in the context menu. Tabs name a note through `noteDisplayName` (`.md`
+  hidden, display only — see the `vault-filesystem` skill), while the `title` tooltip stays the full
+  path. `dirty` and `unreadable` are **per tab** now, not OR'd across a group.
+- **The document's readings live in a floating `.status-bar` pill, bottom right**: backlinks (the
+  `BacklinksPanel` anchors to it), word and character counts, and the save status — all about the
+  FOCUSED pane. It is `pointer-events: none` with `auto` on the button, or it would swallow clicks
+  and text selection at the bottom right of every document. **The counts are computed over a
+  DEBOUNCED copy of the content** (250ms) and skipped entirely for canvas and unreadable documents:
+  `activeTab.content` changes on every keystroke, so a naive `useMemo` is a full-document walk per
+  key. It mounts on `activeFile || saveStatus`, because "Moving … to Trash…" and "Put back as …" are
+  raised from the tree and the bin with no tab open. `.save-status` keeps a reserved `min-width` and
+  is always mounted (never conditionally rendered) and wide enough for `'Saved'`, or the pill would
+  resize twice a minute while the reader types. `min-width`, not `width` — long strings still show
+  whole.
 
 ## The dividers
 
@@ -350,23 +418,26 @@ rectangle.
   knowing about the other. Giving it a hit area also made it a **drop target**, so it cancels
   `dragover`/`drop`: an OS file dropped on an uncancelled one navigates the whole app away to that
   file.
-- **A pane's width lives in its `TabGroup`, as a percentage, and absence means equal.**
-  `sizes?: number[]` sits beside `paths` because every transition that changes the pane list has to
-  change the widths *in the same update* — a second piece of state would allow exactly the
-  intermediate where one array is indexed against a list it no longer describes. Absent is the
-  encoding of "nobody has arranged this": a single pane, a tab nobody resized, and a session written
-  before dividers could be dragged are one thing drawn one way, so nothing invents an arrangement the
-  reader never made and evening the panes up again is a field being deleted. `normalizeSizes` is the
-  single gate every row passes (a commit, a redistribution, a stored session) and `paneSizes` the only
-  reader, so a row out of step with `paths` degrades to equal columns — the geometry's version of "a
-  pane with no document rather than corruption".
-- Widths are picked out **by index**, by the same walk that produced the paths: `closePath` and
-  `renamePath` both drop *every* occurrence of a name, and `renamePath`'s overwrite branch is the one
-  place a pane leaves a tab without anything closing. Redistribution: **closing or splitting off
-  rescales the survivors proportionally** (the only rule that preserves every surviving ratio and
-  doesn't depend on which neighbour the departing pane sat beside), and **a merge gives each arriving
-  pane the share a new pane is drawn at** while both sides keep their internal proportions — so
-  equal-into-equal is still equal, i.e. still absent.
+- **The widths live on the LAYOUT, as percentages, and absence means equal.** `sizes?: number[]`
+  sits beside `panes` because every transition that changes the pane list has to change the widths
+  *in the same update* — a second piece of state would allow exactly the intermediate where one array
+  is indexed against a list it no longer describes. Absent is the encoding of "nobody has arranged
+  this": a single pane, a workspace nobody resized, and a session written before dividers could be
+  dragged are one thing drawn one way, so nothing invents an arrangement the reader never made and
+  evening the panes up again is a field being deleted. `normalizeSizes` is the single gate every row
+  passes (a commit, a redistribution, a stored session) and `paneSizes(layout)` the only reader, so a
+  row out of step with `panes` degrades to equal columns — the geometry's version of "a pane with no
+  document rather than corruption".
+- Widths are picked out **by index**, by the same walk that produced the surviving panes:
+  `closePane`, the emptied-source branch of `moveTabToPane`, and `renamePath`'s overwrite branch —
+  the one place a column disappears without anything closing. Redistribution: **closing rescales the
+  survivors proportionally** (the only rule that preserves every surviving ratio and doesn't depend
+  on which neighbour the departing column sat beside), and **`insertSize` gives an arriving column
+  the share a new one is drawn at**, `1/(n+1)`, while the rest keep their internal proportions — so
+  splitting equal columns still comes out equal, i.e. still absent. `splitToPane` routes its removal
+  through `closePath`, so the source's history, focus fallback, column and width are all settled by
+  the one function that already knows how; it refuses outright when a pane's ONLY tab is dropped back
+  on its own column, which would otherwise mint an id and re-share widths for nothing.
 - **Percentages, not pixels**: the window and the sidebar resize constantly and a restored session
   lands in a window of another size — the same reason a fitted table's columns are percentages. The
   **pixel floor (`MIN_PANE_PX`) is a gesture constraint**, converted against the live width and

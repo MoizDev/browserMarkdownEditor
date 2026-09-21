@@ -23,7 +23,7 @@ The folder icon at the top of the file tree remembers every folder you have open
 
 Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`. You do not need the file dialog for that — right-click the folder in the file tree and choose **Open as Vault**, and it opens as the vault straight away and joins the recent list, so the folder icon is the way back out.
 
-Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's tabs, the way they were split, the pane widths and the note you were reading straight back, without your reopening a thing — and so does reloading the page. A note you deleted from disk in the meantime is simply not among them; one that is there but can't be read at that moment still comes back, as a tab that says so (see **Tabs** below). That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row.
+Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's panes, the tabs in each of them, the pane widths and the note you were reading straight back, without your reopening a thing — and so does reloading the page. A note you deleted from disk in the meantime is simply not among them; one that is there but can't be read at that moment still comes back, as a tab that says so (see **Tabs** below). That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row.
 
 ### Security & Permissions
 Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
@@ -42,9 +42,9 @@ The address bar tracks what is open — \`#vault=Notes&file=Math/HW1.md\` — so
 can copy it at any moment and get back to exactly that note. Paste one into a new
 tab, bookmark it, or put it in another note.
 
-Opening a link never costs you your tabs. The vault comes back with every tab you
-had open in it, split and sized the way you left them, and the note the link names
-is brought to the front — added as one more tab if it was not open already.
+Opening a link never costs you your tabs. The vault comes back with every pane and
+every tab you had open in it, sized the way you left them, and the note the link
+names is brought to the front — added as one more tab if it was not open already.
 Reloading the page is the same thing, since the address bar is a link to what you
 were reading. The note half of a link only counts in the vault the link names: if
 that vault cannot be found and another one opens instead, it opens just as you
@@ -111,10 +111,12 @@ To create something *inside* a particular folder, right-click that folder (or us
 
 ---
 
-## 3. Tabs and Split View
+## 3. Tabs and Panes
 
 ### Tabs
 Every file you open gets a tab along the top of the editor. A note's tab shows its name without the \`.md\`, like the file tree does; hover a tab to see the file's full path. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app — and, because every vault keeps its own set, whenever you come back to that vault. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
+
+At the right of the strip sit two small buttons. **+** starts a new note — it asks for the name in the app's own box, the same one \`Cmd + N\` / \`Ctrl + N\` opens — and puts it in front of you. **⌄** lists everything open in the strip, so you can jump to a tab whose name has scrolled out of sight.
 
 Open enough of them and the tabs share the strip out between themselves, getting narrower so more stay in sight; past that the strip scrolls, and its left edge fades rather than cutting a name off mid-letter.
 
@@ -123,31 +125,40 @@ Clicking a tab puts the keyboard on that note, so \`Space\`, \`Page Down\` and t
 If a note can't be read when your tabs come back — another program is writing it, a synced file isn't downloaded yet, or it's locked — its tab still comes back, marked with a warning sign, and says so instead of showing the note. Nothing in the file is changed. Press **Try again** once it is readable, or click the note in the file tree, which tries again too. It stays among your saved tabs either way; only a note that is really gone from the vault is dropped.
 
 ### Putting Two Notes Side by Side
-Any tab can be merged into the tab you are looking at, so that both are on screen at once:
+The editor can be split into columns — **panes** — side by side, and each pane keeps a strip of tabs of its own:
 
-1. Make sure the tab you want to read *alongside* something is the one in front.
-2. Drag another tab down out of the strip and over the page.
-3. A purple outline shows which half of the page it will take — drop it there.
+1. Drag a tab down out of its strip and over the page.
+2. A purple outline shows which half of the page it will take — drop it there.
 
-The two documents now share one tab, side by side. Keep going and you can have up to **five** at once; each new one is slotted wherever you drop it, and the columns start out sharing the width evenly. The tab shows the name of whichever pane you are working in, with a small badge counting the panes inside it.
+That document leaves the strip it was in and opens a pane of its own, with its own tab strip above it. Keep going and you can have up to **five** panes at once; each new one is slotted wherever you drop it, and the columns start out sharing the width evenly.
 
 Anything can go in a pane: two notes, a note beside a PDF you are reading, a whiteboard beside the notes you are taking from it.
 
-### Working in a Split
-Each pane has a strip at the top with its file's name, a note's without the \`.md\` as in the tab strip. The pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F, ⌘S and the buttons in the top-right act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
+### Moving Tabs Between Panes
+Each pane's tabs are its own, and you switch between them by clicking, exactly as with one pane. To move a document from one pane to another, drag its tab into the other pane's strip and drop it where you want it to sit. Dragging a tab **within** its own strip just reorders it.
 
-That strip also holds the two ways back out:
-- **Move to its own tab** returns that pane to being an ordinary tab.
-- **Close** closes just that document, leaving the rest of the split alone.
+A pane's **+** opens its new note in that pane, and its **⌄** lists that pane's tabs.
 
-Closing the whole tab with its × closes everything in it.
+Closing a tab with its × closes just that document. Closing a pane's **last** tab closes the pane too, and the columns beside it share out the room it was using.
+
+### The Pane Header
+Under each pane's tabs is a row belonging to that pane: its file's name in the middle, a note's without the \`.md\` as in the tab strip.
+
+- **←** and **→** walk that pane back and forward through the documents it has shown, the way a browser's do. Each pane remembers its own, and only for as long as the app is open — after a reload both arrows start out greyed, because there is nowhere yet to go back to.
+- The **eye** button switches that pane between Read Mode and Edit Mode (\`Cmd + E\` / \`Ctrl + E\` does the same to the pane you last clicked in). On a PDF you can annotate, it switches between reading and drawing on it instead. A whiteboard, a notebook, this guide and a note that could not be read have no such button.
+- **⋯** holds what is left: **Insert table…** in a note, **Export to PDF** on a notebook, and **Close this pane**, which closes the pane and everything open in it.
+
+With more than one pane, the pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F and ⌘S act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
+
+### The Status Bar
+A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. It never takes a click meant for the note underneath it.
 
 ### Giving One Pane More Room
-The line between two panes can be dragged. Pull it left or right and those two panes share the width between them — everything else in the split stays exactly where you put it. A pane won't shrink past being readable, so you can always find the line again.
+The line between two panes can be dragged. Pull it left or right and those two panes share the width between them — everything else stays exactly where you put it. A pane won't shrink past being readable, so you can always find the line again.
 
-**Double-click** a line to put every pane in that tab back to equal widths. You can also click a line and nudge it with the **←** and **→** arrow keys, holding Shift to move it further at a time.
+**Double-click** a line to put every pane back to equal widths. You can also click a line and nudge it with the **←** and **→** arrow keys, holding Shift to move it further at a time.
 
-The widths you set are remembered with the tab, and come back the next time you open the app.
+The widths you set are remembered along with the panes, and come back the next time you open the app.
 
 ---
 
@@ -183,7 +194,7 @@ Press \`Cmd + F\` / \`Ctrl + F\` with a note in front of you — in Read Mode or
 - **Replace** is only there in Edit Mode, because Read Mode never changes the note. Switch modes with the bar open and it appears or disappears; what you typed is kept.
 - \`Escape\` closes the bar while you are in it, and so does its **×**. The keys then work on the note again: in Read Mode \`Space\` and \`Page Down\` scroll it, and in Edit Mode you are back typing where you were. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the bar and a second closes the list.
 
-In a split, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; a PDF keeps the browser's own find (see *PDFs*).
+With more than one pane open, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; a PDF keeps the browser's own find (see *PDFs*).
 
 ### Room Below the Last Line
 A note scrolls on past its last line by about half the height of its pane, so the end of what you are reading or writing can sit in the middle of the screen instead of against the bottom edge. A note shorter than that doesn't scroll at all. In Edit Mode, clicking in that space puts the cursor at the end of the note.
@@ -465,7 +476,7 @@ Getting around, and editing:
 - The colons in the second row are honoured: \`| :--- |\` is left-aligned, \`| :---: |\` centred, \`| ---: |\` right-aligned. Editing a cell never disturbs them.
 - Nothing you did not edit is rewritten. Change one cell and every other row comes back byte for byte, spacing included — a table you have lined up by hand stays lined up.
 
-To make a new one, click the **table button** in the top bar, or right-click in a note and choose **Insert table…**, then sweep across the grid to the size you want and click (the first row is the header, so the smallest table is two rows). If you already know your columns, type the header row, such as \`| Name | Grade |\`, and press **Enter**: the \`| --- |\` row and an empty row appear, with the cursor in the first cell. Or just start typing one: the moment the header row, the \`| --- |\` row and one body row are all there it renders, and you carry on typing in the last cell. Pasting a Markdown table in does the same.
+To make a new one, choose **Insert table…** from the pane's **⋯** menu, or right-click in a note and choose it there, then sweep across the grid to the size you want and click (the first row is the header, so the smallest table is two rows). If you already know your columns, type the header row, such as \`| Name | Grade |\`, and press **Enter**: the \`| --- |\` row and an empty row appear, with the cursor in the first cell. Or just start typing one: the moment the header row, the \`| --- |\` row and one body row are all there it renders, and you carry on typing in the last cell. Pasting a Markdown table in does the same.
 
 A table written inside a code fence stays as text — it is being quoted, not tabulated:
 

@@ -17,8 +17,8 @@
  * - `isComposing`: an Escape during IME composition cancels the composition.
  *
  * A surface drawn over CodeMirror, or a modal, must win outright instead —
- * capture phase, prevented AND stopped (ContextMenu, ConfirmDialog,
- * TableInsertButton); this bubble-phase stack is wrong for those.
+ * capture phase, prevented AND stopped (ContextMenu, ConfirmDialog); this
+ * bubble-phase stack is wrong for those.
  */
 
 const stack: Array<() => void> = [];

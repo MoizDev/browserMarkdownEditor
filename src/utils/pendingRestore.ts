@@ -41,7 +41,8 @@ export interface PendingRestoreEntry {
 export interface PendingRestore {
   /** The vault this pass restores; a mutation in any other vault leaves it alone. */
   readonly root: FileSystemDirectoryHandle;
-  /** In stored order, which restoreLayout's singletons follow. */
+  /** In stored order, which is the order restoreLayout appends any path no
+   *  stored pane accounts for. */
   readonly entries: PendingRestoreEntry[];
   /** Bumped by every mutation that changed anything, so the pass knows to re-validate. */
   epoch: number;
@@ -61,7 +62,7 @@ function reachable(entry: PendingRestoreEntry): boolean {
  * of those is DROPPED first, and only then are the movers re-pointed: the other
  * order would drop the mover itself, and skipping the drop would leave two
  * entries answering to one path, which the restore's simultaneous relabel of the
- * layout (tabGroups' relabelPaths) requires never to happen.
+ * layout (tabPanes' relabelPaths) requires never to happen.
  */
 export function retargetPending(
   pending: PendingRestore,

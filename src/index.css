@@ -54,10 +54,14 @@
   /* ── Sizing ── */
   --nav-item-height: 28px;
   --header-height: 40px;
-  /* The strip naming one pane of a split tab. Only drawn when a tab holds more
-     than one document — but the PDF panes, which float over their slot rather
-     than sitting inside it, have to offset themselves by it in CSS. */
-  --pane-header-height: 26px;
+  /* The row under the tab strip that names a pane's document and carries its
+     back/forward, read/edit and ⋯ buttons. Drawn over EVERY pane, at one pane
+     as at five — but the PDF panes, which float over their slot rather than
+     sitting inside it, have to offset themselves by it in CSS.
+     32, not the 26 it was when it held a name and a hover-revealed button: the
+     buttons are permanent chrome now and 24px tall, so 26 left them 1px of air
+     top and bottom. 32 gives 4, which is what the reference images read at. */
+  --pane-header-height: 32px;
   --radius-s: 4px;
   --radius-m: 6px;
 
@@ -960,14 +964,20 @@ body {
 
 .view-header {
   display: flex;
-  align-items: center;
-  /* Exactly this and no more: .pdf-pane and .editor-empty-overlay take it as
-     their top. */
+  /* Stretch, so each .tab-group fills the header's height and its boundary rule
+     can run the strip's full depth. */
+  align-items: stretch;
+  /* Exactly this and no more: .editor-empty-overlay takes it as its top, and
+     .pdf-pane as its top plus one pane header. */
   height: var(--header-height);
-  /* The 5px top puts the actions' centre on the tab titles' line (22.5px down,
-     as measured), not on the strip's geometric centre — the tab bar cancels
-     it with a matching negative margin and spans the full height. */
-  padding: 5px 8px 0 0;
+  /* Vertical only, and NO gap: the tab groups tile the header's full width with
+     the same flex math the columns below use, so any horizontal padding or gap
+     here would shift every group boundary off its divider. The insets the tabs
+     need live inside each group's own scroller instead.
+     The 5px top puts a group's buttons on the tab titles' line (22.5px down, as
+     measured), not on the strip's geometric centre — .tab-group-strip cancels it
+     with a matching negative margin and spans the full height. */
+  padding: 5px 0 0 0;
   background: var(--tab-container-background);
   /* The strip's bottom rule, as an INSET SHADOW rather than a border: a
      child's background paints over it, so the active tab — which reaches the
@@ -977,33 +987,107 @@ body {
      one colour across the seam and visible in BOTH themes. */
   box-shadow: inset 0 -1px 0 var(--tab-rule-color);
   flex-shrink: 0;
-  gap: 6px;
 }
 
-.save-status {
-  font-size: 11px;
-  color: var(--text-accent);
+/* ── Tab groups (one per pane) ──
+   The strip is divided into one group per column, and a group tiles its
+   column's width exactly: the basis is 0 and TabBar overrides flex-GROW with
+   the SAME --pane-w-<i> the column below reads (see .editor-slot), so the two
+   are shared out by identical arithmetic and a divider drag — which writes
+   those variables straight onto .editor-pane with no React render — moves the
+   boundary and the rule in one frame. --pane-w-<i> can do that for both only
+   because .editor-pane holds .view-header and .editor-split alike.
+   Nothing here may take horizontal space outside the flex share: `box-sizing:
+   border-box` (the reset) is what keeps the strip's own padding inside the
+   group rather than widening it, and one stray pixel drifts every boundary
+   right of it.
+   .tab-group.is-focused exists in the markup and is deliberately unstyled: all
+   four reference images draw every group's active tab raised whether or not its
+   pane holds the focus, and the pane header's accent rule already says which
+   pane the keyboard means. */
+.tab-group {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+/* The boundary between two groups, continuous with .editor-split-divider::before
+   below it: the divider's margin-left: -3px and ::before { left: 3px } cancel,
+   so its rule sits exactly at --pane-x-<i>, which is where a group's own left
+   edge is. Same token, so the two segments are one line.
+   It runs from the header's top (top: -5px undoes the 5px the group is inset
+   by) to the strip's foot. In dark that puts #363636 on the #333 strip, where
+   it is all but invisible — which is what the dark references show: there the
+   groups are told apart by the tabs, and the line appears below the strip. */
+.tab-group + .tab-group::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -5px;
+  bottom: 0;
+  width: 1px;
+  background: var(--background-modifier-border);
+  pointer-events: none;
+}
+
+/* The + (new note here) and ⌄ (this pane's tabs) buttons. They follow the LAST
+   TAB rather than sitting at the group's right edge — all four reference images
+   put them there, and a `+` marooned 200px from the tabs it adds to reads as
+   belonging to the window rather than to this pane. `margin-right: auto` is
+   what leaves the slack behind them instead of in front, and the strip beside
+   them takes its width from its content (`flex: 0 1 auto`) rather than eating
+   the row. A tab still scrolls under neither: they are flex SIBLINGS of the
+   strip, outside its scroll box, so a full strip shrinks and they stay put. */
+.tab-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   flex-shrink: 0;
-  /* A reserved slot, for the same reason .view-header-actions has one — it sits
-     between the strip and the actions, so any width it takes comes out of
-     .tab-bar. It is 'Saved' after EVERY autosave (2s, App.tsx), and measured at
-     15 tabs that cost the strip 37.98px, every tab 2px, and the last tab 35.46px
-     of travel, twice a minute while typing. 40px holds 'Saved' (31.98px at 11px,
-     plus room for a wider chosen font) so the common case never reflows. A
-     min-width, not a width: the rare long strings ('Put back as “…”', 'Moving
-     “…” to Trash…') still show whole, and they accompany a tree change the
-     reader is already watching, once. */
-  min-width: 40px;
+  align-self: flex-end;
+  margin-right: auto;
+  padding: 0 4px 6px;
 }
 
-/* ── Tab bar (open documents) ──
+/* 24px square around a 16px icon, on the strip's own colours: a button sitting
+   ON the strip that wore --text-muted read #999 against the tabs' #b3b3b3. */
+.tab-group-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--tab-text-color);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+/* The strip's own hover token, not --background-modifier-hover: these sit on
+   the strip, and dark's #2a2d2e would be a pill DARKER than its #333. */
+.tab-group-btn:hover {
+  color: var(--tab-text-color-active);
+  background: var(--tab-background-hover);
+}
+
+.tab-group-btn:focus-visible {
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+/* ── The tabs of one group ──
    Obsidian's tab strip: inactive tabs sit on the strip itself, split by short
    dividers; the active one is a raised folder tab in the page's own colour
-   whose sides flare out into the strip's bottom rule. */
+   whose sides flare out into the strip's bottom rule. Every selector below is
+   scoped inside one strip, so the sibling combinators mean "within this pane". */
 
 /* The strip's left edge fades instead of guillotining a title, but ONLY once it
    is actually scrolled: the first tab's active flare sits at x=12..18, inside
-   .tab-bar's own 18px left padding, so a permanent mask would eat the flare's
+   the strip's own left padding, so a permanent mask would eat the flare's
    crisp curve while nothing is even clipped. A scroll-driven animation costs no
    JS and no per-frame React; scroll() timelines are Chromium-only, which this
    app is by design. */
@@ -1017,15 +1101,26 @@ body {
   to   { --tab-fade-start: 24px; }
 }
 
-.tab-bar {
-  flex: 1;
+.tab-group-strip {
+  /* An AUTO basis, so the strip is as wide as its tabs and no wider — which is
+     what puts `+` and `⌄` straight after the last one, as the references do.
+     It still shrinks (and then scrolls) when the tabs outgrow the group; the
+     slack, when there is any, sits behind the actions (their margin-right). */
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: flex-end;
   align-self: stretch;
   margin-top: -5px;             /* cancels .view-header's top padding */
-  padding: 0 8px 0 18px;
-  /* 32, not the 18px of padding beside it: TabBar's scrollIntoView({ inline:
+  /* 10, not the first group's 18: both only have to clear the first active
+     tab's 6px flare, which lives outside its box and would otherwise be cut off
+     by the scroller. 18 is what the single strip always had and is the reading
+     the references show at the window's edge; a group that begins at a divider
+     gets the smaller inset so its first tab sits close to the boundary, as they
+     also show. Horizontal padding is safe HERE and nowhere above: it shifts the
+     tabs inside the group without moving the group's own edges. */
+  padding: 0 8px 0 10px;
+  /* 32, not the padding beside it: TabBar's scrollIntoView({ inline:
      'nearest' }) honours this, and anything it parks inside the 24px fade
      arrives dimmed. 24 (the fade's end) + 6 (--tab-curve) + 2, so a tab scrolled
      in from the left lands with its flare — the crisp curve the fade exists to
@@ -1046,7 +1141,13 @@ body {
   animation-timeline: scroll(self inline);
   animation-range: 0 24px;
 }
-.tab-bar::-webkit-scrollbar { height: 0; }
+.tab-group-strip::-webkit-scrollbar { height: 0; }
+
+/* The window's own left edge, not a divider: 18px, which is what keeps the
+   first active tab's flare clear of the strip's start. */
+.tab-group:first-child .tab-group-strip {
+  padding-left: 18px;
+}
 
 .tab {
   position: relative;
@@ -1066,6 +1167,12 @@ body {
      6 characters) fit 9, which is barely the 8 this was raised to beat. The
      tooltip is the answer for a crowded strip, not a wider floor. */
   flex: 0 1 var(--tab-width);
+  /* An explicit floor, NOT `min-width: auto`: a flex item's automatic minimum
+     size here resolves to the chrome PLUS the title's whole max-content width —
+     measured 282px for a 29-character name, 125px for "Notes" — which makes the
+     one tab whose document failed to load three times its neighbours and pushes
+     two more out of the group. (Forcing .tab-title to `flex: 1 1 0` does not
+     change it.) */
   min-width: var(--tab-min-width);
   height: var(--tab-height);
   /* The 4px bottom lifts the content's centre to 14.5px below the tab's top —
@@ -1089,21 +1196,6 @@ body {
 /* Inactive tabs: a rounded hover pill (::before) and the divider at the right
    edge (::after). The active tab spends the same two pseudo-elements on its
    flares, so these selectors and those stay disjoint. */
-/* A tab carrying BOTH the unreadable warning and the split badge overruns the
-   floor: measured, its .tab-trailing hangs 3.42px past the tab, and nothing
-   clips it — the active tab's flares live OUTSIDE its box, so `overflow:
-   hidden` is not available — so the × lands on its neighbour. +8px, the
-   smallest step that clears it (measured 4.58px of slack), and tied to the
-   floor so the two move together.
-   NOT `min-width: auto`: a flex item's automatic minimum size here resolves to
-   the chrome PLUS the title's whole max-content width — measured 282px for a
-   29-character name, 125px for "Notes" — which makes the one tab whose
-   document failed to load three times its neighbours and pushes two more off
-   the strip. (Forcing .tab-title to `flex: 1 1 0` does not change it.) */
-.tab:has(.tab-icon):has(.tab-split-badge) {
-  min-width: calc(var(--tab-min-width) + 8px);
-}
-
 .tab:not(.is-active)::before {
   content: '';
   position: absolute;
@@ -1226,30 +1318,6 @@ body {
   white-space: nowrap;
 }
 
-/* How many documents a merged tab holds. Only ever present on a split tab, so
-   an ordinary tab reads exactly as it always did. Tinted from the text rather
-   than --background-modifier-border, which is #363636 — invisible on the
-   #333 strip. */
-.tab-split-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: 8px;
-  background: color-mix(in srgb, currentColor 16%, transparent);
-  color: inherit;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
-}
-
-.tab.is-active .tab-split-badge {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-}
-
 /* 20px square, 6px in from the edge: the ×'s centre lands the measured 16px
    from the tab's right edge. */
 .tab-trailing {
@@ -1313,10 +1381,11 @@ body {
   pointer-events: none;         /* it overlaps both neighbours by 1px; a drop on it lands on them */
 }
 
-/* ── The panes of the tab on screen ──
-   Columns, left to right: a tab holds one document in the ordinary case and up
-   to five once tabs have been merged (utils/tabGroups.ts). They start out even
-   and the divider between any two of them can be dragged. Splitting is
+/* ── The panes on screen ──
+   Columns, left to right: the workspace holds one pane in the ordinary case and
+   up to five side by side (utils/tabPanes.ts), each showing the active tab of
+   the tabs IT owns — the group directly above it in the strip. They start out
+   even and the divider between any two of them can be dragged. Splitting is
    deliberately only ever vertical, so a pane's rectangle is a plain share of
    the width — which is also what lets the PDF panes, which float above rather
    than inside a pane, place themselves with two percentages.
@@ -1325,15 +1394,15 @@ body {
    written straight onto it, frame by frame, by a divider drag: --pane-w-<i> is
    pane i's width and --pane-x-<i> its left edge, both unitless numbers in
    percent. Everything that has to line up with a column reads them — the slots,
-   the dividers, and the PDF panes floating over the slots — so one write moves
-   all of it at once, with no React render at all. (The tab-drop highlight is
-   the one column-aligned box that does NOT read them: it exists only while a
-   TAB is in flight, which a divider drag excludes, so React's own numbers are
-   never stale under it.)
-   They live on .editor-pane rather than here because the PDF panes are its
-   children, not the split's; the two boxes are the same width, which is what
-   makes one set of percentages serve both, and what any change to the split's
-   own box would quietly break. */
+   the dividers, the PDF panes floating over the slots AND the tab groups in the
+   strip above — so one write moves all of it at once, with no React render at
+   all. (The tab-drop highlight is the one column-aligned box that does NOT read
+   them: it exists only while a TAB is in flight, which a divider drag excludes,
+   so React's own numbers are never stale under it.)
+   They live on .editor-pane rather than here because the PDF panes and the tab
+   strip are its children, not the split's; all three boxes are the same width,
+   which is what makes one set of percentages serve them, and what any change to
+   the split's own box would quietly break. */
 .editor-split {
   position: relative;
   flex: 1;
@@ -1421,58 +1490,104 @@ body.is-resizing-panes * {
   user-select: none !important;
 }
 
-/* Each pane names its own document — side by side there is nothing else that
-   could, and the tab bar has room for one name. Absent entirely on a tab with a
-   single pane, so the ordinary editor is laid out exactly as it always was. */
+/* ── The pane header ──
+   [← →] [centred name + dirty dot] [read/edit] [⋯], one over every pane and
+   drawn at one pane exactly as at five: the document actions live here now, not
+   in the strip, so a header that came and went with a split would take them
+   with it.
+   NO bottom rule. It used to carry one, but it now runs under every pane at all
+   times, a second full-width line 32px below the strip's own — and all four
+   reference images draw none (measured down their empty columns: a constant
+   #ffffff in light and #1c1c1c in dark from the strip's foot into the page).
+   The header wears the page's background and simply belongs to it; the accent
+   rule below is the only line, and only where it says something. */
 .editor-slot-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
   /* A pane dragged narrow — or one a shrinking window left narrow — clips its
      own chrome rather than painting it over the pane beside it. */
   overflow: hidden;
   height: var(--pane-header-height);
-  padding: 0 4px 0 10px;
+  /* Symmetric: both ends now hold a button group, and an uneven inset put the
+     centred title off the pane's own midline. */
+  padding: 0 6px;
   background: var(--background-primary);
-  border-bottom: 1px solid var(--background-modifier-border);
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-size: 12px;
   user-select: none;
 }
 
-/* Which pane ⌘E, ⌘S and the top-bar actions mean. */
-.editor-slot.is-focused .editor-slot-header {
+/* Which pane ⌘E, ⌘S and a ⋯ menu mean — worth saying only when there is more
+   than one pane to mean. At a single pane the accent line is a permanent rule
+   under the header that answers a question nobody can ask. */
+.editor-split.is-split .editor-slot.is-focused .editor-slot-header {
   color: var(--text-normal);
   box-shadow: inset 0 -2px 0 var(--interactive-accent);
 }
 
-.editor-slot-icon {
-  display: inline-flex;
+/* The two fixed ends the centred title is measured against. They must be the
+   SAME width or `flex: 1` centres the title in what is left rather than on the
+   pane's midline: the nav is always two buttons, but the actions end is one on
+   a drawing, a notebook, this guide and an unreadable tab, which put the name
+   13px (measured) right of centre. So the actions end reserves both slots and
+   fills from the right. */
+.editor-slot-nav,
+.editor-slot-actions {
+  display: flex;
+  gap: 2px;
   flex-shrink: 0;
+  min-width: 50px;                /* 2 × 24px button + the 2px gap */
 }
 
+.editor-slot-actions {
+  justify-content: flex-end;
+}
+
+/* Centred between those ends rather than beside the nav arrows: a title that
+   started at the left edge read as a caption on the back button.
+   The 10px either side is the dirty dot's berth — see .editor-slot-dot. It is
+   symmetric so that reserving it does not push the name off the pane's midline,
+   and the ellipsis stops at the content edge, clear of the dot. */
 .editor-slot-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0 10px;
+  text-align: center;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Rendered only while the document is dirty, which for an autosaving editor
+   means it appears on a keystroke and goes 2s later — so in the flex line it
+   would widen the row by its 6px plus the 4px gap and slide the CENTRED title
+   5px sideways and back, twice a minute, under the eye of whoever is typing.
+   The -10px cancels exactly that (6 + 4 - 10 = 0): the dot contributes no width
+   at all and draws inside .editor-slot-title's reserved 10px right padding, so
+   the name and the buttons hold still whether it is there or not. */
 .editor-slot-dot {
   width: 6px;
   height: 6px;
   flex-shrink: 0;
+  margin-left: -10px;
   border-radius: 50%;
   background: currentColor;
   opacity: 0.7;
 }
 
+/* The page's colours, not the strip's: this row sits on the document. NOT
+   hover-revealed any more — back, forward, read/edit and ⋯ are the ONLY way to
+   reach those actions now that the strip carries none of them, and chrome you
+   have to find by hovering is chrome that is not there. 24px around a 15px
+   icon, which is what sets --pane-header-height (24 + 4 + 4). */
 .editor-slot-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   flex-shrink: 0;
   padding: 0;
   border: none;
@@ -1480,24 +1595,28 @@ body.is-resizing-panes * {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s, background 0.12s, color 0.12s;
+  transition: background 0.12s, color 0.12s;
 }
 
-/* The first action floats right; the pair stays together. */
-.editor-slot-action:first-of-type {
-  margin-left: auto;
-}
-
-.editor-slot-header:hover .editor-slot-action,
-.editor-slot-action:focus-visible {
-  opacity: 0.7;
-}
-
-.editor-slot-action:hover {
-  opacity: 1;
+/* :not(:disabled), because Chrome still matches :hover on a disabled button —
+   a greyed-out back arrow lit up under the pointer without it. */
+.editor-slot-action:not(:disabled):hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
+}
+
+.editor-slot-action:focus-visible {
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+/* The ends of the pane's own history. Dimmed rather than hidden: the pair is
+   the reader's landmark for where back and forward are, and an arrow that
+   vanished at the end of the history moved the other one. */
+.editor-slot-action:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
 }
 
 /* The pane's contents, and the positioning context for whatever surface draws
@@ -1554,6 +1673,96 @@ body.is-resizing-panes * {
   color: var(--text-muted);
   font-size: 12px;
   pointer-events: none;
+}
+
+/* ── Status bar ──
+   A pill floating at the bottom right of .editor-pane, over whichever pane
+   reaches it: backlinks, word and character counts and the save status, all
+   about the FOCUSED pane's document. It is not a bar across the window, as
+   Obsidian's is — with panes it would have to pick a column to sit in, and it
+   already picks one by being about the focused document.
+
+   z-index 7, between the panes' 5 (a PDF or a tldraw canvas would otherwise
+   paint straight over it) and .editor-split-dropzone's 20, which exists only
+   while a tab is in flight and has to keep winning while it is. The divider at
+   6 stays grabbable where the pill overlaps it because the pill takes no
+   pointer events.
+
+   pointer-events: none is load-bearing: the pill sits over the last lines of
+   every document, and a click or a drag-select that landed on it instead of on
+   the note would be silently swallowed. Only the one control inside takes them
+   back. */
+.status-bar {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-m);
+  /* A raised surface, NOT --background-primary: the pill floats on the page and
+     one in the page's own colour is a border with nothing inside it. Measured
+     off the reference images: #f6f6f6 on light's #ffffff and #282828 on dark's
+     #1c1c1c — which is --background-primary-alt in both, within 4/255. */
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.status-bar-item {
+  flex-shrink: 0;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* The backlinks count: the one thing in the pill you can press, and what
+   BacklinksPanel anchors its popover to. The negative margin lets its hover pill
+   reach past the text without adding to the pill's own height. */
+.status-bar-btn {
+  pointer-events: auto;
+  margin: -2px -4px;
+  padding: 2px 4px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.status-bar-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.status-bar-btn.active {
+  color: var(--text-accent);
+  background: var(--background-modifier-hover);
+}
+
+.status-bar-btn:focus-visible {
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+/* Last in the pill, and the only item whose text changes on its own. A reserved
+   slot: it reads 'Saved' after EVERY autosave (2s, App.tsx), so without one the
+   pill — which is right-anchored — would grow and shrink under the reader's eye
+   twice a minute while they type. 40px holds 'Saved' (31.98px at 11px, plus
+   room for a wider chosen font) so the common case never reflows. A min-width,
+   not a width: the rare long strings ('Put back as “…”', 'Moving “…” to
+   Trash…') still show whole, and they accompany a tree change the reader is
+   already watching, once.
+   After .status-bar-item, which it also carries, so its accent colour wins. */
+.save-status {
+  min-width: 40px;
+  font-size: 11px;
+  color: var(--text-accent);
 }
 
 /* CodeMirror 6 container */
@@ -1754,6 +1963,73 @@ body.is-resizing-panes * {
   background: var(--background-modifier-border);
   font-family: var(--font-monospace);
   font-size: 0.92em;
+}
+
+/* ── The typed answer ──
+   Present only when the question has one (ConfirmDialog's `input`), between the
+   body and the actions. This is the app's whole replacement for prompt(): the
+   ⌘N / + name, the renames — so the field has to say why a name is refused
+   rather than failing silently the way prompt() did, which is what the error
+   line below is for. */
+.confirm-input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 18px;
+}
+
+.confirm-input-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.confirm-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  /* --background-primary on the dialog's --background-primary-alt: a field has
+     to read as a well cut INTO the dialog, and --background-secondary is the
+     very same colour as the dialog in light (the trap .confirm-body code fell
+     into). */
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-text);
+  font-size: 13px;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.confirm-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* A ring that grows the border rather than an outline offset outside it: the
+   field is full-width and 2px of outline would meet the dialog's own padding. */
+.confirm-input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+/* #e06c75, the app's one red for TEXT and outlines (.context-menu-item.is-danger,
+   .trash-btn:hover) — not .confirm-btn-danger's #c0392b, which is a fill with
+   white on it and is the wrong weight for a 1px border in the dark theme. */
+.confirm-input[aria-invalid="true"] {
+  border-color: #e06c75;
+}
+
+.confirm-input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 1px #e06c75;
+}
+
+/* The reason the confirm button beside it is disabled. Always rendered when
+   there IS a reason and never as a placeholder: a line of empty space reserved
+   under the field would push the actions around on every keystroke. */
+.confirm-input-error {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #e06c75;
+  word-break: break-word;
 }
 
 .confirm-actions {
@@ -2452,7 +2728,9 @@ body.is-resizing-panes * {
 /* No-file overlay — shown when no tab is open. Still an overlay, but no longer
    because there is a view underneath to protect: with no tab open there are no
    panes at all. The overlay-not-unmount rule now applies WITHIN a pane
-   (.drawing-pane, .pdf-pane over their slot), not to the editor as a whole. */
+   (.drawing-pane, .pdf-pane over their slot), not to the editor as a whole.
+   The strip's height alone, unlike .pdf-pane's: with no panes there is no pane
+   header under the strip for this to clear. */
 .editor-empty-overlay {
   position: absolute;
   top: var(--header-height);
@@ -2468,8 +2746,9 @@ body.is-resizing-panes * {
 
 /* ── Drawing pane (.tldraw files) ──
    Fills the pane it belongs to (.editor-slot-body, or a .pdf-pane in annotate
-   mode) rather than the whole editor: with a split tab a drawing is one column
-   of several, and its box is that column's. tldraw fills what it's given. */
+   mode) rather than the whole editor: a drawing is one pane's document among up
+   to five side by side, and its box is that pane's. tldraw fills what it's
+   given. */
 .drawing-pane {
   position: absolute;
   inset: 0;
@@ -2482,9 +2761,9 @@ body.is-resizing-panes * {
   height: 100%;
 }
 /* tldraw rings a focused canvas with a 1px outline OUTSIDE its box — over the
-   tab strip's last row, since the pane stacks above it: a line (measured
-   #edf0f2 / #1a1a1c across the full width) cut the active tab off from its
-   page. Drawn inside instead. */
+   row above it, since the pane stacks above its neighbours: a line (measured
+   #edf0f2 / #1a1a1c across the full width) cut the chrome above the canvas off
+   from it. Drawn inside instead. */
 .drawing-pane .tl-container__focused {
   outline-offset: -1px;
 }
@@ -2502,21 +2781,18 @@ body.is-resizing-panes * {
    inside it: one pane exists per OPEN PDF tab and the ones that are off screen
    are hidden, not unmounted, so their document and reading position survive
    tab switches — which a pane that only existed while its tab was shown could
-   never do. Its column, when the tab is split, arrives as an inline left/width
-   pair (see PdfPane); the offset below the pane headers is here, because that
-   height is the stylesheet's to know. */
+   never do. Its column arrives as an inline left/width pair (see PdfPane); the
+   offset below the strip and the pane header is here, because those heights are
+   the stylesheet's to know. One offset, not two: every pane wears a header now,
+   at one pane as at five. */
 .pdf-pane {
   position: absolute;
-  top: var(--header-height);
+  top: calc(var(--header-height) + var(--pane-header-height));
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 5;
   background: var(--background-primary);
-}
-
-.pdf-pane-split {
-  top: calc(var(--header-height) + var(--pane-header-height));
 }
 
 .pdf-pane-hidden {
@@ -2658,7 +2934,7 @@ body.is-resizing-panes * {
 .pdf-viewer-scroll {
   position: absolute;
   inset: 0;
-  /* Air between the tab strip and the first page. Not padding on
+  /* Air between the pane header and the first page. Not padding on
      .pdf-viewer-inner and NOT a margin on the first page: the re-anchor effect
      scrolls to layout.tops[page], so anything inside the scrollable content is
      scrolled straight past (PAD_V = 20 already is). Insetting the scroll BOX
@@ -2931,7 +3207,7 @@ body.is-resizing-panes * {
 .pdf-thumbs {
   position: absolute;
   /* The same inset as the document column, so the rail's top edge lines up
-     with it instead of butting the tab strip. */
+     with it instead of butting the pane header. */
   top: var(--pdf-top-gap);
   left: 0;
   bottom: 0;
@@ -3092,7 +3368,7 @@ body.is-resizing-panes * {
 }
 
 /* tldraw notches its menu zone into the top-left corner with no margin, so it
-   butts the tab strip. Pad the layout column rather than the widget: the zone's
+   butts the pane header. Pad the layout column rather than the widget: the zone's
    own bottom-right-only radius stays correct, and __top__right (the style panel,
    which already sets margin: 8px) and __top__center (the notebook toolbar) are
    untouched. CenteredTopPanelContainer measures only offsetWidth, so a
@@ -4927,88 +5203,7 @@ li[aria-selected] .cm-completionMatchedText {
 }
 
 /* =============================================================
-   Top-bar action button (Linked mentions toggle)
-   ============================================================= */
-
-/* The right-hand actions, in a slot wide enough for the widest document kind, so
-   the tab strip's right edge does not move when you switch between a note (Insert
-   table + read/edit + linked mentions) and a PDF (one toggle) or a drawing (none).
-   Measured at the widest: 29 + 6 + 29 + 6 + 58 = 128px, where a .view-header-action
-   is a 15px icon in 2x7px of padding and the linked-mentions button adds a 5px gap
-   plus a two-digit count badge. Right-aligned, so the buttons stay pinned to the
-   header's edge however few of them there are. */
-.view-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  min-width: 128px;
-  justify-content: flex-end;
-}
-
-.view-header-action {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 7px;
-  border: none;
-  border-radius: var(--radius-s);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: color 0.15s, background 0.15s;
-}
-
-/* The tab strip's own hover token, not --background-modifier-hover: these sit
-   on the strip, and dark's #2a2d2e would be a pill DARKER than its #333. */
-.view-header-action:hover {
-  color: var(--text-normal);
-  background: var(--tab-background-hover);
-}
-
-.view-header-action.active {
-  color: var(--text-accent);
-  background: var(--tab-background-hover);
-}
-
-.view-header-action:disabled {
-  opacity: 0.4;
-  cursor: default;
-  background: transparent;
-}
-
-/* The top bar's Insert table button and its size picker (TableInsertButton).
-   The picker is fixed to the viewport from the button's own box, so a clipping
-   ancestor in the header cannot cut it off. */
-.table-insert {
-  display: flex;
-}
-
-.table-insert-panel {
-  position: fixed;
-}
-
-.view-header-action-count {
-  /* Tinted from the text, as .tab-split-badge is: #363636 vanishes on the strip. */
-  background: color-mix(in srgb, currentColor 16%, transparent);
-  color: var(--tab-text-color);  /* --text-muted on that tint was ~3.4:1 in dark */
-  border-radius: 9px;
-  padding: 0 6px;
-  font-size: 10px;
-  line-height: 16px;
-  min-width: 16px;
-  text-align: center;
-}
-
-.view-header-action.active .view-header-action-count {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-}
-
-/* =============================================================
-   Linked Mentions popover (anchored under the top-bar button)
+   Linked Mentions popover (anchored to the status bar's backlinks button)
    ============================================================= */
 .backlinks-popover {
   position: fixed;

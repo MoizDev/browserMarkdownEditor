@@ -6,8 +6,18 @@ description: The app's own right-click menu — one module-level store, one comp
 # Right-click: one store, one menu (`utils/contextMenu.ts` + `components/ContextMenu.tsx`)
 
 The app draws its own context menu instead of the browser's, in note text, in a table cell, on a
-file-tree row and on the empty tree area. There is exactly **one** component and **one** module-level
-store; `App` reads it with `useSyncExternalStore` and renders `<ContextMenu>` once.
+file-tree row and on the empty tree area. Two more raisers are **buttons**, not right-clicks: a tab
+group's `⌄` (`TabBar`) lists that pane's tabs, and a pane header's `⋯` (`DocumentPane`) holds Insert
+table… / Export to PDF / Close this pane. Both position from `getBoundingClientRect()`'s bottom-left
+and pass the button as `opener`, so the keyboard comes back to it. There is exactly **one** component
+and **one** module-level store; `App` reads it with `useSyncExternalStore` and renders
+`<ContextMenu>` once.
+
+- **A row's `label` may be a file NAME, never note contents.** The menu renders labels as React text
+  children (`ContextMenu.tsx:360, 378`), so a name is escaped like any other string — which is what
+  lets `⌄` list a pane's tabs by name. Markup and note text are still out: this origin holds the
+  vault's handle with permission granted, so a hole here is read/write over the whole vault. The
+  `label` doc in `utils/contextMenu.ts` states it in those terms; keep the two in step.
 
 - **The store is a module, not a prop, and that satisfies three constraints no prop could satisfy
   together.** `src/editor/` raises this menu (a right-click in a table cell) and knows nothing about
@@ -92,7 +102,7 @@ store; `App` reads it with `useSyncExternalStore` and renders `<ContextMenu>` on
   root or a folder's path. The target row expands ITSELF; its ancestors are expanded by the raiser,
   since the row is not mounted until they are.
 - **The size picker is a flyout, not a modal.** `ConfirmDialog` could not host it anyway (its
-  `children` render inside a `<p>`, its `onConfirm` carries no value, and focus goes to a button), and
+  `children` render inside a `<p>`, and it answers with one line of text, not a pair of numbers), and
   a flyout beside the row needs no backdrop and no focus round trip. It is positioned inline by the
   component — only it knows the row it hangs off — and the stylesheet supplies chrome only.
   `TableSizeGrid` floors rows at `MIN_ROWS`, uses a roving tabindex, and lets ArrowLeft at column 1
@@ -112,5 +122,5 @@ store; `App` reads it with `useSyncExternalStore` and renders `<ContextMenu>` on
   (CodeMirror's search panel, autocomplete, a selection collapse, a rename field); of several open,
   closes only the newest, and prevents the press it takes — one press, one thing (#36). The other
   half: **anything that consumes Escape must `preventDefault()` it**, or the surface behind closes on
-  the same press. Capture-and-stopped (this menu, `ConfirmDialog`, `TableInsertButton`) is for a
+  the same press. Capture-and-stopped (this menu, `ConfirmDialog`) is for a
   surface drawn over CodeMirror or a modal, which must win outright.

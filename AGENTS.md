@@ -77,16 +77,17 @@ everything behavioural is verified by Playwright driving the app in headless Chr
 - **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault. Read ONCE on
   load (a writer then owns it, keeping the link's `file` until consumed), it outranks the stored handle;
   its `file` is opened only BY the session restore, in the vault it names — never by a second opener.
-- **Open documents are a flat list (`tabs`) plus a separate tab *layout*;** `activeTabPath` is
-  derived. The save funnel `updateTabContent(path, content)` is **path-explicit and the only one** —
-  several documents are editable at once and canvas panes serialize after their pane has gone. The
-  session is per vault id (`utils/tabSessions.ts`); a switch empties the workspace without losing it.
+- **Open documents are a flat list (`tabs`) plus a *layout* — a row of panes, each owning its tabs,
+  widths on the layout** (`utils/tabPanes.ts`); `activeTabPath` is derived. The save funnel
+  `updateTabContent(path, content)` is **path-explicit and the only one** — several documents are
+  editable at once and canvas panes serialize after their pane has gone. The session is per vault id
+  and **versioned** (`utils/tabSessions.ts`); a switch empties the workspace without losing it.
 - **A CodeMirror `EditorState` outlives its pane — and `EditorPane`, which the graph view unmounts** (the
   cache is App's) — and so does everything baked into it (`domEventHandlers`, the update listener): all
   it reaches must be **stable for the app's life**, i.e. App-level. A per-pane ref only hides staleness.
 - **Images and tables are deliberate abstractions over the app's own markdown** — the raw text is
   unreachable by design and the file on disk stays ordinary markdown (`markdown-tables` has the how).
-- **The app draws its own context menu and its own `confirm()`; prefer them to native dialogs.**
+- **The app draws its own context menu, `confirm()` and `prompt()`; NO native dialog is left — keep it so.**
 - **TWO places turn note text into DOM `innerHTML`, safe for different reasons** — `tableWidget`'s
   `renderCellContent` (attribute-free allowlist; one sink AND one write site, KaTeX splices in built DOM,
   never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'` DOMPurify pass).

@@ -250,9 +250,11 @@ table into a note the reader is only reading.
   mid-line, on a delimiter-shaped line, when the next line is pipe-fenced, on a line already in a
   table, and on a line inside a code range. Tagged `input`, not `input.type`, so the adoption rule
   ignores it.
-- **The top bar's table button** (`TableInsertButton`) cannot reach a view, so a pick is a one-shot
-  request (`utils/tableInsertRequest.ts`) answered by the FOCUSED `DocumentPane` for that path through
-  `insertTableAtCursor`. The size grid's maxima live in that module, shared with the editor menu's grid.
+- **The pane header's `⋯` → Insert table…** (`DocumentPane.openPaneMenu`) cannot reach a view, so a
+  pick is a one-shot request (`utils/tableInsertRequest.ts`) answered by the FOCUSED `DocumentPane`
+  for that path through `insertTableAtCursor` — which is why that menu focuses its pane BEFORE it
+  opens, or the request would be published into nothing. The size grid's maxima live in that module,
+  shared with the editor menu's grid.
 
 ## How a table gets its width (`tableFit.ts`)
 

@@ -90,7 +90,7 @@ export interface OpenTab {
    * bytes straight over it, which is the loss App.releaseOverwritten exists to
    * prevent and could not, holding only a path.
    *
-   * Session-only, like a TabGroup's id: the stored session records paths, and
+   * Session-only, like a TabPane's id: the stored session records paths, and
    * these are re-minted on restore.
    */
   id: string;
@@ -115,56 +115,76 @@ export interface OpenTab {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * TAB GROUPS (split view)
- * One entry in the tab bar is a GROUP of open documents, shown side by side as
- * vertical panes whose widths the reader sets by dragging the divider between
- * two of them. Most groups hold exactly one path, which is the ordinary
- * single-document tab. `tabs` above stays a FLAT list of every open document —
- * saving, asset tracking and search all key off it and are untouched by the
- * split — while these describe only what the tab bar shows and where each
- * document is drawn. See utils/tabGroups.ts for the operations and the
+ * PANES AND THEIR TABS (the split editor)
+ * The editor is a row of PANES — vertical columns, all drawn at once, whose
+ * widths the reader sets by dragging the divider between two of them. Each
+ * pane owns its own set of tabs and shows one of them. Most workspaces hold
+ * exactly one pane, which is the ordinary tab strip. `tabs` above stays a FLAT
+ * list of every open document — saving, asset tracking and search all key off
+ * it and are untouched by the split — while these describe only how the
+ * documents are arranged. See utils/tabPanes.ts for the operations and the
  * invariants that keep the two in step.
  * ───────────────────────────────────────────────────────────────────────── */
 
-export interface TabGroup {
-  /** Stable for the group's life; the React key and the drag payload. */
+export interface TabPane {
+  /** Stable for the pane's life; the React key and the divider's abandon check. */
   id: string;
-  /** ≥1 open-document paths, in left-to-right pane order. */
+  /** ≥1 open-document paths — this pane's tabs, in strip order. */
   paths: string[];
-  /** Which of those panes has focus — remembered while the group is inactive. */
+  /** The tab this pane is showing. Always one of `paths`. */
   activePath: string;
   /**
-   * Each pane's share of the tab's width, in `paths` order, as percentages
-   * summing to 100 — or ABSENT, which means equal columns and is what a tab is
-   * until someone drags one of its dividers (and what every one-pane tab always
-   * is).
+   * Where this pane has been, oldest first, repeats included — what the pane
+   * header's back and forward arrows walk.
+   *
+   * Session-only, like `OpenTab.id`: the stored session records only the tabs,
+   * so a restored pane starts at `[activePath]` and both arrows read as
+   * disabled. Persisting it would mean storing paths no tab holds any more.
+   *
+   * THE INVARIANT: `history[historyIndex] === activePath`. Every transition
+   * that changes `activePath` goes through tabPanes.ts's `showInPane`, which
+   * maintains both together; `canGoBack`/`canGoForward` check it and answer
+   * false if it has somehow come apart, so the failure mode is two dead
+   * buttons rather than a jump to a document the pane is not holding.
+   */
+  history: string[];
+  /** Index into `history` of what is showing. */
+  historyIndex: number;
+}
+
+/** The whole editor: its panes, which one has focus, and how wide they are.
+ *  Held as ONE piece of state so a transition can never leave the active id
+ *  naming a pane that the same update removed. */
+export interface TabLayout {
+  /** The columns, left to right. All of them are drawn. */
+  panes: TabPane[];
+  /** Which column has focus — what ⌘E, ⌘S, the URL hash and the file tree's
+   *  highlight all mean. */
+  activeId: string | null;
+  /**
+   * Each pane's share of the editor's width, in `panes` order, as percentages
+   * summing to 100 — or ABSENT, which means equal columns and is what the
+   * editor is until someone drags one of its dividers (and what a single pane
+   * always is).
    *
    * Absent rather than filled in, because "nobody has arranged this" then has
-   * exactly one representation: an untouched tab is byte-for-byte the object it
-   * was before this feature, a merge or a close has nothing to redistribute,
-   * evening the panes up again is a field being deleted, and a session full of
-   * ordinary tabs stores nothing but nulls.
+   * exactly one representation: an untouched layout is byte-for-byte the object
+   * it was before this feature, a split or a close has nothing to redistribute,
+   * evening the panes up again is a field being deleted, and a session of
+   * ordinary tabs stores nothing but null.
    *
    * PERCENTAGES, not pixels: the window and the sidebar resize constantly and a
    * restored session lands in a window of another size — the same reason a
    * fitted table's columns and a PDF pane's slot are percentages.
    *
-   * THE INVARIANT: absent, or exactly one finite, positive entry per path,
-   * summing to 100. utils/tabGroups.ts is the only writer and keeps it by
+   * THE INVARIANT: absent, or exactly one finite, positive entry per pane,
+   * summing to 100. utils/tabPanes.ts is the only writer and keeps it by
    * routing every value through one gate; `paneSizes()` is the only reader and
-   * answers equal columns for anything that fails it — so a set that has fallen
+   * answers equal columns for anything that fails it — so a row that has fallen
    * out of step degrades the way a path with no open document does, to
    * something plainly wrong on screen rather than to a broken layout.
    */
   sizes?: number[];
-}
-
-/** The whole tab bar: its groups, and which one is on screen. Held as ONE piece
- *  of state so a transition can never leave the active id naming a group that
- *  the same update removed. */
-export interface TabLayout {
-  groups: TabGroup[];
-  activeId: string | null;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

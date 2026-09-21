@@ -17,29 +17,31 @@ import {
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
-  closeGroup as closeGroupIn,
+  closePane as closePaneIn,
   closePath,
   focusTab,
   focusedPath as focusedPathOf,
-  groupById,
-  mergeIntoActive,
+  goBack,
+  goForward,
   mergeLayouts,
+  moveTabToPane,
   openTab as openTabIn,
+  paneById,
   relabelPaths,
   renamePath,
-  reorderGroups,
   restoreLayout,
-  selectGroup,
-  setGroupSizes,
-  splitOff,
+  selectTab as selectTabIn,
+  setPaneSizes,
+  splitToPane,
   visiblePaths,
-} from './utils/tabGroups';
+} from './utils/tabPanes';
 import { clampTabSize } from './editor/lists';
 import type { WikiLinkTarget } from './editor/wikiLinkComplete';
 import { retryMissingAssets } from './editor/imageWidget';
 import { getNotebookExporter, clearNotebookRenderData, moveNotebookRenderData } from './utils/notebookRenderCache';
 import { findLinkedVault, readLocation, vaultLinkName, writeLocation } from './utils/appUrl';
 import { setActiveFilePath } from './utils/activeFile';
+import { placeholderFor } from './utils/createRequest';
 import {
   ENTRY_STYLE_FILE, LEGACY_STYLE_FILE, emptyEntryStyles, forgetEntry, parseEntryStyles,
   renameEntry, serializeEntryStyles, withEntryStyle, type IconNode,
@@ -171,9 +173,32 @@ interface DialogRequest {
   body: React.ReactNode;
   confirmLabel: string;
   danger?: boolean;
+  /**
+   * Turns the dialog into a question with an answer to TYPE (see
+   * ConfirmDialog's `input`, which this mirrors).
+   *
+   * ON `DialogRequest`, unlike `altLabel` below: a field is meaningful to every
+   * raiser — a notice raised by `tell` could legitimately want one read back,
+   * and nothing about `ask`'s yes/no forbids one either — so declaring it here
+   * costs nothing and would only have to be widened later. What it does NOT do
+   * is deliver the value: only `askForName` resolves the typed answer, because
+   * only its promise has a `string` to resolve with.
+   */
+  input?: {
+    label: string;
+    initialValue: string;
+    placeholder?: string;
+    /** Why this value cannot be accepted, or null. Runs per keystroke, so it
+     *  must be synchronous — which is why `handleNewNote` leaves "that name is
+     *  taken" to `handleCreateFile`'s async guard rather than checking here. */
+    validate?: (value: string) => string | null;
+  };
 }
 interface AppDialog extends DialogRequest {
-  onConfirm: () => void;
+  /** The typed answer, for a request carrying an `input`. Every other call site
+   *  ignores it — a function of fewer parameters is assignable — so the zero-arg
+   *  `onConfirm`s that `ask`, `askChoice` and `tell` build still type-check. */
+  onConfirm: (value: string) => void;
   /** Absent on a notice, which has nothing to decline. */
   onCancel?: () => void;
   /** The third answer, and its label, on the one question that has one — see
@@ -182,6 +207,8 @@ interface AppDialog extends DialogRequest {
    *  `tell` would type-check and then silently render nothing. */
   altLabel?: string;
   onAlt?: () => void;
+  /** Stamped by `raise`, never by a caller — see `dialogSeq`. */
+  id?: number;
 }
 
 /**
@@ -291,12 +318,14 @@ export default function App() {
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.
   const [tabs, setTabs] = useState<OpenTab[]>([]);
-  // How those documents are arranged in the tab bar: one group per tab, holding
-  // one path in the ordinary case and up to five once tabs have been merged
-  // into a split view (utils/tabGroups.ts). Groups + the active one are ONE
-  // piece of state so no update can leave the active id naming a group it just
-  // removed; the focused document — the old `activeTabPath` — is derived from
-  // it, which is what keeps the two from drifting.
+  // How those documents are arranged on screen: a row of panes — columns, all
+  // drawn at once — each holding its own ordered tabs and showing one of them
+  // (utils/tabPanes.ts). One pane with a few tabs is the ordinary workspace; up
+  // to five columns is the ceiling. The panes, the focused one's id and the
+  // columns' widths are ONE piece of state so no update can leave the active id
+  // naming a pane it just removed, or a width row indexed against a pane list
+  // that moved underneath it; the focused document — the old `activeTabPath` —
+  // is derived from it, which is what keeps those from drifting.
   const [layout, setLayout] = useState<TabLayout>(EMPTY_LAYOUT);
   const [saveStatus, setSaveStatus] = useState<string>('');
 
@@ -326,10 +355,10 @@ export default function App() {
   // Each document's full EditorState (doc + undo history + selection + an open
   // search panel) is cached by DOCUMENT — `${OpenTab.id}|${path}`, EditorPane's
   // paneKey — and adopted by whichever pane shows it next, so undo survives tab
-  // switches and being dragged into a split, and can never reach across
-  // documents. By id rather than by path because a rename that overwrites an
-  // open file leaves two documents answering to one path for a commit, and
-  // keyed by path the survivor adopted the loser's text and undo history —
+  // switches and being dragged into a column of its own, and can never reach
+  // across documents. By id rather than by path because a rename that
+  // overwrites an open file leaves two documents answering to one path for a
+  // commit, and keyed by path the survivor adopted the loser's text and history —
   // then saved it over the file that had just replaced it (see OpenTab.id).
   //
   // Held HERE rather than in EditorPane because the graph view REPLACES
@@ -570,6 +599,9 @@ export default function App() {
   // three helpers must stay STABLE (`notify` reaches every memoized
   // DocumentPane) and reading `dialog` would put it in their deps.
   const dialogRef = useRef<AppDialog | null>(null);
+  /** Tells one question from the next. ConfirmDialog is not remounted between
+   *  two of them, so it needs this to know its field is now someone else's. */
+  const dialogSeq = useRef(0);
 
   /**
    * Put a question on screen, settling whatever was already there.
@@ -590,9 +622,15 @@ export default function App() {
     // Settled FIRST, so that its own `setDialog(null)` cannot land on top of the
     // dialog installed below — both writes batch, and the last one must win.
     const prev = dialogRef.current;
-    if (prev) (prev.onCancel ?? prev.onConfirm)();
-    dialogRef.current = next;
-    setDialog(next);
+    // A notice, which has no `onCancel`, is acknowledged instead — with the
+    // empty string, because a displaced dialog's field is gone with it and
+    // nothing was typed into the ones that have none. `askForName` is the only
+    // caller that reads the value, and for it this arm is unreachable: it always
+    // hands `raise` an `onCancel`, which resolves its promise null.
+    if (prev) (prev.onCancel ?? (() => prev.onConfirm('')))();
+    const staged = { ...next, id: ++dialogSeq.current };
+    dialogRef.current = staged;
+    setDialog(staged);
   }, []);
 
   const settle = useCallback(() => { dialogRef.current = null; setDialog(null); }, []);
@@ -628,6 +666,29 @@ export default function App() {
   const tell = useCallback((notice: DialogRequest) => new Promise<void>(resolve => {
     raise({ ...notice, onConfirm: () => { settle(); resolve(); } });
   }), [raise, settle]);
+
+  /**
+   * Ask for a NAME — what `prompt()` used to be, and the reason none is left in
+   * the app (AGENTS.md: the app draws its own dialogs and prefers them to
+   * native ones). Resolves the typed answer, or null when the reader backs out.
+   *
+   * On the same `raise`/`settle` pair as the three above rather than a bespoke
+   * overlay, so it inherits the displaced-dialog rule: a question that is taken
+   * off the screen before it can be answered resolves — as null here — instead
+   * of leaving its caller awaiting for the session.
+   *
+   * Trimmed on the way out, because every caller would: a name is a file name
+   * and the surrounding spaces are a typo, not part of it. `input.validate` is
+   * what refuses an empty one, live, while the reader is still typing.
+   */
+  const askForName = useCallback((question: DialogRequest & { input: NonNullable<AppDialog['input']> }) =>
+    new Promise<string | null>(resolve => {
+      raise({
+        ...question,
+        onConfirm: (value: string) => { settle(); resolve(value.trim()); },
+        onCancel: () => { settle(); resolve(null); },
+      });
+    }), [raise, settle]);
 
   // ── The app's own right-click menu ──────────────────────────────────────
   // One menu is on screen at a time, and every raiser — the editor, a table
@@ -694,8 +755,10 @@ export default function App() {
   const tabsRef = useRef<OpenTab[]>(tabs);
   const layoutRef = useRef<TabLayout>(layout);
   const activeTabPathRef = useRef<string | null>(activeTabPath);
-  // The documents currently on screen — every pane of the active tab, not just
-  // the focused one, so a save in a neighbouring pane still reports itself.
+  // The documents currently on screen — one per column, since a pane shows one
+  // of its tabs, and every column not just the focused one, so a save in a
+  // neighbouring pane still reports itself. A document merely OPEN behind
+  // another tab of the same pane is not here: nothing on screen would show it.
   const visiblePathsRef = useRef<string[]>([]);
   // Per-PATH debounced save timers, so switching or closing one tab never
   // cancels another tab's pending write (fixes the old single-timer data loss).
@@ -733,7 +796,7 @@ export default function App() {
    * in that window was written out as the vault's whole session until the merge
    * wrote it back (measured: a tree click 100ms into a restore reading 600ms per
    * file held the stored session at that one tab for 2.4s, and a reload inside
-   * the window came back with only it — all four saved documents, split and
+   * the window came back with only it — all four saved documents, columns and
    * all, gone for good). A token rather than a flag, so a pass that outlives a
    * switch cannot release the gate a later pass holds.
    */
@@ -797,11 +860,11 @@ export default function App() {
   // trading a rare wrong offset for a routine one.
   useEffect(() => { setRecordScope(currentVaultId); }, [currentVaultId]);
 
-  // Persist the open documents, how they are grouped into tabs, which pane each
-  // tab was left on and how wide those panes were, UNDER THIS VAULT'S ID — so a
-  // reload, and a switch away and back, both come back to the same workspace.
-  // Keyed on `layout` (not `tabs`) so it does NOT run on every keystroke — the
-  // layout's identity only moves when the tab bar actually changes.
+  // Persist the open documents, how they are divided into columns, which tab
+  // each column was left showing and how wide the columns were, UNDER THIS
+  // VAULT'S ID — so a reload, and a switch away and back, both come back to the
+  // same workspace. Keyed on `layout` (not `tabs`) so it does NOT run on every
+  // keystroke — the layout's identity only moves when the arrangement does.
   //
   // GATED on the two session refs, which is the old `hasRestoredTabs` rule
   // generalized per vault. It has to cover two things:
@@ -826,14 +889,19 @@ export default function App() {
     if (sessionVaultIdRef.current !== currentVaultId) return; // …or this vault's restore has not run yet
     if (restoringRef.current) return;                         // …or is still reading (see restoringRef)
     writeSession(currentVaultId, {
-      paths: layout.groups.flatMap(g => g.paths),
-      groups: layout.groups.map(g => g.paths),
-      // Which pane each split tab was left on: without it a background split
-      // tab came back on its leftmost pane, since `active` speaks for one group.
-      focus: layout.groups.map(g => g.activePath),
-      // `null` for the tabs nobody resized, which is most of them — absence is
-      // how "equal columns" is encoded all the way down (see tabGroups.ts).
-      sizes: layout.groups.map(g => g.sizes ?? null),
+      // Stamped, because a record written before panes and tabs swapped axes
+      // means the opposite by the same `groups` row — readSession migrates it
+      // (see its v1 reader), and cannot tell the two apart without this.
+      v: 2,
+      paths: layout.panes.flatMap(p => p.paths),
+      groups: layout.panes.map(p => p.paths),
+      // Which tab each column was left showing: without it a column came back
+      // on its leftmost tab, since `active` speaks for one column only.
+      focus: layout.panes.map(p => p.activePath),
+      // `null` while nobody has dragged a divider, which is most workspaces —
+      // absence is how "equal columns" is encoded all the way down (see
+      // tabPanes.ts). ONE row for the whole editor now, not one per tab.
+      sizes: layout.sizes ?? null,
       active: focusedPathOf(layout),
     });
   }, [layout, currentVaultId, rootHandle]);
@@ -999,8 +1067,8 @@ export default function App() {
       }
 
       // Already open? Just focus it — don't re-read (preserves the tab's
-      // unsaved edits and its own undo history). Its pane comes to the front
-      // whether it is a tab of its own or one pane of a split.
+      // unsaved edits and its own undo history). Its column takes focus and
+      // fronts its tab, wherever in the row that column happens to be.
       const open = tabsRef.current.find(t => t.file.path === node.path);
       if (open) {
         setLayout(l => focusTab(l, node.path));
@@ -1321,8 +1389,8 @@ export default function App() {
       // Only clear `dirty` if the content hasn't changed since we snapshotted.
       setTabs(prev => prev.map(t =>
         t.file.path === path && t.content === snapshot ? { ...t, dirty: false } : t));
-      // Any pane on screen, not only the focused one: with a split tab the
-      // status line speaks for everything the reader can see.
+      // Any column on screen, not only the focused one: with the editor split
+      // the status line speaks for everything the reader can see.
       if (visiblePathsRef.current.includes(path)) {
         setSaveStatus('Saved');
         // Re-armed, not stacked: rapid saves used to leave a handful of live
@@ -1350,7 +1418,7 @@ export default function App() {
 
   // Buffer an edit against ONE named document and schedule its save.
   // Path-explicit on purpose, and the only content funnel there is: several
-  // documents are editable at once in a split tab, and the drawing canvas
+  // documents are editable at once — one per column — and the drawing canvas
   // serializes on a debounce that can fire after its pane has gone away. Either
   // way the text must land in the document it came from — never in whichever
   // pane happens to have focus by then.
@@ -1418,16 +1486,16 @@ export default function App() {
     if (path === movedFrom) return;
     if (!tabsRef.current.some(t => t.file.path === path)) return;
     releaseTab(path, false);                       // no flush: the bytes are gone
-    // Its pane goes too. renamePath would drop it as it re-points the moved
+    // Its tab goes too. renamePath would drop it as it re-points the moved
     // document, but only when the moved one is open — and closing it here is
-    // also what puts the focus on a NEIGHBOUR of the tab that vanished rather
-    // than on whichever tab happens to be leftmost.
+    // also what fronts a NEIGHBOUR of the tab that vanished rather than
+    // whichever tab happens to be leftmost in the column.
     setLayout(l => closePath(l, path));
     setTabs(prev => prev.filter(t => t.file.path !== path));
   }, [releaseTab]);
 
-  /** Close one document. Its pane goes; the tab goes with it only if that was
-   *  its last pane (see utils/tabGroups.ts closePath). */
+  /** Close one document. Its tab goes; the column goes with it only if that was
+   *  the column's last tab (see utils/tabPanes.ts closePath). */
   const removeTab = useCallback((path: string, flush: boolean) => {
     releaseTab(path, flush);
     setLayout(l => closePath(l, path));
@@ -1496,31 +1564,53 @@ export default function App() {
   // (the rebuildGraphRef pattern) rather than growing a dependency.
   useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab]);
 
-  /** Close a whole tab — every document in it. A merged tab is one tab, so its
-   *  × takes all of its panes; each pane's own × closes just that one. */
-  const closeTabGroup = useCallback((id: string) => {
-    const group = groupById(layoutRef.current, id);
-    if (!group) return;
-    for (const path of group.paths) releaseTab(path, true);
-    const closed = new Set(group.paths);
-    setLayout(l => closeGroupIn(l, id));
+  /**
+   * Close a whole column — every document in it. What the pane header's
+   * ⋯ menu means by *Close this pane*; a tab's own × closes just that one.
+   *
+   * Every tab is FLUSHED on the way out (`releaseTab(path, true)`), so closing
+   * a five-tab column cannot lose the four the reader was not looking at.
+   * Read through `layoutRef` rather than `layout` so this keeps its identity
+   * for the app's life: it is baked into a pane's chrome, which outlives the
+   * render that raised the menu.
+   */
+  const closePaneAndTabs = useCallback((paneId: string) => {
+    const pane = paneById(layoutRef.current, paneId);
+    if (!pane) return;
+    for (const path of pane.paths) releaseTab(path, true);
+    const closed = new Set(pane.paths);
+    setLayout(l => closePaneIn(l, paneId));
     setTabs(prev => prev.filter(t => !closed.has(t.file.path)));
   }, [releaseTab]);
 
-  const selectTabGroup = useCallback((id: string) => setLayout(l => selectGroup(l, id)), []);
+  /** A click on a tab: its column takes focus and fronts it. Path-explicit AND
+   *  pane-explicit — two columns may hold tabs with the same name, and the id
+   *  is what says which strip was clicked. */
+  const selectTabInPane = useCallback(
+    (paneId: string, path: string) => setLayout(l => selectTabIn(l, paneId, path)), []);
   const focusPane = useCallback((path: string) => setLayout(l => focusTab(l, path)), []);
-  const splitOffPane = useCallback((path: string) => setLayout(l => splitOff(l, path)), []);
-  const mergeTabGroups = useCallback(
-    (sourceId: string, index: number) => setLayout(l => mergeIntoActive(l, sourceId, index)), []);
-  const reorderTabGroups = useCallback(
-    (id: string, toIndex: number) => setLayout(l => reorderGroups(l, id, toIndex)), []);
-  /** How a split tab divides its width between its panes; null evens them up.
+  /** A tab dropped on the editor body: it leaves its column and becomes one of
+   *  its own at `at`. Refused past MAX_PANES by splitToPane itself. */
+  const splitTabToPane = useCallback(
+    (path: string, at: number) => setLayout(l => splitToPane(l, path, at)), []);
+  /** A tab dragged within its own strip (a reorder) or into another one.
+   *  `toIndex` indexes the destination's tabs as they were DRAWN, which is
+   *  where the drop indicator sat. */
+  const moveTab = useCallback((path: string, toPaneId: string, toIndex: number) =>
+    setLayout(l => moveTabToPane(l, path, toPaneId, toIndex)), []);
+  /** How the editor divides its width between its columns; null evens them up.
    *  One update at the END of a divider drag, never per frame: the persist
    *  effect is keyed on `layout`, so a live commit would write the whole
    *  session to localStorage sixty times a second. EditorPane holds the widths
    *  in flight and hands the settled row over here. */
-  const resizeTabPanes = useCallback(
-    (id: string, sizes: number[] | null) => setLayout(l => setGroupSizes(l, id, sizes)), []);
+  const resizePanes = useCallback(
+    (sizes: number[] | null) => setLayout(l => setPaneSizes(l, sizes)), []);
+  /** The pane header's ← and →. Per COLUMN: each remembers the tabs it has
+   *  shown, so stepping back in one leaves its neighbours alone. Session-only
+   *  (the stored session records no history), so both read as disabled right
+   *  after a reload. */
+  const paneBack = useCallback((paneId: string) => setLayout(l => goBack(l, paneId)), []);
+  const paneForward = useCallback((paneId: string) => setLayout(l => goForward(l, paneId)), []);
 
   const toggleTabMode = useCallback((path: string | null) => {
     if (!path) return;
@@ -1763,13 +1853,13 @@ export default function App() {
     // Read the session WHOLE and synchronously, before the file reads below
     // yield: the refs just claimed are what the persist effect checks, so a
     // value read after the awaits could already have been rewritten — and the
-    // split would come back silently flattened. restoringRef now also shuts
+    // columns would come back silently flattened. restoringRef now also shuts
     // persistence for the reads, but deciding the whole restore from one
     // snapshot is what makes that unreachable rather than merely unreached.
     const stored = readSession(currentVaultId);
     // A linked note the session does not hold joins it at the end, like any
-    // newly opened note — restoreLayout gives a path no stored group accounts
-    // for a tab of its own. An empty `paths` is a real session ("I closed
+    // newly opened note — restoreLayout makes a path no stored column accounts
+    // for a tab of the last one. An empty `paths` is a real session ("I closed
     // everything here"); there is simply nothing of its own to open for it. A
     // Set, because a path listed twice (a hand-edited record) would mint two
     // tabs for one document — restoreLayout dedupes the layout, not the tabs.
@@ -1850,12 +1940,12 @@ export default function App() {
               // layout is rebuilt from what came back, and the persist effect
               // then files that as the whole session — so one momentary failure
               // (a sync client or another editor mid-write, a cloud file not
-              // downloaded, a lock) lost the tab and its place in a split on
-              // every later reload (issue #8). Anything but NotFoundError gets
-              // one immediate second read — a fresh getFile() is exactly what
-              // cures Chromium's "file changed after getFile" NotReadableError —
-              // and then comes back as a tab that says it could not be read,
-              // holding no text (OpenTab.readError).
+              // downloaded, a lock) lost the tab and its place in the
+              // arrangement on every later reload (issue #8). Anything but
+              // NotFoundError gets one immediate second read — a fresh
+              // getFile() is exactly what cures Chromium's "file changed after
+              // getFile" NotReadableError — and then comes back as a tab that
+              // says it could not be read, holding no text (OpenTab.readError).
               if (isNotFound(err)) {
                 entry.dropped = true;
               } else if (entry.readError === undefined) {
@@ -1935,7 +2025,7 @@ export default function App() {
         // that WAS opened still goes through the merge, with nothing to lay it
         // over — the gate held its write back, and the merge's new layout is
         // the only thing that will write it now.
-        if (restored.length === 0 && layoutRef.current.groups.length === 0) return;
+        if (restored.length === 0 && layoutRef.current.panes.length === 0) return;
         // The awaits above yield to the event loop: the vault may have been
         // switched in the meantime, and the switch effect empties the tab set,
         // so the merge below would drop the OLD vault's notes (handles and all)
@@ -1970,17 +2060,20 @@ export default function App() {
           if (tab.readError) continue;
           if (!assetRefsRef.current.has(tab.file.path)) rememberAssetRefs(tab.file, tab.content);
         }
-        // Which of these shared a tab as split panes. A session written before
-        // split tabs existed has no record of it, and restoreLayout gives every
-        // document a tab of its own — exactly what used to happen. The link is
-        // an instruction and the session only a default, so the link's note is
-        // what comes to the front — when it actually came back. Built out here,
-        // not in an updater, because StrictMode runs updaters twice.
+        // Which of these shared a column, and which tab each column showed. A
+        // session written before the editor had columns has no record of it,
+        // and restoreLayout puts everything no stored row accounts for in the
+        // last column as ordinary tabs — never dropping one, since the persist
+        // effect files whatever comes out of here as the vault's WHOLE session
+        // (issue #8). The link is an instruction and the session only a
+        // default, so the link's note is what comes to the front — when it
+        // actually came back. Built out here, not in an updater, because
+        // StrictMode runs updaters twice.
         // Built in the STORED paths' space, which is the only one the stored
-        // groups, focus and widths speak, then relabelled all at once to where
-        // each document is now — so a split whose note was renamed mid-restore
-        // keeps its panes, focus and widths (see relabelPaths for why not
-        // renamePath one at a time).
+        // columns, focus and widths speak, then relabelled all at once to where
+        // each document is now — so an arrangement whose note was renamed
+        // mid-restore keeps its columns, its per-column focus and its widths
+        // (see relabelPaths for why not renamePath one at a time).
         const restoredLayout = relabelPaths(restoreLayout(
           origins,
           stored?.groups,
@@ -1993,19 +2086,23 @@ export default function App() {
         // 5de752e's separate link opener into data loss: it opened the linked
         // note a moment before these reads finished, this pass saw a tab and
         // gave up, and since the refs were already claimed the persist effect
-        // filed that one tab as the vault's whole session (measured: four
+        // filed that one tab as the vault's whole session (measured under the
+        // pre-transposition model, and the arithmetic is unchanged by it: four
         // documents in three tabs, one a 65/35 split, came back from a reload as
         // the one tab the address bar named, with the stored `paths` rewritten
         // from four to that one — so every reload after it restored nothing more
-        // either). The saved tabs come first, as they were left; what was opened
-        // follows (mergeLayouts), keeping the focus; and a document open on both
-        // sides keeps its in-memory tab, which may hold edits. The gate opens
-        // BEFORE the merge is dispatched, so the commit carrying it writes the
-        // session. One ordering still writes a lone tab first: a click that
-        // committed just before this line, its effects not yet run, has them
-        // flushed ahead of the merge's render — one tab stored for the task or
-        // two until the merge's own write. flushSync is not used to close it:
-        // only a reload landing in that gap could cost anything.
+        // either). The saved arrangement comes back as it was left; what was
+        // opened meanwhile follows as TABS of its focused column (mergeLayouts —
+        // one or two clicked notes are not an arrangement the reader asked for,
+        // and appending columns could breach MAX_PANES), keeping the focus; and
+        // a document open on both sides keeps its in-memory tab, which may hold
+        // edits. The gate opens BEFORE the merge is dispatched, so the commit
+        // carrying it writes the session. One ordering still writes a lone tab
+        // first: a click that committed just before this line, its effects not
+        // yet run, has them flushed ahead of the merge's render — one tab
+        // stored for the task or two until the merge's own write. flushSync is
+        // not used to close it: only a reload landing in that gap could cost
+        // anything.
         release();
         setTabs(prev => {
           const open = new Set(prev.map(t => t.file.path));
@@ -2166,6 +2263,57 @@ export default function App() {
       });
     }
   }, [createFile, handleFileClick, tell]);
+
+  /**
+   * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab
+   * strip. ONE function for both: two entry points to the same action that
+   * behaved differently is exactly what the `+` would have reintroduced.
+   *
+   * ⌘N used to raise a `window.prompt`, the last native dialog in the app.
+   * It is gone: AGENTS.md's rule is that the app draws its own `confirm()` and
+   * prefers it to a native one, and `prompt()` could not say where the note
+   * would land, could not refuse an empty name while it was being typed, and
+   * sat outside the theme.
+   *
+   * THE NAME-TAKEN CASE IS DELIBERATELY NOT CHECKED HERE. `input.validate` runs
+   * on every keystroke and must be synchronous; `nameTaken` is a directory walk.
+   * `handleCreateFile` already refuses a taken name with a dialog of its own —
+   * the one guard standing in front of `createFile`, which opens-or-TRUNCATES —
+   * so asking here would only add a second half to keep in step with it.
+   *
+   * Opens wherever `openTab` opens: the focused pane, as a new tab. A `+` in an
+   * unfocused strip focuses its pane first (TabBar), so the note lands in the
+   * column whose `+` was pressed.
+   */
+  const handleNewNote = useCallback(async () => {
+    const root = rootHandleRef.current;
+    if (!root) return;
+    const name = await askForName({
+      title: 'New note',
+      body: <>It will be created in the vault’s top folder.</>,
+      confirmLabel: 'Create',
+      input: {
+        label: 'Name',
+        initialValue: '',
+        // `placeholderFor(null)` — the same hint the file tree's own create row
+        // shows, from the module that owns "what extension does this kind get".
+        // The name is taken AS TYPED here, exactly as a tree-row `file` is, so a
+        // reader who wants a note has to write the `.md` themselves; the
+        // `prompt()` this replaced said so in its own message ('e.g. "note.md"')
+        // and losing that hint would be the one thing the new dialog did worse.
+        placeholder: placeholderFor(null),
+        validate: v => (v.trim() ? null : 'Give the note a name'),
+      },
+    });
+    if (!name) return;
+    // The dialog is an await, and the reader can switch vaults behind it (the
+    // vault menu is not covered by it). Re-checked rather than trusted: writing
+    // through the captured handle would drop the note into a vault that is no
+    // longer on screen, and `parentPath: ''` would then name it in the tree the
+    // new vault built. Same re-validation the restore pass does after its reads.
+    if (rootHandleRef.current !== root) return;
+    await handleCreateFile(root, name, '');
+  }, [askForName, handleCreateFile]);
 
   const handleCreateFolder = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string) => {
     const where = parentHandle?.name || 'this folder';
@@ -2706,7 +2854,7 @@ export default function App() {
             // a file carried along by its folder keeps the one it had.
             ? { ...t, file: { ...t.file, name: handle.name, path: dest, handle, parentHandle } }
             : t));
-        // The tab bar indexes documents by path too — a pane left pointing at
+        // The layout indexes documents by path too — a tab left pointing at
         // the old one would have no document to draw.
         setLayout(l => renamePath(l, from, dest));
         // Buffered edits go to the NEW handle, never the old one. They are not
@@ -2775,13 +2923,12 @@ export default function App() {
         e.preventDefault();
         flushTab(activeTabPathRef.current, true);
       }
-      // Cmd+N — create new note in vault root
+      // Cmd+N — create new note in vault root. Through the same handler the
+      // tab strip's + uses, so the two cannot drift; it draws the app's own
+      // dialog and checks the vault itself, so there is nothing to gate here.
       if (isCmdLetter(e, 'n')) {
         e.preventDefault();
-        if (rootHandle) {
-          const name = prompt('New note name (e.g. "note.md"):');
-          if (name) handleCreateFile(rootHandle, name, '');
-        }
+        void handleNewNote();
       }
       // Cmd+E — toggle read/edit mode of the active tab
       if (isCmdLetter(e, 'e')) {
@@ -2796,7 +2943,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [rootHandle, handleCreateFile, flushTab, toggleTabMode]);
+  }, [handleNewNote, flushTab, toggleTabMode]);
 
   // Auto-save is handled per-tab by scheduleSave/flushTab (see above), so edits
   // to a background tab still persist even while another tab is active.
@@ -3020,14 +3167,16 @@ export default function App() {
             theme={theme}
             tabSize={tabSize}
             saveStatus={saveStatus}
-            onSelectGroup={selectTabGroup}
-            onCloseGroup={closeTabGroup}
-            onReorderGroups={reorderTabGroups}
-            onMergeGroups={mergeTabGroups}
-            onResizePanes={resizeTabPanes}
+            onSelectTab={selectTabInPane}
+            onCloseTab={closeTab}
+            onClosePane={closePaneAndTabs}
+            onMoveTab={moveTab}
+            onSplitTabToPane={splitTabToPane}
+            onResizePanes={resizePanes}
             onFocusPane={focusPane}
-            onClosePane={closeTab}
-            onSplitOffPane={splitOffPane}
+            onNewNote={handleNewNote}
+            onPaneBack={paneBack}
+            onPaneForward={paneForward}
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
             onFlushNow={flushTabNow}
@@ -3100,9 +3249,11 @@ export default function App() {
           tree's (which is visible in the graph view too). */}
       {dialog && (
         <ConfirmDialog
+          questionId={dialog.id ?? 0}
           title={dialog.title}
           confirmLabel={dialog.confirmLabel}
           danger={dialog.danger}
+          input={dialog.input}
           altLabel={dialog.altLabel}
           onAlt={dialog.onAlt}
           onConfirm={dialog.onConfirm}

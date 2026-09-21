@@ -18,6 +18,18 @@ import type { ReactNode } from 'react';
  * it. That is what `children` is for.
  */
 interface ConfirmDialogProps {
+    /**
+     * Which question is on screen. The component is never remounted between two
+     * of them — `raise` swaps one dialog's props for another's in the same
+     * React position — so without an identity the field kept the FIRST
+     * question's typing and never re-took the keyboard: ⌘N, type a name, ⌘N
+     * again, and the new note came up pre-filled with the abandoned one.
+     *
+     * Omit it where the dialog is MOUNTED per question — EditorPane's image
+     * delete is rendered by the request itself, so React's own identity already
+     * says what this says.
+     */
+    questionId?: number;
     title: string;
     /**
      * What going ahead will do. Rich rather than a string: these name files and
@@ -28,7 +40,30 @@ interface ConfirmDialogProps {
     confirmLabel: string;
     /** Whether going ahead destroys something, which colours that button. */
     danger?: boolean;
-    onConfirm: () => void;
+    /**
+     * Turns this into a question with an answer to TYPE — what `prompt()` used
+     * to be, and the reason no native dialog is left in the app.
+     *
+     * Here rather than in a second component for the same reason the third
+     * button is: the backdrop, Escape, the click outside and the focus
+     * round-trip are owned once, and a hand-rolled overlay beside them drifts.
+     */
+    input?: {
+        label: string;
+        initialValue: string;
+        placeholder?: string;
+        /**
+         * Why this value cannot be accepted, or null. Runs on every keystroke:
+         * the confirm button is disabled while it returns a reason and the
+         * reason is shown under the field — a `prompt()` could only fail
+         * silently, after the fact.
+         */
+        validate?: (value: string) => string | null;
+    };
+    /** The typed answer, for a dialog with an `input`; ignored by the rest, so
+     *  the existing `() => void` call sites still type-check (a function of
+     *  fewer parameters is assignable). */
+    onConfirm: (value: string) => void;
     /**
      * Back out. ABSENT for a dialog that only REPORTS something — the confirm
      * button is then the only one drawn, and Escape and a click outside do the
@@ -52,9 +87,22 @@ interface ConfirmDialogProps {
     onAlt?: () => void;
 }
 
-export default function ConfirmDialog({ title, children, confirmLabel, danger, onConfirm, onCancel, altLabel, onAlt }: ConfirmDialogProps) {
+export default function ConfirmDialog({ questionId = 0, title, children, confirmLabel, danger, input, onConfirm, onCancel, altLabel, onAlt }: ConfirmDialogProps) {
     const titleId = useId();
+    const inputId = useId();
     const confirmRef = useRef<HTMLButtonElement | null>(null);
+    const inputRef = useRef<HTMLInputElement | null>(null);
+
+    // Initialised from the spec of the dialog that is on screen, and RESET when
+    // a different question takes the slot (`questionId`) — `raise` replaces the
+    // props without remounting, so nothing else would clear the field. Adjusted
+    // during render, React's pattern for state that follows a prop.
+    const [typed, setTyped] = useState({ id: questionId, value: input?.initialValue ?? '' });
+    if (typed.id !== questionId) setTyped({ id: questionId, value: input?.initialValue ?? '' });
+    const value = typed.id === questionId ? typed.value : input?.initialValue ?? '';
+    const setValue = (next: string) => setTyped({ id: questionId, value: next });
+    const reason = input?.validate ? input.validate(value) : null;
+    const blocked = !!input && reason !== null;
 
     // Whatever raised this — a tree row's trash button, usually. Read during the
     // first render, which is BEFORE the commit that moves focus into the dialog,
@@ -63,7 +111,10 @@ export default function ConfirmDialog({ title, children, confirmLabel, danger, o
 
     // Dismissing is cancelling, or — for a one-button notice — acknowledging.
     // Read through a ref so the listener below is registered exactly once.
-    const dismiss = onCancel ?? onConfirm;
+    // A one-button notice acknowledges with whatever is in the field, which is
+    // nothing — such a dialog has no field. Wrapped rather than passed straight
+    // through because `onConfirm` now takes the typed answer.
+    const dismiss = onCancel ?? (() => onConfirm(value));
     const dismissRef = useRef(dismiss);
     useEffect(() => { dismissRef.current = dismiss; });
 
@@ -89,10 +140,20 @@ export default function ConfirmDialog({ title, children, confirmLabel, danger, o
     //
     // The opener is often GONE by then — it was the trash button of a row the
     // deletion removed — so this only reaches for it while it is still attached.
+    //
+    // With a field, the FIELD takes it instead and its text is selected — the
+    // answer is usually a replacement, not an edit, which is what `prompt()`
+    // did too.
+    //
+    // Taking it is per QUESTION (a second one raised over the first must not be
+    // left with the keyboard in a field it no longer owns); handing it back is
+    // per MOUNT, and stays in an effect of its own so that a swap does not
+    // bounce the focus out to the opener and back.
     useEffect(() => {
-        confirmRef.current?.focus();
-        return () => { if (opener?.isConnected) opener.focus(); };
-    }, [opener]);
+        if (inputRef.current) inputRef.current.select();
+        else confirmRef.current?.focus();
+    }, [questionId]);
+    useEffect(() => () => { if (opener?.isConnected) opener.focus(); }, [opener]);
 
     return (
         <div className="confirm-overlay" onMouseDown={() => dismissRef.current()}>
@@ -105,6 +166,35 @@ export default function ConfirmDialog({ title, children, confirmLabel, danger, o
             >
                 <h3 className="confirm-title" id={titleId}>{title}</h3>
                 <p className="confirm-body">{children}</p>
+                {input && (
+                    <div className="confirm-input-row">
+                        <label className="confirm-input-label" htmlFor={inputId}>{input.label}</label>
+                        <input
+                            ref={inputRef}
+                            id={inputId}
+                            className="confirm-input"
+                            type="text"
+                            value={value}
+                            placeholder={input.placeholder}
+                            autoComplete="off"
+                            spellCheck={false}
+                            aria-invalid={reason !== null}
+                            aria-describedby={reason ? `${inputId}-error` : undefined}
+                            onChange={(e) => setValue(e.target.value)}
+                            // Enter IS the confirm button: the field is the only
+                            // thing focused, so leaving Enter to the form's
+                            // default would submit nothing.
+                            onKeyDown={(e) => {
+                                if (e.key !== 'Enter' || blocked) return;
+                                e.preventDefault();
+                                onConfirm(value);
+                            }}
+                        />
+                        {reason && (
+                            <span className="confirm-input-error" id={`${inputId}-error`}>{reason}</span>
+                        )}
+                    </div>
+                )}
                 <div className="confirm-actions">
                     {onCancel && (
                         <button className="confirm-btn" onClick={onCancel}>Cancel</button>
@@ -115,7 +205,8 @@ export default function ConfirmDialog({ title, children, confirmLabel, danger, o
                     <button
                         ref={confirmRef}
                         className={`confirm-btn${danger ? ' confirm-btn-danger' : ''}`}
-                        onClick={onConfirm}
+                        disabled={blocked}
+                        onClick={() => onConfirm(value)}
                     >
                         {confirmLabel}
                     </button>

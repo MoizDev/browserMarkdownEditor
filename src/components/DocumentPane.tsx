@@ -35,15 +35,15 @@ import { insertTableAtCursor } from '../editor/tableEdit';
 import { canWrite, modeExtensions } from '../editor/readingMode';
 import { keyboardAfterSearchClose, noteSearchKeymap, rebuildSearchPanelForMode, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
 import { tabIntoText } from '../editor/tabIntoText';
-import { onTableInsertRequest, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
+import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
 import { isDrawingFile, isNotebookFile, isPdfFile, noteDisplayName } from '../utils/fileTypes';
-import { AlertCircle, FileText, Notebook, PenTool, PopOut, X } from './icons';
-import type { EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
+import { ArrowLeft, ArrowRight, Edit2, Eye, MoreHorizontal, PenTool } from './icons';
+import type { ActiveFile, EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
 
 // tldraw is a heavy dependency (canvas engine + its own UI). Loading it lazily
 // keeps it out of the initial bundle, so a markdown-only session never pays for
@@ -397,24 +397,49 @@ interface DocumentPaneProps {
      *  keys the pane by, so a pane and its state are one thing. It is NOT the
      *  path: see EditorPane's paneKey. */
     stateKey: string;
-    /** The pane the header actions, ⌘E, ⌘F and ⌘S mean. */
+    /** Which column this is. Every pane-scoped action names it rather than a
+     *  path, because closing the column, and stepping its history, outlive the
+     *  document that happens to be showing. */
+    paneId: string;
+    /** The pane ⌘E, ⌘F and ⌘S mean, and the only one that answers a table
+     *  insert raised from outside the editor. */
     isFocused: boolean;
-    /** True once this tab holds more than one document: each pane then names
-     *  itself, because side by side there is nothing else that could. */
-    showHeader: boolean;
+    /** More than one column is on screen. Only the aria-labels read it: with
+     *  several identical headers up, a bare verb does not say which document
+     *  it acts on. The focus underline is CSS's, from `.editor-split.is-split`. */
+    isSplit: boolean;
+    /** Whether this pane's own history has anywhere to step. False leaves the
+     *  arrow on screen and disabled — a control that comes and goes is harder
+     *  to aim at than one that is plainly spent. */
+    canBack: boolean;
+    canForward: boolean;
+    onBack: (paneId: string) => void;
+    onForward: (paneId: string) => void;
+    /** Closes this whole column and every tab in it. Raised from the ⋯ menu:
+     *  the reference images' header has no ×, and the tab strip's × already
+     *  closes one document. */
+    onClosePane: (paneId: string) => void;
+    /** Read ⇄ edit for THIS pane's document (view ⇄ annotate for a PDF) —
+     *  the same toggle ⌘E runs, which is why it still takes a path. */
+    onToggleMode: (path: string) => void;
+    /** Write a .pdf beside this notebook. A notebook is the editable original
+     *  and the PDF an output, so this writes rather than switching to it. */
+    onExportNotebook: (file: ActiveFile) => void;
     /**
-     * This pane's share of the tab's width — a `flex-grow` naming the CSS
+     * This pane's share of the EDITOR's width — a `flex-grow` naming the CSS
      * variable EditorPane keeps for this column, so a pane needs to know
-     * nothing at all about how its tab divides the width. `undefined` on a tab
-     * with a single pane, which then keeps the stylesheet's own `flex: 1 1 0`
-     * and is laid out exactly as it always was.
+     * nothing at all about how the editor divides its width.
+     *
+     * Passed at every pane count, a single column included (`--pane-w-0: 100`),
+     * so the column and the tab group drawn above it size themselves by one
+     * mechanism instead of two.
      *
      * EditorPane hands out ONE FROZEN OBJECT per column, so this prop's
      * identity never moves: a pane's props do not change at all while a divider
      * is being dragged, which is what lets the drag repaint the whole split
      * without re-rendering a single document.
      */
-    widthStyle: React.CSSProperties | undefined;
+    widthStyle: React.CSSProperties;
     theme: Theme;
     /** Spaces a Tab inserts — and how far Tab indents a list item. */
     tabSize: number;
@@ -443,8 +468,6 @@ interface DocumentPaneProps {
      *  (OpenTab.readError); resolves true once it holds the text. Stable. */
     onRetryRead: (path: string) => Promise<boolean>;
     onFocusPane: (path: string) => void;
-    onClosePane: (path: string) => void;
-    onSplitOffPane: (path: string) => void;
     onOpenNote: OpenNoteByNameHandler;
     onImageDelete: (request: PaneImageDelete) => void;
     /** Say something to the reader — the app's own dialog, from App's `tell`.
@@ -460,7 +483,7 @@ interface DocumentPaneProps {
 }
 
 /**
- * ONE open document, drawn in one pane of the tab on screen.
+ * ONE open document, drawn in one column of the editor.
  *
  * Everything document-scoped lives here — the CodeMirror view, its
  * compartments, the paste/scroll/wikilink handlers and the drawing canvas — so
@@ -482,8 +505,11 @@ interface DocumentPaneProps {
 function DocumentPane({
     tab,
     stateKey,
+    paneId,
     isFocused,
-    showHeader,
+    isSplit,
+    canBack,
+    canForward,
     widthStyle,
     theme,
     tabSize,
@@ -493,8 +519,11 @@ function DocumentPane({
     onContentChange,
     onRetryRead,
     onFocusPane,
+    onBack,
+    onForward,
     onClosePane,
-    onSplitOffPane,
+    onToggleMode,
+    onExportNotebook,
     onOpenNote,
     onImageDelete,
     onNotify,
@@ -527,10 +556,13 @@ function DocumentPane({
     /** True only while setEditorContainer builds the view — see there. */
     const buildingViewRef = useRef(false);
 
-    // The top bar's table button cannot reach this view (EditorPane holds none),
-    // so it raises a request, and only the pane FOCUSED on that document acts on
-    // it: two panes showing the same note must not both insert. A ref, because
-    // the subscription is made once per document and focus moves under it.
+    // "Insert table…" in this pane's ⋯ menu cannot reach this view: the menu is
+    // built from a module store (utils/contextMenu.ts) and holds no EditorView.
+    // So a pick goes out as a request naming the document and only the pane
+    // FOCUSED on it inserts — which is why openPaneMenu focuses this pane before
+    // raising the menu, and why there is still one insertion site rather than
+    // two. A ref, because the subscription is made once per document and focus
+    // moves under it.
     const isFocusedRef = useRef(isFocused);
     useEffect(() => { isFocusedRef.current = isFocused; }, [isFocused]);
     useEffect(() => onTableInsertRequest((request) => {
@@ -965,6 +997,98 @@ function DocumentPane({
     // setEditorContainer): that one arrives synchronously, mid-construction.
     const takeFocusFromEvent = () => { if (!buildingViewRef.current) takeFocus(); };
 
+    const displayName = noteDisplayName(file.name);
+
+    /* ── The header's controls ────────────────────────────────────────────
+       Moved down from the view header, which used to carry one set for
+       whichever document was focused. Each pane now names its own, so the
+       per-kind branches are the same ones, retargeted at THIS pane's file:
+
+       · a note toggles Reading ⇄ Editing;
+       · a PDF reuses that same per-tab mode — read = view the real PDF, with
+         its text selectable, edit = draw on it, in that same file;
+       · a drawing, a notebook, the Help Guide and a document that could not be
+         read have no mode at all, and get NO button rather than a dead one.
+         (A notebook's one action is Export to PDF, which is in ⋯.) */
+    const canAnnotate = isPdf && !unreadable;
+    const canToggleRead = !file.isHelp && !isCanvas && !unreadable;
+    const canToggleMode = canAnnotate || canToggleRead;
+    const modeTitle = canAnnotate
+        ? (mode === 'read' ? 'Viewing — switch to annotating (⌘E)' : 'Annotating — switch to viewing (⌘E)')
+        : (mode === 'read' ? 'Reading — switch to edit (⌘E)' : 'Editing — switch to reading (⌘E)');
+    const modeIcon = canAnnotate
+        ? (mode === 'read' ? <PenTool size={15} /> : <Eye size={15} />)
+        : (mode === 'read' ? <Eye size={15} /> : <Edit2 size={15} />);
+
+    /** What a control announces. Split, every column draws the same three
+     *  buttons, so a bare verb does not say which document it acts on; alone,
+     *  nothing could be confused with it and the plain verb reads better. The
+     *  visible `title` stays the bare verb either way — the document's name is
+     *  already centred between them. */
+    const announce = (verb: string) => (isSplit ? `${verb} in ${displayName}` : verb);
+
+    /* The ⋯ menu: the app's own, never a bespoke dropdown — it already has the
+       grid, command and separator rows this needs, and one menu on screen at a
+       time is the whole point of the store (utils/contextMenu.ts).
+
+       Built fresh per click, so every disabled state is a snapshot of the
+       moment the user asked, as the editor's own menu is. Rows that do not
+       apply to this kind are left out; "Close this pane" applies to every kind,
+       which is what keeps ⋯ from ever being an empty menu. */
+    const openPaneMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+        // FIRST, and load-bearing: the table-insert listener above is gated on
+        // `isFocused`, so a ⋯ raised in a pane that does not have focus would
+        // publish its pick into nothing — a row that silently does nothing at
+        // all. Focusing is also just what acting on a pane means.
+        takeFocus();
+        const button = event.currentTarget;
+        const box = button.getBoundingClientRect();
+        const entries: ContextMenuEntry[] = [];
+        if (canToggleRead) {
+            entries.push({
+                kind: 'grid',
+                id: 'insert-table',
+                label: 'Insert table…',
+                maxRows: TABLE_GRID_ROWS,
+                maxCols: TABLE_GRID_COLS,
+                // Reading mode blocks no programmatic dispatch, so the row is
+                // disabled rather than trusted — and it stays on screen saying
+                // why, the rule every row in this app follows.
+                disabled: mode === 'read',
+                reason: mode === 'read' ? 'Switch to editing (⌘E) to insert a table' : undefined,
+                pick: (rows, cols) => { requestTableInsert(path, rows, cols); },
+            });
+        }
+        if (isNotebook && !unreadable) {
+            entries.push({
+                kind: 'command',
+                id: 'export-pdf',
+                label: 'Export to PDF',
+                run: () => onExportNotebook(file),
+            });
+        }
+        // Only once something precedes it: a drawing's menu is Close alone, and
+        // a separator at the top of a menu is a rule under nothing.
+        if (entries.length > 0) entries.push({ kind: 'separator', id: 'sep-pane' });
+        entries.push({
+            kind: 'command',
+            id: 'close-pane',
+            label: 'Close this pane',
+            run: () => onClosePane(paneId),
+        });
+        openContextMenu({
+            // Hung off the button's bottom-left corner rather than the pointer:
+            // this menu belongs to a control, not to a place in a document, so
+            // it should land in the same spot however the button was hit.
+            x: box.left,
+            y: box.bottom,
+            // "<noun> actions", the form every raiser in the app uses.
+            label: 'Pane actions',
+            opener: button,
+            entries,
+        });
+    };
+
     return (
         <div
             className={`editor-slot${isFocused ? ' is-focused' : ''}`}
@@ -972,44 +1096,68 @@ function DocumentPane({
             onMouseDownCapture={takeFocus}
             onFocusCapture={takeFocusFromEvent}
         >
-            {showHeader && (
-                <div
-                    className="editor-slot-header"
-                    // A file dropped from the desktop on an UNCANCELLED target
-                    // navigates the whole app away to that file, taking every
-                    // unsaved buffer with it. Every other surface a drop can
-                    // land on cancels its own (`.view-content` below, the
-                    // divider in EditorPane); this strip is one too, and it is
-                    // the natural place to aim at if you mean "into that pane".
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => e.preventDefault()}
-                >
-                    <span className="editor-slot-icon" aria-hidden="true">
-                        {unreadable ? <AlertCircle size={12} /> : isNotebook ? <Notebook size={12} /> : isDrawing ? <PenTool size={12} /> : <FileText size={12} />}
-                    </span>
-                    {/* The same display name the tab strip shows — a pane header
-                        that still said "Notes.md" over a tab saying "Notes" would
-                        be the inconsistency. `title` is already the full path. */}
-                    <span className="editor-slot-title" title={path}>{noteDisplayName(file.name)}</span>
-                    {tab.dirty && <span className="editor-slot-dot" aria-hidden="true" />}
+            {/* Drawn at EVERY pane count, a single column included: the header
+                is this pane's own chrome, not a way of telling two columns
+                apart, so it does not appear and disappear as the workspace is
+                split and unsplit. */}
+            <div
+                className="editor-slot-header"
+                // A file dropped from the desktop on an UNCANCELLED target
+                // navigates the whole app away to that file, taking every
+                // unsaved buffer with it. Every other surface a drop can
+                // land on cancels its own (`.view-content` below, the
+                // divider in EditorPane); this strip is one too, and it is
+                // the natural place to aim at if you mean "into that pane".
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => e.preventDefault()}
+            >
+                <div className="editor-slot-nav">
                     <button
                         className="editor-slot-action"
-                        title="Move to its own tab"
-                        aria-label={`Move ${noteDisplayName(file.name)} to its own tab`}
-                        onClick={() => onSplitOffPane(path)}
+                        disabled={!canBack}
+                        title="Back"
+                        aria-label={announce('Back')}
+                        onClick={() => onBack(paneId)}
                     >
-                        <PopOut size={12} />
+                        <ArrowLeft size={15} />
                     </button>
                     <button
                         className="editor-slot-action"
-                        title="Close this pane"
-                        aria-label={`Close ${noteDisplayName(file.name)}`}
-                        onClick={() => onClosePane(path)}
+                        disabled={!canForward}
+                        title="Forward"
+                        aria-label={announce('Forward')}
+                        onClick={() => onForward(paneId)}
                     >
-                        <X size={12} />
+                        <ArrowRight size={15} />
                     </button>
                 </div>
-            )}
+                {/* The same display name the tab strip shows — a pane header
+                    that still said "Notes.md" over a tab saying "Notes" would
+                    be the inconsistency. `title` is already the full path. */}
+                <span className="editor-slot-title" title={path}>{displayName}</span>
+                {tab.dirty && <span className="editor-slot-dot" aria-hidden="true" />}
+                <div className="editor-slot-actions">
+                    {canToggleMode && (
+                        <button
+                            className="editor-slot-action"
+                            title={modeTitle}
+                            aria-label={announce(canAnnotate ? 'Toggle view/annotate mode' : 'Toggle read/edit mode')}
+                            onClick={() => onToggleMode(path)}
+                        >
+                            {modeIcon}
+                        </button>
+                    )}
+                    <button
+                        className="editor-slot-action"
+                        title="More options"
+                        aria-label={announce('More options')}
+                        aria-haspopup="menu"
+                        onClick={openPaneMenu}
+                    >
+                        <MoreHorizontal size={15} />
+                    </button>
+                </div>
+            </div>
             <div className="editor-slot-body">
                 {unreadable && (
                     <div

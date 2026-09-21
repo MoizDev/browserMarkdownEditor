@@ -8,18 +8,18 @@ interface BacklinksPanelProps {
     nodes?: GraphNode[];          // default [] ; backlink graph nodes (from getBacklinkNodes)
     onOpenNode: OpenNodeHandler;  // (node) => void — open a note by its graph node
     onClose: () => void;          // () => void — dismiss the popover
-    style?: CSSProperties;        // inline positioning (fixed top/right) from the anchor button
+    style?: CSSProperties;        // inline positioning (fixed bottom/right) from the anchor button
 }
 
 /**
  * BacklinksPanel — a small dismissible popover listing every note that links to
  * the currently open note ("Linked mentions"). It is rendered by EditorPane and
- * anchored under the top-bar button; clicking a mention opens that note.
+ * anchored above the status bar's button; clicking a mention opens that note.
  *
  * @param nodes       backlink graph nodes (from getBacklinkNodes)
  * @param onOpenNode  (node) => void — open a note by its graph node
  * @param onClose     () => void — dismiss the popover
- * @param style       inline positioning (fixed top/right) from the anchor button
+ * @param style       inline positioning (fixed bottom/right) from the anchor button
  */
 export default function BacklinksPanel({ nodes = [], onOpenNode, onClose, style }: BacklinksPanelProps) {
     return (

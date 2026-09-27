@@ -4,6 +4,7 @@ import type { Editor, TLEditorSnapshot } from 'tldraw';
 import 'tldraw/tldraw.css';
 import type { Theme } from '../types';
 import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { bindImageInvertKey } from './invertibleImageShape';
 import { subscribePenScale } from '../utils/penStyle';
 
 interface DrawingPaneProps {
@@ -97,6 +98,8 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
         // handler reads the width this seeds.
         applyCanvasUi(editor, ui);
         const disposePen = applyPenDefaults(editor);
+        // `i` inverts a selected picture — see invertibleImageShape.tsx.
+        const disposeInvert = bindImageInvertKey(editor);
 
         let lastUi = JSON.stringify(readCanvasUi(editor));
 
@@ -131,6 +134,7 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
         return () => {
             editorRef.current = null;
             disposePen();
+            disposeInvert();
             unlistenDoc();
             unlistenSession();
             unlistenPen();

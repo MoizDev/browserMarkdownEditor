@@ -11,6 +11,7 @@ import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
 import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi } from './canvasPen';
+import { bindImageInvertKey } from './invertibleImageShape';
 import { subscribePenScale } from '../utils/penStyle';
 import { getPdfInverted, readThumbnailsOpen, subscribePdfInverted, writeThumbnailsOpen } from '../utils/pdfViewState';
 import PdfInvertToggle from './PdfInvertToggle';
@@ -308,6 +309,8 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         // already says must not mark it dirty.
         applyCanvasUi(editor, uiRef.current);
         const disposePen = applyPenDefaults(editor);
+        // `i` inverts a selected picture — see invertibleImageShape.tsx.
+        const disposeInvert = bindImageInvertKey(editor);
 
         // Everything below runs BEFORE the listeners attach, so none of it marks
         // a just-opened file dirty.
@@ -404,6 +407,7 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         return () => {
             editorRef.current = null;
             disposePen();
+            disposeInvert();
             unlistenDoc();
             unlistenSession();
             unlistenPen();

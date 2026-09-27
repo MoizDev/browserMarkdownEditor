@@ -23,7 +23,8 @@ interface VaultMenuProps {
      *  with no picker ever shown, and this menu is what closes on the result. */
     onBrowse: () => Promise<VaultOpenResult>;
     onClose: () => void;
-    /** Fixed positioning under the anchor button, from its bounding rect. */
+    /** Fixed positioning ABOVE the sidebar's vault switcher (it sits at the
+     *  bottom of the window), from the switcher's bounding rect. */
     style?: CSSProperties;
 }
 
@@ -60,10 +61,10 @@ const focusedRowIn = (menu: HTMLElement | null): number =>
     rowsIn(menu).indexOf(document.activeElement?.closest('.vault-menu-row') as HTMLElement);
 
 /**
- * VaultMenu — the small list of recently opened vaults that drops out of the
- * explorer's vault button. Picking one switches the whole app to it; the last
+ * VaultMenu — the small list of recently opened vaults that rises from the
+ * sidebar's vault switcher. Picking one switches the whole app to it; the last
  * row falls through to the native folder picker (as does double-clicking the
- * button itself). Each row also carries a minus that takes it off the list, so
+ * switcher itself). Each row also carries a minus that takes it off the list, so
  * the vaults the user actually hops between aren't buried under one-offs.
  *
  * Positioned `fixed` from the anchor's rect, like the linked-mentions popover:
@@ -238,7 +239,7 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
                                 className="vault-menu-forget tree-action-btn"
                                 role="menuitem"
                                 aria-label={`Remove “${vault.label}” from recent vaults`}
-                                title="Remove from this list"
+                                data-tooltip="Remove from this list"
                                 disabled={opening !== null}
                                 onClick={() => void forget(vault, i, 'forget')}
                             >
@@ -249,7 +250,7 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
                             className="vault-menu-item"
                             role="menuitem"
                             aria-current={isCurrent || undefined}
-                            title={isCurrent ? `${vault.label} (current vault)` : vault.label}
+                            data-tooltip={isCurrent ? `${vault.label} (current vault)` : vault.label}
                             onClick={() => activate(vault)}
                         >
                             <VaultRowIcon vault={vault} />

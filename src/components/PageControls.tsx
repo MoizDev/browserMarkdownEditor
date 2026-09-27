@@ -71,7 +71,7 @@ function PageControls({ pageCount, thumbsOpen, onToggleThumbs, onJump, children 
                     autoComplete="off"
                     spellCheck={false}
                     style={{ width: `${Math.max(2, String(pageCount).length)}ch` }}
-                    title="Current page: type a number and press Enter to jump"
+                    data-tooltip="Current page: type a number and press Enter to jump"
                     aria-label="Page number"
                     onFocus={e => {
                         focusValueRef.current = e.currentTarget.value;

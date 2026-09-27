@@ -668,7 +668,8 @@ function NotebookToolbar({ paper, onChange, onRemovePage }: {
                 className="notebook-select"
                 value={paper.ruling}
                 onChange={e => onChange({ ruling: e.target.value as NotebookPaper['ruling'] })}
-                title="Ruling"
+                data-tooltip="Ruling"
+                aria-label="Ruling"
             >
                 <option value="lined">Lined</option>
                 <option value="grid">Grid</option>
@@ -679,7 +680,8 @@ function NotebookToolbar({ paper, onChange, onRemovePage }: {
                 className="notebook-select"
                 value={paper.size}
                 onChange={e => onChange({ size: e.target.value as NotebookPaper['size'] })}
-                title="Page size"
+                data-tooltip="Page size"
+                aria-label="Page size"
             >
                 <option value="letter">Letter</option>
                 <option value="a4">A4</option>
@@ -688,7 +690,7 @@ function NotebookToolbar({ paper, onChange, onRemovePage }: {
             <button
                 className="notebook-toolbar-btn"
                 onClick={() => onChange({ orientation: paper.orientation === 'portrait' ? 'landscape' : 'portrait' })}
-                title="Rotate the pages"
+                data-tooltip="Rotate the pages"
             >
                 {paper.orientation === 'portrait' ? 'Portrait' : 'Landscape'}
             </button>
@@ -699,7 +701,7 @@ function NotebookToolbar({ paper, onChange, onRemovePage }: {
                 className="notebook-toolbar-btn"
                 onClick={onRemovePage}
                 disabled={paper.pageCount <= 1}
-                title="Delete the last page"
+                data-tooltip="Delete the last page"
                 aria-label="Delete the last page"
             >
                 − Page
@@ -708,7 +710,7 @@ function NotebookToolbar({ paper, onChange, onRemovePage }: {
                 className="notebook-toolbar-btn"
                 onClick={() => onChange({ pageCount: Math.min(MAX_PAGES, paper.pageCount + 1) })}
                 disabled={paper.pageCount >= MAX_PAGES}
-                title="Add a page"
+                data-tooltip="Add a page"
             >
                 + Page
             </button>

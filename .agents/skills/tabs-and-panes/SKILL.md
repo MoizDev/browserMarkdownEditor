@@ -397,7 +397,7 @@ a resizable pane one number rather than a rectangle.
 - **A tab group is `[scrolling tabs] [+] [⌄]`.** `+` selects that pane and then opens a new note into
   it (`openTab` opens into the FOCUSED pane, so the selection is what makes "in this column" true);
   `⌄` lists that pane's tabs in the context menu. Tabs name a note through `noteDisplayName` (`.md`
-  hidden, display only — see the `vault-filesystem` skill), while the `title` tooltip stays the full
+  hidden, display only — see the `vault-filesystem` skill), while the tooltip (`data-tooltip`) stays the full
   path. `dirty` and `unreadable` are **per tab** now, not OR'd across a group.
 - **The document's readings live in a floating `.status-bar` pill, bottom right**: backlinks (the
   `BacklinksPanel` anchors to it), word and character counts, and the save status — all about the

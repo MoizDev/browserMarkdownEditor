@@ -375,7 +375,7 @@ export default function TrashPanel({ onClose, onCrawl, onRestore, onDelete, onEm
                 className={`tree-item trash-row${isSelected ? ' is-selected' : ''}`}
                 role="button"
                 tabIndex={0}
-                title={item.sourcePath}
+                data-tooltip={item.sourcePath}
                 onClick={activate}
                 onKeyDown={rowKeyHandler(activate)}
             >
@@ -388,7 +388,8 @@ export default function TrashPanel({ onClose, onCrawl, onRestore, onDelete, onEm
                 <span className="tree-item-actions">
                     <button
                         className="tree-action-btn"
-                        title="Put back"
+                        data-tooltip="Put back"
+                        aria-label="Put back"
                         disabled={busy}
                         onClick={(e) => { e.stopPropagation(); putBack(item); }}
                     >
@@ -396,7 +397,8 @@ export default function TrashPanel({ onClose, onCrawl, onRestore, onDelete, onEm
                     </button>
                     <button
                         className="tree-action-btn trash-btn"
-                        title="Delete permanently"
+                        data-tooltip="Delete permanently"
+                        aria-label="Delete permanently"
                         disabled={busy}
                         onClick={(e) => { e.stopPropagation(); erase(item); }}
                     >
@@ -457,7 +459,7 @@ export default function TrashPanel({ onClose, onCrawl, onRestore, onDelete, onEm
             >
                 <div className="trash-header">
                     <h3 className="trash-title">Trash</h3>
-                    <button className="settings-close-btn" onClick={onClose} title="Close" aria-label="Close">×</button>
+                    <button className="settings-close-btn" onClick={onClose} data-tooltip="Close" aria-label="Close">×</button>
                 </div>
                 <div className="trash-body">
                     <div className="trash-list-pane">

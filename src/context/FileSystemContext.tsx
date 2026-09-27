@@ -717,7 +717,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             return 'error';
         }
         // One picker at a time: browsing for a vault is a DOUBLE-click on the
-        // explorer's vault button, and with nothing in the recent list the first
+        // sidebar's vault switcher, and with nothing in the recent list the first
         // of those two clicks already opens the picker. A second call while one
         // is up rejects with NotAllowedError ("File picker already active").
         if (pickerOpenRef.current || switchInFlightRef.current) return 'busy';

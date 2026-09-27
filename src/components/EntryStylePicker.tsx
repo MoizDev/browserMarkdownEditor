@@ -97,7 +97,7 @@ export default function EntryStylePicker({ icon: initialIcon, color: initialColo
                             onClick={() => apply(icon, color === key ? undefined : key, nodesFor(icon ?? ''))}
                             aria-pressed={color === key}
                             aria-label={value.label}
-                            title={value.label}
+                            data-tooltip={value.label}
                         />
                     ))}
                     <button
@@ -106,7 +106,7 @@ export default function EntryStylePicker({ icon: initialIcon, color: initialColo
                         onClick={() => apply(icon, undefined, nodesFor(icon ?? ''))}
                         aria-pressed={!color}
                         aria-label="Default colour"
-                        title="Default colour"
+                        data-tooltip="Default colour"
                     />
                 </div>
             </div>
@@ -144,7 +144,8 @@ export default function EntryStylePicker({ icon: initialIcon, color: initialColo
                                 onClick={() => (icon === entry.name
                                     ? apply(undefined, color)
                                     : apply(entry.name, color, entry.nodes))}
-                                title={entry.name}
+                                data-tooltip={entry.name}
+                                aria-label={entry.name}
                             >
                                 <LucideGlyph nodes={entry.nodes} size={18} />
                             </button>

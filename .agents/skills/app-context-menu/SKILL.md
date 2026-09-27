@@ -6,10 +6,16 @@ description: The app's own right-click menu — one module-level store, one comp
 # Right-click: one store, one menu (`utils/contextMenu.ts` + `components/ContextMenu.tsx`)
 
 The app draws its own context menu instead of the browser's, in note text, in a table cell, on a
-file-tree row and on the empty tree area. Two more raisers are **buttons**, not right-clicks: a tab
-group's `⌄` (`TabBar`) lists that pane's tabs, and a pane header's `⋯` (`DocumentPane`) holds Insert
-table… / Export to PDF / Close this pane. Both position from `getBoundingClientRect()`'s bottom-left
-and pass the button as `opener`, so the keyboard comes back to it. There is exactly **one** component
+file-tree row and on the empty tree area. Other raisers are **buttons**, not right-clicks: a tab
+group's `⌄` (`TabBar`) lists that pane's tabs, a pane header's `⋯` (`DocumentPane`) holds Insert
+table… / Export to PDF / Close this pane, the explorer's pencil (New Drawing / New Notebook) and sort
+button (`FileExplorer`), and a table's row/column grips (`tableWidget`). They position from
+`getBoundingClientRect()`'s bottom-left and pass the button as `opener`, so the keyboard comes back to
+it, **and as `anchor`**, so a second press on it closes the menu: `openContextMenu` toggles on a
+matching anchor (returning `false` — set a pressed look only on `true`), and ContextMenu's
+outside-pointerdown dismissal exempts the anchor, because closing there let the same press's click
+re-open it (the flicker bug). Right-click raisers pass no anchor — a second right-click re-raises.
+Command rows with `checked` set on every row draw a ✓ column (`menuitemradio`; the sort menu). There is exactly **one** component
 and **one** module-level store; `App` reads it with `useSyncExternalStore` and renders
 `<ContextMenu>` once.
 
@@ -65,7 +71,7 @@ and **one** module-level store; `App` reads it with `useSyncExternalStore` and r
   squeezed to its `min-width` and the flip would then place a *wider* menu back off the screen. One
   menu replacing another **re-renders rather than remounts**, so the measured position and any open
   flyout are reset during render when the request changes.
-- **A row that cannot act stays on screen and says why** (its `reason` becomes the `title`) —
+- **A row that cannot act stays on screen and says why** (its `reason` becomes the row's tooltip) —
   `VaultMenu.messageFor`'s rule: a dead row that says nothing is indistinguishable from a broken one.
   Arrow-key navigation skips disabled rows, and the first *enabled* row takes focus on open (a
   disabled `<button>` cannot). Focus goes back to the opener on close, but **only if nothing else has
@@ -96,7 +102,7 @@ and **one** module-level store; `App` reads it with `useSyncExternalStore` and r
   the entry: entries are built once, when the menu is raised, so reading them per render would freeze
   the highlight at the row's look before the first pick.
 - **The inline "new thing" name box is a THIRD module store** (`utils/createRequest.ts`), for the
-  same reason: the explorer header's New-note button has to open that box in a folder several levels
+  same reason: the explorer's New-note button has to open that box in a folder several levels
   down a memoized recursion. It replaced the two implementations it addresses — a folder row's local
   `creating` state and `FileExplorer`'s own — so there is now one box, at `path: ''` for the vault
   root or a folder's path. The target row expands ITSELF; its ancestors are expanded by the raiser,

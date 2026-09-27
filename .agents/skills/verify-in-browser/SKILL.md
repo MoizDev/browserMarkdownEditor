@@ -41,8 +41,10 @@ Each step below exists because skipping it produces a *working change that looks
    known vault whose grant has lapsed) or `Restore '<previous vault>'` (a stored handle whose grant
    has lapsed). Never both — the linked branch returns before the stored one is reached. Match
    `{ name: 'Open Vault', exact: true }`; a loose `{ name: 'Open' }` is ambiguous on the linked
-   screen. `aria-label="Open another vault"` exists only once a vault is already open, and
-   `.vault-menu-row` only inside that menu.
+   screen. The vault switcher (`.vault-switcher`, `aria-label="Switch vault — <name>"`, bottom of the
+   sidebar) exists only once a vault is open, and `.vault-menu-row` only inside its menu. Stub the
+   picker with a NAMED OPFS subfolder, not the OPFS root: the root's `name` is `''`, so the switcher
+   shows no name and Trash (keyed on it) is disabled. Tooltips are `.tooltip` (≈400ms hover delay).
 
 7. **A reload with a vault open CRASHES Playwright's BUNDLED Chromium** (both `chromium` and
    `chrome-headless-shell`, 153.0.8010.12 under Playwright 1.63): reading the OPFS handle back out of
@@ -61,7 +63,9 @@ Each step below exists because skipping it produces a *working change that looks
      died on the first such reload in both controls. Prefer this. It is not permanent, though: the
      surviving build is whichever Chrome is installed, and the crashing one is the *newer* of the
      two, so a Chrome update can inherit the bug — if this arm starts dying too, fall back to the
-     shim rather than reading it as an app regression.
+     shim rather than reading it as an app regression. **That has now happened on this machine:**
+     installed Chrome updated to 153.0.8010.53 and dies on the same reload, so until a Chrome build
+     survives again the shim below is the arm that works.
    - **`page.route`-intercept the `idb-keyval` module** with a localStorage shim storing
      `{__handle: name}`, re-resolved from the OPFS root — **pack/unpack recursively**, because
      `recent-vaults` is an array of objects each holding a handle, not a bare handle. Works on the

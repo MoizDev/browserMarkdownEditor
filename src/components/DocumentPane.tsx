@@ -1023,7 +1023,7 @@ function DocumentPane({
     /** What a control announces. Split, every column draws the same three
      *  buttons, so a bare verb does not say which document it acts on; alone,
      *  nothing could be confused with it and the plain verb reads better. The
-     *  visible `title` stays the bare verb either way — the document's name is
+     *  visible tooltip stays the bare verb either way — the document's name is
      *  already centred between them. */
     const announce = (verb: string) => (isSplit ? `${verb} in ${displayName}` : verb);
 
@@ -1085,6 +1085,8 @@ function DocumentPane({
             // "<noun> actions", the form every raiser in the app uses.
             label: 'Pane actions',
             opener: button,
+            // A second press on ⋯ closes the menu (utils/contextMenu.ts).
+            anchor: button,
             entries,
         });
     };
@@ -1115,7 +1117,7 @@ function DocumentPane({
                     <button
                         className="editor-slot-action"
                         disabled={!canBack}
-                        title="Back"
+                        data-tooltip="Back"
                         aria-label={announce('Back')}
                         onClick={() => onBack(paneId)}
                     >
@@ -1124,7 +1126,7 @@ function DocumentPane({
                     <button
                         className="editor-slot-action"
                         disabled={!canForward}
-                        title="Forward"
+                        data-tooltip="Forward"
                         aria-label={announce('Forward')}
                         onClick={() => onForward(paneId)}
                     >
@@ -1133,14 +1135,14 @@ function DocumentPane({
                 </div>
                 {/* The same display name the tab strip shows — a pane header
                     that still said "Notes.md" over a tab saying "Notes" would
-                    be the inconsistency. `title` is already the full path. */}
-                <span className="editor-slot-title" title={path}>{displayName}</span>
+                    be the inconsistency. The tooltip is already the full path. */}
+                <span className="editor-slot-title" data-tooltip={path}>{displayName}</span>
                 {tab.dirty && <span className="editor-slot-dot" aria-hidden="true" />}
                 <div className="editor-slot-actions">
                     {canToggleMode && (
                         <button
                             className="editor-slot-action"
-                            title={modeTitle}
+                            data-tooltip={modeTitle}
                             aria-label={announce(canAnnotate ? 'Toggle view/annotate mode' : 'Toggle read/edit mode')}
                             onClick={() => onToggleMode(path)}
                         >
@@ -1149,7 +1151,7 @@ function DocumentPane({
                     )}
                     <button
                         className="editor-slot-action"
-                        title="More options"
+                        data-tooltip="More options"
                         aria-label={announce('More options')}
                         aria-haspopup="menu"
                         onClick={openPaneMenu}
@@ -1171,14 +1173,14 @@ function DocumentPane({
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => e.preventDefault()}
                     >
-                        <span className="unread-pane-title" title={file.name}>
+                        <span className="unread-pane-title" data-tooltip={file.name}>
                             Couldn’t read <strong>{file.name}</strong>
                         </span>
                         <span className="unread-pane-hint">
                             Another program may be using it, it may not be downloaded yet, or it
                             can’t be opened right now. Nothing was changed, and its tab is kept.
                         </span>
-                        <span className="unread-pane-detail" title={tab.readError}>{tab.readError}</span>
+                        <span className="unread-pane-detail" data-tooltip={tab.readError}>{tab.readError}</span>
                         <button className="pdf-pane-action" disabled={retrying} onClick={retryRead}>
                             {retrying ? 'Trying…' : 'Try again'}
                         </button>

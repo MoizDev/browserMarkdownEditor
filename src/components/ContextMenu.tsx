@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import TableSizeGrid from './TableSizeGrid';
+import { Check } from './icons';
 import type { ContextMenuRequest } from '../utils/contextMenu';
 
 // Lazy so the icon set stays out of the main bundle — see utils/lucideIcons.ts.
@@ -95,6 +96,9 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
        hanging off a row that is no longer there. Adjusting state during render
        when a prop changes is React's own pattern for this, and it costs a
        re-render before the commit rather than a frame on screen. */
+    const requestRef = useRef(request);
+    useLayoutEffect(() => { requestRef.current = request; }, [request]);
+
     const [shown, setShown] = useState(request);
     if (shown !== request) {
         setShown(request);
@@ -105,6 +109,13 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
     /* Which rows can hold focus, in the order the arrow keys walk them.
        Separators are not rows, so an index into `entries` would put gaps in
        itemsRef and make every arrow-key walk step over holes. */
+    /* A pick-one menu (the explorer's sort order) marks every command with
+       `checked`; then EVERY command row carries the check gutter, blank where
+       unchecked, so the labels stay in one column the way a native menu's do. */
+    const hasChecks = useMemo(
+        () => request.entries.some(e => e.kind === 'command' && e.checked !== undefined),
+        [request.entries]);
+
     const rowIndex = useMemo(() => {
         const map = new Map<string, number>();
         let i = 0;
@@ -158,7 +169,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
     }, [flyout]);
 
     /* Dismissal. Mirrors VaultMenu's, with the two listeners a menu
-       anchored to a VIEWPORT POINT needs and the vault button's menu did not:
+       anchored to a VIEWPORT POINT needs and the vault switcher's menu did not:
        a scroll moves the thing the menu was aimed at out from under it, and
        this menu is routinely raised inside a scrollable editor.
 
@@ -176,6 +187,15 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
 
         const onPointerDown = (e: PointerEvent) => {
             if (inside(e.target)) return;
+            // A press on the button that raised this menu is left to that
+            // button's own click, which closes the menu through the store
+            // (openContextMenu toggles on a matching `anchor`). Closing here
+            // as well was the flicker: this pointerdown took the menu down and
+            // the same press's click raised it straight back up. Read through
+            // a ref so this effect still registers once per mount — the
+            // listeners' order against other capture listeners is load-bearing.
+            const anchor = requestRef.current.anchor;
+            if (anchor && e.target instanceof Node && anchor.contains(e.target)) return;
             restoreFocusRef.current = false;
             onClose();
         };
@@ -346,7 +366,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                 aria-haspopup="true"
                                 aria-expanded={open}
                                 disabled={entry.disabled}
-                                title={entry.reason}
+                                data-tooltip={entry.reason}
                                 onClick={e => {
                                     const anchor = e.currentTarget.getBoundingClientRect();
                                     setFlyout(current => (current?.id === entry.id ? null : { id: entry.id, anchor }));
@@ -368,13 +388,19 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                             key={entry.id}
                             ref={el => { itemsRef.current[index] = el; }}
                             className={`context-menu-item${entry.danger ? ' is-danger' : ''}`}
-                            role="menuitem"
+                            role={hasChecks ? 'menuitemradio' : 'menuitem'}
+                            aria-checked={hasChecks ? !!entry.checked : undefined}
                             disabled={entry.disabled}
                             // Required when disabled: a dead row that says
                             // nothing is indistinguishable from a broken one.
-                            title={entry.reason}
+                            data-tooltip={entry.reason}
                             onClick={() => activate(entry.run)}
                         >
+                            {hasChecks && (
+                                <span className="context-menu-item-check" aria-hidden="true">
+                                    {entry.checked && <Check size={14} />}
+                                </span>
+                            )}
                             {entry.label}
                         </button>
                     );

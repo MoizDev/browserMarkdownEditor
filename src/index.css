@@ -273,35 +273,43 @@ body {
   min-width: 180px;
 }
 
-/* Thin strip left behind by a collapsed sidebar; its button re-expands. */
+/* Thin strip left behind by a collapsed sidebar; its button re-expands.
+   Its top is the tab strip's band and rule, exactly as the resize handle
+   paints it, because the sidebar header it stands in for is on that band now:
+   in the sidebar colour the band and its rule stopped dead 40px short of the
+   window edge. The button is the header toggle's twin — 30×25 at the same
+   height and in the strip's colours, so the icon does not hop as the sidebar
+   collapses: the header centres its 25px toggle in 40px less its 1px rule,
+   (39 − 25) / 2 = 7. Change the two together. */
 .sidebar-rail {
   flex-shrink: 0;
   width: 40px;
-  background: var(--background-secondary);
+  background: linear-gradient(var(--tab-container-background) calc(var(--header-height) - 1px),
+    var(--tab-rule-color) 0 var(--header-height), var(--background-secondary) 0);
   border-right: 1px solid var(--background-modifier-border);
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 8px;
+  padding-top: 7px;
 }
 
 .sidebar-rail-btn {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 25px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: transparent;
   border: none;
-  border-radius: var(--radius-s);
-  color: var(--text-muted);
+  border-radius: var(--radius-m);
+  color: var(--tab-text-color);
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 
 .sidebar-rail-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
+  background: var(--tab-background-hover);
+  color: var(--tab-text-color-active);
 }
 
 .workspace-resize-handle {
@@ -340,45 +348,97 @@ body {
   overflow: hidden;
 }
 
-.nav-header {
+.nav-tabs-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* No bottom padding: centres the actions 22.5px down, on the tab strip's
-     title line beside it, not on this header's own middle (19.5 — measured
-     3px higher than the strip's titles and actions). */
-  padding: 6px 8px 0 14px;
+  /* Centred in the band above the rule, as Obsidian's are (image 4: a 25px
+     chip 7px clear of the rule on both sides, glyph centre 19.5px down). The
+     user chose this over sitting them on the tab strip's title line (22.5px),
+     accepting that they ride ~2px above the strip's titles beside them. */
+  padding: 0 8px;
   height: var(--header-height);
   flex-shrink: 0;
+  /* The strip's colour, as Obsidian's sidebar tab row is (image 4): the resize
+     handle already paints it across its top 40px, so the band runs on
+     unbroken from the sidebar's edge into the tab strip. */
+  background: var(--tab-container-background);
   /* --tab-rule-color, not the border token it currently resolves to: this is
      the left half of the ONE line that runs on across the resize handle into
      the tab strip, and the three owners have to move together. */
   border-bottom: 1px solid var(--tab-rule-color);
 }
 
-.nav-header-title {
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.nav-tabs {
+  display: flex;
+  gap: 3px;
 }
 
-.nav-header-actions {
+/* Obsidian's sidebar tabs (Files, Search) and the collapse toggle beside them:
+   34×25 chips measured off image 4 (2x: y 14–63, x 30–97), on the STRIP's tokens — they sit on the
+   strip's colour, where dark's --background-modifier-hover (#2a2d2e) would be
+   a pill darker than the #333 under it. */
+.nav-tab {
   display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 25px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-m);
+  background: transparent;
+  color: var(--tab-text-color);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.nav-tab:hover,
+.nav-tab.is-active {
+  color: var(--tab-text-color-active);
+  background: var(--tab-background-hover);
+}
+
+.nav-tab:focus-visible,
+.nav-action-btn:focus-visible,
+.sidebar-footer-btn:focus-visible,
+.vault-switcher:focus-visible {
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+/* The collapse toggle is a plain icon button, not a tab: Obsidian's is its
+   icon's own width. */
+.nav-collapse-btn {
+  width: 30px;
+}
+
+/* The tree's own actions, centred under the tabs as in Obsidian (images 2, 4):
+   30×26 buttons on 32px centres, the first row of icons 22px under the rule,
+   and 6px under them to the tree — image 2's 37px from icon centre to the
+   first row's text (2px here measured 33). */
+.nav-buttons-container {
+  display: flex;
+  justify-content: center;
   gap: 2px;
+  padding: 8px 8px 6px;
   flex-shrink: 0;
 }
 
+/* Shrinkable to 24px: six 30px buttons need 190px, and at the 180px minimum
+   sidebar only 164px is left — measured, a centred row that cannot shrink hung
+   5px off BOTH edges, clipping New note and Expand all. 24px still holds the
+   18px glyph with 3px either side. */
 .nav-action-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 30px;
+  min-width: 24px;
+  height: 26px;
+  flex-shrink: 1;
+  padding: 0;
   border: none;
   border-radius: var(--radius-s);
   background: transparent;
@@ -392,19 +452,12 @@ body {
   background: var(--background-modifier-hover);
 }
 
-/* The two canvas creators (new notebook, new drawing), in the user's accent so
-   they read as a pair among six otherwise identical grey glyphs. Uses the
-   accent VARIABLE, not a colour: Settings lets that be changed, and it is
-   applied as an inline override on <html>. */
-.nav-action-btn.is-accented {
-  color: var(--interactive-accent);
-}
-
-/* The hover rule above would grey them on hover, which reads as the icon going
-   dead exactly when it is being aimed at. */
-.nav-action-btn.is-accented:hover {
-  color: var(--interactive-accent-hover);
-  background: var(--background-modifier-hover);
+/* Pressed: a dropdown of its own is open, or the Auto-reveal toggle is on. Grey
+   like image 5's chip, not the accent — Obsidian marks an ON toggle by the
+   chip alone, and an accent glyph would read as a different kind of button. */
+.nav-action-btn.is-active {
+  color: var(--text-normal);
+  background: var(--background-modifier-active);
 }
 
 .nav-files-container {
@@ -413,12 +466,115 @@ body {
   padding: 4px 0;
 }
 
-/* ── Recent vaults menu (drops out of the explorer's vault button) ──
+/* ── Sidebar footer: tool icons, then Obsidian's vault row (images 1–3) ──
+   One fixed layout at every sidebar width (180–600px): nothing wraps and
+   nothing moves between rows as the sidebar is dragged. The vault name is the
+   only elastic thing, and it ends in "…". */
+.sidebar-footer {
+  flex-shrink: 0;
+  padding: 5px 8px 8px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+/* 2px in, so the first icon's centre sits on the switcher's chevrons below it
+   (both 24px from the sidebar's edge). */
+.sidebar-footer-tools {
+  display: flex;
+  gap: 2px;
+  padding-left: 1px;
+  margin-bottom: 4px;
+}
+
+.sidebar-footer-vault {
+  display: flex;
+  align-items: center;
+}
+
+/* 30×26 — Obsidian's icon buttons: an 18px glyph in 4px/6px of padding, which
+   puts the ? and the gear on 30px centres as in image 1 (so no gap between
+   them; the 4px before the ? is the switcher's margin). */
+.sidebar-footer-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.sidebar-footer-btn:hover:not(:disabled) {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.sidebar-footer-btn.is-active {
+  color: var(--text-normal);
+  background: var(--background-modifier-active);
+}
+
+.sidebar-footer-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The vault switcher: a full-width pill holding the chevrons and the name,
+   greyed on hover and while its menu is open (image 2). */
+.vault-switcher {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  margin-right: 4px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-m);
+  background: transparent;
+  color: var(--text-normal);
+  font-family: var(--font-ui);
+  /* 13px: image 1's "downloadtemp" is 91px wide and shares its cap height
+     with image 8's 13px menu text; 14px measured 97. */
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.vault-switcher:hover,
+.vault-switcher.active {
+  background: var(--background-modifier-active);
+}
+
+.vault-switcher-chevrons {
+  flex-shrink: 0;
+  /* Faint, not muted: image 1 draws them well under the name's weight. */
+  color: var(--text-faint);
+}
+
+.vault-switcher-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Recent vaults menu (rises from the sidebar's vault switcher) ──
    Fixed, not absolute: the sidebar clips its overflow and can be resized
-   narrower than this menu. Position AND width both come from the button's rect
-   (see FileExplorer): the menu hangs from the button's right edge, so how wide
-   it may grow is a function of how far that edge is from the left of the
-   screen — a content-sized menu would otherwise run off it. */
+   narrower than this menu. Position AND width both come from the switcher's
+   rect (see SidebarFooter): the menu stands on the switcher's top edge from its
+   left edge, so how wide it may grow is a function of how far that edge is
+   from the right of the screen — a content-sized menu would otherwise run off
+   it. */
 .vault-menu {
   position: fixed;
   z-index: 900;
@@ -791,11 +947,6 @@ body {
 /* =============================================================
    Vault Search (sidebar) — temporarily replaces the file tree
    ============================================================= */
-.nav-action-btn.active {
-  color: var(--text-accent);
-  background: var(--background-modifier-hover);
-}
-
 .search-panel {
   display: flex;
   flex-direction: column;
@@ -983,7 +1134,7 @@ body {
      child's background paints over it, so the active tab — which reaches the
      header's bottom edge — breaks the rule exactly under itself and flows
      into the page, as Obsidian's does. --tab-rule-color, not the outline: the
-     same line is drawn by .nav-header and .workspace-resize-handle, so it is
+     same line is drawn by .nav-tabs-header and .workspace-resize-handle, so it is
      one colour across the seam and visible in BOTH themes. */
   box-shadow: inset 0 -1px 0 var(--tab-rule-color);
   flex-shrink: 0;
@@ -1836,77 +1987,6 @@ body.is-resizing-panes * {
      which pads by the editor's height minus one line — every two-line note
      scrolls and the last line can reach the top edge over an empty pane. */
   padding-bottom: max(24px, round(down, 50cqh, 1px));
-}
-
-/* ── Theme Toggle ── */
-.theme-toggle-container {
-  padding: 8px 14px;
-  border-top: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-  flex-shrink: 0;
-}
-
-.theme-toggle-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-s);
-  color: var(--text-muted);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: 13px;
-  transition: all 0.15s;
-}
-
-.theme-toggle-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
-}
-
-/* ── Settings Gear Button ── */
-.sidebar-bottom-actions {
-  padding: 4px 14px 8px;
-  background: var(--background-secondary);
-  flex-shrink: 0;
-}
-
-/* ── The Settings row, which is the only one that carries a second button ──
-   Search, Neural Brain and Help Guide above it are still bare .theme-toggle-btn
-   children of the container and are deliberately left that way: one row gained
-   the bin, not the group.
-
-   flex:1 is not tidiness. .theme-toggle-btn is `width: 100%`, which as a flex
-   item becomes its flex BASIS, so the labelled button asks for the whole row on
-   its own and the bin is fitted only by shrinking it — and a flex item's
-   `min-width: auto` is its content width, a floor the label cannot go under.
-   At the 180px sidebar minimum (the resize clamp) that leaves the row 152px
-   against a 28px bin, so the two would fight instead of sharing. Basis 0 plus
-   min-width 0 makes the label take what is left over instead. */
-.sidebar-bottom-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sidebar-bottom-row .theme-toggle-btn {
-  flex: 1;
-  min-width: 0;
-}
-
-/* 28px, not .tree-action-btn's 22. It has to read as the same object as the
-   labelled button beside it, and that button is 6px + a 16px glyph + 6px = 28px
-   tall (its `padding: 6px 8px` against a 16px icon, which out-measures the 13px
-   label's line box). A 28px square puts exactly that same 6px around exactly
-   that same 16px glyph; 22px would sit 3px short of the row and hover would
-   light a chip visibly smaller than its neighbour's. */
-.sidebar-trash-btn {
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
 }
 
 /* ── Settings Panel Overlay ── */
@@ -4424,7 +4504,7 @@ body.is-resizing-panes * {
    override contributes no `background` declaration at all, so the state rules
    below win by ordinary source order and the trap cannot come back.
 
-   The `+` is drawn here because the button carries none: it has a title and an
+   The `+` is drawn here because the button carries none: it has a tooltip and an
    aria-label and no text, so a glyph in the markup would have to be hidden from
    assistive tech anyway. */
 .cm-table-control {
@@ -5209,12 +5289,6 @@ li[aria-selected] .cm-completionMatchedText {
   font-size: 0.9em;
 }
 
-/* Active state for the sidebar Neural Brain toggle button */
-.sidebar-bottom-actions .settings-btn.active {
-  background: var(--background-modifier-hover);
-  color: var(--text-accent);
-}
-
 /* =============================================================
    Linked Mentions popover (anchored to the status bar's backlinks button)
    ============================================================= */
@@ -5409,7 +5483,7 @@ li[aria-selected] .cm-completionMatchedText {
   outline-offset: -1px;
 }
 
-/* A row that cannot act STAYS ON SCREEN and says why in its title (Cut with
+/* A row that cannot act STAYS ON SCREEN and says why in its tooltip (Cut with
    nothing selected, Insert table… while reading). Faint ink and no hover, so
    it reads as unavailable rather than broken — a menu that quietly grows and
    shrinks makes the reader hunt for a row that is simply not applicable now. */
@@ -5435,6 +5509,18 @@ li[aria-selected] .cm-completionMatchedText {
   height: 1px;
   margin: 4px 6px;
   background: var(--background-modifier-border);
+}
+
+/* The ✓ column of a pick-one menu (the explorer's sort order, image 8). Every
+   row of such a menu carries it, blank where unchecked, so the labels line up
+   in one column; ordinary menus render none at all. */
+.context-menu-item-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--text-normal);
 }
 
 /* "This row opens something." Pushed to the right edge by the row's own flex,
@@ -5521,4 +5607,115 @@ li[aria-selected] .cm-completionMatchedText {
   color: var(--text-faint);
   font-size: 11px;
   text-align: center;
+}
+
+/* ============================================================
+   Tooltip — the one bubble utils/tooltip.ts draws for every
+   [data-tooltip]. Measured off Obsidian's own (images 2/5/6/7, at
+   2x): a 23.5px-tall body for one 12px line, 8px from glyph to
+   side, 4px corners, rgb(25,25,25) behind white text, a 5px-tall
+   10px-wide pointer, the body 8px off the target, and a faint
+   shadow. Near-black in BOTH themes, as Obsidian draws it; the dark
+   theme adds a hairline ring so it does not sink into dark chrome.
+   ============================================================ */
+:root {
+  --tooltip-background: #191919;
+  --tooltip-text: #fff;
+  --tooltip-border: rgba(255, 255, 255, 0.12);
+}
+
+/* The ring stays, in the bubble's own colour, so both themes share one
+   geometry — the 1px is part of the measured 4px/8px padding either way. */
+:root[data-theme="light"] {
+  --tooltip-border: var(--tooltip-background);
+}
+
+.tooltip {
+  position: fixed;
+  /* Above the menus (900), the settings overlay (1000) and the dialog (1100). */
+  z-index: 2000;
+  pointer-events: none;
+  box-sizing: border-box;
+  max-width: min(300px, calc(100vw - 16px));
+  padding: 3px 7px;
+  border: 1px solid var(--tooltip-border);
+  border-radius: 4px;
+  background: var(--tooltip-background);
+  color: var(--tooltip-text);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  font-family: var(--font-ui);
+  /* 12px, not 13: rendered here against the reference, bubbles for "Expand
+     all" / "Change sort order" / "Auto-reveal current file" came out 74/119/147px
+     wide at 12px against 74/120/149 — 13px overshot every one by 4–7px.
+     15.6px lines: the one-line reference bubble is 23.5px tall and the
+     three-line one (vault switcher) 55px; 13px × 1.35 made both visibly taller. */
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.3;
+  text-align: center;
+  /* `\n` in the attribute is a line break (the vault switcher's two lines). */
+  white-space: pre-line;
+  /* A long path with no spaces wraps instead of overrunning the 300px. */
+  overflow-wrap: anywhere;
+  animation: tooltip-in 80ms ease-out;
+}
+
+@keyframes tooltip-in {
+  from { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip { animation: none; }
+}
+
+/* The pointer: a 7px square turned 45° (a 10px base, a ~5px reach), centred on
+   the bubble's outer edge — offsets are from the padding box, hence the ring's
+   1px in -4.5px. Only its two outward edges carry the ring. It paints at
+   z-index -1 inside the bubble's stacking context: above the bubble's own
+   border, which it hides under itself so the ring runs around the tip without a
+   seam, and below the text, which it never covers. */
+.tooltip::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  box-sizing: border-box;
+  width: 7px;
+  height: 7px;
+  border: 0 solid var(--tooltip-border);
+  background: var(--tooltip-background);
+  transform: rotate(45deg);
+}
+
+.tooltip.mod-bottom::before,
+.tooltip.mod-top::before {
+  left: calc(var(--tooltip-arrow-x, 50%) - 4.5px);
+}
+
+.tooltip.mod-left::before,
+.tooltip.mod-right::before {
+  top: calc(var(--tooltip-arrow-y, 50%) - 4.5px);
+}
+
+.tooltip.mod-bottom::before {
+  top: -4.5px;
+  border-top-width: 1px;
+  border-left-width: 1px;
+}
+
+.tooltip.mod-top::before {
+  bottom: -4.5px;
+  border-right-width: 1px;
+  border-bottom-width: 1px;
+}
+
+.tooltip.mod-left::before {
+  right: -4.5px;
+  border-top-width: 1px;
+  border-right-width: 1px;
+}
+
+.tooltip.mod-right::before {
+  left: -4.5px;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
 }

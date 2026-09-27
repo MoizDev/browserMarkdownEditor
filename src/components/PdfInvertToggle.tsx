@@ -16,7 +16,7 @@ export default function PdfInvertToggle() {
             type="button"
             className={`pdf-viewer-invert-toggle${inverted ? ' is-on' : ''}`}
             onClick={() => setPdfInverted(!inverted)}
-            title={inverted ? 'Show pages in their own colours' : 'Invert pages for reading in the dark'}
+            data-tooltip={inverted ? 'Show pages in their own colours' : 'Invert pages for reading in the dark'}
             aria-label="Invert page colours"
             aria-pressed={inverted}
         >

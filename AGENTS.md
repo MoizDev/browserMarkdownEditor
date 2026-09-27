@@ -87,15 +87,16 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   it reaches must be **stable for the app's life**, i.e. App-level. A per-pane ref only hides staleness.
 - **Images and tables are deliberate abstractions over the app's own markdown** — the raw text is
   unreachable by design and the file on disk stays ordinary markdown (`markdown-tables` has the how).
-- **The app draws its own context menu, `confirm()` and `prompt()`; NO native dialog is left — keep it so.**
+- **The app draws its own context menu, `confirm()`, `prompt()` and tooltips (`data-tooltip`, drawn by
+  `utils/tooltip.ts`; lint bans `title`) — NO native one is left; keep it so.**
 - **TWO places turn note text into DOM `innerHTML`, safe for different reasons** — `tableWidget`'s
   `renderCellContent` (attribute-free allowlist; one sink AND one write site, KaTeX splices in built DOM,
   never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'` DOMPurify pass).
   This origin holds the vault's handle with permission granted, so a hole is read/write over the whole
   vault. Do not open a third.
 - **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
-  (`utils/graph.ts`, `utils/vaultSearch.ts`) and holds one file's text at a time — both run after *every*
-  save, and an uncached walk is a full vault read per autosave. The bin's crawl is the one exception.
+  (`utils/graph.ts`, `utils/vaultSearch.ts`), one file's text at a time — both run after *every* save;
+  uncached, each is a full vault read per autosave. Exempt: the bin's crawl, `fileTimes`' metadata stat.
 - **The decoration pass runs per keystroke, per arrow key, on every open pane** — memoize on immutable
   identity or measure it; read mode stays a pure function of the document + its folds (`live-preview`).
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,
@@ -119,12 +120,11 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   `(lastModified, size)`. Each pane likewise holds **one stable resolver identity and one stable
   `imageActions`** for life; a fresh closure per call makes every image widget compare unequal on every
   ⌘E and tab switch.
-- **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, and so are the context-menu,
-  entry-style, create-request and **active-file** stores. `FileExplorer`/`TreeNode` are `React.memo`'d so
-  the tree stops re-rendering while the user types: never thread a per-save/menu/search/icon/create/
-  active value through, and never hand them an inline arrow — one un-`useCallback`'d prop in `App.tsx`
-  defeats the memo outright. Rows subscribe to a BOOLEAN ("am I active?"), so a tab switch re-renders
-  the two that changed, not all 2,300.
+- **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, as are the context-menu,
+  entry-style, create-request, file-times and **active-file** stores. `FileExplorer`/`TreeNode` are
+  `React.memo`'d so the tree stops re-rendering while the user types: never thread such a value through,
+  nor an inline arrow — one un-`useCallback`'d prop in `App.tsx` defeats the memo outright. Rows
+  subscribe to a BOOLEAN ("am I active?"), so a tab switch re-renders the two that changed, not 2,300.
 - **Anything repeated thousands of times carries `content-visibility: auto`** (`.tree-item`,
   `.pdf-viewer-page`) plus a known box — or all of them lay out and paint on every ancestor's frame.
 - **The three path-keyed records** (`fileScrollAnchors`, `pdfViewPositions`, `collapsedHeadings`) are

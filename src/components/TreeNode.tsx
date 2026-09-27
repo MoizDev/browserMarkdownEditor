@@ -357,6 +357,7 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
         return (
             <div
                 className={`tree-item tree-file${isActive ? ' is-active' : ''}${marked ? ' is-context-target' : ''}`}
+                data-path={node.path}
                 style={{ paddingLeft }}
                 onClick={() => { if (!isRenaming) onFileClick(node); }}
                 onContextMenu={handleContextMenu}
@@ -405,21 +406,23 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                         // are given and changed, so the real one has to stay a
                         // hover away. The path rather than the name — it also
                         // rescues a row the sidebar's width has ellipsised.
-                        title={node.path}
+                        data-tooltip={node.path}
                     >{noteDisplayName(node.name)}</span>
                 )}
                 {!isRenaming && (
                     <span className="tree-item-actions">
                         <button
                             className="tree-action-btn"
-                            title="Rename"
+                            data-tooltip="Rename"
+                            aria-label="Rename"
                             onClick={(e) => { e.stopPropagation(); setIsRenaming(true); }}
                         >
                             <Edit2 size={13} />
                         </button>
                         <button
                             className="tree-action-btn trash-btn"
-                            title="Move to Trash"
+                            data-tooltip="Move to Trash"
+                            aria-label="Move to Trash"
                             onClick={(e) => { e.stopPropagation(); onTrash(node); }}
                         >
                             <Trash2 size={13} />
@@ -480,28 +483,32 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                     <span className="tree-item-actions">
                         <button
                             className="tree-action-btn"
-                            title="Rename folder"
+                            data-tooltip="Rename folder"
+                            aria-label="Rename folder"
                             onClick={(e) => { e.stopPropagation(); setIsRenaming(true); }}
                         >
                             <Edit2 size={13} />
                         </button>
                         <button
                             className="tree-action-btn"
-                            title="New file"
+                            data-tooltip="New file"
+                            aria-label="New file"
                             onClick={(e) => { e.stopPropagation(); startCreate('file'); }}
                         >
                             <FilePlus size={14} />
                         </button>
                         <button
                             className="tree-action-btn"
-                            title="New folder"
+                            data-tooltip="New folder"
+                            aria-label="New folder"
                             onClick={(e) => { e.stopPropagation(); startCreate('folder'); }}
                         >
                             <FolderPlus size={14} />
                         </button>
                         <button
                             className="tree-action-btn trash-btn"
-                            title="Move to Trash"
+                            data-tooltip="Move to Trash"
+                            aria-label="Move to Trash"
                             onClick={(e) => { e.stopPropagation(); onTrash(node); }}
                         >
                             <Trash2 size={13} />

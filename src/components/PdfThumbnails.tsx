@@ -260,7 +260,7 @@ export function ThumbnailsToggle({ open, onToggle }: { open: boolean; onToggle: 
             type="button"
             className={`pdf-viewer-thumbs-toggle${open ? ' is-on' : ''}`}
             onClick={onToggle}
-            title={open ? 'Hide page thumbnails' : 'Show page thumbnails'}
+            data-tooltip={open ? 'Hide page thumbnails' : 'Show page thumbnails'}
             aria-label="Page thumbnails"
             aria-pressed={open}
         >

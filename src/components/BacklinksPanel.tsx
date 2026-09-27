@@ -30,7 +30,7 @@ export default function BacklinksPanel({ nodes = [], onOpenNode, onClose, style 
                 <button
                     className="backlinks-popover-close"
                     onClick={onClose}
-                    title="Close"
+                    data-tooltip="Close"
                     aria-label="Close linked mentions"
                 >
                     ×
@@ -45,7 +45,7 @@ export default function BacklinksPanel({ nodes = [], onOpenNode, onClose, style 
                             key={n.id}
                             className="backlink-item"
                             onClick={() => { if (!n.unresolved) { onOpenNode(n); onClose(); } }}
-                            title={n.label}
+                            data-tooltip={n.label}
                         >
                             <FileText size={13} />
                             <span className="backlink-name">{baseName(n.name)}</span>

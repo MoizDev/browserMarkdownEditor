@@ -245,7 +245,7 @@ function toolButton(cls: string, title: string, onPress: () => void): HTMLButton
     const button = document.createElement('button');
     button.className = `cm-image-tool ${cls}`;
     button.type = 'button';
-    button.title = title;
+    button.dataset.tooltip = title;
     button.setAttribute('aria-label', title);
     // Never a tab stop: these live inside the document's contenteditable, where
     // tabbing to them would interrupt the note's own Tab handling.

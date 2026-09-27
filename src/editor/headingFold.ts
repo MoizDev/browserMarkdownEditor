@@ -247,7 +247,7 @@ function dressToggle(button: HTMLElement, folded: boolean): void {
     const label = folded ? 'Expand section' : 'Collapse section';
     button.setAttribute('aria-expanded', String(!folded));
     button.setAttribute('aria-label', label);
-    button.title = label;
+    button.dataset.tooltip = label;
 }
 
 /**
@@ -323,7 +323,7 @@ class HeadingFoldPlaceholder extends WidgetType {
         const pill = document.createElement('span');
         pill.className = 'cm-heading-fold-placeholder';
         pill.innerHTML = ELLIPSIS;
-        pill.title = 'Expand section';
+        pill.dataset.tooltip = 'Expand section';
         pill.setAttribute('role', 'button');
         pill.setAttribute('aria-label', 'Expand section');
         pill.onmousedown = (e) => e.preventDefault();

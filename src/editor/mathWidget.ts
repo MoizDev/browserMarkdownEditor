@@ -55,6 +55,14 @@ export function renderMath(el: HTMLElement, latex: string, displayMode: boolean)
             throwOnError: false,
             output: 'html',
         });
+        // With throwOnError off, a parse error renders as red source text whose
+        // message KaTeX puts in a native `title` — the one native tooltip left
+        // once the app drew its own (utils/tooltip.ts). Moved across verbatim;
+        // the controller writes it with textContent, never as markup.
+        for (const err of el.querySelectorAll<HTMLElement>('.katex-error[title]')) {
+            err.dataset.tooltip = err.getAttribute('title') ?? '';
+            err.removeAttribute('title');
+        }
     } catch {
         el.textContent = latex;
         el.classList.add('cm-math-error');

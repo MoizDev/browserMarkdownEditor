@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo, useSyncExternalStore } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { HELP_DOC_CONTENT } from './utils/helpDoc';
@@ -10,6 +10,7 @@ import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
 import { collectFiles } from './utils/tree';
 import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
+import { recordFileWritten, resetFileTimes } from './utils/fileTimes';
 import { isTextFile } from './utils/vaultSearch';
 import {
   isCanvasFile, isPdfFile, isNotebookFile, ensureNotebookExt, notebookPdfName, stripPdfExt,
@@ -55,6 +56,7 @@ import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/
 import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
+import SidebarFooter from './components/SidebarFooter';
 import { prefetchPanes } from './components/prefetchPanes';
 import ConfirmDialog from './components/ConfirmDialog';
 import ContextMenu from './components/ContextMenu';
@@ -62,7 +64,7 @@ import EditorPane from './components/EditorPane';
 import SettingsPanel from './components/SettingsPanel';
 import TrashPanel from './components/TrashPanel';
 import GraphView from './components/GraphView';
-import { Settings, HelpCircle, Network, FileTextOutline, PanelLeft, Search, Trash2 } from './components/icons';
+import { SidebarLeft } from './components/icons';
 import type {
   ActiveFile,
   FileTreeNode,
@@ -414,7 +416,7 @@ export default function App() {
   // way in: localStorage is user-editable and a NaN would reach CodeMirror.
   const [tabSize, setTabSize] = useState<number>(() => clampTabSize(parseInt(localStorage.getItem('tabSize') || '4', 10)));
 
-  // How many recently opened vaults the vault button's menu lists. Clamped for
+  // How many recently opened vaults the vault switcher's menu lists. Clamped for
   // the same reason as tabSize — this one ends up in Array.slice.
   const [recentVaultLimit, setRecentVaultLimit] = useState<number>(
     () => clampRecentVaultLimit(parseInt(localStorage.getItem('recentVaultLimit') || String(DEFAULT_RECENT_VAULT_LIMIT), 10))
@@ -709,6 +711,14 @@ export default function App() {
   // handles goes stale when the vault does — a put-back clicked afterwards
   // would copy a file into a folder of the vault the reader just left.
   useEffect(() => { setShowTrash(false); }, [rootHandle]);
+  // Another vault reuses paths freely; its files' times are its own. A LAYOUT
+  // effect, because every passive one runs after it: pickDirectory and
+  // openRecentVault set the handle and the tree in one commit, and React runs
+  // a child's passive effects before its parent's — so as a plain useEffect
+  // this bumped the generation AFTER FileExplorer had started that vault's stat
+  // walk, which then threw its own result away, and a Modified-time sort sat
+  // in name order until something next rebuilt the tree.
+  useLayoutEffect(() => { resetFileTimes(); }, [rootHandle]);
 
   /** Say something went wrong, in the app's own dialog. One button, because
    *  there is nothing to decide. STABLE — it is handed to EditorPane and on to
@@ -724,12 +734,21 @@ export default function App() {
   // handler that eventually calls it was baked into a widget several panes ago.
   useEffect(() => { setTableNotify(notify); }, [notify]);
 
-  /** Whether the sidebar shows vault search in place of the file tree. Lifted
-   *  out of FileExplorer when the toggle moved to the bottom actions, which App
-   *  renders — FileExplorer is memoized, so `closeSearch` has to be stable or
-   *  the tree starts re-rendering while the user types. */
+  /** Whether the sidebar shows vault search in place of the file tree — the
+   *  explorer's Search tab, and its Files tab back. FileExplorer is memoized,
+   *  so both callbacks have to be stable or the tree starts re-rendering while
+   *  the user types. */
   const [searchOpen, setSearchOpen] = useState(false);
   const closeSearch = useCallback(() => setSearchOpen(false), []);
+  const openSearch = useCallback(() => setSearchOpen(true), []);
+
+  /* The sidebar footer's buttons. Stable for the app's life for the reason
+     `collapseSidebar` below spells out: SidebarFooter is memoized too, and one
+     inline arrow here re-rendered it on every App render. */
+  const toggleGraph = useCallback(() => setMainView(v => (v === 'graph' ? 'editor' : 'graph')), []);
+  const openTrash = useCallback(() => setShowTrash(true), []);
+  const openSettings = useCallback(() => setShowSettings(true), []);
+  const toggleTheme = useCallback(() => setTheme(t => (t === 'dark' ? 'light' : 'dark')), []);
 
   /** Stable for the app's life. As an inline arrow this handed `FileExplorer` a
    *  fresh prop on EVERY App render, which defeated its `React.memo` outright —
@@ -746,6 +765,35 @@ export default function App() {
       const next = new Set<string>(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
+      writeJSON('expandedPaths', [...next]);
+      return next;
+    });
+  }, []);
+
+  /** Open every one of `paths` — the explorer's Expand all, auto-reveal, and
+   *  the New-something buttons opening the way down to their target. One state
+   *  update for the lot, where a handleToggleExpand per folder was N renders
+   *  of the whole tree. Returns `prev` when nothing is new, so a reveal of a
+   *  file whose folders are already open re-renders nothing. */
+  const expandPaths = useCallback((paths: string[]) => {
+    setExpandedPaths(prev => {
+      if (paths.every(p => prev.has(p))) return prev;
+      const next = new Set<string>(prev);
+      for (const p of paths) next.add(p);
+      writeJSON('expandedPaths', [...next]);
+      return next;
+    });
+  }, []);
+
+  /** Close every one of `paths` — the explorer's Collapse all, handed THIS
+   *  vault's folders. Not a blanket clear: `expandedPaths` is one record for
+   *  every vault, and emptying it closed the folders of vaults the user was
+   *  not even looking at. */
+  const collapsePaths = useCallback((paths: string[]) => {
+    setExpandedPaths(prev => {
+      if (!paths.some(p => prev.has(p))) return prev;
+      const next = new Set<string>(prev);
+      for (const p of paths) next.delete(p);
       writeJSON('expandedPaths', [...next]);
       return next;
     });
@@ -1367,6 +1415,7 @@ export default function App() {
         const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
         const bytes = await buildAnnotatedPdfAsync(data.original, snapshot, data.overlays);
         await writeFileBytesRef.current(tab.file.handle as FileSystemFileHandle, bytes);
+        recordFileWritten(path);
       } else {
         // Read AND handed over in one synchronous step, which is what makes the
         // asset diff exact. Two things would otherwise race it: removeTab drops
@@ -1379,6 +1428,10 @@ export default function App() {
         if (embedsAfter) assetRefsRef.current.set(path, embedsAfter);
 
         await writeFileRef.current(tab.file.handle as FileSystemFileHandle, snapshot);
+        // Stamped here, the one save funnel, rather than re-statted: the
+        // explorer's Modified-time sort then moves the note to the top without
+        // a getFile() per save (utils/fileTimes.ts).
+        recordFileWritten(path);
         // Queued rather than awaited: reconciling reads the note's neighbours,
         // and a save's "Saved" status (and the graph rebuild below) should not
         // wait on that — but two of them must not interleave either.
@@ -3043,10 +3096,11 @@ export default function App() {
           <button
             className="sidebar-rail-btn"
             onClick={() => setSidebarCollapsed(false)}
-            title="Expand sidebar (⌘\)"
+            data-tooltip="Expand sidebar (⌘\)"
+            data-tooltip-position="right"
             aria-label="Expand sidebar"
           >
-            <PanelLeft size={16} />
+            <SidebarLeft size={18} strokeWidth={1.75} />
           </button>
         </div>
       )}
@@ -3060,95 +3114,40 @@ export default function App() {
           onFileClick={handleFileClick}
           onCreateFile={handleCreateFile}
           onCreateFolder={handleCreateFolder}
-          onChangeVault={pickDirectory}
-          recentVaults={recentVaults}
-          currentVaultId={currentVaultId}
-          recentVaultLimit={recentVaultLimit}
-          onOpenRecentVault={openRecentVault}
-          onForgetRecentVault={forgetRecentVault}
           onCollapse={collapseSidebar}
           searchOpen={searchOpen}
+          onOpenSearch={openSearch}
           onCloseSearch={closeSearch}
           onTrash={handleTrash}
           onOpenAsVault={handleOpenAsVault}
           onStyleEntry={handleStyleEntry}
           expandedPaths={expandedPaths}
           onToggleExpand={handleToggleExpand}
+          onExpandPaths={expandPaths}
+          onCollapsePaths={collapsePaths}
           onMoveFile={handleMoveFile}
           onRenameFile={handleRenameFile}
           onImportFiles={importFiles}
           onOpenSearchResult={handleOpenSearchResult}
           getOpenTabContent={getOpenTabContent}
         />
-        <div className="theme-toggle-container">
-          <button
-            className="theme-toggle-btn"
-            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-          >
-            {theme === 'dark' ? (
-              <>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" /><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" /><line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" /><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" /></svg>
-                Switch to Light Mode
-              </>
-            ) : (
-              <>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
-                Switch to Dark Mode
-              </>
-            )}
-          </button>
-        </div>
-        <div className="sidebar-bottom-actions">
-          <button
-            className={`theme-toggle-btn settings-btn${searchOpen ? ' active' : ''}`}
-            onClick={() => setSearchOpen(open => !open)}
-            aria-pressed={searchOpen}
-            title="Search this vault — file names and contents"
-          >
-            <Search size={16} />
-            Search
-          </button>
-          <button
-            className={`theme-toggle-btn settings-btn${mainView === 'graph' ? ' active' : ''}`}
-            onClick={() => setMainView(v => (v === 'graph' ? 'editor' : 'graph'))}
-            title="Neural Brain — graph view"
-          >
-            {mainView === 'graph' ? <FileTextOutline size={16} /> : <Network size={16} />}
-            {mainView === 'graph' ? 'Editor' : 'Neural Brain'}
-          </button>
-          <button
-            className="theme-toggle-btn settings-btn"
-            onClick={handleHelpClick}
-            title="Help & Guide"
-          >
-            <HelpCircle size={16} />
-            Help Guide
-          </button>
-          {/* The bin rides the Settings row rather than taking a row of its
-              own: it is the one control down here with nothing to say in words,
-              and a fifth full-width row of chrome for it would push the tree up
-              for a button most sessions never press. The three rows above are
-              deliberately untouched. */}
-          <div className="sidebar-bottom-row">
-            <button
-              className="theme-toggle-btn settings-btn"
-              onClick={() => setShowSettings(true)}
-              title="Settings"
-            >
-              <Settings size={16} />
-              Settings
-            </button>
-            <button
-              className="tree-action-btn sidebar-trash-btn"
-              onClick={() => setShowTrash(true)}
-              title="Trash — everything deleted in this vault"
-              aria-label="Trash"
-              disabled={!rootHandle}
-            >
-              <Trash2 size={16} />
-            </button>
-          </div>
-        </div>
+        <SidebarFooter
+          vaultName={rootHandle?.name ?? ''}
+          fileTree={fileTree}
+          recentVaults={recentVaults}
+          currentVaultId={currentVaultId}
+          recentVaultLimit={recentVaultLimit}
+          onOpenRecentVault={openRecentVault}
+          onForgetRecentVault={forgetRecentVault}
+          onChangeVault={pickDirectory}
+          graphOpen={mainView === 'graph'}
+          onToggleGraph={toggleGraph}
+          onOpenTrash={openTrash}
+          onOpenHelp={handleHelpClick}
+          onOpenSettings={openSettings}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+        />
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">

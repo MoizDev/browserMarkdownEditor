@@ -3,7 +3,10 @@ import React from 'react';
 /**
  * Shared props for every inline SVG icon. `size` sets both width & height
  * (default 16); all other SVG attributes (className, style, aria-*, event
- * handlers, …) are spread onto the underlying <svg>.
+ * handlers, …) are spread onto the underlying <svg>. The spread comes after
+ * each icon's own `strokeWidth`, so passing one overrides it — the sidebar
+ * draws its icons at 1.75, the stroke Obsidian's 18px icons carry (measured
+ * off its screenshots: 2.62 device px at 2x on a 1.5 px/unit scale).
  */
 interface IconProps extends React.SVGProps<SVGSVGElement> {
     size?: number;
@@ -13,16 +16,6 @@ export function ChevronRight({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <polyline points="9 18 15 12 9 6" />
-        </svg>
-    );
-}
-
-export function HelpCircle({ size = 16, ...props }: IconProps) {
-    return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
-            <circle cx="12" cy="12" r="10" />
-            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-            <line x1="12" y1="17" x2="12.01" y2="17" />
         </svg>
     );
 }
@@ -105,18 +98,9 @@ export function FilePlus({ size = 16, ...props }: IconProps) {
 export function FolderPlus({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            <line x1="12" y1="11" x2="12" y2="17" />
-            <line x1="9" y1="14" x2="15" y2="14" />
-        </svg>
-    );
-}
-
-export function FolderOpen({ size = 16, ...props }: IconProps) {
-    return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
-            <path d="M5 19a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4l2 3h9a2 2 0 0 1 2 2v1" />
-            <path d="M21 15l-3.5 5.5L7 17l1-7h16l-3 5z" />
+            <path d="M12 10v6" />
+            <path d="M9 13h6" />
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
         </svg>
     );
 }
@@ -124,8 +108,8 @@ export function FolderOpen({ size = 16, ...props }: IconProps) {
 export function Search({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="m21 21-4.34-4.34" />
             <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
         </svg>
     );
 }
@@ -155,8 +139,8 @@ export function RotateCcw({ size = 16, ...props }: IconProps) {
 export function Settings({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
+            <circle cx="12" cy="12" r="3" />
         </svg>
     );
 }
@@ -196,15 +180,6 @@ export function Eye({ size = 16, ...props }: IconProps) {
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
             <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
             <circle cx="12" cy="12" r="3" />
-        </svg>
-    );
-}
-
-export function PanelLeft({ size = 16, ...props }: IconProps) {
-    return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-            <line x1="9" y1="3" x2="9" y2="21" />
         </svg>
     );
 }
@@ -273,6 +248,132 @@ export function MoreHorizontal({ size = 16, ...props }: IconProps) {
             <circle cx="12" cy="12" r="1" />
             <circle cx="19" cy="12" r="1" />
             <circle cx="5" cy="12" r="1" />
+        </svg>
+    );
+}
+
+/* ── Obsidian's sidebar set ──────────────────────────────────────────────────
+ * Paths below are copied verbatim from lucide-static 1.43
+ * (node_modules/lucide-static/icons/<kebab-name>.svg) — the icon set and
+ * version Obsidian ships — so the sidebar reads as the same glyph family.
+ * Re-copy rather than hand-edit if Lucide is bumped. */
+
+/** Lucide's square-pen: New note. */
+export function SquarePen({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
+        </svg>
+    );
+}
+
+/** Lucide's arrow-up-narrow-wide: Change sort order. */
+export function ArrowUpNarrowWide({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="m3 8 4-4 4 4" />
+            <path d="M7 4v16" />
+            <path d="M11 12h4" />
+            <path d="M11 16h7" />
+            <path d="M11 20h10" />
+        </svg>
+    );
+}
+
+/** Lucide's gallery-vertical: Auto-reveal current file. */
+export function GalleryVertical({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="M3 2h18" />
+            <rect width="18" height="12" x="3" y="6" rx="2" />
+            <path d="M3 22h18" />
+        </svg>
+    );
+}
+
+/** Lucide's chevrons-up-down: Expand all, and the vault switcher. */
+export function ChevronsUpDown({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="m7 15 5 5 5-5" />
+            <path d="m7 9 5-5 5 5" />
+        </svg>
+    );
+}
+
+/** Lucide's chevrons-down-up: Collapse all. */
+export function ChevronsDownUp({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="m7 20 5-5 5 5" />
+            <path d="m7 4 5 5 5-5" />
+        </svg>
+    );
+}
+
+/** Lucide's folder-closed: the Files tab. */
+export function FolderClosed({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            <path d="M2 10h20" />
+        </svg>
+    );
+}
+
+/** Lucide's circle-help: Help. */
+export function CircleHelp({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <circle cx="12" cy="12" r="10" />
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+            <path d="M12 17h.01" />
+        </svg>
+    );
+}
+
+/** Lucide's moon: the theme toggle while light — "switch to dark". */
+export function Moon({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" />
+        </svg>
+    );
+}
+
+/** Lucide's sun: the theme toggle while dark — "switch to light". */
+export function Sun({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2" />
+            <path d="M12 20v2" />
+            <path d="m4.93 4.93 1.41 1.41" />
+            <path d="m17.66 17.66 1.41 1.41" />
+            <path d="M2 12h2" />
+            <path d="M20 12h2" />
+            <path d="m6.34 17.66-1.41 1.41" />
+            <path d="m19.07 4.93-1.41 1.41" />
+        </svg>
+    );
+}
+
+/**
+ * Obsidian's own sidebar toggle — not in Lucide: a rounded frame with a FILLED
+ * bar down its left side. Geometry is a least-squares fit to a 2x screenshot
+ * of Obsidian's file-explorer header: supersampled coverage of rounded-rect
+ * stroke + fill against the glyph's 47x44 px neighbourhood, residual 1.17 as
+ * rounded here (a first guess by eye, x2 y4 w20 h16 with a 3.5-wide bar,
+ * scored 471). Scale came from the Lucide search glyph beside
+ * it — circle stroke centres 24 px apart for r=8, so 1.5 px/unit, an 18px icon
+ * — and the fit held the stroke at exactly 1.75, hence that default here.
+ */
+export function SidebarLeft({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <rect x="1" y="2" width="22" height="20" rx="4" />
+            <rect x="4" y="5.25" width="5.75" height="13.5" rx="1.5" fill="currentColor" stroke="none" />
         </svg>
     );
 }

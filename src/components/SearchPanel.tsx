@@ -139,7 +139,7 @@ export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpen
                 {query && (
                     <button
                         className="search-clear-btn"
-                        title="Clear search"
+                        data-tooltip="Clear search"
                         aria-label="Clear search"
                         onClick={() => { setQuery(''); inputRef.current?.focus(); }}
                     >
@@ -176,7 +176,7 @@ export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpen
                                 className="tree-item search-file-header"
                                 role="button"
                                 tabIndex={0}
-                                title={file.path}
+                                data-tooltip={file.path}
                                 onClick={() => openResult(result)}
                                 onKeyDown={rowKeyHandler(() => openResult(result))}
                             >

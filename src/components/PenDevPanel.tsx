@@ -196,7 +196,7 @@ export default function PenDevPanel() {
         return createPortal(
             <>
                 <style>{PANEL_CSS}</style>
-                <button className="pen-dev-tab" onClick={() => setOpen(true)} title="Pen tuning (dev only)">pen</button>
+                <button className="pen-dev-tab" onClick={() => setOpen(true)} data-tooltip="Pen tuning (dev only)">pen</button>
             </>,
             document.body,
         );
@@ -231,7 +231,7 @@ export default function PenDevPanel() {
                         key={label}
                         className={Math.abs(value - streamline) < 0.005 ? 'is-on' : undefined}
                         onClick={() => setPenStreamline(value)}
-                        title={`streamline ${value} — trails ~${lagAt(value).toFixed(1)}px`}
+                        data-tooltip={`streamline ${value} — trails ~${lagAt(value).toFixed(1)}px`}
                     >
                         {label}<em>{value.toFixed(2)}</em>
                     </button>

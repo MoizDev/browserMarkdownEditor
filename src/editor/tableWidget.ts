@@ -4,7 +4,7 @@ import { createFitProbes, observeTableFit, rekeyTableFit, releaseTableFit, retun
 import { parseGrid } from './tableModel';
 import type { ColumnAlign, Grid } from './tableModel';
 import { activeCellSession, attachCellEditing, columnMenuEntries, endCellEdit, insertColumn, insertRow, rowMenuEntries } from './tableEdit';
-import { openContextMenu } from '../utils/contextMenu';
+import { closeContextMenu, openContextMenu } from '../utils/contextMenu';
 import { findMathRegions } from './latexSource';
 import type { MathRegion } from './latexSource';
 import { renderMath } from './mathWidget';
@@ -400,7 +400,7 @@ function controlButton(cls: string, title: string, onPress: () => void): HTMLBut
     // the modifier is an unclickable one; each needs the other.
     button.className = `cm-table-control ${cls}`;
     button.type = 'button';
-    button.title = title;
+    button.dataset.tooltip = title;
     button.setAttribute('aria-label', title);
     // Never a tab stop: these live inside the document's contenteditable, where
     // tabbing to them would interrupt the note's own Tab handling — and inside
@@ -667,7 +667,7 @@ function gripButton(view: EditorView, container: HTMLElement, axis: 'row' | 'col
     const button = document.createElement('button');
     button.className = `cm-table-grip cm-table-grip-${axis}`;
     button.type = 'button';
-    button.title = label;
+    button.dataset.tooltip = label;
     button.setAttribute('aria-label', label);
     // Never a tab stop, for the chips' reason: inside a table Tab walks cells.
     button.tabIndex = -1;
@@ -675,28 +675,42 @@ function gripButton(view: EditorView, container: HTMLElement, axis: 'row' | 'col
         event.preventDefault();
         event.stopPropagation();
     });
+    // Which row or column this grip's menu is open for, or null. ONE grip
+    // element serves every row (the reveal pass moves it), so "the same button
+    // again" means "close" only when it is still the same row: a press on it
+    // beside another row is asking for THAT row's menu.
+    let openFor: number | null = null;
     button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
         const index = Number(button.dataset.index);
         if (!Number.isInteger(index) || !tableModelOf(container)?.canEdit) return;
+        if (openFor !== null && openFor !== index) closeContextMenu();
         const box = button.getBoundingClientRect();
-        // Shade the row or column the menu is about, for as long as it is open.
         const marked = Array.from(container.querySelectorAll<HTMLElement>(`.cm-table-cell[data-${axis}="${index}"]`));
-        for (const cell of marked) cell.classList.add('cm-table-target');
-        container.classList.add('cm-table-grip-open');
-        openContextMenu({
+        const opened = openContextMenu({
             x: box.left,
             y: box.bottom + 2,
             entries: axis === 'row' ? rowMenuEntries(view, container, index) : columnMenuEntries(view, container, index),
             label,
             opener: null,
+            // A second press on the grip closes its menu (utils/contextMenu.ts).
+            anchor: button,
             onClose: () => {
+                openFor = null;
                 // Cells a command rebuilt are already gone; clearing them is harmless.
                 for (const cell of marked) cell.classList.remove('cm-table-target');
                 container.classList.remove('cm-table-grip-open');
             },
         });
+        // Only once it is open, and AFTER the call: a press that toggled the
+        // menu shut must not shade anything, and opening one menu runs the
+        // replaced menu's onClose, which would strip a class added before it.
+        if (!opened) return;
+        openFor = index;
+        // Shade the row or column the menu is about, for as long as it is open.
+        for (const cell of marked) cell.classList.add('cm-table-target');
+        container.classList.add('cm-table-grip-open');
     });
     return button;
 }

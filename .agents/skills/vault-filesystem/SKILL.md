@@ -249,8 +249,8 @@ should spell `'.Assets'`.**
 
 ## Recent vaults (`utils/recentVaults.ts` + `VaultMenu.tsx`)
 
-The explorer's vault button lists folders already opened as vaults rather than going straight to the
-OS picker. A vault is just a folder, so `~/Notes` and `~/Notes/mathnotes` are two of them; the list
+The sidebar's vault switcher (bottom, `SidebarFooter`; its menu opens UPWARD, anchored by `bottom`)
+lists folders already opened as vaults rather than going straight to the OS picker. A vault is just a folder, so `~/Notes` and `~/Notes/mathnotes` are two of them; the list
 lives in IndexedDB under `recent-vaults` (capped at `MAX_STORED_VAULTS`), and how many the menu
 prints is Settings → Vault → "Recent vaults shown" (`recentVaultLimit`, clamped on read like
 `tabSize` — it reaches `Array.slice`). The store deliberately keeps more than the default 10 so

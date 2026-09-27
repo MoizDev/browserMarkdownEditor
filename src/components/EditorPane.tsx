@@ -847,7 +847,8 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         aria-valuemax={Math.round(widths[i] + widths[i + 1])}
                         aria-valuetext={`${paneTabs[i].file.name} ${Math.round(widths[i])}%, ${right.file.name} ${Math.round(widths[i + 1])}%`}
                         tabIndex={0}
-                        title="Drag to resize · double-click for equal widths"
+                        data-tooltip="Drag to resize · double-click for equal widths"
+                        data-tooltip-position="right"
                         onPointerDown={(e) => startResize(e, i)}
                         onPointerMove={moveResize}
                         // Only the gesture's OWN pointer ends it. A capture
@@ -981,7 +982,8 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                             ref={backlinksBtnRef}
                             className={`status-bar-item status-bar-btn backlinks-toggle${showBacklinks ? ' active' : ''}`}
                             onClick={toggleBacklinks}
-                            title="Linked mentions"
+                            data-tooltip="Linked mentions"
+                            data-tooltip-position="top"
                             aria-label="Linked mentions"
                             aria-expanded={showBacklinks}
                         >

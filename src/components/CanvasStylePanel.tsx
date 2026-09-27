@@ -123,7 +123,7 @@ export default function CanvasStylePanel() {
                 className="canvas-style-panel is-collapsed"
                 data-testid="canvas-style-panel"
                 onClick={() => setCollapsed(false)}
-                title="Show colours and pen width"
+                data-tooltip="Show colours and pen width"
                 aria-label="Show colours and pen width"
                 aria-expanded={false}
             >
@@ -143,7 +143,7 @@ export default function CanvasStylePanel() {
                     type="button"
                     className="canvas-style-toggle"
                     onClick={() => setCollapsed(true)}
-                    title="Hide colours and pen width"
+                    data-tooltip="Hide colours and pen width"
                     aria-label="Hide colours and pen width"
                     aria-expanded={true}
                 >
@@ -162,7 +162,7 @@ export default function CanvasStylePanel() {
                         onClick={() => pickColor(name)}
                         aria-label={name.replace('-', ' ')}
                         aria-pressed={color === name}
-                        title={name.replace('-', ' ')}
+                        data-tooltip={name.replace('-', ' ')}
                     />
                 ))}
             </div>
@@ -193,7 +193,7 @@ export default function CanvasStylePanel() {
                     // cannot be hit by hand.
                     onDoubleClick={() => changeWidth(penScaleToSlider(DEFAULT_PEN_SCALE))}
                     aria-label="Pen width"
-                    title="Pen width — double-click to reset"
+                    data-tooltip="Pen width — double-click to reset"
                 />
             </div>
         </div>

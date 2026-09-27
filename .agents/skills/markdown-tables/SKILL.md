@@ -236,7 +236,10 @@ table into a note the reader is only reading.
   `data-index` by the reveal pass and read at the press, never captured. The hovered cell comes from
   the `pointermove` target, so no row or cell box is scanned.
 - **Their menus are `rowMenuEntries` / `columnMenuEntries`**, raised through the ordinary context-menu
-  store and shading the target with `cm-table-target` until `onClose`.
+  store with the grip as its `anchor`, so a second press on the grip closes the menu. One grip serves
+  every row, so `openFor` remembers which index the menu is for: a press beside ANOTHER row closes the
+  old menu and opens that row's. The target is shaded with `cm-table-target` only once
+  `openContextMenu` returns `true` (a toggled-shut press must not shade), and unshaded in `onClose`.
 - **`moveRow` swaps two LINES byte for byte; `moveColumn` swaps two raw segments per line, delimiter
   included**, so alignment travels with its column. A row too short to hold both segments is the one
   non-swap case: its last cell moves out into a new one and leaves a blank, and a blank DELIMITER cell

@@ -14,14 +14,14 @@ Here is everything you need to know about using the application.
 A "Vault" is simply any folder on your computer that you choose to open with this application. When you click "Open local folder (Vault)", the browser asks for your permission to read and write to that specific directory.
 
 ### Switching Vaults
-The folder icon at the top of the file tree remembers every folder you have opened as a vault:
-- **Click** it to drop down your recent vaults and pick one — no file dialog involved.
+The vault switcher at the bottom of the sidebar — the open vault's name, with a small up-and-down arrow beside it — remembers every folder you have opened as a vault. Hover it to see the vault's name and how many files and folders it holds.
+- **Click** it to open your recent vaults above it and pick one — no file dialog involved. Click it again (or anywhere else) to close the list.
 - **Double-click** it to browse for a folder instead (or choose "Open folder…" at the bottom of that list). Anything you open this way joins the list.
 - Vaults are listed newest first, by folder name alone; two vaults whose folders share a name show the parent folder too. Settings → Vault controls how many are listed.
 - The browser tab is titled with the name of the vault you have open, so tabs on different vaults are easy to tell apart. Turn **Vault name as tab title** off in Settings → Vault and the tab keeps the title "Markdown Editor" instead.
 - The **minus** at the left of a row takes that vault off the list, so the folders you actually switch between are not buried under ones you opened once. It forgets the row only — the folder and everything in it stays exactly where it is, and opening it again puts the row back. There is no minus beside the vault you have open, because the app re-lists that one every time it loads. (From the keyboard: **Delete** on the highlighted row does the same thing.)
 
-Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`. You do not need the file dialog for that — right-click the folder in the file tree and choose **Open as Vault**, and it opens as the vault straight away and joins the recent list, so the folder icon is the way back out.
+Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`. You do not need the file dialog for that — right-click the folder in the file tree and choose **Open as Vault**, and it opens as the vault straight away and joins the recent list, so the vault switcher is the way back out.
 
 Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's panes, the tabs in each of them, the pane widths and the note you were reading straight back, without your reopening a thing — and so does reloading the page. A note you deleted from disk in the meantime is simply not among them; one that is there but can't be read at that moment still comes back, as a tab that says so (see **Tabs** below). That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row.
 
@@ -32,8 +32,22 @@ Modern browsers require you to explicitly grant permission every time you open a
 
 ## 2. File Organization & Navigation
 
+### The Sidebar
+Along the top of the sidebar sit two tabs — **Files** (the folder) shows the file tree and **Search** (the magnifying glass) searches the vault — with the button that hides the sidebar at the right-hand end (\`Cmd + \\\` / \`Ctrl + \\\` does the same; the button left behind on the thin strip brings it back).
+
+Under the tabs, while the file tree is showing, is a row of buttons for the tree itself: **New note**, **New folder**, the **pencil** (its menu holds **New Drawing** and **New Notebook**), **Change sort order**, **Auto-reveal current file** and **Expand all** / **Collapse all** (see *Sorting and Finding Your Place* below).
+
+At the bottom, a row of three icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
+
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
+
+### Sorting and Finding Your Place
+**Change sort order** (the arrow beside the lines) lists the tree by **File name (A to Z)**, **File name (Z to A)**, **Modified time (new to old)** or **Modified time (old to new)**; the tick shows the one in use, and the app remembers it. Folders always stay at the top, in name order. Under a modified-time order a note moves to the top the moment it saves. Moving or renaming a file counts as modifying it, since the app copies it to its new place. There is no "created time" order: browsers do not tell a web page when a file was created.
+
+**Auto-reveal current file** is an on/off switch, off to begin with. While it is on (its button stays shaded), whatever you switch to in the editor is found in the tree for you: the folders it is in open, and its row scrolls into view. It acts when you change notes (and when you turn it on, or come back to Files from Search) — never on its own after that, so a folder you close yourself stays closed.
+
+**Expand all** opens every folder in the vault, at every depth. Once any folder is open the same button becomes **Collapse all**, which closes them all again.
 
 Notes are listed under the name you gave them, without the \`.md\` — \`Recipes.md\` on disk reads **Recipes** here, and in its tab. Everything else keeps its extension, so a PDF, a whiteboard and a notebook still say what they are. Hover a row to see its full path, extension and all. Renaming a note shows you the full \`.md\` name again, with just the part before the dot selected, so the extension is there to keep or change deliberately.
 
@@ -85,12 +99,10 @@ A folder you have also opened as a vault shows the same icon in the vault menu,
 so the list you switch vaults with looks like the tree you set up.
 
 ### Searching the Vault
-**Search** sits at the bottom of the sidebar, under the theme switch, alongside
-Neural Brain, Help Guide and Settings — with the Trash bin's icon at the
-right-hand end of the Settings row. It looks through every note in the vault — file names
-*and* the text inside them — and replaces the file tree while it is open. Picking
-a result opens that note and scrolls to the line it matched, then puts the tree
-back. Notebooks, drawings and PDFs match on their names only, since what is in
+The **Search** tab at the top of the sidebar looks through every note in the
+vault — file names *and* the text inside them — and replaces the file tree while
+it is open; the **Files** tab beside it brings the tree back. Picking a result
+opens that note and scrolls to the line it matched, then puts the tree back. Notebooks, drawings and PDFs match on their names only, since what is in
 them is not text.
 
 ### Drag and Drop
@@ -102,7 +114,7 @@ You can drag and drop files and folders within the file tree to reorganize your 
 Renaming or moving a folder takes the notes you have open from it along: they stay open, keep their place, and go on saving to the right file under its new name.
 
 ### Creating New Items
-Use the icons at the top of the sidebar: **New note**, **New notebook**, **New drawing**, **New folder**, and the folder icon that opens another vault. When creating a new file:
+Use the buttons under the tabs at the top of the sidebar: **New note**, **New folder**, and the **pencil**, whose menu offers **New Drawing** and **New Notebook** (click the pencil again, or anywhere else, to close that menu). When creating a new file:
 - It will be created in the root vault folder if nothing is selected.
 - If you have a file or folder selected, it will be created in the same directory as that selection.
 - New files will automatically open and place you in **Edit Mode**.
@@ -116,7 +128,7 @@ To create something *inside* a particular folder, right-click that folder (or us
 ### Tabs
 Every file you open gets a tab along the top of the editor. A note's tab shows its name without the \`.md\`, like the file tree does; hover a tab to see the file's full path. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app — and, because every vault keeps its own set, whenever you come back to that vault. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
 
-At the right of the strip sit two small buttons. **+** starts a new note — it asks for the name in the app's own box, the same one \`Cmd + N\` / \`Ctrl + N\` opens — and puts it in front of you. **⌄** lists everything open in the strip, so you can jump to a tab whose name has scrolled out of sight.
+At the right of the strip sit two small buttons. **+** starts a new note — it asks for the name in the app's own box, the same one \`Cmd + N\` / \`Ctrl + N\` opens — and puts it in front of you. **⌄** lists everything open in the strip, so you can jump to a tab whose name has scrolled out of sight. Like every drop-down menu in the app, pressing its button again closes it, and so does clicking anywhere else.
 
 Tabs keep a comfortable width while there is room for it, however short their names are. Open enough of them and they share the strip out between themselves, getting narrower so more stay in sight; past that the strip scrolls, and its left edge fades rather than cutting a name off mid-letter. That sharing happens per pane, so splitting the editor squeezes a pane's tabs straight away, and they widen again as the pane does.
 
@@ -234,8 +246,8 @@ save themselves as you work, a second after you stop.
 ### Notebooks
 A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
 here to a paper pad, and what to reach for when you are doing an assignment by
-hand rather than taking notes in Markdown. Make one with the notebook icon at
-the top of the sidebar.
+hand rather than taking notes in Markdown. Make one with **New Notebook**, in
+the pencil button's menu at the top of the sidebar.
 
 A notebook has the same dark pages a PDF does: the button beside the thumbnails
 one turns the paper black and the writing light, for working at night. It only
@@ -378,7 +390,7 @@ To prevent accidental permanent data loss, deleting a file does not erase it fro
 Deleting a **folder** works exactly the same way, and takes everything inside it along: deleting \`Maths/Calculus\` puts the whole folder in \`Maths/.Garbage/Calculus\`, with its notes, its sub-folders and the pictures from its own \`.Assets\` still in place — so a recovered folder works again just as it did. (A picture stored higher up the vault, from an older version of the app, stays where it is and is not copied along.) Any notes from that folder you had open are saved first and then closed, so nothing you had just typed is left behind. A large folder takes a moment to copy; the top bar says so while it does.
 
 ### The Trash Bin
-The **bin icon** at the bottom of the sidebar, at the right-hand end of the Settings row, shows everything you have deleted in the vault you have open — without your going near Finder or Windows Explorer.
+The **bin icon** in the row of icons at the bottom of the sidebar shows everything you have deleted in the vault you have open — without your going near Finder or Windows Explorer.
 
 Opening it looks through every \`.Garbage\` folder in the vault, from the root down. Nothing about your trash is written down or remembered between openings, so what you see is always what is actually on disk — and a big vault takes a moment to look through. The window says so while it works.
 

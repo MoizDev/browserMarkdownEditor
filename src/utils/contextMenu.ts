@@ -38,8 +38,15 @@ export interface ContextMenuCommand {
     label: string;
     run: () => void | Promise<void>;
     danger?: boolean;
+    /**
+     * Set on EVERY command of a pick-one menu (the explorer's sort order): the
+     * menu then draws a check column, ✓ on the `true` row and blank on the
+     * rest, and the rows become `menuitemradio`s. Left undefined everywhere
+     * else, so an ordinary menu keeps no empty gutter.
+     */
+    checked?: boolean;
     disabled?: boolean;
-    /** Becomes the row's `title`. REQUIRED when `disabled` — a dead row that
+    /** Becomes the row's tooltip. REQUIRED when `disabled` — a dead row that
      *  says nothing is indistinguishable from a broken one, which is the rule
      *  VaultMenu.messageFor states for the vault list and which holds here too. */
     reason?: string;
@@ -59,7 +66,7 @@ export interface ContextMenuGrid {
      *  table… in Reading mode is the one that exists — and it stays on screen
      *  and says why rather than vanishing, exactly as a command does. */
     disabled?: boolean;
-    /** Becomes the row's `title`. REQUIRED when `disabled`, for the reason
+    /** Becomes the row's tooltip. REQUIRED when `disabled`, for the reason
      *  spelled out on ContextMenuCommand.reason. */
     reason?: string;
 }
@@ -82,7 +89,7 @@ export interface ContextMenuEntryStyle {
      *  real sidebar. `nodes` is the icon's artwork, which the caller stores. */
     pick: (icon: string | undefined, color: string | undefined, nodes?: unknown) => void;
     disabled?: boolean;
-    /** Becomes the row's `title`. REQUIRED when `disabled` — see above. */
+    /** Becomes the row's tooltip. REQUIRED when `disabled` — see above. */
     reason?: string;
 }
 
@@ -106,6 +113,15 @@ export interface ContextMenuRequest {
     label: string;
     /** Focus returns here on close, if it is still `isConnected`. */
     opener: HTMLElement | null;
+    /**
+     * The BUTTON that raised this menu, if a button did: pressing it again
+     * closes the menu instead of re-raising it, the way every native dropdown
+     * behaves. Distinct from `opener` because a right-click raiser hands over
+     * an opener too (the row or the editor, for the focus round trip) and a
+     * second right-click there must re-raise the menu at the new point, not
+     * toggle it away.
+     */
+    anchor?: HTMLElement | null;
     /** Run exactly once when the menu closes, however it closed. Lets a raiser
      *  clear its own "the menu is on me" highlight without App knowing anything
      *  about it. */
@@ -115,13 +131,28 @@ export interface ContextMenuRequest {
 let current: ContextMenuRequest | null = null;
 const listeners = new Set<() => void>();
 
-export function openContextMenu(request: ContextMenuRequest): void {
+/**
+ * Returns whether the menu is now OPEN — `false` means the press toggled an
+ * open menu shut, and a raiser that sets state around opening (a pressed look,
+ * a highlight) must not set it.
+ */
+export function openContextMenu(request: ContextMenuRequest): boolean {
+    // A second press on the button that raised the open menu closes it. The
+    // outside-pointerdown dismissal in ContextMenu exempts the anchor for the
+    // same reason: before both halves existed, that pointerdown closed the
+    // menu and the same press's click re-opened it — a one-frame flicker that
+    // left the menu on screen however often the button was pressed.
+    if (current && request.anchor && current.anchor === request.anchor) {
+        closeContextMenu();
+        return false;
+    }
     // Replacing one menu with another still closes the first, so a raiser's
     // highlight is never stranded on a row whose menu is long gone.
     const previous = current;
     current = request;
     if (previous && previous !== request) previous.onClose?.();
     for (const listener of listeners) listener();
+    return true;
 }
 
 export function closeContextMenu(): void {

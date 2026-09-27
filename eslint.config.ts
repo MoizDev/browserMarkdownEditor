@@ -37,6 +37,37 @@ export default defineConfig([
       // (rebuild the link-graph; restore the last-opened file on mount). Refactoring
       // would change behavior we are explicitly preserving.
       'react-hooks/set-state-in-effect': 'off',
+      // Every tooltip is the app's own bubble (utils/tooltip.ts, keyed on
+      // `data-tooltip`); a stray native `title` would draw Chromium's OS box beside
+      // it, late and unthemed. Intrinsic elements only (lowercase name): a
+      // component's `title` prop (ConfirmDialog's) is data, and an SVG `<title>` is a
+      // child, not an attribute. `document.title` is the tab title, not a tooltip.
+      'no-restricted-syntax': ['error',
+        {
+          selector: 'JSXOpeningElement[name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
+          message: 'Use data-tooltip (utils/tooltip.ts draws the app\'s own tooltip) — never the native title attribute.',
+        },
+        {
+          selector: 'AssignmentExpression[left.type="MemberExpression"][left.property.name="title"]:not([left.object.name="document"])',
+          message: 'Set dataset.tooltip (utils/tooltip.ts), not .title.',
+        },
+        {
+          selector: 'AssignmentExpression[left.type="MemberExpression"][left.computed=true][left.property.value="title"]',
+          message: 'Set dataset.tooltip (utils/tooltip.ts), not [\'title\'].',
+        },
+        {
+          selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.value="title"]',
+          message: 'Use data-tooltip, not the title attribute.',
+        },
+        {
+          selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.type="TemplateLiteral"][arguments.0.quasis.0.value.raw="title"]',
+          message: 'Use data-tooltip, not the title attribute.',
+        },
+        {
+          selector: 'CallExpression[callee.property.name="setAttributeNS"][arguments.1.value="title"]',
+          message: 'Use data-tooltip, not the title attribute.',
+        },
+      ],
     },
   },
   {

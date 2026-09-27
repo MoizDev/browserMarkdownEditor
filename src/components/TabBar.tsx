@@ -138,6 +138,8 @@ function PaneTabs({ pane, index, byPath, isFocused, draggingPath, onSelectTab, o
             y: Math.round(r.bottom),
             label: 'Tabs in this pane',
             opener: button,
+            // A second press on ⌄ closes the menu (utils/contextMenu.ts).
+            anchor: button,
             entries: pane.paths.map(path => {
                 const tab = byPath.get(path);
                 return {
@@ -190,7 +192,7 @@ function PaneTabs({ pane, index, byPath, isFocused, draggingPath, onSelectTab, o
                                 className={`tab${isActive ? ' is-active' : ''}${draggingPath === path ? ' is-dragging' : ''}`}
                                 role="tab"
                                 aria-selected={isActive}
-                                title={unreadable
+                                data-tooltip={unreadable
                                     ? `${path}\nCouldn’t be read — press Try again, or click it in the file tree`
                                     : path}
                                 draggable
@@ -219,7 +221,7 @@ function PaneTabs({ pane, index, byPath, isFocused, draggingPath, onSelectTab, o
                                     strip is crowded, where the extension is the first
                                     thing the ellipsis eats and the tooltip is the only
                                     answer (measured at the 80px floor: 4 characters). The full
-                                    path stays one hover away, in `title` above. */}
+                                    path stays one hover away, in `data-tooltip` above. */}
                                 <span className="tab-title">{name}</span>
                                 <span className="tab-trailing">
                                     {dirty && <span className="tab-dirty-dot" aria-hidden="true" />}
@@ -256,7 +258,7 @@ function PaneTabs({ pane, index, byPath, isFocused, draggingPath, onSelectTab, o
             <div className="tab-group-actions">
                 <button
                     className="tab-group-btn"
-                    title="New note in this pane"
+                    data-tooltip="New note in this pane"
                     aria-label="New note in this pane"
                     onClick={() => onNewTab(pane.id)}
                 >
@@ -264,7 +266,7 @@ function PaneTabs({ pane, index, byPath, isFocused, draggingPath, onSelectTab, o
                 </button>
                 <button
                     className="tab-group-btn"
-                    title="All tabs in this pane"
+                    data-tooltip="All tabs in this pane"
                     aria-label="All tabs in this pane"
                     aria-haspopup="menu"
                     onClick={openTabList}

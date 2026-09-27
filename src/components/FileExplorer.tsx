@@ -5,17 +5,22 @@ import { isTabDrag } from '../utils/tabDrag';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import SearchPanel from './SearchPanel';
-import VaultMenu from './VaultMenu';
-import { FilePlus, FolderPlus, FolderOpen, PenTool, Notebook, PanelLeft } from './icons';
+import {
+    ArrowUpNarrowWide, ChevronsDownUp, ChevronsUpDown, FolderClosed, FolderPlus, GalleryVertical,
+    PenTool, Search, SidebarLeft, SquarePen,
+} from './icons';
 import {
     ancestorsOf, clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor,
     requestCreate, subscribeCreateRequest, type CreateKind,
 } from '../utils/createRequest';
-import { getActiveFilePath } from '../utils/activeFile';
+import { getActiveFilePath, subscribeActiveFile } from '../utils/activeFile';
 import { collectFiles } from '../utils/tree';
+import { createSortCache, isTimeSort, sortTree, TREE_SORT_ORDERS, type TreeSortOrder } from '../utils/treeSort';
+import { getFileTimes, getFileTimesVersion, statFileTimes, subscribeFileTimes } from '../utils/fileTimes';
+import { readJSON, writeJSON } from '../utils/storage';
 import { createVaultTextCache } from '../utils/vaultSearch';
 import type { VaultTextCache } from '../utils/vaultSearch';
-import type { FileTreeNode, FileTreeFileNode, RecentVault, TextRange, VaultOpenResult } from '../types';
+import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 import type { IconNode } from '../utils/entryStyle';
 
 /**
@@ -27,27 +32,25 @@ function isExternalFileDrag(e: React.DragEvent): boolean {
     return Array.from(e.dataTransfer.types).includes('Files');
 }
 
-/* The vault menu hangs from the right edge of the vault button, which sits in
-   the sidebar — so the room it has to grow into is everything from the left of
-   the screen to that edge. Its width is content-driven (vault names vary), and
-   left unbounded a long folder name pushed the whole menu off the left of the
-   viewport with its shorter rows rendering outside the window entirely. */
-const VAULT_MENU_MARGIN = 8;
-const VAULT_MENU_MIN_WIDTH = 200;
-const VAULT_MENU_MAX_WIDTH = 340;
+/** The sort menu's rows, in Obsidian's wording and order (image 8). Its two
+ *  "Created time" rows are left out on purpose: the File System Access API
+ *  exposes no creation time at all, so they could only lie. */
+const SORT_ROWS: { id: TreeSortOrder; label: string }[] = [
+    { id: 'name-asc', label: 'File name (A to Z)' },
+    { id: 'name-desc', label: 'File name (Z to A)' },
+    { id: 'mtime-desc', label: 'Modified time (new to old)' },
+    { id: 'mtime-asc', label: 'Modified time (old to new)' },
+];
 
-interface VaultMenuPos { top: number; right: number; minWidth: number; maxWidth: number }
-
-function vaultMenuPosFor(button: HTMLElement): VaultMenuPos {
-    const r = button.getBoundingClientRect();
-    const room = Math.max(0, Math.round(r.right - VAULT_MENU_MARGIN));
-    return {
-        top: Math.round(r.bottom + 6),
-        right: Math.max(VAULT_MENU_MARGIN, Math.round(window.innerWidth - r.right)),
-        minWidth: Math.min(VAULT_MENU_MIN_WIDTH, room),
-        maxWidth: Math.min(VAULT_MENU_MAX_WIDTH, room),
-    };
+/** localStorage is user-editable: anything but a known order reads as the default. */
+function readSortOrder(): TreeSortOrder {
+    const stored = readJSON<unknown>('fileTreeSortOrder', 'name-asc');
+    return TREE_SORT_ORDERS.includes(stored as TreeSortOrder) ? stored as TreeSortOrder : 'name-asc';
 }
+
+/** How many frames auto-reveal waits for a row the expand it just asked for
+ *  to mount, before giving up (a file filtered out of the tree never will). */
+const REVEAL_FRAMES = 10;
 
 interface FileExplorerProps {
     rootHandle: FileSystemDirectoryHandle | null;
@@ -55,26 +58,11 @@ interface FileExplorerProps {
     onFileClick: (node: FileTreeNode) => void;
     onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath?: string) => void | Promise<void>;
     onCreateFolder: (parentHandle: FileSystemDirectoryHandle | null, name: string) => void | Promise<void>;
-    /** Open the native folder picker — a double-click on the vault button, or
-     *  its "Open folder…" row. Reports the switch's outcome, which that row
-     *  needs: the picker shares one gate with every other raiser. */
-    onChangeVault: () => Promise<VaultOpenResult>;
-    /** Folders previously opened as vaults, newest first (already labelled). */
-    recentVaults: RecentVault[];
-    /** Which of those is open right now, so the menu can mark it. */
-    currentVaultId: string | null;
-    /** How many of them the menu lists (Settings → Vault). */
-    recentVaultLimit: number;
-    onOpenRecentVault: (vault: RecentVault) => Promise<VaultOpenResult>;
-    /** Drop one vault from the recent list, false if it could not be dropped.
-     *  Stable for the app's life — FileExplorer is memoized and a fresh closure
-     *  would defeat that. */
-    onForgetRecentVault: (id: string) => Promise<boolean>;
     onCollapse: () => void;
-    /** Whether the search panel replaces the tree. Owned by App, because the
-     *  button that toggles it now sits in the sidebar's bottom actions —
-     *  alongside Neural Brain and Settings — rather than in this header. */
+    /** Whether the search panel replaces the tree — the Search tab is on, as
+     *  opposed to Files. Owned by App; both toggles below are stable. */
     searchOpen: boolean;
+    onOpenSearch: () => void;
     onCloseSearch: () => void;
     onTrash: (node: FileTreeNode) => void;
     /** Open a folder row as the vault. Directories only — App ignores the rest. */
@@ -84,6 +72,10 @@ interface FileExplorerProps {
     onStyleEntry: (path: string, icon: string | undefined, color: string | undefined, nodes?: IconNode[]) => void;
     expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
+    /** Open all of these folders in one update (Expand all, auto-reveal). */
+    onExpandPaths: (paths: string[]) => void;
+    /** Close all of these folders in one update (Collapse all). */
+    onCollapsePaths: (paths: string[]) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
     onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
     /** Copy files dragged in from the OS into `targetDir`. */
@@ -98,20 +90,17 @@ function FileExplorer({
     onFileClick,
     onCreateFile,
     onCreateFolder,
-    onChangeVault,
-    recentVaults,
-    currentVaultId,
-    recentVaultLimit,
-    onOpenRecentVault,
-    onForgetRecentVault,
     onCollapse,
     searchOpen,
+    onOpenSearch,
     onCloseSearch,
     onTrash,
     onOpenAsVault,
     onStyleEntry,
     expandedPaths,
     onToggleExpand,
+    onExpandPaths,
+    onCollapsePaths,
     onMoveFile,
     onRenameFile,
     onImportFiles,
@@ -128,45 +117,106 @@ function FileExplorer({
     const [rootDragOver, setRootDragOver] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
 
-    // ── Vault menu ──────────────────────────────────────────────────────────
-    const [vaultMenuPos, setVaultMenuPos] = useState<VaultMenuPos | null>(null);
-    const vaultBtnRef = useRef<HTMLButtonElement | null>(null);
+    const treeRef = useRef<HTMLDivElement | null>(null);
 
-    const listedVaults = useMemo(
-        () => recentVaults.slice(0, recentVaultLimit),
-        [recentVaults, recentVaultLimit]
+    /** Which of the action row's dropdowns is open, for its pressed look. Set
+     *  only AFTER openContextMenu reports the menu open, and cleared by the
+     *  menu's onClose — which also runs when another menu replaces it. */
+    const [openMenu, setOpenMenu] = useState<'create' | 'sort' | null>(null);
+    const clearOpenMenu = useCallback(() => setOpenMenu(null), []);
+
+    // ── View preferences (global, like expandedPaths) ───────────────────────
+    const [sortOrder, setSortOrder] = useState<TreeSortOrder>(readSortOrder);
+    useEffect(() => { writeJSON('fileTreeSortOrder', sortOrder); }, [sortOrder]);
+
+    const [autoReveal, setAutoReveal] = useState<boolean>(() => readJSON<unknown>('fileTreeAutoReveal', false) === true);
+    useEffect(() => { writeJSON('fileTreeAutoReveal', autoReveal); }, [autoReveal]);
+
+    // ── Sorted display tree ─────────────────────────────────────────────────
+    /* The canonical tree stays in buildFileTree's order (folders first, A→Z) —
+       graph, search and every collectFiles caller read it. What the rows show
+       is a display copy, structurally shared (utils/treeSort.ts) so a re-sort
+       that moves one file re-renders only the folders on its way.
+
+       The file times are an external store, and this subscribes to them ONLY
+       while a time order is chosen: the snapshot is a constant 0 otherwise, so
+       a save's stamp (App.flushTab → recordFileWritten) never re-renders the
+       explorer of a user sorting by name. */
+    const sortCacheRef = useRef(createSortCache());
+    const timesVersion = useSyncExternalStore(
+        subscribeFileTimes,
+        useCallback(() => (isTimeSort(sortOrder) ? getFileTimesVersion() : 0), [sortOrder]),
+    );
+    const displayTree = useMemo(() => {
+        void timesVersion; // the times map is mutable; its version is the dependency
+        return sortTree(fileTree, sortOrder, getFileTimes(), sortCacheRef.current);
+    }, [fileTree, sortOrder, timesVersion]);
+
+    /* Stat every file while a time order is chosen, re-run whenever the tree
+       changes shape (a refresh hands out new handles, and a moved file is a new
+       file on disk). Never per keystroke: saves stamp their own path instead.
+       The cleanup discards a walk the tree or the order has since outdated. */
+    useEffect(() => {
+        if (!isTimeSort(sortOrder)) return;
+        let current = true;
+        void statFileTimes(collectFiles(fileTree), () => current);
+        return () => { current = false; };
+    }, [fileTree, sortOrder]);
+
+    // ── Expand all / Collapse all ───────────────────────────────────────────
+    /** Every folder in the tree — the REAL ones, so a stale expandedPaths
+     *  entry (a folder since deleted) cannot hold the toggle on Collapse. */
+    const folderPaths = useMemo(() => {
+        const paths: string[] = [];
+        const walk = (nodes: FileTreeNode[]) => {
+            for (const node of nodes) {
+                if (node.kind === 'directory') { paths.push(node.path); walk(node.children); }
+            }
+        };
+        walk(fileTree);
+        return paths;
+    }, [fileTree]);
+    const anyExpanded = useMemo(
+        () => folderPaths.some(p => expandedPaths.has(p)),
+        [folderPaths, expandedPaths],
     );
 
-    const closeVaultMenu = useCallback(() => setVaultMenuPos(null), []);
-
-    /**
-     * One click lists the vaults already known; two goes to the folder picker.
-     *
-     * `detail` counts the clicks in the current burst, so the second click of a
-     * double-click is caught without delaying the first — waiting out the
-     * double-click interval before showing the list would make the ordinary
-     * case, picking a vault you already have, feel like the slow one. Keyboard
-     * activation reports 0 and lists, which is the only thing it can do.
-     */
-    const handleVaultButtonClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-        if (e.detail >= 2) {
-            setVaultMenuPos(null);
-            onChangeVault();
-            return;
-        }
-        if (vaultMenuPos) { setVaultMenuPos(null); return; }
-        // Nothing to list (a first run, or the setting is off) — don't make the
-        // user open an empty menu to get to the picker.
-        if (listedVaults.length === 0) { onChangeVault(); return; }
-        if (vaultBtnRef.current) setVaultMenuPos(vaultMenuPosFor(vaultBtnRef.current));
-    };
-
-    /** "Open folder…" in the vault menu. The menu is NOT closed here: a picker
-     *  refused because another vault switch is still walking comes back 'busy'
-     *  with nothing shown, and the menu is the only surface that can say so —
-     *  closing first left a row that closed the menu and did nothing at all.
-     *  VaultMenu closes itself on every other result. */
-    const browseForVault = useCallback(() => onChangeVault(), [onChangeVault]);
+    // ── Auto-reveal ─────────────────────────────────────────────────────────
+    const filePathSet = useMemo(() => new Set(collectFiles(fileTree).map(f => f.path)), [fileTree]);
+    /** The last path revealed. A tree refresh re-runs the effect below, and
+     *  without this every create or rename elsewhere would re-open and scroll
+     *  back to the active file — undoing a folder the user had just closed. */
+    const revealedRef = useRef<string | null>(null);
+    useEffect(() => { revealedRef.current = null; }, [autoReveal, searchOpen]);
+    /* Subscribed inside an effect, not through useSyncExternalStore: a tab
+       switch then costs this component nothing unless it actually reveals —
+       the row highlight already rides each row's own boolean subscription. */
+    useEffect(() => {
+        if (!autoReveal || searchOpen) return;
+        let frame = 0;
+        const reveal = () => {
+            const path = getActiveFilePath();
+            // The Help tab's bare pseudo-path, and anything not in the tree yet
+            // (a file just created — the refresh that brings it re-runs this).
+            if (!path || !filePathSet.has(path) || path === revealedRef.current) return;
+            revealedRef.current = path;
+            const slash = path.lastIndexOf('/');
+            if (slash !== -1) onExpandPaths(ancestorsOf(path.slice(0, slash)));
+            // The expand has not committed yet, so the row may not exist until
+            // a frame or two later.
+            let tries = 0;
+            cancelAnimationFrame(frame);
+            const scroll = () => {
+                const row = treeRef.current?.querySelector(`.tree-file[data-path="${CSS.escape(path)}"]`);
+                if (row) { row.scrollIntoView({ block: 'nearest' }); return; }
+                if (++tries < REVEAL_FRAMES) frame = requestAnimationFrame(scroll);
+            };
+            frame = requestAnimationFrame(scroll);
+        };
+        reveal();
+        const unsubscribe = subscribeActiveFile(reveal);
+        return () => { unsubscribe(); cancelAnimationFrame(frame); };
+    }, [autoReveal, searchOpen, filePathSet, onExpandPaths]);
 
     // The indexed vault text lives here (not in SearchPanel) so reopening
     // search doesn't re-read unchanged files.
@@ -212,12 +262,50 @@ function FileExplorer({
         onCloseSearch();
         const target = createTarget();
         // Every folder on the way down has to be open, or the row that renders
-        // the box is not mounted to see the request. The target opens itself.
-        for (const ancestor of ancestorsOf(target)) {
-            if (!expandedPaths.has(ancestor)) onToggleExpand(ancestor);
-        }
+        // the box is not mounted to see the request. One update for the lot.
+        onExpandPaths(ancestorsOf(target));
         requestCreate(target, kind);
     };
+
+    /** Hung off the button's bottom-left corner, like the tab strip's ⌄, and
+     *  `anchor`ed so a second press on the same button closes it. */
+    const raiseMenu = (
+        e: React.MouseEvent<HTMLButtonElement>,
+        which: 'create' | 'sort',
+        label: string,
+        entries: ContextMenuEntry[],
+    ) => {
+        const button = e.currentTarget;
+        const r = button.getBoundingClientRect();
+        const opened = openContextMenu({
+            x: Math.round(r.left),
+            y: Math.round(r.bottom + 4),
+            label,
+            opener: button,
+            anchor: button,
+            onClose: clearOpenMenu,
+            entries,
+        });
+        if (opened) setOpenMenu(which);
+    };
+
+    const openCreateMenu = (e: React.MouseEvent<HTMLButtonElement>) => raiseMenu(e, 'create', 'New drawing or notebook', [
+        // The user's own wording and order.
+        { kind: 'command', id: 'new-drawing', label: 'New Drawing', run: () => startCreateInRoot('drawing') },
+        { kind: 'command', id: 'new-notebook', label: 'New Notebook', run: () => startCreateInRoot('notebook') },
+    ]);
+
+    const sortEntry = (row: { id: TreeSortOrder; label: string }): ContextMenuEntry => ({
+        kind: 'command', id: row.id, label: row.label,
+        checked: sortOrder === row.id,
+        run: () => setSortOrder(row.id),
+    });
+
+    const openSortMenu = (e: React.MouseEvent<HTMLButtonElement>) => raiseMenu(e, 'sort', 'Sort order', [
+        ...SORT_ROWS.slice(0, 2).map(row => sortEntry(row)),
+        { kind: 'separator', id: 'sep-sort' },
+        ...SORT_ROWS.slice(2).map(row => sortEntry(row)),
+    ]);
 
     const handleSearchResult = (node: FileTreeFileNode, range: TextRange | null) => {
         onOpenSearchResult(node, range);
@@ -357,74 +445,100 @@ function FileExplorer({
 
     return (
         <div className="file-explorer">
-            <div className="nav-header">
-                <span className="nav-header-title">
-                    {rootHandle ? rootHandle.name : 'Explorer'}
-                </span>
-                <div className="nav-header-actions">
+            {/* Obsidian's two rows: the view tabs with the collapse toggle,
+                then (on the Files tab only, as there) the tree's own actions. */}
+            <div className="nav-tabs-header">
+                <div className="nav-tabs" role="group" aria-label="Sidebar view">
                     <button
-                        className="nav-action-btn"
-                        title="New note"
-                        onClick={() => startCreateInRoot('file')}
+                        className={`nav-tab${searchOpen ? '' : ' is-active'}`}
+                        data-tooltip="Files"
+                        aria-label="Files"
+                        aria-pressed={!searchOpen}
+                        onClick={onCloseSearch}
                     >
-                        <FilePlus size={15} />
-                    </button>
-                    {/* The two handwriting surfaces carry the accent colour, so
-                        they read as a pair and stand out from the file/folder
-                        actions either side of them. */}
-                    <button
-                        className="nav-action-btn is-accented"
-                        title="New notebook — ruled pages you can write on and export as a PDF"
-                        onClick={() => startCreateInRoot('notebook')}
-                    >
-                        <Notebook size={15} />
+                        <FolderClosed size={18} strokeWidth={1.75} />
                     </button>
                     <button
-                        className="nav-action-btn is-accented"
-                        title="New drawing"
-                        onClick={() => startCreateInRoot('drawing')}
+                        className={`nav-tab${searchOpen ? ' is-active' : ''}`}
+                        data-tooltip="Search"
+                        aria-label="Search"
+                        aria-pressed={searchOpen}
+                        onClick={onOpenSearch}
                     >
-                        <PenTool size={15} />
-                    </button>
-                    <button
-                        className="nav-action-btn"
-                        title="New folder"
-                        onClick={() => startCreateInRoot('folder')}
-                    >
-                        <FolderPlus size={15} />
-                    </button>
-                    <button
-                        ref={vaultBtnRef}
-                        className={`nav-action-btn vault-menu-toggle${vaultMenuPos ? ' active' : ''}`}
-                        title="Open another vault — double-click to browse for a folder"
-                        aria-label="Open another vault"
-                        aria-haspopup="menu"
-                        aria-expanded={vaultMenuPos !== null}
-                        onClick={handleVaultButtonClick}
-                    >
-                        <FolderOpen size={15} />
-                    </button>
-                    <button
-                        className="nav-action-btn"
-                        title="Collapse sidebar (⌘\)"
-                        onClick={onCollapse}
-                    >
-                        <PanelLeft size={15} />
+                        <Search size={18} strokeWidth={1.75} />
                     </button>
                 </div>
+                <button
+                    className="nav-tab nav-collapse-btn"
+                    data-tooltip="Collapse sidebar (⌘\)"
+                    aria-label="Collapse sidebar"
+                    onClick={onCollapse}
+                >
+                    <SidebarLeft size={18} strokeWidth={1.75} />
+                </button>
             </div>
 
-            {vaultMenuPos && (
-                <VaultMenu
-                    anchor={vaultBtnRef.current}
-                    style={vaultMenuPos}
-                    vaults={listedVaults}
-                    currentVaultId={currentVaultId}
-                    onOpen={onOpenRecentVault}
-                    onForget={onForgetRecentVault}
-                    onBrowse={browseForVault}
-                    onClose={closeVaultMenu}
-                />
+            {!searchOpen && (
+                <div className="nav-buttons-container">
+                    <button
+                        className="nav-action-btn"
+                        data-tooltip="New note"
+                        aria-label="New note"
+                        onClick={() => startCreateInRoot('file')}
+                    >
+                        <SquarePen size={18} strokeWidth={1.75} />
+                    </button>
+                    <button
+                        className="nav-action-btn"
+                        data-tooltip="New folder"
+                        aria-label="New folder"
+                        onClick={() => startCreateInRoot('folder')}
+                    >
+                        <FolderPlus size={18} strokeWidth={1.75} />
+                    </button>
+                    <button
+                        className={`nav-action-btn${openMenu === 'create' ? ' is-active' : ''}`}
+                        data-tooltip="New drawing or notebook"
+                        aria-label="New drawing or notebook"
+                        aria-haspopup="menu"
+                        aria-expanded={openMenu === 'create'}
+                        onClick={openCreateMenu}
+                    >
+                        <PenTool size={18} strokeWidth={1.75} />
+                    </button>
+                    <button
+                        className={`nav-action-btn${openMenu === 'sort' ? ' is-active' : ''}`}
+                        data-tooltip="Change sort order"
+                        aria-label="Change sort order"
+                        aria-haspopup="menu"
+                        aria-expanded={openMenu === 'sort'}
+                        onClick={openSortMenu}
+                    >
+                        <ArrowUpNarrowWide size={18} strokeWidth={1.75} />
+                    </button>
+                    <button
+                        className={`nav-action-btn${autoReveal ? ' is-active' : ''}`}
+                        data-tooltip="Auto-reveal current file"
+                        aria-label="Auto-reveal current file"
+                        aria-pressed={autoReveal}
+                        onClick={() => setAutoReveal(on => !on)}
+                    >
+                        <GalleryVertical size={18} strokeWidth={1.75} />
+                    </button>
+                    {/* One toggle, as in Obsidian: it offers whichever of the
+                        two would change something — Collapse once any folder
+                        is open, Expand when none is. */}
+                    <button
+                        className="nav-action-btn"
+                        data-tooltip={anyExpanded ? 'Collapse all' : 'Expand all'}
+                        aria-label={anyExpanded ? 'Collapse all' : 'Expand all'}
+                        onClick={() => (anyExpanded ? onCollapsePaths(folderPaths) : onExpandPaths(folderPaths))}
+                    >
+                        {anyExpanded
+                            ? <ChevronsDownUp size={18} strokeWidth={1.75} />
+                            : <ChevronsUpDown size={18} strokeWidth={1.75} />}
+                    </button>
+                </div>
             )}
 
             {searchOpen ? (
@@ -437,6 +551,7 @@ function FileExplorer({
                 />
             ) : (
                 <div
+                    ref={treeRef}
                     className={`nav-files-container${rootDragOver ? ' drag-over-root' : ''}`}
                     onDragEnter={handleRootDragEnter}
                     onDragOver={handleRootDragOver}
@@ -456,7 +571,7 @@ function FileExplorer({
                             />
                         </div>
                     )}
-                    {fileTree.map((node) => (
+                    {displayTree.map((node) => (
                         <TreeNode
                             key={node.path}
                             node={node}

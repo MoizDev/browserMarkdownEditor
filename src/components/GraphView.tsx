@@ -508,7 +508,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 <span className="graph-stats">
                     {noteCount} note{noteCount === 1 ? '' : 's'} · {links.length} link{links.length === 1 ? '' : 's'}
                 </span>
-                <button className="graph-reset-btn" onClick={resetView} title="Reset view">Reset view</button>
+                <button className="graph-reset-btn" onClick={resetView} data-tooltip="Reset view">Reset view</button>
             </div>
             <div
                 className="graph-canvas-wrap"

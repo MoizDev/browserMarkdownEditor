@@ -646,7 +646,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
             const button = document.createElement('button');
             button.type = 'button';
             // The box is empty (the words it covers belong to the text layer),
-            // so without this it reads as an unnamed button. Not `title`: a
+            // so without this it reads as an unnamed button. No tooltip either: one
             // tooltip on every entry of a table of contents is just noise.
             button.setAttribute('aria-label', 'Follow link');
             const { target } = link;
@@ -654,7 +654,12 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
             el = button;
         }
         el.className = 'pdf-link';
-        if (link.title) el.title = link.title;
+        if (link.title) {
+            el.dataset.tooltip = link.title;
+            // The URL anchor is as empty as the button, and its tooltip was its
+            // only name while it was a native `title`.
+            if (!el.hasAttribute('aria-label')) el.setAttribute('aria-label', link.title);
+        }
         el.style.left = `${link.left}%`;
         el.style.top = `${link.top}%`;
         el.style.width = `${link.width}%`;
@@ -1233,7 +1238,7 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
                             // but never below two digits, or a short document
                             // would give you a slot too cramped to type in.
                             style={{ width: `${Math.max(2, String(layout.pages.length).length)}ch` }}
-                            title="Current page — type a number and press Enter to jump"
+                            data-tooltip="Current page — type a number and press Enter to jump"
                             aria-label="Page number"
                             onFocus={e => {
                                 pageInputFocusValueRef.current = e.currentTarget.value;
@@ -1245,11 +1250,11 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
                         <span className="pdf-viewer-page-total">/ {layout.pages.length}</span>
                     </div>
                     <div className="pdf-viewer-pill pdf-viewer-zoom">
-                        <button onClick={() => nudgeZoom(1 / 1.2)} title="Zoom out (-)" aria-label="Zoom out">−</button>
-                        <button onClick={() => setZoom(clampZoom(1))} title="Reset to fit width" aria-label="Reset zoom">
+                        <button onClick={() => nudgeZoom(1 / 1.2)} data-tooltip="Zoom out (-)" aria-label="Zoom out">−</button>
+                        <button onClick={() => setZoom(clampZoom(1))} data-tooltip="Reset to fit width" aria-label="Reset zoom">
                             {Math.round(zoom * 100)}%
                         </button>
-                        <button onClick={() => nudgeZoom(1.2)} title="Zoom in (+)" aria-label="Zoom in">+</button>
+                        <button onClick={() => nudgeZoom(1.2)} data-tooltip="Zoom in (+)" aria-label="Zoom in">+</button>
                     </div>
                 </div>
             )}

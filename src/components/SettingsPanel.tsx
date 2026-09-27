@@ -23,7 +23,7 @@ interface SettingsPanelProps {
     accentColor: string;
     /** Ink for language-less ``` blocks as #rrggbb, or '' to follow the accent. */
     codeBlockColor: string;
-    /** How many recently opened vaults the vault button's menu lists. */
+    /** How many recently opened vaults the vault switcher's menu lists. */
     recentVaultLimit: number;
     /** Whether the browser tab is titled with the open vault's name. */
     showVaultInTitle: boolean;
@@ -223,8 +223,8 @@ export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadd
                         <div className="setting-info">
                             <div className="setting-name">Recent vaults shown</div>
                             <div className="settings-hint">
-                                How many recently opened vaults the file tree's vault button lists.
-                                Double-click that button to browse for a folder instead.
+                                How many recently opened vaults the vault switcher at the bottom of the sidebar lists.
+                                Double-click the switcher to browse for a folder instead.
                             </div>
                         </div>
                         <div className="setting-control">

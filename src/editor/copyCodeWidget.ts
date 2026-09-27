@@ -31,7 +31,7 @@ export class CopyCodeWidget extends WidgetType {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'cm-codeblock-copy';
-        btn.title = 'Copy code';
+        btn.dataset.tooltip = 'Copy code';
         btn.setAttribute('aria-label', 'Copy code');
         btn.innerHTML = COPY_ICON;
         // Never a tab stop, like every other widget button (headingFold,

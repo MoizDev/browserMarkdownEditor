@@ -423,10 +423,14 @@ a resizable pane one number rather than a rectangle.
   and text selection at the bottom right of every document. **The counts are computed over a
   DEBOUNCED copy of the content** (250ms) and skipped entirely for canvas and unreadable documents:
   `activeTab.content` changes on every keystroke, so a naive `useMemo` is a full-document walk per
-  key. It mounts on `activeFile || saveStatus`, because "Moving … to Trash…" and "Put back as …" are
-  raised from the tree and the bin with no tab open. `.save-status` keeps a reserved `min-width` and
-  is always mounted (never conditionally rendered) and wide enough for `'Saved'`, or the pill would
-  resize twice a minute while the reader types. `min-width`, not `width` — long strings still show
+  key. It mounts only when it has something to say — `backlinksAvailable || countable || saveStatus`
+  (a canvas/unreadable tab once left an empty 40px pill: the reserved slot alone) — and `saveStatus`
+  alone suffices, because "Moving … to Trash…" and "Put back as …" are raised from the tree and the
+  bin with no tab open. It sits over the RIGHTMOST column whatever is focused, so when that column
+  shows a PDF or notebook it takes `.is-lifted`, clearing their page/zoom pills (a drawing has
+  nothing in that corner). `.save-status` keeps a reserved `min-width` and is always mounted (never
+  conditionally rendered) and wide enough for `'Saved'`, or the pill would resize twice a minute
+  while the reader types. `min-width`, not `width` — long strings still show
   whole.
 
 ## The dividers

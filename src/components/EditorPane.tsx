@@ -7,7 +7,7 @@ import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
-import { isPdfFile, isCanvasFile } from '../utils/fileTypes';
+import { isPdfFile, isCanvasFile, isNotebookFile } from '../utils/fileTypes';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
@@ -486,6 +486,15 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
     // A canvas has no words and an unreadable tab holds no text, so neither is
     // counted at all — and neither is the count shown for them.
     const countable = !!activeFile && !isCanvas && !unreadable;
+    const statusShown = backlinksAvailable || countable || !!saveStatus;
+    /* The pill sits over the RIGHTMOST column, whichever pane is focused — and
+       a PDF or a notebook there draws its page/zoom pills in that same corner.
+       Lifted above them rather than hidden: it may be carrying counts for a
+       markdown pane to the left, or a message. A drawing draws nothing there
+       (tldraw's help button is off in this build), so it is not lifted. */
+    const cornerTab = paneTabs.length ? paneTabs[paneTabs.length - 1] : null;
+    const liftStatus = !!cornerTab && !cornerTab.file.isHelp && !cornerTab.readError
+        && (isPdfFile(cornerTab.file.name) || isNotebookFile(cornerTab.file.name));
     const countPath = countable ? activeFile!.path : null;
     const liveText = countable ? focusedTab?.content ?? '' : '';
     const [counted, setCounted] = useState<{ path: string | null; text: string }>(
@@ -1021,12 +1030,17 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
             {/* A floating pill over the bottom right of the editor, about the
                 FOCUSED pane's document — the one thing in this component that
                 is still single-valued, like ⌘E and ⌘S.
-                `saveStatus` keeps it alive on its own because it is not only
-                about a document: "Moving … to Trash…" and "Put back as …" are
-                raised from the file tree and the bin, and with nothing open
-                there would otherwise be nowhere for them to appear. */}
-            {(activeFile || saveStatus) && (
-                <div className="status-bar">
+                Rendered only when it has something to say. A canvas (PDF,
+                drawing, notebook) and an unreadable tab have no backlinks and
+                no counts, and rendering the pill for them anyway left just the
+                reserved `.save-status` slot — an empty 40px blob over the
+                PDF's zoom pill. `saveStatus` keeps it alive on its own because
+                it is not only about a document: "Moving … to Trash…" and "Put
+                back as …" are raised from the file tree and the bin, and with
+                nothing open there would otherwise be nowhere for them to
+                appear. */}
+            {statusShown && (
+                <div className={`status-bar${liftStatus ? ' is-lifted' : ''}`}>
                     {backlinksAvailable && (
                         <button
                             ref={backlinksBtnRef}

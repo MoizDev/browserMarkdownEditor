@@ -45,7 +45,7 @@ import { setActiveFilePath } from './utils/activeFile';
 import { placeholderFor } from './utils/createRequest';
 import {
   ENTRY_STYLE_FILE, LEGACY_STYLE_FILE, emptyEntryStyles, forgetEntry, parseEntryStyles,
-  renameEntry, serializeEntryStyles, withEntryStyle, type IconNode,
+  renameEntry, serializeEntryStyles, withEntryOrder, withEntryStyle, type IconNode,
 } from './utils/entryStyle';
 import { getEntryStyles, setEntryStyles } from './utils/entryStyleStore';
 import { setTableNotify } from './editor/tableEdit';
@@ -1199,9 +1199,16 @@ export default function App() {
    * (the rule AGENTS.md states for anything that touches the whole vault). The
    * styles are held in a store from then on, and this app is the only writer.
    */
+  // Emptied the moment the vault changes, before the browser paints it — not
+  // when the read below lands, and not in a passive effect: switching from the
+  // vault menu drew the new vault's tree with the LAST vault's icons and custom
+  // order (measured, 6 of 6 switches, even with a passive reset), and a drop or
+  // icon pick in that window would have written them into this vault's file.
+  // Same reason and shape as resetFileTimes above.
+  useLayoutEffect(() => { setEntryStyles(emptyEntryStyles()); }, [rootHandle]);
   useEffect(() => {
     let cancelled = false;
-    if (!rootHandle) { setEntryStyles(emptyEntryStyles()); return; }
+    if (!rootHandle) return;
     (async () => {
       const read = async (name: string) => {
         const handle = await rootHandle.getFileHandle(name);
@@ -1239,20 +1246,38 @@ export default function App() {
    * The store is updated first and the write follows, so a picked icon appears
    * in the sidebar immediately rather than after a round trip to disk — the
    * picker is a live preview, and it is being judged against the real tree.
+   *
+   * WRITES ARE SERIALIZED, in call order. A drop into another folder under the
+   * Custom sort writes this file twice back to back (the new order, then the
+   * move's re-key), and two overlapping `createWritable`s on one file land in
+   * COMPLETION order — the older snapshot could win on disk while the screen
+   * shows the newer. Each write also captures the vault it was asked for, so
+   * one still queued at a vault switch cannot land in the next vault.
    */
-  const writeEntryStyles = useCallback(async (next: ReturnType<typeof getEntryStyles>) => {
+  const entryStyleWritesRef = useRef<Promise<void>>(Promise.resolve());
+  const writeEntryStyles = useCallback((next: ReturnType<typeof getEntryStyles>): Promise<void> => {
     setEntryStyles(next);
-    if (!rootHandle) return;
-    try {
-      // createFile opens-or-truncates, which is exactly right here: this file is
-      // the app's own and is rewritten whole every time.
-      const handle = await createFile(rootHandle, ENTRY_STYLE_FILE);
-      await writeFile(handle, serializeEntryStyles(next));
-    } catch (err) {
-      console.error(`Could not save ${ENTRY_STYLE_FILE}:`, err);
-      notify('Could not save how that folder looks.');
-    }
-  }, [createFile, notify, rootHandle, writeFile]);
+    const root = rootHandle;
+    if (!root) return Promise.resolve();
+    const write = entryStyleWritesRef.current.then(async () => {
+      try {
+        // NOT createFile: that truncates to '' in a writable of its own (a tab
+        // closed in between would lose every icon and the custom order) and
+        // then walks the entire vault to refresh a tree this hidden file never
+        // appears in. Measured under Custom: that walk, landing mid-moveFile,
+        // rendered a dropped file in BOTH folders plus its `.crswap`, and a
+        // write queued past a vault switch repainted the OLD vault's tree. One
+        // writable replaces the file whole, atomically on close.
+        const handle = await root.getFileHandle(ENTRY_STYLE_FILE, { create: true });
+        await writeFile(handle, serializeEntryStyles(next));
+      } catch (err) {
+        console.error(`Could not save ${ENTRY_STYLE_FILE}:`, err);
+        notify('Could not save the file tree’s icons, colours or order.');
+      }
+    });
+    entryStyleWritesRef.current = write;
+    return write;
+  }, [notify, rootHandle, writeFile]);
   useEffect(() => { writeEntryStylesRef.current = writeEntryStyles; }, [writeEntryStyles]);
 
   /** Stable for the app's life: FileExplorer and TreeNode are both memoized. */
@@ -1263,6 +1288,15 @@ export default function App() {
     nodes?: IconNode[],
   ) => {
     void writeEntryStyles(withEntryStyle(getEntryStyles(), path, { icon, color }, nodes));
+  }, [writeEntryStyles]);
+
+  /** One folder's custom order (the tree's Custom sort), from a drop in the
+   *  explorer. Stable per vault, for the same memo as handleStyleEntry; an
+   *  unchanged list comes back as the same file and costs no write. */
+  const handleSetTreeOrder = useCallback((folderPath: string, names: readonly string[] | null) => {
+    const current = getEntryStyles();
+    const next = withEntryOrder(current, folderPath, names);
+    if (next !== current) void writeEntryStyles(next);
   }, [writeEntryStyles]);
 
   /** PDF names this session has exported. Re-exporting must not ask about a
@@ -2594,7 +2628,8 @@ export default function App() {
 
         // A trashed row's icon and colour go with it, and a folder's takes
         // everything inside it — otherwise the entry sits in the file forever, and
-        // something later given the same name inherits a look nobody chose.
+        // something later given the same name inherits a look nobody chose. Its
+        // place in a custom order goes too, for the same reason.
         const remaining = forgetEntry(getEntryStyles(), node.path);
         if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
 
@@ -2932,6 +2967,8 @@ export default function App() {
     // folder's, and a folder's carries everything inside it — so a rename
     // strands every one of them on a path nothing has any more. Done for the
     // node itself, not per open tab: a file nobody has open still has a look.
+    // The custom order follows here too: a folder's lists are re-keyed, and the
+    // node keeps its slot on a rename or leaves its old folder's list on a move.
     const restyled = renameEntry(getEntryStyles(), node.path, newPath);
     if (restyled !== getEntryStyles()) void writeEntryStyles(restyled);
 
@@ -3178,6 +3215,7 @@ export default function App() {
           onExpandPaths={expandPaths}
           onCollapsePaths={collapsePaths}
           onMoveFile={handleMoveFile}
+          onSetTreeOrder={handleSetTreeOrder}
           onRenameFile={handleRenameFile}
           onImportFiles={importFiles}
           onOpenSearchResult={handleOpenSearchResult}

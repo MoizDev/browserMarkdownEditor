@@ -7,6 +7,7 @@ import { setPdfRenderData } from '../utils/pdfRenderCache';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { bindImageInvertKey } from './invertibleImageShape';
 import {
     flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen,
@@ -616,6 +617,8 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         // already says must not mark it dirty and rewrite the whole PDF.
         applyCanvasUi(editor, uiRef.current);
         const disposePen = applyPenDefaults(editor);
+        // `i` inverts a selected picture — see invertibleImageShape.tsx.
+        const disposeInvert = bindImageInvertKey(editor);
 
         /* Deliberately document-scope only, unlike a drawing or a notebook,
            which also save when the pen alone changes. A PDF's save REBUILDS THE
@@ -632,6 +635,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         return () => {
             unlisten();
             disposePen();
+            disposeInvert();
             stopViewWatch();
             lock.dispose();
             if (refineTimer) clearTimeout(refineTimer);

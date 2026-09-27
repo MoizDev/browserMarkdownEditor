@@ -285,6 +285,11 @@ function isCmdLetter(e: KeyboardEvent, letter: string): boolean {
  *  <title>, which is what the tab shows before React mounts. */
 const APP_TITLE = 'Markdown Editor';
 
+/** How many closed documents ⌥⇧T can reach back through. Session-only and
+ *  bounded: a long session closes hundreds of tabs and nobody reaches past a
+ *  handful, while an unbounded list would pin a path per close for the day. */
+const CLOSED_TAB_MEMORY = 20;
+
 export default function App() {
   const {
     rootHandle,
@@ -1589,7 +1594,52 @@ export default function App() {
     setTabs(prev => prev.filter(t => t.file.path !== path));
   }, [releaseTab]);
 
-  const closeTab = useCallback((path: string) => removeTab(path, true), [removeTab]);
+  /**
+   * The documents the user closed, oldest first — the stack ⌥⇧T pops.
+   *
+   * PATHS, not the tabs themselves: a reopen reads the file again, so a note
+   * edited elsewhere between the close and the reopen comes back as it now is
+   * (its buffer was flushed on the way out, so nothing is lost either way), and
+   * a closed PDF or notebook costs nothing to hold on to. Only a close the USER
+   * asked for is recorded: a rename, an overwrite or a vault switch takes a tab
+   * away for a reason that reopening would undo (see releaseOverwritten).
+   */
+  const closedPathsRef = useRef<string[]>([]);
+  // Two vaults share paths freely, so the stack is emptied on a switch rather
+  // than left to resolve "notes/todo.md" against whichever vault is open now.
+  useEffect(() => { closedPathsRef.current = []; }, [currentVaultId]);
+  const rememberClosed = useCallback((paths: readonly string[]) => {
+    // Closing, reopening and closing a note again puts it back on top rather
+    // than leaving two entries for one document.
+    const stack = closedPathsRef.current.filter(p => !paths.includes(p));
+    stack.push(...paths);
+    closedPathsRef.current = stack.slice(-CLOSED_TAB_MEMORY);
+  }, []);
+
+  const closeTab = useCallback((path: string) => {
+    rememberClosed([path]);
+    removeTab(path, true);
+  }, [removeTab, rememberClosed]);
+
+  /**
+   * Put the last closed document back (⌥⇧T), through the same opener a click in
+   * the file tree uses.
+   *
+   * Reaches further back rather than failing: an entry already open again, or
+   * whose file has since been trashed, renamed or moved, is dropped and the one
+   * before it tried. So the chord either lands on a document or does nothing —
+   * it never reopens a ghost tab of a file that is gone.
+   */
+  const reopenClosedTab = useCallback(async () => {
+    for (;;) {
+      const path = closedPathsRef.current.pop();
+      if (path === undefined) return;
+      if (tabsRef.current.some(t => t.file.path === path)) continue;
+      const node = collectFiles(fileTreeRef.current).find(f => f.path === path);
+      if (!node) continue;
+      if (await handleFileClick(node)) return;
+    }
+  }, [handleFileClick]);
 
   /**
    * Read an unreadable tab's file again (see OpenTab.readError). Resolves true
@@ -1665,10 +1715,12 @@ export default function App() {
     const pane = paneById(layoutRef.current, paneId);
     if (!pane) return;
     for (const path of pane.paths) releaseTab(path, true);
+    // ⌥⇧T brings the column back one tab at a time, rightmost first.
+    rememberClosed(pane.paths);
     const closed = new Set(pane.paths);
     setLayout(l => closePaneIn(l, paneId));
     setTabs(prev => prev.filter(t => !closed.has(t.file.path)));
-  }, [releaseTab]);
+  }, [releaseTab, rememberClosed]);
 
   /** A click on a tab: its column takes focus and fronts it. Path-explicit AND
    *  pane-explicit — two columns may hold tabs with the same name, and the id
@@ -3206,6 +3258,7 @@ export default function App() {
             saveStatus={saveStatus}
             onSelectTab={selectTabInPane}
             onCloseTab={closeTab}
+            onReopenClosedTab={reopenClosedTab}
             onClosePane={closePaneAndTabs}
             onMoveTab={moveTab}
             onSplitTabToPane={splitTabToPane}

@@ -202,6 +202,23 @@ requires reading it.
   together. Nothing is re-rendered on a toggle, and exports render shapes themselves, so a saved PDF
   never sees it: a notebook exported while dark is still printed on white paper.
 
+## `i` inverts a selected picture — `components/invertibleImageShape.tsx`
+
+The second fork in `CANVAS_SHAPE_UTILS` (same `type: 'image'`, so it substitutes as the draw one
+does). A screenshot taken out of a dark app is a black rectangle on ruled paper; `i` flips it.
+
+- **The flag is `shape.meta.inverted`**, not an asset edit and not a CSS rule. Meta rides along in
+  the document snapshot every canvas file already writes, so it survives a reload, undoes with ⌘Z,
+  and leaves the image asset alone — the same picture can be inverted in one place and not another.
+- **Two methods, both delegating**: `component` wraps tldraw's own output in a `filter`ed div (GPU
+  composited, so an inverted picture costs no more to pan than any other), and `toSvg` wraps it in a
+  filtered `<g>` — which is what makes a notebook's PDF export print what the screen showed.
+- **The key is bound per editor on its container in the CAPTURE phase** (`bindImageInvertKey`, called
+  beside `applyPenDefaults` in all three canvases), never on the window: a second canvas in the next
+  column must not answer for this one's selection. It is cancelled only when an image was actually
+  inverted, so with nothing selected `i` stays whatever tldraw makes of it, and it stands down while
+  a text shape is being edited.
+
 ## The pen is a forked draw shape — `components/tightDrawShape.tsx`
 
 All three canvases pass `shapeUtils={CANVAS_SHAPE_UTILS}`, which substitutes tldraw's draw shape (same

@@ -11,6 +11,7 @@ import type { Editor, TLShape } from 'tldraw';
 import { DefaultDashStyle, DefaultSizeStyle } from 'tldraw';
 import { getPenScale, seedPenScale } from '../utils/penStyle';
 import CanvasStylePanel from './CanvasStylePanel';
+import { InvertibleImageShapeUtil } from './invertibleImageShape';
 import { TightDrawShapeUtil } from './tightDrawShape';
 import PenDevPanel from './PenDevPanel';
 
@@ -78,9 +79,10 @@ export const CANVAS_COMPONENTS = {
 };
 
 /** Ditto for <Tldraw shapeUtils={...}>. tldraw merges these over its own by
- *  `type`, and this one is still `type: 'draw'`, so it substitutes rather than
- *  adds — see tightDrawShape.tsx for what it changes and why. */
-export const CANVAS_SHAPE_UTILS = [TightDrawShapeUtil];
+ *  `type`, and both keep tldraw's own type ('draw', 'image'), so each
+ *  substitutes rather than adds — see tightDrawShape.tsx (ink that keeps up with
+ *  the nib) and invertibleImageShape.tsx (`i` inverts a picture). */
+export const CANVAS_SHAPE_UTILS = [TightDrawShapeUtil, InvertibleImageShapeUtil];
 
 /**
  * Make the pen behave the way the panel promises.

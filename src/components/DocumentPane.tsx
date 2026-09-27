@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { Compartment, EditorState } from '@codemirror/state';
 import type { ChangeDesc } from '@codemirror/state';
@@ -41,7 +41,8 @@ import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
-import { isDrawingFile, isNotebookFile, isPdfFile, noteDisplayName } from '../utils/fileTypes';
+import TexView from './TexView';
+import { isDrawingFile, isNotebookFile, isPdfFile, isTexFile, noteDisplayName } from '../utils/fileTypes';
 import { ArrowLeft, ArrowRight, Edit2, Eye, MoreHorizontal, PenTool } from './icons';
 import type { ActiveFile, EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
 
@@ -540,10 +541,18 @@ function DocumentPane({
     const isNotebook = !file.isHelp && isNotebookFile(file.name);
     const isPdf = !file.isHelp && isPdfFile(file.name);
     const isCanvas = isDrawing || isNotebook || isPdf;
+    /** A LaTeX source file. Reading mode typesets it (components/TexView.tsx)
+     *  instead of building a CodeMirror view, so the two modes are "the document"
+     *  and "the source" rather than markdown's two readings of one text. */
+    const isTex = !file.isHelp && isTexFile(file.name);
     /** Restored without its text (OpenTab.readError): this pane shows only
      *  that, and builds no view, drawing or notebook — each would take the
      *  empty buffer for the document and save it over the file. */
     const unreadable = !!tab.readError;
+    /** Showing the typeset LaTeX rather than a CodeMirror view: no view is built
+     *  at all in this mode, which is why everything below reads `viewRef` when
+     *  called instead of assuming one. */
+    const texReading = isTex && mode === 'read' && !unreadable;
     const [retrying, setRetrying] = useState(false);
     // A success remounts this pane (EditorPane keys it on readError), so only a
     // failed attempt comes back to a mounted component to clear the flag.
@@ -600,10 +609,15 @@ function DocumentPane({
     // reader is — editor/tabIntoText.ts); ⌘F still finds this note from it
     // (`keyIsForNote`: inside the view). Reads `viewRef` when CALLED, so it
     // reaches the view StrictMode's rebuild left, not the one it destroyed.
+    const texScrollerRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
         if (isCanvas || unreadable) return;
-        return registerKeyboardTarget(path, () => viewRef.current?.scrollDOM.focus({ preventScroll: true }));
-    }, [path, isCanvas, unreadable, registerKeyboardTarget]);
+        // A typeset .tex has no view: its own scroller takes the keyboard, so
+        // Space and PageDown scroll the document a tab-bar click just fronted.
+        return registerKeyboardTarget(path, () => (texReading
+            ? texScrollerRef.current?.focus({ preventScroll: true })
+            : viewRef.current?.scrollDOM.focus({ preventScroll: true })));
+    }, [path, isCanvas, unreadable, texReading, registerKeyboardTarget]);
 
     const revealClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -656,6 +670,20 @@ function DocumentPane({
         confirmDelete: (request) => onImageDeleteRef.current({ ...request, path }),
     }));
 
+    /**
+     * The live-preview plugin for this document, or NOTHING for a `.tex`.
+     *
+     * Markdown's readings of LaTeX are all wrong — `$x_1$` is not an italic run,
+     * `_` is a subscript, `#` is a comment nowhere — and a widget that hides the
+     * source it stands for is the last thing wanted in a file that has to compile.
+     * So a .tex is edited as plain source; reading it is TexView's job. One helper
+     * rather than three copies, because the compartment is reconfigured on ⌘E and
+     * on a cached state's re-adoption as well as being built here.
+     */
+    const livePreviewFor = useCallback((forMode: EditorMode) =>
+        (isTex ? [] : createLivePreviewPlugin(stableGetAssetUrl, forMode, imageActions)),
+    [isTex, stableGetAssetUrl, imageActions]);
+
     /** The full extension list for this document. Every dynamic bit goes
      *  through a ref, so the view never has to be rebuilt. */
     const createTabState = (doc: string): EditorState => EditorState.create({
@@ -704,7 +732,7 @@ function DocumentPane({
             tabIntoText,
             readOnlyCompartment.of(modeExtensions(mode)),
             wikiLinkAutocomplete(() => getTargetsRef.current()),
-            livePreviewCompartment.of(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
+            livePreviewCompartment.of(livePreviewFor(mode)),
             // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
             // that, which would forget every collapsed section (headingFold.ts).
             headingFold(storedFoldKeys(path)),
@@ -843,7 +871,7 @@ function DocumentPane({
                     effects: [
                         themeCompartment.reconfigure(themeExtensions(theme)),
                         readOnlyCompartment.reconfigure(modeExtensions(mode)),
-                        livePreviewCompartment.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
+                        livePreviewCompartment.reconfigure(livePreviewFor(mode)),
                         indentCompartment.reconfigure(indentSettings(tabSize)),
                         // A leftover search flash from the last time this document
                         // was on screen.
@@ -927,12 +955,12 @@ function DocumentPane({
         view.dispatch({
             effects: [
                 readOnlyCompartment.reconfigure(modeExtensions(mode)),
-                livePreviewCompartment.reconfigure(createLivePreviewPlugin(stableGetAssetUrl, mode, imageActions)),
+                livePreviewCompartment.reconfigure(livePreviewFor(mode)),
             ],
         });
         // An open search panel gains or loses its Replace row with the mode.
         rebuildSearchPanelForMode(view, wasReadOnly);
-    }, [mode, stableGetAssetUrl, imageActions]);
+    }, [mode, livePreviewFor]);
 
     // Declared LAST on purpose — effects run in declaration order, so the three
     // above see `false` on the mount pass and `true` on every pass after it. The
@@ -1044,7 +1072,9 @@ function DocumentPane({
         const button = event.currentTarget;
         const box = button.getBoundingClientRect();
         const entries: ContextMenuEntry[] = [];
-        if (canToggleRead) {
+        // Not for a .tex: a markdown table is not a `tabular`, and writing one
+        // into a file that has to compile would be a syntax error.
+        if (canToggleRead && !isTex) {
             entries.push({
                 kind: 'grid',
                 id: 'insert-table',
@@ -1186,7 +1216,23 @@ function DocumentPane({
                         </button>
                     </div>
                 )}
-                {!isCanvas && !unreadable && (
+                {texReading && (
+                    <div
+                        className="tex-slot"
+                        ref={texScrollerRef}
+                        // Focusable but not in the tab order, exactly as
+                        // CodeMirror's own scroller is: what a tab-bar click
+                        // hands the keyboard to (see registerKeyboardTarget).
+                        tabIndex={-1}
+                        // Nothing else in this branch cancels a desktop drop,
+                        // and an uncancelled one navigates the whole app away.
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => e.preventDefault()}
+                    >
+                        <TexView source={tab.content} />
+                    </div>
+                )}
+                {!isCanvas && !unreadable && !texReading && (
                     <div
                         className="view-content"
                         ref={setEditorContainer}

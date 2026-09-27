@@ -141,6 +141,8 @@ At the right of the strip sit two small buttons. **+** starts a new note — it 
 
 Tabs keep a comfortable width while there is room for it, however short their names are. Open enough of them and they share the strip out between themselves, getting narrower so more stay in sight; past that the strip scrolls, and its left edge fades rather than cutting a name off mid-letter. That sharing happens per pane, so splitting the editor squeezes a pane's tabs straight away, and they widen again as the pane does.
 
+You can move between tabs without the mouse. \`Option + Tab\` (\`Alt + Tab\` on Windows) goes to the next open document and \`Option + Shift + Tab\` to the previous one, walking every pane's tabs in the order they are drawn, left column first, and wrapping round at the end. \`Option + Shift + W\` closes the document in front of you, and \`Option + Shift + T\` puts the last one you closed back; press it again for the one before that. Reopened documents are read from disk again, and a file that has since been renamed or trashed is skipped rather than coming back empty.
+
 Clicking a tab puts the keyboard on that note, so \`Space\`, \`Page Down\` and the arrow keys scroll it straight away, in Read Mode and while editing. To type, click in the text — or, in Edit Mode, press \`Tab\`, which puts the cursor at the end of the first line of text on screen (or leaves it where it is, if it is already on screen; with only a table or picture on screen, scroll a little first).
 
 If a note can't be read when your tabs come back — another program is writing it, a synced file isn't downloaded yet, or it's locked — its tab still comes back, marked with a warning sign, and says so instead of showing the note. Nothing in the file is changed. Press **Try again** once it is readable, or click the note in the file tree, which tries again too. It stays among your saved tabs either way; only a note that is really gone from the vault is dropped.
@@ -198,6 +200,13 @@ Reading is the mode in which a link is a link: in Read Mode a web address is cli
 Even in Edit Mode, the editor uses a "Live Preview" system. Markdown syntax (like bold asterisks or heading hashes) is hidden on lines you are not actively editing. When your cursor moves to a line, the raw syntax is revealed so you can modify it.
 
 Two things are deliberately never revealed that way, because they are objects rather than text: an **embedded image** and a **table**. Putting the cursor on either one does not turn it back into markdown for you to retype — you work on the thing itself, and the file goes on holding ordinary Markdown. See *Working With an Image* and *Tables*.
+
+### LaTeX (\`.tex\`) Files
+A \`.tex\` file opens **typeset rather than raw**: sections become headings, \`$…$\` and \`align\` blocks are set as maths, \`itemize\` and \`enumerate\` become lists, a \`tabular\` becomes a table, and a \`verbatim\` or \`lstlisting\` block keeps its exact spacing. The preamble sits at the bottom, folded away, since it is instructions to the compiler rather than part of the paper.
+
+Nothing is hidden from you: a command this app does not know is shown as itself, greyed, with whatever it wrapped still readable beside it. This is a reader, not a LaTeX compiler: it does not run packages, number equations or follow \`\\input\`.
+
+\`Cmd + E\` switches to the **source**, exactly as it stands in the file. Markdown's live preview is deliberately switched off there: in a file that has to compile, \`_\` is a subscript and \`$\` opens maths, so the text stays literal and safe to edit.
 
 ### Collapsing a Section
 In Read Mode, point at a heading — or at the margin just to its left — and a small arrow appears beside it. Click the arrow to collapse everything under that heading, up to the next heading of the same or a higher level: a \`##\` section takes its \`###\` sub-sections with it and ends at the next \`##\` or \`#\`. Click it again to bring the section back.
@@ -317,6 +326,9 @@ want again.
 A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endless
 sheet in every direction, for diagrams and thinking rather than for a page you
 intend to hand in.
+
+### Inverting a Picture You Brought Over
+Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
 
 ### PDFs
 A PDF opens in a reader: scroll it, select its text, search it with the browser's

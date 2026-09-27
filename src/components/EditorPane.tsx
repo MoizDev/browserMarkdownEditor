@@ -8,7 +8,7 @@ import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import { isPdfFile, isCanvasFile, isNotebookFile } from '../utils/fileTypes';
-import { paneSizes, paneById, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
+import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
 import type { ActiveFile, OpenTab, GraphData, GraphNode, TabLayout, Theme, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
@@ -30,6 +30,8 @@ interface EditorPaneProps {
     onSelectTab: (paneId: string, path: string) => void;
     /** Close ONE document. The last tab of a column takes the column with it. */
     onCloseTab: (path: string) => void;
+    /** Put the last closed document back — ⌥⇧T. */
+    onReopenClosedTab: () => void;
     /** Close a whole column, and every tab in it. */
     onClosePane: (paneId: string) => void;
     /** Move a document into `toPaneId` so it lands at `toIndex` (an index into
@@ -216,7 +218,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectTab, onCloseTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onFlushNow, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onFlushNow, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -358,6 +360,54 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
         onCloseTab(path);
         handKeyboardToNote();
     }, [onCloseTab, handKeyboardToNote]);
+    // ── The keyboard chords that move between tabs ─────────────────────────
+    //
+    // ⌥⇥ / ⌥⇧⇥ walk the open documents, ⌥⇧W closes the focused one, ⌥⇧T puts the
+    // last close back. Here rather than in App's chord handler because all three
+    // must hand the keyboard on exactly as a tab-bar click does — the registry
+    // above is this component's — and because the walk is over the LAYOUT: every
+    // column's tabs in the order they are drawn, left column first, so a split
+    // workspace cycles through all of it and not just one strip.
+    //
+    // Option, because ⌃⇥ is the browser's own tab switch and ⌘W closes the
+    // window. Matched on `e.code`: Option+W on a Mac gives `e.key === '∑'`, not
+    // 'w'. Capture phase, so CodeMirror (which binds plain Tab) and tldraw never
+    // see them — and, since they are cancelled there, no ⌥ character is typed
+    // into a note either.
+    const layoutRef = useRef(layout);
+    useEffect(() => { layoutRef.current = layout; }, [layout]);
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (!e.altKey || e.metaKey || e.ctrlKey) return;
+            const take = () => { e.preventDefault(); e.stopPropagation(); };
+            if (e.key === 'Tab') {
+                const l = layoutRef.current;
+                const paths = l.panes.flatMap(p => p.paths);
+                if (paths.length < 2) return;
+                take();
+                const at = paths.indexOf(focusedPathRef.current ?? '');
+                // A workspace whose focused document is somehow not in it starts
+                // at the beginning rather than doing nothing.
+                const next = paths[(((at < 0 ? 0 : at + (e.shiftKey ? -1 : 1)) % paths.length) + paths.length) % paths.length];
+                const pane = paneOf(l, next);
+                if (pane) selectFromTabBar(pane.id, next);
+                return;
+            }
+            if (!e.shiftKey) return;
+            if (e.code === 'KeyW') {
+                const path = focusedPathRef.current;
+                if (!path) return;
+                take();
+                closeFromTabBar(path);
+            } else if (e.code === 'KeyT') {
+                take();
+                onReopenClosedTab();
+            }
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        return () => window.removeEventListener('keydown', onKeyDown, true);
+    }, [selectFromTabBar, closeFromTabBar, onReopenClosedTab]);
+
     /** A group's `+`. Focus its column FIRST: `openTab` opens into whichever
      *  pane has the focus, so without this the note lands in the column the
      *  reader was last in rather than the one they pressed `+` in. */

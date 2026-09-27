@@ -115,8 +115,8 @@ hides them and nothing else looks.
   also closes every tab at the displaced path **or under it**: those handles resolve to the directory
   entry the restored copy now occupies, so one keystroke would overwrite what was just put back. The
   panel also closes on `rootHandle` change: every row holds handles from one vault.
-- **Nothing about an item's appearance comes back** — `forgetEntry` dropped its icon/colour when it
-  was trashed, and nothing records it. Panel-side: rows compose `.tree-item` (for
+- **Nothing about an item's appearance comes back** — `forgetEntry` dropped its icon/colour (and its
+  slot in a custom order) when it was trashed, and nothing records it. Panel-side: rows compose `.tree-item` (for
   `content-visibility`), `dropTrashSubtree` prunes a restored/erased subtree from the root list **and**
   every `children` array (a restored folder takes its hoisted rows with it), and the preview is text
   and images ONLY — previewing a PDF or a drawing would pull pdf.js/tldraw into the main bundle.

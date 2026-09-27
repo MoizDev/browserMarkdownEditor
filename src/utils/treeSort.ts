@@ -26,13 +26,21 @@
 //
 // The cache is a WeakMap keyed on source nodes: a tree refresh builds all-new
 // nodes, and the old ones (with their clones) simply fall out of it.
+//
+// CUSTOM is the user's own arrangement (`order` in `.appearance.json`, see
+// utils/entryStyle.ts), per folder: the names its list holds come first, in
+// list order, and every child it does not hold — new, imported, restored,
+// added outside the app — follows in the canonical order, by a STABLE sort over
+// buildFileTree's sequence. Folders are not forced first here: the user may
+// interleave them. A folder with no list is exactly its canonical self.
 
 import type { FileTreeDirNode, FileTreeNode } from '../types';
+import { orderListFor, type EntryOrder } from './entryStyle';
 
-export type TreeSortOrder = 'name-asc' | 'name-desc' | 'mtime-desc' | 'mtime-asc';
+export type TreeSortOrder = 'name-asc' | 'name-desc' | 'mtime-desc' | 'mtime-asc' | 'custom';
 
 /** Every valid order, for clamping a `localStorage` read — it is user-editable. */
-export const TREE_SORT_ORDERS: readonly TreeSortOrder[] = ['name-asc', 'name-desc', 'mtime-desc', 'mtime-asc'];
+export const TREE_SORT_ORDERS: readonly TreeSortOrder[] = ['name-asc', 'name-desc', 'mtime-desc', 'mtime-asc', 'custom'];
 
 /** Whether this order needs file modification times (utils/fileTimes.ts). */
 export function isTimeSort(order: TreeSortOrder): boolean {
@@ -73,6 +81,7 @@ function sameSequence(a: readonly FileTreeNode[], b: readonly FileTreeNode[]): b
  * write on disk — moves copy), and sorting them as oldest flashed every new
  * note at the bottom of a new→old list until the next whole-vault walk. Before
  * the first walk every time is unknown, so the tree simply stays in name order.
+ * `custom` follows the header's rule instead, and reads only `customOrder`.
  * Never mutates its input; see the header for what it guarantees about identity.
  */
 export function sortTree(
@@ -80,9 +89,12 @@ export function sortTree(
     order: TreeSortOrder,
     times: ReadonlyMap<string, number>,
     cache: SortCache,
+    customOrder: Readonly<EntryOrder>,
 ): FileTreeNode[] {
-    // buildFileTree already produced exactly this order.
+    // buildFileTree already produced exactly this order — and so it has for
+    // Custom, while nothing has been reordered.
     if (order === 'name-asc') return nodes;
+    if (order === 'custom' && Object.keys(customOrder).length === 0) return nodes;
 
     const byName = order === 'name-desc'
         ? (a: FileTreeNode, b: FileTreeNode) => compareNames(b.name, a.name)
@@ -104,13 +116,28 @@ export function sortTree(
         return a.kind === 'directory' ? folderOrder(a, b) : fileOrder(a, b);
     };
 
+    /** How one folder's children compare, or null to keep them as they are. */
+    const compareIn = (folderPath: string): ((a: FileTreeNode, b: FileTreeNode) => number) | null => {
+        if (order !== 'custom') return compare;
+        const list = orderListFor(customOrder, folderPath);
+        if (!list) return null;
+        const rank = new Map(list.map((name, i) => [name, i]));
+        // Unlisted ranks just past the list — a finite number, since
+        // Infinity - Infinity is NaN and a NaN comparator breaks the sort.
+        const unlisted = list.length;
+        return (a, b) => (rank.get(a.name) ?? unlisted) - (rank.get(b.name) ?? unlisted);
+    };
+
     // Sub-folders are resolved (to themselves, a cached clone, or a new one)
     // BEFORE the sort, so the sequence compared below is of final identities.
-    const sortList = (list: FileTreeNode[]): FileTreeNode[] =>
-        list.map(child => (child.kind === 'directory' ? sortDir(child) : child)).sort(compare);
+    const sortList = (list: FileTreeNode[], folderPath: string): FileTreeNode[] => {
+        const resolved = list.map(child => (child.kind === 'directory' ? sortDir(child) : child));
+        const cmp = compareIn(folderPath);
+        return cmp ? resolved.sort(cmp) : resolved;
+    };
 
     const sortDir = (dir: FileTreeDirNode): FileTreeDirNode => {
-        const children = sortList(dir.children);
+        const children = sortList(dir.children, dir.path);
         if (sameSequence(children, dir.children)) return dir;
         const cached = cache.dirs.get(dir);
         if (cached && sameSequence(children, cached.children)) return cached;
@@ -119,7 +146,7 @@ export function sortTree(
         return clone;
     };
 
-    const root = sortList(nodes);
+    const root = sortList(nodes, '');
     if (sameSequence(root, nodes)) return nodes;
     if (cache.root && sameSequence(root, cache.root)) return cache.root;
     cache.root = root;

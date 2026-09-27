@@ -1,4 +1,5 @@
-// The open vault's icons and colours — files and folders alike — as a store.
+// The open vault's icons and colours — files and folders alike — and the file
+// tree's custom order (all of `.appearance.json`), as a store.
 //
 // A STORE AND NOT A PROP, for the reason `utils/contextMenu.ts` spells out at
 // length: `FileExplorer` is `React.memo`'d and `TreeNode` memoized specifically
@@ -10,7 +11,7 @@
 // The IO lives in App, which owns every filesystem call; this module holds only
 // what has been read, and notifies the rows that care.
 
-import { emptyEntryStyles, type EntryStyle, type EntryStyleFile } from './entryStyle';
+import { emptyEntryStyles, type EntryOrder, type EntryStyle, type EntryStyleFile } from './entryStyle';
 
 let styles: EntryStyleFile = emptyEntryStyles();
 const listeners = new Set<() => void>();
@@ -42,4 +43,13 @@ export function subscribeEntryStyles(listener: () => void): () => void {
  */
 export function getEntryStyle(path: string): EntryStyle | undefined {
     return styles.entries[path];
+}
+
+/**
+ * The tree's custom order, for the explorer's Custom sort. Identity-stable
+ * while no list changes — every helper in entryStyle.ts carries the object
+ * through untouched — so an icon pick does not re-sort the tree.
+ */
+export function getEntryOrder(): EntryOrder {
+    return styles.order;
 }

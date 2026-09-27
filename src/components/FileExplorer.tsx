@@ -1,6 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore } from 'react';
 import TreeNode from './TreeNode';
-import { takeDraggedNode } from '../utils/treeDrag';
+import {
+    peekDraggedNode, setTreeDropTarget, setTreeReorderMode, takeDraggedNode, type TreeDropPosition,
+} from '../utils/treeDrag';
+import { indexTree, planTreeDrop, type TreeDropPlan, type TreeDropSpot, type TreeIndex } from '../utils/treeReorder';
+import { getEntryOrder, subscribeEntryStyles } from '../utils/entryStyleStore';
 import { isTabDrag } from '../utils/tabDrag';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
@@ -21,7 +25,7 @@ import { readJSON, writeJSON } from '../utils/storage';
 import { createVaultTextCache } from '../utils/vaultSearch';
 import type { VaultTextCache } from '../utils/vaultSearch';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
-import type { IconNode } from '../utils/entryStyle';
+import { orderListFor, type EntryOrder, type IconNode } from '../utils/entryStyle';
 
 /**
  * True when the drag carries OS files rather than a tree node being moved.
@@ -34,13 +38,20 @@ function isExternalFileDrag(e: React.DragEvent): boolean {
 
 /** The sort menu's rows, in Obsidian's wording and order (image 8). Its two
  *  "Created time" rows are left out on purpose: the File System Access API
- *  exposes no creation time at all, so they could only lie. */
+ *  exposes no creation time at all, so they could only lie. Custom is ours —
+ *  Obsidian has none — the user's own drag-arranged order, in its own group
+ *  at the bottom (the menu below slices this list by position). */
 const SORT_ROWS: { id: TreeSortOrder; label: string }[] = [
     { id: 'name-asc', label: 'File name (A to Z)' },
     { id: 'name-desc', label: 'File name (Z to A)' },
     { id: 'mtime-desc', label: 'Modified time (new to old)' },
     { id: 'mtime-asc', label: 'Modified time (old to new)' },
+    { id: 'custom', label: 'Custom' },
 ];
+
+/** The order snapshot while Custom is NOT chosen: constant, so an order or icon
+ *  change never re-renders the explorer of someone sorting another way. */
+const NO_ORDER: EntryOrder = Object.freeze({}) as EntryOrder;
 
 /** localStorage is user-editable: anything but a known order reads as the default. */
 function readSortOrder(): TreeSortOrder {
@@ -77,6 +88,9 @@ interface FileExplorerProps {
     /** Close all of these folders in one update (Collapse all). */
     onCollapsePaths: (paths: string[]) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
+    /** Store one folder's custom order (`null` forgets it). Stable per vault,
+     *  like onStyleEntry: this component is memoized. */
+    onSetTreeOrder: (folderPath: string, names: readonly string[] | null) => void;
     onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
     /** Copy files dragged in from the OS into `targetDir`. */
     onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
@@ -102,6 +116,7 @@ function FileExplorer({
     onExpandPaths,
     onCollapsePaths,
     onMoveFile,
+    onSetTreeOrder,
     onRenameFile,
     onImportFiles,
     onOpenSearchResult,
@@ -128,6 +143,13 @@ function FileExplorer({
     // ── View preferences (global, like expandedPaths) ───────────────────────
     const [sortOrder, setSortOrder] = useState<TreeSortOrder>(readSortOrder);
     useEffect(() => { writeJSON('fileTreeSortOrder', sortOrder); }, [sortOrder]);
+    // Hands a dragged tree node's drop to the container's handlers below
+    // instead of the folder rows' (TreeNode reads it at event time).
+    const reordering = sortOrder === 'custom';
+    useEffect(() => {
+        setTreeReorderMode(reordering);
+        return () => setTreeReorderMode(false);
+    }, [reordering]);
 
     const [autoReveal, setAutoReveal] = useState<boolean>(() => readJSON<unknown>('fileTreeAutoReveal', false) === true);
     useEffect(() => { writeJSON('fileTreeAutoReveal', autoReveal); }, [autoReveal]);
@@ -141,16 +163,29 @@ function FileExplorer({
        The file times are an external store, and this subscribes to them ONLY
        while a time order is chosen: the snapshot is a constant 0 otherwise, so
        a save's stamp (App.flushTab → recordFileWritten) never re-renders the
-       explorer of a user sorting by name. */
+       explorer of a user sorting by name. The custom order is subscribed the
+       same way, only while Custom is chosen: `.appearance.json` also changes
+       with every icon pick. */
     const sortCacheRef = useRef(createSortCache());
     const timesVersion = useSyncExternalStore(
         subscribeFileTimes,
         useCallback(() => (isTimeSort(sortOrder) ? getFileTimesVersion() : 0), [sortOrder]),
     );
+    const customOrder = useSyncExternalStore(
+        subscribeEntryStyles,
+        useCallback(() => (reordering ? getEntryOrder() : NO_ORDER), [reordering]),
+    );
     const displayTree = useMemo(() => {
         void timesVersion; // the times map is mutable; its version is the dependency
-        return sortTree(fileTree, sortOrder, getFileTimes(), sortCacheRef.current);
-    }, [fileTree, sortOrder, timesVersion]);
+        return sortTree(fileTree, sortOrder, getFileTimes(), sortCacheRef.current, customOrder);
+    }, [fileTree, sortOrder, timesVersion, customOrder]);
+
+    /** What a Custom-order drag measures against — only built under Custom, and
+     *  once per display tree, not per `dragover`. */
+    const dropIndex = useMemo<TreeIndex | null>(
+        () => (reordering ? indexTree(displayTree) : null),
+        [reordering, displayTree],
+    );
 
     /* Stat every file while a time order is chosen, re-run whenever the tree
        changes shape (a refresh hands out new handles, and a moved file is a new
@@ -304,7 +339,9 @@ function FileExplorer({
     const openSortMenu = (e: React.MouseEvent<HTMLButtonElement>) => raiseMenu(e, 'sort', 'Sort order', [
         ...SORT_ROWS.slice(0, 2).map(row => sortEntry(row)),
         { kind: 'separator', id: 'sep-sort' },
-        ...SORT_ROWS.slice(2).map(row => sortEntry(row)),
+        ...SORT_ROWS.slice(2, 4).map(row => sortEntry(row)),
+        { kind: 'separator', id: 'sep-custom' },
+        ...SORT_ROWS.slice(4).map(row => sortEntry(row)),
     ]);
 
     const handleSearchResult = (node: FileTreeFileNode, range: TextRange | null) => {
@@ -386,6 +423,71 @@ function FileExplorer({
         });
     };
 
+    // ── Custom order: placing a dragged tree node ──────────────────────────
+    /**
+     * Under Custom, EVERY drop of a tree node is decided here, from the row
+     * under the pointer and where on it the pointer sits: the top or bottom
+     * half of a file means before or after it; a folder splits in quarters —
+     * top before it, middle into it (appended), bottom after it, or, when it is
+     * open with children, first inside it, since the line under an open
+     * folder's header is visually its first child's slot. Below every row is the
+     * end of the vault root. Null when the drag is not a Custom reorder at all
+     * (OS files, editor tabs, another order), which leaves today's paths alone.
+     */
+    const resolveReorder = (e: React.DragEvent<HTMLDivElement>): { path: string | null; spot: TreeDropSpot; plan: TreeDropPlan | null } | null => {
+        if (!dropIndex || isTabDrag(e.dataTransfer)) return null;
+        const dragged = peekDraggedNode();
+        if (!dragged) return null;
+
+        const row = (e.target as Element).closest('.tree-item[data-path]');
+        const node = row && e.currentTarget.contains(row)
+            ? dropIndex.byPath.get((row as HTMLElement).dataset.path!)
+            : undefined;
+        if (!row || !node) {
+            return { path: null, spot: 'root-end', plan: planTreeDrop(dropIndex, dragged, null, 'root-end') };
+        }
+
+        const rect = row.getBoundingClientRect();
+        const y = (e.clientY - rect.top) / rect.height;
+        let spot: TreeDropPosition;
+        if (node.kind === 'file') spot = y < 0.5 ? 'before' : 'after';
+        else if (y < 0.25) spot = 'before';
+        else if (y < 0.75) spot = 'into';
+        else spot = expandedPaths.has(node.path) && node.children.length > 0 ? 'first-child' : 'after';
+        return { path: node.path, spot, plan: planTreeDrop(dropIndex, dragged, node.path, spot) };
+    };
+
+    const clearReorderTarget = () => {
+        setTreeDropTarget(null);
+        setRootDragOver(false);
+    };
+
+    /** The folder handle a plan's destination resolves to. */
+    const handleForFolder = (folderPath: string): FileSystemDirectoryHandle | null => {
+        if (!folderPath) return rootHandle;
+        const node = dropIndex?.byPath.get(folderPath);
+        return node?.kind === 'directory' ? node.handle : null;
+    };
+
+    const dropReorder = async (plan: TreeDropPlan) => {
+        const dragged = takeDraggedNode();
+        if (!dragged) return;
+        if (!plan.move) {
+            onSetTreeOrder(plan.parentPath, plan.names);
+            return;
+        }
+        const target = handleForFolder(plan.parentPath);
+        if (!target) return;
+        // The destination's order is written BEFORE the move, so the tree
+        // refresh the move ends in already shows the node in its slot rather
+        // than at the folder's end for a frame. The move's own re-key
+        // (App.retargetTabs → renameEntry) takes it out of the old folder's list.
+        const previous = orderListFor(getEntryOrder(), plan.parentPath) ?? null;
+        onSetTreeOrder(plan.parentPath, plan.names);
+        const moved = await onMoveFile(dragged, target, plan.parentPath);
+        if (!moved) onSetTreeOrder(plan.parentPath, previous);
+    };
+
     // Root-level drop handlers — use a counter to reliably track enter/leave
     const dragCounterRef = useRef(0);
 
@@ -395,6 +497,8 @@ function FileExplorer({
         // drop it would silently ignore.
         if (isTabDrag(e.dataTransfer)) return;
         e.preventDefault();
+        // A Custom reorder draws its own target on every dragover instead.
+        if (reordering && peekDraggedNode()) return;
         dragCounterRef.current++;
         setRootDragOver(true);
     };
@@ -402,12 +506,26 @@ function FileExplorer({
     const handleRootDragOver = (e: React.DragEvent<HTMLDivElement>) => {
         if (isTabDrag(e.dataTransfer)) return;
         e.preventDefault();
+        const reorder = resolveReorder(e);
+        if (reorder) {
+            const { path, spot, plan } = reorder;
+            setTreeDropTarget(plan && path !== null && spot !== 'root-end' ? { path, position: spot } : null);
+            setRootDragOver(!!plan && spot === 'root-end');
+            e.dataTransfer.dropEffect = plan ? 'move' : 'none';
+            return;
+        }
         // Files dragged from the OS are copied in, not moved out of the vault —
         // showing 'move' would promise Explorer we're removing their original.
         e.dataTransfer.dropEffect = isExternalFileDrag(e) ? 'copy' : 'move';
     };
 
-    const handleRootDragLeave = () => {
+    const handleRootDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+        if (reordering && peekDraggedNode()) {
+            // Only leaving the container clears it; row-to-row crossings are
+            // the next dragover's to redraw.
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) clearReorderTarget();
+            return;
+        }
         dragCounterRef.current--;
         if (dragCounterRef.current <= 0) {
             dragCounterRef.current = 0;
@@ -417,6 +535,13 @@ function FileExplorer({
 
     const handleRootDrop = async (e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
+        const reorder = isExternalFileDrag(e) ? null : resolveReorder(e);
+        if (reorder) {
+            clearReorderTarget();
+            if (reorder.plan) await dropReorder(reorder.plan);
+            else takeDraggedNode();
+            return;
+        }
         dragCounterRef.current = 0;
         setRootDragOver(false);
 
@@ -438,6 +563,7 @@ function FileExplorer({
         const resetDrag = () => {
             dragCounterRef.current = 0;
             setRootDragOver(false);
+            setTreeDropTarget(null);
         };
         document.addEventListener('dragend', resetDrag);
         return () => document.removeEventListener('dragend', resetDrag);

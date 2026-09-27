@@ -43,7 +43,9 @@ At the bottom, a row of three icons: **Neural Brain** (the graph view of how you
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
 
 ### Sorting and Finding Your Place
-**Change sort order** (the arrow beside the lines) lists the tree by **File name (A to Z)**, **File name (Z to A)**, **Modified time (new to old)** or **Modified time (old to new)**; the tick shows the one in use, and the app remembers it. Folders always stay at the top, in name order. Under a modified-time order a note moves to the top the moment it saves. Moving or renaming a file counts as modifying it, since the app copies it to its new place. There is no "created time" order: browsers do not tell a web page when a file was created.
+**Change sort order** (the arrow beside the lines) lists the tree by **File name (A to Z)**, **File name (Z to A)**, **Modified time (new to old)**, **Modified time (old to new)** or **Custom**; the tick shows the one in use, and the app remembers it. Under all but Custom, folders stay at the top, in name order. Under a modified-time order a note moves to the top the moment it saves. Moving or renaming a file counts as modifying it, since the app copies it to its new place. There is no "created time" order: browsers do not tell a web page when a file was created.
+
+**Custom** is your own order: drag files and folders into whatever arrangement you like, folders mixed in among the files if you want (see *Drag and Drop*). Until you move something, a folder looks just as it does under File name (A to Z). Anything added later — a new note, something put back from the Trash — appears at the end of its folder until you place it. The order is kept per vault, in the hidden \`.appearance.json\` at the top of it, so it travels with the vault; choosing another sort order leaves it untouched, and choosing **Custom** again brings it straight back.
 
 **Auto-reveal current file** is an on/off switch, off to begin with. While it is on (its button stays shaded), whatever you switch to in the editor is found in the tree for you: the folders it is in open, and its row scrolls into view. It acts when you change notes (and when you turn it on, or come back to Files from Search) — never on its own after that, so a folder you close yourself stays closed.
 
@@ -111,6 +113,13 @@ You can drag and drop files and folders within the file tree to reorganize your 
 - Drag any item and drop it onto the empty space in the sidebar (the root level) to move it back to the main vault directory.
 - Folders highlight with a purple dashed outline when you hover over them while dragging.
 
+Under the **Custom** sort order, dragging also rearranges the tree, and a line shows where the item will land before you let go:
+- Over the top or bottom half of a row, the line appears above or below it — drop to put the item there.
+- Over the middle of a folder, the folder gets the purple outline instead — drop to put the item at the end of that folder.
+- Over the bottom of an open folder, the line appears indented under its name — drop to make the item the first thing inside it.
+- Below the last row, the whole tree is outlined — drop to put the item at the end of the vault's top level.
+- Dropping between rows of another folder moves the item into that folder, at that spot. Where no line or outline appears, the drop would change nothing, and does nothing.
+
 Renaming or moving a folder takes the notes you have open from it along: they stay open, keep their place, and go on saving to the right file under its new name.
 
 ### Creating New Items
@@ -163,7 +172,7 @@ Under each pane's tabs is a row belonging to that pane: its file's name in the m
 With more than one pane, the pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F and ⌘S act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
 
 ### The Status Bar
-A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. It never takes a click meant for the note underneath it.
+A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. It never takes a click meant for the note underneath it. A PDF, drawing or notebook has no words to count, so there the bar shows only briefly, to say something was saved or moved to the Trash — and when a PDF or notebook is open in the right-most pane, the bar sits just above its page and zoom buttons rather than over them.
 
 ### Giving One Pane More Room
 The line between two panes can be dragged. Pull it left or right and those two panes share the width between them — everything else stays exactly where you put it. A pane won't shrink past being readable, so you can always find the line again.

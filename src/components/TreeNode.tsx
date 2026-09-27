@@ -5,7 +5,10 @@ import {
     clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor, requestCreate,
     subscribeCreateRequest, type CreateKind,
 } from '../utils/createRequest';
-import { setDraggedNode, takeDraggedNode } from '../utils/treeDrag';
+import {
+    getTreeDropPosition, isTreeReorderMode, peekDraggedNode, setDraggedNode, setTreeDropTarget,
+    subscribeTreeDropTarget, takeDraggedNode,
+} from '../utils/treeDrag';
 import { isTabDrag } from '../utils/tabDrag';
 import { openContextMenu } from '../utils/contextMenu';
 import { isActiveFilePath, subscribeActiveFile } from '../utils/activeFile';
@@ -67,7 +70,20 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
         subscribeActiveFile,
         useCallback(() => node.kind === 'file' && isActiveFilePath(node.path), [node.kind, node.path]),
     );
+    /* Where a Custom-order drop would land relative to THIS row, if anywhere —
+       a per-path primitive from the store, so a drag re-renders only the rows
+       it passes (utils/treeDrag.ts). FileExplorer decides it; the row draws it. */
+    const dropPosition = useSyncExternalStore(
+        subscribeTreeDropTarget,
+        useCallback(() => getTreeDropPosition(node.path), [node.path]),
+    );
     const paddingLeft = 12 + depth * 16;
+    /* The indent as a variable too, for the insertion line: it starts where the
+       row's content does, so its left end says what depth the drop lands at. */
+    const rowStyle = { paddingLeft, ['--tree-indent' as string]: `${paddingLeft}px` };
+    const dropClass = dropPosition === 'before' ? ' drop-before'
+        : dropPosition === 'after' ? ' drop-after'
+            : dropPosition === 'first-child' ? ' drop-first-child' : '';
     const expanded = expandedPaths.has(node.path);
     const [dragOver, setDragOver] = useState(false);
     const [isRenaming, setIsRenaming] = useState(false);
@@ -305,8 +321,15 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
         setDraggedNode(node);
     };
 
+    /** Under Custom, a tree node's drop is FileExplorer's to place — before,
+     *  after, into — from one delegated handler on the container. Returning
+     *  without preventing or stopping anything lets the event reach it. OS
+     *  files and editor tabs carry no dragged node and keep the paths below. */
+    const reorderOwnsDrag = () => isTreeReorderMode() && peekDraggedNode() !== null;
+
     const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
         if (node.kind !== 'directory') return;
+        if (reorderOwnsDrag()) return;
         // An editor tab being carried to the split view passes right over the
         // tree. Not preventing the default is what refuses the drop, so the row
         // never lights up offering something it could not do with it.
@@ -320,11 +343,13 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
     };
 
     const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+        if (reorderOwnsDrag()) return;
         e.stopPropagation();
         setDragOver(false);
     };
 
     const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+        if (reorderOwnsDrag()) return;
         e.preventDefault();
         e.stopPropagation();
         setDragOver(false);
@@ -351,14 +376,15 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
 
     const handleDragEnd = () => {
         setDraggedNode(null);
+        setTreeDropTarget(null);
     };
 
     if (node.kind === 'file') {
         return (
             <div
-                className={`tree-item tree-file${isActive ? ' is-active' : ''}${marked ? ' is-context-target' : ''}`}
+                className={`tree-item tree-file${isActive ? ' is-active' : ''}${marked ? ' is-context-target' : ''}${dropClass}`}
                 data-path={node.path}
-                style={{ paddingLeft }}
+                style={rowStyle}
                 onClick={() => { if (!isRenaming) onFileClick(node); }}
                 onContextMenu={handleContextMenu}
                 draggable={!isRenaming}
@@ -436,8 +462,9 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
     return (
         <div className="tree-item-container">
             <div
-                className={`tree-item tree-folder${dragOver ? ' drag-over' : ''}${marked ? ' is-context-target' : ''}`}
-                style={{ paddingLeft }}
+                className={`tree-item tree-folder${dragOver || dropPosition === 'into' ? ' drag-over' : ''}${marked ? ' is-context-target' : ''}${dropClass}`}
+                data-path={node.path}
+                style={rowStyle}
                 onClick={() => { if (!isRenaming) onToggleExpand(node.path); }}
                 onContextMenu={handleContextMenu}
                 draggable={!isRenaming}

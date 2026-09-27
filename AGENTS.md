@@ -70,8 +70,8 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   the notebook PDF export are the deliberate exceptions. **`createFile` is the hole** — it
   opens-or-*truncates*, guarded only at `App.handleCreateFile`; anything new calling it inherits it.
 - **`.Assets` (images) and `.Garbage` (trash) are per FOLDER**, hidden, owned by `utils/assets.ts` — a
-  folder carries its own pictures and deletions wherever it goes. `.appearance.json` is the third
-  app-owned name and the only root-only one (`vault-filesystem`, `entry-styles`).
+  folder carries its own pictures and deletions wherever it goes. `.appearance.json` (looks, custom
+  tree order; **new keys need the user's OK**) is the 3rd, root-only (`vault-filesystem`, `entry-styles`).
 - **Paths are vault-root-relative with no vault-name prefix**, centralized in `utils/paths.ts`;
   `buildFileTree` and every create/move/rename tab handler must agree or tabs stop deduping.
 - **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault. Read ONCE on

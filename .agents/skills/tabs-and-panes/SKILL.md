@@ -44,6 +44,24 @@ never re-reads disk or loses unsaved edits; `dirty` drives the tab dot.
   `renamePath`/`relabelPaths` relabel it. Not persisted: a restored pane starts at `[activePath]`,
   which is why both arrows are grey right after a reload.
 
+## The keyboard chords that move between tabs
+
+⌥⇥ / ⌥⇧⇥ walk the open documents, ⌥⇧W closes the focused one, ⌥⇧T reopens the last close. They live
+in **`EditorPane`, not App's chord handler**, for two reasons: all three must hand the keyboard on
+through the same `handKeyboardToNote` a tab-bar click uses (that registry is EditorPane's), and the
+walk is over `layout.panes.flatMap(p => p.paths)` — every column's tabs in drawn order, so a split
+workspace cycles through all of it.
+
+- **Option, and matched on `e.code`.** ⌃⇥ is the browser's tab switch and ⌘W closes the window;
+  Option+W on a Mac gives `e.key === '∑'`, so `e.key` cannot be used for the letters.
+- **Capture phase**, so CodeMirror (which binds plain Tab) and tldraw never see them — and, being
+  cancelled there, no ⌥ character is typed into a note.
+- **The reopen stack is App's** (`closedPathsRef`, capped at `CLOSED_TAB_MEMORY`): PATHS, filled by
+  `closeTab` and `closePaneAndTabs` only. A rename, an overwrite (`releaseOverwritten`) or a vault
+  switch takes a tab away for a reason reopening would undo, so those never record — and the stack is
+  **emptied on a vault switch**, since two vaults share paths freely. A reopen reaches further back
+  past anything already open or no longer in the tree, so the chord never resurrects a ghost.
+
 ## Autosave and the save funnel
 
 - **Autosave is per-tab**, via a `Map<path, timer>` (`saveTimersRef`, 1s debounce). Switching or

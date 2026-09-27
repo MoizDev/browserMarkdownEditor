@@ -76,6 +76,19 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
 - `livePreview.ts` **declines HMR** (`import.meta.hot.decline()`): the cached decoration logic means
   a hot swap wouldn't take, so it forces a full reload in dev instead.
 
+## A `.tex` file gets NO live preview, and reads through `TexView`
+
+`DocumentPane.livePreviewFor(mode)` returns `[]` for a `.tex` (`isTexFile`), and the three
+`livePreviewCompartment` sites — the state's construction, the ⌘E reconfigure and the cached state's
+re-adoption — all go through it, so they cannot drift. Markdown's readings of LaTeX are all wrong
+(`$x_1$` is not an italic run, `_` is a subscript, `#` is a comment nowhere), and a widget that hides
+the source it stands for is the last thing wanted in a file that has to compile.
+
+Reading mode for a `.tex` builds **no view at all**: `DocumentPane` renders `components/TexView.tsx`
+(parsed by the React-free `utils/texDoc.ts`) in a `.tex-slot` scroller, which is also what
+`registerKeyboardTarget` focuses in that mode. Its maths renders lazily through one shared
+IntersectionObserver — a problem set is hundreds of formulae, and KaTeX is ~0.3ms each.
+
 ## The files
 
 - `latexSource.ts` owns math-region detection (Obsidian rules: `$…$` single-line inline, `$$…$$`

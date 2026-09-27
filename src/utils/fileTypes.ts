@@ -42,6 +42,20 @@ export function isMarkdownFile(name: string): boolean {
     return name.toLowerCase().endsWith(MD_EXT);
 }
 
+/* ── LaTeX ───────────────────────────────────────────────────────── */
+
+/**
+ * A LaTeX source file: ordinary text on disk like any note, but markdown is the
+ * wrong reading of every line in it, so reading mode typesets it instead
+ * (components/TexView.tsx) and edit mode leaves the source alone.
+ *
+ * `.tex` only. A `.sty` or `.cls` is a package, not a document, and a `.bib` is
+ * a database — all three are better read as the plain text they are.
+ */
+export function isTexFile(name: string): boolean {
+    return name.toLowerCase().endsWith('.tex');
+}
+
 /**
  * What a note is CALLED, as opposed to what its file is named: "Notes.md" -> "Notes".
  * Display only — never pass the result to anything that writes to disk.

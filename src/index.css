@@ -5719,3 +5719,194 @@ li[aria-selected] .cm-completionMatchedText {
   border-bottom-width: 1px;
   border-left-width: 1px;
 }
+
+/* ── Reading a .tex file ──
+   The typeset view of a LaTeX source file (components/TexView.tsx). Deliberately
+   NOT styled like markdown reading mode: a paper wants a measure, a title block
+   and real space around its display maths, and the pane it sits in is the same
+   width as a note's. `.tex-slot` is the scroller, so the keyboard target above
+   has something to focus and to page through. */
+.tex-slot {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  outline: none;
+}
+
+.tex-view {
+  padding: 28px 0 40vh;    /* the same bottom air a note's scroller keeps */
+  color: var(--text-normal);
+  font-size: var(--font-size-normal);
+  line-height: 1.65;
+}
+
+.tex-page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 28px;
+}
+
+.tex-title-block {
+  margin: 0 0 28px;
+  text-align: center;
+}
+
+.tex-title {
+  margin: 0;
+  font-size: 1.9em;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.tex-byline {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+}
+
+.tex-heading {
+  margin: 1.6em 0 0.5em;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+h2.tex-heading { font-size: 1.45em; }
+h3.tex-heading { font-size: 1.22em; }
+h4.tex-heading { font-size: 1.08em; }
+h5.tex-heading { font-size: 1em; color: var(--text-muted); }
+
+.tex-para {
+  margin: 0 0 0.9em;
+}
+
+/* Every block a document repeats thousands of times carries this, with a box to
+   guess by — see AGENTS.md. A 900-page thesis then lays out and paints what is
+   on screen rather than all of it on every frame. */
+.tex-para,
+.tex-display,
+.tex-code,
+.tex-table-wrap {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2.6em;
+}
+
+.tex-display {
+  margin: 1.1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+/* A formula still waiting for KaTeX (TexView renders maths lazily) shows its
+   source, in the same monospace the editor uses so the swap is not a jolt. */
+.tex-math,
+.tex-math-display {
+  font-family: var(--font-monospace);
+}
+
+.tex-math:has(.katex),
+.tex-math-display:has(.katex) {
+  font-family: inherit;
+}
+
+.tex-list {
+  margin: 0 0 0.9em;
+  padding-left: 1.6em;
+}
+
+.tex-list .tex-para {
+  margin: 0 0 0.25em;
+}
+
+.tex-list .tex-list {
+  margin: 0.25em 0 0.35em;
+}
+
+.tex-code {
+  margin: 1em 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  font-family: var(--font-monospace);
+  font-size: 0.88em;
+  line-height: 1.5;
+  tab-size: 4;
+}
+
+.tex-table-wrap {
+  margin: 1.1em 0;
+  overflow-x: auto;
+}
+
+.tex-table {
+  border-collapse: collapse;
+  min-width: 60%;
+}
+
+.tex-table th,
+.tex-table td {
+  padding: 6px 12px;
+  border: 1px solid var(--background-modifier-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.tex-table th {
+  background: var(--background-secondary);
+  font-weight: 600;
+}
+
+/* A named environment (`proof`, `theorem`, a `figure`) is drawn as a marked
+   block: the name is what a reader is scanning for, and an environment this app
+   knows nothing about still shows its contents this way rather than vanishing. */
+.tex-env {
+  margin: 1.1em 0;
+  padding-left: 14px;
+  border-left: 2px solid var(--background-modifier-border);
+}
+
+/* `center`, `document` and friends are alignment, not content: no rule for them. */
+.tex-env.is-bare {
+  margin: 0;
+  padding-left: 0;
+  border-left: 0;
+}
+
+.tex-env-name {
+  display: block;
+  margin-bottom: 0.3em;
+  color: var(--text-muted);
+  font-size: 0.82em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: capitalize;
+}
+
+/* A command this app does not know, kept visible exactly as written. */
+.tex-raw {
+  color: var(--text-faint);
+  font-family: var(--font-monospace);
+  font-size: 0.9em;
+}
+
+.tex-preamble {
+  margin: 2.4em 0 0;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 12px;
+}
+
+.tex-preamble > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.88em;
+}
+
+.tex-note {
+  margin: 0 0 1.2em;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 0.9em;
+}

@@ -98,8 +98,10 @@ Two layers, split by what can change mid-chat:
   parallel things, never paste a diff the panel already shows, one clarifying question at most — and the
   definition of both cadences. It CANNOT hold the per-message choice: Claude records the system prompt on a
   chat's first request and reuses it on resume, so a change here reaches new chats only.
-  It also demands LaTeX for maths (`$x^2$`, `$$…$$`) and names the Unicode symbols not to type —
-  the panel renders replies through the editor's own KaTeX, and models otherwise reach for ∑ and √.
+  It also demands LaTeX for maths — the panel renders replies through the editor's own KaTeX, models
+  otherwise reach for ∑ and √, and `\(…\)` (Claude's habit) renders as literal backslashes here.
+  Both this and the mode lines are kept lean deliberately: every clause competes for attention, so
+  what is there is the fix or a fact the model cannot guess, and guesses get cut.
 - **`utils/agentReplyMode.ts`** decides, per message, between `direct` and `teach`, and
   `agentContext.ts` appends `REPLY_MODE_LINE[mode]` as the LAST line of `<bme-context>` (closest to the
   user's words, and self-contained, so an old chat still gets the cadence).

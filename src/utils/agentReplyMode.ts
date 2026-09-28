@@ -135,14 +135,22 @@ export function resolveReplyMode(prefNow: ReplyModePref, text: string, wasTeachi
 /** Repeated on every message, not left to the system prompt alone: a chat that
  *  Claude started before this existed keeps the prompt it recorded then, and
  *  Unicode maths in a notes app is the thing being fixed. */
-const MATHS = ' Write any maths as LaTeX, never as Unicode: $x^2$ inline, $$ ... $$ on its own line for anything displayed.';
+const MATHS = ' Maths as LaTeX, never Unicode: $x^2$ inline, $$ ... $$ on its own line.';
 
+/**
+ * The last line of the <bme-context> block, so it is the closest instruction to
+ * the user's own words.
+ *
+ * Kept SHORT on purpose. The cadence in full is the system prompt's, sent once
+ * per chat; this line rides on every message, where each extra clause both costs
+ * tokens and competes for attention with the user's actual question. Everything
+ * here is either the fix itself or a fact the model cannot guess — the rest was
+ * cut as guesswork, to be added back only if a real reply misbehaves.
+ */
 export const REPLY_MODE_LINE: Record<ReplyMode, string> = {
-    direct: 'Reply mode: DIRECT. Answer the question and stop. No preamble, no recap, no offer to help further.' + MATHS,
-    teach: 'Reply mode: TEACHING. The user is trying to understand this, not to be handed a finished answer. '
-        + 'Give ONE idea — the smallest next step — in under about 120 words of plain prose, with a concrete example '
-        + '(from their own notes or what is on their screen where you can). End with exactly one short question that '
-        + 'checks it landed, then STOP and wait: do not answer it yourself, and do not start the next idea. '
-        + 'If they got it, take the next step; if they did not, go smaller. '
-        + 'If this turns out to be a quick factual question, just answer it in one line instead.' + MATHS,
+    direct: 'Reply mode: DIRECT. Answer the question and stop; no preamble, no recap.' + MATHS,
+    teach: 'Reply mode: TEACHING. The user is learning this, not asking for a finished answer. '
+        + 'Give ONE idea in under about 120 words, with a concrete example, then exactly one short question that '
+        + 'checks it landed, then stop and wait. Do not cover the whole topic or answer your own question. '
+        + 'A quick factual question still gets a one-line answer.' + MATHS,
 };

@@ -132,12 +132,17 @@ export function resolveReplyMode(prefNow: ReplyModePref, text: string, wasTeachi
 
 /** The last line of the <bme-context> block, so it is the closest instruction
  *  to the user's own words. Kept short: the full contract is the system prompt. */
+/** Repeated on every message, not left to the system prompt alone: a chat that
+ *  Claude started before this existed keeps the prompt it recorded then, and
+ *  Unicode maths in a notes app is the thing being fixed. */
+const MATHS = ' Write any maths as LaTeX, never as Unicode: $x^2$ inline, $$ ... $$ on its own line for anything displayed.';
+
 export const REPLY_MODE_LINE: Record<ReplyMode, string> = {
-    direct: 'Reply mode: DIRECT. Answer the question and stop. No preamble, no recap, no offer to help further.',
+    direct: 'Reply mode: DIRECT. Answer the question and stop. No preamble, no recap, no offer to help further.' + MATHS,
     teach: 'Reply mode: TEACHING. The user is trying to understand this, not to be handed a finished answer. '
         + 'Give ONE idea — the smallest next step — in under about 120 words of plain prose, with a concrete example '
         + '(from their own notes or what is on their screen where you can). End with exactly one short question that '
         + 'checks it landed, then STOP and wait: do not answer it yourself, and do not start the next idea. '
         + 'If they got it, take the next step; if they did not, go smaller. '
-        + 'If this turns out to be a quick factual question, just answer it in one line instead.',
+        + 'If this turns out to be a quick factual question, just answer it in one line instead.' + MATHS,
 };

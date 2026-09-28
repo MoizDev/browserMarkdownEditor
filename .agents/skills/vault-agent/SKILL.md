@@ -98,6 +98,8 @@ Two layers, split by what can change mid-chat:
   parallel things, never paste a diff the panel already shows, one clarifying question at most — and the
   definition of both cadences. It CANNOT hold the per-message choice: Claude records the system prompt on a
   chat's first request and reuses it on resume, so a change here reaches new chats only.
+  It also demands LaTeX for maths (`$x^2$`, `$$…$$`) and names the Unicode symbols not to type —
+  the panel renders replies through the editor's own KaTeX, and models otherwise reach for ∑ and √.
 - **`utils/agentReplyMode.ts`** decides, per message, between `direct` and `teach`, and
   `agentContext.ts` appends `REPLY_MODE_LINE[mode]` as the LAST line of `<bme-context>` (closest to the
   user's words, and self-contained, so an old chat still gets the cadence).
@@ -137,6 +139,10 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
 - Header: the app's AI glyph (`StatusMark`, tinted and pulsed by `data-state`), the chat switcher,
   New chat, ⋯, close. **Which CLI runs the next chat is a pick-one section of the ⋯ menu** (`checked`
   rows + its health caption), not a header chip: it is chosen once, and the panel is 400px wide.
+- The model list opens SHORT (`ModelPicker.shortlist`): the default, then family aliases (an id with no
+  digit — `opus`, `sonnet` — which is what someone picking a model means), then the agent's own order,
+  three in all plus whatever is chosen; `Show all N models` opens the rest. Claude reports a dozen, most
+  of them pinned old versions.
 - Replies render through `editor/replyView.ts` (read mode) — no new `innerHTML` sink. A reply's
   `.cm-content` is pinned to the scroller's width: one 493px formula in a 371px reply otherwise laid
   EVERY line out at 493px, and the prose ran off the edge instead of the formula scrolling. aicss free

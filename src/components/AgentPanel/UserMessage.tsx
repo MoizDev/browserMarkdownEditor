@@ -1,7 +1,9 @@
 // What the user sent: their words (plain text — never markdown-rendered, it is
-// what they typed), the pictures they attached, and the context block that
-// went ahead of it, hidden but one click away so "what did the agent see?"
-// always has an answer.
+// what they typed) and the pictures they attached.
+//
+// "Context sent" — the block the editor put in front of the message — is a
+// DEVELOPMENT diagnostic: `item.context` is null in a production build, so the
+// fold below never appears there (chatStore.ts says why).
 
 import { useState } from 'react';
 import type { ChatItem } from './chatStore';

@@ -172,11 +172,12 @@ function byRecent(a: ChatMeta, b: ChatMeta): number {
     return b.updatedAt - a.updatedAt;
 }
 
-/** The user's words and the context block that preceded them, from a stored
- *  message (history): the block is stripped for display but kept inspectable. */
+/** The user's words and, IN DEVELOPMENT ONLY, the context block that preceded
+ *  them: a stored message carries both, and the block is always stripped for
+ *  display — it is only kept, and only in dev, for the "Context sent" fold. */
 function splitContext(text: string): { words: string; context: string | null } {
     const words = stripAgentContext(text);
-    if (words === text) return { words, context: null };
+    if (words === text || !import.meta.env.DEV) return { words, context: null };
     const context = text.endsWith(words) ? text.slice(0, text.length - words.length).trim() : null;
     return { words, context: context || null };
 }
@@ -653,8 +654,15 @@ class ChatStore {
                 this.notice(key, 'warning', `${model?.label ?? 'This model'} can't see images, so ${images.length === 1 ? 'the image was' : 'the images were'} left out.`);
             }
 
-            this.updateItems(key, items => items.map(item =>
-                item.id === userItemId && item.kind === 'user' ? { ...item, context: context.text.trim() || null } : item));
+            // DEV ONLY, and deliberately not a setting: the block is a
+            // diagnostic — how the editor described the user's screen to the
+            // agent — and in the app it is a fold of machine text under every
+            // message the reader did not write. It is also up to 60k characters
+            // a message, all of it held for the life of the chat.
+            if (import.meta.env.DEV) {
+                this.updateItems(key, items => items.map(item =>
+                    item.id === userItemId && item.kind === 'user' ? { ...item, context: context.text.trim() || null } : item));
+            }
 
             await agentBridge.request('run.start', {
                 runId,

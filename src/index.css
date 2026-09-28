@@ -338,6 +338,41 @@ body {
   background: var(--background-primary);
 }
 
+/* The AI agent panel, docked on the right — the sidebar's mirror image: the
+   same 4px handle (on the panel's LEFT edge, so its header band continues the
+   tab strip's), the same border, and a width App clamps to 300px…50%. The
+   panel's own look lives in its lazy chunk (components/AgentPanel/). */
+.workspace-agent-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* The stored width is clamped when set; this holds it when the WINDOW
+     shrinks afterwards, so the editor never loses more than half. */
+  max-width: max(300px, 50vw);
+  overflow: hidden;
+  background: var(--background-secondary);
+  border-left: 1px solid var(--background-modifier-border);
+}
+
+.workspace-agent-panel > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* The one frame before the chunk lands: the header band only, so nothing jumps. */
+.workspace-agent-loading {
+  flex: 0 0 auto;
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--text-faint);
+  background: var(--tab-container-background);
+  border-bottom: 1px solid var(--tab-rule-color);
+}
+
 /* =============================================================
    File Explorer (Sidebar)
    ============================================================= */

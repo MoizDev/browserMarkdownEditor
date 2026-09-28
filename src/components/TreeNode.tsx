@@ -42,7 +42,7 @@ interface TreeNodeProps {
     expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
-    onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
+    onRenameFile: (node: FileTreeNode, newName: string) => unknown;
     /** Copy files dragged in from the OS into `targetDir`. */
     onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
     depth?: number;

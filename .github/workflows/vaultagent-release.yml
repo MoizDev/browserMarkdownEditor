@@ -1,0 +1,221 @@
+# VaultAgent (the agent helper) — build, smoke-test and publish the installers.
+#
+# Push a tag `vaultagent-v1.2.3` to release. "Run workflow" builds and tests the
+# same way (version 0.0.0-ci.<run>) but publishes nothing.
+#
+# Allowed origins: https://notes.moizhashmi.com is baked into every build. The
+# optional repository variable VAULTAGENT_ALLOWED_ORIGINS adds more (comma-
+# separated, e.g. a staging site); unset is fine.
+#
+# Asset names are the app's download links (RELEASE_ASSETS in
+# shared/vaultAgentProtocol.ts) — renaming one here breaks "Download installer".
+
+name: VaultAgent release
+
+on:
+  push:
+    tags: ['vaultagent-v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vaultagent-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Keep in step with the `bun` devDependency in package.json.
+  BUN_VERSION: 1.4.2
+  VAULTAGENT_ALLOWED_ORIGINS: ${{ vars.VAULTAGENT_ALLOWED_ORIGINS }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then v="${GITHUB_REF_NAME#vaultagent-v}"; else v="0.0.0-ci.${GITHUB_RUN_NUMBER}"; fi
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$v' is not a version (want vaultagent-vX.Y.Z)"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Helper tests
+        run: bun test helper
+
+  macos:
+    needs: [version, test]
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Compile (arm64 + x64)
+        run: |
+          bun helper/scripts/build.ts --target bun-darwin-arm64 --version "$VERSION" --outfile out/vaultagent-darwin-arm64
+          bun helper/scripts/build.ts --target bun-darwin-x64 --version "$VERSION" --outfile out/vaultagent-darwin-x64
+      - name: Smoke test (native arm64)
+        run: bun helper/scripts/smoke.ts out/vaultagent-darwin-arm64 --expect-version "$VERSION"
+      - name: Build VaultAgent.pkg
+        run: helper/packaging/macos/build-pkg.sh out/vaultagent-darwin-arm64 out/vaultagent-darwin-x64 "$VERSION" dist/VaultAgent.pkg
+      - name: Check the package
+        run: |
+          pkgutil --expand-full dist/VaultAgent.pkg "$RUNNER_TEMP/pkg"
+          test -x "$RUNNER_TEMP/pkg/vaultagent-component.pkg/Scripts/postinstall"
+          bin="$RUNNER_TEMP/pkg/vaultagent-component.pkg/Payload/Library/Application Support/VaultAgent/stage/vaultagent"
+          lipo "$bin" -verify_arch arm64 x86_64
+          codesign --verify "$bin"
+          test "$("$bin" --version)" = "$VERSION"
+          grep -q "version=\"$VERSION\"" "$RUNNER_TEMP/pkg/Distribution"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/VaultAgent.pkg
+          if-no-files-found: error
+
+  windows:
+    needs: [version, test]
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Compile (x64)
+        run: bun helper/scripts/build.ts --target bun-windows-x64 --version "$env:VERSION" --outfile out/vaultagent.exe
+      - name: Smoke test
+        run: bun helper/scripts/smoke.ts out/vaultagent.exe --expect-version "$env:VERSION"
+      - name: Build VaultAgent-Setup.exe
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "could not install Inno Setup" }
+          }
+          & $iscc "/DAppVersion=$env:VERSION" "/DBinaryPath=$PWD\out\vaultagent.exe" "/DOutputDir=$PWD\dist" helper\packaging\windows\VaultAgent.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+      - name: Install, check, uninstall (silent, on this runner)
+        run: |
+          $dir = "$env:LOCALAPPDATA\VaultAgent"
+          $p = Start-Process -Wait -PassThru -FilePath dist\VaultAgent-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          if ($p.ExitCode -ne 0) { throw "setup exited $($p.ExitCode)" }
+          if (-not (Test-Path "$dir\vaultagent.exe")) { throw "vaultagent.exe not installed" }
+          schtasks /Query /TN VaultAgent | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "logon task not registered" }
+
+          # The task runs with the signed-in user's token; a runner may have no
+          # interactive session to start it in, so a silent /health is a warning.
+          $up = $false
+          for ($i = 0; $i -lt 20 -and -not $up; $i++) {
+            try { $r = Invoke-RestMethod -TimeoutSec 2 http://127.0.0.1:47823/health; $up = $r.app -eq 'vaultagent' } catch { Start-Sleep 1 }
+          }
+          if (-not $up) { Write-Output "::warning::installed helper did not answer /health on this runner" }
+
+          # unins000.exe relaunches itself from %TEMP% and returns at once: wait for the folder to go.
+          Start-Process -Wait -FilePath "$dir\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          for ($i = 0; $i -lt 60 -and (Test-Path $dir); $i++) { Start-Sleep 1 }
+          if (Test-Path $dir) { Get-ChildItem -Recurse $dir; throw "uninstall left $dir behind" }
+          schtasks /Query /TN VaultAgent 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "uninstall left the logon task behind" }
+          if (Get-Process vaultagent -ErrorAction SilentlyContinue) { throw "uninstall left vaultagent.exe running" }
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/VaultAgent-Setup.exe
+          if-no-files-found: error
+
+  linux:
+    needs: [version, test]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ASSET: vaultagent-linux-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Compile
+        run: bun helper/scripts/build.ts --target "bun-linux-${{ matrix.arch }}" --version "$VERSION" --outfile "dist/$ASSET"
+      - name: Smoke test
+        run: bun helper/scripts/smoke.ts "dist/$ASSET" --expect-version "$VERSION"
+      - name: Self-install, check, uninstall (on this runner)
+        run: |
+          set -euo pipefail
+          chmod +x "dist/$ASSET"
+          "dist/$ASSET" < /dev/null   # no arguments = install
+          bin="$HOME/.local/share/vaultagent/vaultagent"
+          test -x "$bin"
+          test -f "$HOME/.config/systemd/user/vaultagent.service"
+          up=
+          for i in $(seq 1 20); do
+            if curl -fsS -m 2 http://127.0.0.1:47823/health | grep -q '"app":"vaultagent"'; then up=1; break; fi
+            sleep 1
+          done
+          test -n "$up" || { echo "::error::installed helper did not answer /health"; exit 1; }
+          "$bin" uninstall
+          test ! -e "$bin"
+          test ! -e "$HOME/.config/systemd/user/vaultagent.service"
+          test ! -e "$HOME/.config/autostart/vaultagent.desktop"
+          for i in $(seq 1 10); do
+            curl -fsS -m 1 http://127.0.0.1:47823/health > /dev/null 2>&1 || exit 0
+            sleep 1
+          done
+          echo "::error::the helper is still running after uninstall"; exit 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/${{ env.ASSET }}
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [version, macos, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          ls -l assets
+          for f in VaultAgent.pkg VaultAgent-Setup.exe vaultagent-linux-x64 vaultagent-linux-arm64; do test -s "assets/$f"; done
+          (cd assets && sha256sum VaultAgent.pkg VaultAgent-Setup.exe vaultagent-linux-x64 vaultagent-linux-arm64 > SHA256SUMS)
+          prerelease=()
+          [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "VaultAgent $VERSION" \
+            --notes "VaultAgent $VERSION — the agent helper for the editor's agent panel. Unsigned: see the panel's install guide." \
+            "${prerelease[@]}" \
+            assets/VaultAgent.pkg assets/VaultAgent-Setup.exe assets/vaultagent-linux-x64 assets/vaultagent-linux-arm64 assets/SHA256SUMS

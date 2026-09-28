@@ -1,0 +1,185 @@
+[
+ {
+  "info": {
+   "id": "msg_0e5eb1e22001bEQIyOsxpPcF1d",
+   "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+   "role": "user",
+   "time": {
+    "created": 1790563786274
+   },
+   "agent": "vaultagent",
+   "model": {
+    "providerID": "fake",
+    "modelID": "fake-model"
+   }
+  },
+  "parts": [
+   {
+    "id": "prt_0e5eb1e26001oX5vjHnccMHtWZ",
+    "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+    "messageID": "msg_0e5eb1e22001bEQIyOsxpPcF1d",
+    "type": "text",
+    "text": "hi there"
+   },
+   {
+    "id": "prt_0e5eb1e26002ytG4dkiLzAbghZ",
+    "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+    "messageID": "msg_0e5eb1e22001bEQIyOsxpPcF1d",
+    "type": "file",
+    "mime": "image/png",
+    "filename": "pasted.png",
+    "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP4z8AARwzEcQCukw/x0F8jngAAAABJRU5ErkJggg=="
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_0e5eb1eea001qTZp00V7vjWMed",
+   "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+   "role": "assistant",
+   "time": {
+    "created": 1790563786474,
+    "completed": 1790563788412
+   },
+   "parentID": "msg_0e5eb1e22001bEQIyOsxpPcF1d",
+   "modelID": "fake-model",
+   "providerID": "fake",
+   "mode": "vaultagent",
+   "agent": "vaultagent",
+   "path": {
+    "cwd": "/home/user/.bme-agent-sessions/6f1c2d3e-4a5b-4c6d-8e7f-001122334455",
+    "root": "/home/user/repo"
+   },
+   "cost": 0,
+   "tokens": {
+    "total": 15,
+    "input": 10,
+    "output": 5,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "finish": "tool-calls"
+  },
+  "parts": [
+   {
+    "id": "prt_0e5eb21c6001CF1jJ9dZTG3W1N",
+    "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+    "messageID": "msg_0e5eb1eea001qTZp00V7vjWMed",
+    "type": "step-start"
+   },
+   {
+    "id": "prt_0e5eb21c7001l63zTZRgIMliXB",
+    "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+    "messageID": "msg_0e5eb1eea001qTZp00V7vjWMed",
+    "type": "tool",
+    "callID": "call_1",
+    "tool": "vault_vault_read",
+    "state": {
+     "status": "completed",
+     "input": {
+      "path": "Notes/a.md"
+     },
+     "output": "FAKE-TOOL-RESULT: hello",
+     "title": "",
+     "metadata": {
+      "truncated": false
+     },
+     "time": {
+      "start": 1790563787210,
+      "end": 1790563787213
+     }
+    }
+   },
+   {
+    "id": "prt_0e5eb26790018SpZjddMvLlF2t",
+    "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+    "messageID": "msg_0e5eb1eea001qTZp00V7vjWMed",
+    "type": "step-finish",
+    "reason": "tool-calls",
+    "cost": 0,
+    "tokens": {
+     "total": 15,
+     "input": 10,
+     "output": 5,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   }
+  ]
+ },
+ {
+  "info": {
+   "id": "msg_0e5eb267d001RTMLoJyz9bCIIx",
+   "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+   "role": "assistant",
+   "time": {
+    "created": 1790563788413,
+    "completed": 1790563790545
+   },
+   "parentID": "msg_0e5eb1e22001bEQIyOsxpPcF1d",
+   "modelID": "fake-model",
+   "providerID": "fake",
+   "mode": "vaultagent",
+   "agent": "vaultagent",
+   "path": {
+    "cwd": "/home/user/.bme-agent-sessions/6f1c2d3e-4a5b-4c6d-8e7f-001122334455",
+    "root": "/home/user/repo"
+   },
+   "cost": 0,
+   "tokens": {
+    "total": 15,
+    "input": 10,
+    "output": 5,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "finish": "stop"
+  },
+  "parts": [
+   {
+    "id": "prt_0e5eb26860018ALKGpfz5RUjyO",
+    "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+    "messageID": "msg_0e5eb267d001RTMLoJyz9bCIIx",
+    "type": "step-start"
+   },
+   {
+    "id": "prt_0e5eb27b3001dBOtLlfVRLxqui",
+    "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+    "messageID": "msg_0e5eb267d001RTMLoJyz9bCIIx",
+    "type": "text",
+    "text": "Hello from fake.",
+    "time": {
+     "start": 1790563788723,
+     "end": 1790563790531
+    }
+   },
+   {
+    "id": "prt_0e5eb2eca001u49k4nnnScBGHt",
+    "sessionID": "ses_f1a14e202ffeigBoSAkcxWKhj2",
+    "messageID": "msg_0e5eb267d001RTMLoJyz9bCIIx",
+    "type": "step-finish",
+    "reason": "stop",
+    "cost": 0,
+    "tokens": {
+     "total": 15,
+     "input": 10,
+     "output": 5,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   }
+  ]
+ }
+]

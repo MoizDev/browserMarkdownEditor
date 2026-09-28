@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- productbuild distribution for VaultAgent.pkg. __VERSION__ is filled in by build-pkg.sh. -->
+<installer-gui-script minSpecVersion="2">
+    <title>VaultAgent</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <readme file="readme.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <!-- Universal binary; Bun's runtime needs macOS 13 or newer. -->
+    <options customize="never" require-scripts="true" rootVolumeOnly="true" hostArchitectures="arm64,x86_64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="13.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <choices-outline>
+        <line choice="default">
+            <line choice="dev.bme.vaultagent"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="dev.bme.vaultagent" visible="false">
+        <pkg-ref id="dev.bme.vaultagent"/>
+    </choice>
+    <pkg-ref id="dev.bme.vaultagent" version="__VERSION__" onConclusion="none">vaultagent-component.pkg</pkg-ref>
+</installer-gui-script>

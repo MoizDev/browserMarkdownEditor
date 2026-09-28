@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { HELP_DOC_CONTENT } from './utils/helpDoc';
@@ -8,6 +8,7 @@ import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
 import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
 import { collectFiles } from './utils/tree';
+import { nameTaken } from './utils/entryNames';
 import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { recordFileWritten, resetFileTimes } from './utils/fileTimes';
@@ -26,6 +27,7 @@ import {
   goForward,
   mergeLayouts,
   moveTabToPane,
+  openInSidePane,
   openTab as openTabIn,
   paneById,
   relabelPaths,
@@ -54,6 +56,8 @@ import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/
 // (~1.3MB) into the main bundle, which a markdown-only session never needs.
 // The builder itself is import()ed at the two points that actually write a PDF.
 import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
+import { clearViews, moveView } from './utils/viewRegistry';
+import type { AgentHostDeps } from './utils/agentHost';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
 import SidebarFooter from './components/SidebarFooter';
@@ -77,11 +81,17 @@ import type {
   Theme,
   MainView,
   CaretStyle,
+  EditorMode,
   EditorRevealRequest,
   TextRange,
   TrashItem,
   TrashRestoreResult,
 } from './types';
+
+// The AI agent panel and everything under it (its CSS, the WebSocket bridge,
+// the reply renderer, the aicss components) load on first open — a reader who
+// never opens it downloads none of it.
+const AgentPanel = lazy(() => import('./components/AgentPanel'));
 
 /**
  * Object URLs handed to `window.open` for files this app doesn't edit (images,
@@ -214,29 +224,6 @@ interface AppDialog extends DialogRequest {
 }
 
 /**
- * Is `name` already used inside `dir`, by anything at all?
- *
- * BOTH KINDS of entry count as taken, whichever kind is about to be written: a
- * file and a folder cannot share a name, and asking only about files once
- * reported a name free while a folder of it sat there. That is the rule
- * `freeEntryName` already documents (FileSystemContext.tsx:21-25); this is the
- * same rule at the one entry point that cannot go through it.
- *
- * It matters here because `createFile` OPENS-OR-TRUNCATES (:425-434). Without
- * this check a "New note" onto an existing name empties that file — no
- * warning, no undo, and the tree looks exactly as it did a moment before. The
- * guard is at this entry point rather than in the primitive deliberately:
- * routing `createFile` through `freeEntryName` would quietly create
- * "note (1).md" while the caller went on to open the name it asked for, and
- * the other caller (the annotated-PDF path) wants create-or-open.
- */
-async function nameTaken(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
-  try { await dir.getFileHandle(name); return true; } catch { /* not a file */ }
-  try { await dir.getDirectoryHandle(name); return true; } catch { /* nor a folder */ }
-  return false;
-}
-
-/**
  * Is this graph the same one we already handed out?
  *
  * `rebuildGraph` keeps the PREVIOUS GraphData object when the answer is yes, and
@@ -280,6 +267,24 @@ function isCmdLetter(e: KeyboardEvent, letter: string): boolean {
   return (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === letter;
 }
 
+/** Which open documents trashing `node` takes. A folder's own path is never a
+ *  document's — except that the Help guide's pseudo-path is a bare name, so a
+ *  vault folder called "help-guide" closed the Help tab. Only a FILE is matched
+ *  by equality; a folder is matched by the `path/` prefix and nothing else. */
+function trashedBy(node: FileTreeNode): (path: string) => boolean {
+  return node.kind === 'directory'
+    ? (path: string) => path.startsWith(`${node.path}/`)
+    : (path: string) => path === node.path;
+}
+
+/** The agent panel's width: at least 300px (its composer and header need it),
+ *  at most half the window (the editor keeps the other half), 400 by default. */
+const AGENT_PANEL_MIN = 300;
+function clampAgentWidth(width: number): number {
+  const max = Math.max(AGENT_PANEL_MIN, Math.floor(window.innerWidth / 2));
+  return Number.isFinite(width) ? Math.min(max, Math.max(AGENT_PANEL_MIN, Math.round(width))) : 400;
+}
+
 /** The tab title whenever it is not the vault's name — before a vault opens,
  *  and always once Settings → Vault turns that off. Must match index.html's
  *  <title>, which is what the tab shows before React mounts. */
@@ -306,6 +311,7 @@ export default function App() {
     forgetRecentVault,
     readFile,
     writeFile,
+    readFileBytes,
     writeFileBytes,
     importFiles,
     createFile,
@@ -972,6 +978,27 @@ export default function App() {
   // tracks the pointer instead of easing 150ms behind it.
   const [isDraggingSidebar, setIsDraggingSidebar] = useState<boolean>(false);
   const isResizing = useRef<boolean>(false);
+
+  // The AI agent panel, docked on the right (⌘⇧X, or the sidebar footer's
+  // sparkles). Width and open state persist like the sidebar's; the width is
+  // clamped on read and on every drag, since localStorage is user-editable and
+  // a window can shrink under a stored width.
+  const [agentPanelOpen, setAgentPanelOpen] = useState<boolean>(() => localStorage.getItem('agentPanelOpen') === 'true');
+  useEffect(() => {
+    localStorage.setItem('agentPanelOpen', String(agentPanelOpen));
+  }, [agentPanelOpen]);
+  const [agentPanelWidth, setAgentPanelWidth] = useState<number>(() => clampAgentWidth(parseInt(localStorage.getItem('agentPanelWidth') || '', 10)));
+  // Whether the reader has opened the panel this session (⌘⇧X, the footer
+  // button), as against it being restored open with the page: only an open
+  // they asked for takes the keyboard (AgentPanel's focus hand-off). What was
+  // focused cannot tell them apart — a note in Reading mode leaves <body>
+  // focused either way.
+  const [agentOpenedByReader, setAgentOpenedByReader] = useState(false);
+  const toggleAgentPanel = useCallback(() => {
+    setAgentOpenedByReader(true);
+    setAgentPanelOpen(o => !o);
+  }, []);
+  const closeAgentPanel = useCallback(() => setAgentPanelOpen(false), []);
 
   // ── Asset lifecycle ─────────────────────────────────────────────────────
   // An asset belongs to the notes that embed it: paste a picture and it is
@@ -1835,6 +1862,8 @@ export default function App() {
       clearPdfRenderData(tab.file.path);
       clearNotebookRenderData(tab.file.path);
     }
+    // Every registered pane belongs to the vault being left.
+    clearViews();
     // Those flushes captured what they needed synchronously (see flushTab); the
     // paths themselves index the vault being left.
     assetRefsRef.current.clear();
@@ -2544,6 +2573,70 @@ export default function App() {
    */
   const trashInFlightRef = useRef<boolean>(false);
 
+  /**
+   * The move itself, with no question in front of it — shared by the reader's
+   * delete (after its confirm) and the AI agent's `vault_trash`, which the chat
+   * shows instead of asking. The caller holds `trashInFlightRef`.
+   */
+  const performTrash = useCallback(async (node: FileTreeNode): Promise<boolean> => {
+    const doomed = trashedBy(node);
+    // Tracked from here — NOT around a question, nor a notice after: a restore
+    // pass must never sit waiting on a dialog (see vaultMovesRef).
+    return trackVaultMove(async () => {
+      // Write out what is still in the save debounce BEFORE the copy starts.
+      // The tabs inside a folder stay live and editable for the whole copy, and
+      // their save timers stay armed — so a debounced write would land on an
+      // original that `removeEntry` then destroys, AFTER the walk had already
+      // copied the older bytes. Whether the edit survived came down to where the
+      // note happened to fall in an arbitrary `entries()` order. Flushed rather
+      // than merely cancelled: the copy then carries the reader's last words,
+      // which is what a trash folder is for.
+      await Promise.all(tabsRef.current
+        .filter(t => doomed(t.file.path))
+        .map(t => flushTab(t.file.path)));
+      // …and let the asset reconciles those saves queued run to completion, so
+      // nothing moves a picture between `.Assets` and `.Garbage/.Assets` while
+      // copyDirRecursive is walking one of them.
+      await reconcileQueueRef.current;
+
+      // The copy has no other outward sign, and an app that looks frozen is one
+      // people click again. Re-armed over any "Saved" the flush above left, whose
+      // own timer would otherwise clear this line mid-copy.
+      if (saveStatusTimerRef.current) {
+        clearTimeout(saveStatusTimerRef.current);
+        saveStatusTimerRef.current = null;
+      }
+      setSaveStatus(`Moving "${node.name}" to Trash…`);
+
+      const trashed = await moveToTrash(node);
+      setSaveStatus('');
+      if (!trashed) return false;
+
+      // A trashed row's icon and colour go with it, and a folder's takes
+      // everything inside it — otherwise the entry sits in the file forever, and
+      // something later given the same name inherits a look nobody chose. Its
+      // place in a custom order goes too, for the same reason.
+      const remaining = forgetEntry(getEntryStyles(), node.path);
+      if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
+
+      // A note a restore pass is still bringing back must not come back out of
+      // the Trash as an open tab (issue #9) — it is not in tabsRef yet, so the
+      // loop below cannot reach it. Only on success: a failed move moved nothing.
+      const pending = pendingFor(rootHandleRef.current);
+      if (pending) dropPending(pending, doomed);
+
+      // What the deletion took with it. Read AFTER the move, not before: the
+      // predicate is a path test and does not move, but a document opened while
+      // the copy was running has to be closed too.
+      // Closed WITHOUT flushing — that already happened above, and their handles
+      // are gone now.
+      for (const tab of tabsRef.current) {
+        if (doomed(tab.file.path)) removeTab(tab.file.path, false);
+      }
+      return true;
+    });
+  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor]);
+
   const handleTrash = useCallback(async (node: FileTreeNode) => {
     // A folder copy runs for seconds, and its row stays on screen throughout —
     // so "I clicked delete and nothing happened, click it again" is the natural
@@ -2561,14 +2654,6 @@ export default function App() {
     trashInFlightRef.current = true;
     try {
       const isFolder = node.kind === 'directory';
-      // Which open documents this takes. A folder's own path is never a
-      // document's — except that the Help guide's pseudo-path is a bare name, so
-      // a vault folder called "help-guide" closed the Help tab. Only a FILE is
-      // matched by equality; a folder is matched by the `path/` prefix and
-      // nothing else.
-      const doomed = isFolder
-        ? (path: string) => path.startsWith(`${node.path}/`)
-        : (path: string) => path === node.path;
 
       // Say what is actually going. "…and everything inside it" reads the same
       // for two notes as for two thousand, and is plainly wrong for an empty one.
@@ -2594,61 +2679,7 @@ export default function App() {
       });
       if (!confirmed) return;
 
-      // Tracked from here — NOT around the question above, nor the notice below:
-      // a restore pass must never sit waiting on a dialog (see vaultMovesRef).
-      const moved = await trackVaultMove(async () => {
-        // Write out what is still in the save debounce BEFORE the copy starts.
-        // The tabs inside a folder stay live and editable for the whole copy, and
-        // their save timers stay armed — so a debounced write would land on an
-        // original that `removeEntry` then destroys, AFTER the walk had already
-        // copied the older bytes. Whether the edit survived came down to where the
-        // note happened to fall in an arbitrary `entries()` order. Flushed rather
-        // than merely cancelled: the copy then carries the reader's last words,
-        // which is what a trash folder is for.
-        await Promise.all(tabsRef.current
-          .filter(t => doomed(t.file.path))
-          .map(t => flushTab(t.file.path)));
-        // …and let the asset reconciles those saves queued run to completion, so
-        // nothing moves a picture between `.Assets` and `.Garbage/.Assets` while
-        // copyDirRecursive is walking one of them.
-        await reconcileQueueRef.current;
-
-        // The copy has no other outward sign, and an app that looks frozen is one
-        // people click again. Re-armed over any "Saved" the flush above left, whose
-        // own timer would otherwise clear this line mid-copy.
-        if (saveStatusTimerRef.current) {
-          clearTimeout(saveStatusTimerRef.current);
-          saveStatusTimerRef.current = null;
-        }
-        setSaveStatus(`Moving "${node.name}" to Trash…`);
-
-        const trashed = await moveToTrash(node);
-        setSaveStatus('');
-        if (!trashed) return false;
-
-        // A trashed row's icon and colour go with it, and a folder's takes
-        // everything inside it — otherwise the entry sits in the file forever, and
-        // something later given the same name inherits a look nobody chose. Its
-        // place in a custom order goes too, for the same reason.
-        const remaining = forgetEntry(getEntryStyles(), node.path);
-        if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
-
-        // A note a restore pass is still bringing back must not come back out of
-        // the Trash as an open tab (issue #9) — it is not in tabsRef yet, so the
-        // loop below cannot reach it. Only on success: a failed move moved nothing.
-        const pending = pendingFor(rootHandleRef.current);
-        if (pending) dropPending(pending, doomed);
-
-        // What the deletion took with it. Read AFTER the move, not before: the
-        // predicate is a path test and does not move, but a document opened while
-        // the copy was running has to be closed too.
-        // Closed WITHOUT flushing — that already happened above, and their handles
-        // are gone now.
-        for (const tab of tabsRef.current) {
-          if (doomed(tab.file.path)) removeTab(tab.file.path, false);
-        }
-        return true;
-      });
+      const moved = await performTrash(node);
       if (!moved) {
         // Never silence: from the outside a click that does nothing is
         // indistinguishable from a broken button. And the reassurance is worth
@@ -2669,7 +2700,18 @@ export default function App() {
     } finally {
       trashInFlightRef.current = false;
     }
-  }, [moveToTrash, removeTab, flushTab, ask, tell, writeEntryStyles, trackVaultMove, pendingFor]);
+  }, [performTrash, ask, tell]);
+
+  /** The agent's delete: no question (the chat shows it), same serialization. */
+  const trashForAgent = useCallback(async (node: FileTreeNode): Promise<'ok' | 'busy' | 'failed'> => {
+    if (trashInFlightRef.current) return 'busy';
+    trashInFlightRef.current = true;
+    try {
+      return (await performTrash(node)) ? 'ok' : 'failed';
+    } finally {
+      trashInFlightRef.current = false;
+    }
+  }, [performTrash]);
 
   /* ── The Trash bin ──────────────────────────────────────────────────────
    * The panel draws the list and owns nothing else: every one of these asks
@@ -2988,6 +3030,10 @@ export default function App() {
         // Same trap, same fix: an exporter left under the old path means Export
         // to PDF on the renamed notebook silently finds nothing.
         moveNotebookRenderData(from, dest);
+        // The agent's view of a mounted pane is keyed by path too: move it with
+        // the render data, so nothing asks the old path between the rename and
+        // the pane's remount under the new one (paneKey includes the path).
+        moveView(from, dest);
         moveAssetRefs(from, dest);
         setTabs(prev => prev
           .filter(t => t.file.path !== dest)
@@ -3040,10 +3086,11 @@ export default function App() {
   // vaultMovesRef for what the restore pass waits on and why.
   const handleRenameFile = useCallback((node: FileTreeNode, newName: string) => trackVaultMove(async () => {
     const success = await renameFile(node, newName);
-    if (!success) return;
+    if (!success) return false;
     const newPath = joinVaultPath(parentVaultPath(node.path), newName);
     retargetExpanded(node, newPath);
     await retargetTabs(node, newPath);
+    return true;
   }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove]);
 
   // Wrap moveFile so a moved document's tab tracks its new path and handle —
@@ -3058,9 +3105,91 @@ export default function App() {
     return success;
   }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove]);
 
+  // ── The AI agent's hands ────────────────────────────────────────────────
+  // Everything the agent panel and its tool executor can do to the vault goes
+  // through these two hosts (utils/agentHost.ts), built ONCE — in the panel's
+  // lazy chunk, so the main bundle does not carry them (measured: +26 kB when
+  // App built them) — so the panel's WebSocket and in-flight runs never
+  // restart on an App re-render. They read
+  // this ref, refreshed after every commit, so each call sees the current vault,
+  // tabs and layout — and goes through the very handlers the reader's own
+  // gestures use.
+  const addTabQuietly = useCallback(async (node: FileTreeNode, mode: EditorMode): Promise<boolean> => {
+    if (node.kind !== 'file') return false;
+    if (tabsRef.current.some(t => t.file.path === node.path)) return true;
+    try {
+      // As handleFileClick: a PDF's bytes are read by its pane, and decoding one
+      // as UTF-8 would corrupt it.
+      const content = isPdfFile(node.name) ? '' : await readFile(node.handle);
+      rememberAssetRefs(node, content);
+      setTabs(prev => prev.some(t => t.file.path === node.path)
+        ? prev
+        : [...prev, { id: newTabId(), file: node, content, mode, dirty: false }]);
+      return true;
+    } catch (err) {
+      console.error('Agent could not open a file:', err);
+      return false;
+    }
+  }, [readFile, rememberAssetRefs]);
+
+  const agentDepsRef = useRef<AgentHostDeps | null>(null);
+  useLayoutEffect(() => {
+    agentDepsRef.current = {
+      root: rootHandle,
+      fileTree,
+      tabs,
+      layout,
+      mainView,
+      stateCache: editorStates,
+      readFile,
+      readFileBytes,
+      writeFile,
+      createFile,
+      createFolder,
+      updateTabContent,
+      afterWrite: (file, before, after) => {
+        // The tail of flushTab, for a file written with no tab to flush.
+        recordFileWritten(file.path);
+        if (tracksAssets(file)) queueReconcile(file, assetEmbeds(before), assetEmbeds(after));
+        rebuildGraphRef.current();
+        bumpSaveEpoch();
+      },
+      renameEntry: handleRenameFile,
+      moveEntry: handleMoveFile,
+      trashEntry: trashForAgent,
+      addTabQuietly,
+      setTabMode: (path, mode) => setTabs(prev => prev.map(t =>
+        t.file.path === path && !t.file.isHelp && !t.readError ? { ...t, mode } : t)),
+      showBeside: path => {
+        // A canvas only exists while the editor is on screen; the graph view
+        // unmounts every pane.
+        setMainView('editor');
+        setLayout(l => openInSidePane(l, path));
+      },
+      openFile: path => {
+        const node = collectFiles(fileTreeRef.current).find(f => f.path === path);
+        if (!node) return;
+        void handleFileClick(node);
+        setMainView('editor');
+      },
+      ask,
+      notify,
+    };
+  });
+  // The hosts themselves are built in the panel's lazy chunk from this getter.
+  const getAgentHostDeps = useCallback(() => agentDepsRef.current!, []);
+  const agentVault = useMemo(
+    () => (rootHandle ? { key: currentVaultId ?? rootHandle.name, name: rootHandle.name } : null),
+    [rootHandle, currentVaultId]);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // ⌘E from inside the agent panel is not about the note behind it — the
+      // reader is typing a message, and flipping the focused document's mode
+      // from there would be a change they cannot see happen. ⌘S and ⌘N stay
+      // app-wide (saving, a new note), and so does ⌘\; ⌘⇧X is below.
+      const inAgentPanel = e.target instanceof Element && !!e.target.closest('[data-agent-panel]');
       if (isCmdLetter(e, 's')) {
         e.preventDefault();
         flushTab(activeTabPathRef.current, true);
@@ -3073,7 +3202,7 @@ export default function App() {
         void handleNewNote();
       }
       // Cmd+E — toggle read/edit mode of the active tab
-      if (isCmdLetter(e, 'e')) {
+      if (!inAgentPanel && isCmdLetter(e, 'e')) {
         e.preventDefault();
         toggleTabMode(activeTabPathRef.current);
       }
@@ -3086,6 +3215,24 @@ export default function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [handleNewNote, flushTab, toggleTabMode]);
+
+  // ⌘⇧X — the AI agent panel. Chosen because nothing else claims it: ⌘⇧K is
+  // CodeMirror's deleteLine (and tldraw's link), ⌘⇧L/⌘⇧U/⌘⇧\ are CodeMirror's,
+  // ⌘⇧A/B/C/D/H/I/J/M/N/O/R/T/W are Chrome's, ⌘⇧E/P/S/Y/. are Edge's, ⌘⇧S/H/7/8
+  // tldraw's. In the CAPTURE phase so a focused editor or canvas never sees it.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== 'x') return;
+      if (!rootHandleRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.repeat) return;
+      setAgentOpenedByReader(true);
+      setAgentPanelOpen(o => !o);
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, []);
 
   // Auto-save is handled per-tab by scheduleSave/flushTab (see above), so edits
   // to a background tab still persist even while another tab is active.
@@ -3112,6 +3259,30 @@ export default function App() {
       document.removeEventListener('mouseup', onMouseUp);
     };
 
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, []);
+
+  // Drag-to-resize the agent panel: the handle sits on its LEFT edge, so the
+  // width is the distance from the pointer to the window's right edge.
+  const startAgentResize = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    let width = clampAgentWidth(window.innerWidth - e.clientX);
+
+    const onMouseMove = (ev: MouseEvent) => {
+      width = clampAgentWidth(window.innerWidth - ev.clientX);
+      setAgentPanelWidth(width);
+    };
+    const onMouseUp = () => {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      // Once, at the end of the drag — not sixty writes a second.
+      localStorage.setItem('agentPanelWidth', String(width));
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
   }, []);
@@ -3232,6 +3403,8 @@ export default function App() {
           onChangeVault={pickDirectory}
           graphOpen={mainView === 'graph'}
           onToggleGraph={toggleGraph}
+          agentOpen={agentPanelOpen}
+          onToggleAgent={toggleAgentPanel}
           onOpenTrash={openTrash}
           onOpenHelp={handleHelpClick}
           onOpenSettings={openSettings}
@@ -3285,6 +3458,19 @@ export default function App() {
           />
         )}
       </div>
+      {agentPanelOpen && (
+        <>
+          <div className="workspace-resize-handle agent" onMouseDown={startAgentResize} />
+          <div
+            className="workspace-agent-panel"
+            style={{ width: agentPanelWidth }}
+          >
+            <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
+              <AgentPanel vault={agentVault} theme={theme} getHostDeps={getAgentHostDeps} takeFocus={agentOpenedByReader} onClose={closeAgentPanel} />
+            </Suspense>
+          </div>
+        </>
+      )}
       {showSettings && (
         <SettingsPanel
           editorFontSize={editorFontSize}

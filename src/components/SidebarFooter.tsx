@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import VaultMenu from './VaultMenu';
-import { ChevronsUpDown, CircleHelp, FileTextOutline, Moon, Network, Settings, Sun, Trash2 } from './icons';
+import { ChevronsUpDown, CircleHelp, FileTextOutline, Moon, Network, Settings, Sparkles, Sun, Trash2 } from './icons';
 import type { FileTreeNode, RecentVault, Theme, VaultOpenResult } from '../types';
 
 /* The vault menu rises from the switcher, which sits at the very bottom of the
@@ -64,6 +64,9 @@ interface SidebarFooterProps {
     onChangeVault: () => Promise<VaultOpenResult>;
     graphOpen: boolean;
     onToggleGraph: () => void;
+    /** The AI agent panel docked on the right of the workspace. */
+    agentOpen: boolean;
+    onToggleAgent: () => void;
     onOpenTrash: () => void;
     onOpenHelp: () => void;
     onOpenSettings: () => void;
@@ -73,7 +76,7 @@ interface SidebarFooterProps {
 
 /**
  * The bottom of the sidebar, modelled on Obsidian's: a row of icon buttons
- * (Neural Brain, Trash, Theme), and under it the vault switcher with Help and
+ * (Neural Brain, AI agent, Trash, Theme), and under it the vault switcher with Help and
  * Settings on its right.
  *
  * FIXED AT EVERY SIDEBAR WIDTH (180–600px): nothing wraps or re-flows as the
@@ -97,6 +100,8 @@ function SidebarFooter({
     onChangeVault,
     graphOpen,
     onToggleGraph,
+    agentOpen,
+    onToggleAgent,
     onOpenTrash,
     onOpenHelp,
     onOpenSettings,
@@ -149,6 +154,7 @@ function SidebarFooter({
     const browseForVault = useCallback(() => onChangeVault(), [onChangeVault]);
 
     const graphLabel = graphOpen ? 'Back to the editor' : 'Neural Brain — graph view';
+    const agentLabel = agentOpen ? 'Close the AI agent (⌘⇧X)' : 'AI agent (⌘⇧X)';
     const themeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
 
     return (
@@ -163,6 +169,17 @@ function SidebarFooter({
                     aria-pressed={graphOpen}
                 >
                     {graphOpen ? <FileTextOutline size={18} strokeWidth={1.75} /> : <Network size={18} strokeWidth={1.75} />}
+                </button>
+                <button
+                    className={`sidebar-footer-btn${agentOpen ? ' is-active' : ''}`}
+                    onClick={onToggleAgent}
+                    data-tooltip={agentLabel}
+                    data-tooltip-position="top"
+                    aria-label={agentLabel}
+                    aria-pressed={agentOpen}
+                    disabled={!vaultName}
+                >
+                    <Sparkles size={18} strokeWidth={1.75} />
                 </button>
                 <button
                     className="sidebar-footer-btn"

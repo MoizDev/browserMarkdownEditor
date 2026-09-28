@@ -8,7 +8,10 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p helper",
+    "helper:dev": "bun helper/src/main.ts serve --dev --no-register",
+    "helper:test": "bun test helper",
+    "helper:build": "bun helper/scripts/build.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",
@@ -32,9 +35,11 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@types/bun": "^1.4.2",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "bun": "^1.4.2",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",

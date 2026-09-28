@@ -91,7 +91,7 @@ interface FileExplorerProps {
     /** Store one folder's custom order (`null` forgets it). Stable per vault,
      *  like onStyleEntry: this component is memoized. */
     onSetTreeOrder: (folderPath: string, names: readonly string[] | null) => void;
-    onRenameFile: (node: FileTreeNode, newName: string) => void | Promise<void>;
+    onRenameFile: (node: FileTreeNode, newName: string) => unknown;
     /** Copy files dragged in from the OS into `targetDir`. */
     onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
     onOpenSearchResult: (node: FileTreeFileNode, range: TextRange | null) => void;

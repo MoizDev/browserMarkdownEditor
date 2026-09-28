@@ -86,6 +86,10 @@ discipline**, so a single new import undoes it silently:
 - The writer runs in a **DOM-less Web Worker**, so `pdfBuild.ts` must never reach for the DOM.
 - `PdfPane` is `React.lazy` in `EditorPane`, `PdfAnnotateCanvas` is `React.lazy` in `PdfPane`, and
   `DrawingPane` is `React.lazy` in `DocumentPane` — so viewing a PDF never pulls in tldraw.
+- `components/canvasAgentOps.ts` (the AI agent's hands on a canvas) imports tldraw: ONLY the three
+  canvas panes may import it. `utils/pdfText.ts` (closed-PDF text/render for the agent) imports pdf.js
+  and is reached only through `import('./pdfText')`. `utils/canvasViewState.ts`, like
+  `pdfViewState.ts`, imports nothing heavy.
 
 ## View mode: `PdfViewer.tsx`
 
@@ -468,3 +472,32 @@ shown/indexed as text; **`isCanvasFile`/`isPdfFile` (fileTypes)** = which pane. 
 notebook *are* text on disk (JSON snapshots) so they flow through `readFile`/`writeFile`/autosave,
 but they must **not** be shown or content-indexed as text — `isCanvasFile` is the predicate that
 covers both, and every site that used to say `isDrawingFile` for that purpose now says it.
+
+## The AI agent on a canvas (`components/canvasAgentOps.ts`)
+
+- Each canvas pane (drawing, notebook, PDF annotate) registers a view reporter with `canvas` ops
+  (`shapes`/`apply`/`currentPage`) plus `capture(maxSide)` (a viewport PNG via `editor.toImage`, paper
+  and PDF pages included, `darkMode: false`); the reader registers `pdfText`/`renderPage`/`capture`
+  (visible page canvases stitched, uninverted). Page-relative coordinates for notebooks and PDFs come
+  from the same `PageBox`es; a live shape belongs to the page under its vertical centre (a closed file's
+  summary, `canvasFileSummary.ts`, uses its top-left).
+- **Agent edits must save exactly like a pen stroke** — and do: they go through the editor API inside
+  one `markHistoryStoppingPoint` + `editor.run` (one ⌘Z), which `@tldraw/store` records as
+  `source: 'user'` (only `mergeRemoteChanges` is `'remote'`), so every pane's existing
+  `{source:'user', scope:'document'}` listener serializes them; a PDF still rebuilds from the pristine
+  original. NEVER apply agent ops headless or as a remote merge.
+- Page backdrops (ruled paper, PDF page images) are never listed; locked shapes are listed but never
+  targetable. Agent shapes get every style set explicitly and `scale` reset to 1 — `applyPenDefaults`
+  would otherwise stamp the user's pen onto them.
+- `pageText` exists in both `PdfViewer` and `PdfAnnotateCanvas` (and a whitespace-normalizing third in
+  `utils/pdfText.ts`): change them together.
+
+## Canvas positions (`utils/canvasViewState.ts`)
+
+Drawings and notebooks now reopen where they were left, like PDFs: localStorage record
+`canvasViewPositions` under `scopedKey` — a drawing's `{pageId, x, y, z}` (watched with a tldraw
+`react()` on the camera, NOT a session-store listener that fires per pointer move; 400 ms debounce,
+flushed on unmount and `pagehide`), a notebook's `{page, offset, zoom}` (from `watchPageView`, restored
+through `cameraFor`). A first open with no record behaves as before. Like the other path-keyed
+records it does not follow renames and is never pruned.
+

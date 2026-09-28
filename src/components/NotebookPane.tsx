@@ -18,6 +18,11 @@ import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
 import PageControls, { type PageControlsHandle } from './PageControls';
 import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView, type PageBox, type PageLock } from './pagedCanvas';
+import { flushCanvasViewPositions, readCanvasViewPos, writeCanvasViewPos } from '../utils/canvasViewState';
+import { registerView, type NotebookViewInfo } from '../utils/viewRegistry';
+import {
+    captureRegion, createCanvasAgentOps, dominantPage, pagesInView, selectedAgentShapeIds, summarizeShapes, type CanvasPageModel,
+} from './canvasAgentOps';
 
 interface NotebookPaneProps {
     /** The notebook's vault path. Every change is reported against it explicitly
@@ -72,6 +77,9 @@ const APPEND_MARGIN_FRACTION = 0.2;
  */
 const TOP_GUTTER = 56;
 
+/** How long the view must rest before where it rests reaches storage. */
+const VIEW_PERSIST_DEBOUNCE_MS = 400;
+
 function pageShapeId(index: number): TLShapeId {
     return createShapeId(`notebook-page-${index}`);
 }
@@ -124,6 +132,9 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
     const thumbsRef = useRef<PdfThumbnailsHandle | null>(null);
     const controlsRef = useRef<PageControlsHandle | null>(null);
     const shownPageRef = useRef(0);
+    /** The page under the top edge (0-based) and how far into it, as the view
+     *  watch last saw them — the position the agent is told. */
+    const viewRef = useRef({ top: 0, offset: 0 });
     /** The box tldraw lives in, where swipes are caught before tldraw sees them. */
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
     /** The page stack as last laid out, and the camera lock that follows it. */
@@ -322,22 +333,108 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         // Scrolls like a PDF: vertical swipes only, full width edge to edge, and
         // the view cannot leave the pages. layOutPages keeps its bounds in step.
         lockRef.current = lockCameraToPages(editor, canvasWrapRef.current, boxesRef.current, TOP_GUTTER);
-        // A first-ever open starts at the top of page 1, full width. A reopen
+        // Where the reader left it, when this device remembers (utils/
+        // canvasViewState.ts): the page and how far into it, at the zoom it was
+        // read at — the PDF annotator's restore. Otherwise as before: a
+        // first-ever open starts at the top of page 1, full width, and a reopen
         // keeps the snapshot's camera, re-applied so the lock clamps it.
-        if (!parsed.snapshot) {
+        const remembered = readCanvasViewPos(filePath);
+        if (remembered?.kind === 'notebook') {
+            const boxes = boxesRef.current;
+            editor.setCamera(cameraFor(
+                boxes[Math.min(boxes.length - 1, remembered.page)],
+                editor.getViewportScreenBounds().width,
+                fitWidthZoom(editor, boxes) * (remembered.zoom ?? 1),
+                remembered.offset,
+                TOP_GUTTER,
+            ));
+        } else if (!parsed.snapshot) {
             editor.setCamera(cameraFor(boxesRef.current[0], editor.getViewportScreenBounds().width, fitWidthZoom(editor, boxesRef.current), 0, TOP_GUTTER));
         } else {
             editor.setCamera(editor.getCamera());
         }
 
         let firstView = true;
-        const stopViewWatch = watchPageView(editor, () => boxesRef.current, ({ shown }) => {
+        let viewTimer: ReturnType<typeof setTimeout> | null = null;
+        const stopViewWatch = watchPageView(editor, () => boxesRef.current, ({ top, offset, shown }) => {
+            viewRef.current = { top, offset };
+            // Memory every pass, storage once the view rests — pdfViewState's
+            // arrangement, for the same reason (App reads memory for a tab
+            // with no pane).
+            writeCanvasViewPos(filePath, {
+                kind: 'notebook', page: top, offset, zoom: editor.getZoomLevel() / fitWidthZoom(editor, boxesRef.current),
+            }, false);
+            if (viewTimer) clearTimeout(viewTimer);
+            viewTimer = setTimeout(() => { viewTimer = null; flushCanvasViewPositions(); }, VIEW_PERSIST_DEBOUNCE_MS);
             if (shown === shownPageRef.current && !firstView) return;
             firstView = false;
             shownPageRef.current = shown;
             controlsRef.current?.setPage(shown);
             thumbsRef.current?.setCurrentPage(shown);
         }, TOP_GUTTER);
+        // A reload unmounts nothing, so the last scroll would die in the
+        // debounce without this.
+        const onPageHide = () => { if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; flushCanvasViewPositions(); } };
+        window.addEventListener('pagehide', onPageHide);
+
+        // What the agent sees and draws through (utils/viewRegistry.ts): the
+        // pages are the ruled backdrop, so they are never listed or touched,
+        // and an op on a page past the last one grows the notebook the way
+        // writing there would.
+        const model: CanvasPageModel = {
+            boxes: () => boxesRef.current,
+            currentPage: () => dominantPage(boxesRef.current, editor.getViewportPageBounds()),
+            isBackdrop: id => pageShapeIdsRef.current.has(id),
+            ensurePages: (count) => {
+                const current = paperRef.current;
+                if (count > current.pageCount) {
+                    const next = { ...current, pageCount: Math.min(MAX_PAGES, count) };
+                    paperRef.current = next;
+                    setPaper(next);
+                    // A remote merge like every page change; the shapes the
+                    // agent then puts on the new page are the user-sourced
+                    // change whose save writes the paper along with them.
+                    layOutPages(editor, next);
+                }
+                return paperRef.current.pageCount;
+            },
+        };
+        const ops = createCanvasAgentOps(editor, model);
+        const unregisterView = registerView(filePath, {
+            kind: 'notebook',
+            canvas: ops,
+            describe(): NotebookViewInfo {
+                const boxes = boxesRef.current;
+                const view = editor.getViewportPageBounds();
+                const visible = pagesInView(boxes, view);
+                const onScreen = new Set(visible);
+                const { shapes, total } = summarizeShapes(editor, model, b => {
+                    const i = pageAt(boxes, (b.minY + b.maxY) / 2) + 1;
+                    return onScreen.has(i);
+                });
+                const p = paperRef.current;
+                return {
+                    kind: 'notebook',
+                    pageCount: p.pageCount,
+                    page: viewRef.current.top + 1,
+                    offset: viewRef.current.offset,
+                    zoom: editor.getZoomLevel() / fitWidthZoom(editor, boxes),
+                    visiblePages: visible,
+                    paper: `${p.ruling} · ${p.size} · ${p.orientation}`,
+                    selectedShapeIds: selectedAgentShapeIds(editor, model),
+                    shapes,
+                    shapesTotal: total,
+                };
+            },
+            // Paper, ruling and writing, as on screen (the pages are in the
+            // export like any shape), at no more than twice the on-screen size.
+            capture: (maxSide) => captureRegion(editor, editor.getViewportPageBounds(), maxSide, editor.getZoomLevel() * 2),
+            renderPage: async (page, maxSide) => {
+                const box = boxesRef.current[page - 1];
+                if (!box) return null;
+                return captureRegion(editor, new Box(box.x, box.y, box.width, box.height), maxSide);
+            },
+        });
 
         // A thumbnail shows the writing, so writing has to reach the strip. The
         // pages each changed shape touches are collected and handed over once
@@ -392,6 +489,8 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
 
         // source: 'user'    → a programmatic load or a re-papering never dirties.
         // scope: 'document' → panning and zooming do not either.
+        // The agent's canvas edits are 'user' too (editor API, no remote merge
+        // — see canvasAgentOps.ts), so they are saved exactly like ink.
         const unlistenDoc = editor.store.listen(schedule, { source: 'user', scope: 'document' });
         // The pickers live in session scope alongside camera noise that must NOT
         // dirty the file, so compare just the slice that gets persisted.
@@ -406,6 +505,11 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
 
         return () => {
             editorRef.current = null;
+            unregisterView();
+            window.removeEventListener('pagehide', onPageHide);
+            // The memory record is current (every view pass writes it); only
+            // the flush can still be pending.
+            if (viewTimer) { clearTimeout(viewTimer); flushCanvasViewPositions(); }
             disposePen();
             disposeInvert();
             unlistenDoc();
@@ -423,7 +527,7 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
                 flush();
             }
         };
-    }, [growIfNeeded, layOutPages, parsed.snapshot, persist]);
+    }, [filePath, growIfNeeded, layOutPages, parsed.snapshot, persist]);
 
     /**
      * Park what an export needs where the app's export handler can pick it up.

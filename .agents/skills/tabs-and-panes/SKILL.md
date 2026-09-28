@@ -516,3 +516,24 @@ a resizable pane one number rather than a rectangle.
 - **`.editor-empty-overlay` is still an overlay**, but the reason changed: with no tab open there are
   simply no panes and no view to orphan. The overlay-not-unmount rule now applies *within* a pane
   (`.drawing-pane`, `.pdf-pane` over their slot), not to the editor as a whole.
+
+## The AI agent's view of the panes (`utils/viewRegistry.ts`)
+
+- **Every mounted pane registers a reporter under its path** (`registerView`), from an effect —
+  NEVER inside the `EditorState` (it outlives the pane). The agent panel calls `describe()` only at
+  send time, so it always gets the live position; nothing is polled or persisted. The unregister
+  removes the reporter under whatever path it holds NOW, and `App.retargetTabs` calls `moveView`
+  beside `movePdfRenderData`, so the reporter answers under the new path until the pane remounts there.
+  `clearViews()` runs in the vault-switch effect. Hidden PDF readers stay registered; annotate canvases
+  (torn down when hidden) do not.
+- **`openInSidePane(layout, path)`** puts a document on screen WITHOUT moving `activeId` — how the
+  agent opens a canvas it was asked to draw on: already visible → unchanged; behind a tab of an
+  unfocused pane → fronted there; otherwise a new column at the right, or at `MAX_PANES` the
+  right-most unfocused column. `App`'s agent host adds the tab first (`addTabQuietly`, no focus) and
+  flips a PDF's tab to `'edit'` (annotate), then waits on `whenViewReady(path, 15s, r => !!r.canvas)`.
+- **Agent text edits and the save funnel**: a mounted note gets the edit through its reporter (one
+  transaction, the pane's update listener carries it to `updateTabContent`); an open-but-hidden note
+  gets it applied to EVERY cached `EditorState` for that path (`${id}|${path}`) and to the buffer, so
+  the next mount shows it and ⌘Z undoes it; a closed file is written and runs `afterWrite` (the tail of
+  `flushTab`). See the `vault-agent` skill.
+

@@ -171,8 +171,16 @@ the primitive on purpose: routing `createFile` through `freeEntryName` would qui
 annotated-PDF path) genuinely wants create-or-open. **The primitive itself is still unguarded, so
 anything new that calls it inherits the hole.**
 
-> Note: `App.tsx`'s `nameTaken` and `FileSystemContext.tsx`'s `entryExists` are two **independent**
-> implementations of the same "taken by either kind" rule. They are not shared code. Change both.
+> Note: `utils/entryNames.ts`'s `nameTaken` (App's create handlers and the AI agent's host) and
+> `FileSystemContext.tsx`'s `entryExists` are two **independent** implementations of the same "taken
+> by either kind" rule. They are not shared code. Change both.
+
+**The AI agent writes through the same rules** (`utils/agentHost.ts`, the `vault-agent` skill): its
+create/mkdir refuse a taken name instead of truncating, its move REFUSES a taken target (unlike
+`moveFile`/`renameFile` — nothing an agent is told justifies an overwrite), its trash is
+`App.performTrash` without the question (same `trashInFlightRef`), and its text edits land in the
+open editor or go through the save tail (`afterWrite`), never behind the app's back — there is no
+external-change detection, so a write the app did not make would be clobbered by the next autosave.
 
 ## A rename or a move carries every open document with it — a FOLDER's included
 
@@ -195,7 +203,12 @@ stored session named a file that was gone. Three things about it:
   collapse itself and everything the reader had opened inside it.
 
 Every mutation rebuilds the whole tree from scratch via `refreshTree` (dirs-first, alphabetical).
-Hidden from the tree: `.Assets`, `.Garbage`, `.DS_Store` — the first two **per folder**.
+Hidden from the tree: `.Assets`, `.Garbage`, `.DS_Store` — the first two **per folder** — and, at the
+vault ROOT only, `.appearance.json` (+ its `.crswap`) and `ROOT_HIDDEN_DIRS` (`utils/vaultAgentStore.ts`:
+`.VaultAgent`, `.claude`, `.agents`, `.codex`, `.opencode` — the AI agent's folders). Graph and vault
+search are built from the tree, so they inherit it; the agent's own `vault_list` reads the disk and
+still sees `.claude`/`.agents`. `.VaultAgent/` (the chat index and the vault's agent id) is written
+with `getFileHandle({create:true})` + `writeFile`, never `createFile`.
 
 ## `.Assets` and `.Garbage` are per FOLDER (`utils/assets.ts`)
 

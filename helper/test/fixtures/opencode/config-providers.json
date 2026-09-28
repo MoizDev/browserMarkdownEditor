@@ -1,0 +1,303 @@
+{
+ "providers": [
+  {
+   "id": "opencode",
+   "name": "OpenCode Zen",
+   "source": "custom",
+   "env": [
+    "OPENCODE_API_KEY"
+   ],
+   "options": {
+    "apiKey": "public"
+   },
+   "models": {
+    "nemotron-3-ultra-free": {
+     "id": "nemotron-3-ultra-free",
+     "providerID": "opencode",
+     "api": {
+      "id": "nemotron-3-ultra-free",
+      "url": "https://opencode.ai/zen/v1",
+      "npm": "@ai-sdk/openai-compatible"
+     },
+     "name": "Nemotron 3 Ultra Free",
+     "family": "nemotron-free",
+     "capabilities": {
+      "temperature": true,
+      "reasoning": true,
+      "attachment": false,
+      "toolcall": true,
+      "input": {
+       "text": true,
+       "audio": false,
+       "image": false,
+       "video": false,
+       "pdf": false
+      },
+      "output": {
+       "text": true,
+       "audio": false,
+       "image": false,
+       "video": false,
+       "pdf": false
+      },
+      "interleaved": {
+       "field": "reasoning_content"
+      }
+     },
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cache": {
+       "read": 0,
+       "write": 0
+      }
+     },
+     "limit": {
+      "context": 1000000,
+      "output": 128000
+     },
+     "status": "active",
+     "options": {},
+     "headers": {},
+     "release_date": "2026-06-04",
+     "variants": {}
+    },
+    "muse-spark-1.3-contributor-free": {
+     "id": "muse-spark-1.3-contributor-free",
+     "providerID": "opencode",
+     "api": {
+      "id": "muse-spark-1.3-contributor-free",
+      "url": "https://opencode.ai/zen/v1",
+      "npm": "@ai-sdk/openai"
+     },
+     "name": "Muse Spark 1.3 Free",
+     "family": "muse-free",
+     "capabilities": {
+      "temperature": true,
+      "reasoning": true,
+      "attachment": true,
+      "toolcall": true,
+      "input": {
+       "text": true,
+       "audio": true,
+       "image": true,
+       "video": true,
+       "pdf": true
+      },
+      "output": {
+       "text": true,
+       "audio": false,
+       "image": false,
+       "video": false,
+       "pdf": false
+      },
+      "interleaved": false
+     },
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cache": {
+       "read": 0,
+       "write": 0
+      }
+     },
+     "limit": {
+      "context": 1048576,
+      "output": 131072
+     },
+     "status": "active",
+     "options": {},
+     "headers": {},
+     "release_date": "2026-09-02",
+     "variants": {
+      "minimal": {
+       "reasoningEffort": "minimal",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      },
+      "low": {
+       "reasoningEffort": "low",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      },
+      "medium": {
+       "reasoningEffort": "medium",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      },
+      "high": {
+       "reasoningEffort": "high",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      },
+      "xhigh": {
+       "reasoningEffort": "xhigh",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      }
+     }
+    },
+    "muse-spark-1.2-contributor-free": {
+     "id": "muse-spark-1.2-contributor-free",
+     "providerID": "opencode",
+     "api": {
+      "id": "muse-spark-1.2-contributor-free",
+      "url": "https://opencode.ai/zen/v1",
+      "npm": "@ai-sdk/openai"
+     },
+     "name": "Muse Spark 1.2 Free",
+     "family": "muse-free",
+     "capabilities": {
+      "temperature": true,
+      "reasoning": true,
+      "attachment": true,
+      "toolcall": true,
+      "input": {
+       "text": true,
+       "audio": true,
+       "image": true,
+       "video": true,
+       "pdf": true
+      },
+      "output": {
+       "text": true,
+       "audio": false,
+       "image": false,
+       "video": false,
+       "pdf": false
+      },
+      "interleaved": false
+     },
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cache": {
+       "read": 0,
+       "write": 0
+      }
+     },
+     "limit": {
+      "context": 1048576,
+      "output": 131072
+     },
+     "status": "active",
+     "options": {},
+     "headers": {},
+     "release_date": "2026-08-05",
+     "variants": {
+      "minimal": {
+       "reasoningEffort": "minimal",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      },
+      "low": {
+       "reasoningEffort": "low",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      },
+      "medium": {
+       "reasoningEffort": "medium",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      },
+      "high": {
+       "reasoningEffort": "high",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      },
+      "xhigh": {
+       "reasoningEffort": "xhigh",
+       "reasoningSummary": "auto",
+       "include": [
+        "reasoning.encrypted_content"
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "fake",
+   "name": "Fake",
+   "source": "config",
+   "env": [],
+   "options": {
+    "baseURL": "http://127.0.0.1:48999/v1",
+    "apiKey": "x"
+   },
+   "models": {
+    "fake-model": {
+     "id": "fake-model",
+     "providerID": "fake",
+     "api": {
+      "id": "fake-model",
+      "url": "",
+      "npm": "@ai-sdk/openai-compatible"
+     },
+     "name": "Fake Model",
+     "family": "",
+     "capabilities": {
+      "temperature": false,
+      "reasoning": false,
+      "attachment": true,
+      "toolcall": true,
+      "input": {
+       "text": true,
+       "audio": false,
+       "image": true,
+       "video": false,
+       "pdf": false
+      },
+      "output": {
+       "text": true,
+       "audio": false,
+       "image": false,
+       "video": false,
+       "pdf": false
+      },
+      "interleaved": false
+     },
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cache": {
+       "read": 0,
+       "write": 0
+      }
+     },
+     "limit": {
+      "context": 0,
+      "output": 0
+     },
+     "status": "active",
+     "options": {},
+     "headers": {},
+     "release_date": "",
+     "variants": {}
+    }
+   }
+  }
+ ],
+ "default": {
+  "opencode": "big-pickle",
+  "fake": "fake-model"
+ }
+}

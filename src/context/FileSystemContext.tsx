@@ -4,6 +4,7 @@ import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault, withVaultPaths } from '../utils/recentVaults';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from '../utils/entryStyle';
+import { ROOT_HIDDEN_DIRS } from '../utils/vaultAgentStore';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath } from '../utils/paths';
 import { sortTrashChildren, sortTrashRoot } from '../utils/trash';
@@ -198,6 +199,13 @@ async function buildFileTree(dirHandle: FileSystemDirectoryHandle, path = ''): P
         // leaves it on disk, and a file this app wrote should not then surface
         // in the tree as though the reader had put it there.
         if (!path && (name === ENTRY_STYLE_FILE || name === LEGACY_STYLE_FILE)) continue;
+        // Chrome's temporary for a write in progress to that file: every icon
+        // pick rewrites it, and a tree walk landing mid-write drew the swap file
+        // as a sibling (see App.writeEntryStyles).
+        if (!path && name === `${ENTRY_STYLE_FILE}.crswap`) continue;
+        // The AI agent's folders (utils/vaultAgentStore.ts) — root-only, where
+        // the agent CLIs look for them.
+        if (!path && handle.kind === 'directory' && ROOT_HIDDEN_DIRS.has(name)) continue;
         // Hide standard system folders from the UI. Every folder may hold its
         // own pair of them (see utils/assets.ts), so this is not a root-only test.
         if (handle.kind === 'directory' && (name === ASSETS_DIR || name === TRASH_DIR)) continue;

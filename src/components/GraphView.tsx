@@ -46,6 +46,13 @@ function nodeColor(id: string): string {
     return NODE_PALETTE[Math.abs(h) % NODE_PALETTE.length];
 }
 
+const DEFAULT_SCALE = 2.5;
+const MIN_SCALE = 0.2;
+const MAX_SCALE = 4;
+/** Screen px kept clear around a fitted graph — room for the labels under the
+ *  outermost nodes. */
+const FIT_PADDING = 36;
+
 interface GraphViewProps {
     nodes: GraphNode[];
     links: GraphLink[];
@@ -87,7 +94,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
 
     // Simulation state lives in refs so the animation loop never restarts.
     const simNodes = useRef<Map<string, SimNode>>(new Map());   // id -> { x, y, vx, vy }
-    const viewRef = useRef<GraphViewport>({ scale: 2.5, offsetX: 0, offsetY: 0 });
+    const viewRef = useRef<GraphViewport>({ scale: DEFAULT_SCALE, offsetX: 0, offsetY: 0 });
     const draggingRef = useRef<{ id: string } | null>(null);     // { id } while dragging a node
     const panningRef = useRef<{ x: number; y: number } | null>(null);      // { x, y } while panning
     const movedRef = useRef<boolean>(false);       // distinguish click vs drag
@@ -97,6 +104,14 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     const alphaRef = useRef<number>(1);          // simulation "temperature"; cools to rest
     const activeRef = useRef<string | null>(activeFilePath);
     const dirtyRef = useRef<boolean>(true);       // request a one-off redraw while at rest
+    // Framed automatically until the reader pans, zooms or drags a node (and
+    // again after Reset view). Without it the view sat at a fixed zoom around
+    // the world origin, so a sidebar or the agent panel narrowing the canvas
+    // left the outer notes off its edges (measured: 4 of 14 fixture notes
+    // unreachable with the agent panel open at 400px).
+    const autoFitRef = useRef<boolean>(true);
+    /** The render loop's `fit`, for Reset view — it needs the loop's canvas size. */
+    const fitRef = useRef<() => void>(() => {});
 
     const [hoverName, setHoverName] = useState<string | null>(null);
 
@@ -175,8 +190,37 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         if (!canvas || !wrap) return;
         const ctx = canvas.getContext('2d')!;
 
+        const nodeRadius = (n: GraphNode) => nodeBaseRadius(n, maxDegree);
+
         let width = 0, height = 0, dpr = 1;
+
+        /** Frame every node (and the label under it) in the canvas. Capped at
+         *  the default zoom, so a small vault is not blown up to fill it. */
+        const fit = () => {
+            const sim = simNodes.current;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const n of nodes) {
+                const p = sim.get(n.id);
+                if (!p) continue;
+                const r = nodeRadius(n);
+                minX = Math.min(minX, p.x - r); maxX = Math.max(maxX, p.x + r);
+                minY = Math.min(minY, p.y - r); maxY = Math.max(maxY, p.y + r);
+            }
+            if (!Number.isFinite(minX) || width <= 0 || height <= 0) return;
+            const room = (size: number) => Math.max(1, size - 2 * FIT_PADDING);
+            const scale = Math.max(MIN_SCALE, Math.min(DEFAULT_SCALE,
+                room(width) / Math.max(1, maxX - minX),
+                room(height) / Math.max(1, maxY - minY)));
+            const view = viewRef.current;
+            view.scale = scale;
+            view.offsetX = -((minX + maxX) / 2) * scale;
+            view.offsetY = -((minY + maxY) / 2) * scale;
+        };
+
+        fitRef.current = fit;
+
         const resize = () => {
+            const before = width;
             dpr = window.devicePixelRatio || 1;
             width = wrap.clientWidth;
             height = wrap.clientHeight;
@@ -184,13 +228,24 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             canvas.height = Math.max(1, Math.floor(height * dpr));
             canvas.style.width = width + 'px';
             canvas.style.height = height + 'px';
+            if (autoFitRef.current) {
+                fit();
+            } else if (before > 0 && width > 0 && width !== before) {
+                // A view the reader framed by hand keeps its framing: scaled
+                // with the WIDTH, which is what the sidebar and the agent panel
+                // change, so opening and then closing one restores it exactly.
+                const view = viewRef.current;
+                const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.scale * (width / before)));
+                const k = scale / view.scale;
+                view.scale = scale;
+                view.offsetX *= k;
+                view.offsetY *= k;
+            }
             dirtyRef.current = true;
         };
         resize();
         const ro = new ResizeObserver(resize);
         ro.observe(wrap);
-
-        const nodeRadius = (n: GraphNode) => nodeBaseRadius(n, maxDegree);
 
         const ALPHA_DECAY = 0.0228;   // cools to rest in a few seconds (D3-style)
         const ALPHA_MIN = 0.001;      // below this the layout is considered settled
@@ -373,6 +428,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
 
         const loop = () => {
             const moved = step();
+            // The camera follows the layout while it settles, until the reader takes over.
+            if (moved && autoFitRef.current) fit();
             // Only repaint when something actually changed — a settled graph idles.
             if (moved || dirtyRef.current) {
                 draw();
@@ -422,6 +479,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         movedRef.current = false;
         const hit = hitTest(e.clientX, e.clientY);
         if (hit) {
+            autoFitRef.current = false;
             draggingRef.current = { id: hit.id };
             alphaRef.current = Math.max(alphaRef.current, 0.3); // wake neighbours
         } else {
@@ -441,6 +499,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         }
         if (panningRef.current) {
             movedRef.current = true;
+            autoFitRef.current = false;
             view.offsetX += e.clientX - panningRef.current.x;
             view.offsetY += e.clientY - panningRef.current.y;
             panningRef.current = { x: e.clientX, y: e.clientY };
@@ -475,7 +534,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         const mx = e.clientX - rect.left - (rect.width / 2 + view.offsetX);
         const my = e.clientY - rect.top - (rect.height / 2 + view.offsetY);
         const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-        const newScale = Math.max(0.2, Math.min(4, view.scale * factor));
+        const newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.scale * factor));
+        autoFitRef.current = false;
         // Zoom toward the cursor.
         view.offsetX -= mx * (newScale / view.scale - 1);
         view.offsetY -= my * (newScale / view.scale - 1);
@@ -484,7 +544,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     };
 
     const resetView = () => {
-        viewRef.current = { scale: 2.5, offsetX: 0, offsetY: 0 };
+        autoFitRef.current = true;
+        fitRef.current();
         dirtyRef.current = true;
     };
 

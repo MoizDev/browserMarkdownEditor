@@ -1,0 +1,23 @@
+{
+  // The VaultAgent helper: a Bun program compiled into one executable per OS.
+  // Checked by `npm run typecheck` (tsc -p helper) alongside the browser code.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    // Bun's globals only: this code never runs in a browser, and the browser's
+    // `lib.dom` must not leak in (a `fetch`/`WebSocket` typed as the DOM's would
+    // hide Bun-only options such as spawn's argument arrays).
+    "types": ["bun"]
+  },
+  "include": ["src", "test", "scripts", "../shared"]
+}

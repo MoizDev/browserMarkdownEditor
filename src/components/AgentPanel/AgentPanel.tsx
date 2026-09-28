@@ -28,6 +28,7 @@ import { ChatList } from './ChatList';
 import { Composer } from './Composer';
 import { MessageList } from './MessageList';
 import { ModelPicker } from './ModelPicker';
+import { TeachToggle } from './TeachToggle';
 import { AgentWarning, SetupGuide } from './SetupGuide';
 import { DRAFT_KEY, activeChatOf, chatStore, configOf, resolveModel } from './chatStore';
 import type { ChatStoreState, Conversation, PreparedImage } from './chatStore';
@@ -402,7 +403,10 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
                             running={runHere}
                             stopping={runHere && run?.phase === 'stopping'}
                             imagesAllowed={model ? model.images : true}
-                            chip={<ModelPicker state={state} theme={theme} disabled={!!blocked && !runHere} />}
+                            chip={<>
+                                <ModelPicker state={state} theme={theme} disabled={!!blocked && !runHere} />
+                                <TeachToggle state={state} />
+                            </>}
                             onSend={send}
                             onStop={stop}
                             registerDrop={registerDrop}

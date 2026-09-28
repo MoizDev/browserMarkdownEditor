@@ -90,6 +90,25 @@ names (`entryNames.nameTaken`) and never truncate; move REFUSES a taken target; 
 `App.performTrash` without the question; canvas ops land in the live tldraw editor (`pdf-and-drawings`),
 opening a closed canvas beside the user via `openInSidePane` without moving the focus.
 
+## How replies are shaped (brevity + teaching)
+
+Two layers, split by what can change mid-chat:
+
+- **`helper/src/prompt.ts`** carries the durable contract — answer first, 2-4 sentences, bullets only for 3+
+  parallel things, never paste a diff the panel already shows, one clarifying question at most — and the
+  definition of both cadences. It CANNOT hold the per-message choice: Claude records the system prompt on a
+  chat's first request and reuses it on resume, so a change here reaches new chats only.
+- **`utils/agentReplyMode.ts`** decides, per message, between `direct` and `teach`, and
+  `agentContext.ts` appends `REPLY_MODE_LINE[mode]` as the LAST line of `<bme-context>` (closest to the
+  user's words, and self-contained, so an old chat still gets the cadence).
+
+**The editor decides, not the model**: the cap in the composer lights on exactly the messages that were sent
+as `teach`, and a badge the model controlled would mean parsing a marker out of a stream it may not emit.
+`ReplyModePref` (`auto`/`teach`/`direct`, localStorage `agentReplyMode`, app-wide) pins it; in `auto`,
+`looksLikeLearning` matches understanding-shaped wording and a TASK regex beats it ("explain this in a note"
+is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teaching`, in memory) — mid-lesson
+"yes" and "why?" carry no cues of their own — and only a task breaks out of it.
+
 ## Chats
 
 - `.VaultAgent/vault.json` = the vault's permanent uuid (created on first send, serialized); it names

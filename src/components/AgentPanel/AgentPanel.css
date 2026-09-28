@@ -737,13 +737,21 @@
   max-width: 100%;
 }
 
-.agent-reply .cm-math-inline {
-  display: inline-block;
-  max-width: 100%;
-  overflow-x: auto;
-  /* inline-block on the baseline would hang the box below the line; bottom
-     keeps a formula sitting on the text's own baseline. */
-  vertical-align: bottom;
+/* Inline maths is NOT made a scroll box, and that is the finding of an
+   experiment: `overflow-x: auto` (to catch a long formula) forces the other axis
+   to a scrolling value too, and CSS turns a paired `clip` into `hidden` — so
+   every inline fraction drew a vertical scrollbar, and clipping it instead cut
+   the numerator off. A fraction is TALLER than its line by design and has always
+   simply overflowed it. A genuinely long one now overflows the line instead of
+   widening the reply (the content above is pinned), and the scroller's own
+   horizontal bar reaches it. */
+
+/* A display formula scrolls sideways, never down: `overflow-x: auto` in
+   index.css would otherwise leave the vertical axis on `auto` as well, one tall
+   integral away from a stray scrollbar. Nothing is cut — .cm-math-block's own
+   12px of vertical padding is what a sum's limits grow into. */
+.agent-reply .cm-math-block {
+  overflow-y: hidden;
 }
 
 .agent-reply-plain {
@@ -1041,6 +1049,49 @@
 .agent-chip:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* The learning cap. Square, because it has no label — the model chip beside it
+   is the one that carries text. */
+.agent-teach {
+  padding: 0 6px;
+}
+
+/* Lit means a lesson is actually under way: pinned on, or `auto` having decided
+   to teach this chat. That is the whole point of the cap — "we are teaching
+   now" has to be visible without the user pinning anything. */
+.agent-teach.is-teaching {
+  color: var(--interactive-accent);
+}
+
+/* Pinned on also carries a tint, so "on for everything" is not mistaken for
+   "auto happens to be teaching". */
+.agent-teach.is-teach {
+  background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+}
+
+.agent-teach.is-teach:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+  color: var(--interactive-accent);
+}
+
+/* Off: the cap, struck through. A muted cap alone reads as "auto", which is a
+   different thing. */
+.agent-teach.is-direct {
+  position: relative;
+  opacity: 0.75;
+}
+
+.agent-teach.is-direct::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  top: 50%;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+  transform: rotate(-20deg);
 }
 
 .agent-chip-label {

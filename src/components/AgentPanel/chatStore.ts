@@ -14,6 +14,7 @@ import { agentBridge, BridgeError } from '../../utils/agentBridge';
 import type { BridgeState, HelperEvent } from '../../utils/agentBridge';
 import { executeTool } from '../../utils/vaultAgentTools';
 import { buildAgentContext, stripAgentContext } from '../../utils/agentContext';
+import { getReplyModePref, resolveReplyMode } from '../../utils/agentReplyMode';
 import { AGENT_IDS, AGENT_LABELS, MAX_IMAGES_PER_MESSAGE } from '../../../shared/vaultAgentProtocol';
 import type {
     AgentEvent, AgentId, AgentStatus, HistoryItem, ModelInfo, RunErrorReason, RunImage, ToolResult,
@@ -88,6 +89,16 @@ export interface ChatStoreState {
     agentsStatus: 'idle' | 'loading' | 'ready' | 'error';
     agents: AgentStatus[];
     models: Partial<Record<AgentId, ModelsEntry>>;
+    /**
+     * Chats with a lesson under way (conversation keys, the draft included).
+     *
+     * In memory only: "yes", "no idea" and "why?" carry no learning cues of
+     * their own, so `auto` has to remember that the last message was taught —
+     * but a reload starting the chat neutral is the right failure, since the
+     * next real question re-decides it anyway. The panel reads it to light the
+     * cap while `auto` is the pinned mode.
+     */
+    teaching: Record<string, boolean>;
 }
 
 /** The draft's conversation key (a chat id is a UUID, so no clash). */
@@ -225,6 +236,7 @@ class ChatStore {
         agentsStatus: 'idle',
         agents: [],
         models: {},
+        teaching: {},
     };
     private readonly listeners = new Set<() => void>();
     private notifyFrame = 0;
@@ -439,8 +451,23 @@ class ChatStore {
         writeChoice(draft);
         const conversations = { ...this.state.conversations };
         delete conversations[DRAFT_KEY];
-        this.set({ draft, activeChatId: null, conversations });
+        const teaching = { ...this.state.teaching };
+        delete teaching[DRAFT_KEY];
+        this.set({ draft, activeChatId: null, conversations, teaching });
         void this.ensureModels(agent);
+    }
+
+    /** Remember whether a lesson is under way in `key` (see ChatStoreState). */
+    private setTeaching(key: string, on: boolean): void {
+        if (!!this.state.teaching[key] === on) return;
+        const teaching = { ...this.state.teaching };
+        if (on) teaching[key] = true; else delete teaching[key];
+        this.set({ teaching });
+    }
+
+    /** Is a lesson under way in the chat on screen? The cap reads this. */
+    isTeaching(): boolean {
+        return !!this.state.teaching[this.conversationKey()];
     }
 
     newChat(): void {
@@ -514,8 +541,11 @@ class ChatStore {
         const conversations = { ...this.state.conversations };
         revokeThumbs(conversations[id]);
         delete conversations[id];
+        const teaching = { ...this.state.teaching };
+        delete teaching[id];
         this.set({
             conversations,
+            teaching,
             activeChatId: this.state.activeChatId === id ? null : this.state.activeChatId,
         });
     }
@@ -556,6 +586,11 @@ class ChatStore {
             kind: 'user', id: userItemId, text,
             thumbs: images.map(i => i.url), imageCount: images.length, context: null,
         });
+        // Decided here, from the words just typed, not by the model: the cap in
+        // the composer lights on this same answer (see utils/agentReplyMode.ts).
+        const mode = resolveReplyMode(getReplyModePref(), text, !!this.state.teaching[key]);
+        this.setTeaching(key, mode === 'teach');
+
         this.runVaultToken = host.toolHost.vaultToken();
         this.runImageHash = null;
         this.releaseRun = agentBridge.retain();
@@ -578,9 +613,13 @@ class ChatStore {
                 const created = chat;
                 const conversations = { ...this.state.conversations, [created.id]: { ...this.conversation(DRAFT_KEY), history: 'loaded' as const } };
                 delete conversations[DRAFT_KEY];
+                // The lesson was decided against the draft's key a moment ago.
+                const teaching = { ...this.state.teaching, [created.id]: !!this.state.teaching[DRAFT_KEY] };
+                delete teaching[DRAFT_KEY];
                 key = created.id;
                 this.set({
                     conversations,
+                    teaching,
                     activeChatId: created.id,
                     chats: [created, ...this.state.chats],
                     run: { ...this.state.run!, chatId: created.id },
@@ -598,6 +637,7 @@ class ChatStore {
                 vaultUuid,
                 lastImageHash: chat.lastImageHash ?? null,
                 imagesSupported,
+                mode,
             });
             if (!stillOurs()) return;
 

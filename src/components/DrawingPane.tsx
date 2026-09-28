@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Tldraw, getSnapshot } from 'tldraw';
+import { Box, Tldraw, getSnapshot, react } from 'tldraw';
 import type { Editor, TLEditorSnapshot } from 'tldraw';
 import 'tldraw/tldraw.css';
 import type { Theme } from '../types';
 import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
 import { subscribePenScale } from '../utils/penStyle';
+import { flushCanvasViewPositions, readCanvasViewPos, writeCanvasViewPos } from '../utils/canvasViewState';
+import { registerView, type DrawingViewInfo } from '../utils/viewRegistry';
+import { captureRegion, createCanvasAgentOps, selectedAgentShapeIds, summarizeShapes, type CanvasPageModel } from './canvasAgentOps';
 
 interface DrawingPaneProps {
     /** The drawing's vault path. Every change is reported against it explicitly
@@ -25,6 +28,17 @@ const SERIALIZE_DEBOUNCE_MS = 400;
 /** Up to this many shapes on a page, zoomed-out strokes keep their full ink
  *  rendering; past it, tldraw's low-zoom thin-line LOD applies as designed. */
 const FULL_INK_SHAPE_LIMIT = 1000;
+
+/** How long the camera must rest before where it rests reaches storage. */
+const VIEW_PERSIST_DEBOUNCE_MS = 400;
+
+/** A whiteboard has no pages to be relative to and no backdrop to protect:
+ *  the agent's coordinates are the canvas's own. */
+const WHITEBOARD_MODEL: CanvasPageModel = {
+    boxes: () => [],
+    currentPage: () => 0,
+    isBackdrop: () => false,
+};
 
 function parseDrawingFile(content: string): { snapshot?: TLEditorSnapshot; ui?: CanvasUiState } {
     if (!content.trim()) return {}; // new/empty file → blank canvas
@@ -112,8 +126,77 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
             serializeTimerRef.current = setTimeout(flush, SERIALIZE_DEBOUNCE_MS);
         };
 
+        // Reopen where the reader LEFT it, not where the file was last saved:
+        // the snapshot's session camera is only as new as the last stroke, so
+        // a board panned across and closed came back wherever the drawing
+        // stopped. Session state, and before the listeners attach, so neither
+        // the page switch nor the camera marks the file dirty. No record: the
+        // snapshot's camera, exactly as before.
+        const remembered = readCanvasViewPos(filePath);
+        if (remembered?.kind === 'drawing') {
+            // A page since deleted takes its camera with it: that place was on
+            // a page that is no longer there.
+            const page = editor.getPages().find(p => p.id === remembered.pageId);
+            if (page) {
+                if (page.id !== editor.getCurrentPageId()) editor.setCurrentPage(page.id);
+                editor.setCamera({ x: remembered.x, y: remembered.y, z: remembered.z });
+            }
+        }
+
+        // And remember it as it moves. A `react()` on the camera and the page,
+        // which runs when the VIEW changes — not a session-scope store
+        // listener, which fires on every pointer move while drawing. Memory on
+        // every change (a property write), storage once the camera rests.
+        let viewTimer: ReturnType<typeof setTimeout> | null = null;
+        let viewMounted = false;
+        const stopViewWatch = react('drawing view position', () => {
+            const { x, y, z } = editor.getCamera();
+            const pageId = editor.getCurrentPageId();
+            // The first run is the camera just restored (or the file's own):
+            // nothing moved, so nothing to write.
+            if (!viewMounted) { viewMounted = true; return; }
+            writeCanvasViewPos(filePath, { kind: 'drawing', pageId, x, y, z }, false);
+            if (viewTimer) clearTimeout(viewTimer);
+            viewTimer = setTimeout(() => { viewTimer = null; flushCanvasViewPositions(); }, VIEW_PERSIST_DEBOUNCE_MS);
+        });
+        // A reload or a closed window unmounts nothing, so the last pan would
+        // die in the debounce without this.
+        const onPageHide = () => { if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; flushCanvasViewPositions(); } };
+        window.addEventListener('pagehide', onPageHide);
+
+        // What the agent sees and draws through (utils/viewRegistry.ts). Built
+        // here, from the live editor, and read only when a message is sent.
+        const ops = createCanvasAgentOps(editor, WHITEBOARD_MODEL);
+        const unregisterView = registerView(filePath, {
+            kind: 'drawing',
+            canvas: ops,
+            describe(): DrawingViewInfo {
+                const pages = editor.getPages();
+                const current = editor.getCurrentPage();
+                const view = editor.getViewportPageBounds();
+                const { x, y, z } = editor.getCamera();
+                const { shapes, total } = summarizeShapes(editor, WHITEBOARD_MODEL, b => Box.Collides(b, view));
+                return {
+                    kind: 'drawing',
+                    pageName: current.name,
+                    pageIndex: Math.max(0, pages.findIndex(p => p.id === current.id)),
+                    pageCount: pages.length,
+                    camera: { x, y, z },
+                    viewport: { x: view.x, y: view.y, w: view.w, h: view.h },
+                    selectedShapeIds: selectedAgentShapeIds(editor, WHITEBOARD_MODEL),
+                    shapes,
+                    shapesTotal: total,
+                };
+            },
+            // The view as it is on screen, at no more than twice its on-screen
+            // size.
+            capture: (maxSide) => captureRegion(editor, editor.getViewportPageBounds(), maxSide, editor.getZoomLevel() * 2),
+        });
+
         // source: 'user'     → a programmatic load never marks the file dirty.
         // scope: 'document'  → panning/zooming (session state) doesn't either.
+        // The agent's canvas edits are 'user' too (editor API, no remote merge
+        // — see canvasAgentOps.ts), so they are saved exactly like a stroke.
         const unlistenDoc = editor.store.listen(schedule, { source: 'user', scope: 'document' });
 
         // The pickers live in session scope alongside camera/selection noise
@@ -130,6 +213,12 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
 
         return () => {
             editorRef.current = null;
+            unregisterView();
+            stopViewWatch();
+            window.removeEventListener('pagehide', onPageHide);
+            // The memory record is current (the watch writes it on every
+            // change); only the flush can still be pending.
+            if (viewTimer) { clearTimeout(viewTimer); flushCanvasViewPositions(); }
             disposePen();
             unlistenDoc();
             unlistenSession();

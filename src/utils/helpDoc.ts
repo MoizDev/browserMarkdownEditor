@@ -2,7 +2,7 @@ export const HELP_DOC_CONTENT = `# Browser Markdown Editor User Guide
 
 Welcome to your Browser Markdown Editor. This application is a fully offline, local-first markdown editor that operates entirely within your web browser using the native File System Access API. 
 
-Because it operates locally, you retain complete ownership and privacy over your data. There are no servers, no databases, and no cloud syncing happening in the background. Your files remain exclusively on your device.
+Because it operates locally, you retain complete ownership and privacy over your data. There are no servers, no databases, and no cloud syncing happening in the background. Your files remain exclusively on your device. The one optional exception is the **AI agent** (section 9): if you choose to install its small helper, the agent you pick sends your questions — and what you are looking at — to its own AI service, exactly as it would from your terminal.
 
 Here is everything you need to know about using the application.
 
@@ -318,6 +318,10 @@ A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endle
 sheet in every direction, for diagrams and thinking rather than for a page you
 intend to hand in.
 
+Drawings and notebooks **reopen where you left them** — the same spot on a
+drawing, the same page and zoom in a notebook — just as a PDF does, whether you
+switch tabs, close the file or reload the app.
+
 ### PDFs
 A PDF opens in a reader: scroll it, select its text, search it with the browser's
 own \`Cmd + F\`, follow its links, and jump to a page with the box at the bottom.
@@ -529,6 +533,41 @@ $$
 
 ### Math in a Table
 Both forms work inside a table cell too — see section 7. Two things to watch. A cell resolves \`\\\\\` down to a single backslash on the way in, so LaTeX that needs a real \`\\\\\` — the row separator inside \`\\begin{matrix}\`, say — has to be written \`\\\\\\\\\` there; those environments then lay out their rows normally. A \`\\\\\` on its own, though, does nothing at all in a cell: a cell is one line, so the break is dropped rather than splitting the formula and growing the row. Everything else carries across unchanged.
+
+---
+
+## 9. The AI Agent
+
+The sparkles button at the bottom of the sidebar (or \`Cmd + Shift + X\` / \`Ctrl + Shift + X\`) opens a chat panel on the right of the window. In it you talk to an AI coding agent you already use — **Claude Code**, **Codex** or **OpenCode** — about the vault you have open. Drag the panel's left edge to make it wider or narrower.
+
+### What it needs
+- **The agent itself, installed and logged in on this computer.** Log in once in a terminal, the way you normally would: run \`claude\` and type \`/login\`; or \`codex login\`; or \`opencode auth login\`. The panel warns you when the agent you picked is not installed or not logged in, and shows the command to run.
+- **VaultAgent**, a small helper that runs quietly in the background (no window, no Dock or menu-bar icon) and starts when you log in. A browser page cannot start programs, so the helper is what runs the agent for you. The panel's guide has the download for your system:
+  - **macOS:** open \`VaultAgent.pkg\`. The first time, macOS blocks it because it is not from the App Store: open **System Settings → Privacy & Security**, click **Open Anyway**, and follow the installer. macOS then says "Background Items Added".
+  - **Windows:** run \`VaultAgent-Setup.exe\`. If SmartScreen stops it, click **More info → Run anyway**.
+  - **Linux:** make the downloaded file executable and run it once (\`chmod +x vaultagent-linux-x64 && ./vaultagent-linux-x64\`); it installs itself as a background service for your user.
+- Then click **Connect** in the panel. Chrome asks once whether this site may talk to apps on your computer — choose **Allow**. Until you click Connect the page never tries to reach the helper. If you chose Block by mistake, click the icon at the left of the address bar, open **Site settings**, and set **Local network access** to **Allow**; the panel reconnects by itself.
+
+### Chatting
+Opening the panel puts you straight in the box at the bottom, and closing it puts you back where you were. Type there and press **Enter** to send (**Shift + Enter** for a new line). Paste images straight from the clipboard, drop them onto the box, or use the attach button. Right-click the box to **Paste**, or selected text anywhere in the panel to **Copy** it. Pick the agent at the top of the panel, and the model and how hard it should think (effort) beside the message box — each chat remembers its own choice, and a new chat starts with the last one you used. Switching the agent starts a new chat. **Stop** ends a reply early.
+
+Each chat keeps its own conversation. The chat list at the top lets you go back to an earlier one or start a new one, and deleting a chat removes it for good (after asking), including the agent's own record of it.
+
+### What the agent can see
+You never need to tell it what you are looking at (open **Context sent** under any of your messages to see exactly what went with it). With **every** message it is told, fresh, which tabs and panes you have open, which one you are in, and exactly where you are in each: the lines on screen and your selection in a note (unsaved edits included), the page, zoom and selected text in a PDF, and what is in view on a drawing or notebook page. When the tab you are in is a drawing, notebook or PDF, a picture of what is on screen goes along too — but only when it changed since your last message. Scroll, switch tabs or keep writing between messages and the next message knows.
+
+It can also look things up on the web.
+
+### What the agent can change
+It can read and search every file in the vault, edit notes, create notes and folders, rename and move things, and delete them — to the Trash, never for good. On drawings, notebooks and PDFs it can add text, sticky notes, shapes, arrows and freehand strokes, and move, restyle or remove shapes. Every change happens straight away and shows in the chat as a card (with the lines it changed); the card's **Open** takes you to the file. A change made in a note you have open appears in it live, and \`Cmd + Z\` undoes it like your own typing. A drawing, notebook or PDF it works on opens **beside** what you are doing, without taking you away from it.
+
+**It can only touch this vault.** It has no access to the rest of your computer: it cannot run programs or read files outside the vault — every file it reads or writes goes through this app.
+
+### Where chats are kept
+The vault holds only a small list of its chats, in a hidden \`.VaultAgent\` folder (hidden from the file tree, search and the graph, as are \`.claude\`, \`.agents\`, \`.codex\` and \`.opencode\` folders at the top of the vault). The conversations themselves are kept by the agent in its own place, the way it keeps your terminal sessions; the agent works from a folder of its own for this vault, under \`~/.bme-agent-sessions\` in your home folder. A \`CLAUDE.md\` or \`AGENTS.md\` at the top of the vault, and skills in \`.claude/skills\` or \`.agents/skills\`, are passed on to the agent as instructions.
+
+### Turning it off
+The panel's **⋯** menu has **Uninstall VaultAgent**: it stops the helper, removes it from your login items and deletes it. Your chats stay. To use the agent again, open the installer again (the panel offers the download) — reinstalling simply replaces the old copy.
 
 ---
 

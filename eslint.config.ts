@@ -6,7 +6,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', 'helper/dist']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -68,6 +68,17 @@ export default defineConfig([
           message: 'Use data-tooltip, not the title attribute.',
         },
       ],
+    },
+  },
+  {
+    // The VaultAgent helper is a Bun program, not browser code; `shared/` is
+    // imported by both sides, so it may assume neither's globals beyond these.
+    files: ['helper/**/*.ts', 'shared/**/*.ts'],
+    languageOptions: {
+      globals: { ...globals.node, Bun: 'readonly' },
+    },
+    rules: {
+      'react-refresh/only-export-components': 'off',
     },
   },
   {

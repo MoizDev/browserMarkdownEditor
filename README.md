@@ -1,6 +1,6 @@
 # Browser Markdown Editor
 
-A powerful, entirely local-first browser-based Markdown editor inspired by Obsidian. Built tightly around the File System Access API, it allows users to manage and edit local Markdown files directly within their web browser, maintaining file structures and directories seamlessly. The application operates solely on your local device without any backend or database requirements, ensuring maximum privacy and data ownership.
+A powerful, entirely local-first browser-based Markdown editor inspired by Obsidian. Built tightly around the File System Access API, it allows users to manage and edit local Markdown files directly within their web browser, maintaining file structures and directories seamlessly. The application operates solely on your local device without any backend or database requirements, ensuring maximum privacy and data ownership. The one optional exception is the AI agent panel, which runs an agent CLI you already use through a small local helper.
 
 ## Key Features
 
@@ -17,6 +17,7 @@ A powerful, entirely local-first browser-based Markdown editor inspired by Obsid
 - **Session Persistence:** Remembers your open vault, expanded file tree directories, cursor position, last active note, how your tabs were split and how wide you left each pane, and application settings using standard client cache (localStorage).
 - **Systematic Settings Panel:** A native settings modal allows adjustments for editor text width (padding), editor font size, and file tree font size, complete with a "Reset to Defaults" option.
 - **Theme Support:** Clean, intuitive toggle between meticulously designed light and dark themes.
+- **AI Agent Panel (optional):** A chat docked on the right (⌘⇧X) that runs Claude Code, Codex or OpenCode — whichever you have installed and logged in — through **VaultAgent**, a small background helper (macOS, Windows, Linux). The agent always knows what you are looking at (tabs, panes, the exact lines, page or canvas view), can read, search and edit the open vault and draw on drawings, notebooks and PDFs, and can search the web — but it can reach nothing outside the vault: its built-in file and shell tools are off, and every file operation goes through the editor.
 
 ## Technical Architecture
 
@@ -74,6 +75,15 @@ To generate a streamlined, minified set of static assets optimized for standard 
 npm run build
 ```
 This generates the relevant application bundle dynamically inside the `dist/` directory, which can subsequently be deployed to platforms like Vercel, Netlify, or standard Apache/Nginx web servers.
+
+### The VaultAgent helper (`helper/`)
+A Bun program, bundled with the dev dependencies:
+```bash
+npm run helper:dev    # run it from source; allows http://localhost:* origins
+npm run helper:test   # its test suite (security checks, CLI stream parsers)
+npm run helper:build  # compile a standalone binary for this OS into helper/dist
+```
+Installers are built and published by `.github/workflows/vaultagent-release.yml` when a `vaultagent-v*` tag is pushed; the panel downloads them from this repository's latest GitHub Release.
 
 ## Future Context & Limitations
 - The underlying architecture heavily depends on browser edge permissions. Users must initially and explicitly grant OS-level prompt access to their chosen folder.

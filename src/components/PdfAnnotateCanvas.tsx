@@ -14,7 +14,15 @@ import {
 import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
 import PageControls, { type PageControlsHandle } from './PageControls';
-import { cameraFor, fitWidthZoom, lockCameraToPages, watchPageView } from './pagedCanvas';
+import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView } from './pagedCanvas';
+import * as pdfjs from 'pdfjs-dist';
+import type { PDFDocumentLoadingTask } from 'pdfjs-dist';
+import { pdfWorker } from '../utils/pdfWorker';
+import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
+import {
+    captureRegion, createCanvasAgentOps, dominantPage, pagesInView, selectedAgentShapeIds, summarizeShapes,
+    type CanvasPageModel,
+} from './canvasAgentOps';
 
 interface PdfAnnotateCanvasProps {
     filePath: string;
@@ -132,6 +140,32 @@ function refreshPageAsset(editor: Editor | null, index: number): void {
     });
 }
 
+/** One page's text as pdf.js extracts it: items in content order, a line
+ *  break wherever pdf.js marks one. PdfViewer holds the same function (a
+ *  component module may export only components, and a shared util would be a
+ *  new pdf.js importer to police) — change both. */
+async function pageText(doc: pdfjs.PDFDocumentProxy, pageNumber: number): Promise<string> {
+    const page = await doc.getPage(pageNumber);
+    const content = await page.getTextContent();
+    let out = '';
+    for (const item of content.items) {
+        if (!('str' in item)) continue;
+        out += item.str;
+        if (item.hasEOL) out += '\n';
+    }
+    return out.trim();
+}
+
+/** Decode an image and draw it over the whole `w`×`h` of `ctx`. */
+async function drawBlob(ctx: CanvasRenderingContext2D, source: Blob, w: number, h: number): Promise<void> {
+    const bitmap = await createImageBitmap(source);
+    try {
+        ctx.drawImage(bitmap, 0, 0, w, h);
+    } finally {
+        bitmap.close();
+    }
+}
+
 /**
  * The snapshot embedded in an annotated PDF, plus the `ui` block beside it.
  *
@@ -190,6 +224,18 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     const overlayCacheRef = useRef<Map<number, { signature: string; overlay: PageOverlay | undefined }>>(new Map());
     /** Whether the user has drawn anything not yet handed to the save path. */
     const hasUnsavedRef = useRef(false);
+    /** The page under the top edge (0-based) and how far into it, as the view
+     *  watch last saw them — the position the agent is told. */
+    const viewPosRef = useRef({ top: 0, offset: 0 });
+    /** A text-only pdf.js document of the original, opened the first time the
+     *  agent asks for page text and closed with the canvas. `PdfPageSource`
+     *  keeps its own document private, and page text is the one thing this
+     *  canvas has no other way to give: its pages are pictures. */
+    const textDocRef = useRef<PDFDocumentLoadingTask | null>(null);
+    useEffect(() => () => {
+        void textDocRef.current?.destroy();
+        textDocRef.current = null;
+    }, [original]);
 
     /** Every page's box on the canvas — the same layout the save path maps
      *  strokes back through. */
@@ -487,6 +533,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         let persistTimer: ReturnType<typeof setTimeout> | null = null;
         let firstView = true;
         const stopViewWatch = watchPageView(editor, () => boxes, ({ top, offset, shown }) => {
+            viewPosRef.current = { top, offset };
             if (shown !== shownPageRef.current || firstView) {
                 firstView = false;
                 shownPageRef.current = shown;
@@ -617,6 +664,93 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         applyCanvasUi(editor, uiRef.current);
         const disposePen = applyPenDefaults(editor);
 
+        // What the agent sees and draws through (utils/viewRegistry.ts). The
+        // pages are backdrop: never listed, never touched. Its edits are
+        // ordinary user-sourced changes, so the listener below exports them
+        // and the save rebuilds from the pristine original like any stroke.
+        const model: CanvasPageModel = {
+            boxes: () => boxes,
+            currentPage: () => dominantPage(boxes, editor.getViewportPageBounds()),
+            isBackdrop: id => pageShapeIdsRef.current.has(id),
+        };
+        const ops = createCanvasAgentOps(editor, model);
+        const unregisterView = registerView(filePath, {
+            kind: 'pdf-annotate',
+            canvas: ops,
+            describe(): PdfViewInfo {
+                const view = editor.getViewportPageBounds();
+                const visible = pagesInView(boxes, view);
+                const onScreen = new Set(visible);
+                const { shapes, total } = summarizeShapes(editor, model, b => onScreen.has(pageAt(boxes, (b.minY + b.maxY) / 2) + 1));
+                return {
+                    kind: 'pdf-annotate',
+                    pageCount: boxes.length,
+                    page: viewPosRef.current.top + 1,
+                    offset: viewPosRef.current.offset,
+                    zoom: editor.getZoomLevel() / fitWidthZoom(editor, boxes),
+                    visiblePages: visible,
+                    // The pages are pictures here: there is no text to select.
+                    selectedText: null,
+                    inverted: getPdfInverted(),
+                    shapes,
+                    shapesTotal: total,
+                    selectedShapeIds: selectedAgentShapeIds(editor, model),
+                };
+            },
+            // Pages and ink as on screen (uninverted), at no more than twice
+            // the on-screen size.
+            capture: (maxSide) => captureRegion(editor, editor.getViewportPageBounds(), maxSide, editor.getZoomLevel() * 2),
+            // The page rendered fresh from the ORIGINAL, with this canvas's ink
+            // over it — not the backdrop, which may not be rasterized yet (only
+            // pages near the view are) and is a JPEG at the view's scale.
+            renderPage: async (page, maxSide) => {
+                const source = sourceRef.current;
+                const box = boxes[page - 1];
+                if (!source || !box || !(maxSide > 0)) return null;
+                const scale = maxSide / Math.max(box.width, box.height);
+                const w = Math.max(1, Math.round(box.width * scale));
+                const h = Math.max(1, Math.round(box.height * scale));
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return null;
+                const url = await source.renderPage(page - 1, scale);
+                try {
+                    await drawBlob(ctx, await (await fetch(url)).blob(), w, h);
+                } finally {
+                    URL.revokeObjectURL(url);
+                }
+                const bounds = new Box(box.x, box.y, box.width, box.height);
+                const ink = editor.getCurrentPageShapes()
+                    .filter(s => !pageShapeIdsRef.current.has(s.id))
+                    .filter(s => { const b = editor.getShapePageBounds(s.id); return !!b && Box.Collides(b, bounds); })
+                    .map(s => s.id);
+                if (ink.length) {
+                    const { blob } = await editor.toImage(ink, {
+                        bounds, scale, pixelRatio: 1, padding: 0, background: false, darkMode: false, format: 'png',
+                    });
+                    await drawBlob(ctx, blob, w, h);
+                }
+                const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+                canvas.width = 0;
+                canvas.height = 0;
+                return png;
+            },
+            pdfText: async (pageNumbers) => {
+                if (!textDocRef.current) {
+                    textDocRef.current = pdfjs.getDocument({ data: original.slice(), worker: pdfWorker() });
+                }
+                const doc = await textDocRef.current.promise;
+                const out: Array<{ page: number; text: string }> = [];
+                for (const n of pageNumbers) {
+                    if (!Number.isInteger(n) || n < 1 || n > doc.numPages) continue;
+                    out.push({ page: n, text: await pageText(doc, n) });
+                }
+                return out;
+            },
+        });
+
         /* Deliberately document-scope only, unlike a drawing or a notebook,
            which also save when the pen alone changes. A PDF's save REBUILDS THE
            WHOLE DOCUMENT (~150ms per annotated page), so doing that because a
@@ -630,6 +764,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         }, { source: 'user', scope: 'document' });
 
         return () => {
+            unregisterView();
             unlisten();
             disposePen();
             stopViewWatch();

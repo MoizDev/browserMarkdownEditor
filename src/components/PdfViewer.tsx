@@ -9,6 +9,7 @@ import PdfInvertToggle from './PdfInvertToggle';
 import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
 import { pdfWorker } from '../utils/pdfWorker';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
+import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 
 /**
  * The view half of a PDF: a pdf.js-rendered continuous scroll of pages.
@@ -138,6 +139,24 @@ const MAX_CANVAS_PIXELS = 2 ** 24;
 /** Backing-store multiplier. Capped at 2: past it the sharpness gain is
  *  invisible but the bitmap cost doubles again. */
 const canvasDpr = () => Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+
+/** One page's text as pdf.js extracts it: items in content order, a line
+ *  break wherever pdf.js marks one. PdfAnnotateCanvas holds the same function
+ *  (a component module may export only components) — change both. */
+async function pageText(doc: PDFDocumentProxy, pageNumber: number): Promise<string> {
+    const page = await doc.getPage(pageNumber);
+    const content = await page.getTextContent();
+    let out = '';
+    for (const item of content.items) {
+        if (!('str' in item)) continue;
+        out += item.str;
+        if (item.hasEOL) out += '\n';
+    }
+    return out.trim();
+}
+
+/** Longest selection the agent is told about verbatim. */
+const MAX_SELECTED_TEXT = 20_000;
 
 /** Where every page sits, for one (document, container width, zoom). */
 interface Layout {
@@ -590,6 +609,141 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         if (!blob) throw new Error('Could not encode a thumbnail');
         return URL.createObjectURL(blob);
     }, []);
+
+    /** 0-based pages at least partly inside the scroll box, from the layout —
+     *  nothing is measured. */
+    const visiblePageIndices = useCallback((): number[] => {
+        const el = scrollRef.current;
+        const L = layoutRef.current;
+        if (!el || !L) return [];
+        const top = el.scrollTop;
+        const bottom = top + el.clientHeight;
+        const out: number[] = [];
+        for (let i = 0; i < L.pages.length; i++) {
+            if (L.tops[i] >= bottom) break;
+            if (L.tops[i] + L.pages[i].h > top) out.push(i);
+        }
+        return out;
+    }, []);
+
+    /* ── What the AI agent sees (utils/viewRegistry.ts) ──────────────────────
+       Registered once per file, and every method reads refs when CALLED — the
+       agent asks only when the user sends a message, so none of this costs a
+       scroll or a render anything. Registered while hidden too: a background
+       tab's reader still knows exactly where it was left. */
+    useEffect(() => registerView(filePath, {
+        kind: 'pdf',
+        describe(): PdfViewInfo {
+            const ds = docStateRef.current;
+            const pos = currentPosRef.current;
+            // Only a selection wholly inside THIS reader's pages: two PDFs can
+            // be on screen, and a selection in a note is not this document's.
+            const el = scrollRef.current;
+            const selection = window.getSelection();
+            let selectedText: string | null = null;
+            if (el && selection && !selection.isCollapsed
+                && selection.anchorNode && el.contains(selection.anchorNode)
+                && selection.focusNode && el.contains(selection.focusNode)) {
+                const t = selection.toString().trim();
+                if (t) selectedText = t.length > MAX_SELECTED_TEXT ? `${t.slice(0, MAX_SELECTED_TEXT)}…` : t;
+            }
+            return {
+                kind: 'pdf',
+                pageCount: ds?.dims.length ?? 0,
+                page: pos.page + 1,
+                // Negative in the air above page 1 (PAD_V); that is "the top of it".
+                offset: Math.min(1, Math.max(0, pos.offset)),
+                zoom: zoomRef.current,
+                visiblePages: visiblePageIndices().map(i => i + 1),
+                selectedText,
+                inverted: getPdfInverted(),
+            };
+        },
+        // The page canvases on screen, cropped to the scroll box, as one PNG —
+        // what the reader sees minus the chrome, and never inverted (that is a
+        // CSS filter; the canvases hold the real page).
+        async capture(maxSide) {
+            const el = scrollRef.current;
+            if (!el) return null;
+            const view = el.getBoundingClientRect();
+            if (!(view.width > 0 && view.height > 0) || !(maxSide > 0)) return null;
+            const scale = Math.min(canvasDpr(), maxSide / Math.max(view.width, view.height));
+            const out = document.createElement('canvas');
+            out.width = Math.max(1, Math.round(view.width * scale));
+            out.height = Math.max(1, Math.round(view.height * scale));
+            const ctx = out.getContext('2d');
+            if (!ctx) return null;
+            const bg = getComputedStyle(el).backgroundColor;
+            ctx.fillStyle = bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent' ? bg : '#808080';
+            ctx.fillRect(0, 0, out.width, out.height);
+            const clip = (r: DOMRect) => {
+                const left = Math.max(r.left, view.left);
+                const top = Math.max(r.top, view.top);
+                const right = Math.min(r.right, view.right);
+                const bottom = Math.min(r.bottom, view.bottom);
+                return right > left && bottom > top ? { left, top, right, bottom } : null;
+            };
+            for (const i of visiblePageIndices()) {
+                const canvas = canvasElsRef.current[i];
+                const pageEl = canvas?.parentElement;
+                if (!canvas || !pageEl) continue;
+                // The paper first: a page still rasterizing is white, as on screen.
+                const pr = clip(pageEl.getBoundingClientRect());
+                if (!pr) continue;
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect((pr.left - view.left) * scale, (pr.top - view.top) * scale, (pr.right - pr.left) * scale, (pr.bottom - pr.top) * scale);
+                if (canvas.width === 0) continue;
+                // The bitmap may be a band of the page (pageRegion), so map
+                // through the canvas's own on-screen box, not the page's.
+                const cr = canvas.getBoundingClientRect();
+                const ir = clip(cr);
+                if (!ir || cr.width <= 0 || cr.height <= 0) continue;
+                const kx = canvas.width / cr.width;
+                const ky = canvas.height / cr.height;
+                ctx.drawImage(
+                    canvas,
+                    (ir.left - cr.left) * kx, (ir.top - cr.top) * ky, (ir.right - ir.left) * kx, (ir.bottom - ir.top) * ky,
+                    (ir.left - view.left) * scale, (ir.top - view.top) * scale, (ir.right - ir.left) * scale, (ir.bottom - ir.top) * scale,
+                );
+            }
+            const png = await new Promise<Blob | null>(resolve => out.toBlob(resolve, 'image/png'));
+            out.width = 0;
+            out.height = 0;
+            return png;
+        },
+        async pdfText(pages) {
+            const doc = docStateRef.current?.doc;
+            if (!doc) return [];
+            const result: Array<{ page: number; text: string }> = [];
+            for (const n of pages) {
+                if (!Number.isInteger(n) || n < 1 || n > doc.numPages) continue;
+                result.push({ page: n, text: await pageText(doc, n) });
+            }
+            return result;
+        },
+        // One page straight from the document, as the thumbnail strip renders
+        // it — never through the render window, whose slots the scroll pass
+        // owns.
+        async renderPage(pageNumber, maxSide) {
+            const ds = docStateRef.current;
+            const dims = ds?.dims[pageNumber - 1];
+            if (!ds || !dims || !(maxSide > 0)) return null;
+            const page = await ds.doc.getPage(pageNumber);
+            const viewport = page.getViewport({ scale: maxSide / Math.max(dims.w, dims.h) });
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.ceil(viewport.width));
+            canvas.height = Math.max(1, Math.ceil(viewport.height));
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return null;
+            await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+            const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+            canvas.width = 0;
+            canvas.height = 0;
+            const st = pageStatesRef.current.get(pageNumber - 1);
+            if (!st?.pagePromise || st.cleaned) page.cleanup();
+            return png;
+        },
+    }), [filePath, visiblePageIndices]);
 
     const thumbSizes = useMemo(
         () => docState?.dims.map(d => ({ width: d.w, height: d.h })) ?? [],

@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    body { font: 13px -apple-system, BlinkMacSystemFont, sans-serif; line-height: 1.5; margin: 0; }
+    h2 { font-size: 14px; margin: 14px 0 6px; }
+    h2:first-child { margin-top: 0; }
+    p, ul { margin: 0 0 8px; }
+    code { font: 12px ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<h2>What gets installed</h2>
+<ul>
+    <li>The helper: <code>~/Library/Application Support/VaultAgent/vaultagent</code></li>
+    <li>A login item that starts it: <code>~/Library/LaunchAgents/dev.bme.vaultagent.plist</code></li>
+    <li>An errors-only log: <code>~/Library/Logs/VaultAgent.log</code> (never your notes or prompts)</li>
+</ul>
+<p>Chats are kept in <code>~/.bme-agent-sessions</code>, one folder per vault.</p>
+
+<h2>Your agents stay as they are</h2>
+<p>VaultAgent never changes the settings of Claude Code, Codex or OpenCode. Every limit it applies is passed to that one run and nothing else.</p>
+
+<h2>Removing it</h2>
+<p>In the editor's agent panel, open the ⋯ menu and choose <b>Uninstall VaultAgent…</b>. The helper, its login item and its log are removed. Your chats are kept.</p>
+
+<h2>“Background Items Added”</h2>
+<p>macOS will tell you a background item was added. That is VaultAgent's login item.</p>
+</body>
+</html>

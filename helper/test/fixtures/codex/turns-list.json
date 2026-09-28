@@ -1,0 +1,104 @@
+{
+ "id": 3,
+ "result": {
+  "data": [
+   {
+    "id": "01a0e5e2-f933-7220-946b-3345c5fcfeea",
+    "items": [
+     {
+      "type": "userMessage",
+      "id": "01a0e5e2-f97c-7b40-a41d-756c689832a7",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "hi there",
+        "text_elements": []
+       }
+      ]
+     },
+     {
+      "type": "mcpToolCall",
+      "id": "call_1",
+      "server": "vault",
+      "tool": "vault_read",
+      "status": "completed",
+      "arguments": {
+       "path": "Notes/a.md"
+      },
+      "appContext": null,
+      "mcpAppUi": null,
+      "pluginId": null,
+      "readOnlyHint": null,
+      "result": {
+       "content": [
+        {
+         "type": "text",
+         "text": "FAKE-TOOL-RESULT: hello"
+        }
+       ],
+       "structuredContent": null,
+       "_meta": null
+      },
+      "error": null,
+      "durationMs": 1
+     },
+     {
+      "type": "agentMessage",
+      "id": "msg_1",
+      "text": "Hello from fake.",
+      "phase": null,
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null
+     }
+    ],
+    "itemsView": "full",
+    "status": "completed",
+    "error": null,
+    "startedAt": 1790563252,
+    "completedAt": 1790563252,
+    "durationMs": 95
+   },
+   {
+    "id": "01a0e5e3-f8b8-7230-9dee-f86c083bd6b9",
+    "items": [
+     {
+      "type": "userMessage",
+      "id": "01a0e5e3-f8df-72a0-9881-d0612386f31f",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "second message",
+        "text_elements": []
+       },
+       {
+        "type": "localImage",
+        "detail": null,
+        "path": "/home/user/.bme-agent-sessions/6f1c2d3e-4a5b-4c6d-8e7f-001122334455/.bme/images/tiny.png"
+       }
+      ]
+     },
+     {
+      "type": "agentMessage",
+      "id": "msg_1",
+      "text": "Hello from fake.",
+      "phase": null,
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null
+     }
+    ],
+    "itemsView": "full",
+    "status": "completed",
+    "error": null,
+    "startedAt": 1790563317,
+    "completedAt": 1790563318,
+    "durationMs": 71
+   }
+  ],
+  "nextCursor": null,
+  "backwardsCursor": "{\"requestedThreadId\":\"01a0e5e2-f8cd-7e10-af86-b36b5255b4a8\",\"rolloutOrdinal\":1,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+ }
+}

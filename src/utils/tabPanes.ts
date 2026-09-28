@@ -540,6 +540,42 @@ export function splitToPane(layout: TabLayout, path: string, at: number): TabLay
 }
 
 /**
+ * Put `path` on screen WITHOUT moving the focus — how the AI agent opens a
+ * drawing, notebook or PDF it was asked to draw on while the reader goes on
+ * typing in their own pane. `activeId` never changes (unless there was no pane
+ * at all), so ⌘E, ⌘S, the URL hash and the tree's highlight all stay on what
+ * the reader was doing.
+ *
+ * Already showing somewhere → unchanged. Open behind another tab of an
+ * UNFOCUSED pane → fronted there. Otherwise (not open, or hidden behind the
+ * focused pane's own tab, which cannot be fronted without taking the reader's
+ * document off screen) it gets a new column at the right, or — at the
+ * five-column ceiling — is fronted in the right-most unfocused column.
+ */
+export function openInSidePane(layout: TabLayout, path: string): TabLayout {
+    const holder = paneOf(layout, path);
+    if (holder && holder.activePath === path) return layout;
+    if (holder && holder.id !== layout.activeId) {
+        const next = showInPane(holder, path);
+        return { ...layout, panes: layout.panes.map(p => (p.id === holder.id ? next : p)) };
+    }
+    // Out of the focused pane first (when it is there), so the path is held once.
+    const base = holder ? closePath(layout, path) : layout;
+    if (base.panes.length === 0) {
+        const id = newPaneId();
+        return { panes: [{ id, paths: [path], activePath: path, history: [path], historyIndex: 0 }], activeId: id };
+    }
+    if (base.panes.length < MAX_PANES) {
+        const at = base.panes.length;
+        const pane: TabPane = { id: newPaneId(), paths: [path], activePath: path, history: [path], historyIndex: 0 };
+        return { ...base, panes: [...base.panes, pane], sizes: insertSize(base, at) };
+    }
+    const side = [...base.panes].reverse().find(p => p.id !== base.activeId) ?? base.panes[base.panes.length - 1];
+    const next = showInPane({ ...side, paths: [...side.paths, path] }, path);
+    return { ...base, panes: base.panes.map(p => (p.id === side.id ? next : p)) };
+}
+
+/**
  * Record the columns' widths — what the pointer coming up off a divider means.
  * `null` puts them back to equal columns (a double-click on one).
  *

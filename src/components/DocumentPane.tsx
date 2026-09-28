@@ -5,7 +5,7 @@ import type { ChangeDesc } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { LanguageDescription } from '@codemirror/language';
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, isolateHistory } from '@codemirror/commands';
 import { search, searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
@@ -35,6 +35,8 @@ import { insertTableAtCursor } from '../editor/tableEdit';
 import { canWrite, modeExtensions } from '../editor/readingMode';
 import { keyboardAfterSearchClose, noteSearchKeymap, rebuildSearchPanelForMode, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
 import { tabIntoText } from '../editor/tabIntoText';
+import { docString } from '../editor/docCache';
+import { registerView, type LineCol, type MarkdownViewInfo, type TextChange } from '../utils/viewRegistry';
 import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readRecord, flushRecord, scopedKey } from '../utils/storage';
@@ -269,6 +271,91 @@ function keyIsForNote(event: KeyboardEvent, view: EditorView): boolean {
     if (view.dom.contains(target)) return true;
     if (target instanceof HTMLElement && target.isContentEditable) return false;
     return !target.closest('input, textarea, select, [role="dialog"], [role="menu"], [role="listbox"]');
+}
+
+/* ── What the AI agent sees of a note (utils/viewRegistry.ts) ──────────────
+   Read from the live view when a message is SENT — never on a keystroke, a
+   scroll or a timer — so none of this is on the hot path. */
+
+function lineCol(state: EditorState, pos: number): LineCol {
+    const line = state.doc.lineAt(pos);
+    return { line: line.number, col: pos - line.from + 1 };
+}
+
+/** Where the reader is in `view`, now. `mode` and `dirty` are the tab's. */
+function describeMarkdown(view: EditorView, mode: EditorMode, dirty: boolean): MarkdownViewInfo {
+    const { state } = view;
+    const doc = state.doc;
+    // The lines actually inside the scroll box — not `view.viewport`, which
+    // CodeMirror renders with a margin above and below what is on screen. The
+    // height map is measured where the reader is looking, so this is exact
+    // there; a view with no box (not laid out) falls back to the viewport.
+    let from = view.viewport.from;
+    let to = view.viewport.to;
+    const box = view.scrollDOM.getBoundingClientRect();
+    if (box.height > 0) {
+        from = view.lineBlockAtHeight(Math.max(0, box.top - view.documentTop)).from;
+        to = view.lineBlockAtHeight(Math.max(0, box.bottom - view.documentTop - 1)).to;
+    }
+    from = Math.min(Math.max(0, from), doc.length);
+    to = Math.min(Math.max(from, to), doc.length);
+    const head = state.selection.main.head;
+    const selections = state.selection.ranges
+        .filter(r => !r.empty)
+        .map(r => ({ from: r.from, to: r.to, fromLC: lineCol(state, r.from), toLC: lineCol(state, r.to) }))
+        .sort((a, b) => a.from - b.from);
+    return {
+        kind: 'markdown',
+        mode,
+        text: docString(doc),
+        lineCount: doc.lines,
+        visibleLines: { from: doc.lineAt(from).number, to: doc.lineAt(to).number },
+        visibleRange: { from: doc.lineAt(from).from, to: doc.lineAt(to).to },
+        cursor: lineCol(state, head),
+        cursorOffset: head,
+        selections,
+        dirty,
+    };
+}
+
+/**
+ * Put the agent's edit into the live editor: ONE transaction, so it is one
+ * undo step, and an ordinary one, so the update listener reports it through
+ * `onContentChange` — the save funnel typing uses — and carries the scroll
+ * place and collapsed headings through it like any keystroke.
+ *
+ * Works in Reading mode too, deliberately: neither half of Reading mode blocks
+ * a programmatic dispatch (editor/readingMode.ts), and no transaction or change
+ * filter anywhere in this editor refuses one. That is why the app's own writes
+ * ask `canWrite` first — and why THIS one does not: it is a tool the user
+ * asked the agent to use, not a gesture aimed at a note being read, and the
+ * chat shows it as a change card. `input.agent` names it for anything that
+ * filters on userEvent later. `isolateHistory` keeps the user's typing just
+ * before or after it from merging into the same undo step (the history joins
+ * adjacent input within 500ms), so ⌘Z takes back exactly the agent's edit.
+ *
+ * Offsets are into the CURRENT text; the caller has already refused a stale
+ * edit (the text it read must still be the text here). Throws RangeError on
+ * ranges that are out of bounds or overlap — a caller bug, not a user one.
+ */
+function applyAgentChanges(view: EditorView, changes: readonly TextChange[]): void {
+    const length = view.state.doc.length;
+    const sorted = [...changes].sort((a, b) => a.from - b.from || a.to - b.to);
+    let end = 0;
+    for (const change of sorted) {
+        const { from, to, insert } = change;
+        if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > length) {
+            throw new RangeError(`Edit range ${from}..${to} is outside the note (0..${length})`);
+        }
+        if (typeof insert !== 'string') throw new RangeError('Edit insert must be a string');
+        if (from < end) throw new RangeError(`Edit ranges overlap at ${from}`);
+        end = to;
+    }
+    view.dispatch({
+        changes: sorted.map(({ from, to, insert }) => ({ from, to, insert })),
+        userEvent: 'input.agent',
+        annotations: isolateHistory.of('full'),
+    });
 }
 
 /* ── The editor's own right-click menu ────────────────────────────────────
@@ -606,6 +693,48 @@ function DocumentPane({
     }, [path, isCanvas, unreadable, registerKeyboardTarget]);
 
     const revealClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // What the AI agent sees of this note, and its hands on it. Registered by
+    // the pane from an effect, NOT baked into the EditorState: the state
+    // outlives this pane, and a reporter captured in it would go on answering
+    // for a pane long gone. Everything is read through refs when called.
+    // The Help Guide is reported (the agent should know it is being read) but
+    // gets no hands: it is read-only in every mode and has no file behind it.
+    const tabRef = useRef(tab);
+    useEffect(() => { tabRef.current = tab; }, [tab]);
+    const isHelp = !!file.isHelp;
+    useEffect(() => {
+        if (isCanvas || unreadable) return;
+        const text = () => {
+            const view = viewRef.current;
+            return view ? docString(view.state.doc) : tabRef.current.content;
+        };
+        return registerView(path, {
+            kind: 'markdown',
+            describe() {
+                const view = viewRef.current;
+                const { mode: tabMode, dirty } = tabRef.current;
+                if (view) return describeMarkdown(view, tabMode, !!dirty);
+                // Between the pane's mount and its view (a frame at most).
+                const content = tabRef.current.content;
+                const state = EditorState.create({ doc: content });
+                return {
+                    kind: 'markdown', mode: tabMode, text: content, lineCount: state.doc.lines,
+                    visibleLines: { from: 1, to: 1 }, visibleRange: { from: 0, to: state.doc.line(1).to },
+                    cursor: { line: 1, col: 1 }, cursorOffset: 0, selections: [], dirty: !!dirty,
+                };
+            },
+            getText: text,
+            ...(isHelp ? {} : {
+                applyTextChanges(changes: TextChange[]) {
+                    const view = viewRef.current;
+                    if (!view) return false;
+                    applyAgentChanges(view, changes);
+                    return true;
+                },
+            }),
+        });
+    }, [path, isCanvas, unreadable, isHelp]);
 
     // Live prop mirrors: the view is built once, so everything it calls has to
     // be reachable without rebuilding it.

@@ -1,0 +1,393 @@
+// The AI agent panel: a right-docked column App mounts lazily (index.tsx). It
+// fills whatever box App gives it; App owns the width, the resize handle, the
+// toggle button and ⌘⇧X.
+//
+// This component is only a view. The connection (utils/agentBridge.ts) and the
+// chats and the run (chatStore.ts) are module stores that outlive it, so
+// closing the panel mid-reply loses nothing and the agent's tool calls keep
+// being answered.
+//
+// `data-agent-panel` on the root is load-bearing: App's global shortcut
+// handler ignores ⌘E whose target is inside it (it would flip the mode of the
+// note behind, unseen); ⌘S, ⌘N and ⌘\ stay app-wide.
+
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { DragEvent, MouseEvent as ReactMouseEvent } from 'react';
+import { AGENT_LABELS, HELPER_NAME } from '../../../shared/vaultAgentProtocol';
+import type { AgentHost, AgentPanelProps } from '../../types/vaultAgent';
+import { createAgentHosts, type AgentHostDeps } from '../../utils/agentHost';
+import { agentBridge, BridgeError } from '../../utils/agentBridge';
+import type { BridgeState } from '../../utils/agentBridge';
+import { detectArch, detectOs, installerAsset, isChromium } from '../../utils/platform';
+import type { CpuArch } from '../../utils/platform';
+import { openContextMenu } from '../../utils/contextMenu';
+import type { ContextMenuEntry } from '../../utils/contextMenu';
+import { CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED, copyText, readClipboardText } from '../../utils/clipboard';
+import { MoreHorizontal, SquarePen, X } from '../icons';
+import { Orb } from './aicss/Orb';
+import { AgentSelector } from './AgentSelector';
+import { ChatList } from './ChatList';
+import { Composer } from './Composer';
+import { MessageList } from './MessageList';
+import { ModelPicker } from './ModelPicker';
+import { AgentWarning, SetupGuide } from './SetupGuide';
+import { DRAFT_KEY, activeChatOf, chatStore, configOf, resolveModel } from './chatStore';
+import type { ChatStoreState, Conversation, PreparedImage } from './chatStore';
+import { useBridgeState, useChatState } from './useAgentChat';
+
+const EMPTY: Conversation = { items: [], history: 'none' };
+
+/** How long after opening the composer may still take the keyboard from where
+ *  it was, while the connection or the agent check is still coming up. Past
+ *  it, a reader who went on typing in their note keeps it. */
+const OPEN_FOCUS_WINDOW_MS = 1500;
+
+/** The header's orb: 22px, not the 18px it shipped at — its 3px dots scale
+ *  with it, and at 18px they were 1.9px specks (AgentPanel.css has the ink). */
+const STATUS_ORB_PX = 22;
+
+function StatusOrb({ bridge, running }: { bridge: BridgeState; running: boolean }) {
+    let label: string;
+    let orb;
+    if (bridge.status === 'connected') {
+        label = running ? 'Working…' : `Connected to ${HELPER_NAME} ${bridge.helper.version}`;
+        orb = <Orb variant="S3" size={STATUS_ORB_PX} label={label} still={!running} />;
+    } else if (bridge.status === 'connecting' || bridge.status === 'checking' || (bridge.status === 'failed' && bridge.retryAt != null)) {
+        label = 'Connecting…';
+        orb = <Orb variant="B2" size={STATUS_ORB_PX} label={label} />;
+    } else {
+        label = `Not connected to ${HELPER_NAME}`;
+        orb = <Orb variant="S1" size={STATUS_ORB_PX} label={label} still className="is-off" />;
+    }
+    return <span className="agent-status" data-tooltip={label}>{orb}</span>;
+}
+
+/** Why the composer cannot send, or null. */
+function blockedReason(state: ChatStoreState, vaultOpen: boolean, conversation: Conversation): string | null {
+    if (!vaultOpen) return 'Open a vault to chat';
+    if (conversation.history === 'missing') return 'History unavailable here — start a new chat';
+    if (conversation.history === 'loading') return 'Loading this chat…';
+    const { agent } = configOf(state);
+    const status = state.agents.find(a => a.agent === agent);
+    if (!status) return state.agentsStatus === 'error' ? `Couldn't check ${AGENT_LABELS[agent]}` : 'Checking agents…';
+    if (!status.installed || status.incompatible || status.loggedIn === false) return `${AGENT_LABELS[agent]} isn't ready`;
+    if (state.run && state.run.chatId !== (state.activeChatId ?? DRAFT_KEY)) return 'Another chat is replying…';
+    return null;
+}
+
+/** Built once per page, like the stores it feeds: chatStore and an in-flight
+ *  run keep this object, so it must outlive every mount of the panel. */
+let sharedHost: AgentHost | null = null;
+function hostFor(getDeps: () => AgentHostDeps): AgentHost {
+    return (sharedHost ??= createAgentHosts(getDeps));
+}
+
+export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClose }: AgentPanelProps) {
+    const host = hostFor(getHostDeps);
+    const bridge = useBridgeState();
+    const state = useChatState();
+    const [os] = useState(detectOs);
+    const [supported] = useState(() => isChromium() && os !== 'other' && typeof WebSocket === 'function');
+    const [arch, setArch] = useState<CpuArch>('x64');
+    const [panelError, setPanelError] = useState<string | null>(null);
+    const dropHandler = useRef<((files: File[]) => void) | null>(null);
+    const [dragging, setDragging] = useState(false);
+    const rootRef = useRef<HTMLDivElement>(null);
+
+    // ── The keyboard in and out ──
+    // Opening hands the keyboard to the composer; closing hands it back to
+    // whatever had it (an Edit-mode caret, the footer button) or else to the
+    // focused note, the way EditorPane gives a note the keyboard (its
+    // scroller — a note in Reading mode leaves <body> focused). Only an open
+    // the reader asked for takes it: a panel restored open with the page
+    // leaves the keyboard to the note being restored.
+    const takeFocusAtMount = useRef(takeFocus);
+    const returnFocusTo = useRef<Element | null>(null);
+    const wantsComposer = useRef(false);
+    const openedAt = useRef(0);
+    // A layout effect so its cleanup runs while the panel is still in the
+    // document — after removal, focus inside it has already fallen to <body>
+    // and there is no telling "the reader was in the panel" from "elsewhere".
+    useLayoutEffect(() => {
+        const before = document.activeElement;
+        returnFocusTo.current = before && before !== document.body ? before : null;
+        wantsComposer.current = takeFocusAtMount.current;
+        openedAt.current = performance.now();
+        return () => {
+            const active = document.activeElement;
+            // Closed from outside (the footer button) with the keyboard
+            // elsewhere: leave it there.
+            if (active && active !== document.body && !active.closest('[data-agent-panel]')) return;
+            const back = returnFocusTo.current;
+            if (back instanceof HTMLElement && back.isConnected && !back.closest('[data-agent-panel]')) {
+                back.focus({ preventScroll: true });
+                return;
+            }
+            const slot = document.querySelector('.editor-slot.is-focused');
+            const note = slot?.querySelector<HTMLElement>('.cm-content[contenteditable="true"]') ?? slot?.querySelector<HTMLElement>('.cm-scroller');
+            note?.focus({ preventScroll: true });
+        };
+    }, []);
+    // The composer exists only once connected, and is disabled until the
+    // agent check lands — so this waits for it, every render until then.
+    useEffect(() => {
+        if (!wantsComposer.current) return;
+        const field = rootRef.current?.querySelector<HTMLTextAreaElement>('.agent-textarea');
+        if (!field || field.disabled) return;
+        wantsComposer.current = false;
+        const active = document.activeElement;
+        // <body> is nobody's keyboard (a Reading-mode note, a Connect button
+        // that went away as it connected); where the reader was when they
+        // opened the panel is theirs again once the window has passed.
+        const unmoved = !active || active === document.body || !!rootRef.current?.contains(active)
+            || (active === returnFocusTo.current && performance.now() - openedAt.current < OPEN_FOCUS_WINDOW_MS);
+        if (unmoved) field.focus({ preventScroll: true });
+    });
+
+    const vaultKey = vault?.key ?? null;
+    const vaultName = vault?.name ?? '';
+    useEffect(() => {
+        chatStore.attach(host, vaultKey ? { key: vaultKey, name: vaultName } : null);
+    }, [host, vaultKey, vaultName]);
+
+    useEffect(() => {
+        if (os !== 'linux') return;
+        let live = true;
+        void detectArch().then(a => { if (live) setArch(a); });
+        return () => { live = false; };
+    }, [os]);
+
+    // Hold the connection while the panel is open, and dial by itself only
+    // where agentBridge.autoConnect says that cannot raise Chrome's prompt.
+    useEffect(() => {
+        if (!supported) return;
+        const release = agentBridge.retain();
+        void agentBridge.autoConnect();
+        return release;
+    }, [supported]);
+
+    // A chat opened before the connection was up gets its history now.
+    const connected = bridge.status === 'connected';
+    const active = activeChatOf(state);
+    const activeConversation = state.conversations[state.activeChatId ?? DRAFT_KEY];
+    useEffect(() => {
+        if (connected && active && !activeConversation) void chatStore.loadHistory(active);
+    }, [connected, active, activeConversation]);
+
+    useEffect(() => {
+        if (!panelError) return;
+        const id = window.setTimeout(() => setPanelError(null), 8000);
+        return () => window.clearTimeout(id);
+    }, [panelError]);
+
+    const registerDrop = useCallback((handler: ((files: File[]) => void) | null) => {
+        dropHandler.current = handler;
+    }, []);
+
+    const connect = useCallback(() => { void agentBridge.connect(); }, []);
+
+    const uninstall = async () => {
+        const ok = await host.ask({
+            title: `Uninstall ${HELPER_NAME}?`,
+            body: `This stops ${HELPER_NAME}, removes it from your login items and deletes it from this computer. Your chats are kept. To use the agent again, download and open the installer.`,
+            confirmLabel: 'Uninstall',
+            danger: true,
+        });
+        if (!ok) return;
+        if (chatStore.getState().run) await chatStore.stop();
+        try {
+            await agentBridge.request('helper.uninstall', {});
+        } catch (e) {
+            // It answers before it goes; a socket that closed first means it went.
+            if (!(e instanceof BridgeError && e.code === 'disconnected')) {
+                setPanelError(`Couldn't uninstall ${HELPER_NAME}: ${e instanceof Error ? e.message : String(e)}`);
+                return;
+            }
+        }
+        chatStore.onUninstalled();
+        agentBridge.markUninstalled();
+    };
+
+    const openMenu = (e: ReactMouseEvent<HTMLButtonElement>) => {
+        const button = e.currentTarget;
+        const r = button.getBoundingClientRect();
+        const asset = installerAsset(os, arch);
+        openContextMenu({
+            x: Math.round(r.left),
+            y: Math.round(r.bottom),
+            label: `${HELPER_NAME} menu`,
+            opener: button,
+            anchor: button,
+            entries: [
+                { kind: 'command', id: 'reconnect', label: 'Reconnect', run: connect, disabled: !supported, reason: 'Not available in this browser' },
+                {
+                    kind: 'command', id: 'download', label: 'Download installer',
+                    run: () => { if (asset) window.open(asset.url, '_blank', 'noopener,noreferrer'); },
+                    disabled: !asset, reason: `${HELPER_NAME} has no build for this system`,
+                },
+                { kind: 'separator', id: 'sep' },
+                {
+                    kind: 'command', id: 'uninstall', label: `Uninstall ${HELPER_NAME}…`, danger: true,
+                    run: uninstall, disabled: !connected, reason: `Connect to ${HELPER_NAME} first`,
+                },
+            ],
+        });
+    };
+
+    // The app draws every context menu itself (AGENTS.md): Copy for what is
+    // selected anywhere in the panel, and in the message box Paste as well —
+    // there the menu opens with nothing selected too, since pasting needs no
+    // selection. A row that cannot act stays and says why (app-context-menu).
+    const onContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        const selection = window.getSelection()?.toString() ?? '';
+        const target = e.target as HTMLElement;
+        const field = target instanceof HTMLTextAreaElement ? target : null;
+        const fieldText = field ? field.value.slice(field.selectionStart, field.selectionEnd) : '';
+        const text = fieldText || selection;
+        if (!text && !field) return;
+        const entries: ContextMenuEntry[] = [{
+            kind: 'command',
+            id: 'copy',
+            label: 'Copy',
+            disabled: !text,
+            reason: text ? undefined : 'Nothing is selected',
+            run: async () => { if (!await copyText(text)) host.notify(CLIPBOARD_WRITE_BLOCKED); },
+        }];
+        if (field) {
+            entries.push({
+                kind: 'command',
+                id: 'paste',
+                label: 'Paste',
+                disabled: field.disabled,
+                reason: field.disabled ? field.placeholder : undefined,
+                run: async () => {
+                    // A menu row's clipboard read is permission-gated (the
+                    // right-click is spent by now), so a refusal is ordinary;
+                    // naming ⌘V is the whole handling.
+                    const read = await readClipboardText();
+                    if (!read.ok) { host.notify(CLIPBOARD_READ_BLOCKED); return; }
+                    if (!read.text || !field.isConnected || field.disabled) return;
+                    field.focus();
+                    // insertText rather than a value write: the paste lands on
+                    // the field's own undo stack (⌘Z takes it back) and raises
+                    // the input event React's onChange reads. The selection it
+                    // replaces is the field's own, kept while the menu was up.
+                    if (!document.execCommand('insertText', false, read.text)) {
+                        field.setRangeText(read.text, field.selectionStart, field.selectionEnd, 'end');
+                        field.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                },
+            });
+        }
+        openContextMenu({ x: e.clientX, y: e.clientY, label: 'Agent panel', opener: target, entries });
+    };
+
+    // Every drop is cancelled, image or not: an uncancelled drop navigates the
+    // app away to the file, taking unsaved buffers with it.
+    const onDragOver = (e: DragEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        const hasFiles = Array.from(e.dataTransfer.types).includes('Files');
+        e.dataTransfer.dropEffect = hasFiles && dropHandler.current ? 'copy' : 'none';
+        if (hasFiles && dropHandler.current && !dragging) setDragging(true);
+    };
+    const onDragLeave = (e: DragEvent<HTMLDivElement>) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+    };
+    const onDrop = (e: DragEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        setDragging(false);
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length && dropHandler.current) dropHandler.current(files);
+    };
+
+    const ready = supported && connected;
+    const key = state.activeChatId ?? DRAFT_KEY;
+    const conversation = state.conversations[key] ?? EMPTY;
+    const config = configOf(state);
+    const run = state.run;
+    const runHere = !!run && run.chatId === key;
+    const agentStatus = state.agents.find(a => a.agent === config.agent) ?? null;
+    const model = resolveModel(state.models[config.agent]?.models, config.model);
+    const blocked = blockedReason(state, !!vault, conversation);
+
+    const send = (text: string, images: PreparedImage[]) => { void chatStore.send(text, images); };
+    const stop = () => { void chatStore.stop(); };
+
+    return (
+        <div
+            ref={rootRef}
+            className={'agent-panel' + (dragging ? ' is-dropping' : '')}
+            data-agent-panel=""
+            data-theme={theme}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+            onContextMenu={onContextMenu}
+        >
+            <header className="agent-header">
+                <StatusOrb bridge={bridge} running={!!run} />
+                {ready ? <ChatList state={state} theme={theme} /> : <span className="agent-header-title">AI agent</span>}
+                <span className="agent-header-spacer" />
+                {ready && <AgentSelector state={state} theme={theme} disabled={!!run} />}
+                {ready && (
+                    <button
+                        type="button"
+                        className="agent-icon-btn"
+                        aria-label="New chat"
+                        data-tooltip="New chat"
+                        onClick={() => chatStore.newChat()}
+                    >
+                        <SquarePen size={15} />
+                    </button>
+                )}
+                <button type="button" className="agent-icon-btn" aria-label={`${HELPER_NAME} menu`} data-tooltip="More" onClick={openMenu}>
+                    <MoreHorizontal size={16} />
+                </button>
+                <button type="button" className="agent-icon-btn" aria-label="Close the agent panel" data-tooltip="Close (⌘⇧X)" onClick={onClose}>
+                    <X size={15} />
+                </button>
+            </header>
+
+            {panelError && <div className="agent-notice error agent-panel-error" role="alert">{panelError}</div>}
+
+            {ready ? (
+                <>
+                    <MessageList
+                        conversation={conversation}
+                        run={run}
+                        runHere={runHere}
+                        theme={theme}
+                        host={host}
+                        onRetryHistory={() => { if (active) void chatStore.loadHistory(active); }}
+                    />
+                    <div className="agent-footer">
+                        {!runHere && (
+                            <AgentWarning
+                                agent={config.agent}
+                                status={agentStatus}
+                                onRecheck={() => void chatStore.refreshAgents(true)}
+                                os={os}
+                                arch={arch}
+                            />
+                        )}
+                        <Composer
+                            blockedReason={runHere ? null : blocked}
+                            running={runHere}
+                            stopping={runHere && run?.phase === 'stopping'}
+                            imagesAllowed={model ? model.images : true}
+                            chip={<ModelPicker state={state} theme={theme} disabled={!!blocked && !runHere} />}
+                            onSend={send}
+                            onStop={stop}
+                            registerDrop={registerDrop}
+                        />
+                    </div>
+                </>
+            ) : (
+                <div className="agent-setup">
+                    <SetupGuide supported={supported} bridge={bridge} os={os} arch={arch} onConnect={connect} />
+                </div>
+            )}
+        </div>
+    );
+}

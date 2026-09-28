@@ -447,3 +447,14 @@ re-nest.
 - The logic is pure state→changes, so it is testable headless: build an `EditorState` with
   `markdown()` + `indentSettings()`, call `listIndentBindings`' `run`/`shift` with a
   `{state, dispatch}` stub, and compare documents.
+
+## The AI agent's edits
+
+`DocumentPane`'s view reporter applies an agent edit as ONE transaction with `userEvent: 'input.agent'`
+and `isolateHistory.of('full')` (typing just before or after is never merged into the agent's undo
+step). It is deliberately allowed in Reading mode: `readOnly`/`editable` do not block a programmatic
+dispatch and there is no transaction filter in `src` — keep it that way, or agent edits to a note
+being read stop landing. The agent panel's replies render in a read-only view built by
+`editor/replyView.ts` from this same read mode, which is how they get headings, code, KaTeX, mermaid
+and tables without a third `innerHTML` sink; streamed text is appended once per animation frame.
+

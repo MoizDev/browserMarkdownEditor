@@ -19,7 +19,11 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "verbatimModuleSyntax": false
+    "verbatimModuleSyntax": false,
+
+    // Named, not auto-included: the helper's @types/bun sits in the same
+    // node_modules, and its `Bun` globals must never type-check in browser code.
+    "types": ["node"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "shared", "vite.config.ts"]
 }

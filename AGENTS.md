@@ -26,27 +26,27 @@ Skills live in `.agents/skills/<name>/SKILL.md`.
 
 ## What this is
 
-A local-first, Obsidian-style Markdown editor that runs **entirely in the browser** with no backend,
-database, or network. It reads and writes the user's real files through the **File System Access API**,
-so it is **Chromium-only by design** (`showDirectoryPicker`, OPFS, `color-mix` are used freely). Stack:
-**React 19 + Vite 7 + TypeScript 6 + CodeMirror 6**, plus KaTeX, mermaid, tldraw (whiteboards, ruled
-notebooks, PDF annotation), pdf.js + pdf-lib, idb-keyval.
+A local-first, Obsidian-style Markdown editor that runs **entirely in the browser**, no backend or
+database (its one network use: the optional AI agent's local helper, `vault-agent`). It reads and
+writes the user's real files through the **File System Access API**, so it is **Chromium-only by
+design** (`showDirectoryPicker`, OPFS, `color-mix` are used freely). Stack: **React 19 + Vite 7 +
+TS 6 + CodeMirror 6**, KaTeX, mermaid, tldraw (drawings, notebooks, PDF ink), pdf.js + pdf-lib, idb-keyval.
 
-> Converted from JS to TS: comments cite stale `.jsx` line numbers — grep, never navigate by them.
-> `src/types/index.ts` holds the domain types, and `declare global`s the File System Access API ones
-> (`showDirectoryPicker`, …) stock `lib.dom` lacks.
+> Ported from JS: comments cite stale `.jsx` lines — grep. `types/index.ts` = domain + FS Access types.
 
 ## Commands
 
 ```bash
 npm run dev        # Vite dev server (React Fast Refresh)
 npm run build      # production build → dist/
-npm run typecheck  # tsc --noEmit  (the real "did I break types" check)
+npm run typecheck  # tsc for src+shared, then -p helper (the real "did I break types" check)
 npm run lint       # eslint .      (flat config, loaded via jiti)
 npm run preview    # serve a production build
+npm run helper:dev # the VaultAgent helper (Bun) from source, dev origins allowed; helper:build compiles
+npm run helper:test # bun test helper/ — its security checks and CLI stream parsers
 ```
 
-**There is no test suite and no test runner.** `typecheck` and `lint` are the only static gates;
+**The app has no test suite** (only `helper/` does). `typecheck` and `lint` are its static gates;
 everything behavioural is verified by Playwright driving the app in headless Chromium — see the
 `verify-in-browser` skill, and use it before saying a change works.
 
@@ -58,20 +58,23 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   touches the File System Access API. `src/editor/` is CodeMirror land and is **React-free**, reached
   through facets and plain callbacks, never by importing a component or a hook. `src/components/` is
   React; `src/utils/` is pure or DOM-light. An import crossing those lines is the change to rethink.
+  `shared/` is pure data and types both the app and `helper/` (a Bun program) import.
 - **Nothing the user made is destroyed outright.** A deleted file is *moved* to `.Garbage`, an
   unreferenced asset is *retired* into it and returns if the reference does, an unasked-for overwrite
   is renamed aside — which is why each costs a copy instead of a `removeEntry`. Prefer a wrong call
   that keeps a file over a right one that cannot be undone.
 - **State lives in `App.tsx`; the filesystem lives behind `useFileSystem()`.** App owns nearly all state
-  and every FS call goes through it. There is no backend and no undo stack behind it: a mistake there
-  destroys the user's notes.
+  and every FS call goes through it; no undo stack stands behind it.
+- **The AI agent reaches the vault ONLY through the app** — its CLI runs with every built-in file and
+  shell tool off (web search/fetch and skills stay on), and each `vault_*`/`canvas_*` call is executed in
+  the browser (`utils/vaultAgentTools.ts` → `utils/agentHost.ts` → App). Never give it a file tool or a shell.
 - **Nothing overwrites an existing file by accident.** Every write that could land on a taken name
   goes through `freeEntryName`, which counts **both** files and folders; `moveFile`/`renameFile` and
   the notebook PDF export are the deliberate exceptions. **`createFile` is the hole** — it
-  opens-or-*truncates*, guarded only at `App.handleCreateFile`; anything new calling it inherits it.
+  opens-or-*truncates*, guarded at `App.handleCreateFile` and the agent host; anything new inherits it.
 - **`.Assets` (images) and `.Garbage` (trash) are per FOLDER**, hidden, owned by `utils/assets.ts` — a
   folder carries its own pictures and deletions wherever it goes. `.appearance.json` (looks, custom
-  tree order; **new keys need the user's OK**) is the 3rd, root-only (`vault-filesystem`, `entry-styles`).
+  tree order; **new keys need the user's OK**) is root-only, like `.VaultAgent` (`vault-filesystem`).
 - **Paths are vault-root-relative with no vault-name prefix**, centralized in `utils/paths.ts`;
   `buildFileTree` and every create/move/rename tab handler must agree or tabs stop deduping.
 - **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault. Read ONCE on
@@ -101,7 +104,7 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   identity or measure it; read mode stays a pure function of the document + its folds (`live-preview`).
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,
   asset reconciles, the recent-vaults read-modify-write and every vault switch each hold an in-flight
-  ref or a promise queue: `StrictMode` double-runs effects and users click twice mid-copy.
+  ref or a promise queue: `StrictMode` (on, `main.tsx`) double-runs effects; users click twice mid-copy.
 - **The PDF/tldraw module split is bundle-size discipline enforced only by import discipline** —
   there is no manual chunking in `vite.config.ts`, so one new import silently pulls pdf-lib (~400kB),
   pdf.js or tldraw into the main bundle. Check the `pdf-and-drawings` skill (it covers notebooks and
@@ -127,7 +130,7 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   subscribe to a BOOLEAN ("am I active?"), so a tab switch re-renders the two that changed, not 2,300.
 - **Anything repeated thousands of times carries `content-visibility: auto`** (`.tree-item`,
   `.pdf-viewer-page`) plus a known box — or all of them lay out and paint on every ancestor's frame.
-- **The three path-keyed records** (`fileScrollAnchors`, `pdfViewPositions`, `collapsedHeadings`) are
+- **The path-keyed records** (`fileScrollAnchors`, `pdf`/`canvasViewPositions`, `collapsedHeadings`) are
   held parsed in memory via `readRecord`/`flushRecord` in `utils/storage.ts`, keyed by its `scopedKey` —
   two vaults share paths freely. Never pruned (recency capping was **rejected**), so they grow per vault.
 - **Settings → CSS variables.** Appearance state persists to `localStorage` and is applied by setting
@@ -136,15 +139,12 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   and a `NaN` reaches `' '.repeat()` / `Array.slice`; and **Vault name as tab title** (`document.title`).
   Theme is `data-theme` on `<html>` (**absent = dark**); custom accent/code colors are inline `<html>`
   style overrides that intentionally outrank both theme blocks.
-- **`React.StrictMode` is on** (`main.tsx`), so effects run twice in dev — write effects to tolerate
-  it, including the async read-modify-write ones.
 - **ESLint config carries intentional relaxations** (`eslint.config.ts`): `no-unused-vars` ignores
   PascalCase/UPPER vars, all args and catch bindings; `set-state-in-effect` is off (the app
   deliberately does it); `only-export-components` is off for `src/context/**`. `tsconfig` is `strict`
   but leaves `noUnusedLocals`/`noUnusedParameters` to lint. Don't "fix" these into failures.
-- **Match the house comment style.** This codebase explains *why*, beside the code, with the measured
-  evidence that forced the decision ("measured: 7 tabs → 0", "~186M comparisons per keystroke"); a
-  comment restating what the line does is not it. Narrow, hard-won facts belong there.
-- **Two things exist twice, as independent copies — change both halves.** "Is this name taken by
-  either kind" is `App.nameTaken` *and* `FileSystemContext.entryExists`; ruled-paper colours are
-  `paper.ts`'s SVG *and* `pdfBuild.ts`'s pdf-lib constants.
+- **Match the house comment style.** Explain *why*, beside the code, with the measured evidence that
+  forced it ("measured: 7 tabs → 0"); a comment restating what the line does is not it.
+- **Two things exist twice, as independent copies — change both halves.** "Is this name taken by either
+  kind" is `entryNames.nameTaken` *and* `FileSystemContext.entryExists`; ruled paper is `paper.ts`'s SVG
+  *and* `pdfBuild.ts`'s pdf-lib constants.

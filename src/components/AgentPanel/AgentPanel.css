@@ -626,11 +626,18 @@
   max-width: min(88%, 560px);
 }
 
+/* The user's own message, in their accent at low strength.
+   `color-mix` against the PANEL's background rather than `transparent`: mixing
+   toward transparent leaves the accent's own lightness in the alpha channel, so
+   a pale accent washed out on dark chrome and a deep one sat almost black on
+   light. Mixed into the surface, 16% reads as tinted in both. The text stays
+   --text-normal: nobody reads their own paragraph off an accent-coloured
+   foreground, and the tint is doing the work of saying who wrote it. No border
+   and no shadow: at this strength the tint is the edge. */
 .agent-user-bubble {
   padding: 8px 12px;
   border-radius: 12px;
-  background: var(--ai-card);
-  box-shadow: var(--ai-shadow);
+  background: color-mix(in srgb, var(--interactive-accent) 16%, var(--ai-card));
 }
 
 .agent-user-images {

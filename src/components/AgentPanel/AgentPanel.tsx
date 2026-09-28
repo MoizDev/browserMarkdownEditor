@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { DragEvent, MouseEvent as ReactMouseEvent } from 'react';
-import { AGENT_LABELS, HELPER_NAME } from '../../../shared/vaultAgentProtocol';
+import { AGENT_IDS, AGENT_LABELS, HELPER_NAME } from '../../../shared/vaultAgentProtocol';
 import type { AgentHost, AgentPanelProps } from '../../types/vaultAgent';
 import { createAgentHosts, type AgentHostDeps } from '../../utils/agentHost';
 import { agentBridge, BridgeError } from '../../utils/agentBridge';
@@ -23,9 +23,7 @@ import type { CpuArch } from '../../utils/platform';
 import { openContextMenu } from '../../utils/contextMenu';
 import type { ContextMenuEntry } from '../../utils/contextMenu';
 import { CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED, copyText, readClipboardText } from '../../utils/clipboard';
-import { MoreHorizontal, SquarePen, X } from '../icons';
-import { Orb } from './aicss/Orb';
-import { AgentSelector } from './AgentSelector';
+import { MoreHorizontal, Sparkles, SquarePen, X } from '../icons';
 import { ChatList } from './ChatList';
 import { Composer } from './Composer';
 import { MessageList } from './MessageList';
@@ -33,7 +31,7 @@ import { ModelPicker } from './ModelPicker';
 import { AgentWarning, SetupGuide } from './SetupGuide';
 import { DRAFT_KEY, activeChatOf, chatStore, configOf, resolveModel } from './chatStore';
 import type { ChatStoreState, Conversation, PreparedImage } from './chatStore';
-import { useBridgeState, useChatState } from './useAgentChat';
+import { HEALTH_CAPTION, agentHealth, useBridgeState, useChatState } from './useAgentChat';
 
 const EMPTY: Conversation = { items: [], history: 'none' };
 
@@ -42,24 +40,33 @@ const EMPTY: Conversation = { items: [], history: 'none' };
  *  it, a reader who went on typing in their note keeps it. */
 const OPEN_FOCUS_WINDOW_MS = 1500;
 
-/** The header's orb: 22px, not the 18px it shipped at — its 3px dots scale
- *  with it, and at 18px they were 1.9px specks (AgentPanel.css has the ink). */
-const STATUS_ORB_PX = 22;
-
-function StatusOrb({ bridge, running }: { bridge: BridgeState; running: boolean }) {
+/**
+ * The panel's mark: the app's own AI glyph, the same one the sidebar button
+ * carries, tinted by the connection (`data-state`, inked in AgentPanel.css).
+ *
+ * It replaced an aicss orb — a 3x3 lattice of dots, which at 22px in the top
+ * corner read as a menu grid and said "agent" to nobody. The orb still does the
+ * work it is good at: the animated ones in the conversation, where motion IS
+ * the message.
+ */
+function StatusMark({ bridge, running }: { bridge: BridgeState; running: boolean }) {
     let label: string;
-    let orb;
+    let state: 'working' | 'on' | 'connecting' | 'off';
     if (bridge.status === 'connected') {
         label = running ? 'Working…' : `Connected to ${HELPER_NAME} ${bridge.helper.version}`;
-        orb = <Orb variant="S3" size={STATUS_ORB_PX} label={label} still={!running} />;
+        state = running ? 'working' : 'on';
     } else if (bridge.status === 'connecting' || bridge.status === 'checking' || (bridge.status === 'failed' && bridge.retryAt != null)) {
         label = 'Connecting…';
-        orb = <Orb variant="B2" size={STATUS_ORB_PX} label={label} />;
+        state = 'connecting';
     } else {
         label = `Not connected to ${HELPER_NAME}`;
-        orb = <Orb variant="S1" size={STATUS_ORB_PX} label={label} still className="is-off" />;
+        state = 'off';
     }
-    return <span className="agent-status" data-tooltip={label}>{orb}</span>;
+    return (
+        <span className="agent-status" data-state={state} data-tooltip={label}>
+            <Sparkles size={17} role="img" aria-label={label} />
+        </span>
+    );
 }
 
 /** Why the composer cannot send, or null. */
@@ -212,6 +219,25 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         const button = e.currentTarget;
         const r = button.getBoundingClientRect();
         const asset = installerAsset(os, arch);
+        // Which CLI runs the next chat lives HERE rather than in the header: the
+        // header carried a dot, a name and a chevron for a choice that is made
+        // once and then not thought about, and the panel is 400px wide. The
+        // status it used to show is still surfaced where it matters — the
+        // warning above the composer when the chosen agent is not ready.
+        void chatStore.refreshAgents(false);
+        const agentRows: ContextMenuEntry[] = ready ? [
+            ...AGENT_IDS.map(id => ({
+                kind: 'command' as const,
+                id: `agent-${id}`,
+                // A pick-one menu: `checked` on every row draws the ✓ column.
+                label: `${AGENT_LABELS[id]} · ${HEALTH_CAPTION[agentHealth(state, id)]}`,
+                checked: id === config.agent,
+                disabled: !!run,
+                reason: run ? 'Wait for the reply to finish' : undefined,
+                run: () => { if (id !== config.agent) chatStore.selectAgent(id); },
+            })),
+            { kind: 'separator', id: 'sep-agent' },
+        ] : [];
         openContextMenu({
             x: Math.round(r.left),
             y: Math.round(r.bottom),
@@ -219,6 +245,7 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
             opener: button,
             anchor: button,
             entries: [
+                ...agentRows,
                 { kind: 'command', id: 'reconnect', label: 'Reconnect', run: connect, disabled: !supported, reason: 'Not available in this browser' },
                 {
                     kind: 'command', id: 'download', label: 'Download installer',
@@ -326,10 +353,9 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
             onContextMenu={onContextMenu}
         >
             <header className="agent-header">
-                <StatusOrb bridge={bridge} running={!!run} />
+                <StatusMark bridge={bridge} running={!!run} />
                 {ready ? <ChatList state={state} theme={theme} /> : <span className="agent-header-title">AI agent</span>}
                 <span className="agent-header-spacer" />
-                {ready && <AgentSelector state={state} theme={theme} disabled={!!run} />}
                 {ready && (
                     <button
                         type="button"

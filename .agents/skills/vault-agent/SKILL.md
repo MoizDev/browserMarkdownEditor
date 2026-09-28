@@ -115,7 +115,12 @@ opening a closed canvas beside the user via `openInSidePane` without moving the 
 - App: `⌘⇧X` is a CAPTURE-phase listener — a Mod-Shift letter no keymap here (CodeMirror,
   tldraw), Chrome or Edge claims; never ⌘⇧K (the user keeps it as deleteLine). `⌘E` is ignored
   inside `[data-agent-panel]` (dropdowns are portalled and carry it too).
-- Replies render through `editor/replyView.ts` (read mode) — no new `innerHTML` sink. aicss free
+- Header: the app's AI glyph (`StatusMark`, tinted and pulsed by `data-state`), the chat switcher,
+  New chat, ⋯, close. **Which CLI runs the next chat is a pick-one section of the ⋯ menu** (`checked`
+  rows + its health caption), not a header chip: it is chosen once, and the panel is 400px wide.
+- Replies render through `editor/replyView.ts` (read mode) — no new `innerHTML` sink. A reply's
+  `.cm-content` is pinned to the scroller's width: one 493px formula in a 371px reply otherwise laid
+  EVERY line out at 493px, and the prose ran off the edge instead of the formula scrolling. aicss free
   components are copied under `aicss/` (MIT, `LICENSE-aicss`); the composer and change cards are our
   own — the aicss Pro components must never be copied.
 

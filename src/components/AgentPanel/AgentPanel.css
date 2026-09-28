@@ -201,30 +201,38 @@
   margin-right: 2px;
 }
 
-/* The header orb is the panel's connection light, so it is inked to be READ,
-   not to sit quietly like the thinking orb in the conversation: the aicss
-   resting ink (0.14–0.2) on 18px made it a smudge in both themes (the
-   review's finding). The accent says "live"; mixed 30% toward the text
-   colour so any custom accent keeps contrast against the header band — a
-   pale accent darkens in light mode, a deep one lightens in dark. */
-.agent-status .aic-orb {
-  --orb-fg: color-mix(in srgb, var(--interactive-accent) 70%, var(--text-normal));
-  /* Working: the comet's tail needs a darker ring to run on. */
-  --orb-rest-ink: 0.3;
-  --orb-dim-ink: 0.3;
+/* The header mark is the panel's connection light as well as its badge, so it
+   is inked to be READ: the accent says "live", mixed 30% toward the text colour
+   so any custom accent keeps contrast against the header band (a pale accent
+   darkens in light mode, a deep one lightens in dark). */
+.agent-status[data-state="on"],
+.agent-status[data-state="working"] {
+  color: color-mix(in srgb, var(--interactive-accent) 70%, var(--text-normal));
 }
 
-/* Connected and idle: the whole grid lit, the centre fully. */
-.agent-status .aic-orb.is-still {
-  --orb-rest-ink: 0.7;
-  --orb-dim-ink: 0.7;
+/* Connecting, or not connected at all: present, but off. */
+.agent-status[data-state="connecting"],
+.agent-status[data-state="off"] {
+  color: var(--text-muted);
 }
 
-/* Not connected: the same grid in the muted text colour — off, but present. */
-.agent-status .aic-orb.is-off {
-  --orb-fg: var(--text-muted);
-  --orb-rest-ink: 0.5;
-  --orb-dim-ink: 0.5;
+/* Working and connecting both breathe. Opacity only — a transform would move
+   17px of glyph against a fixed header row, and the panel is a place to read. */
+.agent-status[data-state="working"],
+.agent-status[data-state="connecting"] {
+  animation: agent-mark-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes agent-mark-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-status[data-state="working"],
+  .agent-status[data-state="connecting"] {
+    animation: none;
+  }
 }
 
 .agent-header-title {
@@ -267,8 +275,8 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  /* What gives way on a narrow panel: a chat title truncates, the agent
-     chip does not (see .agent-selector). */
+  /* A long chat title truncates rather than pushing the header's buttons
+     off the end. */
   flex: 0 1 auto;
   min-width: 0;
   height: 26px;
@@ -297,99 +305,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.agent-selector {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  /* Never shrinks: the chat title gives way instead. A shrinkable selector
-     lost ~1px of a squeeze to its neighbour, and 1px is enough to ellipsize
-     "Claude" to "Clau…" (measured at the 300px minimum). Its longest label
-     ("Claude Code") is bounded, and the narrow form below always fits. */
-  flex: none;
-  max-width: 150px;
-  height: 26px;
-  padding: 0 6px 0 8px;
-  border: 0;
-  border-radius: var(--radius-m);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.agent-selector:hover:not(:disabled),
-.agent-selector[aria-expanded="true"] {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
-}
-
-.agent-selector:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.agent-selector-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* On the tab strip's band, hovers use the strip's own tint: the generic
-   --background-modifier-hover is DARKER than the dark strip (#2a2d2e on #333). */
-.agent-header .agent-icon-btn:hover:not(:disabled),
-.agent-header .agent-chat-switch:hover,
-.agent-header .agent-chat-switch[aria-expanded="true"],
-.agent-header .agent-selector:hover:not(:disabled),
-.agent-header .agent-selector[aria-expanded="true"] {
-  background: var(--tab-background-hover);
-}
-
-/* A narrow panel shortens the agent's name ("Claude Code" → "Claude") rather
-   than dropping it: a bare status dot said nothing about WHICH agent the next
-   message goes to (the review's finding at the 300px minimum). */
-.agent-selector-label.is-short {
-  display: none;
-}
-
-@container agent-panel (max-width: 340px) {
-  .agent-selector-label:not(.is-short) {
-    display: none;
-  }
-
-  .agent-selector-label.is-short {
-    display: inline;
-  }
-
-  /* The 18px the chevron takes goes to the chat title; the chip keeps its
-     hover tint and opens the same menu. */
-  .agent-selector > svg {
-    display: none;
-  }
-
-  .agent-selector {
-    padding-right: 8px;
-  }
-}
-
-/* An agent's state, at a glance: the selector, its menu. */
-.agent-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-faint);
-}
-
-.agent-dot.ready { background: var(--ai-green); }
-.agent-dot.unknown-login { background: var(--ai-amber); }
-.agent-dot.logged-out,
-.agent-dot.incompatible { background: var(--ai-red); }
-.agent-dot.missing {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.25px var(--text-faint);
 }
 
 .agent-panel-error {
@@ -662,6 +577,19 @@
   line-height: 1.5;
 }
 
+/* The orbs that MOVE are the ones the eye should follow — the thinking row, a
+   tool call in flight, a chat loading. aicss inks them in the text colour at
+   0.14–0.2, which in this panel read as three grey specks; the accent is what
+   says "this is the agent working" at 14–20px. The still orbs (the setup
+   screens' status art) keep the quiet ink. */
+.agent-thinking .aic-orb,
+.agent-empty .aic-orb,
+.agent-tool-status .aic-orb {
+  --orb-fg: var(--interactive-accent);
+  --orb-rest-ink: 0.45;
+  --orb-dim-ink: 0.22;
+}
+
 .agent-thinking {
   display: flex;
   align-items: center;
@@ -789,6 +717,33 @@
   padding: 0;
   line-height: 1.5;
   caret-color: auto;
+}
+
+/* Maths must not set the reply's width.
+   MEASURED in a 400px panel (a 371px reply): one `$$…$$` whose KaTeX is 493px
+   wide made `.cm-content` 493px too, so EVERY line was laid out at 493px and
+   the prose ran off the right edge — the whole reply scrolled sideways instead
+   of the formula. Pinning the content to the scroller's width puts the overflow
+   back inside the formula, where `.cm-math-block`'s own `overflow-x: auto`
+   (index.css) has always been waiting for it. A long inline formula scrolls in
+   its own box for the same reason: KaTeX sets `white-space: nowrap` on a base,
+   so it cannot wrap and has to be scrollable or it is simply cut off. */
+.agent-reply .cm-editor .cm-content {
+  width: 100%;
+  max-width: 100%;
+}
+
+.agent-reply .cm-math-block {
+  max-width: 100%;
+}
+
+.agent-reply .cm-math-inline {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  /* inline-block on the baseline would hang the box below the line; bottom
+     keeps a formula sitting on the text's own baseline. */
+  vertical-align: bottom;
 }
 
 .agent-reply-plain {

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { MAX_MCP_BODY_BYTES, type AgentEvent, type AgentId, type HelperMessage } from '../../shared/vaultAgentProtocol.ts';
 import { SAFE_MODEL_RE, type AgentAdapter, type Foreign, type RunContext, type RunOutcome } from '../src/agents/types.ts';
 import { makeOriginPolicy } from '../src/security.ts';
-import { createFetchHandler, startServer, type RunningServer } from '../src/server.ts';
+import { createFetchHandler, helperPlatform, startServer, type RunningServer } from '../src/server.ts';
 
 const ORIGIN = 'https://notes.moizhashmi.com';
 const VAULT = '6f1c2d3e-4a5b-4c6d-8e7f-001122334455';
@@ -126,7 +126,9 @@ describe('HTTP surface', () => {
         const base = `http://127.0.0.1:${server.port}`;
         const plain = await fetch(`${base}/health`);
         expect(plain.status).toBe(200);
-        expect(await plain.json()).toMatchObject({ app: 'vaultagent', protocol: 1, platform: 'macos' });
+        // /health reports the machine it runs on (the release's test job runs on Linux), unlike
+        // `hello`, which echoes the context's platform.
+        expect(await plain.json()).toMatchObject({ app: 'vaultagent', protocol: 1, platform: helperPlatform() });
         expect(plain.headers.get('access-control-allow-origin')).toBeNull();
         const good = await fetch(`${base}/health`, { headers: { Origin: ORIGIN } });
         expect(good.headers.get('access-control-allow-origin')).toBe(ORIGIN);

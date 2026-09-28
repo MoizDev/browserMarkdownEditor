@@ -561,7 +561,19 @@ The sparkles button at the bottom of the sidebar (or \`Cmd + Shift + X\` / \`Ctr
 - Then click **Connect** in the panel. Chrome asks once whether this site may talk to apps on your computer — choose **Allow**. Until you click Connect the page never tries to reach the helper. If you chose Block by mistake, click the icon at the left of the address bar, open **Site settings**, and set **Local network access** to **Allow**; the panel reconnects by itself.
 
 ### Chatting
-Opening the panel puts you straight in the box at the bottom, and closing it puts you back where you were. Type there and press **Enter** to send (**Shift + Enter** for a new line). Paste images straight from the clipboard, drop them onto the box, or use the attach button. Right-click the box to **Paste**, or selected text anywhere in the panel to **Copy** it. Pick the agent at the top of the panel, and the model and how hard it should think (effort) beside the message box — each chat remembers its own choice, and a new chat starts with the last one you used. Switching the agent starts a new chat. **Stop** ends a reply early.
+Opening the panel puts you straight in the box at the bottom, and closing it puts you back where you were. Type there and press **Enter** to send (**Shift + Enter** for a new line). Paste images straight from the clipboard, drop them onto the box, or use the attach button. Right-click the box to **Paste**, or selected text anywhere in the panel to **Copy** it. Pick the agent in the panel's **⋯** menu, which also shows whether each one is installed and logged in, and the model and how hard it should think (effort) beside the message box — each chat remembers its own choice, and a new chat starts with the last one you used. Switching the agent starts a new chat. **Stop** ends a reply early.
+
+### How it answers, and Learning Mode
+Answers are meant to be short: the agent is told to lead with the answer, keep to a few sentences unless you ask for more, skip the preamble and the recap, and never paste back a diff the panel already shows you.
+
+When you are trying to **learn** something rather than get something done, that is the wrong shape, so the panel has a **learning mode** — the graduation cap beside the model chip. In learning mode the agent gives you **one idea at a time**: a short explanation with a concrete example, often built from your own notes, then one question back to check it landed, and then it waits for you. Say you follow and it takes the next step; say you're lost and it goes smaller.
+
+The cap has three settings, and clicking it moves to the next:
+- **Automatic** (the default): the panel decides per message. Ask it to explain something, say you don't understand, or ask why something works, and it teaches; ask it to add a table or fix a typo and it just does it. The cap **lights up** while a lesson is under way, so you can always see which one you are getting.
+- **On**: every answer is taught step by step.
+- **Off**: it always answers directly.
+
+The setting is yours, not the chat's: it stays as you left it. A lesson in progress is remembered until you start a new chat or reload the page.
 
 Each chat keeps its own conversation. The chat list at the top lets you go back to an earlier one or start a new one, and deleting a chat removes it for good (after asking), including the agent's own record of it.
 

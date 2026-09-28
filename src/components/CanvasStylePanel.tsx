@@ -182,6 +182,8 @@ export default function CanvasStylePanel() {
                 />
                 <input
                     className="canvas-style-slider"
+                    // What the track's gradient stops at — see the CSS.
+                    style={{ ['--fill' as string]: `${penScaleToSlider(scale) * 100}%` }}
                     type="range"
                     min={0}
                     max={1}

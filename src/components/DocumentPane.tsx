@@ -44,7 +44,10 @@ import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
 import TexView from './TexView';
-import { isDrawingFile, isNotebookFile, isPdfFile, isTexFile, noteDisplayName } from '../utils/fileTypes';
+import { bracketColourCompartment, codeExtensions, codeLanguageFor, loadCodeLanguage, type CodeLanguage } from '../editor/codeEditor';
+import { rainbowBrackets as rainbowBracketsExtension } from '../editor/rainbowBrackets';
+import { codeDarkTheme, codeLightTheme } from '../editor/codeHighlight';
+import { isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, isTexFile, noteDisplayName } from '../utils/fileTypes';
 import { ArrowLeft, ArrowRight, Edit2, Eye, MoreHorizontal, PenTool } from './icons';
 import type { ActiveFile, EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
 
@@ -234,8 +237,15 @@ const indentCompartment = new Compartment();
 
 
 /** The theme + syntax-highlight extension pair for the current app theme. */
-function themeExtensions(theme: Theme) {
-    return theme === 'light'
+function themeExtensions(theme: Theme, code = false) {
+    const light = theme === 'light';
+    // A code pane keeps the app's CHROME (background, caret, selection,
+    // scrollbars) and replaces the prose HIGHLIGHT STYLE outright — it is not
+    // layered on top. Measured: with both active, the note style's own code
+    // colours won half the tokens, so a Racket file came out in Obsidian's
+    // palette rather than the user's (codeHighlight.ts).
+    if (code) return [light ? obsidianLightTheme : obsidianDarkTheme, light ? codeLightTheme : codeDarkTheme];
+    return light
         ? [obsidianLightTheme, obsidianLightHighlightStyle]
         : [obsidianDarkTheme, obsidianHighlightStyle];
 }
@@ -284,7 +294,7 @@ function lineCol(state: EditorState, pos: number): LineCol {
 }
 
 /** Where the reader is in `view`, now. `mode` and `dirty` are the tab's. */
-function describeMarkdown(view: EditorView, mode: EditorMode, dirty: boolean): MarkdownViewInfo {
+function describeMarkdown(view: EditorView, mode: EditorMode, dirty: boolean, language?: string): MarkdownViewInfo {
     const { state } = view;
     const doc = state.doc;
     // The lines actually inside the scroll box — not `view.viewport`, which
@@ -316,6 +326,7 @@ function describeMarkdown(view: EditorView, mode: EditorMode, dirty: boolean): M
         cursorOffset: head,
         selections,
         dirty,
+        language,
     };
 }
 
@@ -531,6 +542,9 @@ interface DocumentPaneProps {
     theme: Theme;
     /** Spaces a Tab inserts — and how far Tab indents a list item. */
     tabSize: number;
+    /** Settings → Colour brackets by depth. Code panes only; reconfigured
+     *  live through a compartment, like the theme and the indent width. */
+    rainbowBrackets: boolean;
     /**
      * Per-document EditorStates (doc + undo history + selection + search
      * panel), owned by App — so they survive the graph view, which unmounts
@@ -601,6 +615,7 @@ function DocumentPane({
     widthStyle,
     theme,
     tabSize,
+    rainbowBrackets,
     stateCache,
     registerKeyboardTarget,
     getWikiLinkTargets,
@@ -632,6 +647,10 @@ function DocumentPane({
      *  instead of building a CodeMirror view, so the two modes are "the document"
      *  and "the source" rather than markdown's two readings of one text. */
     const isTex = !file.isHelp && isTexFile(file.name);
+    /** A source file: line numbers, syntax colours, folds, several cursors —
+     *  editor/codeEditor.ts. The grammar itself arrives a tick after the view. */
+    const isCode = !file.isHelp && isCodeFile(file.name);
+    const codeLanguage: CodeLanguage | null = isCode ? codeLanguageFor(file.name) : null;
     /** Restored without its text (OpenTab.readError): this pane shows only
      *  that, and builds no view, drawing or notebook — each would take the
      *  empty buffer for the document and save it over the file. */
@@ -728,7 +747,7 @@ function DocumentPane({
             describe() {
                 const view = viewRef.current;
                 const { mode: tabMode, dirty } = tabRef.current;
-                if (view) return describeMarkdown(view, tabMode, !!dirty);
+                if (view) return describeMarkdown(view, tabMode, !!dirty, codeLanguage?.name);
                 // Between the pane's mount and its view (a frame at most).
                 const content = tabRef.current.content;
                 const state = EditorState.create({ doc: content });
@@ -736,6 +755,7 @@ function DocumentPane({
                     kind: 'markdown', mode: tabMode, text: content, lineCount: state.doc.lines,
                     visibleLines: { from: 1, to: 1 }, visibleRange: { from: 0, to: state.doc.line(1).to },
                     cursor: { line: 1, col: 1 }, cursorOffset: 0, selections: [], dirty: !!dirty,
+                    language: codeLanguage?.name,
                 };
             },
             getText: text,
@@ -748,7 +768,9 @@ function DocumentPane({
                 },
             }),
         });
-    }, [path, isCanvas, unreadable, isHelp]);
+        // `codeLanguage` is a property of the PATH (one file, one language), so
+        // it cannot change under a mounted pane; listed for the rule's sake.
+    }, [path, isCanvas, unreadable, isHelp, codeLanguage?.name]);
 
     // Live prop mirrors: the view is built once, so everything it calls has to
     // be reachable without rebuilding it.
@@ -810,19 +832,26 @@ function DocumentPane({
      * on a cached state's re-adoption as well as being built here.
      */
     const livePreviewFor = useCallback((forMode: EditorMode) =>
-        (isTex ? [] : createLivePreviewPlugin(stableGetAssetUrl, forMode, imageActions)),
-    [isTex, stableGetAssetUrl, imageActions]);
+        (isTex || isCode ? [] : createLivePreviewPlugin(stableGetAssetUrl, forMode, imageActions)),
+    [isTex, isCode, stableGetAssetUrl, imageActions]);
 
     /** The full extension list for this document. Every dynamic bit goes
      *  through a ref, so the view never has to be rebuilt. */
     const createTabState = (doc: string): EditorState => EditorState.create({
         doc: doc || '',
         extensions: [
-            EditorView.lineWrapping,
-            // Draw a custom cursor element (.cm-cursor) instead of using the
-            // native browser caret, so the caret style/animation settings apply.
-            drawSelection(),
-            history(),
+            // ── Code files take a different editor entirely ──
+            // No line wrapping (a long line scrolls, as in any editor), no
+            // markdown grammar, no live preview, no wikilinks: everything below
+            // that is about prose is skipped for a .py or a .rkt, and
+            // codeExtensions brings the gutter, folds, brackets, completion and
+            // multiple cursors in its place.
+            ...(isCode ? codeExtensions({ tabSize, language: codeLanguage, rainbow: rainbowBrackets }) : [
+                EditorView.lineWrapping,
+                // Draw a custom cursor element (.cm-cursor) instead of using the
+                // native browser caret, so the caret style/animation settings apply.
+                drawSelection(),
+                history(),
             // Before closeBrackets so LaTeX gets first claim on $ { ( [ —
             // the stock handler doesn't know $ at all, and refuses to pair
             // brackets before non-whitespace, which is every keystroke
@@ -839,17 +868,18 @@ function DocumentPane({
                     LanguageDescription.matchLanguageName(languages, info, true)
                     ?? LanguageDescription.matchFilename(languages, `x.${info}`),
             }),
-            themeCompartment.of(themeExtensions(theme)),
-            indentCompartment.of(indentSettings(tabSize)),
-            // Above the default keymap, which deliberately leaves Tab to the
-            // browser — here it indents (and re-nests list items) instead.
-            listIndentKeymap,
-            keymap.of([
-                ...defaultKeymap,
-                ...historyKeymap,
-                ...closeBracketsKeymap,
-                ...searchKeymap,
+                indentCompartment.of(indentSettings(tabSize)),
+                // Above the default keymap, which deliberately leaves Tab to the
+                // browser — here it indents (and re-nests list items) instead.
+                listIndentKeymap,
+                keymap.of([
+                    ...defaultKeymap,
+                    ...historyKeymap,
+                    ...closeBracketsKeymap,
+                    ...searchKeymap,
+                ]),
             ]),
+            themeCompartment.of(themeExtensions(theme, isCode)),
             // ⌘F's jump is a revealMatch, as the vault-search reveal is: centred
             // and held while pictures and diagrams above it load (the default,
             // a one-shot nearest-edge scroll, left a match 1,445px below view).
@@ -858,17 +888,19 @@ function DocumentPane({
             // by the window listener below, never by CodeMirror itself.
             noteSearchKeymap,
             keyboardAfterSearchClose,
-            tabIntoText,
             readOnlyCompartment.of(modeExtensions(mode)),
-            wikiLinkAutocomplete(() => getTargetsRef.current()),
-            livePreviewCompartment.of(livePreviewFor(mode)),
-            // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
-            // that, which would forget every collapsed section (headingFold.ts).
-            headingFold(storedFoldKeys(path)),
+            ...(isCode ? [] : [
+                tabIntoText,
+                wikiLinkAutocomplete(() => getTargetsRef.current()),
+                livePreviewCompartment.of(livePreviewFor(mode)),
+                // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
+                // that, which would forget every collapsed section (headingFold.ts).
+                headingFold(storedFoldKeys(path)),
+            ]),
             // Outside every compartment for the same reason: a reconfigure
             // (⌘E, the theme) must not drop a restored place still being held.
             scrollAnchorTracking,
-            markdownFormatExtension,
+            ...(isCode ? [] : [markdownFormatExtension]),
             revealHighlightField,
             EditorView.updateListener.of((update) => {
                 if (update.docChanged) {
@@ -993,12 +1025,16 @@ function DocumentPane({
             const view = new EditorView({ state: cached ?? createTabState(tab.content), parent: node });
             viewRef.current = view;
             returnKeyboard(view, keyboardBefore);
+            // Every grammar is a dynamic import, so a code pane paints at once
+            // in plain text and takes its colours a tick later. A cached state
+            // already carries one, and loadCodeLanguage leaves it alone.
+            if (codeLanguage) void loadCodeLanguage(view, codeLanguage);
 
             if (cached) {
                 const wasReadOnly = view.state.readOnly;
                 view.dispatch({
                     effects: [
-                        themeCompartment.reconfigure(themeExtensions(theme)),
+                        themeCompartment.reconfigure(themeExtensions(theme, isCode)),
                         readOnlyCompartment.reconfigure(modeExtensions(mode)),
                         livePreviewCompartment.reconfigure(livePreviewFor(mode)),
                         indentCompartment.reconfigure(indentSettings(tabSize)),
@@ -1068,8 +1104,18 @@ function DocumentPane({
 
     useEffect(() => {
         if (!settled.current) return;
-        viewRef.current?.dispatch({ effects: themeCompartment.reconfigure(themeExtensions(theme)) });
-    }, [theme]);
+        viewRef.current?.dispatch({ effects: themeCompartment.reconfigure(themeExtensions(theme, isCode)) });
+        // `isCode` is a property of the document, so it cannot change under a
+        // mounted pane (a path is one file); it is listed because the rule
+        // cannot know that.
+    }, [theme, isCode]);
+
+    useEffect(() => {
+        if (!settled.current || !isCode) return;
+        viewRef.current?.dispatch({
+            effects: bracketColourCompartment.reconfigure(rainbowBrackets ? rainbowBracketsExtension : []),
+        });
+    }, [rainbowBrackets, isCode]);
 
     useEffect(() => {
         if (!settled.current) return;
@@ -1363,7 +1409,10 @@ function DocumentPane({
                 )}
                 {!isCanvas && !unreadable && !texReading && (
                     <div
-                        className="view-content"
+                        // `is-code` turns off the prose measure and the
+                        // centring (index.css) — a code file starts at its
+                        // line numbers and runs the width of the pane.
+                        className={`view-content${isCode ? ' is-code' : ''}`}
                         ref={setEditorContainer}
                         /* The app's own menu, in place of the browser's.
                            WHERE this handler lives is the whole safety

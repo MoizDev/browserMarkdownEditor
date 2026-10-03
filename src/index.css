@@ -2069,6 +2069,19 @@ body.is-resizing-panes * {
   padding-bottom: max(24px, round(down, 50cqh, 1px));
 }
 
+/* A code pane is not prose: no 900px measure, no centring, no percentage
+   margins. Code starts hard against its line numbers and runs as wide as the
+   pane, because an 80-column line and a 200-column one are both normal and
+   wrapping is off — the scroller takes a long line sideways, as every editor
+   does. The bottom buffer above is kept: the last line of a file wants to be
+   readable at mid-screen just as the last line of a note does. */
+.view-content.is-code .cm-editor .cm-content {
+  max-width: none;
+  margin: 0;
+  padding-left: 0;
+  padding-right: 24px;
+}
+
 /* ── Settings Panel Overlay ── */
 .settings-overlay {
   position: fixed;

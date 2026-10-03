@@ -76,6 +76,48 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
 - `livePreview.ts` **declines HMR** (`import.meta.hot.decline()`): the cached decoration logic means
   a hot swap wouldn't take, so it forces a full reload in dev instead.
 
+## A code file gets a DIFFERENT editor — `editor/codeEditor.ts` + `editor/codeHighlight.ts`
+
+`isCodeFile` (a plain extension list in `utils/fileTypes.ts` — no grammar table there, since that module
+is imported by nearly everything) sends a `.py`/`.rkt`/`.c` down a second branch of `createTabState`:
+no `lineWrapping`, no markdown grammar, no live preview, no wikilinks, no `tabIntoText`; instead line
+numbers, folds, `bracketMatching`, `closeBrackets`, `highlightSelectionMatches`, `autocompletion`,
+multiple cursors (⌥-click; ⌥⇧-drag for a column). `.view-content.is-code` turns off the prose measure
+(900px, centred, 6% padding). App opens code tabs in `'edit'` mode.
+
+- **The grammar loads lazily, through `codeLanguageCompartment`.** Every language in
+  `@codemirror/language-data` is a dynamic import; the state is built with an empty slot and
+  `loadCodeLanguage` fills it a tick later, caching by name and leaving a view that already has one
+  alone (reconfiguring drops its folds).
+- **`drawSelection()` is NOT optional.** The app's theme sets `caret-color: transparent` because every
+  caret setting styles `.cm-cursor` — without it a code pane has NO visible cursor (measured).
+- **The prose highlight style is REPLACED, not layered.** With both active, `obsidianHighlightStyle`'s
+  code colours won half the tokens. `themeExtensions(theme, code)` returns chrome + code style only.
+- **Theme selectors are `&.cm-editor …`.** Equal specificity means import order decides, and the note
+  theme's `.cm-gutters { display: none }` and prose font won (measured).
+- **A parser's `tokenTable` cannot remap CodeMirror's OWN legacy names.** `TokenTable` is seeded with
+  a default map (`variable` → variableName, `builtin` → variableName.standard) and checks it FIRST, so
+  a table keyed on those names is silently ignored — custom names (`bmeCall`, `bmeSymbol`) are the way
+  in. This cost an afternoon.
+- **Racket is defined here, not borrowed.** The legacy Scheme mode calls a 300-word list `builtin` and
+  everything else `variable`, which paints a file in one colour. `racketParser` re-labels: special
+  forms → keyword, the HEAD of a form → call (blue, which is what made it readable), quoted symbols →
+  value, and numbers inside `[…]` → number (the mode calls those "variable" — and `[…]` is exactly
+  where a `cond` puts its answers).
+- **Depth-coloured brackets** are `editor/rainbowBrackets.ts`, a ViewPlugin: it scans the WHOLE document
+  (depth at line 400 depends on every bracket before it) but decorates only `view.visibleRanges`, and
+  takes its string/comment ranges from the syntax tree rather than a hand lexer. It MUST rebuild when
+  `syntaxTree(startState) !== syntaxTree(state)` — the tree is empty on first mount, so without that
+  the first (string-and-comment-blind) build is also the last. Measured: 0.2ms over 47k characters, no
+  long task while typing. The depth classes live on the THEME, to out-specify the syntax style's one
+  punctuation grey — and colour BOTH the mark and its descendant span: a mark decoration WRAPS the
+  highlighter's span (`<span class="cm-bracket-depth-0"><span class="ͼ2i">(</span></span>`), so the
+  INNER one paints. Colouring only the outer left every bracket grey while `getComputedStyle` on it
+  reported the rainbow; the bug came back from a screenshot after three rounds of my own measuring.
+- **The palette is the user's own Zed theme** (`~/.config/zed/themes/one-dark-darker.json`; One Light
+  for the light half), mapped Zed capture → Lezer tag once, by meaning. Code size is
+  `--code-font-size` (Settings → Appearance), separate from the note size.
+
 ## A `.tex` file gets NO live preview, and reads through `TexView`
 
 `DocumentPane.livePreviewFor(mode)` returns `[]` for a `.tex` (`isTexFile`), and the three

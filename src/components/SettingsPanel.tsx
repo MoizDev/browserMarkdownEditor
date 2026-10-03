@@ -2,7 +2,7 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { DEFAULT_RECENT_VAULT_LIMIT, MAX_STORED_VAULTS } from '../utils/recentVaults';
 import type { CaretStyle, SettingsDefaults } from '../types';
 
-const DEFAULTS: SettingsDefaults = { editorFontSize: 16, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
+const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
 
 /** What the swatch shows while no custom accent is set ('') — the dark theme's
  *  default purple. Purely cosmetic; '' still means "theme default". */
@@ -10,6 +10,8 @@ const ACCENT_SWATCH_FALLBACK = '#8b6cef';
 
 interface SettingsPanelProps {
     editorFontSize: number;
+    codeFontSize: number;
+    rainbowBrackets: boolean;
     treeFontSize: number;
     editorPadding: number;
     /** Spaces a Tab inserts — and how far Tab indents a list item. */
@@ -28,6 +30,8 @@ interface SettingsPanelProps {
     /** Whether the browser tab is titled with the open vault's name. */
     showVaultInTitle: boolean;
     onEditorFontSizeChange: (v: number) => void;
+    onCodeFontSizeChange: (v: number) => void;
+    onRainbowBracketsChange: (v: boolean) => void;
     onTreeFontSizeChange: (v: number) => void;
     onEditorPaddingChange: (v: number) => void;
     onTabSizeChange: (v: number) => void;
@@ -44,7 +48,7 @@ interface SettingsPanelProps {
     onClose: () => void;
 }
 
-export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadding, tabSize, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, accentColor, codeBlockColor, recentVaultLimit, showVaultInTitle, onEditorFontSizeChange, onTreeFontSizeChange, onEditorPaddingChange, onTabSizeChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onAccentColorChange, onCodeBlockColorChange, onRecentVaultLimitChange, onShowVaultInTitleChange, onResetDefaults, onClose }: SettingsPanelProps) {
+export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBrackets, treeFontSize, editorPadding, tabSize, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, accentColor, codeBlockColor, recentVaultLimit, showVaultInTitle, onEditorFontSizeChange, onCodeFontSizeChange, onRainbowBracketsChange, onTreeFontSizeChange, onEditorPaddingChange, onTabSizeChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onAccentColorChange, onCodeBlockColorChange, onRecentVaultLimitChange, onShowVaultInTitleChange, onResetDefaults, onClose }: SettingsPanelProps) {
     // Uncontrolled input (keyed on fontFamily) so we only load the Google Font
     // when the user commits the name, and it auto-resets on "Reset to Defaults".
     const fontInputRef = useRef<HTMLInputElement | null>(null);
@@ -109,6 +113,46 @@ export default function SettingsPanel({ editorFontSize, treeFontSize, editorPadd
                                 onChange={(e) => onEditorFontSizeChange(parseInt(e.target.value, 10))}
                                 className="settings-slider"
                             />
+                        </div>
+                    </div>
+
+                    <div className="setting-row">
+                        <div className="setting-info">
+                            <div className="setting-name">Code font size</div>
+                            <div className="setting-desc">Source files only (.py, .rkt, .c …), in Fira Code.</div>
+                        </div>
+                        <div className="setting-control">
+                            <span className="settings-value">{codeFontSize}px</span>
+                            <input
+                                type="range"
+                                min="10"
+                                max="24"
+                                step="1"
+                                value={codeFontSize}
+                                onChange={(e) => onCodeFontSizeChange(parseInt(e.target.value, 10))}
+                                className="settings-slider"
+                            />
+                        </div>
+                    </div>
+
+                    <div className="setting-row">
+                        <div className="setting-info">
+                            <div className="setting-name">Colour brackets by depth</div>
+                            <div className="settings-hint">
+                                In code files, colours each bracket by how deeply it nests, six colours before the
+                                cycle repeats. Off, brackets take the ordinary punctuation colour.
+                            </div>
+                        </div>
+                        <div className="setting-control">
+                            <button
+                                id="rainbow-brackets-toggle"
+                                role="switch"
+                                aria-checked={rainbowBrackets}
+                                className={`settings-toggle${rainbowBrackets ? ' on' : ''}`}
+                                onClick={() => onRainbowBracketsChange(!rainbowBrackets)}
+                            >
+                                <span className="settings-toggle-knob" />
+                            </button>
                         </div>
                     </div>
 

@@ -37,6 +37,11 @@ export interface MarkdownViewInfo {
     selections: Array<{ from: number; to: number; fromLC: LineCol; toLC: LineCol }>;
     /** Has edits not yet written to disk. */
     dirty: boolean;
+    /** Set on a source file: the language its pane is highlighting ("Python",
+     *  "Racket"). The agent is told, so it edits in the right one without
+     *  guessing from the extension — and so a `.rkt` is called Racket even
+     *  though a Scheme grammar is what colours it. */
+    language?: string;
 }
 
 export interface PdfViewInfo {

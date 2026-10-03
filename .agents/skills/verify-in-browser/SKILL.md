@@ -108,6 +108,13 @@ await page.addInitScript(() => {
 await page.goto(`http://localhost:${PORT}/`)   // seed OPFS only AFTER this line
 ```
 
+## Read the colour off the element the TEXT NODE hangs off
+
+`getComputedStyle(el).color` on a wrapper says what that wrapper would paint, not what you see: a
+CodeMirror mark decoration wraps the highlighter's own span, so the inner one wins. Three rounds of
+"measured, it works" missed a bug a screenshot showed in one second. When a check is about what the
+user SEES, walk to the text node's parent — or take the screenshot and look at it.
+
 ## What to check beyond the change itself
 
 Per the repo's standing instruction: be picky about the UI. If something on screen is visibly

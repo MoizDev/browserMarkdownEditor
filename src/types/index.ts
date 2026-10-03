@@ -348,6 +348,8 @@ export type TrashRestoreResult =
 /** Shape of SettingsPanel's DEFAULTS const and the onResetDefaults payload. */
 export interface SettingsDefaults {
   editorFontSize: number;                // SettingsPanel.jsx:3 (16)
+  codeFontSize: number;                  // (14) source files only, in Fira Code
+  rainbowBrackets: boolean;              // (true) depth-coloured brackets in code panes
   treeFontSize: number;                  // (13)
   editorPadding: number;                 // (6)
   tabSize: number;                       // (4) spaces per Tab / per list level

@@ -174,7 +174,7 @@ Under each pane's tabs is a row belonging to that pane: its file's name in the m
 With more than one pane, the pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F and ⌘S act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
 
 ### The Status Bar
-A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. It never takes a click meant for the note underneath it. A PDF, drawing or notebook has no words to count, so there the bar shows only briefly, to say something was saved or moved to the Trash — and when a PDF or notebook is open in the right-most pane, the bar sits just above its page and zoom buttons rather than over them.
+A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. It never takes a click meant for the note underneath it. A PDF, drawing, notebook or code file has no words worth counting, so there the bar shows only briefly, to say something was saved or moved to the Trash — and when a PDF or notebook is open in the right-most pane, the bar sits just above its page and zoom buttons rather than over them.
 
 ### Giving One Pane More Room
 The line between two panes can be dragged. Pull it left or right and those two panes share the width between them — everything else stays exactly where you put it. A pane won't shrink past being readable, so you can always find the line again.
@@ -200,6 +200,27 @@ Reading is the mode in which a link is a link: in Read Mode a web address is cli
 Even in Edit Mode, the editor uses a "Live Preview" system. Markdown syntax (like bold asterisks or heading hashes) is hidden on lines you are not actively editing. When your cursor moves to a line, the raw syntax is revealed so you can modify it.
 
 Two things are deliberately never revealed that way, because they are objects rather than text: an **embedded image** and a **table**. Putting the cursor on either one does not turn it back into markdown for you to retype — you work on the thing itself, and the file goes on holding ordinary Markdown. See *Working With an Image* and *Tables*.
+
+### Code Files
+A source file — \`.py\`, \`.c\`, \`.rkt\`, \`.js\`, \`.rs\`, a shell script, JSON, YAML and about sixty others — opens in a **code pane** instead of the note editor, and opens ready to type in.
+
+It is the same window you are used to, with only the text itself different: line numbers down the side, your syntax colours (the **One Dark Darker** and **One Light** palettes from your own editor), **Fira Code with its ligatures**, and no line wrapping — a long line scrolls sideways, as it should.
+
+What the pane gives you:
+- **Several cursors.** Hold \`Option\` and click to put a cursor on another line; hold \`Option + Shift\` and drag to select a column. Everything you type then lands at every cursor.
+- **Completion** as you type, from the names already in the file and the language's own keywords. \`Enter\` takes the highlighted one, \`Escape\` dismisses the list.
+- **Brackets are coloured by how deeply they nest**, six colours before the cycle repeats, so the shape of a nested expression is readable at a glance — and a bracket with nothing to close is underlined in red. **Settings → Colour brackets by depth** turns this off and on, and takes effect in files you already have open. They are also typed in pairs, the partner of the one beside the cursor lights up, and brackets inside strings and comments are left out of the counting.
+- **Folding**: the arrow beside a function or a block folds it away; click it again to bring it back.
+- \`Tab\` indents and \`Shift + Tab\` outdents, by the width in **Settings → Tab size**. **Settings → Code font size** sets how big code is, separately from your notes.
+- \`Cmd + F\` searches the file, \`Cmd + Z\` undoes, and your edits save exactly as a note's do, a second after you stop typing.
+
+\`Cmd + E\` switches the pane to read-only, which is useful when you are reading rather than editing and do not want a stray keystroke in the file.
+
+**Racket** (\`.rkt\`) gets extra care, since it is a teaching language the stock grammar reads poorly: special forms (\`define\`, \`cond\`, \`else\`, \`check-expect\`, \`local\`…) are coloured as keywords, the name at the head of every form is coloured as the function it is, quoted symbols read as values, and the numbers in \`[…]\` answers are numbers.
+
+**The AI agent reads code files too**, and it is told which language it is looking at and where your cursor is. It can edit them with the same rules it edits notes with: changes land in the open pane and \`Cmd + Z\` takes them back.
+
+There is no compiler here, and no way to run the code — this is a notes app that can hold your code beside your notes, not a terminal.
 
 ### LaTeX (\`.tex\`) Files
 A \`.tex\` file opens **typeset rather than raw**: sections become headings, \`$…$\` and \`align\` blocks are set as maths, \`itemize\` and \`enumerate\` become lists, a \`tabular\` becomes a table, and a \`verbatim\` or \`lstlisting\` block keeps its exact spacing. The preamble sits at the bottom, folded away, since it is instructions to the compiler rather than part of the paper.

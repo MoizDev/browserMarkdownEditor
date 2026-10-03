@@ -132,7 +132,13 @@ function kindLabel(tab: AgentTabInfo, info: ViewInfo | undefined): string {
 function livePosition(info: ViewInfo): string {
     switch (info.kind) {
         case 'markdown': {
-            const parts = [`lines ${info.visibleLines.from}–${info.visibleLines.to} of ${info.lineCount} on screen`, `cursor ${info.cursor.line}:${info.cursor.col}`];
+            const parts = [
+                // Named where it is known: "Python" tells the agent more than
+                // ".py" does, and a .rkt is Racket however it is parsed.
+                ...(info.language ? [`${info.language} source`] : []),
+                `lines ${info.visibleLines.from}–${info.visibleLines.to} of ${info.lineCount} on screen`,
+                `cursor ${info.cursor.line}:${info.cursor.col}`,
+            ];
             if (info.selections.length) {
                 parts.push(`${plural(info.selections.length, 'selection')} (${info.selections.slice(0, 3)
                     .map(s => `${s.fromLC.line}:${s.fromLC.col}–${s.toLC.line}:${s.toLC.col}`).join(', ')}${info.selections.length > 3 ? ', …' : ''})`);

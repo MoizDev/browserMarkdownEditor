@@ -13,9 +13,7 @@ import { dropPending, retargetPending, type PendingRestore, type PendingRestoreE
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { recordFileWritten, resetFileTimes } from './utils/fileTimes';
 import { isTextFile } from './utils/vaultSearch';
-import {
-  isCanvasFile, isPdfFile, isNotebookFile, ensureNotebookExt, notebookPdfName, stripPdfExt,
-} from './utils/fileTypes';
+import { ensureNotebookExt, isCanvasFile, isCodeFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -285,6 +283,12 @@ function clampAgentWidth(width: number): number {
   return Number.isFinite(width) ? Math.min(max, Math.max(AGENT_PANEL_MIN, Math.round(width))) : 400;
 }
 
+/** localStorage is the user's to edit, and a NaN here would reach a CSS
+ *  variable and then CodeMirror's own measuring. 10–24px, 14 by default. */
+function clampCodeFontSize(value: number): number {
+    return Number.isFinite(value) ? Math.min(24, Math.max(10, Math.round(value))) : 14;
+}
+
 /** The tab title whenever it is not the vault's name — before a vault opens,
  *  and always once Settings → Vault turns that off. Must match index.html's
  *  <title>, which is what the tab shows before React mounts. */
@@ -408,6 +412,13 @@ export default function App() {
 
   // Font size and padding settings (persisted via localStorage)
   const [editorFontSize, setEditorFontSize] = useState<number>(() => parseInt(localStorage.getItem('editorFontSize') || '16', 10));
+  // Code panes only (editor/codeHighlight.ts reads the variable). Separate from
+  // the note size because Fira Code at a note's 16px reads larger than the prose
+  // does, and because the two are chosen for different jobs.
+  const [codeFontSize, setCodeFontSize] = useState<number>(() => clampCodeFontSize(parseInt(localStorage.getItem('codeFontSize') || '', 10)));
+  // Depth-coloured brackets in code panes. On by default: in a Lisp they are
+  // how the code is read (editor/rainbowBrackets.ts).
+  const [rainbowBrackets, setRainbowBrackets] = useState<boolean>(() => localStorage.getItem('rainbowBrackets') !== 'false');
   const [treeFontSize, setTreeFontSize] = useState<number>(() => parseInt(localStorage.getItem('treeFontSize') || '13', 10));
   // Clamped to the slider's range on the way in: localStorage is user-editable,
   // and a `NaN%` voids index.css's `max(var(--editor-padding), …)` outright —
@@ -469,6 +480,17 @@ export default function App() {
     document.documentElement.style.setProperty('--font-size-normal', editorFontSize + 'px');
     localStorage.setItem('editorFontSize', String(editorFontSize));
   }, [editorFontSize]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--code-font-size', codeFontSize + 'px');
+    localStorage.setItem('codeFontSize', String(codeFontSize));
+  }, [codeFontSize]);
+
+  // Not a CSS variable: the plugin is an editor extension, so each code pane
+  // reconfigures its own compartment (DocumentPane).
+  useEffect(() => {
+    localStorage.setItem('rainbowBrackets', String(rainbowBrackets));
+  }, [rainbowBrackets]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--nav-item-size', treeFontSize + 'px');
@@ -582,6 +604,8 @@ export default function App() {
 
   const handleResetDefaults = useCallback((defaults: SettingsDefaults) => {
     setEditorFontSize(defaults.editorFontSize);
+    setCodeFontSize(defaults.codeFontSize);
+    setRainbowBrackets(defaults.rainbowBrackets);
     setTreeFontSize(defaults.treeFontSize);
     setEditorPadding(defaults.editorPadding);
     setTabSize(defaults.tabSize);
@@ -1169,9 +1193,13 @@ export default function App() {
       rememberAssetRefs(node, content);
       // Re-check inside the updater: a second click can land while the first
       // read is still in flight, and tabsRef only updates post-commit.
+      // A source file opens ready to type in: there is no "reading mode" worth
+      // having for code — the syntax colours are the same either way, and the
+      // only difference is whether the caret works (⌘E still toggles it).
+      const mode: EditorMode = isCodeFile(node.name) ? 'edit' : 'read';
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
-        : [...prev, { id: newTabId(), file: node, content, mode: 'read', dirty: false }]);
+        : [...prev, { id: newTabId(), file: node, content, mode, dirty: false }]);
       // openTab re-checks too, and focuses an existing tab rather than minting a
       // second one — the same race, answered the same way.
       setLayout(l => openTabIn(l, node.path));
@@ -3428,6 +3456,7 @@ export default function App() {
             layout={layout}
             theme={theme}
             tabSize={tabSize}
+            rainbowBrackets={rainbowBrackets}
             saveStatus={saveStatus}
             onSelectTab={selectTabInPane}
             onCloseTab={closeTab}
@@ -3474,6 +3503,8 @@ export default function App() {
       {showSettings && (
         <SettingsPanel
           editorFontSize={editorFontSize}
+          codeFontSize={codeFontSize}
+          rainbowBrackets={rainbowBrackets}
           treeFontSize={treeFontSize}
           editorPadding={editorPadding}
           tabSize={tabSize}
@@ -3487,6 +3518,8 @@ export default function App() {
           recentVaultLimit={recentVaultLimit}
           showVaultInTitle={showVaultInTitle}
           onEditorFontSizeChange={setEditorFontSize}
+          onCodeFontSizeChange={setCodeFontSize}
+          onRainbowBracketsChange={setRainbowBrackets}
           onTreeFontSizeChange={setTreeFontSize}
           onEditorPaddingChange={setEditorPadding}
           onTabSizeChange={setTabSize}

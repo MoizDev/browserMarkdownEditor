@@ -7,7 +7,7 @@ import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
-import { isPdfFile, isCanvasFile, isNotebookFile } from '../utils/fileTypes';
+import { isPdfFile, isCanvasFile, isCodeFile, isNotebookFile } from '../utils/fileTypes';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
@@ -25,6 +25,8 @@ interface EditorPaneProps {
     theme: Theme;
     /** Spaces a Tab inserts — and how far Tab indents a list item. */
     tabSize: number;
+    /** Settings → Colour brackets by depth, for code panes. */
+    rainbowBrackets: boolean;
     saveStatus: string;
     /** Front `path` in `paneId` and give that column the focus. */
     onSelectTab: (paneId: string, path: string) => void;
@@ -218,7 +220,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onFlushNow, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onFlushNow, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -297,6 +299,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
 
     const isDrawing = !!activeFile && !activeFile.isHelp && isCanvasFile(activeFile.name);
     const isPdf = !!activeFile && !activeFile.isHelp && isPdfFile(activeFile.name);
+    const isCode = !!activeFile && !activeFile.isHelp && isCodeFile(activeFile.name);
     /** True whenever a non-CodeMirror surface owns the focused pane. */
     const isCanvas = isDrawing || isPdf;
 
@@ -435,7 +438,10 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
     // registered with `dismissOnEscape`, where it took the next Escape unseen
     // and, being newest, outranked a vault menu that was on screen (#36 review).
     // Adjusted during render, React's pattern for state that follows a prop.
-    const backlinksAvailable = !!activeFile && !activeFile.isHelp && !isCanvas && !unreadable;
+    // Not for code either: backlinks are `[[wikilinks]]`, which the graph only
+    // builds from markdown — "0 backlinks" over a .rkt is a number that can
+    // never be anything else.
+    const backlinksAvailable = !!activeFile && !activeFile.isHelp && !isCanvas && !unreadable && !isCode;
     if (showBacklinks && !backlinksAvailable) setShowBacklinks(false);
 
     const toggleBacklinks = useCallback(() => {
@@ -485,7 +491,9 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
     //
     // A canvas has no words and an unreadable tab holds no text, so neither is
     // counted at all — and neither is the count shown for them.
-    const countable = !!activeFile && !isCanvas && !unreadable;
+    // Code is not counted: "412 words" of Python measures nothing anybody wants
+    // to know, and the pill is for the document you are in.
+    const countable = !!activeFile && !isCanvas && !unreadable && !isCode;
     const statusShown = backlinksAvailable || countable || !!saveStatus;
     /* The pill sits over the RIGHTMOST column, whichever pane is focused — and
        a PDF or a notebook there draws its page/zoom pills in that same corner.
@@ -864,6 +872,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, saveStatus, o
                         widthStyle={PANE_WIDTH_STYLE[i]}
                         theme={theme}
                         tabSize={tabSize}
+                        rainbowBrackets={rainbowBrackets}
                         stateCache={stateCache}
                         registerKeyboardTarget={registerKeyboardTarget}
                         getWikiLinkTargets={getWikiLinkTargets}

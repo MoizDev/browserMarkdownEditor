@@ -42,6 +42,48 @@ export function isMarkdownFile(name: string): boolean {
     return name.toLowerCase().endsWith(MD_EXT);
 }
 
+/* ── Code ───────────────────────────────────────────────────────── */
+
+/**
+ * Source files, which open in a code pane rather than the markdown editor
+ * (editor/codeEditor.ts): line numbers, the user's syntax colours, brackets,
+ * folds and several cursors.
+ *
+ * A LIST, not a call into `@codemirror/language-data`'s filename matcher, even
+ * though that is what resolves the grammar later: this module is imported by
+ * nearly everything (tabs, the tree, the agent host), and a grammar table in
+ * here would ship in every chunk that touches a path. The two can disagree only
+ * in the harmless direction — an extension listed here with no grammar opens as
+ * plain, uncoloured code.
+ */
+const CODE_EXTENSIONS = new Set([
+    // the course's languages first: Racket, C, Python
+    'rkt', 'racket', 'rktl', 'rktd', 'scrbl', 'scm', 'ss', 'lisp', 'el', 'clj', 'cljs', 'cljc', 'edn',
+    'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hh', 'hxx', 'ipp', 'm', 'mm', 'cs',
+    'py', 'pyw', 'pyi', 'rb', 'pl', 'pm', 'lua', 'r', 'jl', 'php',
+    'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'vue', 'svelte',
+    'go', 'rs', 'java', 'kt', 'kts', 'swift', 'scala', 'dart', 'ex', 'exs', 'erl',
+    'hs', 'ml', 'mli', 'fs', 'fsx', 'nim', 'zig', 'v', 'sv', 'vhd', 'asm', 's',
+    'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd', 'vim',
+    'sql', 'graphql', 'gql', 'proto', 'tf', 'hcl', 'gradle', 'groovy', 'cmake', 'mk',
+    'html', 'htm', 'css', 'scss', 'sass', 'less', 'xml', 'svg', 'json', 'jsonc',
+    'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'env', 'diff', 'patch',
+]);
+
+/** Files whose NAME is the type: no extension to go on. */
+const CODE_NAMES = new Set([
+    'makefile', 'dockerfile', 'containerfile', 'rakefile', 'gemfile', 'brewfile',
+    'justfile', 'procfile', 'cmakelists.txt', '.gitignore', '.gitattributes',
+    '.editorconfig', '.env', '.npmrc', '.prettierrc', '.eslintrc',
+]);
+
+export function isCodeFile(name: string): boolean {
+    const lower = name.toLowerCase();
+    if (CODE_NAMES.has(lower)) return true;
+    const dot = lower.lastIndexOf('.');
+    return dot > 0 && CODE_EXTENSIONS.has(lower.slice(dot + 1));
+}
+
 /* ── LaTeX ───────────────────────────────────────────────────────── */
 
 /**

@@ -51,7 +51,7 @@ UninstallDisplayName=VaultAgent
 UninstallDisplayIcon={app}\vaultagent.exe
 
 [Messages]
-WelcomeLabel2=VaultAgent lets the Markdown editor in your browser talk to the AI agents already on this computer: Claude Code, Codex and OpenCode.%n%nIt runs in the background with no window and starts when you sign in. The agents it starts can read and change the notes in the vault you open, and search the web. Nothing else.
+WelcomeLabel2=VaultAgent lets the Markdown editor in your browser talk to the AI agents already on this computer: Claude Code, Codex and OpenCode.%n%nIt runs in the background with no window and starts when you sign in. The agents it starts can read and change the notes in the vault you open, and their edits land in the editor live. They also run with the same access to this computer as in your terminal, without asking first.
 FinishedLabel=VaultAgent is running. Go back to the editor and press Connect in the agent panel.
 
 [Files]

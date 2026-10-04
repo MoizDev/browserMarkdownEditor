@@ -1,28 +1,29 @@
 // OpenCode adapter: one `opencode serve` on a free loopback port per message
 // (and per history/delete/model query), driven over its HTTP API + SSE.
 //
-// Verified against opencode 1.18.29 by running `opencode serve` with scratch
-// XDG_* folders against a local fake OpenAI-compatible provider and reading the
-// chat-completions request (recordings in helper/test/fixtures/opencode/, provenance in helper/test/adapters.test.ts): the
-// model was offered exactly skill, websearch and our vault_* tools —
-// also when the global config allowed everything (`"*": "allow"`, bash, read),
-// defined its own MCP server and shipped a plugin.
+// The CLI runs with its full tools and allow-all permission — the user's
+// decision; nobody could answer a permission prompt in the panel. `question`
+// stays denied, which is OpenCode's own default the catch-all would otherwise
+// override: nobody can answer a question either. The vault is still reached
+// only through our MCP server, which the prompt insists on.
 //
-// Why each layer (the global config is still read, so the user's providers,
-// models and credentials keep working exactly as in their terminal):
-//   • our own agent `vaultagent` with `"*": "deny"` first: per-agent rules are
-//     evaluated after the top-level ones and the last match wins, so nothing in
-//     the user's config can re-enable a tool for this agent;
-//   • OPENCODE_PURE=1: no external plugins load (verified: a plugin in the global
-//     config dir did not run). Plugins are code, not just tools;
-//   • every MCP server of the user's is set `enabled: false` (verified: not even
-//     contacted); unknown ones would still be denied by the rule above;
+// Verified against opencode 1.18.34 with scratch XDG_* folders and a local fake
+// OpenAI-compatible provider: the model was offered bash, read, edit, write,
+// glob, grep, task, todowrite, webfetch, websearch, skill and our vault_*
+// tools, and read outside the working folder with no `permission.asked`.
+//
+// What stays excluded, by stable single switches only (never a list of names
+// tracked per CLI version). The global config is still read, so the user's
+// providers, models and credentials keep working exactly as in their terminal:
+//   • OPENCODE_PURE=1 / `--pure`: no external plugins load (verified: a plugin
+//     in the global config dir did not run);
+//   • every MCP server of the user's is set `enabled: false`, by the names read
+//     from their own config (verified: not even contacted);
 //   • OPENCODE_DISABLE_PROJECT_CONFIG=1: no opencode.json / .opencode found by
 //     walking up from the working folder (e.g. in ~), so AGENTS.md / CLAUDE.md
 //     are named explicitly in `instructions` instead.
-// Custom tools in the user's global config folder are still imported by
-// OpenCode at startup (it does that for every session); they are denied and
-// never offered to the model.
+// Custom tools in the user's global config folder are imported by OpenCode at
+// startup and offered like in their terminal.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
@@ -48,20 +49,13 @@ export const OPENCODE_AGENT = 'vaultagent';
 const OWN_TOOL_PREFIX = `${MCP_SERVER_NAME}_`;
 
 /**
- * Order matters: OpenCode applies the LAST matching rule, so the catch-all deny goes first.
- *
- * `webfetch` stays DENIED, unlike Claude's WebFetch: OpenCode's fetches plain
- * http and follows redirects, so it read the helper's own /health on
- * 127.0.0.1 — directly and through a public https redirect (verified) — i.e.
- * any unauthenticated local service (a dev server's /@fs/, Jupyter, a router
- * page) was one prompt injection away. 1.18.29's config takes no URL patterns
- * for it. `websearch` (Exa, which returns the pages' text) is the web access.
+ * Order matters: OpenCode applies the LAST matching rule, so the catch-all goes
+ * first. `*` allow also overrides OpenCode's `external_directory`, `doom_loop`
+ * and `.env`-read "ask" defaults (verified on 1.18.34) — never-ask is the point.
  */
 export const OPENCODE_PERMISSION: Record<string, string> = {
-    '*': 'deny',
-    [`${OWN_TOOL_PREFIX}*`]: 'allow',
-    skill: 'allow',
-    websearch: 'allow',
+    '*': 'allow',
+    question: 'deny',
 };
 
 /**
@@ -162,7 +156,7 @@ export function userOpencodeMcpServers(files = opencodeGlobalConfigFiles()): str
             if (!existsSync(f)) continue;
             const cfg = JSON.parse(stripJsonc(readFileSync(f, 'utf8')));
             if (cfg?.mcp && typeof cfg.mcp === 'object') for (const k of Object.keys(cfg.mcp)) names.add(k);
-        } catch { /* unreadable config: its servers stay denied by the permission rule */ }
+        } catch { /* unreadable config: OpenCode cannot load its servers either */ }
     }
     return [...names];
 }
@@ -174,7 +168,7 @@ export interface OpencodeConfigInput {
     userMcpServers: string[];
 }
 
-/** OPENCODE_CONFIG_CONTENT — merged last, over the user's config. Pure; the containment tests assert on it. */
+/** OPENCODE_CONFIG_CONTENT — merged last, over the user's config. Pure; the adapter tests assert on it. */
 export function buildOpencodeConfig(input: OpencodeConfigInput): Record<string, unknown> {
     const mcp: Record<string, unknown> = {};
     for (const name of input.userMcpServers) if (name !== MCP_SERVER_NAME) mcp[name] = { enabled: false };
@@ -226,7 +220,7 @@ export function opencodeEnv(bin: FoundBinary, password: string, config: Record<s
         OPENCODE_DISABLE_AUTOUPDATE: '1',
         OPENCODE_DISABLE_SHARE: '1',
         OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
-        // An inherited permission override must not widen our agent's rules.
+        // We own the permission set; an inherited override must not change it.
         OPENCODE_PERMISSION: undefined,
         [MCP_TOKEN_ENV]: token ?? undefined,
     });
@@ -397,13 +391,19 @@ export class OpencodeEventMapper {
         const status = part.state?.status;
         const mapped = status === 'completed' ? 'done' : status === 'error' ? 'error' : 'running';
         const key = String(part.callID ?? part.id);
-        if (this.toolStates.get(key) === mapped) return;
-        this.toolStates.set(key, mapped);
+        // The `pending` update carries `input: {}`; the real input arrives with
+        // `running` (observed), so an empty → filled input is news too. Nothing
+        // else re-emits: streaming updates repeat the same state.
+        const input = part.state?.input;
+        const hasInput = !!input && typeof input === 'object' && Object.keys(input).length > 0;
+        const state = `${mapped}:${hasInput}`;
+        if (this.toolStates.get(key) === state) return;
+        this.toolStates.set(key, state);
         this.emit({
             type: 'tool',
             callId: key,
             name,
-            input: part.state?.input,
+            input,
             status: mapped,
             ...(mapped === 'done' ? { output: truncate(String(part.state?.output ?? '')) } : {}),
             ...(mapped === 'error' ? { output: truncate(String(part.state?.error ?? '')) } : {}),
@@ -519,7 +519,7 @@ export function createOpencodeAdapter(opts: { sessionsRoot: string }): AgentAdap
             if (statusCache && !refresh && Date.now() - statusCache.at < 30_000) return statusCache.status;
             const bin = await findAgentBinary('opencode', refresh);
             const base: AgentStatus = {
-                agent: 'opencode', installed: !!bin, version: null, loggedIn: null, incompatible: null,
+                agent: 'opencode', installed: !!bin, version: null, loggedIn: null,
                 loginCommand: 'opencode auth login',
                 installCommand: IS_WIN ? 'npm install -g opencode-ai' : 'curl -fsSL https://opencode.ai/install | bash',
             };
@@ -593,8 +593,9 @@ export function createOpencodeAdapter(opts: { sessionsRoot: string }): AgentAdap
 
             const m = mapper;
             let cancelled = false;
-            // Nobody can answer a permission prompt; anything that asks is refused
-            // (with `"*": "deny"` nothing should ask, this is the backstop).
+            // Never ask: with `"*": "allow"` nothing should ask, so this is the
+            // backstop — a permission is granted once, and a question (which
+            // nobody can answer in the panel) is rejected.
             const answered = new Set<string>();
             const original = m.feed.bind(m);
             m.feed = (ev: Foreign) => {
@@ -603,7 +604,7 @@ export function createOpencodeAdapter(opts: { sessionsRoot: string }): AgentAdap
                 if (p?.sessionID !== sessionId || typeof p?.id !== 'string' || answered.has(p.id)) return;
                 if (ev.type === 'permission.asked') {
                     answered.add(p.id);
-                    void server.request('POST', `/permission/${p.id}/reply`, { reply: 'reject' }).catch(() => {});
+                    void server.request('POST', `/permission/${p.id}/reply`, { reply: 'once' }).catch(() => {});
                 } else if (ev.type === 'question.asked') {
                     answered.add(p.id);
                     void server.request('POST', `/question/${p.id}/reject`, {}).catch(() => {});

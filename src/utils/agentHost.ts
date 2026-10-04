@@ -6,7 +6,7 @@
 // panel is lazy, subscribes a WebSocket and holds long-running runs, and a host
 // that changed with App's state would restart all of that on every keystroke.
 //
-// The agent never reaches the disk except through here, and everything here goes
+// The vault tools never reach the disk except through here, and everything here goes
 // through the same App handlers the reader's own gestures use: an edit lands in
 // the open editor (undoable), a new note refuses a taken name instead of
 // truncating it, a move carries its tabs, a deletion goes to `.Garbage`.

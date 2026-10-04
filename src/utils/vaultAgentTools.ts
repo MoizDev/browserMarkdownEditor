@@ -1,7 +1,8 @@
 // The AI agent's hands: every `vault_*` / `canvas_*` tool call the agent CLI
 // makes arrives here (CLI → helper MCP → WebSocket → agentBridge) and is run
 // against the OPEN VAULT through App's VaultToolHost — never against a path on
-// disk. This file is where "the agent can only touch the vault" is enforced:
+// disk. This file is where the vault tools' rules are enforced (the CLI's own
+// tools are outside it):
 //
 //   1. Paths. Everything is vault-relative and normalized here
 //      (normalizeAgentPath) before the host sees it: nothing absolute, no `..`,

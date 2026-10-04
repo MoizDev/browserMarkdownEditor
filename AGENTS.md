@@ -65,9 +65,9 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   that keeps a file over a right one that cannot be undone.
 - **State lives in `App.tsx`; the filesystem lives behind `useFileSystem()`.** App owns nearly all state
   and every FS call goes through it; no undo stack stands behind it.
-- **The AI agent reaches the vault ONLY through the app** — its CLI runs with every built-in file and
-  shell tool off (web search/fetch and skills stay on), and each `vault_*`/`canvas_*` call is executed in
-  the browser (`utils/vaultAgentTools.ts` → `utils/agentHost.ts` → App). Never give it a file tool or a shell.
+- **The AI agent changes the vault ONLY through the app** — its CLI runs never-ask with full normal tools
+  (the user's decision; never restrict them again), but each vault read/write is a `vault_*`/`canvas_*` MCP
+  call run in the browser (`utils/vaultAgentTools.ts` → `utils/agentHost.ts` → App); the prompt bans disk edits.
 - **Nothing overwrites an existing file by accident.** Every write that could land on a taken name
   goes through `freeEntryName`, which counts **both** files and folders; `moveFile`/`renameFile` and
   the notebook PDF export are the deliberate exceptions. **`createFile` is the hole** — it

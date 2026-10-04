@@ -152,7 +152,7 @@ export function MessageList({ conversation, run, runHere, theme, host, onRetryHi
                 {items.length === 0 && history !== 'loading' && history !== 'missing' && history !== 'error' && (
                     <div className="agent-empty agent-welcome">
                         <p>Ask about what you're looking at — the agent sees your open tabs and exactly where you are in them.</p>
-                        <p className="agent-muted">It can read and edit this vault, and nothing outside it. Its edits land in your editor and undo with ⌘Z.</p>
+                        <p className="agent-muted">Its edits to this vault land in your editor and undo with ⌘Z. It runs with the same access to your computer as in your terminal, without asking first.</p>
                     </div>
                 )}
                 {items.map(item => {

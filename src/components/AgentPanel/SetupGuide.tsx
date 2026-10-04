@@ -227,7 +227,7 @@ export function SetupGuide({ supported, bridge, os, arch, onConnect }: SetupGuid
         <Screen title="Set up the AI agent">
             <p className="agent-lede">
                 Chat with Claude Code, Codex or OpenCode about what you're looking at. It runs on this computer
-                and can only reach this vault.
+                with your agent's full access, and its edits to this vault land in your editor.
             </p>
             <ol className="agent-steps">
                 <li>
@@ -255,7 +255,7 @@ export function SetupGuide({ supported, bridge, os, arch, onConnect }: SetupGuid
 }
 
 /** The chosen agent cannot take a message — said above the composer. */
-export function AgentWarning({ agent, status, onRecheck, os, arch }: PlatformProps & {
+export function AgentWarning({ agent, status, onRecheck }: {
     agent: AgentId;
     status: AgentStatus | null;
     onRecheck: () => void;
@@ -269,13 +269,6 @@ export function AgentWarning({ agent, status, onRecheck, os, arch }: PlatformPro
             <>
                 <p><b>{name} isn't installed</b> on this computer. Install it in a terminal:</p>
                 <CommandLine command={status.installCommand} />
-            </>
-        );
-    } else if (status.incompatible) {
-        body = (
-            <>
-                <p><b>This {name} version{status.version ? ` (${status.version})` : ''} isn't supported</b> by this {HELPER_NAME}. {status.incompatible}</p>
-                <div className="agent-actions"><DownloadButton os={os} arch={arch} primary={false} /></div>
             </>
         );
     } else if (status.loggedIn === false) {

@@ -1,9 +1,9 @@
 ---
 name: vault-agent
-description: The AI agent panel ("VaultAgent") — the right-docked chat that runs Claude Code, Codex or OpenCode through a local background helper, its containment to the vault, the WebSocket/MCP protocol, the per-message context snapshot, the tool executor, the chat index in `.VaultAgent/`, and the installers/release. Load before touching shared/, helper/, components/AgentPanel/, utils/agent*.ts, utils/vaultAgent*.ts, utils/viewRegistry.ts, canvasAgentOps.ts, or anything the agent can read or change.
+description: The AI agent panel ("VaultAgent") — the right-docked chat that runs Claude Code, Codex or OpenCode through a local background helper, how each CLI is launched (never-ask, full tools), the WebSocket/MCP protocol, the per-message context snapshot, the tool executor, the chat index in `.VaultAgent/`, and the installers/release. Load before touching shared/, helper/, components/AgentPanel/, utils/agent*.ts, utils/vaultAgent*.ts, utils/viewRegistry.ts, canvasAgentOps.ts, or anything the agent can read or change.
 ---
 
-# VaultAgent: an agent CLI that can only touch the open vault
+# VaultAgent: an agent CLI whose vault edits go through the editor
 
 ```
 Chrome (the editor)                          the user's machine
@@ -15,40 +15,51 @@ executeTool (utils/vaultAgentTools.ts)   claude -p │ codex app-server │ open
 agentHost (utils/agentHost.ts) → App     ◀──┘ MCP tools/call → POST /mcp/<runToken>
 ```
 
-## Containment is the whole point — never weaken it
+## How the CLIs run
 
-- **The helper never touches the vault; the CLI never gets a path into it.** Every CLI runs with
-  its built-in file, shell, patch and image tools OFF. Its only file access is our `vault` MCP server
-  (served by the helper), whose `tools/call` is forwarded to the browser, which executes it against
-  the vault's `FileSystemDirectoryHandle` through App's own handlers. Nothing names a disk path.
-- What IS on: web search (the user's explicit decision; plus Claude's WebFetch), and skills (instruction
-  text). A fetch tool is a door to every unauthenticated LOCAL http service (a dev server's `/@fs/`
-  reads any file): Claude's WebFetch is https-only, follows no cross-host redirect and is denied the
-  loopback/metadata hosts (`--disallowedTools WebFetch(domain:…)`); OpenCode's `webfetch` does plain
-  http AND follows redirects (verified: it read our `/health` through a public redirect), so it is denied.
-- Per CLI (verified against claude 2.1.283, codex 0.157.x, opencode 1.18.29; each flag has a why-comment
-  in `helper/src/agents/*.ts`, and `helper/test/adapters.test.ts` asserts the argv/env — a regression
-  guard; keep it green):
-  - **Claude**: `--tools Skill,WebSearch,WebFetch`, `--allowedTools mcp__vault,…`, `--permission-mode
-    dontAsk`, `--disallowedTools WebFetch(domain:<loopback>)…`, `--strict-mcp-config --mcp-config <inline>` (token via `${VAR}` in env, never argv),
-    `--settings '{"disableAllHooks":true,"autoMemoryEnabled":false}'`. **Never `--bare`** (breaks OAuth).
-  - **Codex** (`app-server`, JSON-RPC): `environments: []` on the thread AND every turn (a resume brings
-    the local environment back; the helper re-reads the thread after each turn and refuses the run if
-    it came back); `-c` overrides for features, `web_search="live"`, the user's own MCP servers
-    disabled. Accepted versions `CODEX_TESTED` (0.157.0 ≤ v < 0.170.0); anything else →
-    `AgentStatus.incompatible` and the run is REFUSED, never silently degraded.
+- **The decision (the user's; do not re-restrict):** each CLI runs with its full normal tools — shell,
+  file read/write, web, skills, sub-agents — in its never-ask mode (nobody can answer a prompt in the
+  panel), with no version gate and no tripwire that ends a run on some tool. The security trade-off
+  (prompt injection reaching the whole machine) was explained and accepted. The vault is still reached
+  only through our `vault` MCP server (served by the helper, forwarded to the browser, run against the
+  vault's `FileSystemDirectoryHandle` through App's handlers); `helper/src/prompt.ts` and the MCP
+  `initialize` instructions forbid touching vault files any other way. The agent is never told the
+  vault's disk path (the browser cannot know it). Its own tool calls reach the panel as `tool` events
+  (`ToolCallCard.describeForeign`: "Ran …", "Read …", "Edited …").
+- **Exclusions only where ONE stable switch exists — never a name list tracked per CLI version**
+  (Codex's per-feature deny-list, which broke on each release, is exactly what was removed):
+  - Claude: `--strict-mcp-config` (user/project/plugin MCP servers), `disableAllHooks`, and every id in
+    the user's `<CLAUDE_CONFIG_DIR|~/.claude>/settings.json` `enabledPlugins` set `false` in `--settings`
+    (`--safe-mode` would also drop our vault tools; `{}` disables nothing).
+  - OpenCode: `OPENCODE_PURE=1`/`--pure` (plugins), `OPENCODE_DISABLE_PROJECT_CONFIG=1`, the user's MCP
+    servers `enabled: false` by the names in their config.
+  - Codex: the user's MCP servers `{enabled:false}` inside the thread `config` JSON — NOT argv: argv
+    `-c mcp_servers.*` is ignored once the thread config has `mcp_servers`, and a dotted name in a `-c`
+    key is fatal at startup.
+  - Let through on purpose: Codex hooks, plugins and apps (only `features.<name>` keys exist), and
+    OpenCode's global custom tools.
+- Per CLI (verified against claude 2.1.289, codex 0.160.0, opencode 1.18.34; each flag has a why-comment
+  in `helper/src/agents/*.ts`, and `helper/test/adapters.test.ts` asserts the argv/params/env — keep it
+  green):
+  - **Claude**: `--permission-mode bypassPermissions`, `--strict-mcp-config --mcp-config <inline>`
+    (token via `${VAR}` in env, never argv), `--settings '{"disableAllHooks":true,…}'`. **Never `--bare`**
+    (breaks OAuth).
+  - **Codex** (`app-server`, JSON-RPC): `sandbox: 'danger-full-access'`, `approvalPolicy: 'never'`, the
+    default (local) environment; `-c web_search="live"`. A stray approval request is approved, an
+    elicitation or user-input request declined.
   - **OpenCode**: one `opencode serve` per vault folder (loopback, an explicit free port — `--port 0`
-    means 4096 — and a random password), permission `*` deny with our tools/skill/websearch allowed,
-    `OPENCODE_PURE=1` (no plugins), `OPENCODE_DISABLE_PROJECT_CONFIG=1`; any `permission.asked` is
-    rejected. Only the adapter talks to it. The folder is made its own OpenCode project (a hand-laid
-    `.git` with an `opencode` id file, `ensureOpencodeProject`) — else every non-git folder shares one
-    "global" project and panel chats appeared in the user's own `opencode session list`.
+    means 4096 — and a random password), permission `{'*':'allow', question:'deny'}` (`question` deny is
+    OpenCode's own default, which `*` would override — as it overrides the user's own deny/ask rules,
+    unlike Claude, whose `permissions.deny` still applies in bypass mode); a stray `permission.asked` is
+    answered `once`, a `question.asked` rejected. Only the adapter talks to it. The folder is made its own OpenCode project
+    (a hand-laid `.git` with an `opencode` id file, `ensureOpencodeProject`) — else every non-git folder
+    shares one "global" project and panel chats appeared in the user's own `opencode session list`.
 - **Zero interference with the user's own CLI use** (a user requirement): every setting is a flag,
   env var or inline config for that one process. Nothing writes `~/.claude/settings.json`,
   `~/.claude.json` MCP entries, `~/.codex/config.toml` or OpenCode's config; nothing is registered
   globally. The CLIs' own session stores gain only the panel's sessions (cwd under
-  `~/.bme-agent-sessions`). Known residue: Codex still reads `~/.agents/skills`; OpenCode still loads
-  (but denies) global custom tools, and its `opencode.log` and project list gain the panel's folders.
+  `~/.bme-agent-sessions`). Known residue: Codex still reads `~/.agents/skills`; OpenCode's `opencode.log`
+  and project list gain the panel's folders.
 - **Browser side**: paths are normalized by `checkPath` (no absolute, `..`, `\`, NUL, empty
   segments) and then spelled as the tree spells them (`canonicalPath`: APFS/NTFS ignore case, the
   app's path keys do not); tool calls run one at a time (`chatStore.toolQueue`), none after Stop; `.VaultAgent/` is invisible and unwritable; anything inside a `.Garbage` is read-only;
@@ -83,9 +94,9 @@ the focused drawing/notebook/PDF view rides along ONLY when its SHA-256 differs 
 
 ## Edits go through the app, never behind it
 
-The app has no external-change detection: a write it did not make is clobbered by the next autosave.
-So text edits (`vault_edit`/`vault_write`, refused as stale unless the text still equals what the agent
-read) go live view → cached `EditorState`s + buffer → disk + `afterWrite`; create/mkdir refuse taken
+The app has no external-change detection: a write it did not make is clobbered by the next autosave —
+which is why the prompt forbids the agent's own tools on vault files. So text edits
+(`vault_edit`/`vault_write`, refused as stale unless the text still equals what the agent read) go live view → cached `EditorState`s + buffer → disk + `afterWrite`; create/mkdir refuse taken
 names (`entryNames.nameTaken`) and never truncate; move REFUSES a taken target; trash is
 `App.performTrash` without the question; canvas ops land in the live tldraw editor (`pdf-and-drawings`),
 opening a closed canvas beside the user via `openInSidePane` without moving the focus.
@@ -164,11 +175,14 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
 - `.github/workflows/vaultagent-release.yml` on tags `vaultagent-v*` builds all three, smoke-tests
   each (`bun helper/scripts/smoke.ts <binary>`), publishes `RELEASE_ASSETS` to GitHub Releases (the
   panel links `releases/latest/download/<asset>` — the repo must stay public and publish no other
-  "latest" release). Bump `MIN_HELPER_VERSION` when the panel needs a newer helper.
+  "latest" release). Bump `MIN_HELPER_VERSION` (now 0.1.2, the first unrestricted helper) when the
+  panel needs a newer helper; each release also bumps `SOURCE_VERSION`
+  in `helper/src/buildInfo.ts` (the tag sets a release build's version; source runs report this one).
 
 ## Verifying
 
 `npm run typecheck`, `npm run lint`, `npm run helper:test`. Behaviour: `npm run helper:dev` plus the
-dev server (loopback → loopback: no LNA prompt) and the `verify-in-browser` harness. Containment
-checks worth repeating after any adapter change: ask the agent to read `/etc/hosts`, `~/.ssh/config`
-and `../` — every one must fail.
+dev server (loopback → loopback: no LNA prompt) and the `verify-in-browser` harness. Worth checking
+after any adapter change: a shell call shows as a "Ran …" row, a vault edit arrives as a `vault_edit`
+diff card in the open editor, and the CLI driven against a fake model server with scratch
+`CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`XDG_*` still starts only our MCP server.

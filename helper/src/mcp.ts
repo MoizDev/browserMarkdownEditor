@@ -32,7 +32,7 @@ const err = (id: JsonRpcId | null, code: number, message: string) => ({ jsonrpc:
 const ok = (id: JsonRpcId, result: unknown) => ({ jsonrpc: '2.0', id, result });
 
 /** `tools/list` payload. `anthropic/alwaysLoad` keeps Claude Code from deferring
- *  our tools behind its ToolSearch tool (which is not in our `--tools` list). */
+ *  our tools behind its ToolSearch tool, so the model always sees them. */
 export function toolList() {
     return VAULT_TOOLS.map(t => ({
         name: t.name,
@@ -70,7 +70,7 @@ export async function handleMcpMessage(raw: unknown, callTool: McpToolHandler): 
                     protocolVersion: version,
                     capabilities: { tools: { listChanged: false } },
                     serverInfo: { name: 'vault', title: 'VaultAgent vault', version: '1' },
-                    instructions: 'These tools are the only way to read or change files. Paths are vault-relative.',
+                    instructions: 'Use these tools for everything in the user\'s vault — reading, searching and every change. Never change vault files any other way. Paths are vault-relative.',
                 }),
             };
         }

@@ -23,7 +23,7 @@ function fakeAdapter(id: AgentId): AgentAdapter {
         id,
         isValidSessionId: (s): s is string => typeof s === 'string' && /^[0-9a-f-]{36}$/.test(s),
         isValidModel: (m): m is string => typeof m === 'string' && SAFE_MODEL_RE.test(m), // as the real adapters
-        status: async () => ({ agent: id, installed: true, version: '1.0.0', loggedIn: true, incompatible: null, loginCommand: 'x', installCommand: 'y' }),
+        status: async () => ({ agent: id, installed: true, version: '1.0.0', loggedIn: true, loginCommand: 'x', installCommand: 'y' }),
         models: async () => [{ id: 'm', label: 'M', efforts: [], defaultEffort: null, images: true }],
         history: async () => ({ found: true, items: [{ kind: 'assistant', text: 'hi' }] }),
         deleteSession: async () => true,

@@ -1,9 +1,9 @@
 // The three CLI adapters, without the CLIs.
 //
-// 1. Containment regression guard: the exact argv / config / env each adapter
-//    hands its CLI. These flags ARE the sandbox — the agent gets the vault tools
-//    and web search, and nothing that reads, writes or runs anything on the disk.
-//    A refactor that drops one must fail here, not in a user's home folder.
+// 1. The exact argv / config / env each adapter hands its CLI — the never-ask,
+//    full-access mode, plus the stable exclusions (the user's MCP servers,
+//    hooks, and plugins where a single switch exists). A refactor that drops
+//    one must fail here, not in a user's home folder.
 // 2. Zero interference: nothing points the CLI at another config, and nothing
 //    is ever written into the user's own (~/.claude, ~/.codex, ~/.config/opencode).
 // 3. Stream parsers and history/model mappers against recorded output.
@@ -19,8 +19,7 @@
 // Hand-written (shapes observed live, never persisted): claude/interrupted,
 // claude/logged-out, claude/web-search-thinking, codex/turn-interrupted.
 // codex/resume-turn is a resumed thread whose late `turn/interrupt` found no
-// active turn — kept because it shows `thread/resume` re-attaching the local
-// environment (id 2) and our turn-level `environments: []` removing it (id 4).
+// active turn.
 
 import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -28,12 +27,12 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MCP_SERVER_NAME, type AgentEvent } from '../../shared/vaultAgentProtocol.ts';
 import {
-    CLAUDE_BUILTIN_TOOLS, CLAUDE_WEBFETCH_DENIED_HOSTS, ClaudeStreamParser, buildClaudeArgs, claudeEnv, claudeOutcome, claudeUserMessage,
-    encodeProjectDir, mapClaudeModels, parseClaudeTranscript,
+    ClaudeStreamParser, buildClaudeArgs, claudeEnv, claudeOutcome, claudeUserMessage,
+    encodeProjectDir, mapClaudeModels, parseClaudeTranscript, userClaudePlugins,
 } from '../src/agents/claude.ts';
 import {
-    CODEX_DISABLED_FEATURES, CodexEventMapper, buildCodexArgs, codexIncompatibility, codexOutcome, codexThreadConfig,
-    codexThreadResumeParams, codexThreadStartParams, codexTurnStartParams, mapCodexModels, mapCodexTurns, userCodexMcpServers,
+    CodexEventMapper, buildCodexArgs, codexOutcome, codexServerReply, codexStartupError, unwrapShell, codexThreadConfig, codexThreadResumeParams,
+    codexThreadStartParams, codexToolItem, codexTurnStartParams, mapCodexModels, mapCodexTurns, userCodexMcpServers,
 } from '../src/agents/codex.ts';
 import { resolveCmdShim, parseVersion, type FoundBinary } from '../src/agents/discover.ts';
 import {
@@ -67,35 +66,19 @@ function added(env: Record<string, string>): Record<string, string> {
 
 /* ═════════════════════════════ Claude Code ═════════════════════════════ */
 
-describe('claude: containment argv', () => {
-    const base = { mcpBaseUrl: MCP_BASE, sessionId: null, newSessionId: '11111111-2222-4333-8444-555555555555', model: null, effort: null };
+describe('claude: argv', () => {
+    const base = { mcpBaseUrl: MCP_BASE, sessionId: null, newSessionId: '11111111-2222-4333-8444-555555555555', model: null, effort: null, userPlugins: [] };
     const args = buildClaudeArgs(base);
 
-    test('built-in tools replaced by exactly Skill + web search/fetch', () => {
-        expect([...CLAUDE_BUILTIN_TOOLS]).toEqual(['Skill', 'WebSearch', 'WebFetch']);
-        expect(flagValue(args, '--tools')).toBe('Skill,WebSearch,WebFetch');
-        expect(flagValue(args, '--allowedTools')).toBe('mcp__vault,Skill,WebSearch,WebFetch');
-        for (const t of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Task', 'NotebookEdit']) {
-            expect(flagValue(args, '--tools').split(',')).not.toContain(t);
-            expect(flagValue(args, '--allowedTools').split(',')).not.toContain(t);
-        }
-    });
-
-    test('WebFetch may not reach this machine; the deny list is followed by a flag, never a free value', () => {
-        const i = args.indexOf('--disallowedTools');
-        expect(i).toBeGreaterThanOrEqual(0);
-        const denied = CLAUDE_WEBFETCH_DENIED_HOSTS.map(h => `WebFetch(domain:${h})`);
-        expect(args.slice(i + 1, i + 1 + denied.length)).toEqual(denied);
-        expect(args[i + 1 + denied.length].startsWith('--')).toBe(true);
-        for (const h of ['localhost', '127.0.0.1']) expect(CLAUDE_WEBFETCH_DENIED_HOSTS).toContain(h);
-    });
-
-    test('no prompts, no permission bypass, only our MCP server, hooks and memory off', () => {
-        expect(flagValue(args, '--permission-mode')).toBe('dontAsk');
-        expect(args).toContain('--strict-mcp-config');
-        for (const bad of ['--dangerously-skip-permissions', '--bare', '--add-dir', '--plugin-dir', '--agents', '--continue', '--setting-sources']) {
+    test('never asks, with the full default tool set: nothing narrows it', () => {
+        expect(flagValue(args, '--permission-mode')).toBe('bypassPermissions');
+        for (const bad of ['--tools', '--allowedTools', '--disallowedTools', '--bare', '--add-dir', '--plugin-dir', '--agents', '--continue', '--setting-sources', '--safe-mode']) {
             expect(args).not.toContain(bad);
         }
+    });
+
+    test('only our MCP server; hooks off; the user\'s plugins off by their own ids', () => {
+        expect(args).toContain('--strict-mcp-config');
         const mcp = JSON.parse(flagValue(args, '--mcp-config'));
         expect(Object.keys(mcp.mcpServers)).toEqual([MCP_SERVER_NAME]);
         expect(mcp.mcpServers.vault).toEqual({
@@ -104,7 +87,16 @@ describe('claude: containment argv', () => {
             headers: { Authorization: `Bearer \${${MCP_TOKEN_ENV}}` },
             alwaysLoad: true,
         });
-        expect(JSON.parse(flagValue(args, '--settings'))).toEqual({ disableAllHooks: true, autoMemoryEnabled: false });
+        // --mcp-config is variadic: the next argument must be a flag, never a free value.
+        expect(args[args.indexOf('--mcp-config') + 2].startsWith('--')).toBe(true);
+        expect(JSON.parse(flagValue(args, '--settings'))).toEqual({ disableAllHooks: true });
+        const withPlugins = buildClaudeArgs({ ...base, userPlugins: ['a@m', 'b@n'] });
+        expect(JSON.parse(flagValue(withPlugins, '--settings'))).toEqual({ disableAllHooks: true, enabledPlugins: { 'a@m': false, 'b@n': false } });
+    });
+
+    test('userClaudePlugins reads the ids, tolerating anything else', () => {
+        expect(userClaudePlugins('{"enabledPlugins":{"a@m":true,"b@n":false}}')).toEqual(['a@m', 'b@n']);
+        for (const bad of ['not json', '{}', '{"enabledPlugins":[1]}', 'null', '{"enabledPlugins":"x"}']) expect(userClaudePlugins(bad)).toEqual([]);
     });
 
     test('session: new chats get our id, old ones resume; model/effort only when chosen', () => {
@@ -180,6 +172,8 @@ describe('claude: stream parser (fixtures)', () => {
         const { p } = parseClaude('claude/logged-out.jsonl');
         expect(claudeOutcome(p.result, false, 1, '')).toMatchObject({ kind: 'error', reason: 'logged-out' });
         expect(claudeOutcome(null, false, 1, 'No conversation found with session ID x')).toMatchObject({ kind: 'error', reason: 'bad-request' });
+        expect(claudeOutcome(null, false, 1, '--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons'))
+            .toMatchObject({ kind: 'error', reason: 'crashed', message: expect.stringContaining('as root') });
         expect(claudeOutcome(null, false, 137, '')).toEqual({ kind: 'error', reason: 'crashed', message: 'Claude Code exited with code 137.' });
     });
 
@@ -221,46 +215,68 @@ describe('claude: history and models', () => {
 
 /* ═════════════════════════════ Codex ═════════════════════════════ */
 
-describe('codex: containment argv and thread params', () => {
-    const args = buildCodexArgs(['github', 'vault']);
+describe('codex: shell rows show the command, not its wrapper', () => {
+    test('unwrapShell', () => {
+        expect(unwrapShell("/bin/zsh -lc 'echo hi && ls -la'")).toBe('echo hi && ls -la');
+        expect(unwrapShell(`/bin/bash -lc 'echo '"'"'quoted'"'"' | wc -c'`)).toBe("echo 'quoted' | wc -c");
+        expect(unwrapShell('git status')).toBe('git status');
+        expect(unwrapShell('powershell.exe -Command "dir"')).toBe('powershell.exe -Command "dir"');
+    });
+});
 
-    test('app-server with every execution/plugin feature off and live web search', () => {
-        expect(args[0]).toBe('app-server');
-        const overrides = args.filter((_, i) => args[i - 1] === '-c');
-        expect(args.filter(a => a === '-c').length).toBe(overrides.length);
-        for (const f of ['shell_tool', 'unified_exec', 'view_image', 'apps', 'plugins', 'hooks', 'multi_agent', 'computer_use', 'browser_use', 'memories']) {
-            expect(CODEX_DISABLED_FEATURES as readonly string[]).toContain(f);
-            expect(overrides).toContain(`features.${f}=false`);
-        }
-        expect(overrides).toContain('web_search="live"');
-        // The user's servers are switched off by name; ours is replaced, not disabled.
-        expect(overrides).toContain('mcp_servers.github.enabled=false');
-        expect(overrides).not.toContain('mcp_servers.vault.enabled=false');
-        for (const bad of ['--dangerously-bypass-approvals-and-sandbox', '--full-auto', 'exec', '--profile', '-p']) expect(args).not.toContain(bad);
+describe('codex: a startup failure says why', () => {
+    test('the error line of stderr, else its last line', () => {
+        // Observed on 0.160.0 with that setting in config.toml.
+        expect(codexStartupError('Error: approval_policy = "untrusted" is no longer supported; remove this setting\n'))
+            .toBe('approval_policy = "untrusted" is no longer supported; remove this setting');
+        expect(codexStartupError('warming up\nsomething broke\n')).toBe('something broke');
+        expect(codexStartupError('')).toBe('');
+    });
+});
+
+describe('codex: argv and thread params', () => {
+    const args = buildCodexArgs();
+
+    test('app-server with live web search, and no per-version feature deny-list', () => {
+        expect(args).toEqual(['app-server', '-c', 'web_search="live"']);
+        expect(args.some(a => a.startsWith('features.'))).toBe(false);
     });
 
-    test('a user MCP name that cannot be expressed as a -c key refuses the run', () => {
-        expect(() => buildCodexArgs(['ok', 'a.b'])).toThrow();
-        expect(() => buildCodexArgs(['x"=1'])).toThrow();
-    });
-
-    test('no local environment, read-only sandbox, never asks; ours is the only MCP server', () => {
+    test('full access, never asks, default environment; the user\'s MCP servers off by name in the thread config', () => {
         const token = newRunToken();
-        const cfg = codexThreadConfig(MCP_BASE, token);
+        const cfg = codexThreadConfig(MCP_BASE, token, ['github', 'my.server', MCP_SERVER_NAME]);
+        const servers = cfg.mcp_servers as Record<string, Record<string, unknown>>;
+        // Dotted names are fine as JSON keys (a `-c` key would split them).
+        expect(Object.keys(servers).sort()).toEqual(['github', 'my.server', MCP_SERVER_NAME]);
+        expect(servers.github).toEqual({ enabled: false });
+        expect(servers['my.server']).toEqual({ enabled: false });
+        // Ours is replaced, not disabled.
+        expect(servers.vault).toMatchObject({ enabled: true, url: `${MCP_BASE}${token}`, bearer_token_env_var: MCP_TOKEN_ENV, omit_tools_from: ['deferred'], default_tools_approval_mode: 'approve' });
         const start = codexThreadStartParams(CWD, 'gpt-5.5', cfg);
-        expect(start).toMatchObject({ cwd: CWD, model: 'gpt-5.5', approvalPolicy: 'never', sandbox: 'read-only', environments: [] });
-        expect(codexThreadResumeParams('t', CWD, null, cfg)).toMatchObject({ approvalPolicy: 'never', sandbox: 'read-only', config: cfg });
+        expect(start).toMatchObject({ cwd: CWD, model: 'gpt-5.5', approvalPolicy: 'never', sandbox: 'danger-full-access', config: cfg });
+        expect(start).not.toHaveProperty('environments');
+        expect(codexThreadResumeParams('t', CWD, null, cfg)).toMatchObject({ approvalPolicy: 'never', sandbox: 'danger-full-access', config: cfg });
         const turn = codexTurnStartParams('t', 'hi', ['/x/a.png'], null, 'high');
-        expect(turn.environments).toEqual([]); // resume re-attaches the local env; every turn removes it again
+        expect(turn).not.toHaveProperty('environments');
         expect(turn.input).toEqual([{ type: 'text', text: 'hi', text_elements: [] }, { type: 'localImage', path: '/x/a.png' }]);
-        const vault = (cfg.mcp_servers as Record<string, Record<string, unknown>>).vault;
-        expect(vault).toMatchObject({ enabled: true, url: `${MCP_BASE}${token}`, bearer_token_env_var: MCP_TOKEN_ENV, omit_tools_from: ['deferred'], default_tools_approval_mode: 'approve' });
-        expect(Object.keys(cfg.mcp_servers as object)).toEqual([MCP_SERVER_NAME]);
+        expect(Object.keys(codexThreadConfig(MCP_BASE, token, []).mcp_servers as object)).toEqual([MCP_SERVER_NAME]);
+    });
+
+    test('server→client requests: approvals approve, questions and forms are declined', () => {
+        expect(codexServerReply('item/commandExecution/requestApproval', {})).toEqual({ decision: 'accept' });
+        expect(codexServerReply('item/fileChange/requestApproval', {})).toEqual({ decision: 'accept' });
+        expect(codexServerReply('execCommandApproval', {})).toEqual({ decision: 'approved' });
+        expect(codexServerReply('applyPatchApproval', {})).toEqual({ decision: 'approved' });
+        const fileSystem = { read: ['/x'], write: null };
+        expect(codexServerReply('item/permissions/requestApproval', { permissions: { network: null, fileSystem } })).toEqual({ permissions: { fileSystem }, scope: 'turn' });
+        expect(codexServerReply('mcpServer/elicitation/request', {})).toMatchObject({ action: 'decline' });
+        expect(codexServerReply('item/tool/requestUserInput', {})).toBeNull();
+        expect(codexServerReply('something/new', {})).toBeNull();
     });
 
     test('zero interference: the token never reaches argv; no config file is named', () => {
         const token = newRunToken();
-        for (const a of buildCodexArgs(['github'])) {
+        for (const a of buildCodexArgs()) {
             expect(a).not.toContain(token);
             expect(GLOBAL_CONFIG.test(a)).toBe(false);
             expect(a.includes(homedir())).toBe(false);
@@ -271,14 +287,6 @@ describe('codex: containment argv and thread params', () => {
         expect(userCodexMcpServers('model = "x"\n[mcp_servers.github]\ncommand = "gh"\n[mcp_servers."my-db"]\nurl = "http://x"\n')).toEqual(['github', 'my-db']);
         expect(userCodexMcpServers('this is [not toml')).toEqual([]);
         expect(userCodexMcpServers('')).toEqual([]);
-    });
-
-    test('tested version window', () => {
-        expect(codexIncompatibility('0.157.1')).toBeNull();
-        expect(codexIncompatibility('0.169.9')).toBeNull();
-        expect(codexIncompatibility('0.156.0')).toContain('older');
-        expect(codexIncompatibility('0.170.0')).toContain('newer');
-        expect(codexIncompatibility(null)).not.toBeNull();
     });
 });
 
@@ -301,17 +309,17 @@ describe('codex: event mapper (fixtures)', () => {
             { type: 'text-delta', text: 'from ' },
             { type: 'text-delta', text: 'fake.' },
         ]);
-        expect(m.breach).toBeNull();
         expect(codexOutcome(m, threadId, false, null)).toEqual({ kind: 'done', status: 'ok', sessionId: threadId, usage: { inputTokens: 20, outputTokens: 10 } });
     });
 
-    test('recorded: thread/start result has no environments; the resumed thread gets them back until our turn', () => {
-        const start = lines('codex/turn-tool-call.jsonl').map(l => JSON.parse(l)).find(m => m.result?.thread);
-        expect(start.result.thread.environments).toEqual([]);
-        const { msgs } = mapCodex('codex/resume-turn.jsonl');
-        const threads = msgs.filter(m => m.result?.thread).map(m => m.result.thread.environments);
-        expect(threads[0].length).toBe(1);   // thread/resume: local env re-attached
-        expect(threads.at(-1)).toEqual([]);  // thread/read after turn/start { environments: [] }
+    test('resumed thread: the reply streams and completes; a late interrupt\'s "no active turn" is harmless', () => {
+        const { threadId, events, m } = mapCodex('codex/resume-turn.jsonl');
+        expect(events).toEqual([
+            { type: 'text-delta', text: 'Hello ' },
+            { type: 'text-delta', text: 'from ' },
+            { type: 'text-delta', text: 'fake.' },
+        ]);
+        expect(codexOutcome(m, threadId, false, null)).toMatchObject({ kind: 'done', status: 'ok', sessionId: threadId });
     });
 
     test('interrupted, with reasoning, web search, and another thread\'s noise', () => {
@@ -327,19 +335,42 @@ describe('codex: event mapper (fixtures)', () => {
         expect(codexOutcome(m, threadId, true, null)).toMatchObject({ kind: 'done', status: 'cancelled', sessionId: threadId });
     });
 
-    test('anything containment says cannot happen ends the run as agent-changed', () => {
-        for (const item of [
-            { type: 'commandExecution', id: 'c' }, { type: 'fileChange', id: 'f' }, { type: 'imageView', id: 'i' },
-            { type: 'mcpToolCall', id: 'm', server: 'github', tool: 'x' }, { type: 'dynamicToolCall', id: 'd' },
-        ]) {
-            const m = new CodexEventMapper('t', () => {});
-            m.feed('item/started', { threadId: 't', item });
-            m.feed('turn/completed', { threadId: 't', turn: { status: 'completed' } });
-            expect(codexOutcome(m, 't', false, null)).toMatchObject({ kind: 'error', reason: 'agent-changed' });
-        }
-        const ok = new CodexEventMapper('t', () => {});
-        ok.feed('item/started', { threadId: 't', item: { type: 'mcpToolCall', id: 'm', server: 'vault', tool: 'vault_read' } });
-        expect(ok.breach).toBeNull();
+    test('Codex\'s own tools stream as `tool` events and never end the run (shapes captured from 0.160.0)', () => {
+        const events: AgentEvent[] = [];
+        const m = new CodexEventMapper('t', e => events.push(e));
+        const item = (method: string, it: Record<string, unknown>) => m.feed(method, { threadId: 't', item: it });
+        const shell = {
+            type: 'commandExecution', id: 'exec-1', command: "/bin/zsh -lc 'echo hi'", cwd: '/w', source: 'unifiedExecStartup',
+            status: 'inProgress', commandActions: [{ type: 'unknown', command: 'echo hi' }], aggregatedOutput: null, exitCode: null,
+        };
+        item('item/started', shell);
+        item('item/completed', { ...shell, status: 'completed', aggregatedOutput: 'hi\n', exitCode: 0 });
+        item('item/completed', { ...shell, id: 'exec-2', status: 'completed', commandActions: [], command: 'false', aggregatedOutput: '', exitCode: 1 });
+        const patch = { type: 'fileChange', id: 'exec-3', changes: [{ path: '/w/a.txt', kind: { type: 'add' }, diff: 'hello\n' }], status: 'completed' };
+        item('item/completed', patch);
+        item('item/completed', { type: 'imageView', id: 'call_view_5', path: '/w/img.png' });
+        item('item/completed', { type: 'mcpToolCall', id: 'call_m', server: 'github', tool: 'x', status: 'completed', arguments: { q: 1 }, result: { content: [{ type: 'text', text: 'ok' }] }, error: null });
+        item('item/completed', { type: 'mcpToolCall', id: 'call_v', server: MCP_SERVER_NAME, tool: 'vault_read', status: 'completed', arguments: { path: 'a.md' }, result: { content: [] } });
+        m.feed('turn/completed', { threadId: 't', turn: { status: 'completed' } });
+        expect(events).toEqual([
+            { type: 'tool', callId: 'exec-1', name: 'shell', input: { command: 'echo hi', cwd: '/w' }, status: 'running' },
+            { type: 'tool', callId: 'exec-1', name: 'shell', input: { command: 'echo hi', cwd: '/w' }, status: 'done', output: 'hi\n' },
+            { type: 'tool', callId: 'exec-2', name: 'shell', input: { command: 'false', cwd: '/w' }, status: 'error' },
+            { type: 'tool', callId: 'exec-3', name: 'apply_patch', input: { paths: ['/w/a.txt'] }, status: 'done', output: '/w/a.txt\nhello\n' },
+            { type: 'tool', callId: 'call_view_5', name: 'view_image', input: { path: '/w/img.png' }, status: 'done' },
+            { type: 'tool', callId: 'call_m', name: 'github.x', input: { q: 1 }, status: 'done', output: 'ok' },
+            // Ours (vault) reaches the panel as `tool.call`, never as a `tool` event.
+        ]);
+        expect(codexOutcome(m, 't', false, null)).toMatchObject({ kind: 'done', status: 'ok' });
+    });
+
+    test('tool items: failures, sub-agents, dynamic tools; non-tools are not tools', () => {
+        expect(codexToolItem({ type: 'fileChange', id: 'f', changes: [], status: 'declined' })).toMatchObject({ name: 'apply_patch', status: 'error' });
+        expect(codexToolItem({ type: 'mcpToolCall', server: 'gh', tool: 'x', status: 'failed', error: { message: 'boom' } })).toEqual({ name: 'gh.x', input: undefined, output: 'boom', status: 'error' });
+        expect(codexToolItem({ type: 'collabAgentToolCall', id: 'c', tool: 'spawnAgent', prompt: 'look', status: 'completed' })).toEqual({ name: 'agent', input: { tool: 'spawnAgent', prompt: 'look' }, status: 'done' });
+        expect(codexToolItem({ type: 'dynamicToolCall', id: 'd', tool: 'thing', arguments: { a: 1 }, status: 'completed', success: false })).toMatchObject({ name: 'thing', status: 'error' });
+        expect(codexToolItem({ type: 'commandExecution', command: 'ls', commandActions: [], aggregatedOutput: 'x'.repeat(5000), exitCode: 0 })!.output!.length).toBeLessThan(4100);
+        for (const type of ['agentMessage', 'reasoning', 'userMessage', 'plan', 'webSearch', 'somethingNew']) expect(codexToolItem({ type })).toBeNull();
     });
 
     test('failures', () => {
@@ -358,6 +389,20 @@ describe('codex: history and models', () => {
             { kind: 'assistant', text: 'Hello from fake.' },
             { kind: 'user', text: 'second message', imageCount: 1 },
             { kind: 'assistant', text: 'Hello from fake.' },
+        ]);
+    });
+
+    test('Codex\'s own tool items become `tool` history items, named as live', () => {
+        const turns = [{ items: [
+            { type: 'commandExecution', id: 'e', command: "/bin/zsh -lc 'echo hi'", commandActions: [{ type: 'unknown', command: 'echo hi' }], cwd: '/w', status: 'completed', aggregatedOutput: 'hi\n', exitCode: 0 },
+            { type: 'commandExecution', id: 'e2', command: 'false', commandActions: [], cwd: '/w', status: 'failed', aggregatedOutput: '', exitCode: 1 },
+            { type: 'mcpToolCall', id: 'm', server: 'github', tool: 'x', status: 'completed', arguments: {}, result: { content: [{ type: 'text', text: 'ok' }] } },
+            { type: 'plan', id: 'p', text: 'later' },
+        ] }];
+        expect(mapCodexTurns(turns)).toEqual([
+            { kind: 'tool', name: 'shell', input: { command: 'echo hi', cwd: '/w' }, output: 'hi\n' },
+            { kind: 'tool', name: 'shell', input: { command: 'false', cwd: '/w' }, isError: true },
+            { kind: 'tool', name: 'github.x', input: {}, output: 'ok' },
         ]);
     });
 
@@ -397,20 +442,14 @@ describe('opencode: its own project per vault folder', () => {
     });
 });
 
-describe('opencode: containment config', () => {
+describe('opencode: config', () => {
     const cfg = buildOpencodeConfig({ cwd: CWD, mcpBaseUrl: MCP_BASE, userMcpServers: ['github', 'vault'] }) as Record<string, Foreign>;
 
-    test('deny everything first, then allow our tools, skills and web search — never webfetch', () => {
-        // OpenCode applies the LAST matching rule: the catch-all deny must be first.
-        // webfetch follows redirects into loopback (see OPENCODE_PERMISSION): denied.
-        expect(Object.entries(OPENCODE_PERMISSION)).toEqual([
-            ['*', 'deny'], ['vault_*', 'allow'], ['skill', 'allow'], ['websearch', 'allow'],
-        ]);
+    test('allow everything, never ask — except a question nobody could answer', () => {
+        // OpenCode applies the LAST matching rule: the catch-all must be first.
+        expect(Object.entries(OPENCODE_PERMISSION)).toEqual([['*', 'allow'], ['question', 'deny']]);
         expect(cfg.permission).toEqual(OPENCODE_PERMISSION);
         expect(cfg.agent[OPENCODE_AGENT].permission).toEqual(OPENCODE_PERMISSION);
-        for (const t of ['bash', 'read', 'edit', 'write', 'glob', 'grep', 'list', 'task', 'patch', 'todowrite']) {
-            expect(OPENCODE_PERMISSION[t]).toBeUndefined();
-        }
     });
 
     test('only our MCP server is enabled; the token is an {env:} reference', () => {
@@ -493,6 +532,21 @@ describe('opencode: event mapper (fixtures)', () => {
         for (const e of events) m.feed(e);
         expect(out).toEqual([]);
         expect(m.idle).toBe(false);
+    });
+
+    test('a tool\'s real input, which arrives with `running` after an empty `pending`, is emitted', () => {
+        const out: AgentEvent[] = [];
+        const m = new OpencodeEventMapper('ses_a', e => out.push(e));
+        const part = (status: string, input: object, extra = {}) => ({ type: 'message.part.updated', properties: { part: { id: 'p1', sessionID: 'ses_a', type: 'tool', tool: 'bash', callID: 'c1', state: { status, input, ...extra } } } });
+        m.feed(part('pending', {}));
+        m.feed(part('running', { command: 'echo hi' }));
+        m.feed(part('running', { command: 'echo hi' }));
+        m.feed(part('completed', { command: 'echo hi' }, { output: 'hi\n' }));
+        expect(out).toEqual([
+            { type: 'tool', callId: 'c1', name: 'bash', input: {}, status: 'running' },
+            { type: 'tool', callId: 'c1', name: 'bash', input: { command: 'echo hi' }, status: 'running' },
+            { type: 'tool', callId: 'c1', name: 'bash', input: { command: 'echo hi' }, status: 'done', output: 'hi\n' },
+        ]);
     });
 
     test('other tools stream running → done; reasoning; errors', () => {

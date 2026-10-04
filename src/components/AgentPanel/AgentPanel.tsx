@@ -78,7 +78,7 @@ function blockedReason(state: ChatStoreState, vaultOpen: boolean, conversation: 
     const { agent } = configOf(state);
     const status = state.agents.find(a => a.agent === agent);
     if (!status) return state.agentsStatus === 'error' ? `Couldn't check ${AGENT_LABELS[agent]}` : 'Checking agents…';
-    if (!status.installed || status.incompatible || status.loggedIn === false) return `${AGENT_LABELS[agent]} isn't ready`;
+    if (!status.installed || status.loggedIn === false) return `${AGENT_LABELS[agent]} isn't ready`;
     if (state.run && state.run.chatId !== (state.activeChatId ?? DRAFT_KEY)) return 'Another chat is replying…';
     return null;
 }
@@ -394,8 +394,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
                                 agent={config.agent}
                                 status={agentStatus}
                                 onRecheck={() => void chatStore.refreshAgents(true)}
-                                os={os}
-                                arch={arch}
                             />
                         )}
                         <Composer

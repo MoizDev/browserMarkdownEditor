@@ -1,10 +1,17 @@
 // Claude Code adapter: one `claude -p` process per message, stream-json both ways.
 //
-// Every flag below was checked against claude 2.1.283 by running it against a
-// local fake Anthropic endpoint with an isolated CLAUDE_CONFIG_DIR and reading
-// the Messages API request it sent (recordings in helper/test/fixtures/claude/, provenance in helper/test/adapters.test.ts):
-// the model saw exactly Skill, WebFetch, WebSearch and our twelve
-// mcp__vault__* tools — nothing else.
+// The CLI runs with its full default tools in `bypassPermissions` mode — the
+// user's decision; nobody could answer a permission prompt in `-p` anyway. The
+// vault is still reached only through our MCP server, which the prompt insists
+// on. What stays excluded, by stable single switches only (never a list of
+// names tracked per CLI version): the user's, project and plugin MCP servers
+// (`--strict-mcp-config`), the user's hooks (`disableAllHooks`), and the user's
+// plugins (disabled by the ids their own settings.json enables).
+//
+// Verified against claude 2.1.289 with a local fake Anthropic endpoint and an
+// isolated CLAUDE_CONFIG_DIR: the model was offered 21 built-in tools plus our
+// mcp__vault__* ones; Bash and a Read outside the cwd ran with no prompt; a
+// user hook and a user plugin's skill/agent were gone.
 
 import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
@@ -27,15 +34,6 @@ const IS_WIN = process.platform === 'win32';
 /** Claude Code's own name for our tools: `mcp__vault__vault_read`. */
 const OWN_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
-/**
- * The built-in tools the agent keeps. `--tools` REPLACES the built-in set, so
- * Bash, Read, Edit, Write, Glob, Grep, NotebookEdit, Task, TodoWrite … are not
- * merely denied — they do not exist in the session. Skill loads the vault's
- * mirrored skills (instruction text); WebSearch/WebFetch are the user's
- * decision to allow the web.
- */
-export const CLAUDE_BUILTIN_TOOLS = ['Skill', 'WebSearch', 'WebFetch'] as const;
-
 export interface ClaudeArgsInput {
     mcpBaseUrl: string;
     sessionId: string | null;
@@ -43,12 +41,11 @@ export interface ClaudeArgsInput {
     newSessionId: string;
     model: string | null;
     effort: string | null;
+    /** Plugin ids the user's own settings.json enables (`userClaudePlugins`). */
+    userPlugins: readonly string[];
 }
 
-/** argv after the binary. Pure; the containment tests assert on it. */
-/** Hosts the agent's WebFetch may never reach: this machine, and the cloud metadata address. */
-export const CLAUDE_WEBFETCH_DENIED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '169.254.169.254'];
-
+/** argv after the binary. Pure; the adapter tests assert on it. */
 export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
     const mcpConfig = {
         mcpServers: {
@@ -58,19 +55,23 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
                 // travels in the child's environment instead of its argv.
                 url: `${input.mcpBaseUrl}\${${MCP_TOKEN_ENV}}`,
                 headers: { Authorization: `Bearer \${${MCP_TOKEN_ENV}}` },
-                // Never defer our tools behind ToolSearch (not in our --tools anyway).
+                // Never defer our tools behind ToolSearch.
                 alwaysLoad: true,
             },
         },
     };
     const settings = {
-        // Hooks are shell commands from the user's (or a plugin's) settings: code
-        // outside the vault. Verified: a SessionStart/UserPromptSubmit hook in user
-        // settings runs without this and does not run with it.
+        // Hooks are the user's own automation (shell commands in their or a
+        // plugin's settings), kept out of panel runs by this one switch.
+        // Verified: a SessionStart/UserPromptSubmit hook in user settings runs
+        // without this and does not run with it.
         disableAllHooks: true,
-        // Auto-memory tells the model to write memory files with the Write tool,
-        // which this session does not have; verified it drops the section.
-        autoMemoryEnabled: false,
+        // Plugins have no single off switch: `--safe-mode` also drops our vault
+        // MCP tools and `enabledPlugins: {}` disables nothing (both verified).
+        // Naming each of the user's own plugins false does it, because this flag
+        // layer outranks user settings (verified: the plugin's skill and agent
+        // were gone). The ids come from the user's config, not from us.
+        ...(input.userPlugins.length ? { enabledPlugins: Object.fromEntries(input.userPlugins.map(id => [id, false])) } : {}),
     };
     return [
         '-p',
@@ -78,21 +79,13 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
         '--output-format', 'stream-json',
         '--verbose',                      // required by stream-json output
         '--include-partial-messages',     // token-level deltas
-        // `--tools` and `--allowedTools` are variadic; each is followed by another
-        // flag, never by a free value, so neither can swallow the next argument.
-        '--tools', CLAUDE_BUILTIN_TOOLS.join(','),
-        // Pre-approve exactly what exists; `dontAsk` denies anything else instead
-        // of prompting (there is nobody to answer a prompt in -p mode).
-        '--allowedTools', [`mcp__${MCP_SERVER_NAME}`, ...CLAUDE_BUILTIN_TOOLS].join(','),
-        // WebFetch already upgrades http to https and does not follow a redirect
-        // to another host, so a plain-http local service is out of its reach;
-        // these deny the loopback/metadata hosts outright (verified: "WebFetch
-        // denied access to domain:127.0.0.1"), so an https one is too.
-        '--disallowedTools', ...CLAUDE_WEBFETCH_DENIED_HOSTS.map(h => `WebFetch(domain:${h})`),
-        '--permission-mode', 'dontAsk',
+        // Never ask: there is nobody to answer a permission prompt in -p mode.
+        '--permission-mode', 'bypassPermissions',
         // Only our server: the user's ~/.claude.json, project .mcp.json and plugin
         // MCP servers are not loaded (verified: a user-level server was not contacted).
         '--strict-mcp-config',
+        // `--mcp-config` is variadic; it is followed by `--settings`, a flag, so it
+        // cannot swallow the next argument (verified).
         '--mcp-config', JSON.stringify(mcpConfig),
         // Per-invocation settings layer — nothing is written to ~/.claude/settings.json.
         '--settings', JSON.stringify(settings),
@@ -164,7 +157,8 @@ export class ClaudeStreamParser {
             return;
         }
         if (!msg || typeof msg !== 'object') return;
-        // Sub-agent traffic (none: there is no Task tool) would carry a parent id.
+        // Sub-agent traffic (the Agent/Task tool's inner calls) carries a parent
+        // id; only the outer call shows.
         if (msg.parent_tool_use_id) return;
         switch (msg.type) {
             case 'system':
@@ -230,6 +224,9 @@ export function claudeOutcome(p: ClaudeResult | null, cancelled: boolean, exitCo
     if (p && p.subtype === 'success' && !p.isError) return { kind: 'done', status: 'ok', sessionId: p.sessionId, usage: p.usage };
     const text = `${p?.text ?? ''}\n${stderrTail}`;
     if (LOGIN_HINT.test(text)) return { kind: 'error', reason: 'logged-out', message: 'Claude Code is not logged in. Run `claude` in a terminal and log in, then try again.' };
+    // Claude Code refuses never-ask mode under root (outside its own sandbox)
+    // and exits 1 with only this on stderr (in 2.1.289's binary).
+    if (/cannot be used with root\/sudo/i.test(text)) return { kind: 'error', reason: 'crashed', message: 'Claude Code will not run without permission prompts as root. Run VaultAgent as your own user, not as root.' };
     if (/no conversation found/i.test(text)) return { kind: 'error', reason: 'bad-request', message: 'This chat’s Claude Code session is not on this computer.' };
     const detail = p?.text?.trim() ? truncate(p.text.trim(), 500) : `Claude Code exited${exitCode === null ? '' : ` with code ${exitCode}`}.`;
     return { kind: 'error', reason: 'crashed', message: detail };
@@ -242,9 +239,34 @@ export function encodeProjectDir(cwd: string): string {
     return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
-export function claudeProjectsDir(): string {
+export function claudeConfigDir(): string {
     const configDir = process.env.CLAUDE_CONFIG_DIR;
-    return join(configDir && configDir.trim() ? configDir : join(homedir(), '.claude'), 'projects');
+    return configDir && configDir.trim() ? configDir : join(homedir(), '.claude');
+}
+
+export function claudeProjectsDir(): string {
+    return join(claudeConfigDir(), 'projects');
+}
+
+/** The plugin ids in the user's settings.json `enabledPlugins` (true or false
+ *  alike — naming one false again is harmless). Tolerant: anything unreadable
+ *  is `[]`. Pure; the caller reads the file and never writes it. */
+export function userClaudePlugins(settingsJson: string): string[] {
+    try {
+        const plugins = (JSON.parse(settingsJson) as Foreign)?.enabledPlugins;
+        if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) return [];
+        return Object.keys(plugins);
+    } catch {
+        return [];
+    }
+}
+
+function readUserClaudePlugins(): string[] {
+    try {
+        return userClaudePlugins(readFileSync(join(claudeConfigDir(), 'settings.json'), 'utf8'));
+    } catch {
+        return [];
+    }
 }
 
 const INTERRUPTED = /^\[Request interrupted by user/;
@@ -404,7 +426,7 @@ export function createClaudeAdapter(opts: { sessionsRoot: string }): AgentAdapte
         async status(refresh) {
             if (statusCache && !refresh && Date.now() - statusCache.at < 30_000) return statusCache.status;
             const bin = await findAgentBinary('claude', refresh);
-            const base: AgentStatus = { agent: 'claude', installed: !!bin, version: null, loggedIn: null, incompatible: null, loginCommand, installCommand };
+            const base: AgentStatus = { agent: 'claude', installed: !!bin, version: null, loggedIn: null, loginCommand, installCommand };
             if (!bin) return (statusCache = { at: Date.now(), status: { ...base, loggedIn: false } }).status;
             const env = agentEnv(bin.pathDirs);
             const [ver, auth] = await Promise.all([
@@ -435,7 +457,10 @@ export function createClaudeAdapter(opts: { sessionsRoot: string }): AgentAdapte
             const bin = await findAgentBinary('claude');
             if (!bin) throw new RunRefused('agent-missing', 'Claude Code is not installed.');
             const newSessionId = randomUUID();
-            const args = buildClaudeArgs({ mcpBaseUrl: ctx.mcpBaseUrl, sessionId: ctx.sessionId, newSessionId, model: ctx.model, effort: ctx.effort });
+            const args = buildClaudeArgs({
+                mcpBaseUrl: ctx.mcpBaseUrl, sessionId: ctx.sessionId, newSessionId, model: ctx.model, effort: ctx.effort,
+                userPlugins: readUserClaudePlugins(),
+            });
             const proc = Bun.spawn([...bin.command, ...args], {
                 cwd: ctx.cwd,
                 env: claudeEnv(bin, ctx.mcpToken),

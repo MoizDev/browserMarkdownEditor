@@ -1,25 +1,24 @@
 // Codex adapter: one `codex app-server` (JSON-RPC over stdio) per message.
 //
-// Verified against codex-cli 0.157.1 (`npm pack`ed into a scratch folder, run
-// with a scratch CODEX_HOME against a local fake Responses endpoint; recordings
-// in helper/test/fixtures/codex/, provenance in helper/test/adapters.test.ts).
-// With the settings below the model was
-// offered exactly: our `mcp__vault` namespace, web_search (live),
-// list/read_mcp_resource(s) (which only reach our server) and
-// request_user_input (answered with an error here). No shell, no apply_patch,
-// no view_image, no sub-agents, no apps/plugins/connectors.
+// Codex runs with its full normal tools — shell, apply_patch, view_image,
+// sub-agents, web search — in its never-ask mode: `sandbox: 'danger-full-access'`
+// with `approvalPolicy: 'never'`, and the default (local) environment left
+// attached. Nobody can answer an approval in the panel, so nothing may ask.
+// Verified against codex-cli 0.160.0 (`npm pack`ed into a scratch folder, run
+// with a scratch CODEX_HOME against a local fake Responses endpoint): both
+// thread/start and thread/resume accept it, and shell/apply_patch/view_image ran
+// with no approval request. The vault itself is still reached only through our
+// `vault` MCP server; the prompt tells the agent so.
 //
-// Containment has two independent layers, both checked:
-//   1. `environments: []` on the thread AND on every turn — the "environment"
-//      is what carries shell/apply_patch/view_image. Verified: a resumed thread
-//      comes back with the local environment re-attached, and the turn-level
-//      `environments: []` removes it again; so after every turn/start we
-//      thread/read and refuse the run unless environments is [].
-//   2. the shell/exec/view_image features off. Verified: with the environment
-//      left ON, these flags alone reduce the tools to apply_patch +
-//      request_user_input + web_search, and the read-only sandbox with
-//      approvals "never" refuses apply_patch.
-// Any command/file-change/image-view item that still shows up ends the run.
+// The user's own MCP servers are switched off in the thread `config`, NOT in
+// argv: once the thread config carries `mcp_servers` (ours always does), an argv
+// `-c mcp_servers.<name>.enabled=false` is ignored (verified: the server still
+// started), and a dotted name in a `-c` key is fatal at startup. Verified on both
+// thread/start and thread/resume: only `vault` starts.
+//
+// Hooks, plugins and apps are deliberately NOT switched off: Codex offers only
+// per-feature `features.<name>` keys for them, i.e. a deny-list that has to be
+// tracked per Codex version, which is what once forced a Codex version gate.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -27,7 +26,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
 import {
-    MCP_SERVER_NAME, TOOL_CALL_TIMEOUT_MS, compareVersions, isUuid,
+    MCP_SERVER_NAME, TOOL_CALL_TIMEOUT_MS, isUuid,
     type AgentEvent, type AgentStatus, type HistoryItem, type ModelInfo, type RunImage, type RunUsage,
 } from '../../../shared/vaultAgentProtocol.ts';
 import { logError } from '../log.ts';
@@ -39,33 +38,6 @@ import {
     MCP_TOKEN_ENV, RunRefused, SAFE_EFFORT_RE, SAFE_MODEL_RE, truncate,
     type AgentAdapter, type Foreign, type RunContext, type RunHandle, type RunOutcome,
 } from './types.ts';
-
-/** The app-server protocol is marked experimental; these are the versions whose shape we verified. */
-export const CODEX_TESTED = { min: '0.157.0', maxExclusive: '0.170.0' } as const;
-
-export function codexIncompatibility(version: string | null): string | null {
-    if (!version) return 'Could not read the Codex version.';
-    if (compareVersions(version, CODEX_TESTED.min) < 0) return `Codex ${version} is older than VaultAgent supports (${CODEX_TESTED.min} or newer). Update Codex.`;
-    if (compareVersions(version, CODEX_TESTED.maxExclusive) >= 0) {
-        return `Codex ${version} is newer than the versions VaultAgent ${HELPER_VERSION} was tested with. Update VaultAgent to use it.`;
-    }
-    return null;
-}
-
-/**
- * Features switched off for every run, as per-process `-c` overrides (nothing
- * is written to ~/.codex/config.toml). All accepted by 0.157.1.
- */
-export const CODEX_DISABLED_FEATURES = [
-    'shell_tool', 'unified_exec', 'view_image', 'shell_snapshot',   // local execution / file viewing
-    'apps', 'plugins', 'remote_plugin', 'tool_suggest', 'skill_mcp_dependency_install', // ChatGPT connectors, plugin tools/MCP
-    'hooks',                                                          // user/plugin hook commands
-    'multi_agent', 'multi_agent_v2',                                  // sub-agents
-    'computer_use', 'browser_use', 'browser_use_external', 'in_app_browser',
-    'image_generation', 'memories', 'goals', 'code_mode', 'sleep_tool',
-] as const;
-
-const MCP_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** The user's own MCP server names from ~/.codex/config.toml (read, never written). */
 export function userCodexMcpServers(configToml: string): string[] {
@@ -82,29 +54,25 @@ export function codexHome(): string {
     return h && h.trim() ? h : join(homedir(), '.codex');
 }
 
-/** argv after the binary. Pure; the containment tests assert on it. Throws on an MCP name we cannot express safely. */
-export function buildCodexArgs(userMcpServers: string[]): string[] {
-    const args = ['app-server'];
-    for (const f of CODEX_DISABLED_FEATURES) args.push('-c', `features.${f}=false`);
+/** argv after the binary. Pure; the tests assert on it. */
+export function buildCodexArgs(): string[] {
     // "live" = real web access (the default "cached" only reads OpenAI's index);
     // verified: the request's web_search tool flips to external_web_access: true.
-    args.push('-c', 'web_search="live"');
-    for (const name of userMcpServers) {
-        if (name === MCP_SERVER_NAME) continue; // replaced by ours in the thread config
-        if (!MCP_NAME_RE.test(name)) throw new RunRefused('agent-changed', `Your Codex config has an MCP server named ${JSON.stringify(name)} that VaultAgent cannot switch off safely.`);
-        // The user's own servers stay theirs — just not in this session.
-        args.push('-c', `mcp_servers.${name}.enabled=false`);
-    }
-    return args;
+    return ['app-server', '-c', 'web_search="live"'];
 }
 
 /**
  * Our MCP server, passed as thread-level `config` over stdin (verified to
  * apply), so the URL — which carries the run token — never appears in argv.
+ * The user's own servers are switched off here too (see top of file): they stay
+ * theirs, just not in this session. JSON keys need no quoting, so any name works
+ * (verified with "my.server" and "has space").
  */
-export function codexThreadConfig(mcpBaseUrl: string, token: string): Record<string, unknown> {
+export function codexThreadConfig(mcpBaseUrl: string, token: string, userMcpServers: string[]): Record<string, unknown> {
+    const off = Object.fromEntries(userMcpServers.filter(n => n !== MCP_SERVER_NAME).map(n => [n, { enabled: false }]));
     return {
         mcp_servers: {
+            ...off,
             [MCP_SERVER_NAME]: {
                 enabled: true,
                 url: `${mcpBaseUrl}${token}`,
@@ -121,7 +89,7 @@ export function codexThreadConfig(mcpBaseUrl: string, token: string): Record<str
     };
 }
 
-const SANDBOX = 'read-only';
+const SANDBOX = 'danger-full-access';
 const APPROVAL = 'never';
 
 export function codexThreadStartParams(cwd: string, model: string | null, config: Record<string, unknown>) {
@@ -130,7 +98,6 @@ export function codexThreadStartParams(cwd: string, model: string | null, config
         ...(model ? { model } : {}),
         approvalPolicy: APPROVAL,
         sandbox: SANDBOX,
-        environments: [],
         developerInstructions: VAULT_AGENT_PROMPT,
         config,
         serviceName: 'VaultAgent',
@@ -157,7 +124,6 @@ export function codexTurnStartParams(threadId: string, text: string, imagePaths:
             { type: 'text', text, text_elements: [] },
             ...imagePaths.map(path => ({ type: 'localImage', path })),
         ],
-        environments: [],
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
         summary: 'auto',
@@ -165,6 +131,32 @@ export function codexTurnStartParams(threadId: string, text: string, imagePaths:
 }
 
 /* ───────────────────────── JSON-RPC over stdio ───────────────────────── */
+
+/**
+ * The answer to a server→client request, or null for a JSON-RPC error. Pure.
+ * Method names and reply shapes are 0.160.0's generated `ServerRequest` schema.
+ */
+export function codexServerReply(method: string, params: Foreign): Record<string, unknown> | null {
+    switch (method) {
+        case 'item/commandExecution/requestApproval':
+        case 'item/fileChange/requestApproval':
+            return { decision: 'accept' };
+        case 'execCommandApproval':   // the legacy (v1) approvals
+        case 'applyPatchApproval':
+            return { decision: 'approved' };
+        case 'item/permissions/requestApproval': {
+            // Grant what was asked. The request's profile spells "none" as null; the
+            // granted one as an absent key.
+            const asked = params?.permissions && typeof params.permissions === 'object' ? params.permissions : {};
+            return { permissions: Object.fromEntries(Object.entries(asked).filter(([, v]) => v != null)), scope: 'turn' };
+        }
+        case 'mcpServer/elicitation/request':
+            return { action: 'decline', content: null, _meta: null };
+        default:
+            // item/tool/requestUserInput included: there is no one to ask.
+            return null;
+    }
+}
 
 interface Pending { resolve(v: Foreign): void; reject(e: Error): void; timer: ReturnType<typeof setTimeout> }
 
@@ -210,9 +202,11 @@ export class CodexRpc {
             return;
         }
         if (msg.id !== undefined && typeof msg.method === 'string') {
-            // A server→client request: approvals, user-input questions, elicitations.
-            // There is no one to ask and nothing should need approval; decline.
-            if (/requestApproval$/i.test(msg.method)) this.write({ id: msg.id, result: { decision: 'decline' } });
+            // A server→client request. A backstop: under `never` + full access none
+            // arrived in testing (0.160.0). Never-ask mode approves; a question or a
+            // form has no one to answer it.
+            const result = codexServerReply(msg.method, msg.params);
+            if (result) this.write({ id: msg.id, result });
             else this.write({ id: msg.id, error: { code: -32000, message: 'Not available in VaultAgent.' } });
             return;
         }
@@ -253,8 +247,6 @@ export interface CodexTurnEnd { status: string; error: string | null }
 export class CodexEventMapper {
     turnId: string | null = null;
     end: CodexTurnEnd | null = null;
-    /** Set when an item appears that containment says cannot exist. */
-    breach: string | null = null;
     lastError: string | null = null;
     usage: RunUsage = {};
     private reasoningOpen = new Set<string>();
@@ -303,33 +295,84 @@ export class CodexEventMapper {
     private item(completed: boolean, item: Foreign): void {
         if (!item || typeof item !== 'object') return;
         switch (item.type) {
-            case 'commandExecution':
-            case 'fileChange':
-            case 'imageView':
-            case 'collabAgentToolCall':
-                this.breach = `Codex tried to use ${item.type}, which VaultAgent keeps switched off.`;
-                return;
             case 'webSearch': {
                 const query = typeof item.query === 'string' ? item.query : item.action?.query ?? undefined;
                 const input = item.action?.type === 'openPage' ? { url: item.action.url } : { query };
                 this.emit({ type: 'tool', callId: String(item.id), name: 'web_search', input, status: completed ? 'done' : 'running' });
                 return;
             }
-            case 'mcpToolCall': {
-                // Ours reach the panel as `tool.call`. Any other server is a leak we switched off.
+            case 'mcpToolCall':
+                // Ours reach the panel as `tool.call`; another server's falls through.
                 if (item.server === MCP_SERVER_NAME) return;
-                this.breach = `Codex called a tool on the MCP server ${JSON.stringify(item.server)}, which VaultAgent keeps switched off.`;
-                return;
-            }
-            case 'dynamicToolCall':
-                this.breach = 'Codex called a tool VaultAgent did not provide.';
-                return;
         }
+        const t = codexToolItem(item);
+        if (!t) return;
+        this.emit({
+            type: 'tool', callId: String(item.id), name: t.name, input: t.input,
+            status: completed ? t.status : 'running',
+            ...(completed && t.output ? { output: t.output } : {}),
+        });
+    }
+}
+
+/** `/bin/zsh -lc 'a && b'` → `a && b`: Codex wraps every command in the user's
+ *  login shell, single-quoted ('"'"' for a quote inside); a chained command
+ *  parses into several actions, so only the wrapper names it whole. Anything
+ *  else is returned as is. */
+export function unwrapShell(command: string): string {
+    const m = /^\S*\b(?:ba|z|fi)?sh -l?c '([\s\S]*)'$/.exec(command);
+    return m ? m[1].replace(/'"'"'|'\\''/g, "'") : command;
+}
+
+export interface CodexToolItem { name: string; input: unknown; output?: string; status: 'done' | 'error' }
+
+const FAILED = new Set(['failed', 'declined', 'interrupted']);
+
+/**
+ * One of Codex's own tool items (not ours, not web search) → what the panel shows,
+ * as if completed; null for anything that is not a tool (messages, reasoning,
+ * plans…). Pure; shared by the live mapper and history so both read the same.
+ * Field names are 0.160.0's, as captured.
+ */
+export function codexToolItem(item: Foreign): CodexToolItem | null {
+    if (!item || typeof item !== 'object') return null;
+    const failed = FAILED.has(item.status);
+    const done = (name: string, input: unknown, output?: string, error = failed): CodexToolItem => ({
+        name, input, ...(output ? { output: truncate(output) } : {}), status: error ? 'error' : 'done',
+    });
+    switch (item.type) {
+        case 'commandExecution': {
+            // `command` is the shell-wrapped form ("/bin/zsh -lc 'echo hi'", observed);
+            // a single parsed action carries the command the model actually wrote.
+            const actions = Array.isArray(item.commandActions) ? item.commandActions : [];
+            const command = actions.length === 1 && typeof actions[0]?.command === 'string' ? actions[0].command : unwrapShell(String(item.command ?? ''));
+            const exited = typeof item.exitCode === 'number' && item.exitCode !== 0;
+            return done('shell', { command, cwd: item.cwd }, typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput : undefined, failed || exited);
+        }
+        case 'fileChange': {
+            const changes = (Array.isArray(item.changes) ? item.changes : []).filter((c: Foreign) => typeof c?.path === 'string');
+            const diff = changes.map((c: Foreign) => `${c.path}\n${typeof c.diff === 'string' ? c.diff : ''}`).join('\n\n');
+            return done('apply_patch', { paths: changes.map((c: Foreign) => c.path as string) }, diff);
+        }
+        case 'imageView':
+            return done('view_image', { path: item.path });
+        case 'mcpToolCall':
+            return done(
+                `${item.server}.${item.tool}`, item.arguments,
+                item.result ? mcpResultText(item.result) : item.error?.message,
+                failed || !!item.result?.isError,
+            );
+        case 'dynamicToolCall':
+            return done(String(item.tool), item.arguments, undefined, failed || item.success === false);
+        case 'collabAgentToolCall':
+            // A sub-agent: spawn/send/wait… on another Codex thread.
+            return done('agent', { tool: item.tool, prompt: item.prompt });
+        default:
+            return null;
     }
 }
 
 export function codexOutcome(m: CodexEventMapper, threadId: string, cancelled: boolean, crashed: string | null): RunOutcome {
-    if (m.breach) return { kind: 'error', reason: 'agent-changed', message: m.breach };
     if (m.end?.status === 'interrupted' || (cancelled && !m.end)) return { kind: 'done', status: 'cancelled', sessionId: threadId, usage: m.usage };
     if (m.end?.status === 'completed') return { kind: 'done', status: 'ok', sessionId: threadId, usage: m.usage };
     const message = m.end?.error ?? m.lastError ?? crashed ?? 'Codex stopped without finishing the turn.';
@@ -342,6 +385,11 @@ export function codexOutcome(m: CodexEventMapper, threadId: string, cancelled: b
 function mcpResultText(result: Foreign): string {
     const content = Array.isArray(result?.content) ? result.content : [];
     return truncate(content.map((c: Foreign) => (c?.type === 'text' ? String(c.text ?? '') : c?.type === 'image' ? '[image]' : '')).join('\n'));
+}
+
+function pushTool(out: HistoryItem[], item: Foreign): void {
+    const t = codexToolItem(item);
+    if (t) out.push({ kind: 'tool', name: t.name, input: t.input, output: t.output, ...(t.status === 'error' ? { isError: true } : {}) });
 }
 
 /** Items of `thread/turns/list` (itemsView "full") → history. */
@@ -366,9 +414,13 @@ export function mapCodexTurns(turns: Foreign[]): HistoryItem[] {
                     break;
                 }
                 case 'mcpToolCall':
+                    if (item.server !== MCP_SERVER_NAME) {
+                        pushTool(out, item);
+                        break;
+                    }
                     out.push({
                         kind: 'tool',
-                        name: item.server === MCP_SERVER_NAME ? String(item.tool) : `${item.server}.${item.tool}`,
+                        name: String(item.tool),
                         input: item.arguments,
                         output: item.result ? mcpResultText(item.result) : item.error?.message,
                         ...(item.status === 'failed' || item.result?.isError ? { isError: true } : {}),
@@ -377,6 +429,8 @@ export function mapCodexTurns(turns: Foreign[]): HistoryItem[] {
                 case 'webSearch':
                     out.push({ kind: 'tool', name: 'web_search', input: { query: item.query } });
                     break;
+                default:
+                    pushTool(out, item);
             }
         }
     }
@@ -423,11 +477,7 @@ function writeImages(cwd: string, images: RunImage[]): string[] {
 interface Spawned { proc: Subprocess<'pipe', 'pipe', 'pipe'>; rpc: CodexRpc }
 
 async function spawnAppServer(bin: FoundBinary, cwd: string, token: string | null): Promise<Spawned> {
-    let userServers: string[] = [];
-    try {
-        userServers = userCodexMcpServers(readFileSync(join(codexHome(), 'config.toml'), 'utf8'));
-    } catch { /* no user config */ }
-    const proc = Bun.spawn([...bin.command, ...buildCodexArgs(userServers)], {
+    const proc = Bun.spawn([...bin.command, ...buildCodexArgs()], {
         cwd,
         env: agentEnv(bin.pathDirs, token ? { [MCP_TOKEN_ENV]: token } : {}),
         stdin: 'pipe',
@@ -435,27 +485,41 @@ async function spawnAppServer(bin: FoundBinary, cwd: string, token: string | nul
         stderr: 'pipe',
         windowsHide: true,
     });
-    // Drained so a chatty stderr can never fill the pipe and stall the CLI; never logged.
-    void drainTail(proc.stderr).catch(() => {});
+    // Drained so a chatty stderr can never fill the pipe and stall the CLI; never
+    // logged — only shown, when Codex dies before answering `initialize`.
+    const stderrTail = drainTail(proc.stderr).catch(() => '');
     const rpc = new CodexRpc(proc);
     try {
         await codexInitialize(rpc);
     } catch (e) {
         void stopProcess(proc);
-        throw e;
+        if (e instanceof RunRefused) throw e;
+        // With no version gate, a Codex that cannot start (a setting the user's
+        // config.toml has that this version rejects, a newer app-server) ends
+        // here. Its own words say why (observed on 0.160.0: `Error:
+        // approval_policy = "untrusted" is no longer supported; remove this
+        // setting`); without them the panel showed only "codex app-server exited".
+        const why = codexStartupError(await Promise.race([stderrTail, Bun.sleep(1000).then(() => '')]));
+        throw new RunRefused('crashed', why ? `Codex could not start: ${why}` : 'Codex could not start.');
     }
     return { proc, rpc };
+}
+
+/** The line of Codex's stderr that says why it would not start, or ''. Pure. */
+export function codexStartupError(stderr: string): string {
+    const lines = stderr.split('\n').map(l => l.trim()).filter(Boolean);
+    const error = lines.find(l => /^error\b/i.test(l)) ?? lines.at(-1) ?? '';
+    return truncate(error.replace(/^error:\s*/i, ''), 300);
 }
 
 export function createCodexAdapter(opts: { sessionsRoot: string }): AgentAdapter {
     let statusCache: { at: number; status: AgentStatus } | null = null;
     let modelCache: { at: number; models: ModelInfo[] } | null = null;
 
+    // Any installed version runs: nothing here may refuse on a version.
     async function ready(): Promise<FoundBinary> {
         const bin = await findAgentBinary('codex');
         if (!bin) throw new RunRefused('agent-missing', 'Codex is not installed.');
-        const st = await adapter.status(false);
-        if (st.incompatible) throw new RunRefused('agent-changed', st.incompatible);
         return bin;
     }
 
@@ -468,7 +532,7 @@ export function createCodexAdapter(opts: { sessionsRoot: string }): AgentAdapter
             if (statusCache && !refresh && Date.now() - statusCache.at < 30_000) return statusCache.status;
             const bin = await findAgentBinary('codex', refresh);
             const base: AgentStatus = {
-                agent: 'codex', installed: !!bin, version: null, loggedIn: null, incompatible: null,
+                agent: 'codex', installed: !!bin, version: null, loggedIn: null,
                 loginCommand: 'codex login', installCommand: 'npm install -g @openai/codex',
             };
             if (!bin) return (statusCache = { at: Date.now(), status: { ...base, loggedIn: false } }).status;
@@ -479,7 +543,7 @@ export function createCodexAdapter(opts: { sessionsRoot: string }): AgentAdapter
             ]);
             const version = parseVersion(ver.stdout);
             const loggedIn = login.timedOut || login.code === null ? null : login.code === 0;
-            return (statusCache = { at: Date.now(), status: { ...base, version, loggedIn, incompatible: codexIncompatibility(version) } }).status;
+            return (statusCache = { at: Date.now(), status: { ...base, version, loggedIn } }).status;
         },
 
         async models(refresh) {
@@ -506,7 +570,11 @@ export function createCodexAdapter(opts: { sessionsRoot: string }): AgentAdapter
         async start(ctx: RunContext): Promise<RunHandle> {
             const bin = await ready();
             const { proc, rpc } = await spawnAppServer(bin, ctx.cwd, ctx.mcpToken);
-            const config = codexThreadConfig(ctx.mcpBaseUrl, ctx.mcpToken);
+            let userServers: string[] = [];
+            try {
+                userServers = userCodexMcpServers(readFileSync(join(codexHome(), 'config.toml'), 'utf8'));
+            } catch { /* no user config */ }
+            const config = codexThreadConfig(ctx.mcpBaseUrl, ctx.mcpToken, userServers);
             let threadId: string;
             let mapper: CodexEventMapper;
             const buffered: [string, Foreign][] = [];
@@ -520,9 +588,6 @@ export function createCodexAdapter(opts: { sessionsRoot: string }): AgentAdapter
                     const res: Foreign = await rpc.request('thread/start', codexThreadStartParams(ctx.cwd, ctx.model, config));
                     threadId = res?.thread?.id;
                     if (!isUuid(threadId)) throw new RunRefused('agent-changed', 'Codex answered `thread/start` in a shape VaultAgent does not know.');
-                    if (!Array.isArray(res.thread.environments) || res.thread.environments.length) {
-                        throw new RunRefused('agent-changed', 'Codex did not switch off its local environment (shell and file access). The run was stopped.');
-                    }
                 }
                 ctx.emit({ type: 'session', sessionId: threadId });
                 mapper = new CodexEventMapper(threadId, ctx.emit);
@@ -532,13 +597,6 @@ export function createCodexAdapter(opts: { sessionsRoot: string }): AgentAdapter
                 const imagePaths = writeImages(ctx.cwd, ctx.images);
                 const turn: Foreign = await rpc.request('turn/start', codexTurnStartParams(threadId, ctx.text, imagePaths, ctx.model, ctx.effort));
                 mapper.turnId ??= turn?.turn?.id ?? null;
-                // The containment check that matters for resumed threads (see top of file).
-                const read: Foreign = await rpc.request('thread/read', { threadId }, 30_000);
-                const envs = read?.thread?.environments;
-                if (!Array.isArray(envs) || envs.length) {
-                    if (mapper.turnId) void rpc.request('turn/interrupt', { threadId, turnId: mapper.turnId }, 5000).catch(() => {});
-                    throw new RunRefused('agent-changed', 'Codex did not switch off its local environment (shell and file access). The run was stopped.');
-                }
             } catch (e) {
                 void stopProcess(proc);
                 if (e instanceof RunRefused) throw e;
@@ -550,10 +608,10 @@ export function createCodexAdapter(opts: { sessionsRoot: string }): AgentAdapter
 
             let cancelled = false;
             const outcome = (async (): Promise<RunOutcome> => {
-                // Ends on turn/completed, a containment breach, or the process dying.
+                // Ends on turn/completed or the process dying.
                 await new Promise<void>(res => {
                     const tick = setInterval(() => {
-                        if (mapper.end || mapper.breach) {
+                        if (mapper.end) {
                             clearInterval(tick);
                             res();
                         }
@@ -563,9 +621,6 @@ export function createCodexAdapter(opts: { sessionsRoot: string }): AgentAdapter
                         res();
                     });
                 });
-                if (mapper.breach && !mapper.end && mapper.turnId) {
-                    await rpc.request('turn/interrupt', { threadId, turnId: mapper.turnId }, 5000).catch(() => {});
-                }
                 const crashed = mapper.end ? null : 'Codex exited unexpectedly.';
                 await stopProcess(proc);
                 return codexOutcome(mapper, threadId, cancelled, crashed);

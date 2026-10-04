@@ -198,7 +198,7 @@ function runErrorMessage(reason: RunErrorReason, message: string, agent: AgentId
         case 'busy': return 'VaultAgent is already running a message. Wait for it to finish, or press Stop.';
         case 'agent-missing': return `${name} isn't installed on this computer.`;
         case 'logged-out': return `You're not logged in to ${name}. Log in from a terminal, then try again.`;
-        case 'agent-changed': return `This version of ${name} isn't one VaultAgent supports. ${message}`.trim();
+        case 'agent-changed': return message || `${name} answered in a way VaultAgent doesn't understand.`;
         case 'cancelled': return 'Stopped.';
         case 'bad-request': return message || 'VaultAgent refused the message.';
         default: return message || `${name} stopped unexpectedly.`;
@@ -410,7 +410,7 @@ class ChatStore {
     /** Whether `agent` can take a message now; the panel shows why not. */
     agentUsable(agent: AgentId): boolean {
         const status = this.agentStatus(agent);
-        return !!status && status.installed && status.loggedIn !== false && !status.incompatible;
+        return !!status && status.installed && status.loggedIn !== false;
     }
 
     async ensureModels(agent: AgentId, force = false): Promise<void> {

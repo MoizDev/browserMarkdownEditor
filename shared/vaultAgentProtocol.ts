@@ -9,9 +9,11 @@
 //                                              ▲
 //                        CLI → MCP tools/call ─┘ → forwarded to the editor as `tool.call`
 //
-// The helper never touches the vault. Every file operation the agent makes is an
-// MCP call the helper forwards to the editor, which executes it against the
-// vault's FileSystemDirectoryHandle and answers with `tool.result`.
+// The helper never touches the vault. Every vault operation the agent makes is
+// an MCP call the helper forwards to the editor, which executes it against the
+// vault's FileSystemDirectoryHandle and answers with `tool.result`. The agent
+// CLI itself runs with its normal tools on the user's machine, but is told to
+// use these vault tools for everything in the vault.
 
 /* ───────────────────────── identity, ports, versions ───────────────────────── */
 
@@ -21,8 +23,10 @@ export const HELPER_APP_ID = 'vaultagent';
 export const HELPER_NAME = 'VaultAgent';
 /** Bumped on any incompatible change to the messages below. */
 export const PROTOCOL_VERSION = 1;
-/** The panel offers the download again when `/health.version` is older. */
-export const MIN_HELPER_VERSION = '0.1.0';
+/** The panel offers the download again when `/health.version` is older.
+ *  0.1.2 is the first helper whose CLIs run unrestricted, with no Codex
+ *  version gate — older ones would keep refusing and contradict the panel. */
+export const MIN_HELPER_VERSION = '0.1.2';
 /** The helper binds the first free one; the panel probes them in order.
  *  The IP literal, never `localhost`: Chrome treats `http://127.0.0.1` as a
  *  secure context, and `localhost` may resolve to ::1 where nothing listens. */
@@ -49,7 +53,7 @@ export const MAX_MCP_BODY_BYTES = 1024 * 1024;
 /** One tool result the editor sends back (text + base64 images). */
 export const MAX_TOOL_RESULT_BYTES = 2 * 1024 * 1024;
 /** Text returned by one tool call. Claude Code spills MCP results over ~25k
- *  tokens to a file its (disabled) Read tool would have to open; stay under. */
+ *  tokens to a file the agent then has to read back; stay under. */
 export const MAX_TOOL_TEXT_CHARS = 60_000;
 /** How long the helper waits for the editor to answer a `tool.call`. Opening a
  *  closed canvas in a side pane waits up to 15 s for it to mount. */
@@ -87,9 +91,6 @@ export interface AgentStatus {
     version: string | null;
     /** null = could not tell (the check itself failed or timed out). */
     loggedIn: boolean | null;
-    /** Set when the installed CLI's shape is not one this helper was built and
-     *  tested against (Codex app-server). The run is refused, never degraded. */
-    incompatible: string | null;
     /** What the user types in a terminal to log in, e.g. `codex login`. */
     loginCommand: string;
     /** How to install it, e.g. `npm i -g @openai/codex`. */
@@ -118,8 +119,8 @@ export type AgentEvent =
     | { type: 'text-delta'; text: string }
     | { type: 'reasoning-delta'; text: string }
     /**
-     * A tool the agent used that is NOT one of ours (web search, web fetch, a
-     * skill load). Our own `vault_*`/`canvas_*` calls reach the panel as
+     * A tool the agent used that is NOT one of ours — any of the CLI's own
+     * tools: shell, file reads/edits, web, skills, sub-agents… Our own `vault_*`/`canvas_*` calls reach the panel as
      * `tool.call` messages and are never repeated here.
      */
     | { type: 'tool'; callId: string; name: string; input?: unknown; status: 'running' | 'done' | 'error'; output?: string }
@@ -136,7 +137,7 @@ export type RunErrorReason =
     | 'busy'            // a run is already in flight on this connection
     | 'agent-missing'   // CLI not found
     | 'logged-out'      // CLI found, not logged in
-    | 'agent-changed'   // CLI shape not the tested one (see AgentStatus.incompatible)
+    | 'agent-changed'   // the CLI answered in a shape this helper does not understand
     | 'bad-request'     // invalid ids, sizes, model…
     | 'crashed'         // CLI exited abnormally / protocol error
     | 'cancelled';

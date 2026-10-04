@@ -43,7 +43,7 @@ npm run typecheck  # tsc for src+shared, then -p helper (the real "did I break t
 npm run lint       # eslint .      (flat config, loaded via jiti)
 npm run preview    # serve a production build
 npm run helper:dev # the VaultAgent helper (Bun) from source, dev origins allowed; helper:build compiles
-npm run helper:test # bun test helper/ — its security checks and CLI stream parsers
+npm run helper:test # bun test helper/ — its security checks, CLI stream parsers and self-update
 ```
 
 **The app has no test suite** (only `helper/` does). `typecheck` and `lint` are its static gates;

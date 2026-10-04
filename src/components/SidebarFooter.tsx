@@ -1,5 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import VaultMenu from './VaultMenu';
+import { AgentUpdateDot } from './agentUpdateIndicator';
+import { agentUpdateHint, useAgentUpdateNotice } from './agentUpdateHint';
 import { ChevronsUpDown, CircleHelp, FileTextOutline, Moon, Network, Settings, Sparkles, Sun, Trash2 } from './icons';
 import type { FileTreeNode, RecentVault, Theme, VaultOpenResult } from '../types';
 
@@ -154,7 +156,10 @@ function SidebarFooter({
     const browseForVault = useCallback(() => onChangeVault(), [onChangeVault]);
 
     const graphLabel = graphOpen ? 'Back to the editor' : 'Neural Brain — graph view';
-    const agentLabel = agentOpen ? 'Close the AI agent (⌘⇧X)' : 'AI agent (⌘⇧X)';
+    // Only where the button can be used: with no vault it is disabled and dotless.
+    const agentNotice = useAgentUpdateNotice();
+    const agentUpdate = vaultName ? agentUpdateHint(agentNotice) : null;
+    const agentLabel = `${agentOpen ? 'Close the AI agent (⌘⇧X)' : 'AI agent (⌘⇧X)'}${agentUpdate ? ` — ${agentUpdate}` : ''}`;
     const themeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
 
     return (
@@ -180,6 +185,7 @@ function SidebarFooter({
                     disabled={!vaultName}
                 >
                     <Sparkles size={18} strokeWidth={1.75} />
+                    {agentUpdate && <AgentUpdateDot />}
                 </button>
                 <button
                     className="sidebar-footer-btn"

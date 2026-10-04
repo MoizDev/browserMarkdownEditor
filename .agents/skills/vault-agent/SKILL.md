@@ -173,11 +173,45 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   (XDG autostart fallback). `helper.uninstall` removes registration, binary and logs, keeps
   `~/.bme-agent-sessions`; reinstall overwrites the same paths.
 - `.github/workflows/vaultagent-release.yml` on tags `vaultagent-v*` builds all three, smoke-tests
-  each (`bun helper/scripts/smoke.ts <binary>`), publishes `RELEASE_ASSETS` to GitHub Releases (the
-  panel links `releases/latest/download/<asset>` — the repo must stay public and publish no other
-  "latest" release). Bump `MIN_HELPER_VERSION` (now 0.1.2, the first unrestricted helper) when the
-  panel needs a newer helper; each release also bumps `SOURCE_VERSION`
-  in `helper/src/buildInfo.ts` (the tag sets a release build's version; source runs report this one).
+  each (`bun helper/scripts/smoke.ts <binary>`, then `update-smoke.ts`), publishes `RELEASE_ASSETS` +
+  the self-update assets + `vaultagent-release.json` (`helper/scripts/release-manifest.ts`) to GitHub
+  Releases (the panel links `releases/latest/download/<asset>` — the repo must stay public and publish
+  no other "latest" release). "Run workflow" = the same builds and checks, publishing nothing.
+  **Release checklist:** bump `SOURCE_VERSION` in `helper/src/buildInfo.ts` (source runs report it; the
+  tag sets a release build's), merge, dispatch once, tag, then check `latest/download/vaultagent-release.json`
+  names the new version. Bump `MIN_HELPER_VERSION` (now 0.1.2, the first unrestricted helper) only
+  when the panel needs a newer helper.
+- **Self-update** (`helper/src/update.ts`; helpers ≥ `SELF_UPDATE_VERSION` 0.1.3, installed `serve`
+  only — source / `--no-register` have no updater and answer `installed:false` / `unsupported`):
+  - `helper.checkUpdate {force?}` → `UpdateCheck` (cached 10 min, a failure 30 s); `helper.update`
+    streams `update.progress` to the asker, replies `{from,to}` once the new binary is in place, then
+    restarts 300 ms later. Refused (`busy`) while any run is active; `run.start` and `helper.uninstall`
+    refused while updating. A copy not running from `installLayout`'s path answers `installed:false`.
+  - Source of truth is baked at build time — `RELEASES_BASE_URL` (`--releases-base` for tests, never
+    from the wire): manifest from `latest/download/`, the asset from the VERSIONED tag URL. Assets are
+    raw per-OS binaries (`UPDATE_ASSET_NAMES`: ad-hoc-signed single-arch macOS, the Windows exe, the
+    Linux binaries) — not the installers (a pkg needs root; Inno kills the running helper first).
+  - Stages, nothing touched until the last: download into `<appDir>/vaultagent.update-<pid>` with
+    size + sha256 → `--version` and a `serve --no-register` /health probe of the staged file →
+    swap (POSIX rename = new inode; Windows renames the running exe aside, rolls back on failure,
+    best-effort Apps & Features `DisplayVersion`) → restart: exit 75 under launchd
+    (`XPC_SERVICE_NAME`) or the systemd unit (its cgroup), `schtasks /Run` on Windows, a detached
+    `serve` otherwise. Leftovers are cleaned at the next installed start. Trust root = HTTPS to
+    GitHub, as for the manual download; the sha guards corruption, not a compromised repo.
+  - Panel (`agentBridge`): outdated helpers (< MIN) still connect, so they can be updated or
+    uninstalled; `helperReady` gates the chat. The bridge owns the update (`update()`, `retain`s
+    itself; a socket close while restarting is not "lost"; 90 s deadline → `update-lost`, kept across redials; an undismissed updated/failed outcome survives a
+    disconnect and is shown on the next connection to that version). Download
+    is offered only when no helper is known to be installed (plus `foreign`); a connected self-
+    updatable helper gets the Update bar / ⋯ row instead; Uninstall is in the menu in every state.
+  - **On every load** (once connected before), `components/agentUpdateHint.ts` runs
+    `agentBridge.checkInBackground()` at idle (a dynamic import: the bridge stays out of the main
+    chunk) — gated exactly like `autoConnect`, so no LNA prompt; `utils/agentUpdateNotice.ts` (a tiny
+    store, imports nothing) puts a dot on the sidebar's agent button and the collapsed rail's expand
+    button. The dot ignores the bar's per-version dismissal. Helpers below 0.1.3 cannot be asked, so get no dot unless outdated.
+  - `CI=true bun helper/scripts/update-smoke.ts` (or `--replace-installed` locally — it replaces the
+    user's install) runs bad-sha / broken-binary / good updates against a fake release on the real
+    service manager.
 
 ## Verifying
 

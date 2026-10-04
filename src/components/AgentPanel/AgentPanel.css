@@ -311,6 +311,106 @@
   margin: 8px 10px 0;
 }
 
+/* ── The update strip (UpdateBar.tsx), in panelError's slot ──
+   Text first, then the buttons pushed right; once the text would drop under
+   ~14em the buttons wrap to a line of their own instead of squeezing it, which
+   is what keeps it whole in a 400px panel and in narrower ones. The right
+   padding is tight so the × sits as close to the edge as the header's.
+   Two classes: `.agent-notice`'s own padding comes later in this file. */
+.agent-notice.agent-update-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 8px 10px 0;
+  padding: 6px 6px 6px 12px;
+}
+
+.agent-update-text {
+  flex: 1 1 14em;
+  min-width: 0;
+}
+
+/* A failure's message is a sentence or two: its buttons always get their own
+   line rather than one that depends on how long the message ran. */
+.agent-update-bar.is-stacked .agent-update-text {
+  flex-basis: 100%;
+  padding-right: 6px;
+}
+
+.agent-update-bar.info b {
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+.agent-update-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+/* The × takes the strip's ink, so it reads as part of a red or green strip
+   rather than a grey button dropped on it. */
+.agent-update-close {
+  width: 22px;
+  height: 22px;
+  margin-left: -4px;
+  color: inherit;
+  opacity: 0.75;
+}
+
+.agent-update-close:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+  opacity: 1;
+}
+
+.agent-btn.small {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+/* The download's progress on the updating screen. */
+.agent-progress {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.agent-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: inherit;
+  background: var(--interactive-accent);
+  transition: width 0.2s ease-out;
+}
+
+/* No size yet: a short segment slides along instead of a fill that would lie. */
+.agent-progress.is-indeterminate > span {
+  width: 30%;
+  transition: none;
+  animation: agent-progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes agent-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(334%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-progress.is-indeterminate > span {
+    width: 100%;
+    opacity: 0.4;
+    animation: none;
+  }
+}
+
 /* ── Buttons, links, commands (setup screens and warnings) ── */
 .agent-btn {
   display: inline-flex;
@@ -614,6 +714,11 @@
 .agent-notice.warning {
   background: color-mix(in srgb, var(--ai-amber) 12%, transparent);
   color: color-mix(in srgb, var(--ai-amber) 70%, var(--text-normal));
+}
+
+.agent-notice.success {
+  background: color-mix(in srgb, var(--ai-green) 12%, transparent);
+  color: color-mix(in srgb, var(--ai-green) 70%, var(--text-normal));
 }
 
 /* The user's message: a card on the right, like every chat. */

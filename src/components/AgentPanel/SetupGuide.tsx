@@ -93,9 +93,48 @@ export interface SetupGuideProps extends PlatformProps {
     supported: boolean;
     bridge: BridgeState;
     onConnect: () => void;
+    onUpdate: () => void;
 }
 
-export function SetupGuide({ supported, bridge, os, arch, onConnect }: SetupGuideProps) {
+/** The updating screen's one line, by the stage the helper reports. */
+function updateLede(bridge: Extract<BridgeState, { status: 'updating' }>): string {
+    const name = bridge.target ? `${HELPER_NAME} ${bridge.target}` : HELPER_NAME;
+    switch (bridge.phase) {
+        case 'checking': return 'Checking the latest release…';
+        case 'downloading': {
+            const pct = progressPercent(bridge);
+            return pct == null ? `Downloading ${name}…` : `Downloading ${name}… ${pct}%`;
+        }
+        case 'verifying': return 'Checking the new version works on this computer…';
+        case 'installing': return 'Installing…';
+        case 'restarting': return `Restarting ${HELPER_NAME}…`;
+    }
+}
+
+function progressPercent(bridge: Extract<BridgeState, { status: 'updating' }>): number | null {
+    const { received, total } = bridge;
+    if (received == null || !total) return null;
+    return Math.min(100, Math.floor((received / total) * 100));
+}
+
+/** A slim bar under the lede while downloading; it slides, not fills, until
+ *  the helper knows the size. */
+function UpdateProgress({ percent }: { percent: number | null }) {
+    return (
+        <div
+            className={'agent-progress' + (percent == null ? ' is-indeterminate' : '')}
+            role="progressbar"
+            aria-label="Download progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent ?? undefined}
+        >
+            <span style={percent == null ? undefined : { width: `${percent}%` }} />
+        </div>
+    );
+}
+
+export function SetupGuide({ supported, bridge, os, arch, onConnect, onUpdate }: SetupGuideProps) {
     if (!supported) {
         return (
             <Screen title="Not available here">
@@ -110,6 +149,53 @@ export function SetupGuide({ supported, bridge, os, arch, onConnect }: SetupGuid
         return (
             <Screen title={`Connecting to ${HELPER_NAME}…`} orb={<Orb variant="S3" size={22} label="Connecting" />}>
                 <p className="agent-lede">If Chrome asks to reach devices on your local network, choose <b>Allow</b>.</p>
+            </Screen>
+        );
+    }
+
+    if (bridge.status === 'updating') {
+        return (
+            <Screen title={`Updating ${HELPER_NAME}…`} orb={<Orb variant="S3" size={22} label="Updating" />}>
+                <p className="agent-lede">{updateLede(bridge)}</p>
+                {bridge.phase === 'downloading' && <UpdateProgress percent={progressPercent(bridge)} />}
+                <p className="agent-muted">Your chats are kept.</p>
+            </Screen>
+        );
+    }
+
+    // Connected, but to a helper too old to chat with: it is connected only so
+    // it can be updated (or uninstalled from the ⋯ menu).
+    if (bridge.status === 'connected' && bridge.helper.outdated) {
+        const { helper, update } = bridge;
+        const tooOld = <>{HELPER_NAME} {helper.version} is older than this editor needs ({MIN_HELPER_VERSION} or newer).</>;
+        if (helper.selfUpdate && update.kind !== 'unsupported') {
+            const failed = update.kind === 'failed' ? update : null;
+            return (
+                <Screen title={`Update ${HELPER_NAME}`}>
+                    <p className="agent-lede">{tooOld}</p>
+                    {failed && (
+                        <div className="agent-notice error" role="alert">
+                            Couldn't update {HELPER_NAME}: {failed.message} You can download the installer instead.
+                        </div>
+                    )}
+                    <div className="agent-actions">
+                        <button type="button" className={'agent-btn' + (failed ? '' : ' primary')} onClick={onUpdate}>
+                            {failed ? 'Try again' : 'Update'}
+                        </button>
+                        {failed && <DownloadButton os={os} arch={arch} />}
+                    </div>
+                    {failed && <InstallSteps os={os} arch={arch} />}
+                </Screen>
+            );
+        }
+        return (
+            <Screen title={`Update ${HELPER_NAME}`}>
+                <p className="agent-lede">{tooOld} Download the installer and open it — it replaces the old version.</p>
+                <div className="agent-actions">
+                    <DownloadButton os={os} arch={arch} />
+                    <button type="button" className="agent-btn" onClick={onConnect}>Retry</button>
+                </div>
+                <InstallSteps os={os} arch={arch} />
             </Screen>
         );
     }
@@ -181,12 +267,30 @@ export function SetupGuide({ supported, bridge, os, arch, onConnect }: SetupGuid
                         <div className="agent-actions">{retry}</div>
                     </Screen>
                 );
+            // Only a helper on an older PROTOCOL is refused outright now; one that
+            // is merely below MIN_HELPER_VERSION connects (the screen above).
             case 'outdated':
                 return (
                     <Screen title={`Update ${HELPER_NAME}`}>
                         <p className="agent-lede">
                             {HELPER_NAME} {problem.version} is older than this editor needs ({MIN_HELPER_VERSION} or newer).
                             Download the installer and open it — it replaces the old version.
+                        </p>
+                        <div className="agent-actions">
+                            <DownloadButton os={os} arch={arch} />
+                            {retry}
+                        </div>
+                        <InstallSteps os={os} arch={arch} />
+                    </Screen>
+                );
+            case 'update-lost':
+                return (
+                    <Screen title={`${HELPER_NAME} didn't come back`} orb={retrying ? <Orb variant="B2" size={22} label="Reconnecting" /> : undefined}>
+                        <p className="agent-lede">
+                            {problem.target
+                                ? `The update to ${problem.target} was installed, but ${HELPER_NAME} hasn't restarted yet.`
+                                : `${HELPER_NAME} stopped answering during the update and hasn't come back yet.`}
+                            {retrying ? ' Still trying.' : ''} If it doesn't, download the installer and open it.
                         </p>
                         <div className="agent-actions">
                             <DownloadButton os={os} arch={arch} />
@@ -216,7 +320,6 @@ export function SetupGuide({ supported, bridge, os, arch, onConnect }: SetupGuid
                 <p className="agent-lede">{HELPER_NAME} is set up on this computer. Connect to pick up where you left off.</p>
                 <div className="agent-actions">
                     <button type="button" className="agent-btn primary" onClick={onConnect}>Connect</button>
-                    <DownloadButton os={os} arch={arch} again primary={false} />
                 </div>
             </Screen>
         );

@@ -613,8 +613,17 @@ Your own MCP servers are left out of the panel's runs, and so are your hooks and
 ### Where chats are kept
 The vault holds only a small list of its chats, in a hidden \`.VaultAgent\` folder (hidden from the file tree, search and the graph, as are \`.claude\`, \`.agents\`, \`.codex\` and \`.opencode\` folders at the top of the vault). The conversations themselves are kept by the agent in its own place, the way it keeps your terminal sessions; the agent works from a folder of its own for this vault, under \`~/.bme-agent-sessions\` in your home folder. A \`CLAUDE.md\` or \`AGENTS.md\` at the top of the vault, and skills in \`.claude/skills\` or \`.agents/skills\`, are passed on to the agent as instructions.
 
+### Keeping it up to date
+Each time you load the page (once you have connected before, and Chrome still allows the connection), the editor asks VaultAgent whether a newer version has been released. When one has, a small dot appears on the sparkles button (and on the expand-sidebar button while the sidebar is hidden), and the panel says "**VaultAgent X** is available" with an **Update** button. The panel's **⋯** menu also has **Update VaultAgent**, which you can use any time; it is greyed out when you already have the latest version.
+
+One click is all it takes: VaultAgent downloads the new version, checks that it runs on this computer, replaces the old copy and restarts. The panel shows the progress, reconnects by itself and says "Updated to VaultAgent X". Your chats are kept. If a reply is being written, the panel asks first, because updating stops it.
+
+If anything goes wrong, the version you have keeps running and the panel says what happened, with **Try again** and a **Download installer** link: opening the installer replaces the old copy just as well.
+
+VaultAgent versions older than 0.1.3 cannot update themselves. For those, the **⋯** menu keeps **Download installer**: download it and open it once, and later versions update from the panel.
+
 ### Turning it off
-The panel's **⋯** menu has **Uninstall VaultAgent**: it stops the helper, removes it from your login items and deletes it. Your chats stay. To use the agent again, open the installer again (the panel offers the download) — reinstalling simply replaces the old copy.
+The panel's **⋯** menu always has **Uninstall VaultAgent** (it works while VaultAgent is connected, even an outdated one, and waits while an update runs): it stops the helper, removes it from your login items and deletes it. Your chats stay. To use the agent again, download the installer from the panel and open it.
 
 ---
 

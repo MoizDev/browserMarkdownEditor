@@ -10,14 +10,16 @@
 //
 // --dev also accepts http://localhost:* / http://127.0.0.1:* origins (the Vite
 // dev server). --no-register: a foreground run (dev, CI smoke) — log to stderr,
-// never touch the installed layout, refuse `helper.uninstall`.
+// never touch the installed layout, refuse `helper.uninstall` and `helper.update`.
+// An installed `serve` can update itself from the panel (update.ts).
 
 import { HELPER_PORTS, type AgentId } from '../../shared/vaultAgentProtocol.ts';
 import { createClaudeAdapter } from './agents/claude.ts';
 import { createCodexAdapter } from './agents/codex.ts';
 import { createOpencodeAdapter } from './agents/opencode.ts';
 import type { AgentAdapter } from './agents/types.ts';
-import { BAKED_ORIGINS, HELPER_VERSION } from './buildInfo.ts';
+import { BAKED_ORIGINS, HELPER_VERSION, RELEASES_BASE_URL } from './buildInfo.ts';
+import { activeRunCount } from './connection.ts';
 import { install, selfUninstall, uninstall, uninstallService } from './install/index.ts';
 import { installLayout } from './install/layout.ts';
 import { logError, setLogFile } from './log.ts';
@@ -26,6 +28,7 @@ import { makeOriginPolicy } from './security.ts';
 import { findRunningHelper, helperPlatform, startServer } from './server.ts';
 import { compareVersions } from '../../shared/vaultAgentProtocol.ts';
 import { runCapture } from './proc.ts';
+import { cleanupLeftovers, createUpdater } from './update.ts';
 
 function flag(args: string[], name: string): boolean {
     return args.includes(name);
@@ -60,7 +63,16 @@ async function serve(args: string[]): Promise<void> {
         codex: createCodexAdapter({ sessionsRoot }),
         opencode: createOpencodeAdapter({ sessionsRoot }),
     };
-    let server;
+    const layout = installLayout(platform);
+    let server: ReturnType<typeof startServer> | undefined;
+    const updater = noRegister ? undefined : createUpdater({
+        platform,
+        layout,
+        currentVersion: HELPER_VERSION,
+        releasesBase: RELEASES_BASE_URL,
+        activeRuns: activeRunCount,
+        stopServer: () => server?.stop(),
+    });
     try {
         server = startServer({
             ports: HELPER_PORTS,
@@ -70,6 +82,7 @@ async function serve(args: string[]): Promise<void> {
                 platform,
                 adapters,
                 uninstall: noRegister ? undefined : () => void selfUninstall(platform),
+                updater,
             },
         });
     } catch (e) {
@@ -77,9 +90,10 @@ async function serve(args: string[]): Promise<void> {
         // Non-zero: launchd / Task Scheduler / systemd retry later.
         process.exit(1);
     }
+    if (!noRegister) cleanupLeftovers(layout.appDir);
     if (noRegister || dev) process.stdout.write(`VaultAgent ${HELPER_VERSION} listening on http://127.0.0.1:${server.port}${dev ? ' (dev origins allowed)' : ''}\n`);
     const stop = () => {
-        server.stop();
+        server?.stop();
         process.exit(0);
     };
     process.on('SIGTERM', stop);

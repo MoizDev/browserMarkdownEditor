@@ -60,13 +60,14 @@ import './index.css';
 import FileExplorer from './components/FileExplorer';
 import SidebarFooter from './components/SidebarFooter';
 import { prefetchPanes } from './components/prefetchPanes';
+import { SidebarRailExpand } from './components/SidebarRailExpand';
+import { scheduleAgentUpdateCheck } from './components/agentUpdateHint';
 import ConfirmDialog from './components/ConfirmDialog';
 import ContextMenu from './components/ContextMenu';
 import EditorPane from './components/EditorPane';
 import SettingsPanel from './components/SettingsPanel';
 import TrashPanel from './components/TrashPanel';
 import GraphView from './components/GraphView';
-import { SidebarLeft } from './components/icons';
 import type {
   ActiveFile,
   FileTreeNode,
@@ -1023,6 +1024,9 @@ export default function App() {
     setAgentPanelOpen(o => !o);
   }, []);
   const closeAgentPanel = useCallback(() => setAgentPanelOpen(false), []);
+  // Each load asks the helper (if one was ever connected) whether VaultAgent has
+  // a newer release, so the sidebar can say so before the panel is opened.
+  useEffect(() => { scheduleAgentUpdateCheck(); }, []);
 
   // ── Asset lifecycle ─────────────────────────────────────────────────────
   // An asset belongs to the notes that embed it: paste a picture and it is
@@ -3381,15 +3385,7 @@ export default function App() {
     <div className="workspace">
       {sidebarCollapsed && (
         <div className="sidebar-rail">
-          <button
-            className="sidebar-rail-btn"
-            onClick={() => setSidebarCollapsed(false)}
-            data-tooltip="Expand sidebar (⌘\)"
-            data-tooltip-position="right"
-            aria-label="Expand sidebar"
-          >
-            <SidebarLeft size={18} strokeWidth={1.75} />
-          </button>
+          <SidebarRailExpand onExpand={() => setSidebarCollapsed(false)} />
         </div>
       )}
       <div

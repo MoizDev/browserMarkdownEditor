@@ -21,6 +21,7 @@ import { logError } from './log.ts';
 import { syncMirror } from './mirror.ts';
 import { BadRequest, ensureDir, vaultDir } from './paths.ts';
 import { newRunToken } from './security.ts';
+import { UpdateFailed, UpdateRefused, type Updater } from './update.ts';
 
 export interface HelperContext {
     sessionsRoot: string;
@@ -30,6 +31,8 @@ export interface HelperContext {
     mcpBaseUrl(): string;
     /** Undefined when running from source / --no-register: nothing to uninstall. */
     uninstall?: () => void;
+    /** Undefined when running from source / --no-register: there is no installed copy to replace. */
+    updater?: Updater;
 }
 
 interface ActiveRun {
@@ -48,6 +51,11 @@ const runsByToken = new Map<string, ActiveRun>();
 
 export function runForToken(token: string): ActiveRun | undefined {
     return runsByToken.get(token);
+}
+
+/** Runs in flight on every connection (self-update refuses while any is). */
+export function activeRunCount(): number {
+    return runsByToken.size;
 }
 
 const RUN_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -141,6 +149,9 @@ export class Connection {
         } catch (e) {
             if (e instanceof BadRequest) this.fail(reqId, 'bad-request', e.message);
             else if (e instanceof RunRefused) this.fail(reqId, e.reason, e.message);
+            else if (e instanceof UpdateRefused) this.fail(reqId, e.code, e.message);
+            // Already logged by the updater, and its message is written for the panel.
+            else if (e instanceof UpdateFailed) this.fail(reqId, 'internal', e.message);
             else {
                 logError(`request ${msg.type} failed`, e);
                 this.fail(reqId, 'internal', e instanceof Error ? e.message : 'internal error');
@@ -202,9 +213,37 @@ export class Connection {
                     this.fail(reqId, 'unsupported', 'This VaultAgent is not installed (it is running from source).');
                     return;
                 }
+                // Another window's update would put a binary back after the removal
+                // (its swap renames over the deleted path) and then restart it.
+                if (this.ctx.updater?.busy) {
+                    this.fail(reqId, 'busy', 'VaultAgent is updating. Try again when it has finished.');
+                    return;
+                }
                 this.reply(reqId, { ok: true });
                 // Respond first; the socket has to carry the answer before we go.
                 setTimeout(uninstall, 300);
+                return;
+            }
+            case 'helper.checkUpdate': {
+                const updater = this.ctx.updater;
+                if (!updater) {
+                    this.reply(reqId, { current: HELPER_VERSION, latest: null, available: false, installed: false });
+                    return;
+                }
+                this.reply(reqId, await updater.check(p.force === true));
+                return;
+            }
+            case 'helper.update': {
+                const updater = this.ctx.updater;
+                if (!updater) {
+                    this.fail(reqId, 'unsupported', 'This VaultAgent is not installed (it is running from source).');
+                    return;
+                }
+                const result = await updater.update(progress => this.send({ type: 'update.progress', ...progress }));
+                this.reply(reqId, result);
+                this.send({ type: 'update.progress', phase: 'restarting' });
+                // Respond first; the socket has to carry the answer before we go.
+                setTimeout(() => updater.restart(), 300);
                 return;
             }
             default:
@@ -226,6 +265,7 @@ export class Connection {
         if (typeof p.text !== 'string') throw new BadRequest('text must be a string');
         const images = validateImages(p.images);
         if (this.active) throw new RunRefused('busy', 'A reply is already being written in this chat window.');
+        if (this.ctx.updater?.busy) throw new RunRefused('busy', 'VaultAgent is updating. Try again in a moment.');
 
         const run: ActiveRun = {
             runId, token: newRunToken(), handle: null, accepted: false, queued: [], finished: false, pendingTools: new Map(), conn: this,

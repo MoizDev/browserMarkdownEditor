@@ -312,6 +312,38 @@ body {
   color: var(--tab-text-color-active);
 }
 
+/* VaultAgent has an update (components/agentUpdateIndicator.tsx): a dot on the
+   buttons that lead to the agent panel, so it is seen with the panel closed. */
+.sidebar-rail-btn,
+.sidebar-footer-btn {
+  position: relative;
+}
+
+.agent-update-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+  pointer-events: none;
+}
+
+/* On Sparkles the dot sits exactly over the small top-right spark and stands
+   in for it (any other spot leaves a stub of it showing). On the rail icon it
+   sits on the frame's corner, so a ring in the rail's colour cuts it out —
+   without one the two strokes merge into a blob. */
+.sidebar-footer-btn .agent-update-dot {
+  top: 3px;
+  right: 5px;
+  box-shadow: 0 0 0 1px var(--background-secondary);
+}
+
+.sidebar-rail-btn .agent-update-dot {
+  top: 2px;
+  right: 3px;
+  box-shadow: 0 0 0 1.5px var(--tab-container-background);
+}
+
 .workspace-resize-handle {
   width: 4px;
   cursor: col-resize;

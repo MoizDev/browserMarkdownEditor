@@ -16,7 +16,7 @@ import type { DragEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { AGENT_IDS, AGENT_LABELS, HELPER_NAME } from '../../../shared/vaultAgentProtocol';
 import type { AgentHost, AgentPanelProps } from '../../types/vaultAgent';
 import { createAgentHosts, type AgentHostDeps } from '../../utils/agentHost';
-import { agentBridge, BridgeError } from '../../utils/agentBridge';
+import { agentBridge, BridgeError, helperReady } from '../../utils/agentBridge';
 import type { BridgeState } from '../../utils/agentBridge';
 import { detectArch, detectOs, installerAsset, isChromium } from '../../utils/platform';
 import type { CpuArch } from '../../utils/platform';
@@ -30,11 +30,24 @@ import { MessageList } from './MessageList';
 import { ModelPicker } from './ModelPicker';
 import { TeachToggle } from './TeachToggle';
 import { AgentWarning, SetupGuide } from './SetupGuide';
+import { UpdateBar } from './UpdateBar';
 import { DRAFT_KEY, activeChatOf, chatStore, configOf, resolveModel } from './chatStore';
 import type { ChatStoreState, Conversation, PreparedImage } from './chatStore';
 import { HEALTH_CAPTION, agentHealth, useBridgeState, useChatState } from './useAgentChat';
 
 const EMPTY: Conversation = { items: [], history: 'none' };
+
+const WAIT_FOR_UPDATE = 'Wait for the update to finish';
+
+/** Resolves once no run is in flight (a stopped one ends on its run.done), or after `timeoutMs`. */
+function runEnded(timeoutMs: number): Promise<void> {
+    return new Promise(resolve => {
+        if (!chatStore.getState().run) { resolve(); return; }
+        const done = () => { window.clearTimeout(timer); off(); resolve(); };
+        const timer = window.setTimeout(done, timeoutMs);
+        const off = chatStore.subscribe(() => { if (!chatStore.getState().run) done(); });
+    });
+}
 
 /** How long after opening the composer may still take the keyboard from where
  *  it was, while the connection or the agent check is still coming up. Past
@@ -53,9 +66,15 @@ const OPEN_FOCUS_WINDOW_MS = 1500;
 function StatusMark({ bridge, running }: { bridge: BridgeState; running: boolean }) {
     let label: string;
     let state: 'working' | 'on' | 'connecting' | 'off';
-    if (bridge.status === 'connected') {
+    if (bridge.status === 'connected' && bridge.helper.outdated) {
+        label = `${HELPER_NAME} ${bridge.helper.version} needs an update`;
+        state = 'off';
+    } else if (bridge.status === 'connected') {
         label = running ? 'Working…' : `Connected to ${HELPER_NAME} ${bridge.helper.version}`;
         state = running ? 'working' : 'on';
+    } else if (bridge.status === 'updating') {
+        label = `Updating ${HELPER_NAME}…`;
+        state = 'connecting';
     } else if (bridge.status === 'connecting' || bridge.status === 'checking' || (bridge.status === 'failed' && bridge.retryAt != null)) {
         label = 'Connecting…';
         state = 'connecting';
@@ -174,13 +193,18 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         return release;
     }, [supported]);
 
-    // A chat opened before the connection was up gets its history now.
+    // A socket to a helper — possibly an outdated one, there only to be
+    // updated or uninstalled. `ready` is the one the chat may use.
     const connected = bridge.status === 'connected';
+    const updating = bridge.status === 'updating';
+    const ready = supported && helperReady(bridge);
+
+    // A chat opened before the connection was up gets its history now.
     const active = activeChatOf(state);
     const activeConversation = state.conversations[state.activeChatId ?? DRAFT_KEY];
     useEffect(() => {
-        if (connected && active && !activeConversation) void chatStore.loadHistory(active);
-    }, [connected, active, activeConversation]);
+        if (ready && active && !activeConversation) void chatStore.loadHistory(active);
+    }, [ready, active, activeConversation]);
 
     useEffect(() => {
         if (!panelError) return;
@@ -193,6 +217,34 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
     }, []);
 
     const connect = useCallback(() => { void agentBridge.connect(); }, []);
+
+    // The bar's button, the outdated screen's and the menu row can all be
+    // pressed again while the question below is up or the reply is stopping;
+    // the bridge ignores a second update, this keeps a second question away.
+    const updateStarting = useRef(false);
+    const doUpdate = useCallback(async () => {
+        if (updateStarting.current) return;
+        updateStarting.current = true;
+        try {
+            if (chatStore.getState().run) {
+                const ok = await host.ask({
+                    title: 'Stop the reply and update?',
+                    body: `${HELPER_NAME} restarts to update, which ends the reply in progress. Your chats are kept.`,
+                    confirmLabel: 'Stop and update',
+                });
+                if (!ok) return;
+                // The helper refuses to update while a run is live.
+                await chatStore.stop();
+                // A stopped run ends when its run.done arrives; updating before
+                // that would abandon it too, stacking a second notice on it.
+                await runEnded(5000);
+            }
+            await agentBridge.update();
+        } finally {
+            updateStarting.current = false;
+        }
+    }, [host]);
+    const update = useCallback(() => { void doUpdate(); }, [doUpdate]);
 
     const uninstall = async () => {
         const ok = await host.ask({
@@ -216,6 +268,35 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         agentBridge.markUninstalled();
     };
 
+    /** The ⋯ menu's Update row, for a helper that can update itself — in
+     *  place of "Download installer", which is for one that cannot. */
+    const updateRow = (): ContextMenuEntry | null => {
+        if (updating) {
+            return { kind: 'command', id: 'update', label: `Updating ${HELPER_NAME}…`, run: () => {}, disabled: true, reason: WAIT_FOR_UPDATE };
+        }
+        if (bridge.status !== 'connected' || !bridge.helper.selfUpdate) return null;
+        const status = bridge.update;
+        const label = `Update ${HELPER_NAME}`;
+        switch (status.kind) {
+            case 'unsupported': return null;
+            case 'available':
+                return { kind: 'command', id: 'update', label: `${label} to ${status.latest}`, run: update };
+            case 'checking':
+                return { kind: 'command', id: 'update', label, run: update, disabled: true, reason: 'Checking for updates…' };
+            case 'current':
+            case 'updated':
+                return {
+                    kind: 'command', id: 'update', label, run: update, disabled: true,
+                    reason: `${HELPER_NAME} ${bridge.helper.version} is the latest version`,
+                };
+            // The helper checks again as it starts, and a failure brings back
+            // the bar with the installer download.
+            case 'unknown':
+            case 'failed':
+                return { kind: 'command', id: 'update', label, run: update };
+        }
+    };
+
     const openMenu = (e: ReactMouseEvent<HTMLButtonElement>) => {
         const button = e.currentTarget;
         const r = button.getBoundingClientRect();
@@ -226,6 +307,9 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         // status it used to show is still surfaced where it matters — the
         // warning above the composer when the chosen agent is not ready.
         void chatStore.refreshAgents(false);
+        // Cached by the helper, so asking on every open is cheap; the row is
+        // built from what is known now and the bar picks up the answer.
+        void agentBridge.checkForUpdate(false);
         const agentRows: ContextMenuEntry[] = ready ? [
             ...AGENT_IDS.map(id => ({
                 kind: 'command' as const,
@@ -247,16 +331,24 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
             anchor: button,
             entries: [
                 ...agentRows,
-                { kind: 'command', id: 'reconnect', label: 'Reconnect', run: connect, disabled: !supported, reason: 'Not available in this browser' },
                 {
+                    kind: 'command', id: 'reconnect', label: 'Reconnect', run: connect,
+                    disabled: !supported || updating,
+                    // A reason is the row's tooltip, so only a dead row gets
+                    // one (measured: an enabled Uninstall said "Connect to
+                    // VaultAgent first" on hover while connected).
+                    reason: updating ? WAIT_FOR_UPDATE : !supported ? 'Not available in this browser' : undefined,
+                },
+                updateRow() ?? {
                     kind: 'command', id: 'download', label: 'Download installer',
                     run: () => { if (asset) window.open(asset.url, '_blank', 'noopener,noreferrer'); },
-                    disabled: !asset, reason: `${HELPER_NAME} has no build for this system`,
+                    disabled: !asset, reason: asset ? undefined : `${HELPER_NAME} has no build for this system`,
                 },
                 { kind: 'separator', id: 'sep' },
                 {
                     kind: 'command', id: 'uninstall', label: `Uninstall ${HELPER_NAME}…`, danger: true,
-                    run: uninstall, disabled: !connected, reason: `Connect to ${HELPER_NAME} first`,
+                    run: uninstall, disabled: !connected,
+                    reason: updating ? WAIT_FOR_UPDATE : connected ? undefined : `Connect to ${HELPER_NAME} first`,
                 },
             ],
         });
@@ -329,7 +421,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         if (files.length && dropHandler.current) dropHandler.current(files);
     };
 
-    const ready = supported && connected;
     const key = state.activeChatId ?? DRAFT_KEY;
     const conversation = state.conversations[key] ?? EMPTY;
     const config = configOf(state);
@@ -376,6 +467,7 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
                 </button>
             </header>
 
+            {ready && <UpdateBar helper={bridge.helper} update={bridge.update} os={os} arch={arch} onUpdate={update} />}
             {panelError && <div className="agent-notice error agent-panel-error" role="alert">{panelError}</div>}
 
             {ready ? (
@@ -413,7 +505,7 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
                 </>
             ) : (
                 <div className="agent-setup">
-                    <SetupGuide supported={supported} bridge={bridge} os={os} arch={arch} onConnect={connect} />
+                    <SetupGuide supported={supported} bridge={bridge} os={os} arch={arch} onConnect={connect} onUpdate={update} />
                 </div>
             )}
         </div>

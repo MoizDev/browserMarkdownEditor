@@ -10,8 +10,8 @@
 // is idempotent, index loads are keyed by vault, and the one run is a field,
 // not something an effect starts.
 
-import { agentBridge, BridgeError } from '../../utils/agentBridge';
-import type { BridgeState, HelperEvent } from '../../utils/agentBridge';
+import { agentBridge, BridgeError, helperReady } from '../../utils/agentBridge';
+import type { HelperEvent, HelperInfo } from '../../utils/agentBridge';
 import { executeTool } from '../../utils/vaultAgentTools';
 import { buildAgentContext, stripAgentContext } from '../../utils/agentContext';
 import { getReplyModePref, resolveReplyMode } from '../../utils/agentReplyMode';
@@ -225,6 +225,13 @@ export function configOf(state: ChatStoreState): ChatConfig {
 
 /* ───────────────────────── the store ───────────────────────── */
 
+/** Only a helper the chat may use counts: an outdated one is connected just
+ *  to be updated or uninstalled, and is never asked for agents or history. */
+function readyHelper(): HelperInfo | null {
+    const state = agentBridge.getState();
+    return helperReady(state) ? state.helper : null;
+}
+
 class ChatStore {
     private state: ChatStoreState = {
         vaultKey: null,
@@ -259,11 +266,19 @@ class ChatStore {
     /** Mirror payload hash per vault uuid, for this connection. */
     private readonly mirrorHashes = new Map<string, string>();
     private indexLoadSeq = 0;
-    private lastBridgeStatus: BridgeState['status'] = agentBridge.getState().status;
+    /** The chat-ready helper last seen. An object per connection, so a new
+     *  one is told apart from the same one re-announced with a fresh update
+     *  status. */
+    private lastHelper: HelperInfo | null = null;
 
     constructor() {
         const offEvents = agentBridge.subscribe(event => this.onHelperEvent(event));
         const offState = agentBridge.subscribeState(() => this.onBridgeState());
+        // This module loads with the panel, but the page-load update check can
+        // have connected the bridge first: a helper already there is announced
+        // now, or its agents are never asked for (measured: "Checking agents…"
+        // for good when the panel opened inside the check's grace).
+        this.onBridgeState();
         // Dev only: a hot update re-runs this module and builds a second
         // store. Both listening would answer every tool.call TWICE — a
         // doubled edit in the user's note — so the old one lets go first.
@@ -377,22 +392,24 @@ class ChatStore {
     /* ── the connection ── */
 
     private onBridgeState(): void {
-        const status = agentBridge.getState().status;
-        const was = this.lastBridgeStatus;
-        this.lastBridgeStatus = status;
-        if (status === 'connected' && was !== 'connected') {
+        const helper = readyHelper();
+        const was = this.lastHelper;
+        this.lastHelper = helper;
+        if (helper && helper !== was) {
             // A new helper process may have a fresh sessions folder.
             this.mirrorHashes.clear();
             this.set({ models: {} });
             void this.refreshAgents(false);
         }
-        if (status !== 'connected' && was === 'connected' && this.state.run) {
-            this.abandonRun('Lost the connection to VaultAgent, so the reply stopped.');
+        if (!helper && was && this.state.run) {
+            this.abandonRun(agentBridge.getState().status === 'updating'
+                ? 'VaultAgent is updating, so the reply stopped.'
+                : 'Lost the connection to VaultAgent, so the reply stopped.');
         }
     }
 
     async refreshAgents(refresh: boolean): Promise<void> {
-        if (agentBridge.getState().status !== 'connected') return;
+        if (!helperReady(agentBridge.getState())) return;
         this.set({ agentsStatus: this.state.agents.length ? 'ready' : 'loading' });
         try {
             const agents = await agentBridge.request('agents.status', { refresh });
@@ -416,7 +433,7 @@ class ChatStore {
     async ensureModels(agent: AgentId, force = false): Promise<void> {
         const existing = this.state.models[agent];
         if (!force && existing && existing.status !== 'error') return;
-        if (!this.agentUsable(agent) || agentBridge.getState().status !== 'connected') return;
+        if (!this.agentUsable(agent) || !helperReady(agentBridge.getState())) return;
         this.set({ models: { ...this.state.models, [agent]: { status: 'loading', models: existing?.models ?? [] } } });
         try {
             const models = await agentBridge.request('models.list', { agent });
@@ -490,7 +507,7 @@ class ChatStore {
             this.setConversation(chat.id, { items: [], history: 'loaded' });
             return;
         }
-        if (agentBridge.getState().status !== 'connected') return;
+        if (!helperReady(agentBridge.getState())) return;
         this.setConversation(chat.id, { items: [], history: 'loading' });
         try {
             const vaultId = await host.ensureVaultUuid();
@@ -574,7 +591,7 @@ class ChatStore {
     /** One run at a time; the composer is disabled while one is live. */
     async send(text: string, images: PreparedImage[]): Promise<void> {
         const host = this.host;
-        if (!host || !this.state.vaultKey || this.state.run || agentBridge.getState().status !== 'connected') return;
+        if (!host || !this.state.vaultKey || this.state.run || !helperReady(agentBridge.getState())) return;
         const config = this.config();
         const existing = this.activeChat();
         const runId = uid();

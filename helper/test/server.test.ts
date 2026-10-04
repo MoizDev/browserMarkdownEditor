@@ -267,4 +267,12 @@ describe('WebSocket protocol', () => {
         expect(await p.request('helper.uninstall')).toMatchObject({ ok: false, error: { code: 'unsupported' } });
         p.ws.close();
     });
+
+    test('a helper with no updater (source / --no-register): no update offered, update refused', async () => {
+        const p = await new Panel().open();
+        expect(await p.request('helper.checkUpdate', { force: true })).toMatchObject({ ok: true, result: { available: false, installed: false, latest: null } });
+        expect(await p.request('helper.update')).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+        expect(p.messages.some(m => m.type === 'update.progress')).toBe(false);
+        p.ws.close();
+    });
 });

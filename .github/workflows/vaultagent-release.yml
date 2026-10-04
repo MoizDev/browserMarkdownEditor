@@ -9,6 +9,9 @@
 #
 # Asset names are the app's download links (RELEASE_ASSETS in
 # shared/vaultAgentProtocol.ts) — renaming one here breaks "Download installer".
+# Installed helpers update themselves from vaultagent-release.json and the raw
+# per-OS binaries beside it (UPDATE_ASSET_NAMES in helper/src/update.ts):
+# renaming or dropping one of those breaks the panel's "Update" for that OS.
 
 name: VaultAgent release
 
@@ -81,10 +84,29 @@ jobs:
           codesign --verify "$bin"
           test "$("$bin" --version)" = "$VERSION"
           grep -q "version=\"$VERSION\"" "$RUNNER_TEMP/pkg/Distribution"
+      - name: Self-update binaries (one arch each, ad-hoc signed)
+        run: |
+          set -euo pipefail
+          for a in arm64 x64; do
+            cp "out/vaultagent-darwin-$a" "dist/vaultagent-macos-$a"
+            chmod 755 "dist/vaultagent-macos-$a"
+            # Apple silicon kills unsigned code; an installed helper runs these as they are.
+            codesign --force --sign - "dist/vaultagent-macos-$a"
+            codesign --verify "dist/vaultagent-macos-$a"
+          done
+          test "$(dist/vaultagent-macos-arm64 --version)" = "$VERSION"
+      - name: Self-update, end to end (real launchd)
+        # A runner may have no GUI session for the LaunchAgent: the script warns and passes then.
+        run: bun helper/scripts/update-smoke.ts
+        env:
+          CI: 'true'
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: dist/VaultAgent.pkg
+          path: |
+            dist/VaultAgent.pkg
+            dist/vaultagent-macos-arm64
+            dist/vaultagent-macos-x64
           if-no-files-found: error
 
   windows:
@@ -135,10 +157,19 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw "uninstall left the logon task behind" }
           if (Get-Process vaultagent -ErrorAction SilentlyContinue) { throw "uninstall left vaultagent.exe running" }
           exit 0
+      - name: Self-update, end to end (real logon task)
+        # A runner may have no interactive session for the task: the script warns and passes then.
+        run: bun helper/scripts/update-smoke.ts
+        env:
+          CI: 'true'
+      - name: Self-update binary
+        run: Copy-Item out\vaultagent.exe dist\vaultagent-windows-x64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/VaultAgent-Setup.exe
+          path: |
+            dist/VaultAgent-Setup.exe
+            dist/vaultagent-windows-x64.exe
           if-no-files-found: error
 
   linux:
@@ -187,6 +218,10 @@ jobs:
             sleep 1
           done
           echo "::error::the helper is still running after uninstall"; exit 1
+      - name: Self-update, end to end (real systemd)
+        run: bun helper/scripts/update-smoke.ts
+        env:
+          CI: 'true'
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
@@ -203,6 +238,11 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      # The manifest is written by a repo script (the same validation installed helpers apply).
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       - uses: actions/download-artifact@v4
         with:
           path: assets
@@ -211,11 +251,14 @@ jobs:
         run: |
           set -euo pipefail
           ls -l assets
-          for f in VaultAgent.pkg VaultAgent-Setup.exe vaultagent-linux-x64 vaultagent-linux-arm64; do test -s "assets/$f"; done
-          (cd assets && sha256sum VaultAgent.pkg VaultAgent-Setup.exe vaultagent-linux-x64 vaultagent-linux-arm64 > SHA256SUMS)
+          bins=(VaultAgent.pkg VaultAgent-Setup.exe vaultagent-linux-x64 vaultagent-linux-arm64
+                vaultagent-macos-arm64 vaultagent-macos-x64 vaultagent-windows-x64.exe)
+          for f in "${bins[@]}"; do test -s "assets/$f"; done
+          bun helper/scripts/release-manifest.ts "$VERSION" assets
+          (cd assets && sha256sum "${bins[@]}" > SHA256SUMS)
           prerelease=()
           [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "VaultAgent $VERSION" \
-            --notes "VaultAgent $VERSION — the agent helper for the editor's agent panel. Unsigned: see the panel's install guide." \
+            --notes "VaultAgent $VERSION — the agent helper for the editor's agent panel. Unsigned: see the panel's install guide. VaultAgent 0.1.3 and later update themselves from the panel (⋯ → Update VaultAgent); older versions: download the installer once." \
             "${prerelease[@]}" \
-            assets/VaultAgent.pkg assets/VaultAgent-Setup.exe assets/vaultagent-linux-x64 assets/vaultagent-linux-arm64 assets/SHA256SUMS
+            "${bins[@]/#/assets/}" assets/SHA256SUMS assets/vaultagent-release.json

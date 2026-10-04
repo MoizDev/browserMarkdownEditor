@@ -7,6 +7,9 @@
 //   version  --version X   or env VAULTAGENT_VERSION   (default: the source version)
 //   origins  --origins "https://a,https://b" or env VAULTAGENT_ALLOWED_ORIGINS
 //            — EXTRA allowed origins; the production origin is always included.
+//   releases --releases-base http://127.0.0.1:47890/releases or env VAULTAGENT_RELEASES_BASE
+//            — where self-update looks for releases (default: the GitHub Releases page).
+//            Tests only (a fake release server); release builds never set it.
 
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -24,6 +27,7 @@ const windows = target ? target.includes('windows') : process.platform === 'win3
 const outfile = resolve(opt('--outfile') ?? join(helperDir, 'dist', windows ? 'vaultagent.exe' : 'vaultagent'));
 const version = (opt('--version') ?? process.env.VAULTAGENT_VERSION ?? '').replace(/^vaultagent-v/, '').replace(/^v/, '');
 const originsRaw = opt('--origins') ?? process.env.VAULTAGENT_ALLOWED_ORIGINS ?? '';
+const releasesRaw = opt('--releases-base') ?? process.env.VAULTAGENT_RELEASES_BASE ?? '';
 
 if (version && !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
     console.error(`bad version: ${version}`);
@@ -37,6 +41,18 @@ const origins = originsRaw.split(/[\s,]+/).filter(Boolean).map(o => {
     }
     return n;
 });
+const releasesBase = (() => {
+    if (!releasesRaw) return '';
+    let u: URL | null = null;
+    try {
+        u = new URL(releasesRaw);
+    } catch { /* reported below */ }
+    if (!u || (u.protocol !== 'http:' && u.protocol !== 'https:') || u.search || u.hash) {
+        console.error(`bad releases base (want an http(s) URL, no query or fragment): ${releasesRaw}`);
+        process.exit(1);
+    }
+    return u.href.replace(/\/+$/, '');
+})();
 
 mkdirSync(dirname(outfile), { recursive: true });
 const cmd = [
@@ -46,10 +62,11 @@ const cmd = [
     ...(windows ? ['--windows-hide-console'] : []),
     `--define`, `__VAULTAGENT_VERSION__=${JSON.stringify(version)}`,
     `--define`, `__VAULTAGENT_EXTRA_ORIGINS__=${JSON.stringify(origins.join(','))}`,
+    `--define`, `__VAULTAGENT_RELEASES_BASE__=${JSON.stringify(releasesBase)}`,
     join(helperDir, 'src', 'main.ts'),
     '--outfile', outfile,
 ];
 const proc = Bun.spawn(cmd, { stdout: 'inherit', stderr: 'inherit' });
 const code = await proc.exited;
 if (code !== 0) process.exit(code);
-console.log(`built ${outfile}${version ? ` (v${version})` : ''}${origins.length ? ` + origins ${origins.join(', ')}` : ''}`);
+console.log(`built ${outfile}${version ? ` (v${version})` : ''}${origins.length ? ` + origins ${origins.join(', ')}` : ''}${releasesBase ? ` + releases ${releasesBase}` : ''}`);

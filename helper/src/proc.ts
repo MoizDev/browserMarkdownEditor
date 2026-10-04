@@ -2,6 +2,7 @@
 // value from the panel (a model name, a session id) can ever be parsed as a
 // command. Values that do reach argv are validated by their adapter first.
 
+import { spawn as nodeSpawn } from 'node:child_process';
 import { delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import type { Subprocess } from 'bun';
@@ -79,6 +80,22 @@ export async function runCapture(cmd: string[], opts: { cwd?: string; env?: Reco
     ]);
     clearTimeout(timer);
     return { code: timedOut ? null : code, stdout, stderr, timedOut };
+}
+
+/** Start something that must outlive us (Linux fallback start, Windows self-delete, a restart after self-update). */
+export function detached(cmd: string[]): void {
+    const child = nodeSpawn(cmd[0], cmd.slice(1), { detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+}
+
+/**
+ * Windows: run one cmd.exe command line detached. Verbatim, wrapped in `/s /c "…"`
+ * (cmd strips exactly the outer quotes): default argument quoting would turn the
+ * line's own quotes into `\"`, which cmd does not understand.
+ */
+export function detachedCmd(line: string): void {
+    const child = nodeSpawn('cmd.exe', ['/d', '/s', '/c', `"${line}"`], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true });
+    child.unref();
 }
 
 export function killHard(proc: Subprocess): void {

@@ -63,6 +63,10 @@ Filename: "{app}\vaultagent.exe"; Parameters: "uninstall-service"; Flags: runhid
 [UninstallDelete]
 Type: files; Name: "{app}\vaultagent.log"
 Type: files; Name: "{app}\vaultagent.log.1"
+; Self-update's leftovers (the replaced .exe, an interrupted download): normally
+; cleaned at the helper's next start, but one left behind must not keep {app} alive.
+Type: files; Name: "{app}\vaultagent.previous-*.exe"
+Type: files; Name: "{app}\vaultagent.update-*"
 Type: dirifempty; Name: "{app}"
 
 [Code]

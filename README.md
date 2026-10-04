@@ -80,10 +80,12 @@ This generates the relevant application bundle dynamically inside the `dist/` di
 A Bun program, bundled with the dev dependencies:
 ```bash
 npm run helper:dev    # run it from source; allows http://localhost:* origins
-npm run helper:test   # its test suite (security checks, CLI stream parsers)
+npm run helper:test   # its test suite (security checks, CLI stream parsers, self-update)
 npm run helper:build  # compile a standalone binary for this OS into helper/dist
 ```
-Installers are built and published by `.github/workflows/vaultagent-release.yml` when a `vaultagent-v*` tag is pushed; the panel downloads them from this repository's latest GitHub Release.
+Installers are built and published by `.github/workflows/vaultagent-release.yml` when a `vaultagent-v*` tag is pushed; the panel downloads them from this repository's latest GitHub Release, and an installed helper (0.1.3+) updates itself from the same release when the user clicks **Update** in the panel.
+
+To test self-update without publishing, build helpers against a local fake release with `bun helper/scripts/build.ts --releases-base http://127.0.0.1:<port>/releases`; `bun helper/scripts/update-smoke.ts --replace-installed` does exactly that end to end. It replaces the helper installed for your user, which the flag acknowledges (CI runs it as `CI=true`); back yours up first, or reinstall it afterwards.
 
 ## Future Context & Limitations
 - The underlying architecture heavily depends on browser edge permissions. Users must initially and explicitly grant OS-level prompt access to their chosen folder.

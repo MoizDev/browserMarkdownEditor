@@ -4,13 +4,12 @@
 // `root` (tests, CI smoke): files are laid out under that folder and nothing is
 // registered with the OS — no launchctl, schtasks or systemctl.
 
-import { spawn as nodeSpawn } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { HelperPlatform } from '../../../shared/vaultAgentProtocol.ts';
 import { logError } from '../log.ts';
-import { runCapture } from '../proc.ts';
+import { detached, detachedCmd, runCapture } from '../proc.ts';
 import {
     LAUNCHD_LABEL, SYSTEMD_UNIT, WINDOWS_TASK, autostartDesktop, installLayout, launchdPlist, systemdUnit, windowsTaskXml,
     type InstallLayout,
@@ -77,12 +76,6 @@ function windowsUserId(): string {
     const user = process.env.USERNAME ?? '';
     const domain = process.env.USERDOMAIN ?? '';
     return domain ? `${domain}\\${user}` : user;
-}
-
-/** Start something that must outlive us (Linux fallback start, Windows self-delete). */
-function detached(cmd: string[]): void {
-    const child = nodeSpawn(cmd[0], cmd.slice(1), { detached: true, stdio: 'ignore', windowsHide: true });
-    child.unref();
 }
 
 /**
@@ -216,8 +209,11 @@ export async function uninstall(opts: { platform: HelperPlatform; root?: string 
     if (register) await uninstallService();
     removeFiles(l);
     if (register && existsSync(l.appDir) && !/["%]/.test(l.appDir)) {
-        // Our own .exe is still running; delete the folder once we are gone.
-        detached(['cmd.exe', '/d', '/c', `timeout /t 3 /nobreak >nul & rmdir /s /q "${l.appDir}"`]);
+        // Our own .exe is still running; delete the folder once we are gone. `ping`
+        // as the delay, not `timeout`: with no console (stdio 'ignore') `timeout`
+        // fails at once ("Input redirection is not supported") and the rmdir ran
+        // while the .exe was still locked.
+        detachedCmd(`ping -n 4 127.0.0.1 >nul & rmdir /s /q "${l.appDir}"`);
     }
 }
 

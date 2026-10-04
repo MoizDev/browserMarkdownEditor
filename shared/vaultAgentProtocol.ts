@@ -35,8 +35,16 @@ export const HELPER_PORTS: readonly number[] = [47823, 47824, 47825, 47826, 4782
 /** The deployed editor. Baked into the helper as an allowed Origin; release
  *  builds may add more through the VAULTAGENT_ALLOWED_ORIGINS repo variable. */
 export const PRODUCTION_ORIGIN = 'https://notes.moizhashmi.com';
+/** The GitHub Releases page the release workflow publishes to. */
+export const RELEASES_BASE = 'https://github.com/MoizDev/browserMarkdownEditor/releases';
 /** Where the release workflow publishes the installers. */
-export const RELEASE_DOWNLOAD_BASE = 'https://github.com/MoizDev/browserMarkdownEditor/releases/latest/download';
+export const RELEASE_DOWNLOAD_BASE = `${RELEASES_BASE}/latest/download`;
+/** Published beside the installers: `{app, version, assets: {<name>: {sha256, size}}}`
+ *  for the raw per-OS binaries an installed helper updates itself from. */
+export const RELEASE_MANIFEST = 'vaultagent-release.json';
+/** The first helper that answers `helper.update`. Older ones cannot update
+ *  themselves, so the panel keeps offering them the manual installer download. */
+export const SELF_UPDATE_VERSION = '0.1.3';
 export const RELEASE_ASSETS = {
     macos: 'VaultAgent.pkg',
     windows: 'VaultAgent-Setup.exe',
@@ -127,6 +135,20 @@ export type AgentEvent =
     /** Something the user should see that is not the agent's reply. */
     | { type: 'notice'; message: string };
 
+/** The stages of a self-update, in order, as `update.progress` reports them. */
+export type UpdatePhase = 'checking' | 'downloading' | 'verifying' | 'installing' | 'restarting';
+
+/** `helper.checkUpdate`. */
+export interface UpdateCheck {
+    current: string;
+    /** null = the check failed (see `error`) or the helper cannot update itself. */
+    latest: string | null;
+    available: boolean;
+    /** false = no updater: a source run or `serve --no-register`. */
+    installed: boolean;
+    error?: string;
+}
+
 export interface RunUsage {
     inputTokens?: number;
     outputTokens?: number;
@@ -215,6 +237,13 @@ export interface RequestMap {
     /** Remove the login registration, the binary and the logs, then exit.
      *  `~/.bme-agent-sessions` is kept. Responds before it goes. */
     'helper.uninstall': [Record<string, never>, { ok: true }];
+    /** Is a newer release published? Cached by the helper; `force` skips the cache. */
+    'helper.checkUpdate': [{ force?: boolean }, UpdateCheck];
+    /** Download, check and install the latest release, then restart into it.
+     *  Progress streams as `update.progress` to the asking connection only.
+     *  Responds once the new binary is in place, before the helper restarts;
+     *  a failure response means the running helper and its binary are untouched. */
+    'helper.update': [Record<string, never>, { from: string; to: string }];
 }
 
 export type RequestName = keyof RequestMap;
@@ -239,7 +268,9 @@ export type HelperMessage =
     | { type: 'run.event'; runId: string; event: AgentEvent }
     | { type: 'run.done'; runId: string; sessionId: string | null; status: 'ok' | 'cancelled'; usage?: RunUsage }
     | { type: 'run.error'; runId: string; reason: RunErrorReason; message: string }
-    | { type: 'tool.call'; runId: string; callId: string; name: ToolName; args: Record<string, unknown> };
+    | { type: 'tool.call'; runId: string; callId: string; name: ToolName; args: Record<string, unknown> }
+    /** Sent only to the connection that asked for `helper.update`. */
+    | { type: 'update.progress'; phase: UpdatePhase; received?: number; total?: number };
 
 /* ───────────────────────── the agent's tools ───────────────────────── */
 

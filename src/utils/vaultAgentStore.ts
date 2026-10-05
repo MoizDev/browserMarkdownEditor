@@ -100,3 +100,42 @@ export function parseVaultId(text: string | null): string | null {
 export function serializeVaultId(id: string): string {
     return JSON.stringify({ version: 1, id }, null, 2) + '\n';
 }
+
+/**
+ * The vault's id, read from `.VaultAgent/vault.json` or minted and written.
+ *
+ * ONE implementation, two callers that could not be further apart: the agent
+ * host (which names the CLI's working folder after it) and the terminal (which
+ * asks the helper "where is this vault on disk?" with it). Both need the same
+ * answer for the same vault, and a second minting would split a vault in two.
+ *
+ * Serialized here rather than by each caller: StrictMode runs effects twice,
+ * and the first terminal and the first message can land together.
+ */
+let idInFlight: Promise<string | null> = Promise.resolve(null);
+
+export function ensureVaultId(
+    root: FileSystemDirectoryHandle,
+    writeFile: (handle: FileSystemFileHandle, text: string) => Promise<unknown>,
+): Promise<string | null> {
+    const next = idInFlight.then(async () => {
+        try {
+            const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR);
+            const existing = parseVaultId(await (await (await dir.getFileHandle(VAULT_ID_FILE)).getFile()).text());
+            if (existing) return existing;
+        } catch { /* no folder, no file, or unreadable: mint one below */ }
+        try {
+            const id = crypto.randomUUID();
+            const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR, { create: true });
+            // Never createFile: it truncates, and then walks the whole vault to
+            // refresh a tree this hidden folder is not in.
+            await writeFile(await dir.getFileHandle(VAULT_ID_FILE, { create: true }), serializeVaultId(id));
+            return id;
+        } catch (err) {
+            console.error('Could not write the vault id:', err);
+            return null;
+        }
+    });
+    idInFlight = next.catch(() => null);
+    return next;
+}

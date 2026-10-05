@@ -330,9 +330,19 @@ describe('TerminalManager: open', () => {
     test('spawns the launch spec at the requested size and reports shell, pid and backend', async () => {
         const { backend, mgr, owner } = rig();
         const r = await mgr.open(owner, newId(), 120, 40);
-        expect(r).toEqual({ shell: '/fake/zsh', pid: backend.spawned[0].pid, backend: 'inprocess' });
+        expect(r).toEqual({ shell: '/fake/zsh', pid: backend.spawned[0].pid, backend: 'inprocess', cwd: '/home/ada' });
         expect(backend.spawned[0].options).toMatchObject({ file: '/fake/zsh', args: ['-l'], cwd: '/home/ada', cols: 120, rows: 40 });
         expect(mgr.count()).toBe(1);
+        await mgr.closeAll();
+    });
+
+    test('starts the shell in the folder it was given, and in ~ without one', async () => {
+        const { backend, mgr, owner } = rig();
+        const r = await mgr.open(owner, newId(), 80, 24, '/home/ada/Notes/CS145');
+        expect(r.cwd).toBe('/home/ada/Notes/CS145');
+        expect(backend.spawned[0].options).toMatchObject({ cwd: '/home/ada/Notes/CS145' });
+        const plain = await mgr.open(owner, newId(), 80, 24);
+        expect(plain.cwd).toBe('/home/ada');
         await mgr.closeAll();
     });
 

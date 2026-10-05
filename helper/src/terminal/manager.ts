@@ -143,7 +143,13 @@ export class TerminalManager {
         return this.sessions.size;
     }
 
-    async open(owner: TerminalOwner, termId: unknown, cols: unknown, rows: unknown): Promise<{ shell: string; pid: number; backend: TerminalBackend }> {
+    /**
+     * `cwd` is where the shell starts: the folder of the file the user is
+     * looking at, already resolved to a real directory by the caller
+     * (helper/src/vaultPath.ts). Undefined keeps the old behaviour, the home
+     * directory, which is also what a vault the helper cannot find falls back to.
+     */
+    async open(owner: TerminalOwner, termId: unknown, cols: unknown, rows: unknown, cwd?: string): Promise<{ shell: string; pid: number; backend: TerminalBackend; cwd: string }> {
         if (!isUuid(termId)) throw new BadRequest('invalid termId');
         const dims = size(cols, rows);
         if (this.sessions.has(termId)) throw new BadRequest('that terminal already exists');
@@ -157,7 +163,8 @@ export class TerminalManager {
         // must still detach (and so eventually reap) this session.
         this.sessions.set(termId, session);
         try {
-            const launch = await this.launch();
+            const base = await this.launch();
+            const launch = cwd ? { ...base, cwd } : base;
             session.shell = launch.file;
             const pty = await this.backend.spawn({ ...launch, cols: dims.cols, rows: dims.rows }, {
                 onData: bytes => this.onData(session, bytes),
@@ -167,7 +174,7 @@ export class TerminalManager {
             session.backend = this.backend.kind;
             // Closed (or exited) while the spawn was still in flight.
             if (session.disposed || session.exited) pty.kill();
-            return { shell: session.shell, pid: pty.pid, backend: session.backend };
+            return { shell: session.shell, pid: pty.pid, backend: session.backend, cwd: launch.cwd };
         } catch (e) {
             this.dispose(session);
             throw e;

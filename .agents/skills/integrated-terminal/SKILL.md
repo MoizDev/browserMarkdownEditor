@@ -13,11 +13,40 @@ TerminalDock (main chunk: handle + height)          helper (Bun)                
 ```
 
 **The user's decisions, which are the spec — do not "fix" them:** on by default, ships with VaultAgent,
-a button beside the agent's; starts in `~` and knows nothing about the vault; **completely
-unconstrained** (no sandbox, allow-list or confirmation — the user accepted that anything running
+a button beside the agent's; **a new shell starts in the folder of the file the user is looking at**
+(revised from "starts in `~`, knows nothing about the vault" — see the section below; it still falls
+back to `~`); **completely unconstrained** (no sandbox, allow-list or confirmation — the user accepted that anything running
 script on this origin can now run commands); no folder picker or setup dialog; **independent of the
 agent** (nothing in `viewRegistry`/`agentContext`, no agent tool touches it, the manager shares no
 state with runs); **no code-signing certificate, ever** (ad-hoc signing only).
+
+## Where a shell starts (`helper/src/vaultPath.ts`, `utils/terminalStart.ts`)
+
+`terminal.open` carries `vaultId` + `dir` (vault-relative, from the editor) and answers with the `cwd`
+it used. The editor CANNOT send a path: the File System Access API hands out handles and never
+`/Users/…`, which is also why the agent's CLIs run in `~/.bme-agent-sessions/<uuid>`. So the helper
+resolves the vault itself.
+
+- **The vault is found by its MARKER, not its name**: `.VaultAgent/vault.json` holds the vault's id,
+  so "where is vault X?" has an exact answer and a same-named folder cannot impersonate it.
+  `searchForVault` walks breadth-first from `$HOME` (depth 6, 2s, 20k dirs, skipping hidden dirs,
+  `Library`, `node_modules`, `.Trash`…, never following a symlink out) and opens no file but the
+  marker. The answer is cached in `~/.bme-agent-sessions/vault-paths.json` and **re-checked against
+  the marker every time**, so a moved or renamed vault never hands a shell someone else's directory.
+- **Every fallback is one step out, never a failure**: a folder deleted since the editor last looked,
+  a `..`, an absolute path or a file instead of a directory all end at the vault root; a vault that
+  cannot be found at all ends at `~`, which is exactly the old behaviour.
+- **The browser side is `utils/terminalStart.ts`**, a one-function store App fills from the focused
+  tab — not `viewRegistry`, not `agentContext`: the terminal stays independent of the agent. The vault
+  id comes from `vaultAgentStore.ensureVaultId`, the SAME minting the agent host uses (two mintings
+  would split one vault in two), and it is minted lazily — on the first terminal or the first time
+  Settings is opened, never merely because a vault was opened.
+- **Only NEW shells follow the focus.** A running shell owns its cwd; `cd`-ing it under the user was
+  considered and refused.
+- `Settings → Terminal → Vault folder on disk` (`components/VaultFolderSetting.tsx`) shows what was
+  found and takes a typed path when the search comes up empty (a vault outside `$HOME`, a network
+  share). It asks the helper ONLY when a connection already exists — Settings must never be what
+  raises Chrome's Local Network Access prompt.
 
 ## Protocol and gate (`shared/vaultAgentProtocol.ts`)
 

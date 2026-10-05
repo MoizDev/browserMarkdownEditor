@@ -31,8 +31,8 @@ import {
 import { isTextFile } from './vaultSearch';
 import { nameTaken } from './entryNames';
 import {
-    CHAT_INDEX_FILE, VAULT_AGENT_DIR, VAULT_ID_FILE, emptyChatIndex, parseChatIndex, parseVaultId,
-    serializeChatIndex, serializeVaultId,
+    CHAT_INDEX_FILE, VAULT_AGENT_DIR, VAULT_ID_FILE, emptyChatIndex, ensureVaultId, parseChatIndex,
+    serializeChatIndex,
 } from './vaultAgentStore';
 
 /** How long `openCanvasForAgent` waits for a canvas to mount and register. */
@@ -197,7 +197,6 @@ function queue() {
 
 export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const serializeIndex = queue();
-    const serializeId = queue();
 
     const toolHost: VaultToolHost = {
         vaultToken: () => getDeps().root,
@@ -482,21 +481,10 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         ensureVaultUuid() {
             const root = getDeps().root;
             if (!root) return Promise.resolve(null);
-            // Serialized: StrictMode and a double send would otherwise both find
-            // no file and mint two ids, the second orphaning the first's folder.
-            return serializeId(async () => {
-                const existing = parseVaultId(await readVaultAgentFile(root, VAULT_ID_FILE));
-                if (existing) return existing;
-                if (getDeps().root !== root) return null;
-                const id = crypto.randomUUID();
-                try {
-                    await writeVaultAgentFile(root, VAULT_ID_FILE, serializeVaultId(id));
-                    return id;
-                } catch (err) {
-                    console.error('Could not write the vault id:', err);
-                    return null;
-                }
-            });
+            // The SAME minting the terminal uses (utils/vaultAgentStore.ts),
+            // which is also where the serialization lives: two callers minting
+            // for one vault would split it in two, and StrictMode runs both.
+            return ensureVaultId(root, getDeps().writeFile);
         },
 
         async readChatIndex(): Promise<ChatIndex> {

@@ -5,6 +5,7 @@ import {
     setTerminalFontFamily, setTerminalFontSize, subscribeTerminalSettings,
 } from '../utils/terminalSettings';
 import type { CaretStyle, SettingsDefaults } from '../types';
+import { VaultFolderSetting } from './VaultFolderSetting';
 
 const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
 
@@ -35,6 +36,8 @@ interface SettingsPanelProps {
     showVaultInTitle: boolean;
     onEditorFontSizeChange: (v: number) => void;
     onCodeFontSizeChange: (v: number) => void;
+    /** This vault's id, for the terminal's "where is it on disk" row (null = no vault). */
+    vaultId: string | null;
     onRainbowBracketsChange: (v: boolean) => void;
     onTreeFontSizeChange: (v: number) => void;
     onEditorPaddingChange: (v: number) => void;
@@ -52,7 +55,7 @@ interface SettingsPanelProps {
     onClose: () => void;
 }
 
-export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBrackets, treeFontSize, editorPadding, tabSize, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, accentColor, codeBlockColor, recentVaultLimit, showVaultInTitle, onEditorFontSizeChange, onCodeFontSizeChange, onRainbowBracketsChange, onTreeFontSizeChange, onEditorPaddingChange, onTabSizeChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onAccentColorChange, onCodeBlockColorChange, onRecentVaultLimitChange, onShowVaultInTitleChange, onResetDefaults, onClose }: SettingsPanelProps) {
+export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBrackets, vaultId, treeFontSize, editorPadding, tabSize, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, accentColor, codeBlockColor, recentVaultLimit, showVaultInTitle, onEditorFontSizeChange, onCodeFontSizeChange, onRainbowBracketsChange, onTreeFontSizeChange, onEditorPaddingChange, onTabSizeChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onAccentColorChange, onCodeBlockColorChange, onRecentVaultLimitChange, onShowVaultInTitleChange, onResetDefaults, onClose }: SettingsPanelProps) {
     // Uncontrolled input (keyed on fontFamily) so we only load the Google Font
     // when the user commits the name, and it auto-resets on "Reset to Defaults".
     const fontInputRef = useRef<HTMLInputElement | null>(null);
@@ -298,6 +301,8 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     </div>
 
                     <h4 className="settings-section">Terminal</h4>
+
+                    <VaultFolderSetting vaultId={vaultId} />
 
                     <div className="setting-row">
                         <div className="setting-info">

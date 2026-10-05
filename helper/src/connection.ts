@@ -20,6 +20,7 @@ import { HELPER_VERSION } from './buildInfo.ts';
 import { logError } from './log.ts';
 import { syncMirror } from './mirror.ts';
 import { BadRequest, ensureDir, vaultDir } from './paths.ts';
+import { locateVault, rememberVaultPath, terminalCwdFor } from './vaultPath.ts';
 import { newRunToken } from './security.ts';
 import { collectFontHints } from './terminal/font.ts';
 import { TerminalLimit, TerminalNotFound, type TerminalManager, type TerminalOwner } from './terminal/manager.ts';
@@ -276,8 +277,21 @@ export class Connection {
             case 'terminal.open':
                 // The restart that follows an update ends every shell: do not start one into it.
                 if (this.ctx.updater?.busy) throw new RunRefused('busy', 'VaultAgent is updating. Try again in a moment.');
-                this.reply(reqId, await this.ctx.terminals.open(this.terminalOwner, p.termId, p.cols, p.rows));
+                // Where the editor is: a vault-relative folder resolved against
+                // the vault's real location, which only the helper can work out.
+                this.reply(reqId, await this.ctx.terminals.open(
+                    this.terminalOwner, p.termId, p.cols, p.rows,
+                    terminalCwdFor(p.vaultId, p.dir) ?? undefined,
+                ));
                 return;
+            case 'vault.path': {
+                if (typeof p.set === 'string') {
+                    this.reply(reqId, { path: rememberVaultPath(p.vaultId, p.set) });
+                } else {
+                    this.reply(reqId, { path: locateVault(p.vaultId) });
+                }
+                return;
+            }
             case 'terminal.attach':
                 this.reply(reqId, await this.ctx.terminals.attach(this.terminalOwner, p.termId, p.cols, p.rows));
                 return;

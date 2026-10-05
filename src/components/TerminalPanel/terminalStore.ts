@@ -34,6 +34,7 @@ import {
     agentBridge, BridgeError, isTerminalEvent, type BridgeState, type HelperInfo, type TerminalEvent,
 } from '../../utils/agentBridge';
 import { CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED, copyText, readClipboardText } from '../../utils/clipboard';
+import { terminalStart } from '../../utils/terminalStart';
 import { detectOs } from '../../utils/platform';
 import { setTerminalCount } from '../../utils/terminalCount';
 import { currentFont, fontsReady, startFontDetection, subscribeFont } from './terminalFont';
@@ -570,10 +571,20 @@ class TerminalStore {
         const helperAtStart = helper;
         const stale = () => s.disposed || this.helper !== helperAtStart;
         if (s.mode === 'open') {
-            agentBridge.request('terminal.open', { termId: s.termId, cols, rows }).then(
-                result => { if (!stale()) this.goLive(s, result.shell); },
-                e => { if (!stale()) this.openFailed(s, e); },
-            );
+            // Where the user is, asked at the moment the shell is spawned —
+            // a vault-relative folder the helper resolves against the vault's
+            // real location (utils/terminalStart.ts). The await is one small
+            // file read, and `stale()` covers the dock closing across it.
+            void terminalStart().then(start => {
+                if (stale()) return;
+                agentBridge.request('terminal.open', {
+                    termId: s.termId, cols, rows,
+                    ...(start.vaultId ? { vaultId: start.vaultId, dir: start.dir } : {}),
+                }).then(
+                    result => { if (!stale()) this.goLive(s, result.shell); },
+                    e => { if (!stale()) this.openFailed(s, e); },
+                );
+            });
         } else {
             agentBridge.request('terminal.attach', { termId: s.termId, cols, rows }).then(
                 result => {

@@ -302,7 +302,20 @@ export interface RequestMap {
     'helper.update': [Record<string, never>, { from: string; to: string }];
     /** Start a new shell in a PTY under the client-minted `termId` (a UUID).
      *  Its output streams as `terminal.output`, its end as `terminal.exit`. */
-    'terminal.open': [{ termId: string; cols: number; rows: number }, { shell: string; pid: number; backend: TerminalBackend }];
+    /**
+     * `vaultId` + `dir` ask for the shell to start in that folder of that vault:
+     * the editor knows its files only as vault-relative paths, so the helper
+     * resolves them against the vault's real location (helper/src/vaultPath.ts)
+     * and answers with the `cwd` it actually used — the vault root when the
+     * folder is gone, the home directory when the vault cannot be found.
+     */
+    'terminal.open': [
+        { termId: string; cols: number; rows: number; vaultId?: string; dir?: string },
+        { shell: string; pid: number; backend: TerminalBackend; cwd: string },
+    ];
+    /** Where a vault is on disk. `set` stores a path the user typed (checked
+     *  against the vault's own marker); without it, the helper looks. */
+    'vault.path': [{ vaultId: string; set?: string }, { path: string | null }];
     /** Take over an existing shell — after a reload, or from another window
      *  (which then gets `terminal.detached`). `snapshot` is the serialized
      *  screen + scrollback to write into a freshly reset xterm. */

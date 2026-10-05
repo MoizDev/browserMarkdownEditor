@@ -89,16 +89,18 @@ mkdirSync(home, { recursive: true });   // the terminal starts in ~, which must 
 const rand = () => Math.random().toString(36).slice(2, 10);
 
 /**
- * The terminal, over the same WebSocket the panel uses (production Origin). The
- * helper's shell is forced to a plain one (see TERMINAL_SHELL_OVERRIDE): the scratch
- * HOME has no .zshrc, and zsh would answer with its first-run wizard. The marker is
- * typed with a quote (`a''b`, `a^b` in cmd.exe) in the middle and printed without it, so
- * seeing it means the shell RAN the command — the echo of our keystrokes cannot match.
+ * The terminal, over the same WebSocket the panel uses (production Origin). On macOS
+ * and Linux the helper's shell is forced to a plain one (see TERMINAL_SHELL_OVERRIDE):
+ * the scratch HOME has no .zshrc, and zsh would answer with its first-run wizard. The
+ * marker is typed with an empty quote (`a''b`) or, in cmd.exe, a caret (`a^b`) in the
+ * middle and printed without it, so seeing it means the shell RAN the command — the
+ * echo of our keystrokes cannot match. Which one is decided by the shell the helper
+ * REPORTS: sh and PowerShell (pwsh, powershell.exe) join `a''b`, cmd prints it as typed
+ * and only drops `^`, which PowerShell prints (CI, windows-latest: pwsh echoed `a^b`).
  */
 async function smokeTerminal(port: number): Promise<void> {
     const windows = helperPlatform() === 'windows';
     const word = rand();
-    const typed = windows ? `echo smoke-a^b-${word}` : `echo smoke-a''b-${word}`;
     const marker = `smoke-ab-${word}`;
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Origin: PRODUCTION_ORIGIN } } as unknown as string[]);
     const seen: HelperMessage[] = [];
@@ -124,6 +126,8 @@ async function smokeTerminal(port: number): Promise<void> {
         check('terminal.open answers', await waitFor(() => seen.some(m => m.type === 'response' && m.reqId === 't1'), 15_000));
         const opened = seen.find(m => m.type === 'response' && m.reqId === 't1');
         check('terminal.open ok', !!opened && opened.type === 'response' && opened.ok, JSON.stringify(opened));
+        const shell = opened?.type === 'response' && opened.ok ? String((opened.result as { shell?: unknown }).shell ?? '') : '';
+        const typed = /(^|[\\/])cmd(\.exe)?$/i.test(shell) ? `echo smoke-a^b-${word}` : `echo smoke-a''b-${word}`;
         // Let the shell print its prompt first: a Windows ConPTY drops input that beats its init.
         await Bun.sleep(windows ? 1500 : 300);
         ws.send(JSON.stringify({ type: 'terminal.input', termId, data: `${typed}\r` }));
@@ -168,7 +172,9 @@ async function smokeServe(): Promise<void> {
     if (expectVersion) check(`--version is ${expectVersion}`, version === expectVersion, version);
 
     const proc = Bun.spawn([binary, 'serve', '--no-register'], {
-        env: { ...process.env, HOME: home, USERPROFILE: home, [TERMINAL_SHELL_OVERRIDE]: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh' },
+        // Windows runs the shell users get (pwsh, else Windows PowerShell, else cmd): an
+        // override must be an absolute path, so the `cmd.exe` once passed here was ignored.
+        env: { ...process.env, HOME: home, USERPROFILE: home, ...(process.platform === 'win32' ? {} : { [TERMINAL_SHELL_OVERRIDE]: '/bin/sh' }) },
         stdout: 'pipe',
         stderr: 'inherit',
     });

@@ -1,0 +1,5 @@
+# Ghostty config (synthetic)
+theme = catppuccin-mocha
+font-family = "MesloLGS Nerd Font Mono"
+font-family = Symbols Nerd Font Mono
+font-size = 14

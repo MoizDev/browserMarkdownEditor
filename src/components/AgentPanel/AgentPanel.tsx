@@ -18,6 +18,7 @@ import type { AgentHost, AgentPanelProps } from '../../types/vaultAgent';
 import { createAgentHosts, type AgentHostDeps } from '../../utils/agentHost';
 import { agentBridge, BridgeError, helperReady } from '../../utils/agentBridge';
 import type { BridgeState } from '../../utils/agentBridge';
+import { getTerminalCount } from '../../utils/terminalCount';
 import { detectArch, detectOs, installerAsset, isChromium } from '../../utils/platform';
 import type { CpuArch } from '../../utils/platform';
 import { openContextMenu } from '../../utils/contextMenu';
@@ -38,6 +39,12 @@ import { HEALTH_CAPTION, agentHealth, useBridgeState, useChatState } from './use
 const EMPTY: Conversation = { items: [], history: 'none' };
 
 const WAIT_FOR_UPDATE = 'Wait for the update to finish';
+
+/** "1 open terminal" / "3 open terminals" — the count the terminal chunk keeps
+ *  in a tiny store, so this chunk never imports the terminal's. */
+function terminalsPhrase(n: number): string {
+    return `${n} open terminal${n === 1 ? '' : 's'}`;
+}
 
 /** Resolves once no run is in flight (a stopped one ends on its run.done), or after `timeoutMs`. */
 function runEnded(timeoutMs: number): Promise<void> {
@@ -226,13 +233,25 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         if (updateStarting.current) return;
         updateStarting.current = true;
         try {
-            if (chatStore.getState().run) {
-                const ok = await host.ask({
+            // A restart ends every shell the helper runs, so they are asked
+            // about in the same question as a reply in flight — one prompt, not two.
+            const replying = !!chatStore.getState().run;
+            const shells = getTerminalCount();
+            if (replying || shells > 0) {
+                const ok = await host.ask(replying ? {
                     title: 'Stop the reply and update?',
-                    body: `${HELPER_NAME} restarts to update, which ends the reply in progress. Your chats are kept.`,
+                    body: shells > 0
+                        ? `${HELPER_NAME} restarts to update, which ends the reply in progress and ${terminalsPhrase(shells)}. Your chats are kept.`
+                        : `${HELPER_NAME} restarts to update, which ends the reply in progress. Your chats are kept.`,
                     confirmLabel: 'Stop and update',
+                } : {
+                    title: `Update ${HELPER_NAME}?`,
+                    body: `Updating restarts ${HELPER_NAME} and ends ${terminalsPhrase(shells)}.`,
+                    confirmLabel: 'Update',
                 });
                 if (!ok) return;
+            }
+            if (replying) {
                 // The helper refuses to update while a run is live.
                 await chatStore.stop();
                 // A stopped run ends when its run.done arrives; updating before
@@ -247,9 +266,10 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
     const update = useCallback(() => { void doUpdate(); }, [doUpdate]);
 
     const uninstall = async () => {
+        const shells = getTerminalCount();
         const ok = await host.ask({
             title: `Uninstall ${HELPER_NAME}?`,
-            body: `This stops ${HELPER_NAME}, removes it from your login items and deletes it from this computer. Your chats are kept. To use the agent again, download and open the installer.`,
+            body: `This stops ${HELPER_NAME}${shells > 0 ? `, which ends ${terminalsPhrase(shells)},` : ''} removes it from your login items and deletes it from this computer. Your chats are kept. To use the agent again, download and open the installer.`,
             confirmLabel: 'Uninstall',
             danger: true,
         });
@@ -323,6 +343,13 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
             })),
             { kind: 'separator', id: 'sep-agent' },
         ] : [];
+        // Only what a connected helper said of itself in `hello`: with none
+        // (or mid-update, when the one that answered may already be gone) the
+        // menu shows no version rather than a stale or blank one.
+        const versionRows: ContextMenuEntry[] = bridge.status === 'connected' && bridge.helper.version ? [
+            { kind: 'label', id: 'version', label: bridge.helper.version, tooltip: `${HELPER_NAME} version` },
+            { kind: 'separator', id: 'sep-version' },
+        ] : [];
         openContextMenu({
             x: Math.round(r.left),
             y: Math.round(r.bottom),
@@ -330,6 +357,7 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
             opener: button,
             anchor: button,
             entries: [
+                ...versionRows,
                 ...agentRows,
                 {
                     kind: 'command', id: 'reconnect', label: 'Reconnect', run: connect,

@@ -3,14 +3,20 @@ import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault, withVaultPaths } from '../utils/recentVaults';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
-import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from '../utils/entryStyle';
-import { ROOT_HIDDEN_DIRS } from '../utils/vaultAgentStore';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
-import { joinVaultPath } from '../utils/paths';
+import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { sortTrashChildren, sortTrashRoot } from '../utils/trash';
+import { isGitName, isHiddenEntryName } from '../utils/vaultEntries';
+import { findDirNode, shareTree, spliceDir } from '../utils/treeShare';
+import { hashBytes, sameStat } from '../utils/diskVersion';
+import type { DiskStat, DiskVersion } from '../utils/diskVersion';
+import {
+    MAX_DIRTY_DIRS, createBatchCoalescer, dirtyDirs, mergeInto, normalizeRecords, rescanBatch, touchedPaths,
+} from '../utils/vaultChanges';
+import type { VaultChangeBatch } from '../utils/vaultChanges';
 import type {
     FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult,
-    TrashItem, TrashRestoreMode, TrashRestoreResult,
+    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult,
 } from '../types';
 
 const FileSystemContext = createContext<FileSystemContextValue | null>(null);
@@ -186,33 +192,34 @@ async function displaceInto(
 
 /**
  * Recursively traverses a FileSystemDirectoryHandle and returns a nested tree.
+ *
+ * What is hidden is `isHiddenEntryName`'s (utils/vaultEntries.ts) — the same
+ * predicate the outside-change filter uses, so the tree and the watcher cannot
+ * disagree about what exists. `.git` is therefore never walked: a repository's
+ * object store is thousands of entries that are nobody's notes.
+ *
+ * `reuse` lets a RE-LIST of one directory (the watcher's patch) keep the subtree
+ * of every child folder it names instead of walking it again: one level deep
+ * only, and only for folders the caller knows were untouched.
  */
-async function buildFileTree(dirHandle: FileSystemDirectoryHandle, path = ''): Promise<FileTreeNode[]> {
+async function buildFileTree(
+    dirHandle: FileSystemDirectoryHandle,
+    path = '',
+    reuse?: ReadonlyMap<string, FileTreeNode>,
+): Promise<FileTreeNode[]> {
     const children: FileTreeNode[] = [];
 
     for await (const [name, handle] of dirHandle.entries()) {
-        if (name === '.DS_Store') continue;
-        // The app's own record of how things look. Hidden for the same reason
-        // .Assets and .Garbage are: it is bookkeeping, not something the reader
-        // put in their vault. Root-only, unlike those two — see entryStyle.ts.
-        // The legacy name goes too: migration reads it forward and deliberately
-        // leaves it on disk, and a file this app wrote should not then surface
-        // in the tree as though the reader had put it there.
-        if (!path && (name === ENTRY_STYLE_FILE || name === LEGACY_STYLE_FILE)) continue;
-        // Chrome's temporary for a write in progress to that file: every icon
-        // pick rewrites it, and a tree walk landing mid-write drew the swap file
-        // as a sibling (see App.writeEntryStyles).
-        if (!path && name === `${ENTRY_STYLE_FILE}.crswap`) continue;
-        // The AI agent's folders (utils/vaultAgentStore.ts) — root-only, where
-        // the agent CLIs look for them.
-        if (!path && handle.kind === 'directory' && ROOT_HIDDEN_DIRS.has(name)) continue;
-        // Hide standard system folders from the UI. Every folder may hold its
-        // own pair of them (see utils/assets.ts), so this is not a root-only test.
-        if (handle.kind === 'directory' && (name === ASSETS_DIR || name === TRASH_DIR)) continue;
+        if (isHiddenEntryName(name, !path, handle.kind)) continue;
 
         const entryPath = path ? `${path}/${name}` : name;
 
         if (handle.kind === 'directory') {
+            const kept = reuse?.get(name);
+            if (kept && kept.kind === 'directory') {
+                children.push(kept);
+                continue;
+            }
             const subtree = await buildFileTree(handle, entryPath);
             children.push({
                 name,
@@ -273,7 +280,7 @@ async function buildFileTree(dirHandle: FileSystemDirectoryHandle, path = ''): P
 
 /** A file's metadata, tolerant of a read that fails mid-crawl — a file being
  *  written as the walk passes it must not take the whole bin down. */
-async function statFile(handle: FileSystemFileHandle): Promise<{ mtime: number; size: number }> {
+async function statForTrash(handle: FileSystemFileHandle): Promise<{ mtime: number; size: number }> {
     try {
         const file = await handle.getFile();
         return { mtime: file.lastModified, size: file.size };
@@ -298,7 +305,7 @@ async function collectRetired(
     try {
         for await (const [name, handle] of assetsDir.entries()) {
             if (handle.kind !== 'file' || name === '.DS_Store' || !isAssetName(name)) continue;
-            const { mtime, size } = await statFile(handle);
+            const { mtime, size } = await statForTrash(handle);
             const sourcePath = joinVaultPath(assetsPath, name);
             out.push({
                 id: sourcePath, name, kind: 'file', origin: 'retired', sourcePath,
@@ -343,7 +350,7 @@ async function collectGarbage(
                 continue;
             }
 
-            const { mtime, size } = await statFile(handle);
+            const { mtime, size } = await statForTrash(handle);
             out.push({
                 id: sourcePath, name, kind: 'file', origin: 'trashed', sourcePath,
                 handle, parentHandle: garbageDir,
@@ -367,7 +374,7 @@ async function measureLiveAssets(assetsDir: FileSystemDirectoryHandle): Promise<
             // Finder's, not the reader's, and weighing it would put a folder's
             // deletion time at whenever macOS last touched that file.
             if (handle.kind !== 'file' || name === '.DS_Store') continue;
-            const stat = await statFile(handle);
+            const stat = await statForTrash(handle);
             newest = Math.max(newest, stat.mtime);
             size += stat.size;
         }
@@ -419,7 +426,7 @@ async function buildTrashedDir(
                 continue;
             }
 
-            const stat = await statFile(handle);
+            const stat = await statForTrash(handle);
             newest = Math.max(newest, stat.mtime);
             size += stat.size;
             children.push({
@@ -464,7 +471,7 @@ async function describeDisplaced(
     try {
         if (kind === 'file') {
             const handle = await bucket.getFileHandle(name);
-            const { mtime, size } = await statFile(handle);
+            const { mtime, size } = await statForTrash(handle);
             return {
                 id: sourcePath, name, kind: 'file', origin, sourcePath,
                 handle, parentHandle: bucket,
@@ -491,6 +498,9 @@ async function walkForTrash(dir: FileSystemDirectoryHandle, path: string, out: T
         for await (const [name, handle] of dir.entries()) {
             if (handle.kind !== 'directory' || !isAssetName(name)) continue;
             if (name === ASSETS_DIR) continue;             // live pictures, not trash
+            // A repository's object store: never holds a `.Garbage` the user
+            // made, and is thousands of directories to read for nothing.
+            if (isGitName(name)) continue;
             const childPath = joinVaultPath(path, name);
             if (name === TRASH_DIR) {
                 await collectGarbage(handle, childPath, dir, path, out);
@@ -519,6 +529,164 @@ async function menuVaults(list: StoredVault[], root?: FileSystemDirectoryHandle 
     return root ? withVaultPaths(labelled, root) : labelled;
 }
 
+/* ── Versioned document IO ───────────────────────────────────────────────────
+ * What the app last knew a document's file to be on disk (utils/diskVersion.ts)
+ * is checked before every document write and compared with by every outside-
+ * change check. These are the primitives; App owns the baselines.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+function isNotFound(err: unknown): boolean {
+    return (err as DOMException | undefined)?.name === 'NotFoundError';
+}
+
+/** The entry is not there AS A FILE any more: gone, or replaced by a folder. */
+function isGone(err: unknown): boolean {
+    const name = (err as DOMException | undefined)?.name;
+    return name === 'NotFoundError' || name === 'TypeMismatchError';
+}
+
+/** One consistent snapshot of a file: its metadata and exactly the bytes that
+ *  metadata describes. `getFile()` returns a snapshot, and reading it after the
+ *  file changed rejects with NotReadableError rather than returning a mix — so
+ *  one retry (re-snapshot, re-read) is the right answer to a write landing
+ *  between the two calls. */
+async function readSnapshot(handle: FileSystemFileHandle): Promise<{ file: File; buf: ArrayBuffer }> {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            const file = await handle.getFile();
+            return { file, buf: await file.arrayBuffer() };
+        } catch (err) {
+            if (attempt === 0 && (err as DOMException | undefined)?.name === 'NotReadableError') continue;
+            throw err;
+        }
+    }
+}
+
+async function versionOfSnapshot(file: File, buf: ArrayBuffer): Promise<DiskVersion> {
+    return { lastModified: file.lastModified, size: file.size, hash: await hashBytes(buf) };
+}
+
+/** `{lastModified, size}` from a metadata-only `getFile()`; null when the file
+ *  is gone. Any other failure (a lock, a permission lapse) is NOT "deleted" and
+ *  is thrown: calling a locked file deleted would tell the user their note was
+ *  removed. */
+async function statOf(handle: FileSystemFileHandle): Promise<DiskStat | null> {
+    try {
+        const file = await handle.getFile();
+        return { lastModified: file.lastModified, size: file.size };
+    } catch (err) {
+        if (isGone(err)) return null;
+        throw err;
+    }
+}
+
+function toBytes(data: string | Uint8Array): Uint8Array {
+    return typeof data === 'string' ? new TextEncoder().encode(data) : data;
+}
+
+/** Replace a file's bytes. Hands over the VIEW, not `.buffer` — see
+ *  writeFileBytes for why. */
+async function writeAllBytes(handle: FileSystemFileHandle, bytes: Uint8Array): Promise<void> {
+    const writable = await handle.createWritable();
+    await writable.write(bytes as Uint8Array<ArrayBuffer>);
+    await writable.close();
+}
+
+/** The version of `bytes` the app has just written to `handle`: the HASH is of
+ *  the bytes written (never re-read — re-reading would hash someone else's
+ *  write that landed in between and call it ours), the stat is re-read from
+ *  disk. A stat that cannot be re-read becomes lastModified 0, which equals no
+ *  real stat and so makes the next check hash instead of trusting it. */
+async function versionAfterWrite(handle: FileSystemFileHandle, bytes: Uint8Array): Promise<DiskVersion> {
+    const hash = await hashBytes(bytes);
+    let stat: DiskStat | null = null;
+    try { stat = await statOf(handle); } catch { /* fall through to the forced-recheck stat */ }
+    return { lastModified: stat?.lastModified ?? 0, size: stat?.size ?? bytes.byteLength, hash };
+}
+
+/** `name` with " (conflict)" before its extension; a name with no extension
+ *  (a dotfile like `.env` included — its only dot is the first character) gets
+ *  it appended. */
+function conflictName(name: string, n: number): string {
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+    return `${stem} (conflict${n === 1 ? '' : ` ${n}`})${ext}`;
+}
+
+/**
+ * Walk down from `root` to the folder at `path`, creating whichever folders on
+ * the way are missing. `patchFrom` is where the tree must be re-listed from: the
+ * deepest folder that already existed, whose re-list picks the new chain up as
+ * one new folder (null when nothing was created).
+ */
+async function ensureDirChain(root: FileSystemDirectoryHandle, path: string): Promise<{ dir: FileSystemDirectoryHandle; patchFrom: string | null }> {
+    let dir = root;
+    let dirPath = '';
+    let patchFrom: string | null = null;
+    if (path) for (const name of path.split('/')) {
+        try {
+            dir = await dir.getDirectoryHandle(name);
+        } catch (err) {
+            if (!isNotFound(err)) throw err;
+            if (patchFrom === null) patchFrom = dirPath;
+            dir = await dir.getDirectoryHandle(name, { create: true });
+        }
+        dirPath = joinVaultPath(dirPath, name);
+    }
+    return { dir, patchFrom };
+}
+
+/**
+ * Re-list the directories in `dirs` (vault paths; '' = the root) into a copy of
+ * `base` — the watcher's patch, which costs one directory listing per dirty
+ * directory instead of a walk of the vault. Shallow first, so a folder that is
+ * NEW is walked once by its parent's re-list and its own entry is skipped.
+ *
+ * A child folder keeps its old subtree (no I/O for it) unless the batch said it
+ * was touched (`touched`): `mv other a` is one record, and `a`'s old subtree is
+ * then stale. Returns null if any listing failed, and the caller falls back to
+ * one full walk — a half-patched tree is worse than a slow correct one.
+ */
+async function relistDirs(
+    base: FileTreeNode[],
+    root: FileSystemDirectoryHandle,
+    dirs: Iterable<string>,
+    touched: ReadonlySet<string>,
+): Promise<FileTreeNode[] | null> {
+    const depth = (d: string) => (d ? d.split('/').length : 0);
+    const ordered = [...dirs].sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : 1));
+    const walkedAfresh: string[] = [];
+    let tree = base;
+
+    for (const dir of ordered) {
+        if (walkedAfresh.some(f => dir === f || dir.startsWith(`${f}/`))) continue;
+        const node = dir ? findDirNode(tree, dir) : null;
+        // Not in the tree: it is gone, or no parent re-list produced it. Either
+        // way there is nothing here to patch.
+        if (dir && !node) continue;
+
+        const old = node ? node.children : tree;
+        const keep = new Map<string, FileTreeNode>();
+        for (const c of old) if (c.kind === 'directory' && !touched.has(c.path)) keep.set(c.name, c);
+
+        let children: FileTreeNode[];
+        try {
+            children = await buildFileTree(node ? node.handle : root, dir, keep);
+        } catch {
+            return null;
+        }
+        for (const c of children) if (c.kind === 'directory' && keep.get(c.name) !== c) walkedAfresh.push(c.path);
+        tree = spliceDir(tree, dir, children);
+    }
+    return tree;
+}
+
+/** The watcher's polling cadence — see FileSystemProvider's watcher effect. */
+const POLL_THROTTLE_MS = 3000;
+const POLL_INTERVAL_MS = 15000;
+const REOBSERVE_DELAY_MS = 1000;
+
 export function FileSystemProvider({ children }: { children: ReactNode }) {
     const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
     const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
@@ -532,9 +700,60 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const [currentVaultId, setCurrentVaultId] = useState<string | null>(null);
 
     // The open vault, readable from the stable callbacks below without making
-    // them depend on it (they are props of the memoized FileExplorer).
+    // them depend on it (they are props of the memoized FileExplorer). Written
+    // ONLY by `commitRoot`, synchronously with the state: an effect-driven copy
+    // lags a render, and the stale-walk guards below compare against it in the
+    // very tick a switch commits.
     const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
-    useEffect(() => { rootHandleRef.current = rootHandle; }, [rootHandle]);
+    const commitRoot = useCallback((handle: FileSystemDirectoryHandle | null) => {
+        rootHandleRef.current = handle;
+        setRootHandle(handle);
+    }, []);
+
+    // The tree the app is showing, readable without a render, and the vault it
+    // describes. The watcher patches the tree it finds here; a walk's result is
+    // only ever shared with a tree of the SAME vault (two vaults share paths
+    // freely, and their handles must never be mixed).
+    const fileTreeRef = useRef<FileTreeNode[]>([]);
+    const treeOwnerRef = useRef<FileSystemDirectoryHandle | null>(null);
+    const commitTree = useCallback((tree: FileTreeNode[], owner: FileSystemDirectoryHandle) => {
+        fileTreeRef.current = tree;
+        treeOwnerRef.current = owner;
+        setFileTree(tree);
+    }, []);
+
+    // Tree computations are TICKETED in start order. A computation publishes
+    // only if no later-started one already has: refreshTree and the watcher both
+    // read the disk and replace the tree, and whichever FINISHES last used to
+    // win — so a slow walk that began before a change could repaint over the
+    // newer tree that change produced. A later start saw the disk at least as
+    // new, so dropping the earlier finisher loses nothing.
+    const treeTicketRef = useRef(0);
+    const treePublishedRef = useRef(0);
+
+    // How many of the app's OWN mutations (copy-then-delete moves, trashing,
+    // imports, …) are in flight, and the watcher's hook to resume when the last
+    // one ends. Their intermediate states ("item in both places", "item
+    // nowhere") are real, observable on disk, and must never be drawn: the
+    // watcher holds its batches until this is 0 — see FileSystemProvider's
+    // watcher effect.
+    const mutationBusyRef = useRef(0);
+    const resumeWatcherRef = useRef<(() => void) | null>(null);
+    const withMutation = useCallback(async <T,>(run: () => Promise<T>): Promise<T> => {
+        mutationBusyRef.current++;
+        try {
+            return await run();
+        } finally {
+            if (--mutationBusyRef.current === 0) resumeWatcherRef.current?.();
+        }
+    }, []);
+
+    const vaultChangeListenersRef = useRef(new Set<(batch: VaultChangeBatch) => void>());
+    const subscribeVaultChanges = useCallback((listener: (batch: VaultChangeBatch) => void) => {
+        vaultChangeListenersRef.current.add(listener);
+        return () => { vaultChangeListenersRef.current.delete(listener); };
+    }, []);
+    const [liveDetection, setLiveDetection] = useState<'observer' | 'polling' | 'off'>('off');
 
     // True while a native folder picker is up (see pickDirectory).
     const pickerOpenRef = useRef(false);
@@ -596,15 +815,44 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, []);
 
     /**
+     * Put a freshly computed tree on screen — if it is still wanted: `handle` is
+     * still the open vault, and no later-started computation has landed. It is
+     * SHARED with the tree on screen first (utils/treeShare.ts), so a refresh
+     * that changed nothing sets no state at all and one that changed a file
+     * re-renders that file's rows alone. Returns whether it was taken.
+     */
+    const publishTree = useCallback((ticket: number, handle: FileSystemDirectoryHandle, tree: FileTreeNode[]) => {
+        if (handle !== rootHandleRef.current) return false;     // a different vault is open now
+        if (ticket < treePublishedRef.current) return false;    // a later walk already landed
+        treePublishedRef.current = ticket;
+        const shown = treeOwnerRef.current === handle ? fileTreeRef.current : null;
+        const next = shown ? shareTree(shown, tree) : tree;
+        if (next !== shown) commitTree(next, handle);
+        return true;
+    }, [commitTree]);
+
+    /**
      * Refresh the file tree from the current root handle. A failed walk leaves
      * the tree that is up standing: it still describes the vault the app is on,
-     * which is more use than an empty sidebar.
+     * which is more use than an empty sidebar. A walk for a vault that is no
+     * longer the open one is dropped — it used to repaint the new vault with the
+     * old one's rows when a slow walk finished after a switch.
      */
     const refreshTree = useCallback(async (handle: FileSystemDirectoryHandle | null | undefined) => {
         if (!handle) return;
+        const ticket = ++treeTicketRef.current;
         const tree = await loadTree(handle);
-        if (tree) setFileTree(tree);
-    }, [loadTree]);
+        if (tree) publishTree(ticket, handle, tree);
+    }, [loadTree, publishTree]);
+
+    /** Patch the tree after a write the context made itself (a conflict copy, a
+     *  recreated file): re-list just those directories, or walk if that fails. */
+    const patchTreeDirs = useCallback(async (root: FileSystemDirectoryHandle, dirs: string[]) => {
+        const ticket = ++treeTicketRef.current;
+        const next = await relistDirs(fileTreeRef.current, root, dirs, new Set());
+        if (next) publishTree(ticket, root, next);
+        else await refreshTree(root);
+    }, [publishTree, refreshTree]);
 
     /**
      * Publish a stored list to the menu. Every write to `recentVaults` goes
@@ -667,7 +915,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     // lapsed grant is handed to App to ask for with a button.
                     const permission = await target.handle.queryPermission({ mode: 'readwrite' });
                     if (permission === 'granted') {
-                        setRootHandle(target.handle);
+                        commitRoot(target.handle);
                         await recordVault(target.handle);
                         await refreshTree(target.handle);
                         setIsLoading(false);
@@ -684,7 +932,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     // queryPermission does not require a user gesture, unlike requestPermission
                     const permission = await storedHandle.queryPermission({ mode: 'readwrite' });
                     if (permission === 'granted') {
-                        setRootHandle(storedHandle);
+                        commitRoot(storedHandle);
                         // Before the tree walk, so the vault menu is already
                         // right on the first render that has a vault to show.
                         await recordVault(storedHandle);
@@ -704,7 +952,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             await publishVaults(stored, null);
             setIsLoading(false);
         })();
-    }, [refreshTree, recordVault, publishVaults]);
+    }, [refreshTree, recordVault, publishVaults, commitRoot]);
 
 
     /**
@@ -750,8 +998,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
 
             await set(IDB_KEY, handle);
             setPreviousVault(null);
-            setRootHandle(handle);
-            setFileTree(tree);
+            commitRoot(handle);
+            commitTree(tree, handle);
             await recordVault(handle);
             return 'ok';
         } catch (err) {
@@ -765,7 +1013,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             pickerOpenRef.current = false;
             switchInFlightRef.current = false;
         }
-    }, [refreshTree, loadTree, recordVault, isCurrentVault]);
+    }, [refreshTree, loadTree, recordVault, isCurrentVault, commitRoot, commitTree]);
 
     /**
      * Take one vault off the recent list. Nothing on disk is touched: the list
@@ -841,8 +1089,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // cannot be observed describing different vaults.
             await set(IDB_KEY, handle);
             setPreviousVault(null);
-            setRootHandle(handle);
-            setFileTree(tree);
+            commitRoot(handle);
+            commitTree(tree, handle);
             await recordVault(handle);
             return 'ok';
         } catch (err) {
@@ -852,7 +1100,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } finally {
             switchInFlightRef.current = false;
         }
-    }, [loadTree, recordVault, isCurrentVault]);
+    }, [loadTree, recordVault, isCurrentVault, commitRoot, commitTree]);
 
     /**
      * Take the grant a linked vault still needs.
@@ -941,7 +1189,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      *
      * Returns the names actually written.
      */
-    const importFiles = useCallback(async (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => {
+    const importFiles = useCallback((files: FileList | File[], targetDir: FileSystemDirectoryHandle) => withMutation(async () => {
         const written: string[] = [];
         for (const file of Array.from(files)) {
             // A dropped directory arrives as a File with no type and no size;
@@ -960,13 +1208,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         }
         if (written.length) await refreshTree(rootHandle);
         return written;
-    }, [rootHandle, refreshTree]);
+    }), [rootHandle, refreshTree, withMutation]);
 
     /**
      * Create a new file inside a directory handle.
      * Returns the new file handle.
      */
-    const createFile = useCallback(async (parentDirHandle: FileSystemDirectoryHandle, fileName: string) => {
+    const createFile = useCallback((parentDirHandle: FileSystemDirectoryHandle, fileName: string) => withMutation(async () => {
         const fileHandle = await parentDirHandle.getFileHandle(fileName, { create: true });
         // Write empty content to initialize
         const writable = await fileHandle.createWritable();
@@ -975,18 +1223,18 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         // Refresh the tree to reflect the new file
         await refreshTree(rootHandle);
         return fileHandle;
-    }, [rootHandle, refreshTree]);
+    }), [rootHandle, refreshTree, withMutation]);
 
     /**
      * Create a new folder inside a directory handle.
      * Returns the new directory handle.
      */
-    const createFolder = useCallback(async (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => {
+    const createFolder = useCallback((parentDirHandle: FileSystemDirectoryHandle, folderName: string) => withMutation(async () => {
         const dirHandle = await parentDirHandle.getDirectoryHandle(folderName, { create: true });
         // Refresh the tree to reflect the new folder
         await refreshTree(rootHandle);
         return dirHandle;
-    }, [rootHandle, refreshTree]);
+    }), [rootHandle, refreshTree, withMutation]);
 
     /**
      * Object URLs handed out by getAssetUrl, keyed by "<scope> <fileName>" and
@@ -1152,7 +1400,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * creating it if this is the folder's first asset. Only a document with no
      * folder of its own (the Help guide) falls back to the vault root.
      */
-    const saveAsset = useCallback(async (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => {
+    const saveAsset = useCallback((fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => withMutation(async () => {
         const targetDir = parentDirHandle || rootHandle;
         if (!targetDir) throw new Error('No vault open');
 
@@ -1170,7 +1418,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         await writable.close();
 
         await refreshTree(rootHandle);
-    }, [rootHandle, refreshTree]);
+    }), [rootHandle, refreshTree, withMutation]);
 
     /**
      * Move an asset out of a folder's `.Assets` and into its `.Garbage` — what
@@ -1184,7 +1432,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * as recovering the other — and restoreAsset undoes it automatically when
      * the reference comes back.
      */
-    const retireAsset = useCallback(async (fileName: string, dirHandle: FileSystemDirectoryHandle) => {
+    const retireAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
         if (!isAssetName(fileName)) return false;
         try {
             const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR);
@@ -1211,7 +1459,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } catch {
             return false;
         }
-    }, [dirPath]);
+    }), [dirPath, withMutation]);
 
     /**
      * Put a retired asset back into `.Assets` — the exact inverse of
@@ -1222,7 +1470,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * cheapest one: a folder that has never retired an asset has no
      * `.Garbage/.Assets` at all, and the lookup fails at the first step.
      */
-    const restoreAsset = useCallback(async (fileName: string, dirHandle: FileSystemDirectoryHandle) => {
+    const restoreAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
         if (!isAssetName(fileName)) return false;
         try {
             const graveyard = await retiredAssetsDir(dirHandle, false);
@@ -1243,7 +1491,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } catch {
             return false;
         }
-    }, []);
+    }), [withMutation]);
 
     /**
      * Restore the previous vault by requesting permission with a user gesture
@@ -1253,7 +1501,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         try {
             const permission = await previousVault.requestPermission({ mode: 'readwrite' });
             if (permission === 'granted') {
-                setRootHandle(previousVault);
+                commitRoot(previousVault);
                 setIsLoading(true);
                 await recordVault(previousVault);
                 await refreshTree(previousVault);
@@ -1263,7 +1511,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } catch (err) {
             console.error('Error restoring vault permission:', err);
         }
-    }, [previousVault, refreshTree, recordVault]);
+    }, [previousVault, refreshTree, recordVault, commitRoot]);
 
     /**
      * Move a file — or a whole folder — into the Trash: the `.Garbage` folder
@@ -1295,7 +1543,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * its own errors, so `removeEntry` succeeding is the last thing that can
      * fail.
      */
-    const moveToTrash = useCallback(async (node: FileTreeNode) => {
+    const moveToTrash = useCallback((node: FileTreeNode) => withMutation(async () => {
         if (!rootHandle || !node.parentHandle) return false;
         // The trash must never be nested inside itself, and a folder must never
         // be trashed into the bucket retired ASSETS are parked in — restoreAsset
@@ -1319,7 +1567,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             console.error('Failed to move item to trash:', err);
             return false;
         }
-    }, [rootHandle, refreshTree, revokeAssetUrlsUnder]);
+    }), [rootHandle, refreshTree, revokeAssetUrlsUnder, withMutation]);
 
     /**
      * Everything trashed anywhere in this vault, newest deletion first — the
@@ -1354,7 +1602,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * — deleteFromTrash is the one call in here that does that, and only when
      * asked in so many words.
      */
-    const restoreFromTrash = useCallback(async (item: TrashItem, mode: TrashRestoreMode): Promise<TrashRestoreResult> => {
+    const restoreFromTrash = useCallback((item: TrashItem, mode: TrashRestoreMode): Promise<TrashRestoreResult> => withMutation(async () => {
         if (!rootHandle) return { status: 'error' };
         // Mirrors moveToTrash's guard, and is unreachable for the same reason:
         // the crawl lists neither hidden folder as an item. If it ever were
@@ -1455,7 +1703,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // the disk is already refusing writes. Nothing is lost either way.
             return { status: 'error' };
         }
-    }, [rootHandle, refreshTree, revokeAssetUrlsUnder]);
+    }), [rootHandle, refreshTree, revokeAssetUrlsUnder, withMutation]);
 
     /**
      * Erase one item from the trash for good. With `emptyTrash`, the only thing
@@ -1493,7 +1741,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * caller that saw only the count would empty the panel's list and say the
      * bin was emptied while the folders that refused still held their files.
      */
-    const emptyTrash = useCallback(async () => {
+    const emptyTrash = useCallback(() => withMutation(async () => {
         if (!rootHandle) return { removed: 0, failed: 0 };
         let removed = 0;
         let failed = 0;
@@ -1505,6 +1753,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 for await (const [name, handle] of dir.entries()) {
                     if (handle.kind !== 'directory' || !isAssetName(name)) continue;
                     if (name === ASSETS_DIR) continue;
+                    if (isGitName(name)) continue;        // same reason as walkForTrash
                     if (name === TRASH_DIR) { hasTrash = true; continue; }
                     live.push(handle);
                 }
@@ -1530,15 +1779,22 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
 
         await sweep(rootHandle);
         return { removed, failed };
-    }, [rootHandle]);
+    }), [rootHandle, withMutation]);
 
     /**
      * Move a file from its current parent to a target directory handle.
      */
-    const moveFile = useCallback(async (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => {
+    const moveFile = useCallback((sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
         if (!sourceNode.parentHandle || !targetDirHandle) return false;
-        // Don't move into the same folder
+        // Don't move into the same folder. By isSameEntry as well as identity: a
+        // copy-then-delete "move" of a file onto its own folder copies it onto
+        // itself and then removes it, so this test must not depend on two
+        // handles for one folder being the same OBJECT (the tree's sharing pass
+        // keeps them so, but a handle can reach here from anywhere).
         if (sourceNode.parentHandle === targetDirHandle) return false;
+        try {
+            if (await sourceNode.parentHandle.isSameEntry(targetDirHandle)) return false;
+        } catch { /* cannot tell: proceed as before */ }
 
         try {
             if (sourceNode.kind === 'file') {
@@ -1562,12 +1818,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             console.error('Failed to move item:', err);
             return false;
         }
-    }, [rootHandle, refreshTree]);
+    }), [rootHandle, refreshTree, withMutation]);
 
     /**
      * Rename a file or folder within its parent directory.
      */
-    const renameFile = useCallback(async (sourceNode: FileTreeNode, newName: string) => {
+    const renameFile = useCallback((sourceNode: FileTreeNode, newName: string) => withMutation(async () => {
         if (!sourceNode.parentHandle || !newName) return false;
         if (sourceNode.name === newName) return true; // No change
 
@@ -1593,7 +1849,357 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             console.error('Failed to rename item:', err);
             return false;
         }
-    }, [rootHandle, refreshTree]);
+    }), [rootHandle, refreshTree, withMutation]);
+
+    /* ── Versioned document IO ─────────────────────────────────────────────────
+     * The contracts are in types/index.ts (FileSystemContextValue). Documents go
+     * through these so that a save can never overwrite a file that changed on
+     * disk since the app last read or wrote it; `readFile`/`writeFile` stay as
+     * they were for everything that is not an open document.
+     * ─────────────────────────────────────────────────────────────────────── */
+
+    /** readFile, plus the version of exactly the bytes it decoded. The hash is
+     *  over the RAW bytes (CRLF and all) — hashing the normalized text would make
+     *  a text document and a PDF disagree about what "unchanged" means. */
+    const readFileVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
+        const { file, buf } = await readSnapshot(fileHandle);
+        const version = await versionOfSnapshot(file, buf);
+        return { text: new TextDecoder('utf-8').decode(buf).replace(/\r\n?/g, '\n'), version };
+    }, []);
+
+    const readBytesVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
+        const { file, buf } = await readSnapshot(fileHandle);
+        return { bytes: new Uint8Array(buf), version: await versionOfSnapshot(file, buf) };
+    }, []);
+
+    /**
+     * THE document write. Writes only if the file still is what the app last
+     * knew (`expected`): the stat is the cheap check, and when only the stat
+     * moved (a `touch`, a checkout of identical bytes, a sync tool re-stamping)
+     * the content hash decides — equal content is no conflict.
+     *
+     * A file that is MISSING is `deleted` and nothing is written, because
+     * `createWritable` on a vanished handle would silently recreate it — a note
+     * the user deleted outside the app coming back on the next keystroke.
+     *
+     * A TOCTOU WINDOW REMAINS and cannot be closed with this API: the File System
+     * Access API has no compare-and-swap, so a change landing between the stat
+     * here and the swap-file rename inside `close()` is still overwritten (and a
+     * same-size, same-mtime change is indistinguishable by stat alone). It is
+     * milliseconds wide, versus "whenever the user next typed" before; the live
+     * detection (the watcher, App.checkOpenDocs) is what makes it rare.
+     *
+     * Not wrapped in the mutation counter on purpose: this is the autosave, and
+     * it must cost the tree nothing (its `.crswap` swap is filtered, and the
+     * resulting `modified` never touches the tree).
+     */
+    const writeFileVersioned = useCallback(async (
+        fileHandle: FileSystemFileHandle,
+        data: string | Uint8Array,
+        expected: DiskVersion | null,
+    ): Promise<VersionedWriteResult> => {
+        const bytes = toBytes(data);
+        try {
+            const stat = await statOf(fileHandle);
+            if (!stat) return { status: 'deleted' };
+
+            if (expected && !sameStat(stat, expected)) {
+                const { file, buf } = await readSnapshot(fileHandle);
+                const disk = await versionOfSnapshot(file, buf);
+                if (disk.hash !== expected.hash) {
+                    return { status: 'changed', disk: { bytes: new Uint8Array(buf), version: disk } };
+                }
+            }
+
+            await writeAllBytes(fileHandle, bytes);
+        } catch (err) {
+            // Vanished between the stat and the swap (or mid-read): still not ours
+            // to recreate.
+            if (isGone(err)) return { status: 'deleted' };
+            throw err;
+        }
+        return { status: 'written', version: await versionAfterWrite(fileHandle, bytes) };
+    }, []);
+
+    /**
+     * Park `data` beside `filePath` as `stem (conflict).ext`, then
+     * `stem (conflict 2).ext`, … — never over anything: the name is verified free
+     * against files AND folders (entryExists) and only then created, with
+     * `getFileHandle({create:true})` rather than `createFile` (which opens-or-
+     * truncates). The verify-then-create gap is the same one every name check in
+     * this file has; nothing else is writing conflict copies. Resolves to the
+     * copy's vault path.
+     *
+     * `vaultRoot`: the vault the document belongs to, when that may no longer be
+     * the open one — a vault switch flushes its closing documents only AFTER
+     * rootHandleRef names the next vault (measured: the copy landed in the new
+     * vault, at the same relative path). Folders on the way that were deleted
+     * along with the file are made again: the copy holds edits that exist
+     * nowhere else (measured: closing such a tab lost them).
+     */
+    const writeConflictCopy = useCallback((filePath: string, data: string | Uint8Array, vaultRoot?: FileSystemDirectoryHandle | null) => withMutation(async () => {
+        const root = vaultRoot ?? rootHandleRef.current;
+        if (!root) throw new Error('No vault open');
+        const parentPath = parentVaultPath(filePath);
+        const { dir, patchFrom } = await ensureDirChain(root, parentPath);
+        const name = filePath.slice(parentPath ? parentPath.length + 1 : 0);
+
+        let copyName = '';
+        for (let n = 1; ; n++) {
+            copyName = conflictName(name, n);
+            if (!(await entryExists(dir, copyName))) break;
+        }
+        const handle = await dir.getFileHandle(copyName, { create: true });
+        await writeAllBytes(handle, toBytes(data));
+        // Only the tree on screen is patched: a copy left in the vault being
+        // switched away from is found there the next time it is opened.
+        if (root === rootHandleRef.current) await patchTreeDirs(root, [patchFrom ?? parentPath]);
+        return joinVaultPath(parentPath, copyName);
+    }), [withMutation, patchTreeDirs]);
+
+    /**
+     * Put back a file that was deleted outside the app ("Save again"): create any
+     * missing parent folders and the file — only if NOTHING is at `filePath`
+     * now. Whatever is there (the user, or a `git checkout`, got there first) is
+     * `exists`, and the caller turns that into a conflict instead of a write.
+     */
+    const recreateFile = useCallback((filePath: string, data: string | Uint8Array) => withMutation(async () => {
+        const root = rootHandleRef.current;
+        if (!root) throw new Error('No vault open');
+        const parentPath = parentVaultPath(filePath);
+        const fileName = filePath.slice(parentPath ? parentPath.length + 1 : 0);
+        const { dir, patchFrom } = await ensureDirChain(root, parentPath);
+        if (await entryExists(dir, fileName)) return { status: 'exists' as const };
+
+        const handle = await dir.getFileHandle(fileName, { create: true });
+        const bytes = toBytes(data);
+        await writeAllBytes(handle, bytes);
+        const version = await versionAfterWrite(handle, bytes);
+        await patchTreeDirs(root, [patchFrom ?? parentPath]);
+        return { status: 'written' as const, version, handle };
+    }), [withMutation, patchTreeDirs]);
+
+    /** A fresh handle for a vault path, walked down from the root: what a tab's
+     *  stored handle is checked against, since that one may be stale. Null if any
+     *  component is missing (or is the wrong kind). */
+    const resolveFileHandle = useCallback(async (filePath: string) => {
+        const root = rootHandleRef.current;
+        if (!root || !filePath) return null;
+        const names = filePath.split('/');
+        const fileName = names.pop() as string;
+        try {
+            let dir = root;
+            for (const name of names) dir = await dir.getDirectoryHandle(name);
+            return await dir.getFileHandle(fileName);
+        } catch (err) {
+            if (isGone(err)) return null;
+            throw err;
+        }
+    }, []);
+
+    /* ── The watcher: outside changes → the tree, then the open documents ─────
+     * One FileSystemObserver on the vault root (Chrome 133+ desktop; works on
+     * OPFS), `recursive`. Its records are HINTS (utils/vaultChanges.ts): they pick
+     * which directories to re-list and which open documents to re-verify; the
+     * disk, not the record, is what the app then believes.
+     *
+     * UNVERIFIED against a real disk (only OPFS can be driven in tests): that
+     * local-disk records carry the same shapes as OPFS's, that an autosave shows
+     * up as one `modified` for the file with its `.crswap` swap swallowed or
+     * filtered (either way it is filtered here), and that Windows reports no
+     * cross-directory `moved` (so a move there is disappeared + appeared). Each
+     * of those degrades to a re-list that shares back to an identical tree.
+     *
+     * The pipeline: records → normalizeRecords → a 100 ms trailing debounce
+     * (500 ms ceiling) → ONE serialized processing step at a time:
+     *   - it WAITS while the app's own mutations are in flight (`mutationBusyRef`),
+     *     and again after its reads if one began meanwhile, because a copy-then-
+     *     delete move is, in between, an item in both places;
+     *   - it re-lists only the dirty directories (or walks the vault once when
+     *     there are more than MAX_DIRTY_DIRS, or the batch says rescan);
+     *   - shares the result with the tree on screen and sets state ONLY if
+     *     something changed;
+     *   - and only then tells the subscribers, tree-patched-first, so App's
+     *     open-document logic sees a tree that already matches the disk.
+     * A batch is emitted even when it changed no listing — `modified` is exactly
+     * that case, and App needs it.
+     * ─────────────────────────────────────────────────────────────────────── */
+
+    const emitVaultChanges = useCallback((batch: VaultChangeBatch) => {
+        for (const listener of [...vaultChangeListenersRef.current]) {
+            try { listener(batch); } catch (err) { console.error('A vault-change listener threw:', err); }
+        }
+    }, []);
+
+    /** One batch, start to finish. Resolves false when it must be redone (a
+     *  mutation began, or the tree moved under it), true when it is finished or
+     *  moot (another vault is open). */
+    const processVaultBatch = useCallback(async (
+        root: FileSystemDirectoryHandle,
+        batch: VaultChangeBatch,
+        isCurrent: () => boolean,
+    ): Promise<boolean> => {
+        const dirs = batch.rescan ? null : dirtyDirs(batch);
+        if (dirs === null || dirs.size > 0) {
+            const ticket = ++treeTicketRef.current;
+            const base = fileTreeRef.current;
+            let next: FileTreeNode[] | null = null;
+            if (dirs && dirs.size <= MAX_DIRTY_DIRS) next = await relistDirs(base, root, dirs, touchedPaths(batch));
+            // A rescan, a burst past the dirty-directory cap, or a failed re-list
+            // (a folder vanished mid-listing): one full walk, still shared.
+            if (!next) next = await loadTree(root);
+
+            if (!isCurrent()) return true;
+            if (mutationBusyRef.current > 0) return false;
+            // Someone else published while we read (a context write that patches
+            // the tree itself): our result was computed from a tree that is gone.
+            if (fileTreeRef.current !== base) return false;
+            if (next) publishTree(ticket, root, next);
+        }
+        if (!isCurrent()) return true;
+        emitVaultChanges(batch);
+        return true;
+    }, [loadTree, publishTree, emitVaultChanges]);
+
+    useEffect(() => {
+        if (!rootHandle) {
+            setLiveDetection('off');
+            return;
+        }
+        const root = rootHandle;
+        let cancelled = false;
+        const isCurrent = () => !cancelled && rootHandleRef.current === root;
+
+        // ── the serialized queue ──
+        let queued: VaultChangeBatch | null = null;
+        let running = false;
+        const pump = async () => {
+            if (running) return;
+            running = true;
+            try {
+                while (queued && isCurrent()) {
+                    // Resumed by the mutation counter reaching 0 (resumeWatcherRef).
+                    if (mutationBusyRef.current > 0) break;
+                    const batch: VaultChangeBatch = queued;
+                    queued = null;
+                    let finished = true;
+                    try {
+                        finished = await processVaultBatch(root, batch, isCurrent);
+                    } catch (err) {
+                        console.error('Could not process outside changes:', err);
+                    }
+                    if (!finished) queued = queued ? mergeInto(batch, queued) : batch;
+                }
+            } finally {
+                running = false;
+            }
+        };
+        const enqueue = (batch: VaultChangeBatch) => {
+            queued = queued ? mergeInto(queued, batch) : batch;
+            void pump();
+        };
+        const coalescer = createBatchCoalescer(enqueue);
+
+        // A macrotask later, not synchronously from the mutation's `finally`: the
+        // caller's own continuation (App's retargetTabs after `await moveFile`)
+        // runs in a microtask right after, and the batch must land after it.
+        const resume = () => { setTimeout(() => { if (isCurrent()) void pump(); }, 0); };
+        resumeWatcherRef.current = resume;
+
+        // ── polling: the fallback, and the answer to a dead observer ──
+        let polling = false;
+        let stopPolling: (() => void) | null = null;
+        const startPolling = () => {
+            if (polling || cancelled) return;
+            polling = true;
+            setLiveDetection('polling');
+            let last = 0;
+            // Throttled, and only while visible: a full walk is real work, and a
+            // hidden tab has nobody to show it to. The sharing pass means a tick
+            // that finds nothing sets no state at all.
+            const tick = () => {
+                if (document.visibilityState !== 'visible') return;
+                const now = Date.now();
+                if (now - last < POLL_THROTTLE_MS) return;
+                last = now;
+                enqueue(rescanBatch());
+            };
+            window.addEventListener('focus', tick);
+            document.addEventListener('visibilitychange', tick);
+            const timer = setInterval(tick, POLL_INTERVAL_MS);
+            stopPolling = () => {
+                window.removeEventListener('focus', tick);
+                document.removeEventListener('visibilitychange', tick);
+                clearInterval(timer);
+            };
+            tick();   // whatever was missed while there was no watching at all
+        };
+
+        // ── the observer ──
+        let observer: FileSystemObserver | null = null;
+        let reobserving = false;
+
+        const observe = async (): Promise<boolean> => {
+            // Absent outside Chromium 133+ (and the app is Chromium-only by design,
+            // but a Chromium older than that is a real install).
+            if (typeof FileSystemObserver !== 'function') return false;
+            let obs: FileSystemObserver | null = null;
+            try {
+                obs = new FileSystemObserver((records, source) => {
+                    // A superseded observer (disconnected, or replaced after an
+                    // error) can still have a callback in flight.
+                    if (cancelled || source !== observer) return;
+                    coalescer.push(normalizeRecords(records));
+                    if (records.some(r => r.type === 'errored')) void reobserve();
+                });
+                observer = obs;
+                await obs.observe(root, { recursive: true });
+            } catch (err) {
+                console.warn('Could not watch the vault for outside changes; falling back to polling:', err);
+                obs?.disconnect();
+                if (observer === obs) observer = null;
+                return false;
+            }
+            if (cancelled) obs.disconnect();
+            return true;
+        };
+
+        // 'errored' means the platform lost its watch (a volume went away, the
+        // watch limit was hit). One more try after a pause; if that fails too,
+        // polling takes over for good — and either way a rescan, since whatever
+        // happened in the gap was not seen.
+        const reobserve = async () => {
+            if (reobserving || cancelled) return;
+            reobserving = true;
+            await new Promise(resolve => setTimeout(resolve, REOBSERVE_DELAY_MS));
+            const stale = observer;
+            observer = null;
+            stale?.disconnect();
+            const ok = cancelled ? false : await observe();
+            reobserving = false;
+            if (cancelled) return;
+            if (ok) enqueue(rescanBatch());
+            else startPolling();
+        };
+
+        setLiveDetection('off');
+        void (async () => {
+            const ok = await observe();
+            if (cancelled) return;
+            if (ok) setLiveDetection('observer');
+            else startPolling();
+        })();
+
+        return () => {
+            cancelled = true;
+            coalescer.cancel();
+            queued = null;
+            observer?.disconnect();
+            observer = null;
+            stopPolling?.();
+            if (resumeWatcherRef.current === resume) resumeWatcherRef.current = null;
+        };
+    }, [rootHandle, processVaultBatch]);
 
     const value: FileSystemContextValue = {
         rootHandle,
@@ -1633,6 +2239,15 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         emptyTrash,
         moveFile,
         renameFile,
+        readFileVersioned,
+        readBytesVersioned,
+        statFile: statOf,
+        writeFileVersioned,
+        writeConflictCopy,
+        recreateFile,
+        resolveFileHandle,
+        subscribeVaultChanges,
+        liveDetection,
     };
 
     return (

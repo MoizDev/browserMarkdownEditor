@@ -98,11 +98,25 @@ export interface ContextMenuSeparator {
     id: string;
 }
 
+/**
+ * Quiet text that is NOT a row: no click, no hover, no focus, skipped by the
+ * arrow keys and not a menuitem to a screen reader (the agent panel's ⋯ opens
+ * on the connected helper's version). `label` is a React text child, under
+ * the same rule as ContextMenuCommand.label.
+ */
+export interface ContextMenuLabel {
+    kind: 'label';
+    id: string;
+    label: string;
+    tooltip?: string;
+}
+
 export type ContextMenuEntry =
     | ContextMenuCommand
     | ContextMenuGrid
     | ContextMenuEntryStyle
-    | ContextMenuSeparator;
+    | ContextMenuSeparator
+    | ContextMenuLabel;
 
 export interface ContextMenuRequest {
     /** Viewport coordinates of the click the menu hangs from. */

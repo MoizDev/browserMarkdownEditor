@@ -19,7 +19,7 @@
 
 import {
     HELPER_APP_ID, HELPER_HOST, HELPER_PORTS, HELPER_NAME, MAX_WS_MESSAGE_BYTES, MIN_HELPER_VERSION, PROTOCOL_VERSION,
-    SELF_UPDATE_VERSION, compareVersions,
+    SELF_UPDATE_VERSION, TERMINAL_VERSION, compareVersions,
 } from '../../shared/vaultAgentProtocol';
 import type {
     ClientMessage, ErrorCode, HealthResponse, HelperMessage, HelperPlatform, RequestName, RequestParams, RequestResult,
@@ -63,6 +63,10 @@ export interface HelperInfo {
     outdated: boolean;
     /** At least SELF_UPDATE_VERSION: it answers `helper.update`. */
     selfUpdate: boolean;
+    /** At least TERMINAL_VERSION: it answers `terminal.*`. The terminal gates on
+     *  this alone — MIN_HELPER_VERSION stays put so the chat keeps working on a
+     *  helper that predates the terminal. */
+    terminal: boolean;
 }
 
 /** Whether a newer VaultAgent exists, and how the last attempt to get it went. */
@@ -130,6 +134,15 @@ export class BridgeError extends Error {
 /** Everything the helper sends that is not a response — minus the update's
  *  progress, which the bridge consumes itself (it drives the `updating` state). */
 export type HelperEvent = Exclude<HelperMessage, { type: 'response' } | { type: 'update.progress' }>;
+
+/** A terminal's output, exit or hand-over. One listener list serves both
+ *  features, so each side filters: the chat store ignores these, the terminal
+ *  store ignores everything else. */
+export type TerminalEvent = Extract<HelperEvent, { type: `terminal.${string}` }>;
+
+export function isTerminalEvent(event: HelperEvent): event is TerminalEvent {
+    return event.type.startsWith('terminal.');
+}
 
 /** Connected to a helper the chat may use: not merely a socket to one that is
  *  only there to be updated or uninstalled. */
@@ -300,7 +313,8 @@ class AgentBridge {
         return () => { this.stateListeners.delete(listener); };
     };
 
-    /** run.event / run.done / run.error / tool.call, as they arrive. */
+    /** run.event / run.done / run.error / tool.call and the terminal's output,
+     *  as they arrive. */
     subscribe(listener: (event: HelperEvent) => void): () => void {
         this.eventListeners.add(listener);
         return () => { this.eventListeners.delete(listener); };
@@ -494,6 +508,7 @@ class AgentBridge {
                     sessionsDir: result.sessionsDir,
                     outdated: compareVersions(result.version, MIN_HELPER_VERSION) < 0,
                     selfUpdate: compareVersions(result.version, SELF_UPDATE_VERSION) >= 0,
+                    terminal: compareVersions(result.version, TERMINAL_VERSION) >= 0,
                 };
                 this.lastCheck = helper.selfUpdate ? { kind: 'checking' } : { kind: 'unsupported' };
                 if (this.pendingUpdate) {
@@ -817,7 +832,9 @@ class AgentBridge {
         });
     }
 
-    /** A message that expects no response (tool.result). False when not sent. */
+    /** A message that expects no response (tool.result, terminal.input,
+     *  terminal.ack). False when not sent — the caller decides whether that
+     *  matters (a keystroke typed into a dead socket is simply lost). */
     send(message: ClientMessage): boolean {
         const socket = this.socket;
         if (!socket || socket.readyState !== WebSocket.OPEN) return false;

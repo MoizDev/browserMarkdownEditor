@@ -13,7 +13,7 @@ import {
     AGENT_IDS, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE, MAX_TOOL_RESULT_BYTES, MAX_TOOL_TEXT_CHARS, PROTOCOL_VERSION,
     TOOL_CALL_TIMEOUT_MS,
     type AgentEvent, type AgentId, type ClientMessage, type ErrorCode, type HelperMessage, type HelperPlatform,
-    type RequestName, type RunImage, type ToolName, type ToolResult,
+    type RequestName, type RunImage, type TerminalBackend, type TerminalFontCandidate, type ToolName, type ToolResult,
 } from '../../shared/vaultAgentProtocol.ts';
 import { RunRefused, SAFE_EFFORT_RE, type AgentAdapter, type RunHandle, type RunOutcome } from './agents/types.ts';
 import { HELPER_VERSION } from './buildInfo.ts';
@@ -21,6 +21,9 @@ import { logError } from './log.ts';
 import { syncMirror } from './mirror.ts';
 import { BadRequest, ensureDir, vaultDir } from './paths.ts';
 import { newRunToken } from './security.ts';
+import { collectFontHints } from './terminal/font.ts';
+import { TerminalLimit, TerminalNotFound, type TerminalManager, type TerminalOwner } from './terminal/manager.ts';
+import { openPrivacySettings, revealPtyHost, terminalPrivacy } from './terminal/privacy.ts';
 import { UpdateFailed, UpdateRefused, type Updater } from './update.ts';
 
 export interface HelperContext {
@@ -33,6 +36,13 @@ export interface HelperContext {
     uninstall?: () => void;
     /** Undefined when running from source / --no-register: there is no installed copy to replace. */
     updater?: Updater;
+    /** One per helper process: shells outlive any one connection. */
+    terminals: TerminalManager;
+    /** macOS installed helpers: where `vaultagent-pty` lives, for `helper.revealPtyHost`. */
+    ptyHostBinary?: string;
+    /** Test seams; the real machine by default. */
+    fontHints?: () => Promise<TerminalFontCandidate[]>;
+    privacy?: () => Promise<{ backend: TerminalBackend; fullDiskAccess: boolean | null }>;
 }
 
 interface ActiveRun {
@@ -110,15 +120,21 @@ function isAgent(a: unknown): a is AgentId {
 export class Connection {
     private active: ActiveRun | null = null;
     private closed = false;
+    /** This connection as the terminal manager knows it (compared by identity). */
+    private readonly terminalOwner: TerminalOwner = { send: m => this.send(m) };
 
-    constructor(private readonly ctx: HelperContext, private readonly sendRaw: (text: string) => void) {}
+    /** `sendRaw` answers as Bun's `ws.send` does: 0 means the frame was DROPPED (the
+     *  socket is past its backpressure limit), -1 queued, more than 0 sent. */
+    constructor(private readonly ctx: HelperContext, private readonly sendRaw: (text: string) => number | void) {}
 
-    private send(msg: HelperMessage): void {
-        if (this.closed) return;
+    /** False only when the frame was dropped; the terminal manager resyncs on that. */
+    private send(msg: HelperMessage): boolean {
+        if (this.closed) return true;
         try {
-            this.sendRaw(JSON.stringify(msg));
+            return this.sendRaw(JSON.stringify(msg)) !== 0;
         } catch (e) {
             logError('ws send failed', e);
+            return false;
         }
     }
 
@@ -142,6 +158,15 @@ export class Connection {
             this.onToolResult(msg.runId, msg.callId, msg.result);
             return;
         }
+        // Fire-and-forget, like tool.result: a keystroke or an ack has no answer to wait for.
+        if (msg.type === 'terminal.input') {
+            this.ctx.terminals.input(this.terminalOwner, msg.termId, msg.data);
+            return;
+        }
+        if (msg.type === 'terminal.ack') {
+            this.ctx.terminals.ack(this.terminalOwner, msg.termId, msg.chars);
+            return;
+        }
         const reqId = (msg as { reqId?: unknown }).reqId;
         if (typeof reqId !== 'string' || !REQ_ID_RE.test(reqId)) return;
         try {
@@ -149,6 +174,8 @@ export class Connection {
         } catch (e) {
             if (e instanceof BadRequest) this.fail(reqId, 'bad-request', e.message);
             else if (e instanceof RunRefused) this.fail(reqId, e.reason, e.message);
+            else if (e instanceof TerminalLimit) this.fail(reqId, 'limit', e.message);
+            else if (e instanceof TerminalNotFound) this.fail(reqId, 'not-found', e.message);
             else if (e instanceof UpdateRefused) this.fail(reqId, e.code, e.message);
             // Already logged by the updater, and its message is written for the panel.
             else if (e instanceof UpdateFailed) this.fail(reqId, 'internal', e.message);
@@ -246,6 +273,44 @@ export class Connection {
                 setTimeout(() => updater.restart(), 300);
                 return;
             }
+            case 'terminal.open':
+                // The restart that follows an update ends every shell: do not start one into it.
+                if (this.ctx.updater?.busy) throw new RunRefused('busy', 'VaultAgent is updating. Try again in a moment.');
+                this.reply(reqId, await this.ctx.terminals.open(this.terminalOwner, p.termId, p.cols, p.rows));
+                return;
+            case 'terminal.attach':
+                this.reply(reqId, await this.ctx.terminals.attach(this.terminalOwner, p.termId, p.cols, p.rows));
+                return;
+            case 'terminal.resize':
+                this.ctx.terminals.resize(this.terminalOwner, p.termId, p.cols, p.rows);
+                this.reply(reqId, {});
+                return;
+            case 'terminal.close':
+                this.ctx.terminals.close(this.terminalOwner, p.termId);
+                this.reply(reqId, {});
+                return;
+            case 'terminal.fontHint':
+                this.reply(reqId, { candidates: await (this.ctx.fontHints ?? collectFontHints)() });
+                return;
+            case 'terminal.privacy':
+                this.reply(reqId, await (this.ctx.privacy ?? (() => terminalPrivacy(this.ctx.terminals.backend)))());
+                return;
+            case 'helper.openPrivacySettings':
+                if (this.ctx.platform !== 'macos') {
+                    this.fail(reqId, 'unsupported', 'Privacy settings are a macOS feature.');
+                    return;
+                }
+                await openPrivacySettings();
+                this.reply(reqId, {});
+                return;
+            case 'helper.revealPtyHost':
+                if (this.ctx.platform !== 'macos' || !this.ctx.ptyHostBinary) {
+                    this.fail(reqId, 'unsupported', 'This VaultAgent has no PTY host to show (it is not an installed macOS helper).');
+                    return;
+                }
+                await revealPtyHost(this.ctx.ptyHostBinary);
+                this.reply(reqId, {});
+                return;
             default:
                 this.fail(reqId, 'unsupported', `unknown request ${String(type)}`);
         }
@@ -341,6 +406,8 @@ export class Connection {
 
     onClose(): void {
         this.closed = true;
+        // Shells outlive their socket: they wait, detached, for the page to come back.
+        this.ctx.terminals.detachAll(this.terminalOwner);
         const run = this.active;
         if (!run) return;
         // The panel is gone: nobody can see the reply or answer tool calls.

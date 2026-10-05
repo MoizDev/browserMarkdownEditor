@@ -15,7 +15,7 @@ declare const __VAULTAGENT_EXTRA_ORIGINS__: string | undefined;
 declare const __VAULTAGENT_RELEASES_BASE__: string | undefined;
 
 /** Source version; the release build replaces it with the tag's. */
-const SOURCE_VERSION = '0.1.3';
+const SOURCE_VERSION = '0.2.0';
 
 export const HELPER_VERSION: string =
     typeof __VAULTAGENT_VERSION__ === 'string' && __VAULTAGENT_VERSION__ ? __VAULTAGENT_VERSION__ : SOURCE_VERSION;

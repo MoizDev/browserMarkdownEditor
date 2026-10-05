@@ -36,6 +36,7 @@ import { canWrite, modeExtensions } from '../editor/readingMode';
 import { keyboardAfterSearchClose, noteSearchKeymap, rebuildSearchPanelForMode, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
 import { tabIntoText } from '../editor/tabIntoText';
 import { docString } from '../editor/docCache';
+import { externalReload, reloadSpec } from '../editor/externalReload';
 import { registerView, type LineCol, type MarkdownViewInfo, type TextChange } from '../utils/viewRegistry';
 import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
@@ -49,7 +50,8 @@ import { rainbowBrackets as rainbowBracketsExtension } from '../editor/rainbowBr
 import { codeDarkTheme, codeLightTheme } from '../editor/codeHighlight';
 import { isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, isTexFile, noteDisplayName } from '../utils/fileTypes';
 import { ArrowLeft, ArrowRight, Edit2, Eye, MoreHorizontal, PenTool } from './icons';
-import type { ActiveFile, EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
+import DiskBar from './DiskBar';
+import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
 
 // tldraw is a heavy dependency (canvas engine + its own UI). Loading it lazily
 // keeps it out of the initial bundle, so a markdown-only session never pays for
@@ -564,8 +566,11 @@ interface DocumentPaneProps {
      *  both, so the caller keeps it stable for the app's life (App does). */
     getWikiLinkTargets: () => WikiLinkTarget[];
     /** Path-explicit: several documents are editable at once, and a debounced
-     *  canvas save can land after this pane has gone away. */
-    onContentChange: (path: string, content: string) => void;
+     *  canvas save can land after this pane has gone away. `fromDisk` = the
+     *  text was just reloaded from the file: buffer it, but it is not an edit. */
+    onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
+    /** Resolve this document's DiskBar (OpenTab.disk). Stable. */
+    onDiskAction: (path: string, action: DiskAction) => Promise<void>;
     /** Read this document's file again when the restore could not
      *  (OpenTab.readError); resolves true once it holds the text. Stable. */
     onRetryRead: (path: string) => Promise<boolean>;
@@ -620,6 +625,7 @@ function DocumentPane({
     registerKeyboardTarget,
     getWikiLinkTargets,
     onContentChange,
+    onDiskAction,
     onRetryRead,
     onFocusPane,
     onBack,
@@ -766,6 +772,18 @@ function DocumentPane({
                     applyAgentChanges(view, changes);
                     return true;
                 },
+                // The file changed on disk and this document had nothing unsaved
+                // (App.checkOpenDocs decided): one minimal transaction, so the
+                // caret, the scroll place and the history outside the change all
+                // stay. The update listener sees `externalReload` and reports it
+                // as `fromDisk`, so it is never written back.
+                replaceFromDisk(next: string) {
+                    const view = viewRef.current;
+                    if (!view) return false;
+                    const spec = reloadSpec(view.state, next);
+                    if (spec) view.dispatch(spec);
+                    return true;
+                },
             }),
         });
         // `codeLanguage` is a property of the PATH (one file, one language), so
@@ -904,7 +922,11 @@ function DocumentPane({
             revealHighlightField,
             EditorView.updateListener.of((update) => {
                 if (update.docChanged) {
-                    onContentChangeRef.current(path, update.state.doc.toString());
+                    // A reload from disk is the file's own text, not an edit:
+                    // marked dirty, it would be saved straight back over the
+                    // file it came from (editor/externalReload.ts).
+                    const fromDisk = update.transactions.some(tr => tr.annotation(externalReload));
+                    onContentChangeRef.current(path, update.state.doc.toString(), fromDisk ? { fromDisk } : undefined);
                     // Keyed by path, like everything else baked in here.
                     mapRememberedScroll(path, update.changes);
                 }
@@ -1365,6 +1387,11 @@ function DocumentPane({
                     </button>
                 </div>
             </div>
+            {/* A PDF draws its own: its PdfPane floats over this slot and would
+                paint over a bar placed here. */}
+            {tab.disk && !isPdf && (
+                <DiskBar name={file.name} state={tab.disk} path={path} onAction={onDiskAction} />
+            )}
             <div className="editor-slot-body">
                 {unreadable && (
                     <div
@@ -1547,9 +1574,11 @@ function DocumentPane({
                 {isDrawing && !unreadable && (
                     <Suspense fallback={<div className="drawing-pane drawing-pane-loading">Loading whiteboard…</div>}>
                         {/* Keyed on path: each drawing gets its own tldraw
-                            instance, loaded from its own snapshot. */}
+                            instance, loaded from its own snapshot. And on
+                            diskRev, so a reload from disk remounts it on the
+                            new file (App.reloadFromDisk). */}
                         <DrawingPane
-                            key={path}
+                            key={`${path}|${tab.diskRev ?? 0}`}
                             filePath={path}
                             content={tab.content}
                             onContentChange={onContentChange}
@@ -1562,7 +1591,7 @@ function DocumentPane({
                         {/* Keyed on path, like a drawing: each notebook gets its
                             own tldraw instance, loaded from its own file. */}
                         <NotebookPane
-                            key={path}
+                            key={`${path}|${tab.diskRev ?? 0}`}
                             filePath={path}
                             content={tab.content}
                             onContentChange={onContentChange}

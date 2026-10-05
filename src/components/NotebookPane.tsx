@@ -429,6 +429,15 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
             // Paper, ruling and writing, as on screen (the pages are in the
             // export like any shape), at no more than twice the on-screen size.
             capture: (maxSide) => captureRegion(editor, editor.getViewportPageBounds(), maxSide, editor.getZoomLevel() * 2),
+            // Strokes inside the serialize debounce are edits App cannot see yet
+            // (App.checkOpenDocs): a reload from disk over them would lose them.
+            // Called only after this effect has run, so `flush` below is set.
+            hasPendingEdits: () => serializeTimerRef.current !== null,
+            flushPending: () => {
+                if (!serializeTimerRef.current) return;
+                clearTimeout(serializeTimerRef.current);
+                flush();
+            },
             renderPage: async (page, maxSide) => {
                 const box = boxesRef.current[page - 1];
                 if (!box) return null;

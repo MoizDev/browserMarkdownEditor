@@ -15,6 +15,10 @@ executeTool (utils/vaultAgentTools.ts)   claude -p │ codex app-server │ open
 agentHost (utils/agentHost.ts) → App     ◀──┘ MCP tools/call → POST /mcp/<runToken>
 ```
 
+The same helper also runs the editor's **terminal** (`terminal.*` messages, a separate feature with
+its own skill, `integrated-terminal`): no run ever sees a terminal session, and nothing in this
+skill's context, tools or chat index reads one.
+
 ## How the CLIs run
 
 - **The decision (the user's; do not re-restrict):** each CLI runs with its full normal tools — shell,
@@ -94,8 +98,10 @@ the focused drawing/notebook/PDF view rides along ONLY when its SHA-256 differs 
 
 ## Edits go through the app, never behind it
 
-The app has no external-change detection: a write it did not make is clobbered by the next autosave —
-which is why the prompt forbids the agent's own tools on vault files. So text edits
+A write the app did not make is no longer clobbered — every document save is versioned and an outside
+change reloads the note or raises a conflict bar (`tabs-and-panes` → "Outside changes") — but it costs
+the reader exactly that interruption, which is why the prompt still forbids the agent's own tools on
+vault files. So text edits
 (`vault_edit`/`vault_write`, refused as stale unless the text still equals what the agent read) go live view → cached `EditorState`s + buffer → disk + `afterWrite`; create/mkdir refuse taken
 names (`entryNames.nameTaken`) and never truncate; move REFUSES a taken target; trash is
 `App.performTrash` without the question; canvas ops land in the live tldraw editor (`pdf-and-drawings`),
@@ -152,6 +158,7 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
 - Header: the app's AI glyph (`StatusMark`, tinted and pulsed by `data-state`), the chat switcher,
   New chat, ⋯, close. **Which CLI runs the next chat is a pick-one section of the ⋯ menu** (`checked`
   rows + its health caption), not a header chip: it is chosen once, and the panel is 400px wide.
+  The menu opens on the connected helper's version (a `label` entry, absent unless connected).
 - The model list opens SHORT (`ModelPicker.shortlist`): the default, then family aliases (an id with no
   digit — `opus`, `sonnet` — which is what someone picking a model means), then the agent's own order,
   three in all plus whatever is chosen; `Show all N models` opens the rest. Claude reports a dozen, most
@@ -178,15 +185,22 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   Releases (the panel links `releases/latest/download/<asset>` — the repo must stay public and publish
   no other "latest" release). "Run workflow" = the same builds and checks, publishing nothing.
   **Release checklist:** bump `SOURCE_VERSION` in `helper/src/buildInfo.ts` (source runs report it; the
-  tag sets a release build's), merge, dispatch once, tag, then check `latest/download/vaultagent-release.json`
-  names the new version. Bump `MIN_HELPER_VERSION` (now 0.1.2, the first unrestricted helper) only
-  when the panel needs a newer helper.
+  tag sets a release build's; 0.2.0 = the first with a terminal), push, dispatch once on the branch,
+  tag that commit, then check `latest/download/vaultagent-release.json` names the new version. Bump
+  `MIN_HELPER_VERSION` (now 0.1.2, the first unrestricted helper) only when the CHAT needs a newer
+  helper — a feature with its own gate (`TERMINAL_VERSION`, `SELF_UPDATE_VERSION`) never raises it,
+  or every older helper is locked out of the chat too. `PROTOCOL_VERSION` stays 1 for additive changes.
+  The macOS job also checks `helper/ptyhost/vaultagent-pty` against `PINNED.json` (CI never rebuilds
+  it; see `integrated-terminal`). The release notes mention the terminal; there are no new assets.
+  Every job that tests or compiles the helper runs `npm ci --ignore-scripts` first: since the terminal
+  it bundles npm packages (`@xterm/headless` + addons), and a bare checkout cannot resolve them.
 - **Self-update** (`helper/src/update.ts`; helpers ≥ `SELF_UPDATE_VERSION` 0.1.3, installed `serve`
   only — source / `--no-register` have no updater and answer `installed:false` / `unsupported`):
   - `helper.checkUpdate {force?}` → `UpdateCheck` (cached 10 min, a failure 30 s); `helper.update`
     streams `update.progress` to the asker, replies `{from,to}` once the new binary is in place, then
-    restarts 300 ms later. Refused (`busy`) while any run is active; `run.start` and `helper.uninstall`
-    refused while updating. A copy not running from `installLayout`'s path answers `installed:false`.
+    restarts 300 ms later. Refused (`busy`) while any run is active; `run.start`, `terminal.open` and
+    `helper.uninstall` refused while updating. A restart ends every terminal shell, so the panel asks
+    first when `utils/terminalCount.ts` says any are open (update and uninstall alike). A copy not running from `installLayout`'s path answers `installed:false`.
   - Source of truth is baked at build time — `RELEASES_BASE_URL` (`--releases-base` for tests, never
     from the wire): manifest from `latest/download/`, the asset from the VERSIONED tag URL. Assets are
     raw per-OS binaries (`UPDATE_ASSET_NAMES`: ad-hoc-signed single-arch macOS, the Windows exe, the

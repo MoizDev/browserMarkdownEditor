@@ -66,7 +66,7 @@ workspace cycles through all of it.
 
 - **Autosave is per-tab**, via a `Map<path, timer>` (`saveTimersRef`, 1s debounce). Switching or
   closing one tab must never cancel another tab's pending write.
-- **The save funnel `updateTabContent(path, content)` is path-explicit and the only one there is:**
+- **The save funnel `updateTabContent(path, content, opts?)` is path-explicit and the only one there is:**
   several documents are editable at once in a split tab, and the drawing/PDF canvases serialize on
   their own debounce that can fire *after* their pane has gone away — either way the text must land
   in the originating file's buffer, not "whatever pane has focus now."
@@ -74,6 +74,48 @@ workspace cycles through all of it.
   `writeFileRef`, `rebuildGraphRef`) so stable callbacks and timers never go stale without re-arming.
   A save reports "Saved" when its path is **visible** (any pane of the tab on screen), not merely
   focused.
+
+- **Writes are versioned and serialized per DOCUMENT.** `flushTab` chains on `flushChainsRef` keyed by
+  `OpenTab.id` (a rename mid-write cannot split a chain; `flushingRef` counts what is queued or running)
+  and writes only through `writeFileVersioned` against `getBaseline(id)` (`utils/docBaselines.ts` —
+  keyed by id, so a rename needs no re-key). `written` → new baseline + the old tail; `changed` → the
+  tab enters `disk: 'conflict'`, `deleted` → `disk: 'deleted'`. `diskStateRef` mirrors `OpenTab.disk`
+  SYNCHRONOUSLY and is the gate: a held tab is never autosaved. `closing` (close, trash, vault switch):
+  a last write its file cannot take keeps the text as a `(conflict)` copy instead — nobody is left to ask.
+  A PDF's baseline is hashed in the background at open (`seedPdfBaseline`); its first save awaits it.
+- **`updateTabContent(path, content, { fromDisk: true })`** buffers WITHOUT dirty and schedules nothing:
+  a reload from disk is the file, and reported as typing it would be written straight back.
+
+## Outside changes (`App.checkOpenDocs`, `reloadFromDisk`, `handleDiskAction`, `DiskBar`)
+
+- **Every read that fills a tab records a baseline** (`readFileVersioned`): `handleFileClick`, the restore
+  pass (versions carried to the merge), `retryUnreadTab`, `addTabQuietly`. `releaseTab` drops it; the
+  vault switch clears all of it after its synchronous flush captures.
+- **`checkOpenDocs(scope | 'all', batch?)`** — serialized promise queue; waits out `vaultMovesRef`,
+  `trashInFlightRef` and `restoringRef` (mid copy-then-delete the old file is simply gone); skips and
+  re-queues a document with a write in flight. Per tab: fresh handle from the root → missing → follow a
+  certain move (`followDiskMove`) or `disk: 'deleted'`; stat equals baseline → nothing (the echo of our
+  own save); hash equal → refresh the stored stat (`touch`); hash differs → **`hasUnsaved`** (`dirty` ||
+  armed timer || write in flight || the reporter's `hasPendingEdits`) ? conflict : reload in place.
+  Disk back at the baseline lifts a held tab and re-arms its save. A move followed in a pass re-points
+  tabs only a commit later, so those are skipped (not "missing") and re-checked at the new path on the
+  750 ms retry. A noticed move onto ANOTHER open document flushes that one as closing (`retargetPaths`'
+  `fromDisk`) — an in-app move drops it. Success messages go to the status line (`announce`), never
+  `notify` (the "Could not continue" modal).
+  Triggered by every `subscribeVaultChanges` batch, window focus / `visibilitychange`, and a 2 s poll
+  while visible when `liveDetection === 'polling'`.
+- **Reload in place**: text → the reporter's `replaceFromDisk` (one minimal head/tail change annotated
+  `externalReload` + `isolateHistory`, `editor/externalReload.ts`), or with no live view the cached
+  `${id}|${path}` state and the buffer; the update listener baked into the state reports it as
+  `fromDisk`. Caret, scroll anchor and history outside the change survive; ⌘Z steps back over it.
+  Canvases → `content` replaced, `diskRev + 1`, which is part of the Drawing/Notebook/PdfPane keys (NOT
+  `paneKey`, so the EditorState cache key is untouched); a PDF also drops its parked render data.
+- **The DiskBar** sits between `.editor-slot-header` and `.editor-slot-body` — inside `PdfPane` for a PDF,
+  which floats over the slot (its body is always wrapped in `.pdf-pane-body`, so the bar coming and going
+  never remounts the viewer). Conflict: **Reload** (pending canvas strokes flushed via `flushPending`,
+  mine → `(conflict)` copy, disk re-read NOW) / **Keep mine** (disk → copy, baseline := what was read,
+  then a forced `flushTab` — a disk that moved again re-raises the conflict). Deleted: **Save again**
+  (`recreateFile`; something there now → conflict) / **Close** (asks when unsaved).
 
 ## Session persistence is PER VAULT
 

@@ -10,7 +10,10 @@ Everything else goes through `useFileSystem()`: `readFile`/`writeFile`, binary
 `readFileBytes`/`writeFileBytes`, `createFile`/`createFolder`, `moveFile`/`renameFile`/`moveToTrash`,
 `importFiles`, `getAssetUrl`/`saveAsset`/`retireAsset`/`restoreAsset`,
 `listTrash`/`restoreFromTrash`/`deleteFromTrash`/`emptyTrash`,
-`pickDirectory`/`restoreVault`/`openRecentVault`/`openFolderAsVault`.
+`pickDirectory`/`restoreVault`/`openRecentVault`/`openFolderAsVault` — and, for open DOCUMENTS, the
+versioned IO (`readFileVersioned`/`readBytesVersioned`/`statFile`/`writeFileVersioned`/
+`writeConflictCopy`/`recreateFile`/`resolveFileHandle`) plus `subscribeVaultChanges`/`liveDetection`
+(see "Changes made outside the app" below).
 
 There is no backend and no undo stack behind these calls — a mistake here destroys the user's notes.
 
@@ -179,8 +182,8 @@ anything new that calls it inherits the hole.**
 create/mkdir refuse a taken name instead of truncating, its move REFUSES a taken target (unlike
 `moveFile`/`renameFile` — nothing an agent is told justifies an overwrite), its trash is
 `App.performTrash` without the question (same `trashInFlightRef`), and its text edits land in the
-open editor or go through the save tail (`afterWrite`), never behind the app's back — there is no
-external-change detection, so a write the app did not make would be clobbered by the next autosave.
+open editor or go through the save tail (`afterWrite`), never behind the app's back. (A write the app
+did not make is no longer clobbered — see below — but it costs the reader a reload or a conflict bar.)
 
 ## A rename or a move carries every open document with it — a FOLDER's included
 
@@ -201,14 +204,64 @@ stored session named a file that was gone. Three things about it:
   description of the folder before it moved.
 - `App.retargetExpanded` moves the tree's disclosure state the same way, so a renamed folder does not
   collapse itself and everything the reader had opened inside it.
+- The core is **path-based** (`App.retargetPaths` / `retargetExpandedPaths`): a rename noticed ON DISK
+  (`App.followDiskMove`, below) runs the very same fix-ups — tabs, layout, styles and custom order,
+  render caches, asset refs, pending restore — minus the copy, inside `trackVaultMove`.
 
-Every mutation rebuilds the whole tree from scratch via `refreshTree` (dirs-first, alphabetical).
-Hidden from the tree: `.Assets`, `.Garbage`, `.DS_Store` — the first two **per folder** — and, at the
-vault ROOT only, `.appearance.json` (+ its `.crswap`) and `ROOT_HIDDEN_DIRS` (`utils/vaultAgentStore.ts`:
-`.VaultAgent`, `.claude`, `.agents`, `.codex`, `.opencode` — the AI agent's folders). Graph and vault
-search are built from the tree, so they inherit it; the agent's own `vault_list` reads the disk and
-still sees `.claude`/`.agents`. `.VaultAgent/` (the chat index and the vault's agent id) is written
-with `getFileHandle({create:true})` + `writeFile`, never `createFile`.
+**The tree is walked whole only on a vault open, a rescan or `refreshTree`** (dirs-first, alphabetical),
+and every published tree goes through `shareTree` (`utils/treeShare.ts`): each unchanged node keeps
+its object identity, so the `memo`'d `TreeNode` rows re-render only for what changed, and a walk that
+found nothing new keeps the `fileTree` reference itself (graph, search, fileTimes and prefetch key on
+it). A changed directory keeps its old handle and its children are re-pointed at it — a node's
+`parentHandle` IS its parent node's `handle` (`moveFile` also checks `isSameEntry`). Publishing is
+**ticketed** (`publishTree`): a walk publishes only if no later-started one already has and its root
+is still the open vault, and the provider writes root and tree only via `commitRoot`/`commitTree`.
+
+Hidden from the tree — ONE predicate, `utils/vaultEntries.ts` (`isHiddenVaultEntry`; the observer
+filter `isIgnoredChangePath` is built on it, so the two cannot drift): `.Assets`, `.Garbage`,
+`.DS_Store` — the first two **per folder** — plus **`.git` (file or folder) and `*.crswap` at any
+depth**; and at the vault ROOT only, `.appearance.json` and `ROOT_HIDDEN_DIRS` (`utils/vaultAgentStore.ts`:
+`.VaultAgent`, `.claude`, `.agents`, `.codex`, `.opencode` — the AI agent's folders). `.git` is never
+even walked (the tree, the observer, the trash crawl and `emptyTrash`'s sweep all skip it), yet
+`copyDirRecursive` still copies it when its folder moves. Graph and vault search are built from the
+tree, so they inherit it; the agent's own `vault_list` reads the disk and still sees `.claude`/`.agents`
+but leaves out `.git` unless `includeHidden`. `.VaultAgent/` (the chat index and the vault's agent id)
+is written with `getFileHandle({create:true})` + `writeFile`, never `createFile`.
+
+## Changes made outside the app (`FileSystemObserver` + versioned writes)
+
+A `git pull` in the terminal, a formatter, a sync client, a second app tab. **Observer records are
+HINTS; a stat — and a SHA-256 of the raw bytes when the stat moved — is the truth.**
+
+- **The watcher** (an effect on `rootHandle` in the provider): one `FileSystemObserver`, `recursive`,
+  StrictMode-safe and generation-guarded. Records → `normalizeRecords` (`utils/vaultChanges.ts`;
+  ignored paths dropped at the top, `.git` being the bulk of a git command's noise) → a coalescer
+  (100 ms trailing, 500 ms ceiling) → one serialized `processBatch`: re-list ONLY the dirty parent
+  dirs (a touched folder is walked fresh; an untouched child folder keeps its subtree), splice with
+  path-copying, `shareTree`, publish if changed, then emit the batch to `subscribeVaultChanges` —
+  always, even with no tree change (`modified` is for App). >64 dirty dirs or `rescan` = one full walk.
+  **`modified` never touches the tree**, so the app's own autosaves cost it nothing.
+- **`mutationBusy`**: the app's own `createFile`/`createFolder`/`importFiles`/`saveAsset`/moves/renames/
+  trash/restore/empty/asset retire+restore and the conflict-copy/recreate writes hold it; a batch
+  arriving meanwhile waits and is processed ONCE a macrotask after the last ends, so a copy-then-delete
+  is never drawn mid-way and App's own fix-ups (microtasks after the await) land first.
+- **Fallback**: no observer, `observe()` rejected, or an `errored` record plus one failed re-observe →
+  `liveDetection: 'polling'` — `{rescan:true}` batches on focus/visible (throttled 3 s) and every 15 s
+  while visible, through the sharing pass (no render when nothing changed). Unverified platform facts
+  (local disk vs OPFS records, `.crswap` reporting, no cross-directory `moved` on Windows) are in
+  comments; each degrades to a re-list that shares back to an identical tree.
+- **Versioned IO**: `readFileVersioned` (hash of the raw bytes, then UTF-8 + CRLF normalize; one retry
+  on `NotReadableError`), `statFile` (null only for NotFound/TypeMismatch — a lock throws, it is not a
+  deletion), **`writeFileVersioned(handle, data, expected)`** — missing → `deleted` (never recreates);
+  stat equal → write; stat moved → hash: equal writes (a `touch`), different → `changed` with the disk's
+  bytes. A TOCTOU window between the check and the write remains (no API closes it; documented).
+- **`writeConflictCopy(path, data, vaultRoot?)`** → `stem (conflict).ext`, then `(conflict 2)`…, checked
+  against files AND folders via `entryExists`, written with `getFileHandle({create:true})` on a name proven
+  free (never `createFile`); deleted parent folders are made again (`ensureDirChain`). `vaultRoot` is the
+  document's vault — a vault switch's closing flushes run after `rootHandleRef` names the next one. **`recreateFile(path, data)`** → missing parents + the file, only if nothing is there.
+- **App's half** (`tabs-and-panes` → "Outside changes"): per-document baselines, `checkOpenDocs`, reload
+  in place, the DiskBar, and rename pairing — an explicit `moved` record, or a UNIQUE same-size
+  same-HASH file that appeared in the batch; anything less certain shows "deleted", never a guess.
 
 ## `.Assets` and `.Garbage` are per FOLDER (`utils/assets.ts`)
 

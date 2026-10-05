@@ -2,7 +2,7 @@ export const HELP_DOC_CONTENT = `# Browser Markdown Editor User Guide
 
 Welcome to your Browser Markdown Editor. This application is a fully offline, local-first markdown editor that operates entirely within your web browser using the native File System Access API. 
 
-Because it operates locally, you retain complete ownership and privacy over your data. There are no servers, no databases, and no cloud syncing happening in the background. Your files remain exclusively on your device. The one optional exception is the **AI agent** (section 9): if you choose to install its small helper, the agent you pick sends your questions — and what you are looking at — to its own AI service, exactly as it would from your terminal.
+Because it operates locally, you retain complete ownership and privacy over your data. There are no servers, no databases, and no cloud syncing happening in the background. Your files remain exclusively on your device. The one optional exception is **VaultAgent**, a small helper you can install on your computer: it runs the **AI agent** (section 9), which sends your questions — and what you are looking at — to its own AI service, exactly as it would from your terminal, and the built-in **Terminal** (section 10).
 
 Here is everything you need to know about using the application.
 
@@ -37,7 +37,7 @@ Along the top of the sidebar sit two tabs — **Files** (the folder) shows the f
 
 Under the tabs, while the file tree is showing, is a row of buttons for the tree itself: **New note**, **New folder**, the **pencil** (its menu holds **New Drawing** and **New Notebook**), **Change sort order**, **Auto-reveal current file** and **Expand all** / **Collapse all** (see *Sorting and Finding Your Place* below).
 
-At the bottom, a row of three icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
+At the bottom, a row of five icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **AI agent** (the sparkles — see section 9), the **Terminal** (see section 10), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
 
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
@@ -252,6 +252,15 @@ A note scrolls on past its last line by about half the height of its pane, so th
 
 ### Auto-Save
 You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
+
+### When Files Change Outside the App
+Your notes are ordinary files, so other programs can change them too — a \`git pull\` in the terminal, a formatter, a sync service like iCloud or Dropbox, another editor, or this app open in a second browser tab. The editor notices, and never saves over a change it has not seen:
+- **A note you have open updates by itself** when its file changes and you have nothing unsaved in it. Your cursor and scroll position stay where they were, and \`Cmd + Z\` / \`Ctrl + Z\` steps back to the text you had before. Drawings, notebooks and PDFs reload the same way.
+- **If you were in the middle of editing it**, neither version wins silently. A bar appears at the top of the note — "*changed on disk while you had unsaved edits*" — with two buttons. **Reload** shows the version on disk and keeps yours beside it as \`name (conflict).md\`; **Keep mine** saves your version and keeps the one from disk beside it as \`name (conflict).md\`. (If that name is taken, the copy is called \`name (conflict 2).md\`, and so on.) Until you choose, the note is not saved, but you can keep reading and editing it; its tab carries a warning sign meanwhile, so a note waiting on you is easy to spot behind other tabs.
+- **Even when a change could not be noticed as it happened**, every save first checks that the file is still the one you opened. If it is not, nothing is written and the same bar appears. A change that only touched the file's date (\`touch\`, or a checkout that wrote the very same text) is not counted as a change.
+- **If the file is deleted**, the bar says so, and typing does not quietly bring the file back: **Save again** writes your note back where it was (folders included), and **Close** closes the tab — asking first if it holds edits that exist nowhere else. Closing a note whose file changed or vanished in any other way (the × on its tab, say) keeps your unsaved edits beside it as a \`(conflict)\` copy rather than dropping them.
+- **If the file is renamed or moved**, its tab follows it to the new name, and a renamed folder keeps its icon, colour, custom order and whether it was expanded — when your system reports the change as a rename. A sync service that copies and then deletes, or a folder renamed on Windows, looks like a new folder: open notes inside are followed when their contents match, but the folder's look starts fresh. When the app cannot be sure where a file went, the tab shows it as deleted rather than guess.
+- **The file tree updates by itself** as files and folders are created, deleted, moved or renamed outside the app, and so do search, the graph and the *Modified* sort. A \`.git\` folder is never shown.
 
 ### Scroll Persistence
 The application remembers where you were reading in every note: the line at the top of the editor, and how far into it you had scrolled. Switch to another tab and back, close the note and open it again, or reload the app, and that line comes back to the top of the editor — whether you were in Reading mode or editing when you left. If that line is now inside a section you have collapsed, the note opens at that section's heading instead, and the section stays collapsed; if Reading mode draws it as part of a table or maths block, the note opens at the top of that block.
@@ -614,7 +623,7 @@ Your own MCP servers are left out of the panel's runs, and so are your hooks and
 The vault holds only a small list of its chats, in a hidden \`.VaultAgent\` folder (hidden from the file tree, search and the graph, as are \`.claude\`, \`.agents\`, \`.codex\` and \`.opencode\` folders at the top of the vault). The conversations themselves are kept by the agent in its own place, the way it keeps your terminal sessions; the agent works from a folder of its own for this vault, under \`~/.bme-agent-sessions\` in your home folder. A \`CLAUDE.md\` or \`AGENTS.md\` at the top of the vault, and skills in \`.claude/skills\` or \`.agents/skills\`, are passed on to the agent as instructions.
 
 ### Keeping it up to date
-Each time you load the page (once you have connected before, and Chrome still allows the connection), the editor asks VaultAgent whether a newer version has been released. When one has, a small dot appears on the sparkles button (and on the expand-sidebar button while the sidebar is hidden), and the panel says "**VaultAgent X** is available" with an **Update** button. The panel's **⋯** menu also has **Update VaultAgent**, which you can use any time; it is greyed out when you already have the latest version.
+Each time you load the page (once you have connected before, and Chrome still allows the connection), the editor asks VaultAgent whether a newer version has been released. When one has, a small dot appears on the sparkles button (and on the expand-sidebar button while the sidebar is hidden), and the panel says "**VaultAgent X** is available" with an **Update** button. The panel's **⋯** menu also has **Update VaultAgent**, which you can use any time; it is greyed out when you already have the latest version. The version you have is shown at the top of that menu.
 
 One click is all it takes: VaultAgent downloads the new version, checks that it runs on this computer, replaces the old copy and restarts. The panel shows the progress, reconnects by itself and says "Updated to VaultAgent X". Your chats are kept. If a reply is being written, the panel asks first, because updating stops it.
 
@@ -624,6 +633,40 @@ VaultAgent versions older than 0.1.3 cannot update themselves. For those, the **
 
 ### Turning it off
 The panel's **⋯** menu always has **Uninstall VaultAgent** (it works while VaultAgent is connected, even an outdated one, and waits while an update runs): it stops the helper, removes it from your login items and deletes it. Your chats stay. To use the agent again, download the installer from the panel and open it.
+
+If any terminals are open (section 10), updating or uninstalling VaultAgent asks first, because restarting the helper ends their shells.
+
+---
+
+## 10. The Terminal
+
+The terminal button at the bottom of the sidebar — right of the sparkles — or \`\`Ctrl + \` \`\` (Control and the backquote key, on every system, as in VS Code) opens a terminal along the bottom of the editor. It is a real terminal, like the one built into VS Code: everything you can do in your own terminal app works here — running commands, scripts and programs, editors like \`vim\`, \`htop\`, Python and other REPLs, \`ssh\`, \`git\` with its pager, colours, \`Ctrl + C\` and the other control keys.
+
+It is **your own shell, with your own settings**: the same login shell your terminal app opens (zsh, bash, fish, …), with everything your profile sets up — your PATH (Homebrew, nvm, pyenv, conda…), aliases, functions and your prompt theme (oh-my-zsh, Powerlevel10k, Starship…). Like a new terminal window, it **starts in your home folder** and knows nothing about the vault; \`cd\` wherever you like. It is not limited in any way: it can do anything your user account can.
+
+It needs **VaultAgent** (see section 9), version 0.2.0 or newer — the same helper the agent uses, with nothing to set up or switch on. If VaultAgent is not installed, or is too old, the terminal shows the same install, connect or update screen as the agent panel. The first click on the terminal button may make Chrome ask whether this site may talk to apps on your computer; choose **Allow**.
+
+### Several terminals
+The strip at the top of the terminal holds a tab per shell (\`zsh\`, \`zsh 2\`, …). **+** starts another one (up to ten), clicking a tab switches to it, and the **×** on a tab ends that shell. Hiding the terminal — the **⌄** button, the sidebar button again, or \`\`Ctrl + \` \`\` — keeps every shell running exactly as it was; so does switching vaults, the graph view, or reloading the page, which reconnects to the shells it had (a shell left with no page attached is ended after 30 minutes). Ending the last shell hides the terminal. When a shell exits on its own, its tab says so; press **Enter** to start a new one in its place. If you open the same shell in another browser window, this one's tab says it moved there.
+
+### Size, copy and paste
+Drag the terminal's top edge to make it taller or shorter (the editor always keeps some room); double-click the edge to put it back, or focus it and use the up and down arrow keys (with **Shift** for bigger steps). The terminal remembers its height and fits itself to whatever room it has.
+
+- **macOS:** select text and \`Cmd + C\` copies; \`Cmd + V\` pastes; \`Cmd + K\` clears; \`Option + ←/→\` jump by word and \`Cmd + ←/→\` to the start or end of the line. \`Option\` types characters as usual (it is not Meta). Programs that copy to the clipboard themselves (over \`ssh\` or in \`tmux\`, say) reach your real clipboard.
+- **Windows and Linux:** \`Ctrl + C\` copies when text is selected (otherwise it interrupts the program, as usual); \`Ctrl + Shift + C\` copies, \`Ctrl + Shift + V\` pastes. \`Ctrl + W\` would close the browser tab, so while you are in the terminal Chrome asks before leaving the page.
+- **Right-click** for **Copy**, **Paste**, **Select All**, **Clear**, **New Terminal** and **Kill Terminal** — unless the program running wants the mouse itself (like \`htop\` or \`vim\` with the mouse on); hold **Shift** to get the menu anyway.
+- Links in the output open in a new browser tab with \`Cmd\`-click (\`Ctrl\`-click on Windows and Linux).
+
+Inside the terminal, keys belong to the shell: \`Cmd + E\` and the \`Option\`/\`Alt\` tab shortcuts do not reach the editor. \`Cmd + S\`, \`Cmd + N\` and \`\`Ctrl + \` \`\` still work on a Mac.
+
+### Fonts and icons
+The terminal uses the font your terminal app is set to — it looks in Ghostty, iTerm2, kitty, Alacritty, WezTerm, Windows Terminal, Terminal and VS Code — when that font is installed. Settings → Terminal lets you choose a font and size instead. The icons that prompt themes draw (Nerd Font symbols) always show, because the editor carries a font of just those symbols for when yours lacks them. The colours follow the editor's light or dark theme.
+
+### macOS: Documents, Desktop and iCloud Drive
+macOS protects some folders. The first time a command in the terminal reaches into one of them, macOS asks whether **vaultagent-pty** — the small part of VaultAgent that runs your shells — may access it; choose **Allow**. These permissions are separate from the ones your own terminal app has, and they are kept across VaultAgent updates. To never be asked, give **vaultagent-pty** Full Disk Access once: the terminal offers **Open Settings** and **Show in Finder** for that (drag it into the list, or switch it on), and you can dismiss the offer. If you uninstall VaultAgent and install it again, your permissions still match.
+
+### The agent and the terminal
+They are separate: the agent never sees, reads or types into your terminal, and nothing you do in the terminal is sent to it.
 
 ---
 

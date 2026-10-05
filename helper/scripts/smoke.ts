@@ -5,19 +5,25 @@
 // 1. `serve --no-register` with HOME pointed at a scratch folder, then raw HTTP
 //    against it: /health CORS, the Private Network Access preflight, Host and
 //    Origin checks on /health, /ws and /mcp. Raw sockets, because fetch will not
-//    send an arbitrary Host header.
+//    send an arbitrary Host header. Then the terminal over a real WebSocket: open a
+//    shell, run an echo, see its output, let it exit, close it.
 // 2. `install --root` / `uninstall --root` in a scratch folder: the exact layout,
-//    and that nothing is left. `--root` registers nothing with the OS.
+//    and that nothing is left. `--root` registers nothing with the OS. On macOS the
+//    layout holds the PTY host the compiled helper embeds: it is run from there on
+//    a scratch socket and one shell is spawned through it, so a compiled helper
+//    that embedded a broken (or no) host fails here.
 //
 // Never touches the real home folder; safe to run on a developer machine.
 
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PRODUCTION_ORIGIN } from '../../shared/vaultAgentProtocol.ts';
-import { installLayout } from '../src/install/layout.ts';
+import { PRODUCTION_ORIGIN, type HelperMessage } from '../../shared/vaultAgentProtocol.ts';
+import { installLayout, type InstallLayout } from '../src/install/layout.ts';
 import { helperPlatform } from '../src/server.ts';
+import { TERMINAL_SHELL_OVERRIDE } from '../src/terminal/shell.ts';
+import { ptyHostBackend } from '../src/terminal/ptyHostBackend.ts';
 
 const argv = process.argv.slice(2);
 const binary = argv[0];
@@ -77,6 +83,84 @@ function raw(port: number, method: string, path: string, headers: Record<string,
 
 const scratch = mkdtempSync(join(tmpdir(), 'vaultagent-smoke-'));
 const home = join(scratch, 'home');
+mkdirSync(home, { recursive: true });   // the terminal starts in ~, which must exist
+
+/** A random word, for output that cannot be the shell echoing our own keystrokes back. */
+const rand = () => Math.random().toString(36).slice(2, 10);
+
+/**
+ * The terminal, over the same WebSocket the panel uses (production Origin). The
+ * helper's shell is forced to a plain one (see TERMINAL_SHELL_OVERRIDE): the scratch
+ * HOME has no .zshrc, and zsh would answer with its first-run wizard. The marker is
+ * typed with a quote (`a''b`, `a^b` in cmd.exe) in the middle and printed without it, so
+ * seeing it means the shell RAN the command — the echo of our keystrokes cannot match.
+ */
+async function smokeTerminal(port: number): Promise<void> {
+    const windows = helperPlatform() === 'windows';
+    const word = rand();
+    const typed = windows ? `echo smoke-a^b-${word}` : `echo smoke-a''b-${word}`;
+    const marker = `smoke-ab-${word}`;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Origin: PRODUCTION_ORIGIN } } as unknown as string[]);
+    const seen: HelperMessage[] = [];
+    let output = '';
+    ws.onmessage = e => {
+        const m = JSON.parse(String(e.data)) as HelperMessage;
+        seen.push(m);
+        if (m.type === 'terminal.output') output += m.data;
+    };
+    const opened = await new Promise<boolean>(resolve => {
+        ws.onopen = () => resolve(true);
+        ws.onerror = () => resolve(false);
+    });
+    check('terminal: /ws opens', opened);
+    if (!opened) return;
+    const waitFor = async (what: () => boolean, ms: number) => {
+        for (const until = Date.now() + ms; Date.now() < until && !what(); await Bun.sleep(50));
+        return what();
+    };
+    try {
+        const termId = crypto.randomUUID();
+        ws.send(JSON.stringify({ type: 'terminal.open', reqId: 't1', termId, cols: 100, rows: 30 }));
+        check('terminal.open answers', await waitFor(() => seen.some(m => m.type === 'response' && m.reqId === 't1'), 15_000));
+        const opened = seen.find(m => m.type === 'response' && m.reqId === 't1');
+        check('terminal.open ok', !!opened && opened.type === 'response' && opened.ok, JSON.stringify(opened));
+        // Let the shell print its prompt first: a Windows ConPTY drops input that beats its init.
+        await Bun.sleep(windows ? 1500 : 300);
+        ws.send(JSON.stringify({ type: 'terminal.input', termId, data: `${typed}\r` }));
+        check('terminal: the shell ran the command', await waitFor(() => output.includes(marker), 15_000), output.slice(-200));
+        ws.send(JSON.stringify({ type: 'terminal.input', termId, data: 'exit\r' }));
+        check('terminal: terminal.exit after the shell exits', await waitFor(() => seen.some(m => m.type === 'terminal.exit' && m.termId === termId), 15_000));
+        ws.send(JSON.stringify({ type: 'terminal.close', reqId: 't2', termId }));
+        check('terminal.close answers ok', await waitFor(() => seen.some(m => m.type === 'response' && m.reqId === 't2' && m.ok), 5000));
+    } finally {
+        ws.close();
+    }
+}
+
+/** macOS: the host the compiled helper embedded, run as a LaunchAgent would run it, on a scratch socket. */
+async function smokePtyHost(l: InstallLayout): Promise<void> {
+    check('the PTY host was embedded and written', !!l.ptyHostBinary && existsSync(l.ptyHostBinary), String(l.ptyHostBinary));
+    if (!l.ptyHostBinary || !existsSync(l.ptyHostBinary)) return;
+    const socket = join(scratch, 'pty.sock');
+    const host = Bun.spawn([l.ptyHostBinary, '--socket', socket], { stdout: 'ignore', stderr: 'inherit' });
+    try {
+        for (let i = 0; i < 100 && !existsSync(socket); i++) await Bun.sleep(50);
+        const word = rand();
+        let out = '';
+        let exit = null as { code: number | null; signal: string | null } | null;   // assigned from a callback: keep TS from narrowing it to `never`
+        const proc = await ptyHostBackend(socket).spawn(
+            { file: '/bin/sh', args: [], env: { PATH: '/usr/bin:/bin' }, cwd: home, cols: 80, rows: 24 },
+            { onData: b => (out += new TextDecoder().decode(b)), onExit: e => (exit = e) },
+        );
+        proc.write(`echo host-a''b-${word}; exit 3\r`);
+        for (let i = 0; i < 200 && !exit; i++) await Bun.sleep(50);
+        check('PTY host: the shell ran the command', out.includes(`host-ab-${word}`), out);
+        check('PTY host: exit code relayed', exit?.code === 3 && exit?.signal === null, JSON.stringify(exit));
+    } finally {
+        host.kill();
+        await host.exited;
+    }
+}
 
 async function smokeServe(): Promise<void> {
     const version = Bun.spawnSync([binary, '--version']).stdout.toString().trim();
@@ -84,7 +168,7 @@ async function smokeServe(): Promise<void> {
     if (expectVersion) check(`--version is ${expectVersion}`, version === expectVersion, version);
 
     const proc = Bun.spawn([binary, 'serve', '--no-register'], {
-        env: { ...process.env, HOME: home, USERPROFILE: home },
+        env: { ...process.env, HOME: home, USERPROFILE: home, [TERMINAL_SHELL_OVERRIDE]: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh' },
         stdout: 'pipe',
         stderr: 'inherit',
     });
@@ -137,6 +221,8 @@ async function smokeServe(): Promise<void> {
         const up = await raw(port, 'GET', '/ws', { ...ws, Origin: PRODUCTION_ORIGIN });
         check('/ws upgrades for the production Origin', up.status === 101, String(up.status));
 
+        await smokeTerminal(port);
+
         const token = 'a'.repeat(43);
         const mcp = { Host: host, 'Content-Type': 'application/json', 'Content-Length': '2', Authorization: `Bearer ${token}` };
         check('/mcp refuses any browser (Origin present)', (await raw(port, 'POST', `/mcp/${token}`, { ...mcp, Origin: PRODUCTION_ORIGIN })).status === 403);
@@ -156,6 +242,7 @@ async function smokeInstall(): Promise<void> {
     const l = installLayout(platform, root);
     check('binary placed', existsSync(l.binary), l.binary);
     if (l.registrationFile) check('registration file written', existsSync(l.registrationFile), l.registrationFile);
+    if (platform === 'macos') await smokePtyHost(l);
     const u = Bun.spawnSync([binary, 'uninstall', '--root', root], { stdout: 'inherit', stderr: 'inherit' });
     check('uninstall --root exits 0', u.exitCode === 0, String(u.exitCode));
     const left = existsSync(root) ? readdirSync(root, { recursive: true, withFileTypes: true }).filter(e => e.isFile()).map(e => join(e.parentPath, e.name)) : [];

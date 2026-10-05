@@ -12,6 +12,10 @@
 //    fail with the old helper still answering on the same socket and its binary
 //    unchanged. Then the good release: the helper must come back as 0.0.2 under
 //    its service manager, with no leftovers.
+//    On macOS it also checks the PTY host (helper/ptyhost): installed and loaded
+//    by the helper itself, and — after the update — still loaded and BYTE-IDENTICAL.
+//    That is the invariant behind "terminal privacy grants survive a VaultAgent
+//    update" (a grant is keyed to the host's cdhash), expressed as a check CI can run.
 // 4. Uninstalls.
 //
 // It REPLACES whatever VaultAgent is installed for this user — hence the guard.
@@ -22,7 +26,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { HELPER_PORTS, PRODUCTION_ORIGIN, RELEASE_MANIFEST, type HelperMessage } from '../../shared/vaultAgentProtocol.ts';
-import { installLayout } from '../src/install/layout.ts';
+import { PTYHOST_LABEL, installLayout } from '../src/install/layout.ts';
 import { findRunningHelper, helperPlatform } from '../src/server.ts';
 import { updateAssetName, type Manifest } from '../src/update.ts';
 import { buildManifest } from './release-manifest.ts';
@@ -70,6 +74,9 @@ async function helperAt(version: string): Promise<{ port: number; version: strin
     const h = await findRunningHelper(HELPER_PORTS);
     return h && h.version === version ? h : null;
 }
+
+/** macOS: is the PTY host's LaunchAgent loaded in this user's GUI domain? */
+const ptyHostLoaded = () => Bun.spawnSync(['/bin/launchctl', 'print', `gui/${process.getuid?.() ?? 0}/${PTYHOST_LABEL}`]).exitCode === 0;
 
 function leftovers(): string[] {
     try {
@@ -187,6 +194,15 @@ async function main(): Promise<void> {
     }
     check(`installed ${OLD} answers /health`, true);
     const installedSha = await sha(layout.binary);
+    // The helper installs and loads the PTY host at its start, so allow it a moment after /health.
+    const pinnedHost = platform === 'macos' ? (JSON.parse(await Bun.file(join(helperDir, 'ptyhost', 'PINNED.json')).text()) as { sha256: string }).sha256 : '';
+    let hostBefore = '';
+    if (platform === 'macos') {
+        const hostUp = await waitFor(async () => (existsSync(layout.ptyHostBinary!) && ptyHostLoaded() ? true : null), 20_000);
+        check('macOS: vaultagent-pty is installed and loaded', !!hostUp);
+        hostBefore = existsSync(layout.ptyHostBinary!) ? await sha(layout.ptyHostBinary!) : '';
+        check('macOS: the installed vaultagent-pty is the pinned binary', hostBefore === pinnedHost, hostBefore);
+    }
     const panel = await Panel.open(up.port);
     check('hello', (await panel.request('hello', { protocol: 1 })).ok);
 
@@ -214,6 +230,11 @@ async function main(): Promise<void> {
     const back = await waitFor(() => helperAt(NEW), 60_000);
     check(`good: comes back as ${NEW} under its service manager`, !!back);
     check('good: installed binary is the new one', (await sha(layout.binary)) === manifests.good.assets[asset!].sha256);
+    if (platform === 'macos') {
+        const hostUp = await waitFor(async () => (existsSync(layout.ptyHostBinary!) && ptyHostLoaded() ? true : null), 20_000);
+        check('good: vaultagent-pty is still installed and loaded', !!hostUp);
+        check('good: vaultagent-pty is byte-identical (privacy grants survive the update)', existsSync(layout.ptyHostBinary!) && (await sha(layout.ptyHostBinary!)) === hostBefore);
+    }
     check('good: no leftovers', !!(await waitFor(async () => leftovers().length === 0 || null, 10_000)), leftovers().join(', '));
     if (back) {
         const again = await Panel.open(back.port);
@@ -236,6 +257,9 @@ try {
         check('uninstall exits 0', u.exitCode === 0, String(u.exitCode));
         check('uninstall stops the helper', !!(await waitFor(async () => ((await findRunningHelper(HELPER_PORTS)) ? null : true), 20_000)));
         check('uninstall removes the binary', !!(await waitFor(async () => !existsSync(layout.binary) || null, 20_000)));
+        if (platform === 'macos') {
+            check('uninstall removes the PTY host and unloads it', !!(await waitFor(async () => (!existsSync(layout.ptyHostRegistration!) && !ptyHostLoaded() ? true : null), 20_000)));
+        }
     }
     releaseServer?.stop(true);
     rmSync(scratch, { recursive: true, force: true });

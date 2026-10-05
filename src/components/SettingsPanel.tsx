@@ -1,5 +1,9 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import { DEFAULT_RECENT_VAULT_LIMIT, MAX_STORED_VAULTS } from '../utils/recentVaults';
+import {
+    TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, getTerminalSettings, resetTerminalSettings,
+    setTerminalFontFamily, setTerminalFontSize, subscribeTerminalSettings,
+} from '../utils/terminalSettings';
 import type { CaretStyle, SettingsDefaults } from '../types';
 
 const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
@@ -54,6 +58,13 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
     const fontInputRef = useRef<HTMLInputElement | null>(null);
     const applyFont = () => onFontFamilyChange((fontInputRef.current?.value || '').trim());
     const titleId = useId();
+
+    // The terminal's two settings live in their own store (utils/terminalSettings):
+    // the lazy terminal chunk reads it too, and neither side imports the other.
+    const terminal = useSyncExternalStore(subscribeTerminalSettings, getTerminalSettings);
+    const terminalFontRef = useRef<HTMLInputElement | null>(null);
+    const applyTerminalFont = () => setTerminalFontFamily(terminalFontRef.current?.value ?? '');
+    const terminalSize = terminal.fontSize ?? terminal.detectedSize ?? 13;
 
     // A modal dialog (`aria-modal`, which DocumentPane's ⌘F guard also reads)
     // has to hold the keyboard, or a screen reader is told to ignore the very
@@ -286,6 +297,58 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                         </div>
                     </div>
 
+                    <h4 className="settings-section">Terminal</h4>
+
+                    <div className="setting-row">
+                        <div className="setting-info">
+                            <div className="setting-name">Terminal font</div>
+                            <div className="settings-hint">
+                                A font installed on this computer, such as a Nerd Font your prompt uses. Blank follows your
+                                terminal app's font; Nerd Font icons draw either way.
+                            </div>
+                        </div>
+                        <div className="setting-control">
+                            <input
+                                id="terminal-font-input"
+                                key={terminal.fontFamily}
+                                ref={terminalFontRef}
+                                type="text"
+                                className="settings-text-input"
+                                placeholder={terminal.detectedFamily ?? 'Automatic'}
+                                defaultValue={terminal.fontFamily}
+                                onBlur={applyTerminalFont}
+                                onKeyDown={(e) => { if (e.key === 'Enter') applyTerminalFont(); }}
+                                spellCheck={false}
+                                autoCorrect="off"
+                            />
+                            <button className="settings-apply-btn" onClick={applyTerminalFont}>Apply</button>
+                        </div>
+                    </div>
+
+                    <div className="setting-row">
+                        <div className="setting-info">
+                            <div className="setting-name">Terminal font size</div>
+                        </div>
+                        <div className="setting-control">
+                            {terminal.fontSize !== null && (
+                                <button className="settings-apply-btn" onClick={() => setTerminalFontSize(null)}>
+                                    Automatic
+                                </button>
+                            )}
+                            <span className="settings-value">{terminalSize}px</span>
+                            <input
+                                id="terminal-font-size-input"
+                                type="range"
+                                min={TERMINAL_FONT_SIZE_MIN}
+                                max={TERMINAL_FONT_SIZE_MAX}
+                                step="1"
+                                value={terminalSize}
+                                onChange={(e) => setTerminalFontSize(parseInt(e.target.value, 10))}
+                                className="settings-slider"
+                            />
+                        </div>
+                    </div>
+
                     <h4 className="settings-section">Colors</h4>
 
                     <div className="setting-row">
@@ -428,7 +491,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     <div className="settings-footer">
                         <button
                             className="settings-reset-btn"
-                            onClick={() => onResetDefaults(DEFAULTS)}
+                            onClick={() => { onResetDefaults(DEFAULTS); resetTerminalSettings(); }}
                         >
                             Reset to Defaults
                         </button>

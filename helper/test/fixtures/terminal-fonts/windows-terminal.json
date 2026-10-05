@@ -1,0 +1,13 @@
+{
+    // Windows Terminal settings (synthetic), with comments and trailing commas
+    "defaultProfile": "{aaaa-0001}",
+    "profiles": {
+        "defaults": {
+            "font": { "face": "Cascadia Code NF", "size": 11, },
+        },
+        "list": [
+            { "guid": "{aaaa-0001}", "name": "PowerShell", "font": { "face": "MesloLGM Nerd Font" }, },
+            { "guid": "{aaaa-0002}", "name": "cmd", "font": { "face": "Not Used" } },
+        ],
+    },
+}

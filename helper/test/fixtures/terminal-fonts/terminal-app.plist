@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Default Window Settings</key>
+	<string>Novel</string>
+	<key>Window Settings</key>
+	<dict>
+		<key>Basic</key>
+		<dict>
+			<key>name</key>
+			<string>Basic</string>
+		</dict>
+		<key>Novel</key>
+		<dict>
+			<key>name</key>
+			<string>Novel</string>
+			<key>Font</key>
+			<data>
+			YnBsaXN0MDDUAQIDBAUGGBlYJHZlcnNpb25YJG9iamVjdHNZJGFyY2hpdmVyVCR0b3ASAAGGoKQHCBESVSRudWxs1AkKCwwNDg8QVk5TU2l6ZVhOU2ZGbGFnc1ZOU05hbWVWJGNsYXNzI0AoAAAAAAAAEBCAAoADXlNGTW9uby1SZWd1bGFy0hMUFRZYJGNsYXNzZXNaJGNsYXNzbmFtZaIWF1ZOU0ZvbnRYTlNPYmplY3RfEA9OU0tleWVkQXJjaGl2ZXLRGhtUcm9vdIABCBEaIy0yNzxCS1JbYmlydHZ4h4yVoKOqs8XIzQAAAAAAAAEBAAAAAAAAABwAAAAAAAAAAAAAAAAAAADP
+			</data>
+		</dict>
+	</dict>
+</dict>
+</plist>

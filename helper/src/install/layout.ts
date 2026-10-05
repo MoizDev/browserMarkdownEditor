@@ -8,6 +8,8 @@ import { join } from 'node:path';
 import type { HelperPlatform } from '../../../shared/vaultAgentProtocol.ts';
 
 export const LAUNCHD_LABEL = 'dev.bme.vaultagent';
+/** The frozen PTY host's own LaunchAgent (macOS): see helper/ptyhost/ptyhost.c. */
+export const PTYHOST_LABEL = 'dev.bme.vaultagent.pty';
 export const WINDOWS_TASK = 'VaultAgent';
 export const SYSTEMD_UNIT = 'vaultagent.service';
 
@@ -22,6 +24,11 @@ export interface InstallLayout {
     registrationFile: string | null;
     /** Linux: XDG autostart fallback when there is no systemd user session. */
     autostartFile: string | null;
+    /** macOS only (null elsewhere): the frozen PTY host, the unix socket it
+     *  listens on (inside appDir, so uninstall removes both) and its LaunchAgent plist. */
+    ptyHostBinary: string | null;
+    ptyHostSocket: string | null;
+    ptyHostRegistration: string | null;
 }
 
 export function installLayout(platform: HelperPlatform, root?: string, env: NodeJS.ProcessEnv = process.env): InstallLayout {
@@ -35,6 +42,9 @@ export function installLayout(platform: HelperPlatform, root?: string, env: Node
             logFile: join(home, 'Library', 'Logs', 'VaultAgent.log'),
             registrationFile: join(home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`),
             autostartFile: null,
+            ptyHostBinary: join(appDir, 'vaultagent-pty'),
+            ptyHostSocket: join(appDir, 'pty.sock'),
+            ptyHostRegistration: join(home, 'Library', 'LaunchAgents', `${PTYHOST_LABEL}.plist`),
         };
     }
     if (platform === 'windows') {
@@ -45,6 +55,7 @@ export function installLayout(platform: HelperPlatform, root?: string, env: Node
             logFile: join(appDir, 'vaultagent.log'),
             registrationFile: null,
             autostartFile: null,
+            ptyHostBinary: null, ptyHostSocket: null, ptyHostRegistration: null,
         };
     }
     const config = fromEnv('XDG_CONFIG_HOME', join(home, '.config'));
@@ -55,6 +66,7 @@ export function installLayout(platform: HelperPlatform, root?: string, env: Node
         logFile: join(fromEnv('XDG_STATE_HOME', join(home, '.local', 'state')), 'vaultagent', 'vaultagent.log'),
         registrationFile: join(config, 'systemd', 'user', SYSTEMD_UNIT),
         autostartFile: join(config, 'autostart', 'vaultagent.desktop'),
+        ptyHostBinary: null, ptyHostSocket: null, ptyHostRegistration: null,
     };
 }
 
@@ -91,6 +103,38 @@ export function launchdPlist(l: InstallLayout): string {
 	<string>/dev/null</string>
 	<key>StandardErrorPath</key>
 	<string>${xml(l.logFile)}</string>
+</dict>
+</plist>
+`;
+}
+
+/**
+ * The PTY host's LaunchAgent. KeepAlive unconditionally (it is a daemon that only
+ * ever exits by crashing or by being booted out). ProcessType Interactive: it
+ * relays keystrokes, and Standard/Background would throttle the I/O under load.
+ * No stdout/stderr paths: it never logs, by design (terminal bytes pass through it).
+ */
+export function ptyHostPlist(l: InstallLayout): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>${PTYHOST_LABEL}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>${xml(l.ptyHostBinary!)}</string>
+		<string>--socket</string>
+		<string>${xml(l.ptyHostSocket!)}</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
 </dict>
 </plist>
 `;

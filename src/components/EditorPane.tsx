@@ -11,7 +11,7 @@ import { isPdfFile, isCanvasFile, isCodeFile, isNotebookFile } from '../utils/fi
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
-import type { ActiveFile, OpenTab, GraphData, GraphNode, TabLayout, Theme, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
+import type { ActiveFile, ContentChangeOptions, DiskAction, OpenTab, GraphData, GraphNode, TabLayout, Theme, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
 
 // Same reasoning as the drawing canvas: pdf.js + pdf-lib only load once a PDF
 // is actually opened.
@@ -53,7 +53,10 @@ interface EditorPaneProps {
     onToggleMode: (path: string) => void;
     /** Path-explicit: several documents are editable at once, and a canvas's
      *  debounced save can land after its pane has gone away. */
-    onContentChange: (path: string, content: string) => void;
+    onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
+    /** Resolve a document's DiskBar — its file changed or vanished on disk
+     *  (OpenTab.disk). Stable, for DocumentPane's memo. */
+    onDiskAction: (path: string, action: DiskAction) => Promise<void>;
     /** Buffer content and write it immediately, skipping the save debounce. */
     onFlushNow: (path: string, content: string) => void;
     /** Read an unreadable tab's file again (OpenTab.readError); resolves true
@@ -220,7 +223,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onFlushNow, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onFlushNow, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -382,6 +385,9 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
             if (!e.altKey || e.metaKey || e.ctrlKey) return;
+            // The terminal's keys are the shell's: ⌥⇥ is completion in some
+            // shells and ⌥⇧W/⌥⇧T are readline/vim chords there.
+            if (e.target instanceof Element && e.target.closest('[data-terminal]')) return;
             const take = () => { e.preventDefault(); e.stopPropagation(); };
             if (e.key === 'Tab') {
                 const l = layoutRef.current;
@@ -877,6 +883,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
                         registerKeyboardTarget={registerKeyboardTarget}
                         getWikiLinkTargets={getWikiLinkTargets}
                         onContentChange={onContentChange}
+                        onDiskAction={onDiskAction}
                         onRetryRead={onRetryRead}
                         onFocusPane={onFocusPane}
                         onBack={onPaneBack}
@@ -1009,8 +1016,10 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
                         // alone, the pane of an overwritten PDF was handed to
                         // the file that replaced it and went on showing the old
                         // bytes — its re-read effect does re-run on the new
-                        // handle, and returns early on the bytes it has.
-                        key={paneKey(tab)}
+                        // handle, and returns early on the bytes it has. And on
+                        // diskRev: a reload from disk remounts it on the new
+                        // file (App.reloadFromDisk).
+                        key={`${paneKey(tab)}|${tab.diskRev ?? 0}`}
                         fallback={visible ? (
                             <div className="pdf-pane pdf-pane-message" style={fallbackStyle}>
                                 Loading PDF…
@@ -1031,6 +1040,8 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
                             onFlushNow={onFlushNow}
                             onOpenNotebookSource={onOpenNotebookSource}
                             isDirty={tab.dirty}
+                            disk={tab.disk}
+                            onDiskAction={onDiskAction}
                         />
                     </Suspense>
                 );

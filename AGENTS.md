@@ -27,10 +27,10 @@ Skills live in `.agents/skills/<name>/SKILL.md`.
 ## What this is
 
 A local-first, Obsidian-style Markdown editor that runs **entirely in the browser**, no backend or
-database (its one network use: the optional AI agent's local helper, `vault-agent`). It reads and
+database (its one network use: the local VaultAgent helper behind the AI agent and the terminal). It reads and
 writes the user's real files through the **File System Access API**, so it is **Chromium-only by
 design** (`showDirectoryPicker`, OPFS, `color-mix` are used freely). Stack: **React 19 + Vite 7 +
-TS 6 + CodeMirror 6**, KaTeX, mermaid, tldraw (drawings, notebooks, PDF ink), pdf.js + pdf-lib, idb-keyval.
+TS 6 + CodeMirror 6**, KaTeX, mermaid, tldraw (drawings, notebooks, PDF ink), pdf.js + pdf-lib, idb-keyval, xterm.js.
 
 > Ported from JS: comments cite stale `.jsx` lines — grep. `types/index.ts` = domain + FS Access types.
 
@@ -43,7 +43,7 @@ npm run typecheck  # tsc for src+shared, then -p helper (the real "did I break t
 npm run lint       # eslint .      (flat config, loaded via jiti)
 npm run preview    # serve a production build
 npm run helper:dev # the VaultAgent helper (Bun) from source, dev origins allowed; helper:build compiles
-npm run helper:test # bun test helper/ — its security checks, CLI stream parsers and self-update
+npm run helper:test # bun test helper/ — security, CLI stream parsers, self-update, terminal + PTY host
 ```
 
 **The app has no test suite** (only `helper/` does). `typecheck` and `lint` are its static gates;
@@ -68,6 +68,11 @@ everything behavioural is verified by Playwright driving the app in headless Chr
 - **The AI agent changes the vault ONLY through the app** — its CLI runs never-ask with full normal tools
   (the user's decision; never restrict them again), but each vault read/write is a `vault_*`/`canvas_*` MCP
   call run in the browser (`utils/vaultAgentTools.ts` → `utils/agentHost.ts` → App); the prompt bans disk edits.
+  The **terminal** (`integrated-terminal`) is the same helper's PTY running the user's own login shell:
+  unconstrained by the user's decision (add no restriction), and invisible to the agent both ways.
+- **Every document write is versioned** — `flushTab` writes only via `writeFileVersioned` against the
+  document's disk baseline (`utils/docBaselines.ts`, by tab id); a file changed or gone on disk raises the
+  DiskBar instead. Observer records are hints, stat + hash the truth. Never write a document around it.
 - **Nothing overwrites an existing file by accident.** Every write that could land on a taken name
   goes through `freeEntryName`, which counts **both** files and folders; `moveFile`/`renameFile` and
   the notebook PDF export are the deliberate exceptions. **`createFile` is the hole** — it
@@ -82,7 +87,7 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   its `file` is opened only BY the session restore, in the vault it names — never by a second opener.
 - **Open documents are a flat list (`tabs`) plus a *layout* — a row of panes, each owning its tabs,
   widths on the layout** (`utils/tabPanes.ts`); `activeTabPath` is derived. The save funnel
-  `updateTabContent(path, content)` is **path-explicit and the only one** — several documents are
+  `updateTabContent(path, content, {fromDisk?})` is **path-explicit and the only one** — several documents are
   editable at once and canvas panes serialize after their pane has gone. The session is per vault id
   and **versioned** (`utils/tabSessions.ts`); a switch empties the workspace without losing it.
 - **A CodeMirror `EditorState` outlives its pane — and `EditorPane`, which the graph view unmounts** (the
@@ -95,8 +100,7 @@ everything behavioural is verified by Playwright driving the app in headless Chr
 - **TWO places turn note text into DOM `innerHTML`, safe for different reasons** — `tableWidget`'s
   `renderCellContent` (attribute-free allowlist; one sink AND one write site, KaTeX splices in built DOM,
   never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'` DOMPurify pass).
-  This origin holds the vault's handle with permission granted, so a hole is read/write over the whole
-  vault. Do not open a third.
+  This origin holds the vault's handle — and, through the terminal, a shell. Do not open a third.
 - **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
   (`utils/graph.ts`, `utils/vaultSearch.ts`), one file's text at a time — both run after *every* save;
   uncached, each is a full vault read per autosave. Exempt: the bin's crawl, `fileTimes`' metadata stat.
@@ -120,9 +124,8 @@ everything behavioural is verified by Playwright driving the app in headless Chr
 ## Conventions & gotchas
 
 - **Object URLs are cached by file version, never minted per use** — keyed on path, validated on
-  `(lastModified, size)`. Each pane likewise holds **one stable resolver identity and one stable
-  `imageActions`** for life; a fresh closure per call makes every image widget compare unequal on every
-  ⌘E and tab switch.
+  `(lastModified, size)`. Each pane likewise holds **one stable resolver and one stable `imageActions`**
+  for life; a fresh closure per call makes every image widget compare unequal on every ⌘E and tab switch.
 - **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, as are the context-menu,
   entry-style, create-request, file-times and **active-file** stores. `FileExplorer`/`TreeNode` are
   `React.memo`'d so the tree stops re-rendering while the user types: never thread such a value through,
@@ -130,21 +133,18 @@ everything behavioural is verified by Playwright driving the app in headless Chr
   subscribe to a BOOLEAN ("am I active?"), so a tab switch re-renders the two that changed, not 2,300.
 - **Anything repeated thousands of times carries `content-visibility: auto`** (`.tree-item`,
   `.pdf-viewer-page`) plus a known box — or all of them lay out and paint on every ancestor's frame.
-- **The path-keyed records** (`fileScrollAnchors`, `pdf`/`canvasViewPositions`, `collapsedHeadings`) are
-  held parsed in memory via `readRecord`/`flushRecord` in `utils/storage.ts`, keyed by its `scopedKey` —
-  two vaults share paths freely. Never pruned (recency capping was **rejected**), so they grow per vault.
-- **Settings → CSS variables.** Appearance state persists to `localStorage` and is applied by setting
-  CSS variables on `document.documentElement`. Three are not: **Tab size** (a CodeMirror compartment)
-  and **Recent vaults shown** (a plain prop), both clamped on read since `localStorage` is user-editable
-  and a `NaN` reaches `' '.repeat()` / `Array.slice`; and **Vault name as tab title** (`document.title`).
-  Theme is `data-theme` on `<html>` (**absent = dark**); custom accent/code colors are inline `<html>`
-  style overrides that intentionally outrank both theme blocks.
+- **The path-keyed records** (`fileScrollAnchors`, `pdf`/`canvasViewPositions`, `collapsedHeadings`) live
+  parsed in memory (`readRecord`/`flushRecord`, `utils/storage.ts`) under its per-vault `scopedKey`.
+  Never pruned (recency capping was **rejected**), so they grow per vault.
+- **Settings → CSS variables** on `document.documentElement`, persisted to `localStorage` — except **Tab
+  size** (a CodeMirror compartment), **Recent vaults shown** (a prop), the **Terminal** font/size (an
+  import-free store, `utils/terminalSettings.ts`), all clamped on read (`localStorage` is user-editable),
+  and **Vault name as tab title**. Theme is `data-theme` on `<html>` (**absent = dark**); custom
+  accent/code colors are inline `<html>` style overrides that intentionally outrank both theme blocks.
 - **ESLint config carries intentional relaxations** (`eslint.config.ts`): `no-unused-vars` ignores
-  PascalCase/UPPER vars, all args and catch bindings; `set-state-in-effect` is off (the app
-  deliberately does it); `only-export-components` is off for `src/context/**`. `tsconfig` is `strict`
-  but leaves `noUnusedLocals`/`noUnusedParameters` to lint. Don't "fix" these into failures.
+  PascalCase/UPPER vars, all args and catch bindings; `set-state-in-effect` is off (deliberate);
+  `only-export-components` is off for `src/context/**`; `tsconfig` leaves unused locals to lint.
 - **Match the house comment style.** Explain *why*, beside the code, with the measured evidence that
   forced it ("measured: 7 tabs → 0"); a comment restating what the line does is not it.
-- **Two things exist twice, as independent copies — change both halves.** "Is this name taken by either
-  kind" is `entryNames.nameTaken` *and* `FileSystemContext.entryExists`; ruled paper is `paper.ts`'s SVG
-  *and* `pdfBuild.ts`'s pdf-lib constants.
+- **Two things exist twice — change both halves.** "Is this name taken by either kind" is
+  `entryNames.nameTaken` *and* `FileSystemContext.entryExists`; ruled paper is `paper.ts` *and* `pdfBuild.ts`.

@@ -4,7 +4,8 @@ import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfAnnotation';
 import type { NotebookSource } from '../utils/pdfFormat';
 import PdfViewer from './PdfViewer';
-import type { ActiveFile, EditorMode } from '../types';
+import DiskBar from './DiskBar';
+import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode } from '../types';
 
 // tldraw + pdf.js rasterization are heavy and only needed once someone actually
 // annotates, so the canvas is a separate chunk. Viewing a PDF never loads it.
@@ -45,7 +46,7 @@ interface PdfPaneProps {
     mode: EditorMode;
     /** The tab's buffered tldraw snapshot (annotated files only). */
     content: string;
-    onContentChange: (path: string, content: string) => void;
+    onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
     /** Writes to disk immediately; used as the canvas hands over to the viewer. */
     onFlushNow: (path: string, content: string) => void;
     /** This PDF is a notebook's export — open that notebook instead. Takes the
@@ -53,6 +54,11 @@ interface PdfPaneProps {
     onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void;
     /** True while this tab has strokes not yet written to disk. */
     isDirty: boolean;
+    /** The file parted ways with the tab on disk (OpenTab.disk). The bar is
+     *  drawn HERE, not by DocumentPane: this pane floats over the slot and
+     *  would paint over one placed there. */
+    disk?: 'conflict' | 'deleted';
+    onDiskAction: (path: string, action: DiskAction) => Promise<void>;
 }
 
 interface PdfSource {
@@ -79,7 +85,7 @@ interface PdfSource {
  * modes rather than one blended view because a rasterized page has no text to
  * select — the pixels are all that's left. See utils/pdfAnnotation.ts.
  */
-function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, isDirty }: PdfPaneProps) {
+function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, isDirty, disk, onDiskAction }: PdfPaneProps) {
     const { readFileBytes } = useFileSystem();
     const [source, setSource] = useState<PdfSource | null>(null);
     const [viewBytes, setViewBytes] = useState<Uint8Array | null>(null);
@@ -316,7 +322,10 @@ function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, o
             // scroll, a text selection or a click on the zoom pill all count.
             onPointerDownCapture={() => { if (isVisible) onFocusPane(file.path); }}
         >
-            {body}
+            {disk && <DiskBar name={file.name} state={disk} path={file.path} onAction={onDiskAction} />}
+            {/* Always wrapped, bar or no bar: toggling the wrapper would remount
+                the viewer and lose the reading position. */}
+            <div className="pdf-pane-body">{body}</div>
         </div>
     );
 }

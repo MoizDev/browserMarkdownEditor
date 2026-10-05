@@ -10,7 +10,7 @@
 // is idempotent, index loads are keyed by vault, and the one run is a field,
 // not something an effect starts.
 
-import { agentBridge, BridgeError, helperReady } from '../../utils/agentBridge';
+import { agentBridge, BridgeError, helperReady, isTerminalEvent } from '../../utils/agentBridge';
 import type { HelperEvent, HelperInfo } from '../../utils/agentBridge';
 import { executeTool } from '../../utils/vaultAgentTools';
 import { buildAgentContext, stripAgentContext } from '../../utils/agentContext';
@@ -778,6 +778,8 @@ class ChatStore {
     /* ── the helper's events ── */
 
     private onHelperEvent(event: HelperEvent): void {
+        // The terminal shares the bridge's listener list but not a byte of state.
+        if (isTerminalEvent(event)) return;
         if (event.type === 'tool.call') { void this.onToolCall(event); return; }
         const run = this.state.run;
         if (!run || event.runId !== run.runId) return;

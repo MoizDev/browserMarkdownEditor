@@ -180,6 +180,10 @@ function PaneTabs({ pane, index, byPath, isFocused, draggingPath, onSelectTab, o
                     // something about the document whose name they sit beside.
                     const dirty = !!tab?.dirty;
                     const unreadable = !!tab?.readError;
+                    // Parted ways with its file on disk (OpenTab.disk): autosave is
+                    // held until the DiskBar is answered, and in a background tab
+                    // nothing else would say so (measured: no sign at all).
+                    const held = tab?.disk;
                     // Stripped like the title below, so the × button's accessible
                     // name says what is actually on screen. Falls back to the PATH,
                     // which is left whole.
@@ -194,7 +198,11 @@ function PaneTabs({ pane, index, byPath, isFocused, draggingPath, onSelectTab, o
                                 aria-selected={isActive}
                                 data-tooltip={unreadable
                                     ? `${path}\nCouldn’t be read — press Try again, or click it in the file tree`
-                                    : path}
+                                    : held === 'conflict'
+                                        ? `${path}\nChanged on disk while you had unsaved edits — not saved until you choose`
+                                        : held === 'deleted'
+                                            ? `${path}\nDeleted on disk — not saved until you choose`
+                                            : path}
                                 draggable
                                 onClick={() => onSelectTab(pane.id, path)}
                                 onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }} // no middle-click autoscroll
@@ -205,10 +213,11 @@ function PaneTabs({ pane, index, byPath, isFocused, draggingPath, onSelectTab, o
                             >
                                 {/* No file-type icon, as Obsidian's tabs have none.
                                     The one icon left is the warning sign of a document
-                                    restored without its text (OpenTab.readError):
-                                    without it a tab in the background gives no sign
-                                    until it is selected. */}
-                                {unreadable && (
+                                    restored without its text (OpenTab.readError), or
+                                    held by a change on disk (OpenTab.disk): without it
+                                    a tab in the background gives no sign until it is
+                                    selected. */}
+                                {(unreadable || held) && (
                                     <span className="tab-icon" aria-hidden="true"><AlertCircle size={13} /></span>
                                 )}
                                 {/* A note's tab says what the note is CALLED, not what

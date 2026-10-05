@@ -194,6 +194,14 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
             // The view as it is on screen, at no more than twice its on-screen
             // size.
             capture: (maxSide) => captureRegion(editor, editor.getViewportPageBounds(), maxSide, editor.getZoomLevel() * 2),
+            // A stroke still inside the serialize debounce is an edit App cannot
+            // see yet; reloading the file from disk over it would lose it.
+            hasPendingEdits: () => serializeTimerRef.current !== null,
+            flushPending: () => {
+                if (!serializeTimerRef.current) return;
+                clearTimeout(serializeTimerRef.current);
+                flush();
+            },
         });
 
         // source: 'user'     → a programmatic load never marks the file dirty.

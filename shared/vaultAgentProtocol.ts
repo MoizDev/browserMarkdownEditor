@@ -14,6 +14,10 @@
 // vault's FileSystemDirectoryHandle and answers with `tool.result`. The agent
 // CLI itself runs with its normal tools on the user's machine, but is told to
 // use these vault tools for everything in the vault.
+//
+// The same helper also runs the editor's terminal (`terminal.*`): the user's own
+// login shell in a PTY, unconstrained by the user's decision. It is a separate
+// feature — no agent run ever sees, reads or drives a terminal session.
 
 /* ───────────────────────── identity, ports, versions ───────────────────────── */
 
@@ -45,6 +49,10 @@ export const RELEASE_MANIFEST = 'vaultagent-release.json';
 /** The first helper that answers `helper.update`. Older ones cannot update
  *  themselves, so the panel keeps offering them the manual installer download. */
 export const SELF_UPDATE_VERSION = '0.1.3';
+/** The first helper with a terminal (`terminal.*`). The terminal dock gates on
+ *  it on its own; MIN_HELPER_VERSION stays put, because the CHAT needs nothing
+ *  new and raising it would lock every older helper out of the chat too. */
+export const TERMINAL_VERSION = '0.2.0';
 export const RELEASE_ASSETS = {
     macos: 'VaultAgent.pkg',
     windows: 'VaultAgent-Setup.exe',
@@ -72,6 +80,30 @@ export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 /** Mirrored instruction/skill files (CLAUDE.md, AGENTS.md, skills). */
 export const MAX_MIRROR_FILE_BYTES = 256 * 1024;
 export const MAX_MIRROR_TOTAL_BYTES = 4 * 1024 * 1024;
+
+/** Open terminals per helper connection — a runaway `+` loop must not fork
+ *  shells until the machine runs out of ptys (macOS defaults to 511). */
+export const MAX_TERMINALS = 10;
+/** One `terminal.input` frame. A paste larger than this is split by the panel;
+ *  the helper drops anything over it rather than buffering without bound. */
+export const TERMINAL_INPUT_MAX_CHARS = 65_536;
+/** Clamp for `cols`/`rows`: a bogus size would make the headless mirror
+ *  allocate a screen buffer of that many cells. */
+export const TERMINAL_MAX_COLS = 1000;
+export const TERMINAL_MAX_ROWS = 500;
+/** A shell whose page went away (reload, closed tab, sleep) keeps running this
+ *  long so the page can re-attach to it; then it is killed. */
+export const TERMINAL_DETACHED_TTL_MS = 30 * 60_000;
+/** Flow control: Bun's PTY cannot pause its reads, so the helper counts output
+ *  the panel has not yet acknowledged (`terminal.ack`, from xterm's write
+ *  callback). Above HIGH it stops streaming and lets the headless mirror absorb
+ *  the flood; once acks bring it under LOW it sends one `reset` snapshot and
+ *  resumes. Keeps `yes` from growing the helper or freezing the tab. */
+export const TERMINAL_ACK_HIGH = 512_000;
+export const TERMINAL_ACK_LOW = 128_000;
+/** Scrollback lines the helper's headless mirror keeps, and so the most a
+ *  re-attach or a `reset` snapshot can restore. */
+export const TERMINAL_SCROLLBACK = 5000;
 
 /* ───────────────────────── agents ───────────────────────── */
 
@@ -148,6 +180,30 @@ export interface UpdateCheck {
     installed: boolean;
     error?: string;
 }
+
+/** One font the user's own terminal app is set to, as `terminal.fontHint`
+ *  found it. The browser takes the first candidate that is installed. */
+export interface TerminalFontCandidate {
+    /** Where it came from: 'ghostty', 'iterm2', 'kitty', 'alacritty', 'wezterm',
+     *  'windows-terminal', 'terminal-app', 'vscode'. */
+    source: string;
+    family?: string;
+    /** e.g. `MesloLGS-NF-Regular` — CSS `local()` accepts it directly. */
+    postscript?: string;
+    /** Points, as the terminal app stores it. */
+    size?: number;
+}
+
+/** How a terminal's shell ended. */
+export interface TerminalExit {
+    code: number | null;
+    signal: string | null;
+}
+
+/** Which PTY spawned the shell: macOS installed helpers use the frozen
+ *  `vaultagent-pty` host (so privacy grants survive updates); everything else
+ *  is Bun's in-process PTY. */
+export type TerminalBackend = 'ptyhost' | 'inprocess';
 
 export interface RunUsage {
     inputTokens?: number;
@@ -244,6 +300,25 @@ export interface RequestMap {
      *  Responds once the new binary is in place, before the helper restarts;
      *  a failure response means the running helper and its binary are untouched. */
     'helper.update': [Record<string, never>, { from: string; to: string }];
+    /** Start a new shell in a PTY under the client-minted `termId` (a UUID).
+     *  Its output streams as `terminal.output`, its end as `terminal.exit`. */
+    'terminal.open': [{ termId: string; cols: number; rows: number }, { shell: string; pid: number; backend: TerminalBackend }];
+    /** Take over an existing shell — after a reload, or from another window
+     *  (which then gets `terminal.detached`). `snapshot` is the serialized
+     *  screen + scrollback to write into a freshly reset xterm. */
+    'terminal.attach': [{ termId: string; cols: number; rows: number }, { snapshot: string; shell: string; exited: TerminalExit | null }];
+    'terminal.resize': [{ termId: string; cols: number; rows: number }, Record<string, never>];
+    /** Kill the shell (and its process group) and forget the session. */
+    'terminal.close': [{ termId: string }, Record<string, never>];
+    /** The fonts the user's terminal apps are configured with, best first. */
+    'terminal.fontHint': [Record<string, never>, { candidates: TerminalFontCandidate[] }];
+    /** Which backend new shells get, and (macOS, PTY host only) whether that
+     *  host has Full Disk Access; null = not macOS, or could not tell. */
+    'terminal.privacy': [Record<string, never>, { backend: TerminalBackend; fullDiskAccess: boolean | null }];
+    /** macOS: open System Settings → Privacy & Security → Full Disk Access. */
+    'helper.openPrivacySettings': [Record<string, never>, Record<string, never>];
+    /** macOS: reveal the installed `vaultagent-pty` in Finder. */
+    'helper.revealPtyHost': [Record<string, never>, Record<string, never>];
 }
 
 export type RequestName = keyof RequestMap;
@@ -257,9 +332,13 @@ export type ClientRequest = {
 /** Panel → helper. */
 export type ClientMessage =
     | ClientRequest
-    | { type: 'tool.result'; runId: string; callId: string; result: ToolResult };
+    | { type: 'tool.result'; runId: string; callId: string; result: ToolResult }
+    /** Keystrokes/paste for a terminal; at most TERMINAL_INPUT_MAX_CHARS. */
+    | { type: 'terminal.input'; termId: string; data: string }
+    /** How many characters of `terminal.output` xterm has finished parsing. */
+    | { type: 'terminal.ack'; termId: string; chars: number };
 
-export type ErrorCode = RunErrorReason | 'not-found' | 'internal' | 'unsupported';
+export type ErrorCode = RunErrorReason | 'not-found' | 'internal' | 'unsupported' | 'limit';
 
 /** Helper → panel. */
 export type HelperMessage =
@@ -270,7 +349,14 @@ export type HelperMessage =
     | { type: 'run.error'; runId: string; reason: RunErrorReason; message: string }
     | { type: 'tool.call'; runId: string; callId: string; name: ToolName; args: Record<string, unknown> }
     /** Sent only to the connection that asked for `helper.update`. */
-    | { type: 'update.progress'; phase: UpdatePhase; received?: number; total?: number };
+    | { type: 'update.progress'; phase: UpdatePhase; received?: number; total?: number }
+    /** Shell output, UTF-8-decoded. `reset` = `data` is a whole-screen snapshot:
+     *  reset the xterm, then write it (after flow control caught up). */
+    | { type: 'terminal.output'; termId: string; data: string; reset?: true }
+    /** The shell ended; the session stays until `terminal.close` or the TTL. */
+    | { type: 'terminal.exit'; termId: string; code: number | null; signal: string | null }
+    /** Another connection attached to this terminal; this one no longer owns it. */
+    | { type: 'terminal.detached'; termId: string };
 
 /* ───────────────────────── the agent's tools ───────────────────────── */
 

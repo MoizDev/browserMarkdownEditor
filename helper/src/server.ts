@@ -134,6 +134,17 @@ export function startServer(opts: ServerOptions): RunningServer {
                 },
                 websocket: {
                     maxPayloadLength: MAX_WS_MESSAGE_BYTES,
+                    // Terminal output is the first thing here that can outrun a socket. The
+                    // real control is application-level: the panel's `terminal.ack`s pause
+                    // streaming above TERMINAL_ACK_HIGH (512k chars, at worst ~3 MB as
+                    // JSON-escaped control codes), so this is only an explicit ceiling well
+                    // above that — stated rather than inherited from Bun's default. The
+                    // socket is not closed at it: it also carries an agent run, which a
+                    // terminal flood must not take down. Past it Bun DROPS frames (measured:
+                    // `send` answers 0) — the terminal manager notices and resyncs that
+                    // shell with a snapshot (TerminalManager.dropped).
+                    backpressureLimit: 8 * 1024 * 1024,
+                    closeOnBackpressureLimit: false,
                     idleTimeout: 120,
                     sendPings: true,
                     open(ws: ServerWebSocket<WsData>) {

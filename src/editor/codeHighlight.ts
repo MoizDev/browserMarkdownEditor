@@ -19,38 +19,13 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
 import { EditorView } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
+import { CODE_DARK, CODE_LIGHT, type CodePalette } from './codePalette';
 
-/** One Dark Darker, as the theme file states it. */
-const DARK = {
-    base: '#abb2bf',
-    comment: '#7f848e',
-    keyword: '#d55fde',
-    string: '#98c379',
-    number: '#d8985f',
-    func: '#52adf2',
-    type: '#f5c876',
-    variable: '#ef596f',
-    operator: '#33d8e4',
-    punctuation: '#aab1c0',
-    invalid: '#ef596f',
-};
+// The palettes live in codePalette.ts (import-free), shared with the terminal.
+const DARK = CODE_DARK;
+const LIGHT = CODE_LIGHT;
 
-/** One Light, the same theme's light half. */
-const LIGHT = {
-    base: '#383a42',
-    comment: '#a0a1a7',
-    keyword: '#a626a4',
-    string: '#50a14f',
-    number: '#986801',
-    func: '#4078f2',
-    type: '#c18401',
-    variable: '#e45649',
-    operator: '#0184bc',
-    punctuation: '#383a42',
-    invalid: '#e45649',
-};
-
-type Palette = typeof DARK;
+type Palette = CodePalette;
 
 /**
  * The six nesting colours, in cycle order, drawn from the SAME palette as the

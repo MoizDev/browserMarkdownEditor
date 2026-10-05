@@ -64,6 +64,21 @@ export function recordFileWritten(path: string, time: number = Date.now()): void
     notify();
 }
 
+/** The same, for a whole batch of OUTSIDE writes (a `git pull` rewrites hundreds
+ *  of files at once): one notification, so a time sort re-renders once for the
+ *  batch rather than once per path. `time` should be the file's real
+ *  `lastModified` where the caller has stat'ed it — the app's own clock is only
+ *  a stand-in, and an outside writer's clock is not the app's. */
+export function stampFileTimes(entries: Iterable<readonly [path: string, time: number]>): void {
+    let any = false;
+    for (const [path, time] of entries) {
+        times.set(path, time);
+        for (const walk of walksInFlight) walk.set(path, time);
+        any = true;
+    }
+    if (any) notify();
+}
+
 /** For a vault switch: the old vault's paths mean nothing in the new one. */
 export function resetFileTimes(): void {
     generation++;

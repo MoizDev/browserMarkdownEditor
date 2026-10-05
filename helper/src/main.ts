@@ -22,12 +22,15 @@ import { BAKED_ORIGINS, HELPER_VERSION, RELEASES_BASE_URL } from './buildInfo.ts
 import { activeRunCount } from './connection.ts';
 import { install, selfUninstall, uninstall, uninstallService } from './install/index.ts';
 import { installLayout } from './install/layout.ts';
+import { ensurePtyHost } from './install/ptyhost.ts';
 import { logError, setLogFile } from './log.ts';
 import { ensureDir, sessionsRootFor } from './paths.ts';
 import { makeOriginPolicy } from './security.ts';
 import { findRunningHelper, helperPlatform, startServer } from './server.ts';
 import { compareVersions } from '../../shared/vaultAgentProtocol.ts';
 import { runCapture } from './proc.ts';
+import { chooseBackend, ptyHostBinaryPath } from './terminal/backend.ts';
+import { TerminalManager } from './terminal/manager.ts';
 import { cleanupLeftovers, createUpdater } from './update.ts';
 
 function flag(args: string[], name: string): boolean {
@@ -65,13 +68,19 @@ async function serve(args: string[]): Promise<void> {
     };
     const layout = installLayout(platform);
     let server: ReturnType<typeof startServer> | undefined;
+    // One for the whole process: a shell outlives the socket that opened it.
+    const terminals = new TerminalManager({ backend: chooseBackend(platform, layout, !noRegister) });
     const updater = noRegister ? undefined : createUpdater({
         platform,
         layout,
         currentVersion: HELPER_VERSION,
         releasesBase: RELEASES_BASE_URL,
         activeRuns: activeRunCount,
-        stopServer: () => server?.stop(),
+        // The restart that follows ends every shell: hang them up first, not mid-keystroke.
+        stopServer: () => {
+            void terminals.closeAll();
+            server?.stop();
+        },
     });
     try {
         server = startServer({
@@ -83,6 +92,8 @@ async function serve(args: string[]): Promise<void> {
                 adapters,
                 uninstall: noRegister ? undefined : () => void selfUninstall(platform),
                 updater,
+                terminals,
+                ptyHostBinary: noRegister || platform !== 'macos' ? undefined : ptyHostBinaryPath(layout),
             },
         });
     } catch (e) {
@@ -90,11 +101,24 @@ async function serve(args: string[]): Promise<void> {
         // Non-zero: launchd / Task Scheduler / systemd retry later.
         process.exit(1);
     }
-    if (!noRegister) cleanupLeftovers(layout.appDir);
+    if (!noRegister) {
+        cleanupLeftovers(layout.appDir);
+        // macOS: the frozen PTY host that owns the terminal's shells. Also here, not only
+        // at install, so a helper that self-updated from before the terminal gets it. Never
+        // fatal: the terminal then falls back to the in-process PTY (chooseBackend), and
+        // the chat is unaffected.
+        void ensurePtyHost(layout).catch(e => logError('could not set up the PTY host', e));
+    }
     if (noRegister || dev) process.stdout.write(`VaultAgent ${HELPER_VERSION} listening on http://127.0.0.1:${server.port}${dev ? ' (dev origins allowed)' : ''}\n`);
+    let stopping = false;
     const stop = () => {
-        server?.stop();
-        process.exit(0);
+        if (stopping) return;
+        stopping = true;
+        // Hang up every shell (and let them report it) before the server goes.
+        void terminals.closeAll().finally(() => {
+            server?.stop();
+            process.exit(0);
+        });
     };
     process.on('SIGTERM', stop);
     process.on('SIGINT', stop);

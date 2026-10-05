@@ -5,10 +5,14 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MAX_MCP_BODY_BYTES, type AgentEvent, type AgentId, type HelperMessage } from '../../shared/vaultAgentProtocol.ts';
+import { MAX_MCP_BODY_BYTES, MAX_TERMINALS, type AgentEvent, type AgentId, type HelperMessage } from '../../shared/vaultAgentProtocol.ts';
 import { SAFE_MODEL_RE, type AgentAdapter, type Foreign, type RunContext, type RunOutcome } from '../src/agents/types.ts';
 import { makeOriginPolicy } from '../src/security.ts';
 import { createFetchHandler, helperPlatform, startServer, type RunningServer } from '../src/server.ts';
+import { inProcessBackend } from '../src/terminal/backend.ts';
+import { TerminalManager } from '../src/terminal/manager.ts';
+import { fakeBackend, type FakeBackend } from './fixtures/fakePty.ts';
+import { Panel as BasePanel } from './fixtures/panel.ts';
 
 const ORIGIN = 'https://notes.moizhashmi.com';
 const VAULT = '6f1c2d3e-4a5b-4c6d-8e7f-001122334455';
@@ -60,9 +64,16 @@ function fakeAdapter(id: AgentId): AgentAdapter {
 
 let server: RunningServer;
 let sessionsRoot: string;
+let backend: FakeBackend;
+let terminals: TerminalManager;
 
 beforeAll(() => {
     sessionsRoot = mkdtempSync(join(tmpdir(), 'bme-sessions-'));
+    backend = fakeBackend();
+    terminals = new TerminalManager({
+        backend,
+        launch: async () => ({ file: '/fake/sh', args: ['-l'], env: { TERM: 'xterm-256color' }, cwd: sessionsRoot }),
+    });
     server = startServer({
         ports: [0],
         policy: makeOriginPolicy([ORIGIN], false),
@@ -70,50 +81,22 @@ beforeAll(() => {
             sessionsRoot,
             platform: 'macos',
             adapters: { claude: fakeAdapter('claude'), codex: fakeAdapter('codex'), opencode: fakeAdapter('opencode') },
+            terminals,
+            fontHints: async () => [{ source: 'ghostty', family: 'Fira Code' }],
+            privacy: async () => ({ backend: 'inprocess', fullDiskAccess: null }),
         },
     });
 });
-afterAll(() => {
+afterAll(async () => {
+    await terminals.closeAll();
     server.stop();
     rmSync(sessionsRoot, { recursive: true, force: true });
 });
 
-class Panel {
-    readonly messages: HelperMessage[] = [];
-    private waiters: { pred: (m: HelperMessage) => boolean; resolve: (m: HelperMessage) => void }[] = [];
-    ws!: WebSocket;
-    private n = 0;
-
-    async open(origin = ORIGIN): Promise<this> {
-        this.ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, { headers: { Origin: origin } } as unknown as string[]);
-        this.ws.onmessage = e => {
-            const m = JSON.parse(String(e.data)) as HelperMessage;
-            this.messages.push(m);
-            if (m.type === 'tool.call') {
-                this.ws.send(JSON.stringify({ type: 'tool.result', runId: m.runId, callId: m.callId, result: { content: [{ type: 'text', text: `read ${m.args.path}` }] } }));
-            }
-            this.waiters = this.waiters.filter(w => (w.pred(m) ? (w.resolve(m), false) : true));
-        };
-        await new Promise<void>((res, rej) => {
-            this.ws.onopen = () => res();
-            this.ws.onerror = () => rej(new Error('ws error'));
-        });
-        return this;
-    }
-
-    next(pred: (m: HelperMessage) => boolean, timeoutMs = 5000): Promise<HelperMessage> {
-        const seen = this.messages.find(pred);
-        if (seen) return Promise.resolve(seen);
-        return new Promise((resolve, reject) => {
-            this.waiters.push({ pred, resolve });
-            setTimeout(() => reject(new Error('timeout waiting for message')), timeoutMs);
-        });
-    }
-
-    async request(type: string, params: Record<string, unknown> = {}): Promise<Extract<HelperMessage, { type: 'response' }>> {
-        const reqId = `r${++this.n}`;
-        this.ws.send(JSON.stringify({ type, reqId, ...params }));
-        return (await this.next(m => m.type === 'response' && m.reqId === reqId)) as Extract<HelperMessage, { type: 'response' }>;
+/** The shared harness, bound to this file's server. */
+class Panel extends BasePanel {
+    constructor() {
+        super(server.port);
     }
 }
 
@@ -274,5 +257,142 @@ describe('WebSocket protocol', () => {
         expect(await p.request('helper.update')).toMatchObject({ ok: false, error: { code: 'unsupported' } });
         expect(p.messages.some(m => m.type === 'update.progress')).toBe(false);
         p.ws.close();
+    });
+});
+
+describe('terminal over the socket', () => {
+    const id = () => crypto.randomUUID();
+    const outputOf = (p: BasePanel, termId: string) =>
+        p.messages.flatMap(m => (m.type === 'terminal.output' && m.termId === termId ? [m.data] : [])).join('');
+
+    test('open, input, output, resize, close', async () => {
+        const p = await new Panel().open();
+        const termId = id();
+        const opened = await p.request('terminal.open', { termId, cols: 100, rows: 30 });
+        expect(opened).toMatchObject({ ok: true, result: { shell: '/fake/sh', pid: 1000 + backend.spawned.length - 1, backend: 'inprocess' } });
+        const pty = backend.spawned.at(-1)!;
+        expect(pty.size).toEqual({ cols: 100, rows: 30 });
+
+        p.send({ type: 'terminal.input', termId, data: 'echo hi\r' });
+        for (let i = 0; i < 50 && !pty.written.length; i++) await Bun.sleep(10);
+        expect(pty.written).toEqual(['echo hi\r']);
+
+        pty.emit('hi\r\n');
+        await p.next(m => m.type === 'terminal.output' && m.termId === termId);
+        expect(outputOf(p, termId)).toBe('hi\r\n');
+        // Acknowledged, so it stops counting against the flow-control budget.
+        p.send({ type: 'terminal.ack', termId, chars: 4 });
+
+        expect(await p.request('terminal.resize', { termId, cols: 90, rows: 20 })).toMatchObject({ ok: true });
+        expect(pty.size).toEqual({ cols: 90, rows: 20 });
+
+        expect(await p.request('terminal.close', { termId })).toMatchObject({ ok: true });
+        expect(pty.kills).toBe(1);
+        expect(await p.request('terminal.resize', { termId, cols: 90, rows: 20 })).toMatchObject({ ok: false, error: { code: 'not-found' } });
+        p.ws.close();
+    });
+
+    test('a shell that ends reports terminal.exit after its last output', async () => {
+        const p = await new Panel().open();
+        const termId = id();
+        await p.request('terminal.open', { termId, cols: 80, rows: 24 });
+        const pty = backend.spawned.at(-1)!;
+        pty.emit('bye\r\n');
+        pty.end({ code: 3, signal: null });
+        const exit = await p.next(m => m.type === 'terminal.exit' && m.termId === termId);
+        expect(exit).toMatchObject({ code: 3, signal: null });
+        const iOut = p.messages.findIndex(m => m.type === 'terminal.output' && m.termId === termId);
+        expect(iOut).toBeGreaterThanOrEqual(0);
+        expect(iOut).toBeLessThan(p.messages.indexOf(exit));
+        await p.request('terminal.close', { termId });
+        p.ws.close();
+    });
+
+    test('a closed socket detaches; another one re-attaches with the screen and steals it', async () => {
+        const first = await new Panel().open();
+        const termId = id();
+        await first.request('terminal.open', { termId, cols: 80, rows: 24 });
+        const pty = backend.spawned.at(-1)!;
+        pty.emit('one\r\ntwo');
+        first.ws.close();
+        for (let i = 0; i < 50 && terminals.count() === 0; i++) await Bun.sleep(10);
+        await Bun.sleep(50);
+        expect(pty.kills).toBe(0); // still running, detached
+
+        const second = await new Panel().open();
+        const attached = await second.request('terminal.attach', { termId, cols: 80, rows: 24 });
+        expect(attached).toMatchObject({ ok: true, result: { shell: '/fake/sh', exited: null } });
+        const snapshot = (attached as { result: { snapshot: string } }).result.snapshot;
+        expect(snapshot).toContain('one');
+        expect(snapshot).toContain('two');
+
+        // Output after the attach follows the response, never precedes it.
+        pty.emit('!');
+        await second.next(m => m.type === 'terminal.output' && m.termId === termId);
+        expect(second.messages.findIndex(m => m.type === 'terminal.output')).toBeGreaterThan(second.messages.findIndex(m => m.type === 'response'));
+
+        const third = await new Panel().open();
+        await third.request('terminal.attach', { termId, cols: 80, rows: 24 });
+        await second.next(m => m.type === 'terminal.detached' && m.termId === termId);
+        // The old owner can no longer type into it.
+        second.send({ type: 'terminal.input', termId, data: 'nope' });
+        third.send({ type: 'terminal.input', termId, data: 'yes' });
+        for (let i = 0; i < 50 && !pty.written.length; i++) await Bun.sleep(10);
+        expect(pty.written).toEqual(['yes']);
+        await third.request('terminal.close', { termId });
+        second.ws.close();
+        third.ws.close();
+    });
+
+    test('validation and the per-connection limit', async () => {
+        const p = await new Panel().open();
+        expect(await p.request('terminal.open', { termId: '../x', cols: 80, rows: 24 })).toMatchObject({ ok: false, error: { code: 'bad-request' } });
+        expect(await p.request('terminal.open', { termId: id(), cols: 'wide', rows: 24 })).toMatchObject({ ok: false, error: { code: 'bad-request' } });
+        const ids = Array.from({ length: MAX_TERMINALS }, id);
+        for (const termId of ids) expect(await p.request('terminal.open', { termId, cols: 80, rows: 24 })).toMatchObject({ ok: true });
+        expect(await p.request('terminal.open', { termId: id(), cols: 80, rows: 24 })).toMatchObject({ ok: false, error: { code: 'limit' } });
+        // The same id twice is refused, not silently re-spawned.
+        expect(await p.request('terminal.open', { termId: ids[0], cols: 80, rows: 24 })).toMatchObject({ ok: false, error: { code: 'bad-request' } });
+        for (const termId of ids) await p.request('terminal.close', { termId });
+        p.ws.close();
+    });
+
+    test('font hints and privacy answer', async () => {
+        const p = await new Panel().open();
+        expect(await p.request('terminal.fontHint')).toMatchObject({ ok: true, result: { candidates: [{ source: 'ghostty', family: 'Fira Code' }] } });
+        expect(await p.request('terminal.privacy')).toMatchObject({ ok: true, result: { backend: 'inprocess', fullDiskAccess: null } });
+        // Not an installed helper: no PTY host to show.
+        expect(await p.request('helper.revealPtyHost')).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+        p.ws.close();
+    });
+});
+
+// The same round trip through a real PTY and a real shell (what a user's keystrokes reach).
+describe.skipIf(process.platform === 'win32')('terminal over the socket, real /bin/sh', () => {
+    test('type a command, see its output, exit', async () => {
+        const real = new TerminalManager({
+            backend: inProcessBackend(),
+            launch: async () => ({ file: '/bin/sh', args: [], env: { PATH: process.env.PATH ?? '/usr/bin:/bin', TERM: 'xterm-256color', PS1: '$ ' }, cwd: tmpdir() }),
+        });
+        const own = startServer({
+            ports: [0],
+            policy: makeOriginPolicy([ORIGIN], false),
+            context: { sessionsRoot, platform: 'linux', adapters: { claude: fakeAdapter('claude'), codex: fakeAdapter('codex'), opencode: fakeAdapter('opencode') }, terminals: real },
+        });
+        try {
+            const p = await new BasePanel(own.port).open();
+            const termId = crypto.randomUUID();
+            expect(await p.request('terminal.open', { termId, cols: 80, rows: 24 })).toMatchObject({ ok: true, result: { shell: '/bin/sh', backend: 'inprocess' } });
+            const marker = `marker-${crypto.randomUUID().slice(0, 8)}`;
+            p.send({ type: 'terminal.input', termId, data: `echo ${marker}$((6*7))\r` });
+            await p.next(m => m.type === 'terminal.output' && m.data.includes(`${marker}42`));
+            p.send({ type: 'terminal.input', termId, data: 'exit 7\r' });
+            expect(await p.next(m => m.type === 'terminal.exit')).toMatchObject({ termId, code: 7 });
+            expect(await p.request('terminal.close', { termId })).toMatchObject({ ok: true });
+            p.ws.close();
+        } finally {
+            await real.closeAll();
+            own.stop();
+        }
     });
 });

@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import VaultMenu from './VaultMenu';
 import { AgentUpdateDot } from './agentUpdateIndicator';
 import { agentUpdateHint, useAgentUpdateNotice } from './agentUpdateHint';
-import { ChevronsUpDown, CircleHelp, FileTextOutline, Moon, Network, Settings, Sparkles, Sun, Trash2 } from './icons';
+import { ChevronsUpDown, CircleHelp, FileTextOutline, Moon, Network, Settings, Sparkles, SquareTerminal, Sun, Trash2 } from './icons';
 import type { FileTreeNode, RecentVault, Theme, VaultOpenResult } from '../types';
 
 /* The vault menu rises from the switcher, which sits at the very bottom of the
@@ -69,6 +69,9 @@ interface SidebarFooterProps {
     /** The AI agent panel docked on the right of the workspace. */
     agentOpen: boolean;
     onToggleAgent: () => void;
+    /** The terminal docked under the editor. */
+    terminalOpen: boolean;
+    onToggleTerminal: () => void;
     onOpenTrash: () => void;
     onOpenHelp: () => void;
     onOpenSettings: () => void;
@@ -78,7 +81,7 @@ interface SidebarFooterProps {
 
 /**
  * The bottom of the sidebar, modelled on Obsidian's: a row of icon buttons
- * (Neural Brain, AI agent, Trash, Theme), and under it the vault switcher with Help and
+ * (Neural Brain, AI agent, Terminal, Trash, Theme), and under it the vault switcher with Help and
  * Settings on its right.
  *
  * FIXED AT EVERY SIDEBAR WIDTH (180–600px): nothing wraps or re-flows as the
@@ -104,6 +107,8 @@ function SidebarFooter({
     onToggleGraph,
     agentOpen,
     onToggleAgent,
+    terminalOpen,
+    onToggleTerminal,
     onOpenTrash,
     onOpenHelp,
     onOpenSettings,
@@ -160,6 +165,7 @@ function SidebarFooter({
     const agentNotice = useAgentUpdateNotice();
     const agentUpdate = vaultName ? agentUpdateHint(agentNotice) : null;
     const agentLabel = `${agentOpen ? 'Close the AI agent (⌘⇧X)' : 'AI agent (⌘⇧X)'}${agentUpdate ? ` — ${agentUpdate}` : ''}`;
+    const terminalLabel = terminalOpen ? 'Close the terminal (⌃`)' : 'Terminal (⌃`)';
     const themeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
 
     return (
@@ -186,6 +192,17 @@ function SidebarFooter({
                 >
                     <Sparkles size={18} strokeWidth={1.75} />
                     {agentUpdate && <AgentUpdateDot />}
+                </button>
+                <button
+                    className={`sidebar-footer-btn${terminalOpen ? ' is-active' : ''}`}
+                    onClick={onToggleTerminal}
+                    data-tooltip={terminalLabel}
+                    data-tooltip-position="top"
+                    aria-label={terminalLabel}
+                    aria-pressed={terminalOpen}
+                    disabled={!vaultName}
+                >
+                    <SquareTerminal size={18} strokeWidth={1.75} />
                 </button>
                 <button
                     className="sidebar-footer-btn"

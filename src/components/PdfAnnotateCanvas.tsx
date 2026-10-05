@@ -659,6 +659,15 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             else onContentChangeRef.current(filePath, json);
         };
 
+        // The export is async (~150 ms a page), so "nothing pending" also needs
+        // no export in flight: its strokes reach the save funnel only at its end.
+        let pendingFlush: Promise<void> | null = null;
+        const runFlush = (immediate = false): Promise<void> => {
+            const run = flush(immediate).finally(() => { if (pendingFlush === run) pendingFlush = null; });
+            pendingFlush = run;
+            return run;
+        };
+
         // Before applyPenDefaults, whose shape handler reads the width this
         // seeds, and before the listeners attach — restoring what the file
         // already says must not mark it dirty and rewrite the whole PDF.
@@ -752,6 +761,15 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 }
                 return out;
             },
+            // Strokes in the debounce or mid-export are edits App cannot see yet
+            // (App.checkOpenDocs): reloading the PDF from disk over them would
+            // lose them, so they make an outside change a conflict instead.
+            hasPendingEdits: () => hasUnsavedRef.current || pendingFlush !== null,
+            flushPending: async () => {
+                if (serializeTimerRef.current) { clearTimeout(serializeTimerRef.current); serializeTimerRef.current = null; }
+                if (hasUnsavedRef.current) await runFlush();
+                else if (pendingFlush) await pendingFlush;
+            },
         });
 
         /* Deliberately document-scope only, unlike a drawing or a notebook,
@@ -763,7 +781,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         const unlisten = editor.store.listen(() => {
             hasUnsavedRef.current = true;
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
-            serializeTimerRef.current = setTimeout(() => { void flush(); }, SERIALIZE_DEBOUNCE_MS);
+            serializeTimerRef.current = setTimeout(() => { void runFlush(); }, SERIALIZE_DEBOUNCE_MS);
         }, { source: 'user', scope: 'document' });
 
         return () => {
@@ -781,7 +799,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             // would rewrite the whole PDF every time the mode was toggled.
             if (hasUnsavedRef.current) {
                 onFlushStartRef.current();   // synchronous: beats the viewer's read
-                void flush(true);
+                void runFlush(true);
             }
         };
     }, [filePath, original, pages, boxes]);

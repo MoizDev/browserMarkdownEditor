@@ -84,7 +84,7 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
     {
         name: 'vault_list',
         mutates: false,
-        description: 'List the files and folders in the vault (or in one folder of it), as a tree. The app\'s own hidden folders (.VaultAgent, .Garbage trash, .Assets images) are left out unless includeHidden is true.',
+        description: 'List the files and folders in the vault (or in one folder of it), as a tree. The app\'s own hidden folders (.VaultAgent, .Garbage trash, .Assets images) and .git are left out unless includeHidden is true.',
         inputSchema: {
             type: 'object', additionalProperties: false,
             properties: { path: PATH, depth: { type: 'integer', minimum: 1, maximum: 10, default: 2 }, includeHidden: { type: 'boolean', default: false } },

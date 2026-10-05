@@ -172,6 +172,19 @@ export interface ViewReporter {
     /** Markdown: the live text. */
     getText?(): string;
     canvas?: CanvasAgentOps;
+    // ── outside-change handling (App.checkOpenDocs). The agent never calls these.
+    /** Text documents: put the file's new text from disk into the live editor
+     *  as one minimal, history-isolated transaction annotated `externalReload`,
+     *  so the pane reports it WITHOUT marking the tab dirty. False if the view
+     *  is gone (App then updates the cached state and the buffer itself). */
+    replaceFromDisk?(text: string): boolean;
+    /** Canvases: edits the pane holds that App cannot see yet — a drawing or
+     *  notebook's 400 ms store debounce, an annotated PDF's unsaved strokes.
+     *  A document with pending edits is never reloaded over: it is a conflict. */
+    hasPendingEdits?(): boolean;
+    /** Canvases: push those pending edits into the save funnel NOW, so a
+     *  conflict's "Reload" can keep them as the `(conflict)` copy. */
+    flushPending?(): void | Promise<void>;
 }
 
 const views = new Map<string, ViewReporter>();

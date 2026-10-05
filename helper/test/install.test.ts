@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { join, relative, sep } from 'node:path';
 import type { HelperPlatform } from '../../shared/vaultAgentProtocol.ts';
 import { install, uninstall } from '../src/install/index.ts';
-import { LAUNCHD_LABEL, autostartDesktop, installLayout, launchdPlist, systemdUnit, windowsTaskXml } from '../src/install/layout.ts';
+import { LAUNCHD_LABEL, PTYHOST_LABEL, autostartDesktop, installLayout, launchdPlist, systemdUnit, windowsTaskXml } from '../src/install/layout.ts';
 
 const PROBE = join(import.meta.dir, '..', 'dist', '.probe');
 let root: string;
@@ -34,9 +34,13 @@ const home = () => join(root, 'home');
 describe('layout per OS', () => {
     test('macOS', async () => {
         const l = await install({ platform: 'macos', root: home(), sourceBinary: source });
+        // The frozen PTY host is laid down beside the helper (install/ptyhost.ts),
+        // with a LaunchAgent of its own.
         expect(listAll(home())).toEqual([
             'Library/Application Support/VaultAgent/vaultagent',
+            'Library/Application Support/VaultAgent/vaultagent-pty',
             `Library/LaunchAgents/${LAUNCHD_LABEL}.plist`,
+            `Library/LaunchAgents/${PTYHOST_LABEL}.plist`,
         ]);
         expect(existsSync(join(home(), 'Library', 'Logs'))).toBe(true);
         expect(readFileSync(l.binary, 'utf8')).toBe(readFileSync(source, 'utf8'));

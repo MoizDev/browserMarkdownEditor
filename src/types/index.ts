@@ -9,6 +9,9 @@
 // `declare global`. Because this module is part of the `tsconfig` `include`,
 // that augmentation is loaded globally for every other module.
 
+import type { DiskStat, DiskVersion } from '../utils/diskVersion';
+import type { VaultChangeBatch } from '../utils/vaultChanges';
+
 /* ─────────────────────────────────────────────────────────────────────────
  * FILE TREE
  * Produced by buildFileTree() in FileSystemContext (FileSystemContext.jsx:29-67).
@@ -112,6 +115,19 @@ export interface OpenTab {
    * Session-only, like `id`: the stored session records only paths.
    */
   readError?: string;
+  /**
+   * The file on disk parted ways with this tab: 'conflict' = it changed while
+   * the tab held unsaved edits (or a save found it changed); 'deleted' = it is
+   * gone. While set, nothing autosaves the tab — the DiskBar asks the user.
+   * Session-only, like `readError`.
+   */
+  disk?: 'conflict' | 'deleted';
+  /**
+   * Bumped each time a canvas document (drawing, notebook, annotated PDF) is
+   * reloaded from disk in place. Part of those panes' React keys, so they
+   * remount on the new bytes; text documents reload by transaction instead.
+   */
+  diskRev?: number;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -450,7 +466,52 @@ export interface FileSystemContextValue {
   emptyTrash: () => Promise<{ removed: number; failed: number }>;
   moveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>; // :297
   renameFile: (sourceNode: FileTreeNode, newName: string) => Promise<boolean>; // :329
+
+  // ── versioned document IO (outside-change safety) ──
+  /** readFile, plus the DiskVersion of exactly the bytes read. */
+  readFileVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ text: string; version: DiskVersion }>;
+  readBytesVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ bytes: Uint8Array; version: DiskVersion }>;
+  /** `{lastModified, size}` without reading the bytes; null if the file is gone. */
+  statFile: (fileHandle: FileSystemFileHandle) => Promise<DiskStat | null>;
+  /** THE document write: writes only if the file still is `expected` (equal
+   *  stat, or equal hash when only the stat moved). Never recreates a missing
+   *  file. Every document save goes through it. */
+  writeFileVersioned: (fileHandle: FileSystemFileHandle, data: string | Uint8Array, expected: DiskVersion | null) => Promise<VersionedWriteResult>;
+  /** Write `data` beside `filePath` as `stem (conflict).ext` (then
+   *  `(conflict 2)`, …), never over anything, re-making deleted parent folders.
+   *  `vaultRoot`: the document's vault, when it may no longer be the open one
+   *  (a vault switch). Resolves to the copy's path. */
+  writeConflictCopy: (filePath: string, data: string | Uint8Array, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
+  /** Re-create a file deleted outside the app (and any missing parent folders)
+   *  only if nothing is at `filePath` now. */
+  recreateFile: (filePath: string, data: string | Uint8Array) => Promise<
+    { status: 'written'; version: DiskVersion; handle: FileSystemFileHandle } | { status: 'exists' }>;
+  /** A fresh handle for a vault path, resolved from the root; null if missing. */
+  resolveFileHandle: (filePath: string) => Promise<FileSystemFileHandle | null>;
+  /** Outside changes, after the tree has been patched for them. */
+  subscribeVaultChanges: (listener: (batch: VaultChangeBatch) => void) => () => void;
+  /** How outside changes are noticed: a FileSystemObserver, or (unsupported
+   *  or failed) polling. 'off' while no vault is open. */
+  liveDetection: 'observer' | 'polling' | 'off';
 }
+
+/** The save funnel's third argument (App.updateTabContent). `fromDisk`: the
+ *  content was just reloaded from the file — buffer it, but it is not an edit,
+ *  so the tab stays clean and nothing is scheduled to be written. */
+export interface ContentChangeOptions {
+  fromDisk?: boolean;
+}
+
+/** What the DiskBar's buttons ask App to do (OpenTab.disk): 'reload' and
+ *  'keep' resolve a conflict, 'save' and 'close' a deletion. */
+export type DiskAction = 'reload' | 'keep' | 'save' | 'close';
+
+export type VersionedWriteResult =
+  | { status: 'written'; version: DiskVersion }
+  /** The file changed on disk; nothing was written. `disk` is what is there. */
+  | { status: 'changed'; disk: { bytes: Uint8Array; version: DiskVersion } }
+  /** The file is gone; nothing was written (and nothing recreated). */
+  | { status: 'deleted' };
 
 /* ─────────────────────────────────────────────────────────────────────────
  * SHARED CALLBACK / PROP ALIASES (used across multiple buckets)
@@ -498,4 +559,38 @@ declare global {
       options?: DirectoryPickerOptions
     ): Promise<FileSystemDirectoryHandle>;
   }
+
+  /* FileSystemObserver (Chrome 133+, desktop): not in TS 6's lib.dom. Shapes
+     per the WICG explainer / Chromium's IDL. Feature-detect before use —
+     `typeof FileSystemObserver === 'function'` — it is absent elsewhere. */
+  type FileSystemChangeType = 'appeared' | 'disappeared' | 'modified' | 'moved' | 'unknown' | 'errored';
+
+  interface FileSystemChangeRecord {
+    /** The handle passed to observe(). */
+    readonly root: FileSystemHandle;
+    /** The handle affected (for 'disappeared' it may no longer resolve). */
+    readonly changedHandle: FileSystemHandle | null;
+    /** Path from `root` to the changed entry, as name components. */
+    readonly relativePathComponents: readonly string[];
+    readonly type: FileSystemChangeType;
+    /** 'moved' only: the former path from `root`. */
+    readonly relativePathMovedFrom: readonly string[] | null;
+  }
+
+  interface FileSystemObserverObserveOptions {
+    recursive?: boolean;
+  }
+
+  type FileSystemObserverCallback = (records: FileSystemChangeRecord[], observer: FileSystemObserver) => void;
+
+  interface FileSystemObserver {
+    observe(handle: FileSystemHandle, options?: FileSystemObserverObserveOptions): Promise<void>;
+    unobserve(handle: FileSystemHandle): void;
+    disconnect(): void;
+  }
+
+  var FileSystemObserver: {
+    prototype: FileSystemObserver;
+    new (callback: FileSystemObserverCallback): FileSystemObserver;
+  } | undefined;
 }

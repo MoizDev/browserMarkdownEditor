@@ -90,6 +90,26 @@ Each step below exists because skipping it produces a *working change that looks
    replaced the browser's, assert `defaultPrevented` on the `contextmenu` event — the OS menu never
    appears in a screenshot either way.
 
+10. **Outside changes are simulated in OPFS, from OUTSIDE the app's code path** — a separate
+    `page.evaluate` (or a Worker) opening fresh `navigator.storage.getDirectory()` handles and writing
+    with `createWritable`, deleting with `removeEntry`, renaming with `handle.move()` (which gives real
+    `moved` records) or copy + delete (which does not — the hash-pairing path). First assert
+    `typeof FileSystemObserver === 'function'` in this Chromium; `delete window.FileSystemObserver` in an
+    init script forces the polling fallback (`liveDetection === 'polling'`) and the save-time check
+    alone. Count the app's own writes with an init-script wrapper on `createWritable`, and tree work
+    with one on `FileSystemDirectoryHandle.prototype.entries` plus a MutationObserver on `.tree-item`s.
+    Real-disk FSEvents (records, `.crswap` handling) differ from OPFS and cannot be driven headless —
+    the native picker is the wall; say so rather than claim them.
+
+11. **The terminal needs the real helper:** `npm run helper:dev` (a source run: dev origins allowed,
+    the in-process PTY backend, never the installed macOS PTY host) beside the dev server — loopback to
+    loopback raises no Local Network Access prompt. Set `VAULTAGENT_TERMINAL_SHELL=/bin/sh` for a
+    deterministic shell (test-only; the user's real login shell runs otherwise). Type into
+    `.xterm-helper-textarea`. The WebGL renderer draws to a canvas, so assert through the shell's own
+    side effects (`echo marker > $TMPDIR/x`, read it back from Node) or screenshots; `.xterm-rows` holds
+    text only under the DOM renderer fallback. Kill stray helpers you started; never stop the user's
+    installed one.
+
 ## Sketch
 
 ```js

@@ -15,7 +15,8 @@ it, **and as `anchor`**, so a second press on it closes the menu: `openContextMe
 matching anchor (returning `false` — set a pressed look only on `true`), and ContextMenu's
 outside-pointerdown dismissal exempts the anchor, because closing there let the same press's click
 re-open it (the flicker bug). Right-click raisers pass no anchor — a second right-click re-raises.
-Command rows with `checked` set on every row draw a ✓ column (`menuitemradio`; the sort menu). There is exactly **one** component
+Command rows with `checked` set on every row draw a ✓ column (`menuitemradio`; the sort menu). A `label`
+entry is quiet text, not a row (`role="none"`, outside the arrow-key walk; the agent panel's version). There is exactly **one** component
 and **one** module-level store; `App` reads it with `useSyncExternalStore` and renders
 `<ContextMenu>` once.
 
@@ -62,7 +63,8 @@ and **one** module-level store; `App` reads it with `useSyncExternalStore` and r
   hangs off a **point in the viewport** — a scroll moves the thing it was aimed at out from under it,
   and it is routinely raised inside a scrollable editor. The scroll listener is capture-phase (an
   editor scroll does not bubble to `window`) and excludes scrolls **inside** the menu, which is what
-  lets the menu itself have a `max-height` and scroll.
+  lets the menu itself have a `max-height` and scroll — and scrolls of a `<textarea>`/`<input>`'s own
+  text, which move nothing on the page (xterm scrolls its hidden textarea on the raising right-click).
 - **Position: measure at the corner, then flip, then clamp.** The menu is rendered once at `0,0` and
   **`opacity: 0`, not `visibility: hidden`** — measured: a visibility-hidden element cannot take focus
   and `focus()` on it is a silent no-op, so the menu opened with the keyboard still on whatever raised

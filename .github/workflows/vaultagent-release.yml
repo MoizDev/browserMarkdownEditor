@@ -54,6 +54,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Install dependencies
+        # The helper bundles npm packages since the terminal (@xterm/headless and its
+        # addons: the reattach mirror), so a bare checkout cannot test or compile it.
+        # The lockfile pins them; no install scripts are needed (or run).
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Helper tests
         run: bun test helper
 
@@ -67,10 +72,26 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Install dependencies
+        # The helper bundles npm packages since the terminal (@xterm/headless and its
+        # addons: the reattach mirror), so a bare checkout cannot test or compile it.
+        # The lockfile pins them; no install scripts are needed (or run).
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Compile (arm64 + x64)
         run: |
           bun helper/scripts/build.ts --target bun-darwin-arm64 --version "$VERSION" --outfile out/vaultagent-darwin-arm64
           bun helper/scripts/build.ts --target bun-darwin-x64 --version "$VERSION" --outfile out/vaultagent-darwin-x64
+      - name: Check the frozen PTY host (never rebuilt here)
+        # helper/ptyhost/vaultagent-pty is built once, by hand, with build.sh and committed;
+        # every helper embeds those exact bytes so its cdhash, and with it each user's macOS
+        # privacy grants for the terminal, stays the same across releases. CI only checks the pin.
+        run: |
+          set -euo pipefail
+          want="$(sed -n 's/.*"sha256": *"\([0-9a-f]*\)".*/\1/p' helper/ptyhost/PINNED.json)"
+          got="$(shasum -a 256 helper/ptyhost/vaultagent-pty | awk '{print $1}')"
+          test -n "$want" && test "$got" = "$want" || { echo "::error::helper/ptyhost/vaultagent-pty ($got) is not the pinned binary ($want)"; exit 1; }
+          codesign --verify --strict helper/ptyhost/vaultagent-pty
+          lipo helper/ptyhost/vaultagent-pty -verify_arch arm64 x86_64
       - name: Smoke test (native arm64)
         run: bun helper/scripts/smoke.ts out/vaultagent-darwin-arm64 --expect-version "$VERSION"
       - name: Build VaultAgent.pkg
@@ -119,6 +140,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Install dependencies
+        # The helper bundles npm packages since the terminal (@xterm/headless and its
+        # addons: the reattach mirror), so a bare checkout cannot test or compile it.
+        # The lockfile pins them; no install scripts are needed (or run).
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Compile (x64)
         run: bun helper/scripts/build.ts --target bun-windows-x64 --version "$env:VERSION" --outfile out/vaultagent.exe
       - name: Smoke test
@@ -191,6 +217,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Install dependencies
+        # The helper bundles npm packages since the terminal (@xterm/headless and its
+        # addons: the reattach mirror), so a bare checkout cannot test or compile it.
+        # The lockfile pins them; no install scripts are needed (or run).
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Compile
         run: bun helper/scripts/build.ts --target "bun-linux-${{ matrix.arch }}" --version "$VERSION" --outfile "dist/$ASSET"
       - name: Smoke test
@@ -259,6 +290,6 @@ jobs:
           prerelease=()
           [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "VaultAgent $VERSION" \
-            --notes "VaultAgent $VERSION — the agent helper for the editor's agent panel. Unsigned: see the panel's install guide. VaultAgent 0.1.3 and later update themselves from the panel (⋯ → Update VaultAgent); older versions: download the installer once." \
+            --notes "VaultAgent $VERSION — the helper for the editor's agent panel and terminal. Unsigned: see the panel's install guide. VaultAgent 0.1.3 and later update themselves from the panel (⋯ → Update VaultAgent); older versions: download the installer once." \
             "${prerelease[@]}" \
             "${bins[@]/#/assets/}" assets/SHA256SUMS assets/vaultagent-release.json

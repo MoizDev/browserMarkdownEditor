@@ -43,6 +43,7 @@ import { createVaultTextCache, isTextFile } from './vaultSearch';
 import { collectFiles } from './tree';
 import { isCanvasFile, isImageFile, isNotebookFile, isPdfFile } from './fileTypes';
 import { ASSETS_DIR, TRASH_DIR } from './assets';
+import { isGitName } from './vaultEntries';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from './entryStyle';
 import { VAULT_AGENT_DIR } from './vaultAgentStore';
 import { parentVaultPath } from './paths';
@@ -362,7 +363,14 @@ async function vaultList(a: Args, ctx: Ctx): Promise<ToolExecution> {
             // .VaultAgent is never listed, includeHidden or not: every read and
             // write of it is refused, so showing it would only invite attempts.
             if (dir === '' && name === lower(VAULT_AGENT_DIR)) return false;
+            // `.git` (a folder, or the file a worktree/submodule has) is hidden
+            // from the sidebar at every depth (utils/vaultEntries.ts) and from
+            // this default listing too: thousands of object files that are not
+            // notes. Only that one rule is shared with the tree — NOT the whole
+            // isHiddenVaultEntry, which would also hide `.claude`/`.agents`
+            // that the agent is meant to see.
             const hidden = (c.kind === 'directory' && (name === lower(TRASH_DIR) || name === lower(ASSETS_DIR)))
+                || isGitName(c.name)
                 || (dir === '' && c.kind === 'file' && (c.name === ENTRY_STYLE_FILE || c.name === LEGACY_STYLE_FILE));
             if (hidden && !includeHidden) { hiddenSkipped++; return false; }
             return true;
@@ -391,7 +399,7 @@ async function vaultList(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const notes: string[] = [];
     if (!lines.length) notes.push('(empty)');
     if (stopped) notes.push(`…[stopped after ${MAX_LIST_ENTRIES} entries — list a sub-folder with path, or use a smaller depth]`);
-    if (hiddenSkipped) notes.push(`(${hiddenSkipped} hidden app item${hiddenSkipped === 1 ? '' : 's'} left out: ${ASSETS_DIR} image folders, ${TRASH_DIR} trash, the settings file — pass includeHidden: true to show them)`);
+    if (hiddenSkipped) notes.push(`(${hiddenSkipped} hidden app item${hiddenSkipped === 1 ? '' : 's'} left out: ${ASSETS_DIR} image folders, ${TRASH_DIR} trash, .git, the settings file — pass includeHidden: true to show them)`);
     return ok([head, ...lines, ...notes].join('\n'));
 }
 

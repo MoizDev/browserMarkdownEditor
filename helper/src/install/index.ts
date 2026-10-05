@@ -10,6 +10,8 @@ import { dirname, join, resolve } from 'node:path';
 import type { HelperPlatform } from '../../../shared/vaultAgentProtocol.ts';
 import { logError } from '../log.ts';
 import { detached, detachedCmd, runCapture } from '../proc.ts';
+import { bootoutAndWait, bootstrapWithRetry, guiDomain, launchctl } from './launchctl.ts';
+import { ensurePtyHost, removePtyHost } from './ptyhost.ts';
 import {
     LAUNCHD_LABEL, SYSTEMD_UNIT, WINDOWS_TASK, autostartDesktop, installLayout, launchdPlist, systemdUnit, windowsTaskXml,
     type InstallLayout,
@@ -44,24 +46,6 @@ function placeBinary(src: string, dest: string): void {
         } catch { /* locked: the rename below reports it */ }
     }
     renameSync(tmp, dest);
-}
-
-function uid(): number {
-    return typeof process.getuid === 'function' ? process.getuid() : 0;
-}
-
-async function launchctl(...args: string[]) {
-    return runCapture(['/bin/launchctl', ...args], { timeoutMs: 15_000 });
-}
-
-/** Unload the login item and wait (≤5 s) until launchd no longer knows it. */
-async function bootoutAndWait(): Promise<void> {
-    const target = `gui/${uid()}/${LAUNCHD_LABEL}`;
-    await launchctl('bootout', target);
-    for (let i = 0; i < 25; i++) {
-        if ((await launchctl('print', target)).code !== 0) return;
-        await Bun.sleep(200);
-    }
 }
 
 async function systemctl(...args: string[]) {
@@ -113,17 +97,16 @@ export async function install(opts: InstallOptions): Promise<InstallLayout> {
 
     if (l.platform === 'macos') {
         writeFileAtomic(l.registrationFile!, launchdPlist(l));
+        // Before the helper's own bootstrap: the helper's `serve` runs the same step
+        // at start, and two racing bootstraps of one label would fail the loser. The
+        // host is best effort (the terminal falls back to the in-process PTY
+        // without it), so it never fails an install.
+        await ensurePtyHost(l, { register: register && !opts.skipLaunchctl });
         if (register && !opts.skipLaunchctl) {
             // bootout first: a reinstall replaces the running old version.
-            await bootoutAndWait();
-            // A bootstrap right behind a bootout can still fail with "5:
-            // Input/output error" while launchd finishes tearing the old job down.
-            let r = await launchctl('bootstrap', `gui/${uid()}`, l.registrationFile!);
-            for (let i = 0; r.code !== 0 && i < 4; i++) {
-                await Bun.sleep(1000);
-                r = await launchctl('bootstrap', `gui/${uid()}`, l.registrationFile!);
-            }
-            if (r.code !== 0) throw new Error(`launchctl bootstrap failed (${r.code})`);
+            await bootoutAndWait(LAUNCHD_LABEL);
+            const code = await bootstrapWithRetry(l.registrationFile!);
+            if (code !== 0) throw new Error(`launchctl bootstrap failed (${code})`);
         }
     } else if (l.platform === 'windows') {
         if (register) {
@@ -165,7 +148,7 @@ export async function install(opts: InstallOptions): Promise<InstallLayout> {
 }
 
 function removeFiles(l: InstallLayout): void {
-    for (const p of [l.registrationFile, l.autostartFile, l.logFile, `${l.logFile}.1`]) {
+    for (const p of [l.registrationFile, l.ptyHostRegistration, l.autostartFile, l.logFile, `${l.logFile}.1`]) {
         if (p) rmSync(p, { force: true });
     }
     if (l.platform === 'linux') rmSync(dirname(l.logFile), { recursive: true, force: true });
@@ -187,7 +170,11 @@ export async function uninstall(opts: { platform: HelperPlatform; root?: string 
     if (l.platform === 'macos') {
         removeFiles(l);
         // launchd would restart a KeepAlive job whose plist still exists; the files go first.
-        if (register) await launchctl('bootout', `gui/${uid()}/${LAUNCHD_LABEL}`);
+        // The PTY host first, then the helper: when this process IS the helper, its own bootout ends us.
+        if (register) {
+            await removePtyHost(l);
+            await launchctl('bootout', `${guiDomain()}/${LAUNCHD_LABEL}`);
+        }
         return;
     }
     if (l.platform === 'linux') {

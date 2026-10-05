@@ -120,7 +120,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         const map = new Map<string, number>();
         let i = 0;
         for (const entry of request.entries) {
-            if (entry.kind !== 'separator') map.set(entry.id, i++);
+            if (entry.kind !== 'separator' && entry.kind !== 'label') map.set(entry.id, i++);
         }
         return map;
     }, [request.entries]);
@@ -207,8 +207,14 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         };
         // Capture, because a scroll inside the editor does not bubble to
         // window. A scroll of the menu's OWN content is not a reason to close
-        // it, hence the containment test.
-        const onScroll = (e: Event) => { if (!inside(e.target)) onClose(); };
+        // it, hence the containment test. Nor is a text field scrolling its own
+        // text, which moves nothing on the page: xterm repositions its hidden
+        // input textarea on the very right-click that raises the terminal's menu
+        // (measured: after a paste, the menu closed ~4 ms after it opened).
+        const onScroll = (e: Event) => {
+            if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+            if (!inside(e.target)) onClose();
+        };
 
         document.addEventListener('pointerdown', onPointerDown, true);
         window.addEventListener('keydown', onKeyDown, true);
@@ -351,6 +357,17 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                 {request.entries.map(entry => {
                     if (entry.kind === 'separator') {
                         return <div key={entry.id} className="context-menu-separator" role="separator" />;
+                    }
+
+                    if (entry.kind === 'label') {
+                        // role="none": text the menu carries, not an item of it.
+                        // The blank check column keeps it in the labels' column.
+                        return (
+                            <div key={entry.id} className="context-menu-label" role="none" data-tooltip={entry.tooltip}>
+                                {hasChecks && <span className="context-menu-item-check" aria-hidden="true" />}
+                                {entry.label}
+                            </div>
+                        );
                     }
 
                     const index = rowIndex.get(entry.id) ?? 0;

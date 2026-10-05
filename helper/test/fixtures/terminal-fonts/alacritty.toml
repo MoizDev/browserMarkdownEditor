@@ -1,0 +1,12 @@
+[window]
+opacity = 0.95
+
+[font]
+size = 13.0
+
+[font.normal]
+family = "CaskaydiaCove Nerd Font"
+style = "Regular"
+
+[font.bold]
+family = "Not This One"

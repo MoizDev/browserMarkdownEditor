@@ -1,0 +1,6 @@
+{
+    /* VS Code user settings (synthetic) */
+    "editor.fontFamily": "Menlo",
+    "terminal.integrated.fontFamily": "'MesloLGS NF', \"Hack Nerd Font\", monospace",
+    "terminal.integrated.fontSize": 13, // pixels
+}

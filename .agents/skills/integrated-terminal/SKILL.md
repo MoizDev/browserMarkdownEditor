@@ -69,7 +69,10 @@ state with runs); **no code-signing certificate, ever** (ad-hoc signing only).
   (smoke, tests) and is stripped from the shell's env.
 - **Teardown:** in-process → `terminal.close()` (SIGHUP to the session; zsh ignores SIGTERM), then
   `kill(-pid, SIGKILL)` after 2 s; Windows kills the tree (`taskkill /T /F`) first, dodging the pre-24H2
-  `ClosePseudoConsole` hang. `terminal.closed` stays false after exit, so the code closes it. Helper
+  `ClosePseudoConsole` hang. A job-control job (`cmd &`) has its own process group, out of reach of
+  the hang-up and of either backend's group kill: it ends only because bash/zsh resend SIGHUP to their
+  jobs. dash (Ubuntu's `/bin/sh`) does not, as in any terminal app, so the real-PTY test runs bash
+  (macOS's `/bin/sh` IS bash, which hid it). `terminal.closed` stays false after exit, so the code closes it. Helper
   SIGTERM/SIGINT and the self-update restart run `closeAll()`. Never log terminal bytes.
 - `font.ts` reads the user's terminal apps' configs (Ghostty, iTerm2 and Terminal.app via `defaults
   export` + `plutil`, kitty, Alacritty, WezTerm, Windows Terminal, VS Code) — best effort, 2 s timeouts,

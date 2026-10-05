@@ -307,6 +307,17 @@ class Owner {
 const launch = async () => ({ file: '/fake/zsh', args: ['-l'], env: { TERM: 'xterm-256color' }, cwd: '/home/ada' });
 const newId = () => crypto.randomUUID();
 const settle = () => Bun.sleep(15);
+/**
+ * Until `pred` holds (or a generous deadline passes; the assertion after it then says
+ * what was seen). A `reset` snapshot waits for the mirror to parse everything written
+ * so far, and xterm parses in ~12 ms time slices: measured 12–40 ms for the 560 KB the
+ * flow-control tests write, on macOS and Linux alike, so `settle()` raced it (1 in 40
+ * failed on both; CI failed it outright).
+ */
+async function eventually(pred: () => boolean, ms = 3000): Promise<void> {
+    const stop = Date.now() + ms;
+    while (!pred() && Date.now() < stop) await Bun.sleep(5);
+}
 
 function rig(over: { maxTerminals?: number } = {}) {
     const backend = fakeBackend();
@@ -482,7 +493,7 @@ describe('TerminalManager: output', () => {
 
         // The panel acknowledges everything: one snapshot, flagged reset, that includes what it missed.
         mgr.ack(owner, id, sent);
-        await settle();
+        await eventually(() => owner.types().includes('reset'));
         const last = owner.msgs.at(-1)!;
         expect(last).toMatchObject({ type: 'terminal.output', termId: id, reset: true });
         expect((last as { data: string }).data).toContain('TAIL-MARKER-1');
@@ -595,7 +606,7 @@ describe('TerminalManager: exit', () => {
         backend.spawned[0].end({ code: 0, signal: null });
         expect(owner.msgs.some(m => m.type === 'terminal.exit')).toBe(false);
         mgr.ack(owner, id, 8 * 70_000);
-        await settle();
+        await eventually(() => owner.types().includes('terminal.exit'));
         expect(owner.types().slice(-2)).toEqual(['reset', 'terminal.exit']);
         await mgr.closeAll();
     });
@@ -870,7 +881,7 @@ describe('privacy probe', () => {
 
 /* ───────────────────────── a real PTY ───────────────────────── */
 
-describe.skipIf(process.platform === 'win32')('real PTY (/bin/sh)', () => {
+describe.skipIf(process.platform === 'win32')('real PTY', () => {
     async function until(owner: Owner, id: string, pred: (out: string) => boolean, ms = 8000): Promise<void> {
         const stop = Date.now() + ms;
         while (Date.now() < stop) {
@@ -890,14 +901,19 @@ describe.skipIf(process.platform === 'win32')('real PTY (/bin/sh)', () => {
 
     test('echo, resize is seen by the shell, close hangs up a background child', async () => {
         const backend: PtyBackend = inProcessBackend();
+        // bash, not /bin/sh: an interactive shell puts `cmd &` in its own process group, out
+        // of reach of the hang-up and of any group kill (the PTY host's too), and the job dies
+        // only because bash and zsh resend SIGHUP to their jobs. dash (Ubuntu's /bin/sh) does
+        // not, as in any terminal app; macOS's /bin/sh is bash, so only CI saw it (measured:
+        // the job outlived close by 5 s under dash, ~60 ms under bash).
         const mgr = new TerminalManager({
             backend,
-            launch: async () => ({ file: '/bin/sh', args: [], env: { PATH: process.env.PATH ?? '/usr/bin:/bin', TERM: 'xterm-256color', PS1: '$ ' }, cwd: tmpdir() }),
+            launch: async () => ({ file: '/bin/bash', args: ['--norc', '--noprofile'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin', TERM: 'xterm-256color', PS1: '$ ', BASH_SILENCE_DEPRECATION_WARNING: '1' }, cwd: tmpdir() }),
         });
         const owner = new Owner();
         const id = newId();
         const opened = await mgr.open(owner, id, 100, 30);
-        expect(opened).toMatchObject({ shell: '/bin/sh', backend: 'inprocess' });
+        expect(opened).toMatchObject({ shell: '/bin/bash', backend: 'inprocess' });
 
         const marker = `m${Date.now()}`;
         mgr.input(owner, id, `echo ${marker}$((20+22))\r`);
@@ -907,7 +923,8 @@ describe.skipIf(process.platform === 'win32')('real PTY (/bin/sh)', () => {
         await until(owner, id, o => o.includes('30 100'));
         mgr.resize(owner, id, 50, 20);
         mgr.input(owner, id, 'stty size\r');
-        await until(owner, id, o => /\r\n20 50\r\n/.test(o));
+        // Not always after `\r\n`: bash 5 ends bracketed paste (`\x1b[?2004l\r`) before a command's output.
+        await until(owner, id, o => /[\r\n]20 50\r\n/.test(o));
 
         mgr.input(owner, id, 'sleep 300 & echo bgpid=$!\r');
         await until(owner, id, o => /bgpid=\d+\r\n/.test(o));
@@ -918,7 +935,7 @@ describe.skipIf(process.platform === 'win32')('real PTY (/bin/sh)', () => {
         while (alive(bg) && Date.now() < stop) await Bun.sleep(50);
         expect(alive(bg)).toBe(false);
         expect(mgr.count()).toBe(0);
-    });
+    }, 30_000); // its waits outlast bun's 5 s default, which would hide the failing step
 
     test('a shell that exits reports its code, and attach returns the screen', async () => {
         const mgr = new TerminalManager({

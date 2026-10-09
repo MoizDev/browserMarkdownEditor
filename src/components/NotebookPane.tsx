@@ -10,7 +10,7 @@ import { parseNotebookFile, serializeNotebookFile, type NotebookUiState } from '
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
-import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi } from './canvasPen';
+import { CANVAS_COMPONENTS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, serializeDelay } from './canvasPen';
 import { bindImageInvertKey } from './invertibleImageShape';
 import { subscribePenScale } from '../utils/penStyle';
 import { getPdfInverted, readThumbnailsOpen, subscribePdfInverted, writeThumbnailsOpen } from '../utils/pdfViewState';
@@ -374,7 +374,12 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         }, TOP_GUTTER);
         // A reload unmounts nothing, so the last scroll would die in the
         // debounce without this.
-        const onPageHide = () => { if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; flushCanvasViewPositions(); } };
+        const onPageHide = () => {
+            if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; flushCanvasViewPositions(); }
+            // A notebook that waits longer between saves can have more strokes
+            // outstanding here — and a reload unmounts nothing.
+            if (serializeTimerRef.current) { clearTimeout(serializeTimerRef.current); flush(); }
+        };
         window.addEventListener('pagehide', onPageHide);
 
         // What the agent sees and draws through (utils/viewRegistry.ts): the
@@ -491,9 +496,20 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
             persist();
         };
 
+        // Mid-stroke the document is about to change again, and serializing a
+        // full notebook is exactly what the pen would feel — so wait for the
+        // hand to lift and pay it once, rather than in the middle of a line.
+        const tick = () => {
+            if (editor.inputs.isPointing) {
+                serializeTimerRef.current = setTimeout(tick, SERIALIZE_DEBOUNCE_MS);
+                return;
+            }
+            flush();
+        };
+
         const schedule = () => {
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
-            serializeTimerRef.current = setTimeout(flush, SERIALIZE_DEBOUNCE_MS);
+            serializeTimerRef.current = setTimeout(tick, serializeDelay(editor, SERIALIZE_DEBOUNCE_MS));
         };
 
         // source: 'user'    → a programmatic load or a re-papering never dirties.
@@ -731,6 +747,7 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
                         onMount={handleMount}
                         components={NOTEBOOK_COMPONENTS}
                         shapeUtils={CANVAS_SHAPE_UTILS}
+                        options={CANVAS_OPTIONS}
                         colorScheme={NOTEBOOK_COLOR_SCHEME}
                         licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                     />

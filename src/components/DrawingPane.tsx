@@ -3,7 +3,7 @@ import { Box, Tldraw, getSnapshot, react } from 'tldraw';
 import type { Editor, TLEditorSnapshot } from 'tldraw';
 import 'tldraw/tldraw.css';
 import type { Theme } from '../types';
-import { CANVAS_COMPONENTS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { CANVAS_COMPONENTS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, serializeDelay, type CanvasUiState } from './canvasPen';
 import { bindImageInvertKey } from './invertibleImageShape';
 import { subscribePenScale } from '../utils/penStyle';
 import { flushCanvasViewPositions, readCanvasViewPos, writeCanvasViewPos } from '../utils/canvasViewState';
@@ -124,9 +124,20 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
             onContentChangeRef.current(filePath, JSON.stringify({ ...getSnapshot(editor.store), ui: uiNow }));
         };
 
+        // Mid-stroke the document is about to change again, and serializing a
+        // big board is exactly what the pen would feel — so wait for the hand
+        // to lift and pay it once, rather than in the middle of a line.
+        const tick = () => {
+            if (editor.inputs.isPointing) {
+                serializeTimerRef.current = setTimeout(tick, SERIALIZE_DEBOUNCE_MS);
+                return;
+            }
+            flush();
+        };
+
         const schedule = () => {
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
-            serializeTimerRef.current = setTimeout(flush, SERIALIZE_DEBOUNCE_MS);
+            serializeTimerRef.current = setTimeout(tick, serializeDelay(editor, SERIALIZE_DEBOUNCE_MS));
         };
 
         // Reopen where the reader LEFT it, not where the file was last saved:
@@ -164,7 +175,12 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
         });
         // A reload or a closed window unmounts nothing, so the last pan would
         // die in the debounce without this.
-        const onPageHide = () => { if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; flushCanvasViewPositions(); } };
+        const onPageHide = () => {
+            if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; flushCanvasViewPositions(); }
+            // A big board waits longer between saves, so more strokes can be
+            // outstanding here — and a reload unmounts nothing.
+            if (serializeTimerRef.current) { clearTimeout(serializeTimerRef.current); flush(); }
+        };
         window.addEventListener('pagehide', onPageHide);
 
         // What the agent sees and draws through (utils/viewRegistry.ts). Built
@@ -251,6 +267,7 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
                 onMount={handleMount}
                 components={CANVAS_COMPONENTS}
                 shapeUtils={CANVAS_SHAPE_UTILS}
+                options={CANVAS_OPTIONS}
                 colorScheme={theme === 'light' ? 'light' : 'dark'}
                 // Required once deployed, not cosmetic: on a non-localhost HTTPS
                 // origin, tldraw with no key reports `unlicensed-production` and

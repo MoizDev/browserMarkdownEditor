@@ -453,7 +453,20 @@ A `.tldraw` file is a tldraw snapshot **plus an extra `ui` block** (current tool
 `stylesForNextShape`, which tldraw's own snapshots omit). Parsed **once per file, keyed on
 `filePath` alone**, not per render (`content` churns on save round-trips but tldraw owns the doc after
 mount; re-parsing would clobber in-progress edits — the `exhaustive-deps` disable there is
-deliberate). Serialize debounce 400ms → the app's 1s save.
+deliberate). Serialize debounce 400ms → the app's 1s save, but see `serializeDelay` below.
+
+**All three canvases pass `CANVAS_OPTIONS` (`canvasPen.ts`) to `<Tldraw>`, and must.** tldraw stops
+creating shapes at `maxShapesPerPage` (default **4,000**) and does it *silently* — the refusal is a
+`max-shapes` event nothing listens to, so a full board just stops taking ink. Measured: at 4,200
+shapes, 8 drawn strokes produced 0 new ones. It is 1,000,000 here, finite because the render pass
+builds z-indices out of it.
+
+**Saving a canvas is O(document), not O(stroke)** — the whole store is stringified, hashed and
+written per change burst (~1.7MB at 4,000 shapes). `serializeDelay(editor, base)` therefore scales
+the debounce with the shape count (to 2s), and the drawing/notebook timers re-arm instead of firing
+while `editor.inputs.isPointing` — serializing underneath a moving pen is what the lag was. Measured
+on a 3,900-shape board, one ~6s stroke: 665ms blocked / longest stall 136ms → 435ms / 75ms. Anything
+that lengthens that debounce owes a matching flush: unmount, `flushPending` **and `pagehide`**.
 
 `store.listen` is scoped `{source:'user', scope:'document'}` so programmatic loads and camera moves
 don't dirty the file; a separate session-scope listener only reschedules a save when the UI-state

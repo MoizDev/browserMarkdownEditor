@@ -31,9 +31,10 @@ import {
 import { isTextFile } from './vaultSearch';
 import { nameTaken } from './entryNames';
 import {
-    CHAT_INDEX_FILE, VAULT_AGENT_DIR, VAULT_ID_FILE, emptyChatIndex, ensureVaultId, parseChatIndex,
-    serializeChatIndex,
+    CHAT_INDEX_FILE, CHAT_TREE_DIR, VAULT_AGENT_DIR, VAULT_ID_FILE, emptyChatIndex, ensureVaultId,
+    parseChatIndex, serializeChatIndex,
 } from './vaultAgentStore';
+import { emptyTree, parseTree, serializeTree, type ChatTree } from './chatTree';
 
 /** How long `openCanvasForAgent` waits for a canvas to mount and register. */
 const CANVAS_MOUNT_TIMEOUT_MS = 15_000;
@@ -197,6 +198,8 @@ function queue() {
 
 export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const serializeIndex = queue();
+    /** One write queue per chat transcript (see writeChatTree). */
+    const treeQueues = new Map<string, ReturnType<typeof queue>>();
 
     const toolHost: VaultToolHost = {
         vaultToken: () => getDeps().root,
@@ -442,6 +445,16 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         await getDeps().writeFile(await dir.getFileHandle(name, { create: true }), text);
     };
 
+    /** `.VaultAgent/chats/<chatId>.json`. The id is ours (a UUID) and never a
+     *  user string, so there is no path to escape with — but it is checked
+     *  anyway, because this writes inside the user's vault. */
+    const chatTreeFile = async (root: FileSystemDirectoryHandle, chatId: string, create: boolean) => {
+        if (!/^[0-9a-f-]{36}$/i.test(chatId)) return null;
+        const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR, { create });
+        const chats = await dir.getDirectoryHandle(CHAT_TREE_DIR, { create });
+        return chats.getFileHandle(`${chatId}.json`, { create });
+    };
+
     const readMirrorFile = async (dir: FileSystemDirectoryHandle, name: string): Promise<string | null> => {
         try {
             const file = await (await dir.getFileHandle(name)).getFile();
@@ -508,6 +521,47 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 await writeVaultAgentFile(root, CHAT_INDEX_FILE, serializeChatIndex(next));
                 return next;
             });
+        },
+
+        async readChatTree(chatId: string): Promise<ChatTree> {
+            const root = getDeps().root;
+            if (!root) return emptyTree();
+            try {
+                const handle = await chatTreeFile(root, chatId, false);
+                return handle ? parseTree(await (await handle.getFile()).text()) : emptyTree();
+            } catch {
+                // No folder, no file, or unreadable: an empty tree, and the CLI's
+                // own history takes over (chatStore.loadHistory).
+                return emptyTree();
+            }
+        },
+
+        writeChatTree(chatId: string, tree: ChatTree): Promise<void> {
+            const root = getDeps().root;
+            if (!root) return Promise.resolve();
+            // Per chat, not one queue for all of them: two chats writing at once
+            // touch different files, and a long transcript must not hold up the
+            // chat the user is actually typing in.
+            const serialize = (treeQueues.get(chatId) ?? treeQueues.set(chatId, queue()).get(chatId))!;
+            return serialize(async () => {
+                if (getDeps().root !== root) return;   // a vault switch mid-write
+                const handle = await chatTreeFile(root, chatId, true);
+                if (handle) await getDeps().writeFile(handle, serializeTree(tree));
+            }).catch(err => {
+                // A transcript that cannot be written is not worth losing the
+                // reply over: the chat still works, it just will not come back.
+                console.error('Could not write the chat transcript:', err);
+            });
+        },
+
+        async deleteChatTree(chatId: string): Promise<void> {
+            const root = getDeps().root;
+            if (!root || !/^[0-9a-f-]{36}$/i.test(chatId)) return;
+            try {
+                const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR);
+                const chats = await dir.getDirectoryHandle(CHAT_TREE_DIR);
+                await chats.removeEntry(`${chatId}.json`);
+            } catch { /* already gone */ }
         },
 
         async collectMirrorFiles(): Promise<MirrorFile[]> {

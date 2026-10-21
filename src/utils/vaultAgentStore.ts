@@ -19,6 +19,11 @@ import { AGENT_IDS, isUuid, type AgentId } from '../../shared/vaultAgentProtocol
 export const VAULT_AGENT_DIR = '.VaultAgent';
 export const VAULT_ID_FILE = 'vault.json';
 export const CHAT_INDEX_FILE = 'chats.json';
+/** One file per chat, holding that chat's message TREE (utils/chatTree.ts).
+ *  A folder rather than more keys in chats.json: a transcript with its branches
+ *  is the big thing here, and rewriting every chat's history to record one
+ *  message would be the panel's slowest act. */
+export const CHAT_TREE_DIR = 'chats';
 
 /**
  * Folders hidden from the file tree AT THE VAULT ROOT ONLY (and so from vault

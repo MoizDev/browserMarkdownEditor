@@ -12,6 +12,7 @@
 // shared/vaultAgentProtocol.ts; what each pane reports is utils/viewRegistry.ts.
 
 import type { AgentId, MirrorFile } from '../../shared/vaultAgentProtocol';
+import type { ChatTree } from '../utils/chatTree';
 import type { EditorMode, FileTreeNode, TabLayout, Theme } from './index';
 import type { TextChange, ViewReporter } from '../utils/viewRegistry';
 import type { AgentHostDeps } from '../utils/agentHost';
@@ -166,6 +167,14 @@ export interface AgentHost {
      *  first call. null with no vault, or if it could not be written. */
     ensureVaultUuid(): Promise<string | null>;
     readChatIndex(): Promise<ChatIndex>;
+    /** One chat's message tree, from `.VaultAgent/chats/<id>.json`. An unknown
+     *  chat, or an unreadable file, reads as an empty tree — the CLI's own
+     *  history is the fallback (utils/chatTree.ts). */
+    readChatTree(chatId: string): Promise<ChatTree>;
+    /** Replace that file. Serialized per chat, like the index. */
+    writeChatTree(chatId: string, tree: ChatTree): Promise<void>;
+    /** Drop it, when the chat itself is deleted. */
+    deleteChatTree(chatId: string): Promise<void>;
     /** Serialized read-modify-write: re-reads the file, applies `update`, writes. */
     updateChatIndex(update: (index: ChatIndex) => ChatIndex): Promise<ChatIndex>;
     /** The vault's CLAUDE.md, AGENTS.md, .claude/skills/**, .agents/skills/**. */

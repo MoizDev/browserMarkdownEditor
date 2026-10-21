@@ -605,6 +605,13 @@ The cap has three settings, and clicking it moves to the next:
 
 The setting is yours, not the chat's: it stays as you left it. A lesson in progress is remembered until you start a new chat or reload the page.
 
+### Changing something you already sent
+Point at one of your own messages and a **pencil** appears. Click it, change the words, press **Enter** (or **Send**), and the agent answers the new version.
+
+The old one is not thrown away. Your message now has **two versions**, and a small **‹ 1/2 ›** under it switches between them — along with everything that followed each one. Edit again and you get a third, and so on. It works on any message in the chat, not just the last, and a chat you started before this update can be edited the same way.
+
+Each version is a separate conversation from that point on: the agent answering your edited message does not know about the version you replaced, which is the point of editing it. It is told what came **before** the message you changed, so it still has the thread.
+
 Each chat keeps its own conversation. The chat list at the top lets you go back to an earlier one or start a new one, and deleting a chat removes it for good (after asking), including the agent's own record of it.
 
 ### What the agent can see

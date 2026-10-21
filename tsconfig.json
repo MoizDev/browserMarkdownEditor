@@ -25,5 +25,8 @@
     // node_modules, and its `Bun` globals must never type-check in browser code.
     "types": ["node"]
   },
-  "include": ["src", "shared", "vite.config.ts"]
+  "include": ["src", "shared", "vite.config.ts"],
+  // `bun test` runs these (npm run test:app) and `@types/bun` is deliberately
+  // not in `types` above — its globals must never type-check in browser code.
+  "exclude": ["src/**/*.test.ts"]
 }

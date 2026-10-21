@@ -44,11 +44,13 @@ npm run lint       # eslint .      (flat config, loaded via jiti)
 npm run preview    # serve a production build
 npm run helper:dev # the VaultAgent helper (Bun) from source, dev origins allowed; helper:build compiles
 npm run helper:test # bun test helper/ — security, CLI stream parsers, self-update, terminal + PTY host
+npm run test:app   # bun test src/ — the chat tree's branching rules, and nothing else (see below)
 ```
 
-**The app has no test suite** (only `helper/` does). `typecheck` and `lint` are its static gates;
-everything behavioural is verified by Playwright driving the app in headless Chromium — see the
-`verify-in-browser` skill, and use it before saying a change works.
+**The app's only tests are `test:app`**: one pure module, the branching chat transcript
+(`utils/chatTree.ts`). `typecheck` and `lint` are its other static gates, and everything behavioural
+is verified by Playwright driving it in headless Chromium — see `verify-in-browser`, and use it
+before saying a change works.
 
 **Env:** `VITE_TLDRAW_LICENSE_KEY` — production only; a missing key never shows up in `npm run dev`.
 

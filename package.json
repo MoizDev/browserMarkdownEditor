@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p helper",
     "helper:dev": "bun helper/src/main.ts serve --dev --no-register",
     "helper:test": "bun test helper",
+    "test:app": "bun test src",
     "helper:build": "bun helper/scripts/build.ts"
   },
   "dependencies": {

@@ -33,10 +33,11 @@ import { TeachToggle } from './TeachToggle';
 import { AgentWarning, SetupGuide } from './SetupGuide';
 import { UpdateBar } from './UpdateBar';
 import { DRAFT_KEY, activeChatOf, chatStore, configOf, resolveModel } from './chatStore';
+import { emptyTree } from '../../utils/chatTree';
 import type { ChatStoreState, Conversation, PreparedImage } from './chatStore';
 import { HEALTH_CAPTION, agentHealth, useBridgeState, useChatState } from './useAgentChat';
 
-const EMPTY: Conversation = { items: [], history: 'none' };
+const EMPTY: Conversation = { items: [], tree: emptyTree(), history: 'none' };
 
 const WAIT_FOR_UPDATE = 'Wait for the update to finish';
 

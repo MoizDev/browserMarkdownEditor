@@ -20,6 +20,10 @@ import type {
     AgentEvent, AgentId, AgentStatus, HistoryItem, ModelInfo, RunErrorReason, RunImage, ToolResult,
 } from '../../../shared/vaultAgentProtocol';
 import type { AgentChange, AgentHost, ChatIndex, ChatMeta } from '../../types/vaultAgent';
+import {
+    activePath, activeSessionId, append as appendNode, branchFrom, emptyTree, isEmpty,
+    selectVersion as selectVersionIn, type ChatNode, type ChatTree, type StoredTool,
+} from '../../utils/chatTree';
 
 /* ───────────────────────── shapes ───────────────────────── */
 
@@ -50,7 +54,17 @@ export type ChatItem =
     | { kind: 'notice'; id: string; tone: 'info' | 'warning' | 'error'; message: string };
 
 export interface Conversation {
+    /** What the panel draws: the active branch, plus whatever is streaming. */
     items: ChatItem[];
+    /**
+     * The durable transcript, WITH its branches (utils/chatTree.ts).
+     *
+     * The app owns this now. A CLI session is a line, so a conversation that
+     * forks cannot be read back out of one — `session.history` survives as the
+     * fallback for chats made before this, and as a repair when a tree file is
+     * lost.
+     */
+    tree: ChatTree;
     /** Where the transcript came from: this session, or the CLI's own store. */
     history: 'none' | 'loading' | 'loaded' | 'missing' | 'error';
     historyError?: string;
@@ -104,7 +118,7 @@ export interface ChatStoreState {
 /** The draft's conversation key (a chat id is a UUID, so no clash). */
 export const DRAFT_KEY = 'draft';
 
-const EMPTY_CONVERSATION: Conversation = { items: [], history: 'none' };
+const EMPTY_CONVERSATION: Conversation = { items: [], tree: emptyTree(), history: 'none' };
 
 /* ───────────────────────── remembered choices (localStorage) ───────────────────────── */
 
@@ -249,6 +263,9 @@ class ChatStore {
     private readonly listeners = new Set<() => void>();
     private notifyFrame = 0;
     private host: AgentHost | null = null;
+    /** The user message the live run answers: where its reply is committed in
+     *  the tree when it finishes. */
+    private runUserNode: { key: string; nodeId: string } | null = null;
     /** Captured when the current run started (host.toolHost.vaultToken()). */
     private runVaultToken: object | null = null;
     private runImageHash: string | null = null;
@@ -501,32 +518,95 @@ class ChatStore {
         if (!conversation || conversation.history === 'error') void this.loadHistory(chat);
     }
 
+    /**
+     * Put a chat on screen.
+     *
+     * The TREE first: it is the app's own transcript, and the only thing that
+     * knows about branches. A chat made before trees existed has none, so the
+     * CLI's history is read instead and becomes a straight-line tree — from
+     * which that chat can be edited and branched like any other, without
+     * anything being written until the user actually does so.
+     */
     async loadHistory(chat: ChatMeta): Promise<void> {
         const host = this.host;
-        if (!chat.sessionId || !host) {
-            this.setConversation(chat.id, { items: [], history: 'loaded' });
+        if (!host) {
+            this.setConversation(chat.id, { ...EMPTY_CONVERSATION, history: 'loaded' });
             return;
         }
-        if (!helperReady(agentBridge.getState())) return;
-        this.setConversation(chat.id, { items: [], history: 'loading' });
+        this.setConversation(chat.id, { ...this.conversation(chat.id), items: [], history: 'loading' });
+
+        const tree = await host.readChatTree(chat.id);
+        if (this.conversation(chat.id).history !== 'loading') return;   // a run started meanwhile
+        if (!isEmpty(tree)) {
+            this.setConversation(chat.id, { items: itemsFromTree(tree), tree, history: 'loaded' });
+            return;
+        }
+
+        if (!chat.sessionId || !helperReady(agentBridge.getState())) {
+            this.setConversation(chat.id, { ...EMPTY_CONVERSATION, history: 'loaded' });
+            return;
+        }
         try {
             const vaultId = await host.ensureVaultUuid();
             if (!vaultId) throw new Error('This vault has no agent id yet.');
             const history = await agentBridge.request('session.history', { vaultId, agent: chat.agent, sessionId: chat.sessionId });
-            // A run may have started on this chat while the history loaded.
             if (this.conversation(chat.id).history !== 'loading') return;
             if (!history.found) {
-                this.setConversation(chat.id, { items: [], history: 'missing' });
+                this.setConversation(chat.id, { ...EMPTY_CONVERSATION, history: 'missing' });
                 return;
             }
-            this.setConversation(chat.id, { items: history.items.map(historyToItem), history: 'loaded' });
+            const items = history.items.map(historyToItem);
+            this.setConversation(chat.id, { items, tree: treeFromItems(items, chat.sessionId), history: 'loaded' });
         } catch (e) {
             this.setConversation(chat.id, {
-                items: [],
+                ...EMPTY_CONVERSATION,
                 history: 'error',
                 historyError: e instanceof Error ? e.message : String(e),
             });
         }
+    }
+
+    /* ── editing the past ── */
+
+    /**
+     * Send `text` as another version of the message `nodeId`.
+     *
+     * Everything below it on this branch stays where it is; the panel shows the
+     * new version, and the arrows under the message walk between them.
+     */
+    editMessage(nodeId: string, text: string): void {
+        const trimmed = text.trim();
+        const node = this.conversation(this.conversationKey()).tree.nodes[nodeId];
+        if (!trimmed || !node || node.role !== 'user' || this.state.run) return;
+        if (trimmed === node.text.trim()) return;   // nothing was changed
+        void this.send(trimmed, [], nodeId);
+    }
+
+    /** The arrows under a message: show its version `index` instead. */
+    selectVersionAt(nodeId: string, index: number): void {
+        const tree = this.conversation(this.conversationKey()).tree;
+        const node = tree.nodes[nodeId];
+        if (!node) return;
+        const siblings = tree.children[node.parent ?? ''] ?? [];
+        const target = siblings[index];
+        if (target) this.selectVersion(target);
+    }
+
+    /** Show another version of a message (its own newest line below it). */
+    selectVersion(nodeId: string): void {
+        const key = this.conversationKey();
+        const conversation = this.conversation(key);
+        const tree = selectVersionIn(conversation.tree, nodeId);
+        if (tree === conversation.tree) return;
+        this.setConversation(key, { ...conversation, tree, items: itemsFromTree(tree), history: 'loaded' });
+        this.persistTree(key, tree);
+    }
+
+    /** Write a chat's transcript out. Fire and forget: a tree that cannot be
+     *  saved still shows, and the next write tries again. */
+    private persistTree(key: string, tree: ChatTree): void {
+        if (key === DRAFT_KEY || !this.host) return;
+        void this.host.writeChatTree(key, tree);
     }
 
     /** Permanent, after the app's own confirm: the index entry AND the CLI's own
@@ -556,6 +636,9 @@ class ChatStore {
             }
         }
         await this.writeIndex(index => ({ ...index, chats: index.chats.filter(c => c.id !== id) }));
+        // The transcript goes with it: a chat deleted on purpose should not
+        // leave its branches behind in .VaultAgent/chats/.
+        await host.deleteChatTree(id).catch(() => {});
         const conversations = { ...this.state.conversations };
         revokeThumbs(conversations[id]);
         delete conversations[id];
@@ -589,7 +672,14 @@ class ChatStore {
     /* ── sending ── */
 
     /** One run at a time; the composer is disabled while one is live. */
-    async send(text: string, images: PreparedImage[]): Promise<void> {
+    /**
+     * `editOf` re-sends an earlier message with new words: it becomes another
+     * VERSION of that message (a sibling in the tree), the thread under the old
+     * one is kept, and the run starts a fresh CLI session carrying the turns
+     * above as a transcript — the old session holds the words that were edited
+     * away (utils/chatTree.ts).
+     */
+    async send(text: string, images: PreparedImage[], editOf?: string): Promise<void> {
         const host = this.host;
         if (!host || !this.state.vaultKey || this.state.run || !helperReady(agentBridge.getState())) return;
         const config = this.config();
@@ -599,10 +689,24 @@ class ChatStore {
 
         // Shown at once; everything below is async and may take a moment
         // (the mirror read, the canvas capture).
+        // The message goes into the TREE first, and the panel is redrawn from
+        // it: an edit replaces the thread below with its own branch, a new
+        // message extends the one on screen. The node's id is the item's id, so
+        // everything downstream addresses one message by one name.
         const userItemId = uid();
-        this.pushItem(key, {
-            kind: 'user', id: userItemId, text,
-            thumbs: images.map(i => i.url), imageCount: images.length, context: null,
+        const before = this.conversation(key);
+        const tree = editOf
+            ? branchFrom(before.tree, editOf, { id: userItemId, text, createdAt: Date.now(), images: images.length || undefined })
+            : appendNode(before.tree, { id: userItemId, role: 'user', text, createdAt: Date.now(), images: images.length || undefined });
+        this.setConversation(key, {
+            ...before,
+            tree,
+            history: 'loaded',
+            items: [
+                ...itemsFromTree(tree).slice(0, -1),
+                // The live item keeps its thumbnails, which the tree cannot hold.
+                { kind: 'user', id: userItemId, text, thumbs: images.map(i => i.url), imageCount: images.length, context: null },
+            ],
         });
         // Decided here, from the words just typed, not by the model: the cap in
         // the composer lights on this same answer (see utils/agentReplyMode.ts).
@@ -681,14 +785,25 @@ class ChatStore {
                     item.id === userItemId && item.kind === 'user' ? { ...item, context: context.text.trim() || null } : item));
             }
 
+            // The session belongs to the BRANCH, not to the chat: a fork starts
+            // its own, and is handed the turns above it as a transcript because
+            // the other version's session holds the words that were edited away.
+            const branchTree = this.conversation(key).tree;
+            const sessionId = activeSessionId(branchTree);
+            const prefix = sessionId ? '' : transcriptPrefix(branchTree, userItemId);
+            this.runUserNode = { key, nodeId: userItemId };
+            // Saved before the run, not only after it: a window closed mid-reply
+            // should still have the question, and the branch it was asked on.
+            this.persistTree(key, branchTree);
+
             await agentBridge.request('run.start', {
                 runId,
                 vaultId: vaultUuid,
                 agent: config.agent,
-                sessionId: chat.sessionId,
+                sessionId,
                 model: config.model,
                 effort: config.effort,
-                text: context.text + text,
+                text: context.text + prefix + text,
                 images: runImages,
             });
             // Stopped while run.start was on the wire: the helper started it
@@ -775,6 +890,36 @@ class ChatStore {
         this.releaseRun = null;
     }
 
+    /**
+     * Write what the run produced into the tree, and save it.
+     *
+     * One assistant node per run, holding its reply, its thinking and its tool
+     * calls — so the branch reads the same after a reload as it did live. A run
+     * that produced nothing at all (stopped before the first token) leaves no
+     * empty bubble behind: its node is dropped and the branch ends at the
+     * message that asked.
+     */
+    private commitRun(key: string, sessionId: string | null): void {
+        const pending = this.runUserNode;
+        this.runUserNode = null;
+        if (!pending || pending.key !== key) return;
+        const conversation = this.conversation(key);
+        if (!conversation.tree.nodes[pending.nodeId]) return;
+
+        const patch = foldRunIntoNode(conversation.items, pending.nodeId);
+        const empty = !patch.text && !patch.tools?.length && !patch.reasoning;
+        let tree = conversation.tree;
+        if (!empty) {
+            tree = appendNode(tree, {
+                id: uid(), role: 'assistant', text: '', createdAt: Date.now(),
+                ...(sessionId ? { sessionId } : {}),
+                ...patch,
+            });
+        }
+        this.setConversation(key, { ...conversation, tree });
+        this.persistTree(key, tree);
+    }
+
     /* ── the helper's events ── */
 
     private onHelperEvent(event: HelperEvent): void {
@@ -789,6 +934,7 @@ class ChatStore {
         if (event.type === 'run.done') {
             const imageHash = event.status === 'ok' ? this.runImageHash : null;
             this.finishRun(key);
+            this.commitRun(key, event.sessionId ?? null);
             if (event.status === 'cancelled') this.notice(key, 'info', 'Stopped.');
             if (chat) {
                 void this.patchChat(chat.id, {
@@ -801,6 +947,7 @@ class ChatStore {
         }
         // run.error
         this.finishRun(key);
+        this.commitRun(key, null);
         const agent = chat?.agent ?? this.config().agent;
         this.notice(key, event.reason === 'cancelled' ? 'info' : 'error', runErrorMessage(event.reason, event.message, agent));
         if (event.reason === 'agent-missing' || event.reason === 'logged-out' || event.reason === 'agent-changed') {
@@ -944,6 +1091,154 @@ function endAssistant(items: ChatItem[]): ChatItem[] {
         return [...items.slice(0, -1), { ...last, streaming: false }];
     }
     return items;
+}
+
+/* ───────────────────────── the tree ⇄ what is drawn ───────────────────────── */
+
+/**
+ * The branch on screen, as panel items.
+ *
+ * Node ids become item ids on purpose: the edit button, the version arrows and
+ * the streaming updates all address the same message by one id, so nothing has
+ * to map between "the third item" and "the node it came from". A node's extras
+ * (its thinking, its tool calls) become their own items, as they were when they
+ * streamed — a reloaded chat should not look different from a live one.
+ */
+export function itemsFromTree(tree: ChatTree): ChatItem[] {
+    const items: ChatItem[] = [];
+    for (const node of activePath(tree)) {
+        if (node.role === 'user') {
+            items.push({
+                kind: 'user', id: node.id, text: node.text,
+                // Thumbnails are object URLs; they die with the page, and the
+                // count is what survives to say pictures went with it.
+                thumbs: [], imageCount: node.images ?? 0, context: null,
+            });
+            continue;
+        }
+        if (node.reasoning) {
+            items.push({ kind: 'reasoning', id: `${node.id}:think`, text: node.reasoning, streaming: false, startedAt: null, endedAt: null });
+        }
+        for (const tool of node.tools ?? []) {
+            items.push({
+                kind: 'tool', id: `${node.id}:${tool.callId}`, callId: tool.callId, name: tool.name,
+                input: tool.input, status: tool.status, output: tool.output, own: tool.own,
+                ...(tool.change ? { change: tool.change as AgentChange } : {}),
+            });
+        }
+        if (node.text || !node.tools?.length) {
+            items.push(node.error
+                ? { kind: 'notice', id: node.id, tone: 'error', message: node.text }
+                : { kind: 'assistant', id: node.id, text: node.text, streaming: false });
+        }
+    }
+    return items;
+}
+
+/**
+ * Fold everything a run produced into the one assistant node that records it.
+ *
+ * The live items are the source — they are what the user watched arrive — and
+ * `after` is the user item the run answered, so a chat with several turns
+ * commits only the newest one.
+ */
+export function foldRunIntoNode(items: ChatItem[], afterId: string): Partial<ChatNode> {
+    const start = items.findIndex(item => item.id === afterId);
+    const tail = start < 0 ? items : items.slice(start + 1);
+    const text: string[] = [];
+    const reasoning: string[] = [];
+    const tools: StoredTool[] = [];
+    let error = false;
+    for (const item of tail) {
+        if (item.kind === 'assistant') text.push(item.text);
+        else if (item.kind === 'reasoning') reasoning.push(item.text);
+        else if (item.kind === 'tool') {
+            tools.push({
+                callId: item.callId, name: item.name, input: item.input, output: item.output,
+                status: item.status === 'error' ? 'error' : 'done', own: item.own,
+                ...(item.change ? { change: item.change } : {}),
+            });
+        } else if (item.kind === 'notice' && item.tone === 'error') {
+            // A run that ended badly is kept as the turn's text: a branch whose
+            // answer failed should say so when it is come back to, not be blank.
+            text.push(item.message);
+            error = true;
+        }
+    }
+    return {
+        text: text.join('\n\n').trim(),
+        ...(reasoning.length ? { reasoning: reasoning.join('\n\n') } : {}),
+        ...(tools.length ? { tools } : {}),
+        ...(error ? { error: true } : {}),
+    };
+}
+
+/** How much of a branch's history is replayed into a new CLI session. */
+const PREFIX_BUDGET = 40_000;
+
+/**
+ * The turns above this message, as text for an agent that has not seen them.
+ *
+ * A BRANCH IS A NEW CLI SESSION, and it has to be: the session the other
+ * version ran in holds the very message the user edited away, and resuming it
+ * would have the agent answer with that still in mind. So the kept turns are
+ * handed over as a transcript instead. Oldest turns are dropped first when it
+ * does not fit, with a line saying so — the recent ones are what the next
+ * message is actually about.
+ */
+export function transcriptPrefix(tree: ChatTree, upTo: string | null): string {
+    const path = activePath(tree);
+    const end = upTo ? path.findIndex(node => node.id === upTo) : path.length;
+    const turns = (end < 0 ? path : path.slice(0, end))
+        .filter(node => node.text.trim())
+        .map(node => `${node.role === 'user' ? 'User' : 'You'}: ${node.text.trim()}`);
+    if (!turns.length) return '';
+
+    const kept: string[] = [];
+    let used = 0;
+    for (let i = turns.length - 1; i >= 0; i--) {
+        if (used + turns[i].length > PREFIX_BUDGET) break;
+        used += turns[i].length;
+        kept.unshift(turns[i]);
+    }
+    const dropped = turns.length - kept.length;
+    return [
+        '<bme-history>',
+        'Earlier in this conversation (the user edited a message, so this part of it is being',
+        'continued in a new session; answer as though it had all happened here):',
+        ...(dropped ? [`[${dropped} older turn${dropped === 1 ? '' : 's'} left out for length]`] : []),
+        ...kept,
+        '</bme-history>',
+        '',
+    ].join('\n');
+}
+
+/**
+ * A straight-line tree from what the CLI remembers.
+ *
+ * For chats that predate the tree file. Consecutive non-user items fold into
+ * the one assistant turn they belonged to, which is the shape the rest of this
+ * module expects — and gives the old chat working edit arrows from then on.
+ */
+export function treeFromItems(items: ChatItem[], sessionId: string | null): ChatTree {
+    let tree = emptyTree();
+    let pendingUser: string | null = null;
+    const flush = (upto: number, from: number) => {
+        if (pendingUser === null) return;
+        const patch = foldRunIntoNode(items.slice(from, upto), pendingUser);
+        tree = appendNode(tree, { id: uid(), role: 'assistant', text: '', createdAt: Date.now(), sessionId, ...patch });
+        pendingUser = null;
+    };
+    let runStart = 0;
+    items.forEach((item, index) => {
+        if (item.kind !== 'user') return;
+        flush(index, runStart);
+        tree = appendNode(tree, { id: item.id, role: 'user', text: item.text, createdAt: Date.now(), images: item.imageCount || undefined });
+        pendingUser = item.id;
+        runStart = index;
+    });
+    flush(items.length, runStart);
+    return tree;
 }
 
 function historyToItem(item: HistoryItem): ChatItem {

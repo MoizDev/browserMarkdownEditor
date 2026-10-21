@@ -136,12 +136,24 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   the working folder `~/.bme-agent-sessions/<uuid>/`, so a vault maps to the same folder in every
   browser and machine. `.VaultAgent/chats.json` = `{chatId, agent, sessionId, title, model, effort,
   timestamps, lastImageHash}` only — read-modify-write through one queue, unknown keys preserved.
-  Conversations live in each CLI's own store; history is read back through the helper.
+- **The TRANSCRIPT is the app's, one file per chat: `.VaultAgent/chats/<chatId>.json`**
+  (`utils/chatTree.ts`). It has to be: a message can be EDITED, which forks the conversation, and a
+  CLI session is a line — no reading-back of `session.history` produces a fork. A folder rather than
+  more keys in `chats.json`, so recording one message does not rewrite every chat's history; one write
+  queue per chat (`agentHost.writeChatTree`), saved when the question is asked and again when the
+  reply lands. `session.history` survives as the fallback: a chat with no tree file (made before this,
+  or whose file was lost) is read from the CLI and becomes a straight-line tree it can then be
+  branched from (`treeFromItems`).
+- **A branch is a SESSION of its own.** `activeSessionId` is the newest assistant turn on the branch
+  being shown, so an edit starts a fresh CLI session and carries the kept turns as a
+  `<bme-history>` transcript (`transcriptPrefix`, 40k budget, oldest dropped first). Resuming the
+  other version's session instead would hand the agent the very words the user edited away.
+  `ChatMeta.sessionId` stays the chat's latest, for `session.delete` and the history fallback.
 - Before each run the panel sends `vault.sync` (skipped when unchanged this connection): the vault's
   `CLAUDE.md`, `AGENTS.md`, `.claude/skills/**`, `.agents/skills/**`, mirrored into the working folder
   (whitelisted, size-capped, stale files removed). Nothing else — never settings, `.mcp.json`,
   `opencode.json`, hooks.
-- Delete is permanent (after `ask`): the CLI's session (`session.delete`) and then the index entry.
+- Delete is permanent (after `ask`): the CLI's session (`session.delete`), the index entry, and the chat's tree file.
 
 ## Panel (`components/AgentPanel/`, lazy with its CSS)
 
@@ -163,6 +175,11 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   digit — `opus`, `sonnet` — which is what someone picking a model means), then the agent's own order,
   three in all plus whatever is chosen; `Show all N models` opens the rest. Claude reports a dozen, most
   of them pinned old versions.
+- **Editing a message** (`UserMessage`): the pencil turns the bubble into a textarea, Enter sends,
+  Escape abandons. `chatStore.editMessage` → `send(text, [], nodeId)`, which branches instead of
+  appending. `‹ 2/3 ›` under a message with siblings calls `selectVersionAt`; node ids ARE item ids,
+  so the arrows, the edit and the streaming updates all address one message by one name. Editing is
+  refused while a run is live (a second run would have nowhere to go).
 - Replies render through `editor/replyView.ts` (read mode) — no new `innerHTML` sink. A reply's
   `.cm-content` is pinned to the scroller's width: one 493px formula in a 371px reply otherwise laid
   EVERY line out at 493px, and the prose ran off the edge instead of the formula scrolling. aicss free

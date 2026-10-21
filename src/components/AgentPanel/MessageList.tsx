@@ -6,6 +6,8 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AgentHost } from '../../types/vaultAgent';
 import type { Theme } from '../../types';
 import type { ChatItem, Conversation, RunInfo } from './chatStore';
+import { chatStore } from './chatStore';
+import { versionOf } from '../../utils/chatTree';
 import { AssistantMessage } from './AssistantMessage';
 import { ToolCallCard } from './ToolCallCard';
 import { UserMessage } from './UserMessage';
@@ -26,14 +28,28 @@ interface ItemProps {
     host: AgentHost;
     scrollRoot: HTMLElement | null;
     eager: boolean;
+    /** User messages only: which version this is, and whether it can be edited
+     *  right now (not while a reply is running). */
+    version?: { index: number; count: number };
+    canEdit?: boolean;
 }
 
 /** Items are replaced (never mutated) when they change, so identity is the
  *  memo key: a streaming delta re-renders only the reply it extends. */
-const Item = memo(function Item({ item, theme, host, scrollRoot, eager }: ItemProps) {
+const Item = memo(function Item({ item, theme, host, scrollRoot, eager, version, canEdit }: ItemProps) {
     switch (item.kind) {
         case 'user':
-            return <UserMessage item={item} />;
+            return (
+                <UserMessage
+                    item={item}
+                    version={version}
+                    canEdit={canEdit}
+                    // The store owns the tree; the component only says what the
+                    // user did. Stable module-level calls, so the memo holds.
+                    onEdit={text => chatStore.editMessage(item.id, text)}
+                    onVersion={index => chatStore.selectVersionAt(item.id, index)}
+                />
+            );
         case 'assistant':
             return <AssistantMessage text={item.text} streaming={item.streaming} theme={theme} scrollRoot={scrollRoot} initiallyNear={eager} />;
         case 'reasoning':
@@ -157,7 +173,18 @@ export function MessageList({ conversation, run, runHere, theme, host, onRetryHi
                 )}
                 {items.map(item => {
                     const eager = item.kind === 'assistant' && replies++ >= eagerFrom;
-                    return <Item key={item.id} item={item} theme={theme} host={host} scrollRoot={scroller} eager={eager} />;
+                    return (
+                        <Item
+                            key={item.id}
+                            item={item}
+                            theme={theme}
+                            host={host}
+                            scrollRoot={scroller}
+                            eager={eager}
+                            version={item.kind === 'user' ? versionOf(conversation.tree, item.id) : undefined}
+                            canEdit={item.kind === 'user' && !run && !!conversation.tree.nodes[item.id]}
+                        />
+                    );
                 })}
                 {showThinking && (
                     <div className="agent-thinking">

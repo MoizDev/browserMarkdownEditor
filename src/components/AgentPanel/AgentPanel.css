@@ -466,6 +466,116 @@
   background: color-mix(in srgb, var(--interactive-accent) 16%, var(--ai-card));
 }
 
+/* ── Editing a message, and its versions ──
+   The row under a user message: `‹ 2/3 ›` when it has been edited, and the
+   pencil. Both are quiet until the message is hovered — a conversation should
+   read as a conversation, not as a row of controls. */
+.agent-user-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.agent-user:hover .agent-user-tools,
+.agent-user:focus-within .agent-user-tools,
+/* A message with versions keeps its arrows visible: they are the only sign
+   that the other branch exists at all. */
+.agent-user-tools:has(.agent-versions) {
+  opacity: 1;
+}
+
+.agent-edit-btn,
+.agent-version-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.agent-edit-btn:hover:not(:disabled),
+.agent-version-step:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.agent-edit-btn:disabled,
+.agent-version-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.agent-versions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.agent-version-count {
+  min-width: 2.2em;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The message, while it is being rewritten: the bubble becomes the field, at
+   the same width, so nothing jumps when editing starts. */
+.agent-user.is-editing {
+  align-self: stretch;
+  max-width: 100%;
+  gap: 6px;
+}
+
+.agent-user-edit {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 45%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--ai-card));
+  color: var(--text-normal);
+  font: inherit;
+  line-height: 1.5;
+  resize: none;
+  overflow: hidden;
+}
+
+.agent-user-edit:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
+.agent-user-edit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.agent-edit-send {
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--interactive-accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-edit-send:hover {
+  background: var(--interactive-accent-hover);
+}
+
 .agent-user-images {
   display: flex;
   flex-wrap: wrap;

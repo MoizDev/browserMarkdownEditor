@@ -77,7 +77,9 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
         subscribeTreeDropTarget,
         useCallback(() => getTreeDropPosition(node.path), [node.path]),
     );
-    const paddingLeft = 12 + depth * 16;
+    /* 20px per level — also the inline create row below and index.css's
+       .drop-first-child line: change all three together. */
+    const paddingLeft = 12 + depth * 20;
     /* The indent as a variable too, for the insertion line: it starts where the
        row's content does, so its left end says what depth the drop lands at. */
     const rowStyle = { paddingLeft, ['--tree-indent' as string]: `${paddingLeft}px` };
@@ -553,7 +555,7 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                         // this folder. It replaces a window.prompt(), which is
                         // the direction 89824e7 took the app: the question is
                         // asked where the answer will appear.
-                        <div className="tree-item tree-inline-input" style={{ paddingLeft: 12 + (depth + 1) * 16 }}>
+                        <div className="tree-item tree-inline-input" style={{ paddingLeft: 12 + (depth + 1) * 20 }}>
                             <input
                                 ref={createInputRef}
                                 className="inline-rename-input"

@@ -888,6 +888,7 @@ body.is-resizing-terminal * {
   /* What the floated action buttons fade into. Restated by each row state
      below, so the fade always matches the row it sits on. */
   --tree-row-bg: var(--background-secondary);
+  --tree-row-base: var(--background-secondary);
 }
 
 .tree-item:hover {
@@ -1039,8 +1040,12 @@ body.is-resizing-terminal * {
   transition: opacity 0.12s;
   flex-shrink: 0;
   /* The row's own background, whichever state it is in — hovered, active, or
-     holding the context menu. `transparent` would let the name show through. */
-  background: linear-gradient(to right, transparent, var(--tree-row-bg) 16px);
+     holding the context menu. `transparent` would let the name show through.
+     The hover/active tints are translucent in the light theme, so they are
+     laid over the opaque surface the row sits on — alone they let it through. */
+  background:
+    linear-gradient(to right, transparent, var(--tree-row-bg) 16px),
+    linear-gradient(to right, transparent, var(--tree-row-base) 16px);
 }
 
 /* …and whenever the keyboard is on one of them. Without the second selector the
@@ -2808,6 +2813,7 @@ body.is-resizing-panes * {
    below restates it for the same reason the tree's own states do. */
 .trash-row {
   --tree-row-bg: var(--background-primary-alt);
+  --tree-row-base: var(--background-primary-alt);
   padding-left: 10px;
   color: var(--text-normal);
 }

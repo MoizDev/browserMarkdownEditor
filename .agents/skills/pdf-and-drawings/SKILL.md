@@ -84,8 +84,9 @@ discipline**, so a single new import undoes it silently:
 - The builder is dynamically `import()`ed only at the two write sites.
 - Reader (pdf.js) and writer (pdf-lib) **never import each other** — they share names via `pdfFormat`.
 - The writer runs in a **DOM-less Web Worker**, so `pdfBuild.ts` must never reach for the DOM.
-- `PdfPane` is `React.lazy` in `EditorPane`, `PdfAnnotateCanvas` is `React.lazy` in `PdfPane`, and
-  `DrawingPane` is `React.lazy` in `DocumentPane` — so viewing a PDF never pulls in tldraw.
+- `PdfPane` and `CanvasPane` are `React.lazy` in `EditorPane`, `PdfAnnotateCanvas` is `React.lazy` in
+  `PdfPane`, and `DrawingPane`/`NotebookPane` are `React.lazy` in `CanvasPane` — so viewing a PDF
+  never pulls in tldraw.
 - `components/canvasAgentOps.ts` (the AI agent's hands on a canvas) imports tldraw: ONLY the three
   canvas panes may import it. `utils/pdfText.ts` (closed-PDF text/render for the agent) imports pdf.js
   and is reached only through `import('./pdfText')`. `utils/canvasViewState.ts`, like
@@ -257,17 +258,26 @@ All three canvases pass `shapeUtils={CANVAS_SHAPE_UTILS}`, which substitutes tld
 
 ## Panes
 
-- **One `PdfPane` is mounted per open PDF tab** (EditorPane maps over PDF tabs), hidden via
-  `.pdf-pane-hidden` (visibility) when off screen — so *tab* switches keep the document and reading
-  position. Note the limit of that guarantee: `App.tsx` renders
+- **Every canvas floats over its column, one pane per open tab**: `PdfPane` for PDFs and `CanvasPane`
+  (whiteboards and notebooks) — EditorPane maps over both lists — hidden via `.pdf-pane-hidden` /
+  `.canvas-pane-hidden` (visibility) when off screen, so a *tab* switch keeps the document, the
+  reading position or camera, the selection and the undo history. A canvas that lived in the slot was
+  destroyed and rebuilt on every switch, which is what made returning to a board expensive: measured
+  on a production build, a 1,200-shape board carrying 12 screenshots cost 150-250ms per return with
+  106-185ms of it blocking the main thread, against ~0 once it stopped remounting.
+- The behaviour the float buys is **per tab switch, not unconditional**: `App.tsx` renders
   `mainView === 'graph' ? <GraphView/> : <EditorPane/>`, so opening the Neural Brain view unmounts
-  `EditorPane` and with it every pane and every `PdfPane`. Markdown notes come back intact (their
-  `EditorState` cache is App's — undo, selection and search panel survive), but every open PDF
-  reloads, which a tab switch never costs it. (Drawings, notebooks and the annotate canvas are torn
-  down by a tab switch anyway.) That is existing behaviour, not a designed one.
-- Panes lazy-activate on first being shown (a restored background PDF touches neither disk nor pdf.js
-  until then). Only the annotate canvas is torn down when its tab is backgrounded: unmounting tldraw
-  is what flushes pending strokes. The view re-read is driven by **this tab's `dirty` falling edge**,
+  `EditorPane` and with it every float. Markdown notes come back intact (their `EditorState` cache is
+  App's — undo, selection and search panel survive); every open PDF and board rebuilds. Existing
+  behaviour, not a designed one.
+- Panes lazy-activate on first being shown — `useActivated` in `floatingSlot.ts` — so a restored
+  session with five canvases in the background touches neither disk, nor pdf.js, nor the tldraw chunk
+  for the four nobody is looking at. Only the annotate canvas is torn down when its tab is
+  backgrounded: unmounting tldraw is what flushes pending strokes.
+- **A float has to be handed the keyboard explicitly.** It outlives the tab switch, so nothing
+  re-focuses it the way a remount used to: `CanvasPane` registers a `registerKeyboardTarget` that
+  focuses tldraw's own container, and without it a board returned to from the tab bar took no
+  shortcut, ⌘Z included, until it was clicked. The view re-read is driven by **this tab's `dirty` falling edge**,
   not a global `saveEpoch` (which reloaded the view — and its scroll position — whenever *any* file
   autosaved).
 - The PDF panes stay **outside** the pane slots on purpose — one is mounted per open PDF tab and
@@ -448,6 +458,10 @@ canvases. Split across two files because `react-refresh/only-export-components` 
   `CenteredTopPanelContainer` measures only `offsetWidth`, so a `padding-top` moves nothing it reads.
 
 # Drawings (`DrawingPane.tsx`, tldraw)
+
+Mounted inside `CanvasPane`, the float that keeps it alive across tab switches (see **Panes**), so a
+`DrawingPane` unmount now means the tab closed, the file reloaded from disk, or the graph view opened
+— not merely that the reader looked at something else.
 
 A `.tldraw` file is a tldraw snapshot **plus an extra `ui` block** (current tool +
 `stylesForNextShape`, which tldraw's own snapshots omit). Parsed **once per file, keyed on

@@ -347,7 +347,10 @@ a resizable pane one number rather than a rectangle.
   created-once `EditorView` re-pointed at each tab's cached state; showing five documents at once
   made that a special case inside the editor rather than five of the same thing. React keys a pane by
   `paneKey` — `OpenTab.id | path` — so a pane shows one document for its whole life and there is no
-  tab-swap logic in it at all; switching tabs mounts and unmounts panes.
+  tab-swap logic in it at all; switching tabs mounts and unmounts panes. **A canvas is the exception
+  on purpose**: PDFs, whiteboards and notebooks are floats mounted per open tab at `EditorPane` level
+  (`PdfPane`, `CanvasPane`, geometry in `components/floatingSlot.ts`) and are hidden rather than
+  unmounted, because rebuilding one costs a reload or a whole tldraw editor — see `pdf-and-drawings`.
 - **The `EditorState` cache is what makes that free.** A pane caches its state on the way out and
   adopts it on the way in, so undo history, selection and an open search panel survive every tab
   switch exactly as they did when one view was re-pointed — and still never reach across documents.
@@ -557,7 +560,7 @@ a resizable pane one number rather than a rectangle.
   the feedback the gesture exists to give (measured: a PDF beside a dragged divider stays rendered).
 - **`.editor-empty-overlay` is still an overlay**, but the reason changed: with no tab open there are
   simply no panes and no view to orphan. The overlay-not-unmount rule now applies *within* a pane
-  (`.drawing-pane`, `.pdf-pane` over their slot), not to the editor as a whole.
+  (`.canvas-pane`, `.pdf-pane` over their slot), not to the editor as a whole.
 
 ## The AI agent's view of the panes (`utils/viewRegistry.ts`)
 
@@ -566,8 +569,8 @@ a resizable pane one number rather than a rectangle.
   send time, so it always gets the live position; nothing is polled or persisted. The unregister
   removes the reporter under whatever path it holds NOW, and `App.retargetTabs` calls `moveView`
   beside `movePdfRenderData`, so the reporter answers under the new path until the pane remounts there.
-  `clearViews()` runs in the vault-switch effect. Hidden PDF readers stay registered; annotate canvases
-  (torn down when hidden) do not.
+  `clearViews()` runs in the vault-switch effect. Hidden PDF readers and hidden boards stay registered
+  (they are floats that outlive the switch); annotate canvases, torn down when hidden, do not.
 - **`openInSidePane(layout, path)`** puts a document on screen WITHOUT moving `activeId` — how the
   agent opens a canvas it was asked to draw on: already visible → unchanged; behind a tab of an
   unfocused pane → fronted there; otherwise a new column at the right, or at `MAX_PANES` the

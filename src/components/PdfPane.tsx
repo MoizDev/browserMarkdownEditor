@@ -1,10 +1,11 @@
-import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfAnnotation';
 import type { NotebookSource } from '../utils/pdfFormat';
 import PdfViewer from './PdfViewer';
 import DiskBar from './DiskBar';
+import { useActivated, useFloatingSlot } from './floatingSlot';
 import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode } from '../types';
 
 // tldraw + pdf.js rasterization are heavy and only needed once someone actually
@@ -101,53 +102,11 @@ function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, o
 
     // Panes for background tabs mount hidden at session restore; don't touch
     // the disk (or pdf.js) until the tab is first brought to the front.
-    const [activated, setActivated] = useState(isVisible);
-    useEffect(() => { if (isVisible) setActivated(true); }, [isVisible]);
+    const activated = useActivated(isVisible);
 
-    // A hidden pane KEEPS the geometry it was last shown at. `.pdf-pane-hidden`
-    // is only `visibility: hidden`, so the box still takes part in layout — and
-    // letting it snap back to full width the moment its tab goes to the back
-    // resized the viewer, tripping its ResizeObserver into a full re-fit and a
-    // re-rasterization of every windowed page, for a document nobody can see.
-    // (Measured: a half-width pane at 618px jumping to 1236px on every switch.)
-    //
-    // It is the resolved GEOMETRY that is retained, not the slot index and pane
-    // count it used to be derived from: those two no longer determine a width
-    // now that the columns can be sized individually.
-    const [shownSlot, setShownSlot] = useState(
-        { index: slotIndex, left: slotLeft, width: slotWidth });
-    useEffect(() => {
-        if (isVisible) setShownSlot(prev =>
-            prev.index === slotIndex && prev.left === slotLeft && prev.width === slotWidth
-                ? prev
-                : { index: slotIndex, left: slotLeft, width: slotWidth });
-    }, [isVisible, slotIndex, slotLeft, slotWidth]);
-    const slot = isVisible
-        ? { index: slotIndex, left: slotLeft, width: slotWidth }
-        : shownSlot;
-
-    // The column this document occupies, as a share of the editor's width —
-    // expressed at EVERY pane count now, a lone column included (where it is
-    // simply 0% and 100%): every column carries a header and a tab strip, so
-    // there is no longer a full-width case for the stylesheet to own.
-    //
-    // ON SCREEN it is expressed as the editor's own CSS variables, so a divider
-    // drag carries this pane along with its column in the very write that moves
-    // the column — no render, and never a frame out of step with it.
-    // HIDDEN it freezes to the numbers instead: those variables describe the
-    // columns as they are NOW, so a pane left reading them would be dragged
-    // around behind an arrangement it is not even in — the same hazard
-    // `shownSlot` above exists to close, arriving by a new road. Every drag
-    // commits before any tab switch can happen, so the frozen numbers are never
-    // mid-gesture.
-    const slotStyle = useMemo(() => (isVisible
-        ? {
-            left: `calc(var(--pane-x-${slot.index}) * 1%)`,
-            width: `calc(var(--pane-w-${slot.index}) * 1%)`,
-            right: 'auto' as const,
-        }
-        : { left: `${slot.left}%`, width: `${slot.width}%`, right: 'auto' as const }
-    ), [isVisible, slot.index, slot.left, slot.width]);
+    // Standing this pane over its column, and what it freezes to once hidden:
+    // components/floatingSlot.ts, which the canvas float shares.
+    const slotStyle = useFloatingSlot(isVisible, slotIndex, slotLeft, slotWidth);
 
     // True from the moment the canvas starts exporting until that save lands.
     // `isDirty` alone can't cover this: the export takes a moment, and the tab

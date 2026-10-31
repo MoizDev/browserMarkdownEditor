@@ -3024,7 +3024,7 @@ body.is-resizing-panes * {
 /* No-file overlay — shown when no tab is open. Still an overlay, but no longer
    because there is a view underneath to protect: with no tab open there are no
    panes at all. The overlay-not-unmount rule now applies WITHIN a pane
-   (.drawing-pane, .pdf-pane over their slot), not to the editor as a whole.
+   (.canvas-pane, .pdf-pane over their slot), not to the editor as a whole.
    The strip's height alone, unlike .pdf-pane's: with no panes there is no pane
    header under the strip for this to clear. */
 .editor-empty-overlay {
@@ -3093,6 +3093,37 @@ body.is-resizing-panes * {
 
 .pdf-pane-hidden {
   visibility: hidden;
+}
+
+/* A whiteboard's and a notebook's float, which is the PDF pane's box exactly:
+   one per open canvas tab, standing over the column its document occupies,
+   hidden rather than unmounted when its tab goes to the back. Separate rules
+   rather than a shared class so that neither surface's look is hostage to the
+   other's — the BEHAVIOUR they share lives in components/floatingSlot.ts, where
+   sharing it is worth something. */
+.canvas-pane {
+  position: absolute;
+  top: calc(var(--header-height) + var(--pane-header-height));
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--background-primary);
+}
+
+.canvas-pane-hidden {
+  visibility: hidden;
+}
+
+/* The box the canvas fills. `.drawing-pane` is `position: absolute; inset: 0`,
+   so it needs a positioned parent with a height of its own — and the wrapper
+   always exists, bar or no bar, so raising a DiskBar never remounts the board. */
+.canvas-pane-body {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 /* A column, so a DiskBar above the body takes its own height and the viewer

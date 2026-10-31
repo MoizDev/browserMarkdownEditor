@@ -7,7 +7,7 @@ import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
-import { isPdfFile, isCanvasFile, isCodeFile, isNotebookFile } from '../utils/fileTypes';
+import { isPdfFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
@@ -16,6 +16,9 @@ import type { ActiveFile, ContentChangeOptions, DiskAction, OpenTab, GraphData, 
 // Same reasoning as the drawing canvas: pdf.js + pdf-lib only load once a PDF
 // is actually opened.
 const PdfPane = lazy(() => import('./PdfPane'));
+// Whiteboards and notebooks float over their column for the same reason PDFs
+// do, and through the same geometry — see components/floatingSlot.ts.
+const CanvasPane = lazy(() => import('./CanvasPane'));
 
 interface EditorPaneProps {
     /** Every open document, flat. */
@@ -1040,6 +1043,58 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
                             onFlushNow={onFlushNow}
                             onOpenNotebookSource={onOpenNotebookSource}
                             isDirty={tab.dirty}
+                            disk={tab.disk}
+                            onDiskAction={onDiskAction}
+                        />
+                    </Suspense>
+                );
+            })}
+
+            {/* One pane per OPEN WHITEBOARD or NOTEBOOK tab, mounted and merely
+                hidden off screen exactly as the PDF panes above are — a canvas
+                in the slot was torn down and rebuilt on every tab switch, which
+                is the expensive half of switching to a board and back
+                (floatingSlot.ts has the measurements). Unreadable tabs are left
+                out: their slot draws the retry message, and a float would cover
+                it. */}
+            {tabs.filter(t => !t.file.isHelp && !t.readError
+                && (isDrawingFile(t.file.name) || isNotebookFile(t.file.name))).map(tab => {
+                const slot = paneGeom.get(tab.file.path);
+                const visible = !!slot;
+                const fallbackStyle = visible
+                    ? {
+                        left: `calc(var(--pane-x-${slot!.index}) * 1%)`,
+                        width: `calc(var(--pane-w-${slot!.index}) * 1%)`,
+                        right: 'auto' as const,
+                    }
+                    : undefined;
+                return (
+                    <Suspense
+                        // Keyed as a PDF pane is: by the pane AND the path, so
+                        // an overwritten file never inherits the old board's
+                        // editor, and on diskRev, so a reload from disk
+                        // remounts it on the new file (App.reloadFromDisk).
+                        key={`${paneKey(tab)}|${tab.diskRev ?? 0}`}
+                        fallback={visible ? (
+                            <div className="canvas-pane" style={fallbackStyle}>
+                                <div className="drawing-pane drawing-pane-loading">
+                                    {isNotebookFile(tab.file.name) ? 'Loading notebook…' : 'Loading whiteboard…'}
+                                </div>
+                            </div>
+                        ) : null}
+                    >
+                        <CanvasPane
+                            file={tab.file}
+                            isVisible={visible}
+                            slotIndex={slot?.index ?? 0}
+                            slotLeft={slot?.left ?? 0}
+                            slotWidth={slot?.width ?? 100}
+                            onFocusPane={onFocusPane}
+                            registerKeyboardTarget={registerKeyboardTarget}
+                            content={tab.content}
+                            onContentChange={onContentChange}
+                            onConfirm={onConfirm}
+                            theme={theme}
                             disk={tab.disk}
                             onDiskAction={onDiskAction}
                         />

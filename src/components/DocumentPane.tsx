@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { Compartment, EditorState } from '@codemirror/state';
 import type { ChangeDesc } from '@codemirror/state';
@@ -52,13 +52,6 @@ import { isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, isTexFile, noteDi
 import { ArrowLeft, ArrowRight, Edit2, Eye, MoreHorizontal, PenTool } from './icons';
 import DiskBar from './DiskBar';
 import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
-
-// tldraw is a heavy dependency (canvas engine + its own UI). Loading it lazily
-// keeps it out of the initial bundle, so a markdown-only session never pays for
-// it — the chunk is fetched the first time a .tldraw file is opened.
-const DrawingPane = lazy(() => import('./DrawingPane'));
-// Lazy for the same reason DrawingPane is: opening a note must not load tldraw.
-const NotebookPane = lazy(() => import('./NotebookPane'));
 
 /** localStorage key: per-file editor scroll places (editor/scrollAnchor.ts). */
 const SCROLL_ANCHORS_KEY = 'fileScrollAnchors';
@@ -1387,9 +1380,9 @@ function DocumentPane({
                     </button>
                 </div>
             </div>
-            {/* A PDF draws its own: its PdfPane floats over this slot and would
-                paint over a bar placed here. */}
-            {tab.disk && !isPdf && (
+            {/* A canvas draws its own: its float stands over this slot and
+                would paint over a bar placed here. */}
+            {tab.disk && !isCanvas && (
                 <DiskBar name={file.name} state={tab.disk} path={path} onAction={onDiskAction} />
             )}
             <div className="editor-slot-body">
@@ -1571,37 +1564,11 @@ function DocumentPane({
                         }}
                     />
                 )}
-                {isDrawing && !unreadable && (
-                    <Suspense fallback={<div className="drawing-pane drawing-pane-loading">Loading whiteboard…</div>}>
-                        {/* Keyed on path: each drawing gets its own tldraw
-                            instance, loaded from its own snapshot. And on
-                            diskRev, so a reload from disk remounts it on the
-                            new file (App.reloadFromDisk). */}
-                        <DrawingPane
-                            key={`${path}|${tab.diskRev ?? 0}`}
-                            filePath={path}
-                            content={tab.content}
-                            onContentChange={onContentChange}
-                            theme={theme}
-                        />
-                    </Suspense>
-                )}
-                {isNotebook && !unreadable && (
-                    <Suspense fallback={<div className="drawing-pane drawing-pane-loading">Loading notebook…</div>}>
-                        {/* Keyed on path, like a drawing: each notebook gets its
-                            own tldraw instance, loaded from its own file. */}
-                        <NotebookPane
-                            key={`${path}|${tab.diskRev ?? 0}`}
-                            filePath={path}
-                            content={tab.content}
-                            onContentChange={onContentChange}
-                            onConfirm={onConfirm}
-                        />
-                    </Suspense>
-                )}
-                {/* A PDF's surface is the PdfPane EditorPane keeps mounted for
-                    every open PDF tab and positions over this slot — it must
-                    outlive the pane so a tab switch never reloads the document. */}
+                {/* A canvas has no surface here. EditorPane keeps one pane
+                    mounted per open PDF, whiteboard and notebook tab and
+                    positions it over this slot: each must outlive the pane, so
+                    that a tab switch neither reloads the document nor rebuilds
+                    a whole tldraw editor (components/floatingSlot.ts). */}
             </div>
         </div>
     );

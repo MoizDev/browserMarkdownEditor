@@ -22,16 +22,16 @@ export function canFlushTab(tab:OpenTab):boolean {return canUpdateTabContent(tab
 export function canChangeTabMode(tab:OpenTab,_mode?:EditorMode):boolean {return !tab.file.isHelp&&!tab.readError&&tab.representation?.status==='ready'&&!['epub','unsupported','drawing','notebook'].includes(tab.representation.loadedKind)}
 export function readingCapabilities(tab:OpenTab,live?:ReaderCapabilities):ReaderCapabilities {
  if(tab.readerStatus && ['error','missing','stale','loading'].includes(tab.readerStatus.phase)) return {surface:'unsupported',emphasis:{kind:'inactive',reason:tab.readerStatus.message??'Reading content is unavailable'},text:'none',find:false,appearance:'none',copy:false};
- if(live)return live;
  const kind=tab.representation?.loadedKind;
  const base:ReaderCapabilities={surface:'unsupported',emphasis:{kind:'inactive',reason:'No readable prose in this view'},text:'none',find:false,appearance:'none',copy:false};
- if(tab.readError||tab.representation?.status==='unavailable')return base;
+ if(tab.readError||tab.representation?.status!=='ready')return base;
+ if(live)return live;
  if(kind==='epub')return {...base,emphasis:{kind:'inactive',reason:'Opening book; reading capabilities are not available yet'}};
- if(kind==='pdf')return {...base,surface:tab.mode==='edit'?'pdf-annotation':'pdf-original',emphasis:tab.mode==='edit'?{kind:'inactive',reason:'Word emphasis is inactive while annotating'}:{kind:'pdf-text-action'}};
+ if(kind==='pdf')return {...base,surface:tab.mode==='edit'?'pdf-annotation':'pdf-original',emphasis:{kind:'inactive',reason:'Checking original PDF text for Word emphasis'}};
  if(!canReadTabText(tab)||isCanvasFile(tab.file.name)||kind==='code'||kind==='tex')return base;
  return {...base,surface:tab.mode==='read'?'markdown-read':'edit',text:'available',copy:true,find:true,emphasis:tab.mode==='read'?{kind:'toggle'}:{kind:'inactive',reason:'Switch to Reading mode to apply Word emphasis'}};
 }
-export interface ReadingSurfaceController {capabilities():ReaderCapabilities;showPdfText?(enableEmphasis:boolean):Promise<void>;showPdfOriginal?():Promise<void>;findReading?():void;showBookPanel?(panel:'contents'|'search'|'appearance'):void;bookFlow?():import('../types/reading').ReaderFlow;setBookFlow?(flow:import('../types/reading').ReaderFlow):void;captureReading?():Promise<void>;focusReading():void}
+export interface ReadingSurfaceController {capabilities():ReaderCapabilities;showPdfText?():Promise<void>;showPdfOriginal?():Promise<void>;findReading?():void;showBookPanel?(panel:'contents'|'search'|'appearance'):void;bookFlow?():import('../types/reading').ReaderFlow;setBookFlow?(flow:import('../types/reading').ReaderFlow):void;captureReading?():Promise<void>;focusReading():void}
 const surfaces=new Map<string,{identity:ReaderIdentity;controller:ReadingSurfaceController}>(),listeners=new Set<()=>void>();
 export function sameReaderToken(a:ReaderToken,b:ReaderToken):boolean{return a.vaultId===b.vaultId&&a.vaultEpoch===b.vaultEpoch&&a.documentId===b.documentId&&a.byteGeneration===b.byteGeneration}
 export function registerReadingSurface(identity:ReaderIdentity,controller:ReadingSurfaceController):()=>void {const entry={identity,controller};surfaces.set(identity.documentId,entry);listeners.forEach(f=>f());return ()=>{if(surfaces.get(identity.documentId)===entry){surfaces.delete(identity.documentId);listeners.forEach(f=>f())}}}

@@ -6,10 +6,13 @@ import {
 } from '../utils/pdfViewState';
 import PdfThumbnails, { ThumbnailsToggle, type PdfThumbnailsHandle } from './PdfThumbnails';
 import PdfInvertToggle from './PdfInvertToggle';
+import './PdfNativeEmphasis.css';
 import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
 import type { PdfDocumentSession, PdfPageLease } from '../utils/pdfDocumentSession';
 import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
+import { bindPdfNativeEmphasis, pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
+import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 
 /**
@@ -49,6 +52,8 @@ import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
  */
 
 interface PdfViewerProps {
+    emphasisEnabled?: boolean;
+    onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;
     onLocation?(): void;
     /** Vault path — the persistence key for page position + zoom. */
     filePath: string;
@@ -83,6 +88,7 @@ interface PageState {
     wantRender?: boolean;
     /** A render loop is currently running for this page. */
     busy?: boolean;
+    loopPromise?: Promise<void>;
     /** True once this page's pdf.js state has been released (see cleanupPage);
      *  cleared when it re-enters the render window. */
     cleaned?: boolean;
@@ -177,6 +183,7 @@ interface PageRect {
 /** One rasterization request, and everything needed to decide whether a bitmap
  *  already in hand answers it. */
 interface RenderTarget {
+    emphasis: boolean;
     scale: number;
     /** The band to rasterize; `null` for the whole page, which is the case at
      *  every zoom that fits inside MAX_CANVAS_PIXELS. */
@@ -197,7 +204,7 @@ const contains = (outer: PageRect, inner: PageRect): boolean =>
 
 /** Would the bitmap `have` describes still answer `want`? */
 function satisfies(have: RenderTarget | undefined, want: RenderTarget): boolean {
-    if (!have || have.scale !== want.scale) return false;
+    if (!have || have.scale !== want.scale || have.emphasis !== want.emphasis) return false;
     // The whole page is wanted: only a whole-page bitmap will do, or zooming
     // back out would leave a band stretched across the page.
     if (want.rect === null) return have.rect === null;
@@ -216,7 +223,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
  * Past it, the band is the visible strip grown by as much margin as the budget
  * still affords, so scrolling at zoom moves around inside paint already done.
  */
-function pageRegion(L: Layout, el: HTMLElement, i: number): Omit<RenderTarget, 'scale'> {
+function pageRegion(L: Layout, el: HTMLElement, i: number): Omit<RenderTarget, 'scale' | 'emphasis'> {
     const { w, h } = L.pages[i];
     const dpr = canvasDpr();
     if (w * h * dpr * dpr <= MAX_CANVAS_PIXELS) return { rect: null, need: null, trigger: null };
@@ -303,7 +310,18 @@ interface PinchGesture {
     timer: number | null;
 }
 
-function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) {
+function PdfViewer({ filePath, session, isActive, onLocation, emphasisEnabled = false, onNativeEmphasisResult }: PdfViewerProps) {
+    const [nativeNotice, setNativeNotice] = useState('');
+    const nativePages = useRef(new Map<number, PdfNativeEmphasisResult>());
+    const showNativeNotice = useCallback((index: number) => {
+        const result = nativePages.current.get(index);
+        setNativeNotice(pdfNativeEmphasisNotice(result));
+        nativeResult.current?.(index, result);
+    }, []);
+    const nativeResult = useRef(onNativeEmphasisResult);
+    nativeResult.current = onNativeEmphasisResult;
+    const emphasisRef = useRef(emphasisEnabled);
+    emphasisRef.current = emphasisEnabled;
     const locationCallback = useRef(onLocation);
     locationCallback.current = onLocation;
     // Read once per mount: where this file was last left, and at what zoom.
@@ -398,6 +416,9 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
     useEffect(() => {
         let cancelled = false;
         setError(null);
+        nativePages.current.clear();
+        setNativeNotice('');
+        nativeResult.current?.(0, undefined);
         const gen = ++docGenRef.current;
         // The containers themselves are created once and never replaced, so
         // capturing them here for the cleanup is safe (and keeps lint honest).
@@ -445,7 +466,7 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
             for (const st of pageStates.values()) {
                 st.wantRender = false;
                 st.renderTask?.cancel();
-                void Promise.allSettled([st.renderTask?.promise, st.textPromise, st.linksPromise]).then(async () => {
+                void Promise.allSettled([st.loopPromise, st.renderTask?.promise, st.textPromise, st.linksPromise]).then(async () => {
                     (await st.pageLease)?.release();
                 }).catch(() => {});
             }
@@ -880,19 +901,25 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
                 const cw = Math.max(1, Math.floor((rect ? rect.w : vp.width) * dpr));
                 const ch = Math.max(1, Math.floor((rect ? rect.h : vp.height) * dpr));
 
-                // Rasterize OFF-SCREEN once there is something on screen worth
-                // keeping: sizing a canvas wipes it, so rendering in place left
-                // the page blank white for the length of every zoom step and,
-                // now that a scroll at zoom can re-render, for those too. The
-                // spare bitmap is skipped on a page's first render, where there
-                // is nothing to preserve and it would only double the cold cost.
-                const work = st.rendered ? document.createElement('canvas') : canvas;
+                // Cold and warm paints use the same offscreen→blit route.
+                // Chromium antialiases a direct first paint differently from a
+                // blit (measured 145,932 differing channels after OFF), so mixing
+                // the routes cannot give an exact original-page restoration.
+                const work = document.createElement('canvas');
                 work.width = cw;
                 work.height = ch;
                 const ctx = work.getContext('2d');
                 if (!ctx) return;
 
+                const emphasis = await bindPdfNativeEmphasis(page, ctx, target.emphasis);
+                // Metadata can arrive after a new toggle/zoom/eviction request.
+                if (docGenRef.current !== gen || !st.wantRender || st.want !== target) {
+                    emphasis?.dispose();
+                    if (work !== canvas) { work.width = 0; work.height = 0; }
+                    continue;
+                }
                 const task = page.render({
+                    operationsFilter: emphasis?.operationsFilter,
                     canvas: work,
                     canvasContext: ctx,
                     viewport: vp,
@@ -907,6 +934,13 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
                 st.rendering = target;
                 try {
                     await task.promise;
+                    const current = () => docGenRef.current === gen && !!st.wantRender && st.want === target;
+                    if (!current()) continue;
+                    await emphasis.verify({ viewport: vp, transform: rect
+                        ? [dpr, 0, 0, dpr, -rect.x * dpr, -rect.y * dpr]
+                        : (dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined) },
+                        probe => { st.renderTask = probe; }, current, !!rect);
+                    if (!current()) continue;
                     if (work !== canvas) {
                         canvas.width = cw;
                         canvas.height = ch;
@@ -914,9 +948,16 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
                     }
                     placeCanvas(canvas, rect);
                     st.rendered = target;
+                    canvas.dataset.nativeEmphasis = String(target.emphasis);
+                    if (emphasis) {
+                        canvas.dataset.emphasizedGlyphs = String(emphasis.result.painted);
+                        nativePages.current.set(i, { ...emphasis.result });
+                        if (shownPageRef.current === i) showNativeNotice(i);
+                    }
                 } catch (err) {
-                    if (!(err instanceof pdfjs.RenderingCancelledException)) throw err;
+                    if (!(err instanceof pdfjs.RenderingCancelledException) && !(err instanceof DOMException && err.name === 'AbortError')) throw err;
                 } finally {
+                    emphasis?.dispose();
                     st.renderTask = undefined;
                     st.rendering = undefined;
                     if (work !== canvas) {
@@ -926,25 +967,26 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
                 }
                 if (docGenRef.current !== gen) return;
             }
+            if (docGenRef.current !== gen || !st.wantRender) return;
             void ensureText(i);
             void ensureLinks(i);
         } catch (err) {
             console.error(`Could not render PDF page ${i + 1}:`, err);
         } finally {
             st.busy = false;
-            if (!st.wantRender) {
+            if (!st.wantRender && docGenRef.current === gen) {
                 clearCanvas(i);
                 st.rendered = undefined;
             }
         }
-    }, [getPage, ensureText, ensureLinks, clearCanvas]);
+    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice]);
 
     const ensurePage = useCallback((i: number) => {
         const L = layoutRef.current;
         const el = scrollRef.current;
         if (!L || !el) return;
         const st = getState(i);
-        st.want = { scale: L.scale, ...pageRegion(L, el, i) };
+        st.want = { emphasis: emphasisRef.current, scale: L.scale, ...pageRegion(L, el, i) };
         st.wantRender = true;
         // Back in the window — eligible to be released again once it leaves.
         st.cleaned = false;
@@ -959,7 +1001,7 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
             void ensureLinks(i);
             return;
         }
-        void renderLoop(i, st);
+        st.loopPromise = renderLoop(i, st);
     }, [getState, renderLoop, ensureText, ensureLinks]);
 
     const evictPage = useCallback((i: number) => {
@@ -1025,7 +1067,11 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
         for (let i = 0; i < n; i++) {
             if (i >= renderFrom && i <= renderTo) ensurePage(i);
             else {
-                if (i < keepFrom || i > keepTo) evictPage(i);
+                const old = pageStatesRef.current.get(i)?.want;
+                // Retained offscreen bitmaps must not expose the old emphasis
+                // for a frame when scrolled back. Reclaim them; approach paints
+                // the current setting through the ordinary bounded window.
+                if (i < keepFrom || i > keepTo || (old && old.emphasis !== emphasisRef.current)) evictPage(i);
                 if (i < cleanFrom || i > cleanTo) cleanupPage(i);
             }
         }
@@ -1041,6 +1087,7 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
         const maxScroll = el.scrollHeight - el.clientHeight;
         const shown = maxScroll > 1 && top >= maxScroll - 1 ? last : first;
         shownPageRef.current = shown;
+        showNativeNotice(shown);
         thumbsRef.current?.setCurrentPage(shown);
         // Written straight to the DOM rather than through state — see
         // pageInputRef. Never while it's focused: that would fight the typing.
@@ -1048,7 +1095,11 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
         if (input && document.activeElement !== input) input.value = String(shown + 1);
         writePdfViewPos(filePath, { ...currentPosRef.current, zoom: zoomRef.current }, false);
         schedulePersist();
-    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath]);
+    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice]);
+
+    // This changes paint only. Do not re-anchor, rebuild TextLayer, or remount
+    // the retained viewer: selection, native find and the page camera stay put.
+    useLayoutEffect(() => { updateWindow(); }, [emphasisEnabled, updateWindow]);
 
     const scrollRafRef = useRef(0);
     const scheduleWindowUpdate = useCallback(() => {
@@ -1394,6 +1445,7 @@ function PdfViewer({ filePath, session, isActive, onLocation }: PdfViewerProps) 
             </div>
             {layout && (
                 <div className="pdf-viewer-controls">
+                    {emphasisEnabled && nativeNotice && <span className="pdf-native-emphasis-notice" role="status">{nativeNotice}</span>}
                     <div className="pdf-viewer-pill">
                         <ThumbnailsToggle open={thumbsOpen} onToggle={toggleThumbs} />
                         <PdfInvertToggle />

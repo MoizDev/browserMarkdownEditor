@@ -29,15 +29,29 @@ Preference-only changes do not recreate livePreview. Tables use their owner's sa
 PDF Original and Text share one displayed-byte session with document/page leases. PdfPane
 consumes PdfReadingBinding, publishes the version of those exact bytes and registers a full-token
 surface controller; retained callbacks read the latest binding. Global emphasis and Aa preferences
-use the sole readingPreferences store. Original's header action opens only that PDF's Text surface;
-turning emphasis Off keeps Text open. Annotation entry maps the Text physical page/word before
+use the sole readingPreferences store. The header toggle only changes that preference: PDF and
+EPUB consume it in the original document view, never through the extracted Text action. Native PDF
+capability must come from actual page glyph support; loading/scanned/unsupported profiles are
+inactive without losing the shared preference. PDF Text stays a separate explicit menu action with
+emphasis inactive. Annotation entry maps the Text physical page/word before
 mounting the canvas; dirty/flushing annotation bytes block Text entry until the save lands.
 
 PDF Text records carry a raw fingerprint, extraction schema, page digest, canonical anchor and
 Original camera checkpoint/navigation revisions. Restore validates the fingerprint and schema,
-then resolves page bounds/quote and detects digest drift. Surface and location writes update the
+then resolves page bounds/quote and detects digest drift. Legacy surface:text records may come from
+the old emphasis action, so restore Original with the same anchor/camera. New Text writes carry
+textChoice:manual; only that marker authorizes restoring Text. No global preference migration is
+needed: saved emphasis remains a paint preference and never selects a surface. Surface and location
+writes update the
 central record synchronously, with flushes on hide/unmount/pagehide. Original updates its legacy
 camera in memory before a header action. No new PDF proxy is created for a surface switch.
+Native PDF uses the exact pdf.js 6.1.200 original glyph/paint route (pdfNativeEmphasis), adding
+a thin same-color stroke before the original fill on eligible glyphs. Each completed render checks a temporary counterpart for a final pixel difference before
+publishing support, so clipped, off-page, white-on-white or occluded glyph calls cannot falsely
+enable the header. High-zoom bands use a bounded whole-page capability probe; no full-document
+raster pass runs. Temporary paints are cancelled with their target and released with the lease. Current-page Viewer and
+annotation backdrop results publish availability through PdfPane; unknown/loading pages are
+inactive. Per-render plans/method bindings are released with the page lease, not stored per vault.
 The Text agent reporter supplies actual bounded visible/selected canonical text and physical-page
 extraction. Text image capture is explicitly unsupported; it never substitutes an Original PNG.
 
@@ -57,6 +71,18 @@ script or publisher resource URL depends on Vite base. Archive and hash worker U
 `new URL(..., import.meta.url)` transform. A note-only tree does not prefetch any EPUB chunk.
 Static dist includes root THIRD_PARTY_NOTICES, vendor licenses/source-lock and frame integrity.
 
+EPUB native emphasis uses CSS Custom Highlight ranges over stable original XHTML text nodes.
+Symmetric text-shadow ink preserves the authored font face/weight/style, shaping, advances,
+artwork and fixed geometry. No wrapper nodes or replacement chapter are introduced. Toggle-only
+configure neither remounts sections nor repositions the camera; disposal/eviction releases ranges
+and styles. Windowing inserts only new roots, preserving live ranges on retained roots; new roots
+initialize paint after attachment and settling. Copy checks current computed visibility independently
+of the paint preference. Publisher typography/colors win; Aa supplies defaults for unstyled text and the canvas.
+SVG/math/ruby/code, authored bold/shadows, RTL/vertical and unsupported scripts remain original.
+Image/SVG-only or otherwise ineligible sections publish an inactive reason; eligible XHTML works
+in reflowable, fixed and mixed books. Capability flows through the full-token callback into App;
+initial/loading/error states cannot advertise an active toggle.
+
 The shared document header is the sole EPUB Word emphasis button. Its More menu also offers
 Contents, Find, Appearance and requested Scroll/Pages; the body toolbar exposes the same reader
 actions. Full-token ReadingSurfaceController registration owns those commands, keyboard Find,
@@ -73,7 +99,7 @@ SVG or raster pages and mixed overrides; IDPF/Adobe-obfuscated fonts. ZIP64, enc
 script-dependent prose, media and remote assets are unsupported. PNG/JPEG/static WebP, sanitized
 SVG and WOFF/WOFF2/TTF/OpenType are supported. GIF/AVIF/APNG/animated WebP images are refused
 with warnings while keeping prose readable. Unknown CSS is removed with warnings. A section
-above 1,048,576 UTF-16 units or 20,000 generated prefix ranges keeps full canonical reading but
+above 1,048,576 UTF-16 units or 20,000 native prefix ranges keeps full canonical reading but
 reports emphasis unavailable. Metadata/Contents has a 256 KiB transport cap (192 KiB metadata
 projection); exceptionally large TOCs receive a bounded error rather than silent truncation.
 Canonical CFI is app-local over the sanitized projection, never exported as publisher CFI.

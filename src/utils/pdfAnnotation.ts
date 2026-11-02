@@ -18,6 +18,8 @@
 // would darken and duplicate the annotations and inflate the file. Verified: 4
 // save cycles leave the embedded original byte-identical and the size flat.
 
+import { bindPdfNativeEmphasis } from './pdfNativeEmphasis';
+import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { pdfWorker } from './pdfWorker';
@@ -207,7 +209,7 @@ export interface PdfPageSource {
      * `scale` defaults to PAGE_RENDER_SCALE; a higher one is how a zoomed-in
      * page is re-rendered sharp.
      */
-    renderPage(index: number, scale?: number): Promise<string>;
+    renderPage(index: number, scale?: number, emphasisEnabled?: boolean, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal): Promise<string>;
     /** Tear down the pdf.js worker. */
     close(): Promise<void>;
 }
@@ -241,7 +243,7 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
 
     return {
         sizes,
-        async renderPage(index: number, scale = PAGE_RENDER_SCALE) {
+        async renderPage(index: number, scale = PAGE_RENDER_SCALE, emphasisEnabled = false, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal) {
             const page = await doc.getPage(index + 1);
             const viewport = page.getViewport({ scale });
             const canvas = document.createElement('canvas');
@@ -249,13 +251,29 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
             canvas.height = Math.ceil(viewport.height);
             const context = canvas.getContext('2d');
             if (!context) throw new Error('Could not get a 2D canvas context to render the PDF');
-            await page.render({ canvas, canvasContext: context, viewport }).promise;
-
-            const blob = await new Promise<Blob | null>(res =>
-                canvas.toBlob(res, PAGE_IMAGE_TYPE, PAGE_IMAGE_QUALITY));
-            page.cleanup();
-            if (!blob) throw new Error(`Could not rasterize page ${index + 1}`);
-            return URL.createObjectURL(blob);
+            const emphasis = emphasisEnabled || onEmphasisResult ? await bindPdfNativeEmphasis(page, context, emphasisEnabled) : undefined;
+            let rendering: import('pdfjs-dist').RenderTask | undefined;
+            const cancel = () => rendering?.cancel();
+            const current = () => !signal?.aborted;
+            signal?.addEventListener('abort', cancel);
+            try {
+                signal?.throwIfAborted();
+                rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis?.operationsFilter });
+                await rendering.promise;
+                await emphasis?.verify({ viewport }, task => { rendering = task; }, current);
+                signal?.throwIfAborted();
+                if (emphasis) onEmphasisResult?.({ ...emphasis.result });
+                const blob = await new Promise<Blob | null>(res =>
+                    canvas.toBlob(res, PAGE_IMAGE_TYPE, PAGE_IMAGE_QUALITY));
+                signal?.throwIfAborted();
+                if (!blob) throw new Error(`Could not rasterize page ${index + 1}`);
+                return URL.createObjectURL(blob);
+            } finally {
+                signal?.removeEventListener('abort', cancel);
+                emphasis?.dispose();
+                canvas.width = canvas.height = 0;
+                page.cleanup();
+            }
         },
         close: () => task.destroy(),
     };

@@ -18,6 +18,9 @@ import type { LocationCause, PdfReadingBinding, ReaderCapabilities } from '../ty
 import type { DiskVersion } from '../utils/diskVersion';
 import { registerReadingSurface } from '../utils/documentReading';
 import { flushPdfTextViewState } from '../utils/readerViewState';
+import { pdfNativeEmphasisAvailability } from '../utils/pdfNativeEmphasis';
+import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
+import type { EmphasisAvailability } from '../types/reading';
 
 // tldraw + pdf.js rasterization are heavy and only needed once someone actually
 // annotates, so the canvas is a separate chunk. Viewing a PDF never loads it.
@@ -124,6 +127,16 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const textNavigationRevision = useRef(0);
     const textPage = useRef(0);
     const [mappingNotice, setMappingNotice] = useState('');
+    const [nativeReader, setNativeReader] = useState<EmphasisAvailability>(() => pdfNativeEmphasisAvailability());
+    const [nativeAnnotation, setNativeAnnotation] = useState<EmphasisAvailability>(() => pdfNativeEmphasisAvailability());
+    // A remounted renderer may start on a different physical page. Retain the
+    // preference, but never borrow the previous surface's glyph eligibility.
+    useLayoutEffect(() => { setNativeReader(pdfNativeEmphasisAvailability()); }, [session, mode, textSurface]);
+    useLayoutEffect(() => { setNativeAnnotation(pdfNativeEmphasisAvailability()); }, [source, mode, isVisible]);
+    const reportNative = (setter: typeof setNativeReader, result?: PdfNativeEmphasisResult) => {
+        const next = pdfNativeEmphasisAvailability(result);
+        setter(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
+    };
     const [textQuality, setTextQuality] = useState<'available' | 'partial' | 'none'>('partial');
     const textSurfaceRef = useRef(false);
     function publishLocation(cause: LocationCause, surface = textSurfaceRef.current) {
@@ -153,9 +166,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         const epoch = returnEpoch;
         return () => { ++epoch.current; controller.dispose(); setTextReader(null); };
     }, [session, file.path]);
-    async function showText(enableEmphasis = false) {
+    async function showText() {
         if (mode !== 'read' || isDirty || flushing || disk || !textReader || !session) throw new Error('Wait for PDF annotations to finish saving before opening extracted text.');
-        if (enableEmphasis) binding.current?.onEmphasisChange(true);
         if (textSurfaceRef.current) { focusReading(); return; }
         const epoch = ++returnEpoch.current;
         setMappingNotice('');
@@ -367,9 +379,11 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     }
     const capabilities: ReaderCapabilities = {
         surface: mode === 'edit' ? 'pdf-annotation' : textSurface ? 'pdf-text' : 'pdf-original',
-        emphasis: mode === 'edit' ? { kind: 'inactive', reason: 'Word emphasis is inactive while annotating' }
-            : isDirty || flushing || disk || !session ? { kind: 'inactive', reason: disk ? 'Resolve the PDF disk change before switching surfaces' : 'Waiting for the PDF to finish loading or saving' }
-            : textSurface ? textQuality === 'none' ? { kind: 'inactive', reason: 'No usable extracted text on this page. View Original; no OCR is performed.' } : { kind: 'toggle' } : { kind: 'pdf-text-action' },
+        emphasis: disk ? { kind: 'inactive', reason: 'Resolve the PDF disk change to refresh Word emphasis' }
+            : mode === 'edit' ? nativeAnnotation
+            : isDirty || flushing || !session ? { kind: 'inactive', reason: 'Waiting for the PDF to finish loading or saving' }
+            : textSurface ? { kind: 'inactive', reason: 'Word emphasis applies to Original PDF pages. Choose Original PDF to use it.' }
+            : nativeReader,
         text: textSurface ? textQuality : 'partial', find: mode === 'read', copy: mode === 'read', appearance: textSurface ? 'reflow' : 'none',
     };
     const actions = useRef({ showText, showOriginal, focusReading, capabilities, publishLocation });
@@ -380,7 +394,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         if (!identity) return;
         const unregister = registerReadingSurface(identity, {
             capabilities: () => actions.current.capabilities,
-            showPdfText: enabled => actions.current.showText(enabled),
+            showPdfText: () => actions.current.showText(),
             showPdfOriginal: () => actions.current.showOriginal(),
             findReading: () => { const input = root.current?.querySelector<HTMLInputElement>('.pdf-reading-find input'); input?.focus(); input?.select(); },
             focusReading: () => actions.current.focusReading(),
@@ -434,6 +448,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         key={file.path}
                         filePath={file.path}
                         original={source.original}
+                        emphasisEnabled={reading?.emphasisEnabled ?? false}
+                        onNativeEmphasisResult={(_page, result) => reportNative(setNativeAnnotation, result)}
                         // Prefer the live buffer (unsaved strokes) over disk, but only
                         // once it holds this file's snapshot — on the first render
                         // after a tab switch `content` may still be '' .
@@ -461,10 +477,11 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         textPage.current = anchor.physicalPageIndex;
                         if (cause === 'user-scroll' || cause === 'user-navigation' || cause === 'search' || cause === 'link') ++textNavigationRevision.current;
                         publishLocation(cause);
-                    }} onTextQuality={setTextQuality} emphasisEnabled={reading?.emphasisEnabled ?? false} typography={reading?.typography ?? DEFAULT_TEXT_TYPOGRAPHY}
-                    onEmphasisChange={reading?.onEmphasisChange} onTypographyChange={reading?.onTypographyChange} />
+                    }} onTextQuality={setTextQuality} emphasisEnabled={false} typography={reading?.typography ?? DEFAULT_TEXT_TYPOGRAPHY}
+                    onTypographyChange={reading?.onTypographyChange} />
             ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer filePath={file.path} session={session} isActive={isFocused}
-                onLocation={() => publishLocation('layout', false)} />
+                onLocation={() => publishLocation('layout', false)} emphasisEnabled={reading?.emphasisEnabled ?? false}
+                onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} />
                 {mappingNotice && <div className="pdf-pane-mapping-notice" role="status">{mappingNotice}</div>}
             </>;
         }

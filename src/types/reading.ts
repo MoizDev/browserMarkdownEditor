@@ -9,7 +9,7 @@ export interface Utf16Range {from:number;to:number}
 export interface TextContext {quote:string;before:string;after:string}
 export type ReaderFlow='scroll'|'pages';
 export type ReadingSurface='markdown-read'|'edit'|'epub-reflow'|'epub-fixed'|'pdf-original'|'pdf-text'|'pdf-annotation'|'unsupported';
-export type EmphasisAvailability={kind:'toggle'}|{kind:'pdf-text-action'}|{kind:'inactive';reason:string};
+export type EmphasisAvailability={kind:'toggle'}|{kind:'inactive';reason:string};
 export interface ReaderCapabilities {surface:ReadingSurface;emphasis:EmphasisAvailability;text:'available'|'partial'|'none';find:boolean;appearance:'reflow'|'fixed'|'none';copy:boolean}
 export interface ReaderStatus {phase:'loading'|'ready'|'partial'|'stale'|'missing'|'error';message?:string;progress?:{done:number;total?:number}}
 export type LocationCause='restore'|'layout'|'user-scroll'|'user-navigation'|'search'|'link'|'annotation';
@@ -19,7 +19,7 @@ export interface EpubFixedLocator extends EpubSectionKey {kind:'fixed';sectionDi
 export type EpubLocator=EpubTextLocator|EpubFixedLocator;
 export interface EpubReadingRecord {v:1;kind:'epub';rawFingerprint:string;parserSchema:1;sanitizerSchema:1;projectionSchema:1;requestedLayout:ReaderFlow;locator:EpubLocator}
 export interface PdfTextAnchor extends TextContext {physicalPageIndex:number;offsetUTF16:number;affinity:Affinity;alignHint?:number}
-export interface PdfTextReadingRecord {v:1;surface:'original'|'text';rawFingerprint:string;extractionSchema:1;pageDigest?:string;textAnchor?:PdfTextAnchor;originalCheckpoint:{page:number;offset:number;zoom:number;navigationRevision:number};textNavigationRevision:number}
+export interface PdfTextReadingRecord {v:1;surface:'original'|'text';textChoice?:'manual';rawFingerprint:string;extractionSchema:1;pageDigest?:string;textAnchor?:PdfTextAnchor;originalCheckpoint:{page:number;offset:number;zoom:number;navigationRevision:number};textNavigationRevision:number}
 export type ReaderLocation={kind:'epub';value:EpubReadingRecord}|{kind:'pdf-text';value:PdfTextReadingRecord};
 export type ReaderHostCommand='next-document'|'previous-document'|'close-document'|'reopen-document'|'find'|'dismiss'|'read-only-mode';
 export interface ReadingTypography {family:'serif'|'sans'|'publisher';size:number;leading:number;measure:'compact'|'comfortable'|'wide';margins:'small'|'medium'|'large';theme:'follow-app'|'light'|'sepia'|'dark'}

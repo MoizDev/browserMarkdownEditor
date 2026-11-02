@@ -12,6 +12,7 @@ export default function EpubReaderHost({identity,integration,isFocused,onFocusPa
  const info=useRef<EpubViewInfo>({kind:'epub',status:'loading',visibleCanonicalText:'',selectedCanonicalText:null});
  useEffect(()=>{
   setSnapshot(null);setError('');info.current={kind:'epub',status:'loading',visibleCanonicalText:'',selectedCanonicalText:null};
+  integration.onReaderStatus(identity,{phase:'loading',message:'Opening book locally…'});
   const abort=new AbortController();let owned:ReadOnlyFileSnapshot|undefined;
   void integration.acquireSnapshot(identity,abort.signal).then(value=>{owned=value;if(abort.signal.aborted)value.dispose();else setSnapshot(value)}).catch(error=>{if(!abort.signal.aborted){const message=String(error);setError(message);info.current={...info.current,status:'error'};integration.onReaderStatus(identity,{phase:'error',message})}});
   const unregister=registerView(identity.path,{kind:'epub',describe:()=>info.current});

@@ -4153,8 +4153,16 @@ export default function App() {
     return { identityForTab,
       async acquireSnapshot(identity, signal) { const tab = current(identity); if (!tab?.file.handle || tab.file.path !== identity.path) throw new DOMException('Reader changed', 'AbortError'); return readerDeps.current.readFileSnapshot(tab.file.handle as FileSystemFileHandle, signal); },
       onReaderVersion(token, version) { const tab = current(token); if (tab) setBaseline(tab.id, version); },
-      onReaderStatus(token, status) { const tab=current(token); if(!tab)return; if(JSON.stringify(tab.readerStatus)===JSON.stringify(status))return; setTabs(prev=>prev.map(t=>t.id===tab.id?{...t,readerStatus:status}:t)); },
-      onReaderCapabilities(token, caps) { const tab = current(token); if (!tab || JSON.stringify(tab.readerCapabilities)===JSON.stringify(caps)) return; setTabs(prev => prev.map(t => t.id === tab.id ? { ...t, readerCapabilities: caps } : t)); },
+      onReaderStatus(token, status) { if(!current(token))return; setTabs(prev=>{
+        if(!current(token))return prev;
+        const tab=prev.find(t=>t.id===token.documentId&&t.representation.generation===token.byteGeneration);
+        return !tab||JSON.stringify(tab.readerStatus)===JSON.stringify(status)?prev:prev.map(t=>t===tab?{...t,readerStatus:status}:t);
+      }); },
+      onReaderCapabilities(token, caps) { if(!current(token))return; setTabs(prev=>{
+        if(!current(token))return prev;
+        const tab=prev.find(t=>t.id===token.documentId&&t.representation.generation===token.byteGeneration);
+        return !tab||JSON.stringify(tab.readerCapabilities)===JSON.stringify(caps)?prev:prev.map(t=>t===tab?{...t,readerCapabilities:caps}:t);
+      }); },
       onReaderLocation(token, location) { const tab = current(token); if (!tab) return; const identity = identityForTab(tab); if (location.kind === 'epub') writeReaderViewState(identity, location.value); else writePdfTextViewState(identity, location.value); },
       onReaderCommand(token, command) { const tab = current(token); if (!tab || tab.file.path !== activeTabPathRef.current) return;
         if (['close-document','reopen-document','next-document','previous-document'].includes(command) && runReaderHostCommand(command)) return;

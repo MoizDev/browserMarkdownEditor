@@ -17,7 +17,7 @@ export async function createEpubSession(snapshot:ReadOnlyFileSnapshot,identity:R
  const initialRecord=options.initialRecord?.v===1&&options.initialRecord.parserSchema===1&&options.initialRecord.sanitizerSchema===1&&options.initialRecord.projectionSchema===1&&validLocator(options.initialRecord.locator)?options.initialRecord:undefined;
  const preferences=validPreferences(options.preferences)?options.preferences:DEFAULT_PREFERENCES;
  const manifest=new Map(info.resources.map(r=>[r.id,r]));
- const session:EpubSession={metadata:{title:'Opening book…',author:'',language:'',direction:'ltr',contents:[],pageList:[],landmarks:[],sections:info.spine,warnings:info.warnings},capabilities:{surface:'epub-reflow',emphasis:{kind:'toggle'},text:'partial',find:true,appearance:'reflow',copy:true},
+ const session:EpubSession={metadata:{title:'Opening book…',author:'',language:'',direction:'ltr',contents:[],pageList:[],landmarks:[],sections:info.spine,warnings:info.warnings},capabilities:{surface:'epub-reflow',emphasis:{kind:'inactive',reason:'Checking this section’s text for Word emphasis'},text:'partial',find:true,appearance:'reflow',copy:true},
  async mount(container,callbacks){
   if(bridge||disposed)throw Error('EPUB_SESSION_ALREADY_MOUNTED');events=callbacks;
   bridge=await mountBridge(container,{vaultId:identity.vaultId,vaultEpoch:identity.vaultEpoch,documentId:identity.documentId,byteGeneration:identity.byteGeneration},(message,active)=>{

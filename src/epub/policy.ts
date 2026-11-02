@@ -19,7 +19,7 @@ export class BookPolicy {
   if(text.length>4*1024*1024||chain.length>=16||chain.includes(base))throw Error('CSS_CYCLE_OR_LIMIT');
   let tokens=0;CSS.tokenize(text,()=>{if(++tokens>50000)throw Error('CSS_TOKENS')});
   const ast=CSS.parse(text),remove:{item:unknown;list:{remove(value:unknown):void}}[]=[],imports:string[]=[];let rules=0;
-  CSS.walk(ast,{enter:(n:Record<string,unknown>,item:unknown,list:{remove(value:unknown):void})=>{
+  CSS.walk(ast,{enter:(n:Record<string,unknown>,item:unknown,list:{remove(value:unknown):void;insertData(value:unknown,before:unknown):void})=>{
    const drop=()=>{if(item&&list)remove.push({item,list})};
    if(n.type==='Rule'&&++rules>10000)throw Error('CSS_RULES');
    if(n.type==='Atrule'){
@@ -27,10 +27,20 @@ export class BookPolicy {
     if(name==='import'){const pre=n.prelude as {children?:{first?:{type:string;value:string}}};const first=pre?.children?.first;if(first&&['String','Url'].includes(first.type)){const ref=resolveBookReference(first.value,base);if(ref&&this.resources.manifest.get(ref.name)?.type==='text/css')imports.push(ref.name);else this.warn('Blocked external stylesheet')}drop()}
    }
    if(n.type==='Declaration'){
-    const property=String(n.property).toLowerCase();let bad=property.startsWith('--')||property.startsWith('-')||['behavior','content','font','animation','transition','cursor','filter','backdrop-filter','will-change'].includes(property);
+    const property=String(n.property).toLowerCase();let bad=property.startsWith('--')||property.startsWith('-')||['behavior','content','animation','transition','cursor','filter','backdrop-filter','will-change'].includes(property);
     CSS.walk(n.value,(q:{type:string;name?:string;value?:string})=>{if(q.type==='Raw'||q.type==='Function'&&!['rgb','rgba','hsl','hsla','calc','min','max','clamp','linear-gradient','radial-gradient','repeating-linear-gradient','repeating-radial-gradient','translate','translatex','translatey','scale','scalex','scaley','rotate','matrix','cubic-bezier','format','tech'].includes(String(q.name).toLowerCase()))bad=true;if(property==='position'&&q.type==='Identifier'&&['fixed','sticky'].includes(String(q.name)))bad=true});
     if(!CSS.lexer.matchDeclaration(n).matched&&!CSS.lexer.matchAtruleDescriptor('font-face',property,n.value).matched)bad=true;
-    if(property==='font-family')CSS.walk(n.value,(q:{type:string;name:string;value:string})=>{if(q.type==='Identifier'&&!['serif','sans-serif','monospace','cursive','fantasy','system-ui','inherit','initial','unset'].includes(q.name))q.name=`s${index}-${q.name}`;else if(q.type==='String')q.value=`s${index}-${q.value}`});
+    if(property==='font'){
+     // Expand a valid static shorthand before namespacing families. Treating each
+     // identifier as a family breaks multiword faces and silently loses book fonts.
+     const declaration=document.createElement('span').style;declaration.font=CSS.generate(n.value);
+     if(!declaration.font||bad)bad=true;
+     else {const expanded=CSS.parse(['font-style','font-variant','font-weight','font-stretch','font-size','line-height','font-family'].map(key=>key+':'+declaration.getPropertyValue(key)+(n.important?'!important':'')).filter(value=>!value.endsWith(':')).join(';'),{context:'declarationList'});
+      const family=expanded.children.toArray().find((d:{property:string})=>d.property==='font-family');if(family)this.namespaceFamily(family,index);
+      for(const d of expanded.children.toArray())list.insertData(d,item);drop();
+     }
+    }
+    if(property==='font-family')this.namespaceFamily(n,index);
     if(bad){drop();this.warn('Unsupported CSS declaration: '+property)}
    }
   }});
@@ -42,6 +52,12 @@ export class BookPolicy {
   const prefix:string[]=[];for(const name of imports){const data=await this.resources.read(name);if(data.text)prefix.push(await this.css(data.text,name,index,chain.concat(base)))}
   const faces=this.faces.get(index)??new Set<string>(),beforeFaces=new Set(faces);this.faces.set(index,faces);const excess:{item:unknown;list:{remove(value:unknown):void}}[]=[];CSS.walk(ast,{visit:'Atrule',enter:(node:{name:string},item:unknown,list:{remove(value:unknown):void})=>{if(node.name!=='font-face')return;const key=CSS.generate(node);if(faces.has(key))return;const count=[...this.faces.values()].reduce((n,set)=>n+set.size,0);if(count>=8){excess.push({item,list});this.warn('FONT_FACE_LIMIT: Additional publisher fonts are unavailable.')}else faces.add(key)}});for(const {item,list}of excess)list.remove(item);const desired=[...this.faces.values()].reduce((n,set)=>n+set.size,0);if(!await this.resources.reserve('faces',desired)){this.faces.set(index,beforeFaces);const rejected:{item:unknown;list:{remove(value:unknown):void}}[]=[];CSS.walk(ast,{visit:'Atrule',enter:(node:{name:string},item:unknown,list:{remove(value:unknown):void})=>{if(node.name==='font-face')rejected.push({item,list})}});for(const {item,list}of rejected)list.remove(item);this.warn('FONT_FACE_LIMIT: Additional publisher fonts are unavailable.')}
   return prefix.join('\n')+CSS.generate(ast);
+ }
+ private namespaceFamily(declaration:Record<string,unknown>,index:number){
+  const value=declaration.value as {children:{toArray():{type:string;name?:string;value?:string}[]}},families:string[]=[];let parts:string[]=[],quoted=false;
+  const flush=()=>{if(!parts.length)return;const family=parts.join(' ');families.push(!quoted&&/^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-serif|ui-sans-serif|ui-monospace|ui-rounded|math|emoji|fangsong|inherit|initial|unset|revert|revert-layer)$/i.test(family)?family:JSON.stringify(`s${index}-${family}`));parts=[];quoted=false};
+  for(const node of value.children.toArray()){if(node.type==='Operator'&&node.value===',')flush();else if(node.type==='String'){parts.push(node.value!);quoted=true;}else if(node.type==='Identifier')parts.push(node.name!)}flush();
+  if(families.length)declaration.value=CSS.parse(families.join(','),{context:'value'});
  }
  async construct(model:XmlNode|string,base:string,index:number,styles:string[],chain:string[]=[]):Promise<Node>{
   if(typeof model==='string')return document.createTextNode(model);

@@ -93,8 +93,8 @@ app — load `verify-in-browser` before claiming it works.
   cache is App's) — and so does everything baked into it (`domEventHandlers`, the update listener): all
   it reaches must be **stable for the app's life**, i.e. App-level. A per-pane ref only hides staleness.
 - **Loaded representation authorizes content operations**, never extension alone (`documentReading.ts`).
-  EPUB is binary/read-only; reading sentinels never enter text saves, assets or tools. Load `epub-reader`
-  before changing its lifecycle. Images/tables retain ordinary source Markdown (`markdown-tables`).
+  EPUB is binary/read-only; sentinels never enter text saves/assets/tools (`epub-reader`). Word emphasis
+  stays in the original PDF/EPUB view; Text is explicit. Images/tables keep source Markdown (`markdown-tables`).
 - **The app draws its own context menu, `confirm()`, `prompt()` and tooltips (`data-tooltip`, drawn by
   `utils/tooltip.ts`; lint bans `title`) — NO native one is left; keep it so.**
 - **TWO places turn note text into DOM `innerHTML`, safe for different reasons** — `tableWidget`'s

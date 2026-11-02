@@ -16,19 +16,26 @@ function epub(value:unknown):value is EpubReadingRecord{
  return l.kind==='fixed'&&hash(l.sectionDigest)&&obj(l.viewport)&&nonnegative(l.viewport.x)&&nonnegative(l.viewport.y)&&nonnegative(l.viewport.zoom)&&Number(l.viewport.zoom)>0&&Number(l.viewport.zoom)<=10;
 }
 function pdf(value:unknown):value is PdfTextReadingRecord{
- if(!obj(value)||value.v!==1||!['original','text'].includes(value.surface as string)||!hash(value.rawFingerprint)||value.extractionSchema!==1||!obj(value.originalCheckpoint)||!integer(value.textNavigationRevision))return false;
+ if(!obj(value)||value.v!==1||!['original','text'].includes(value.surface as string)||(value.textChoice!==undefined&&value.textChoice!=='manual')||!hash(value.rawFingerprint)||value.extractionSchema!==1||!obj(value.originalCheckpoint)||!integer(value.textNavigationRevision))return false;
  const c=value.originalCheckpoint;if(!integer(c.page)||!nonnegative(c.offset)||Number(c.offset)>1||!nonnegative(c.zoom)||Number(c.zoom)<=0||!integer(c.navigationRevision))return false;
  if(value.pageDigest!==undefined&&!hash(value.pageDigest))return false;
  const a=value.textAnchor;return a===undefined||(obj(a)&&integer(a.physicalPageIndex)&&integer(a.offsetUTF16)&&['before','after'].includes(a.affinity as string)&&context(a));
 }
 export function readReaderViewState(vaultId:string,path:string):EpubReadingRecord|undefined {const v=readRecord<unknown>('readerViewState')[key(vaultId,path)];return epub(v)?structuredClone(v):undefined}
-export function readPdfTextViewState(vaultId:string,path:string):PdfTextReadingRecord|undefined {const v=readRecord<unknown>('pdfTextViewState')[key(vaultId,path)];return pdf(v)?structuredClone(v):undefined}
+export function readPdfTextViewState(vaultId:string,path:string):PdfTextReadingRecord|undefined {
+ const v=readRecord<unknown>('pdfTextViewState')[key(vaultId,path)];if(!pdf(v))return undefined;
+ const record=structuredClone(v);
+ // The old emphasis button opened Text automatically. Only records written by
+ // the independent manual action may restore it; keep every saved anchor/camera.
+ if(record.surface==='text'&&record.textChoice!=='manual')record.surface='original';
+ return record;
+}
 let failed=false;
 export const readerPersistenceUnavailable=()=>failed;
 function flush(name:string){const timer=timers.get(name);if(timer)clearTimeout(timer);timers.delete(name);if(!dirty.has(name))return;const previous=failed;failed=!flushRecord(name);if(!failed)dirty.delete(name);else if(!previous&&typeof window!=='undefined')window.dispatchEvent(new Event('reading-persistence-unavailable'))}
 function write(name:string,identity:ReaderIdentity,value:unknown,now:boolean){dirty.add(name);readRecord<unknown>(name)[key(identity.vaultId,identity.path)]=structuredClone(value);const timer=timers.get(name);if(timer)clearTimeout(timer);if(now)flush(name);else timers.set(name,setTimeout(()=>flush(name),350))}
 export function writeReaderViewState(identity:ReaderIdentity,record:EpubReadingRecord,now=false){if(epub(record))write('readerViewState',identity,record,now)}
-export function writePdfTextViewState(identity:ReaderIdentity,record:PdfTextReadingRecord,now=false){if(pdf(record))write('pdfTextViewState',identity,record,now)}
+export function writePdfTextViewState(identity:ReaderIdentity,record:PdfTextReadingRecord,now=false){if(pdf(record))write('pdfTextViewState',identity,{...record,textChoice:record.surface==='text'?'manual':undefined},now)}
 export function flushReaderViewState(){flush('readerViewState')}
 export function flushPdfTextViewState(){flush('pdfTextViewState')}
 export function moveReaderViewState(identity:ReaderIdentity,from:string,to:string){for(const name of ['readerViewState','pdfTextViewState']){const r=readRecord<unknown>(name),old=key(identity.vaultId,from),next=key(identity.vaultId,to);if(!r[next]&&!r[old])continue;dirty.add(name);delete r[next];if(r[old]){r[next]=r[old];delete r[old]}flush(name)}}

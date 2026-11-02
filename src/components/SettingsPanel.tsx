@@ -234,7 +234,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     </div>
 
                     <h4 className="settings-section">Reading</h4>
-                    <div className="setting-row"><div className="setting-info"><div className="setting-name">Word emphasis</div><div className="setting-desc">One browser-local preference for supported reading views. Inactive in source editing, code, math, annotation and fixed EPUB pages. PDF Original keeps its pixels; Text is extracted separately.</div></div><div className="setting-control"><WordEmphasisToggle capability={{kind:'toggle'}} /></div></div>
+                    <div className="setting-row"><div className="setting-info"><div className="setting-name">Word emphasis</div><div className="setting-desc">One browser-local preference for supported reading views. PDF pages and EPUB text are emphasized in their original view without changing files or layout. Image-only pages and unsupported text stay unchanged; the header explains availability.</div></div><div className="setting-control"><WordEmphasisToggle capability={{kind:'toggle'}} /></div></div>
                     <button type="button" className="settings-reset-btn" onClick={resetReadingPreferences}>Reset reading preferences</button>
                     <h4 className="settings-section">Editing</h4>
 

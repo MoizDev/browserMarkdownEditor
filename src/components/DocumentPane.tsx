@@ -669,7 +669,6 @@ function DocumentPane({
     const readerIdentity = reading.identityForTab(tab);
     const controller = useSyncExternalStore(useCallback(listener => subscribeReadingSurface(tab.id, listener), [tab.id]), useCallback(() => getReadingSurface(readerIdentity), [readerIdentity]));
     const capability = readingCapabilities(tab, controller?.capabilities() ?? tab.readerCapabilities).emphasis;
-    const pdfTextAction = controller?.showPdfText ? () => { void controller.showPdfText!(true).catch(error => onNotify(String(error))); } : undefined;
     /** Showing the typeset LaTeX rather than a CodeMirror view: no view is built
      *  at all in this mode, which is why everything below reads `viewRef` when
      *  called instead of assuming one. */
@@ -1308,7 +1307,7 @@ function DocumentPane({
         const button = event.currentTarget;
         const box = button.getBoundingClientRect();
         const entries: ContextMenuEntry[] = [
-            {kind: 'command',id:'word-emphasis',label:capability.kind === 'pdf-text-action' ? 'Read extracted PDF text with word emphasis' : 'Word emphasis',checked:capability.kind === 'toggle' ? preferences.emphasis.enabled : undefined,disabled:capability.kind === 'inactive' || capability.kind === 'pdf-text-action' && !pdfTextAction,reason:capability.kind === 'inactive' ? capability.reason : capability.kind === 'pdf-text-action' && !pdfTextAction ? 'Open extracted text from the PDF toolbar' : undefined,run:()=>{if(capability.kind==='pdf-text-action')pdfTextAction?.();else if(capability.kind==='toggle')setWordEmphasis(!getReadingPreferences().emphasis.enabled)}},
+            {kind:'command',id:'word-emphasis',label:'Word emphasis',checked:capability.kind==='toggle' && preferences.emphasis.enabled,disabled:capability.kind==='inactive',reason:capability.kind==='inactive'?capability.reason:undefined,run:()=>{if(capability.kind==='toggle')setWordEmphasis(!getReadingPreferences().emphasis.enabled)}},
         ];
         if (isEpub && controller?.showBookPanel) entries.push(
             {kind:'command',id:'book-contents',label:'Book contents',run:()=>controller.showBookPanel?.('contents')},
@@ -1317,7 +1316,7 @@ function DocumentPane({
             ...(['scroll','pages'] as const).map(flow=>({kind:'command' as const,id:`book-${flow}`,label:flow==='scroll'?'Scroll layout':'Pages layout',checked:controller.bookFlow?.()===flow,disabled:controller.capabilities().surface==='epub-fixed',reason:controller.capabilities().surface==='epub-fixed'?'Publisher page geometry is preserved':undefined,run:()=>controller.setBookFlow?.(flow)})),
         );
         if (isPdf && mode === 'read' && controller) entries.push(
-            {kind:'command',id:'pdf-text',label:'Read extracted text',checked:controller.capabilities().surface==='pdf-text',disabled:capability.kind==='inactive' && controller.capabilities().surface!=='pdf-text',run:()=>{void controller.showPdfText?.(false).catch(error=>onNotify(String(error)))}},
+            {kind:'command',id:'pdf-text',label:'Read extracted text',checked:controller.capabilities().surface==='pdf-text',disabled:!controller.showPdfText || tab.readerStatus?.phase==='loading' || !!tab.disk || tab.dirty,reason:tab.disk?'Resolve the PDF disk change first':tab.dirty?'Wait for annotations to finish saving':undefined,run:()=>{void controller.showPdfText?.().catch(error=>onNotify(String(error)))}},
             {kind:'command',id:'pdf-original',label:'Original PDF',checked:controller.capabilities().surface==='pdf-original',run:()=>{void controller.showPdfOriginal?.().catch(error=>onNotify(String(error)))}},
         );
         if(canToggleMode) entries.push({kind:'command',id:'change-mode',label: canAnnotate ? 'Toggle view/annotate mode' : 'Toggle read/edit mode',run:()=>onToggleMode(path)});
@@ -1419,7 +1418,7 @@ function DocumentPane({
                 <span className="editor-slot-title" data-tooltip={path}>{displayName}</span>
                 {tab.dirty && <span className="editor-slot-dot" aria-hidden="true" />}
                 <div className="editor-slot-actions">
-                    <WordEmphasisToggle className="editor-slot-action" capability={capability} onPdfTextAction={pdfTextAction} />
+                    <WordEmphasisToggle className="editor-slot-action" capability={capability} />
                     {canToggleMode && (
                         <button
                             className="editor-slot-action editor-mode-toggle"

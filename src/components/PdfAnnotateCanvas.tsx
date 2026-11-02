@@ -20,6 +20,9 @@ import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask } from 'pdfjs-dist';
 import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
 import { pdfWorker } from '../utils/pdfWorker';
+import { pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
+import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
+import './PdfNativeEmphasis.css';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import {
     captureRegion, createCanvasAgentOps, dominantPage, pagesInView, selectedAgentShapeIds, summarizeShapes,
@@ -27,6 +30,8 @@ import {
 } from './canvasAgentOps';
 
 interface PdfAnnotateCanvasProps {
+    emphasisEnabled?: boolean;
+    onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;
     filePath: string;
     /** Pristine original PDF bytes (never the stamped ones — see pdfAnnotation.ts). */
     original: Uint8Array;
@@ -117,6 +122,7 @@ const REFINE_DEBOUNCE_MS = 350;
 
 /** One page's rasterized backdrop, and how sharp it currently is. */
 interface PageImage {
+    emphasis: boolean;
     url: string;
     scale: number;
 }
@@ -187,7 +193,7 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
-export default function PdfAnnotateCanvas({ filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart }: PdfAnnotateCanvasProps) {
+export default function PdfAnnotateCanvas({ filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult }: PdfAnnotateCanvasProps) {
     // Geometry only. The canvas mounts as soon as this lands; the page images
     // stream in afterwards through pageImagesRef.
     const [pages, setPages] = useState<PdfPageSize[] | null>(null);
@@ -207,6 +213,14 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     const uiRef = useRef<CanvasUiState | undefined>(parsed.ui);
     const serializeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     /** Page images as they arrive, by page index. Read by the asset store. */
+    const [nativeNotice, setNativeNotice] = useState('');
+    const nativePages = useRef(new Map<number, PdfNativeEmphasisResult>());
+    const nativeResult = useRef(onNativeEmphasisResult);
+    nativeResult.current = onNativeEmphasisResult;
+    const emphasisRef = useRef(emphasisEnabled);
+    emphasisRef.current = emphasisEnabled;
+    const refreshEmphasis = useRef<(() => void) | undefined>(undefined);
+    useEffect(() => { refreshEmphasis.current?.(); }, [emphasisEnabled]);
     const pageImagesRef = useRef<Array<PageImage | undefined>>([]);
     /** The open document, so a zoomed-in page can be re-rendered sharper. */
     const sourceRef = useRef<PdfPageSource | null>(null);
@@ -300,6 +314,9 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 // here, after an await, rather than while rendering: the reader
                 // records its position as it unmounts.
                 const start = Math.min(source.sizes.length - 1, readPdfViewPos(filePath)?.page ?? 0);
+                nativePages.current.clear();
+                setNativeNotice('');
+                nativeResult.current?.(start, undefined);
                 shownPageRef.current = start;
                 setThumbsStart(start);
                 setPages(source.sizes);
@@ -434,90 +451,76 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         let refining = false;
         let refineAgain = false;
         let sharpenWanted = false;
+        let closed = false;
+        let activePaint: AbortController | undefined;
         const unrenderable = new Set<number>();
         const refinePages = async (sharpen: boolean) => {
             if (sharpen) sharpenWanted = true;
+            if (closed) return;
             if (refining) { refineAgain = true; return; }
             const source = sourceRef.current;
             const images = pageImagesRef.current;
             if (!source) return;
-
             refining = true;
             try {
                 do {
                     refineAgain = false;
+                    if (closed || pageImagesRef.current !== images) return;
                     const viewport = editor.getViewportPageBounds();
-
-                    // 1. The nearest never-drawn page within a screen of the view.
-                    //    One per iteration, then look again: the view may have
-                    //    moved while it rendered.
-                    const reach = viewport.height;
                     const middle = (viewport.minY + viewport.maxY) / 2;
-                    let missing = -1;
-                    for (let i = 0, best = Infinity; i < boxes.length; i++) {
-                        const box = boxes[i];
-                        if (images[i] || unrenderable.has(i)) continue;
-                        if (box.y > viewport.maxY + reach || box.y + box.height < viewport.minY - reach) continue;
-                        const distance = Math.abs(box.y + box.height / 2 - middle);
-                        if (distance < best) { best = distance; missing = i; }
-                    }
-                    if (missing >= 0) {
-                        try {
-                            const url = await source.renderPage(missing);
-                            // The canvas may have gone away mid-render; the cleanup
-                            // has already emptied the array, so this URL is ours to
-                            // drop rather than ours to install.
-                            if (pageImagesRef.current !== images) { URL.revokeObjectURL(url); return; }
-                            images[missing] = { url, scale: PAGE_RENDER_SCALE };
-                            refreshPageAsset(editor, missing);
-                        } catch (err) {
-                            // Left blank rather than retried on every pan.
-                            unrenderable.add(missing);
-                            console.warn(`Could not render PDF page ${missing + 1}:`, err);
-                        }
-                        refineAgain = true;
-                        continue;
-                    }
-
-                    // 2. Sharpen, once the view has settled (see scheduleRefine).
-                    if (!sharpenWanted) continue;
-                    sharpenWanted = false;
-                    // Zoom is CSS pixels per page unit; the display adds its own
-                    // ratio on top, and it is the product that a raster has to
-                    // match to look sharp.
-                    const wanted = Math.min(
-                        MAX_PAGE_SCALE,
-                        Math.max(
-                            PAGE_RENDER_SCALE,
-                            Math.ceil((editor.getZoomLevel() * window.devicePixelRatio) / PAGE_SCALE_STEP) * PAGE_SCALE_STEP,
-                        ),
-                    );
+                    const wanted = Math.min(MAX_PAGE_SCALE, Math.max(PAGE_RENDER_SCALE,
+                        Math.ceil((editor.getZoomLevel() * window.devicePixelRatio) / PAGE_SCALE_STEP) * PAGE_SCALE_STEP));
+                    const emphasis = emphasisRef.current;
+                    // Decide again after each await. Visible stale backdrops beat
+                    // even missing neighbors; distant cached pages are invalidated
+                    // lazily, so a toggle costs the approach window, not visit history.
+                    let candidate: { index: number; scale: number; priority: number } | undefined;
                     for (let i = 0; i < boxes.length; i++) {
-                        const box = boxes[i];
-                        const current = images[i];
-                        if (!current) continue;
+                        if (unrenderable.has(i)) continue;
+                        const box = boxes[i], current = images[i];
                         const visible = box.y < viewport.maxY && box.y + box.height > viewport.minY
                             && box.x < viewport.maxX && box.x + box.width > viewport.minX;
-                        const target = visible ? wanted : PAGE_RENDER_SCALE;
-                        if (current.scale === target) continue;
-                        // Dropping back to base is a re-render too, but a cheap
-                        // one, and it is what returns the memory a zoomed-in page
-                        // borrowed.
-                        const url = await source.renderPage(i, target);
-                        if (pageImagesRef.current !== images) { URL.revokeObjectURL(url); return; }
-                        URL.revokeObjectURL(current.url);
-                        images[i] = { url, scale: target };
-                        refreshPageAsset(editor, i);
+                        const near = box.y <= viewport.maxY + viewport.height && box.y + box.height >= viewport.minY - viewport.height;
+                        const scale = visible && sharpenWanted ? wanted : visible && current ? current.scale : PAGE_RENDER_SCALE;
+                        const stale = !current || near && current.emphasis !== emphasis;
+                        const resize = !!current && (visible ? sharpenWanted && current.scale !== wanted : current.scale !== PAGE_RENDER_SCALE);
+                        if ((!near && !resize) || (!stale && !resize)) continue;
+                        const priority = (visible ? 0 : near ? 1e9 : 2e9) + Math.abs(box.y + box.height / 2 - middle);
+                        if (!candidate || priority < candidate.priority) candidate = { index: i, scale, priority };
                     }
+                    if (!candidate) { sharpenWanted = false; continue; }
+                    const { index, scale } = candidate;
+                    const controller = new AbortController(); activePaint = controller;
+                    try {
+                        let native: PdfNativeEmphasisResult | undefined;
+                        const url = await source.renderPage(index, scale, emphasis, result => { native = result; }, controller.signal);
+                        if (closed || pageImagesRef.current !== images || controller.signal.aborted || emphasis !== emphasisRef.current) {
+                            URL.revokeObjectURL(url); refineAgain = true; continue;
+                        }
+                        const previous = images[index];
+                        images[index] = { url, scale, emphasis };
+                        refreshPageAsset(editor, index);
+                        if (previous) URL.revokeObjectURL(previous.url);
+                        if (native) {
+                            nativePages.current.set(index, native);
+                            if (shownPageRef.current === index) {
+                                setNativeNotice(pdfNativeEmphasisNotice(native)); nativeResult.current?.(index, native);
+                            }
+                        }
+                    } catch (err) {
+                        if (!controller.signal.aborted) {
+                            unrenderable.add(index);
+                            console.warn(`Could not render PDF page ${index + 1}:`, err);
+                        }
+                    } finally { if (activePaint === controller) activePaint = undefined; }
+                    refineAgain = true;
                 } while (refineAgain);
-            } catch (err) {
-                // A failed refinement leaves the previous image in place, which is
-                // merely less sharp — never worth breaking the canvas over.
-                console.warn('Could not re-render PDF pages for the current zoom:', err);
-            } finally {
-                refining = false;
-            }
+            } finally { refining = false; }
         };
+
+        // Only remote backdrop assets change; ink, history and camera are retained.
+        const refresh = () => { activePaint?.abort(); void refinePages(true); };
+        refreshEmphasis.current = refresh;
 
         // Sharpening waits for the view to settle: a zoom gesture passes through
         // every scale on the way, and rendering each one would be wasted work.
@@ -539,12 +542,15 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             if (shown !== shownPageRef.current || firstView) {
                 firstView = false;
                 shownPageRef.current = shown;
+                setNativeNotice(pdfNativeEmphasisNotice(nativePages.current.get(shown)));
+                nativeResult.current?.(shown, nativePages.current.get(shown));
                 controlsRef.current?.setPage(shown);
                 thumbsRef.current?.setCurrentPage(shown);
             }
             writePdfViewPos(filePath, { page: top, offset, zoom: editor.getZoomLevel() / fitWidthZoom(editor, boxes) }, false);
             if (persistTimer) clearTimeout(persistTimer);
             persistTimer = setTimeout(() => { persistTimer = null; flushPdfViewPositions(); }, 400);
+            activePaint?.abort();
             void refinePages(false);
             scheduleRefine();
         });
@@ -803,6 +809,9 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             stopDirty.forEach(stop => stop());
             disposePen();
             disposeInvert();
+            closed = true;
+            activePaint?.abort();
+            if (refreshEmphasis.current === refresh) refreshEmphasis.current = undefined;
             stopViewWatch();
             lock.dispose();
             if (refineTimer) clearTimeout(refineTimer);
@@ -878,6 +887,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 onToggleThumbs={toggleThumbs}
                 onJump={jumpToPage}
             >
+                {emphasisEnabled && nativeNotice && <span className="pdf-native-emphasis-notice" role="status">{nativeNotice}</span>}
                 <PdfInvertToggle />
             </PageControls>
         </div>

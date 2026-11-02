@@ -1,10 +1,9 @@
-import { emphasisRanges } from '../utils/readingEmphasis';
 import type { Utf16Range } from '../utils/readingEmphasis';
 export const EPUB_TEXT_SCHEMA='epub-text-v1';
 const blocks=new Set('p div section article h1 h2 h3 h4 h5 h6 li tr blockquote pre figure figcaption dt dd'.split(' '));
 export interface TextInterval {node:Text;from:number;to:number;synthetic:boolean;eligible:boolean;visible?:boolean}
 export interface CanonicalText {text:string;intervals:TextInterval[];byNode:WeakMap<Node,TextInterval>;elements:WeakMap<Node,{from:number;to:number}>;exclusions:Utf16Range[];tokenBreaks:number[]}
-export interface RenderMap {root:Element;fragments:WeakMap<Node,{node:Text;from:number;to:number}[]>;offsets:WeakMap<Node,{from:number;to:number}>;elements:WeakMap<Node,{from:number;to:number}>;wrappers:WeakSet<Element>;emphasisUnavailable?:string}
+export interface RenderMap {root:Element;fragments:WeakMap<Node,{node:Text;from:number;to:number}[]>;offsets:WeakMap<Node,{from:number;to:number}>;elements:WeakMap<Node,{from:number;to:number}>}
 export function projectCanonical(root:Element):CanonicalText {
  const result:CanonicalText={text:'',intervals:[],byNode:new WeakMap(),elements:new WeakMap(),exclusions:[],tokenBreaks:[]};
  const add=(node:Text,synthetic:boolean,eligible:boolean)=>{const interval={node,from:result.text.length,to:result.text.length+node.length,synthetic,eligible};result.text+=node.data;result.intervals.push(interval);result.byNode.set(node,interval);if(!eligible)result.exclusions.push({from:interval.from,to:interval.to});if(synthetic)result.tokenBreaks.push(interval.from,interval.to)};
@@ -23,25 +22,13 @@ export function projectCanonical(root:Element):CanonicalText {
  }
  walk(root);return result;
 }
-export function renderCanonical(root:Element,canonical:CanonicalText,enabled:boolean,locale:string):RenderMap {
- const map:RenderMap={root:null as unknown as Element,fragments:new WeakMap(),offsets:new WeakMap(),elements:new WeakMap(),wrappers:new WeakSet()};
- // Bound generated wrapper growth independently of the publisher's node budget.
- // Large sections still render and copy their complete original canonical text.
- if(canonical.text.length>1024*1024)map.emphasisUnavailable='Word emphasis is unavailable for sections larger than 1 MiB of text.';
- let marks=enabled&&!map.emphasisUnavailable?emphasisRanges({text:canonical.text,locale,exclusions:canonical.exclusions,tokenBreaks:canonical.tokenBreaks}):[];
- if(marks.length>20000){map.emphasisUnavailable='Word emphasis is unavailable for sections requiring more than 20,000 emphasis spans.';marks=[]}
- let markIndex=0;
+export function renderCanonical(root:Element,canonical:CanonicalText):RenderMap {
+ const map:RenderMap={root:null as unknown as Element,fragments:new WeakMap(),offsets:new WeakMap(),elements:new WeakMap()};
+ // One text node per source interval for the lifetime of this mounted section.
+ // Native highlight ranges never enter this map or alter its UTF-16 coordinates.
  function clone(node:Node):Node {
-  if(node.nodeType===3){const text=node as Text,interval=canonical.byNode.get(node);if(!interval)return document.createTextNode(text.data);
-   while(markIndex<marks.length&&marks[markIndex].to<=interval.from)markIndex++;const ranges:Utf16Range[]=[];for(let i=markIndex;i<marks.length&&marks[i].from<interval.to;i++)ranges.push(marks[i]);const cuts=new Set([0,text.length]);
-   for(const m of ranges){cuts.add(Math.max(0,m.from-interval.from));cuts.add(Math.min(text.length,m.to-interval.from))}
-   let rangeIndex=0;const sorted=[...cuts].sort((a,b)=>a-b),fragment=document.createDocumentFragment(),fragments:{node:Text;from:number;to:number}[]=[];
-   if(!text.length){const t=document.createTextNode('');fragments.push({node:t,from:0,to:0});map.offsets.set(t,{from:interval.from,to:interval.to});fragment.append(t)}
-   for(let i=1;i<sorted.length;i++){
-    const from=sorted[i-1],to=sorted[i],t=document.createTextNode(text.data.slice(from,to));map.offsets.set(t,{from:interval.from+from,to:interval.from+to});fragments.push({node:t,from,to});
-    while(rangeIndex<ranges.length&&ranges[rangeIndex].to<=interval.from+from)rangeIndex++;const mark=ranges[rangeIndex];if(mark&&mark.from<=interval.from+from&&mark.to>=interval.from+to){const span=document.createElement('span');span.className='reader-emphasis';span.style.setProperty('font-weight','700','important');map.wrappers.add(span);span.append(t);fragment.append(span);map.elements.set(span,{from:interval.from+from,to:interval.from+to})}else fragment.append(t);
-   }
-   map.fragments.set(node,fragments);return fragment;
+  if(node.nodeType===3){const text=node as Text,t=document.createTextNode(text.data),interval=canonical.byNode.get(node);
+   if(interval){map.fragments.set(node,[{node:t,from:0,to:text.length}]);map.offsets.set(t,{from:interval.from,to:interval.to})}return t;
   }
   const el=node.cloneNode(false),bounds=canonical.elements.get(node);if(bounds)map.elements.set(el,bounds);for(const child of node.childNodes)el.appendChild(clone(child));return el;
  }

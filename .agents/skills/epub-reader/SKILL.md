@@ -39,5 +39,11 @@ Saved locators resolve href + occurrence before any ordinal/bounds check, includ
 Removed sections fall back to a valid linear start with a notice; raw fingerprint drift is disclosed.
 Generated Contents entries retain their spine ordinal for repeated hrefs. Preserve visible ARIA-hidden
 artwork/prose in the clone; computed hidden intervals stay indexed but leave Copy/selected text.
-App-controlled reflow sizes/leading and generated prefix weight override publisher important styles;
-fixed geometry and authored strong exclusions remain separate.
+Publisher typography/colors win; Aa font/size/leading are fallback defaults. NativeEmphasis paints
+CSS Custom Highlight ranges on original XHTML nodes with metric-preserving glyph ink, including
+fixed/mixed sections. No prefix wrappers, section remount or camera reposition on emphasis-only
+configure. Image/SVG-only, RTL/vertical and unsupported runs stay original with inactive capability.
+
+Windowing must retain attached section roots: removing even an unchanged root collapses live
+Selection/Highlight ranges. Initialize new roots after attachment/styles settle, including visibility
+when emphasis is Off. Copy checks current computed visibility; scroll does not rebuild the book.

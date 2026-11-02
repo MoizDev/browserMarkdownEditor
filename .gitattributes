@@ -1,0 +1,4 @@
+# Preserve pinned upstream bytes: archive.js contains a literal whitespace table,
+# and the bundled license notice retains upstream line endings/spaces.
+src/epub/vendor/archive.js whitespace=-blank-at-eol
+src/epub/vendor/THIRD_PARTY_NOTICES.txt whitespace=-blank-at-eol

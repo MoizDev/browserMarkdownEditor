@@ -78,6 +78,9 @@ export interface ActiveFile {
  * ───────────────────────────────────────────────────────────────────────── */
 
 export interface OpenTab {
+  readerStatus?: import('./reading').ReaderStatus;
+  readerCapabilities?: import('./reading').ReaderCapabilities;
+  representation: import('./reading').DocumentRepresentation;
   /**
    * Identifies the DOCUMENT rather than the file, for the lifetime of this
    * session. A rename carries it (the same document under a new name); the file
@@ -428,6 +431,7 @@ export interface FileSystemContextValue {
   /** Take one vault off the recent list — a record only, nothing on disk.
    *  Resolves false if the list could not be rewritten. */
   forgetRecentVault: (id: string) => Promise<boolean>;
+  readFileSnapshot: (handle: FileSystemFileHandle, signal?: AbortSignal) => Promise<import('./reading').ReadOnlyFileSnapshot>;
   readFile: (fileHandle: FileSystemFileHandle) => Promise<string>;            // :143
   writeFile: (fileHandle: FileSystemFileHandle, content: string) => Promise<void>; // :151
   // Binary IO — PDFs cannot ride the text path (UTF-8 decode + CRLF
@@ -504,7 +508,7 @@ export interface ContentChangeOptions {
 
 /** What the DiskBar's buttons ask App to do (OpenTab.disk): 'reload' and
  *  'keep' resolve a conflict, 'save' and 'close' a deletion. */
-export type DiskAction = 'reload' | 'keep' | 'save' | 'close';
+export type DiskAction = 'reload' | 'keep' | 'save' | 'close' | 'retry';
 
 export type VersionedWriteResult =
   | { status: 'written'; version: DiskVersion }

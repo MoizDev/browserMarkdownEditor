@@ -434,3 +434,10 @@ raising the setting later still has history to show.
   pick is `'ok'` — nothing failed, so the menu closes as it always did — and so is the unsupported
   browser's `alert` path being `'error'`. `FileExplorer.browseForVault` no longer closes the menu
   before the call; `VaultMenu.browse` owns that, mirroring its `activate`.
+
+Binary EPUB snapshots use readFileSnapshot: immutable Blob/stat, same-Blob bounded worker fingerprint and explicit disposal. Strict UTF-8 text reads reject ZIP/PDF signatures and NUL; renamed binaries cannot inherit text write authority. App document operations also gate on loaded representation.
+
+Cross-kind retarget preserves the latest live revision after destination acquisition, repeats if
+editing continues during preservation, and commits tab/layout synchronously without another await.
+PDF edits are preserved as rebuilt PDFs, not snapshot JSON. A failed preservation retains the editor.
+Graph/search cache deterministic text refusals by stat as negative results; IO failures retry.

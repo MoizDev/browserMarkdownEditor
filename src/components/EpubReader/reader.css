@@ -1,0 +1,25 @@
+/* Pane chrome only. Publisher styles and reader typography remain inside the opaque frame. */
+.epub-pane{height:100%;min-height:0;display:flex;flex-direction:column;position:relative;background:var(--background-primary);color:var(--text-primary);overflow:hidden}
+.epub-reader-body{position:relative;flex:1;min-height:0;display:flex}
+.epub-frame-host{flex:1;min-width:0;min-height:0}
+.epub-reader-frame{border:0;width:100%;height:100%;display:block}
+.epub-toolbar,.epub-footer{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--background-modifier-border,#444);font:12px/1.4 system-ui;flex-wrap:wrap}
+.epub-footer{border-bottom:0;border-top:1px solid var(--background-modifier-border,#444)}
+.epub-book-label{flex:1;min-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.epub-pane button,.epub-pane select,.epub-pane input{font:inherit;color:inherit;background:var(--background-secondary,#303136);border:1px solid var(--background-modifier-border,#555);border-radius:5px;padding:5px 8px}
+.epub-pane button{cursor:pointer}.epub-pane button:disabled{opacity:.45;cursor:default}.epub-pane button[aria-pressed=true]{background:var(--interactive-accent,#5b6cff);color:white}
+.epub-pane :focus-visible{outline:2px solid var(--interactive-accent,#8b9dff);outline-offset:2px}
+.epub-panel{position:absolute;z-index:5;inset-block:0;inset-inline-start:0;width:min(320px,100%);min-width:0;overflow:auto;box-sizing:border-box;padding:min(16px,5%);background:var(--background-secondary,#25262b);border-inline-end:1px solid var(--background-modifier-border,#555);box-shadow:4px 0 18px #0003}
+.epub-panel-header{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:16px;font-weight:600;overflow-wrap:anywhere}
+.epub-panel-header>span{min-width:0}.epub-panel-header>button{flex-shrink:0}
+/* Native selects/ranges otherwise keep intrinsic widths beyond a narrow split. */
+.epub-panel :is(input,select){min-width:0;width:100%;box-sizing:border-box}
+.epub-panel input[type=checkbox]{width:auto;align-self:flex-start}
+.epub-panel ol{padding-inline-start:18px}.epub-panel li{margin:6px 0}.epub-panel li button{text-align:start;width:100%;border:0;background:transparent}
+.epub-panel label{display:flex;flex-direction:column;gap:5px;margin:14px 0}.epub-panel p{font:12px/1.5 system-ui;opacity:.8}
+.epub-search-hits{list-style:none;padding:0!important}.epub-search-hits button{white-space:normal}
+.epub-state{position:absolute;z-index:4;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:32px;background:var(--background-primary,#202124);gap:12px;font:14px/1.6 system-ui}
+.epub-state p{max-width:42ch}.epub-warning{font:12px/1.5 system-ui;padding:5px 12px;background:var(--background-secondary,#333)}
+.epub-external{position:absolute;z-index:10;inset:20% 12%;padding:20px;background:var(--background-secondary,#303136);border:1px solid var(--background-modifier-border,#555);border-radius:10px;box-shadow:0 8px 30px #0006;overflow-wrap:anywhere}
+
+@media (pointer:coarse){.epub-pane button,.epub-pane select{min-height:44px;min-width:44px}.epub-pane input[type=range]{min-height:44px}}

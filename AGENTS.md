@@ -27,30 +27,27 @@ Skills live in `.agents/skills/<name>/SKILL.md`.
 ## What this is
 
 A local-first, Obsidian-style Markdown editor that runs **entirely in the browser**, no backend or
-database (its one network use: the local VaultAgent helper behind the AI agent and the terminal). It reads and
+database. Optional fonts use Google; the local VaultAgent helper serves AI and terminal. It reads and
 writes the user's real files through the **File System Access API**, so it is **Chromium-only by
 design** (`showDirectoryPicker`, OPFS, `color-mix` are used freely). Stack: **React 19 + Vite 7 +
 TS 6 + CodeMirror 6**, KaTeX, mermaid, tldraw (drawings, notebooks, PDF ink), pdf.js + pdf-lib, idb-keyval, xterm.js.
 
-> Ported from JS: comments cite stale `.jsx` lines — grep. `types/index.ts` = domain + FS Access types.
-
 ## Commands
 
 ```bash
-npm run dev        # Vite dev server (React Fast Refresh)
-npm run build      # production build → dist/
+npm run dev        # regenerate contained EPUB frame, then Vite + React Fast Refresh
+npm run build      # regenerate EPUB frame + notices, production build → dist/
 npm run typecheck  # tsc for src+shared, then -p helper (the real "did I break types" check)
 npm run lint       # eslint .      (flat config, loaded via jiti)
 npm run preview    # serve a production build
 npm run helper:dev # the VaultAgent helper (Bun) from source, dev origins allowed; helper:build compiles
 npm run helper:test # bun test helper/ — security, CLI stream parsers, self-update, terminal + PTY host
-npm run test:app   # bun test src/ — the chat tree's branching rules, and nothing else (see below)
+npm run test:app   # bun test src/ — pure chat tree/store tests
 ```
 
-**The app's only tests are `test:app`**: one pure module, the branching chat transcript
-(`utils/chatTree.ts`). `typecheck` and `lint` are its other static gates, and everything behavioural
-is verified by Playwright driving it in headless Chromium — see `verify-in-browser`, and use it
-before saying a change works.
+**Checks:** `test:app` covers pure chat tree/store modules; `helper:test` covers the helper.
+`typecheck` and `lint` are static gates. UI behaviour needs headless Playwright against the
+app — load `verify-in-browser` before claiming it works.
 
 **Env:** `VITE_TLDRAW_LICENSE_KEY` — production only; a missing key never shows up in `npm run dev`.
 
@@ -95,8 +92,9 @@ before saying a change works.
 - **A CodeMirror `EditorState` outlives its pane — and `EditorPane`, which the graph view unmounts** (the
   cache is App's) — and so does everything baked into it (`domEventHandlers`, the update listener): all
   it reaches must be **stable for the app's life**, i.e. App-level. A per-pane ref only hides staleness.
-- **Images and tables are deliberate abstractions over the app's own markdown** — the raw text is
-  unreachable by design and the file on disk stays ordinary markdown (`markdown-tables` has the how).
+- **Loaded representation authorizes content operations**, never extension alone (`documentReading.ts`).
+  EPUB is binary/read-only; reading sentinels never enter text saves, assets or tools. Load `epub-reader`
+  before changing its lifecycle. Images/tables retain ordinary source Markdown (`markdown-tables`).
 - **The app draws its own context menu, `confirm()`, `prompt()` and tooltips (`data-tooltip`, drawn by
   `utils/tooltip.ts`; lint bans `title`) — NO native one is left; keep it so.**
 - **TWO places turn note text into DOM `innerHTML`, safe for different reasons** — `tableWidget`'s

@@ -482,8 +482,11 @@ while `editor.inputs.isPointing` — serializing underneath a moving pen is what
 on a 3,900-shape board, one ~6s stroke: 665ms blocked / longest stall 136ms → 435ms / 75ms. Anything
 that lengthens that debounce owes a matching flush: unmount, `flushPending` **and `pagehide`**.
 
-`store.listen` is scoped `{source:'user', scope:'document'}` so programmatic loads and camera moves
-don't dirty the file; a separate session-scope listener only reschedules a save when the UI-state
+Drawing/notebook `store.listen` is scoped `{source:'user', scope:'document'}`; PDF annotation uses
+synchronous user-only shape/asset/binding side effects, because a deferred listener missed immediate
+flushes. PDF exports serialize and snapshot before awaiting overlays; App awaits pending export before
+leaving annotation. FontManager cleanup waits for in-flight document fonts, avoiding late updates to
+its disposed map. Programmatic loads and camera moves don't dirty the file; a separate session-scope listener only reschedules a save when the UI-state
 slice actually changed. Unmounting mid-debounce flushes synchronously. `getEfficientZoomLevel` is
 patched to defeat tldraw's below-50%-zoom thin-line LOD under `FULL_INK_SHAPE_LIMIT` shapes.
 
@@ -511,12 +514,12 @@ covers both, and every site that used to say `isDrawingFile` for that purpose no
 - **Agent edits must save exactly like a pen stroke** — and do: they go through the editor API inside
   one `markHistoryStoppingPoint` + `editor.run` (one ⌘Z), which `@tldraw/store` records as
   `source: 'user'` (only `mergeRemoteChanges` is `'remote'`), so every pane's existing
-  `{source:'user', scope:'document'}` listener serializes them; a PDF still rebuilds from the pristine
+  user/document change handler serializes them; a PDF still rebuilds from the pristine
   original. NEVER apply agent ops headless or as a remote merge.
 - Page backdrops (ruled paper, PDF page images) are never listed; locked shapes are listed but never
   targetable. Agent shapes get every style set explicitly and `scale` reset to 1 — `applyPenDefaults`
   would otherwise stamp the user's pen onto them.
-- `pageText` exists in both `PdfViewer` and `PdfAnnotateCanvas` (and a whitespace-normalizing third in
+- `pageText` exists in both `PdfViewer` and `PdfAnnotateCanvas` (and a third in
   `utils/pdfText.ts`): change them together.
 
 ## Canvas positions (`utils/canvasViewState.ts`)
@@ -528,3 +531,8 @@ flushed on unmount and `pagehide`), a notebook's `{page, offset, zoom}` (from `w
 through `cameraFor`). A first open with no record behaves as before. Like the other path-keyed
 records it does not follow renames and is never pruned.
 
+
+Original and extracted Text share PdfDocumentSession with document/page leases; release, never direct page.cleanup while another consumer can use it. pdf-page-v1 replaces three old trim/collapse reporters with exact returned strings/order/EOL. PdfPane consumes the central PdfReadingBinding: displayed version, full-token surface controller, shared preferences and validated synchronous Text records. Original camera memory updates precede header actions; Text→annotation maps through Original before mounting the canvas. The actual Text reporter has no image-capture fallback. No glyph/pixel emphasis is claimed.
+
+PDF Text native Copy, custom Copy and selected-text reporting share page-model selection extraction.
+Only page bodies contribute text; page controls/quality notices never enter that canonical slice.

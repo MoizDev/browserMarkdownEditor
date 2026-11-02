@@ -161,3 +161,6 @@ export function notebookPdfName(name: string): string {
 }
 
 
+
+/** Native binary, always read-only. Keep separate from vault text eligibility. */
+export function isEpubFile(name: string): boolean { return /\.epub$/i.test(name); }

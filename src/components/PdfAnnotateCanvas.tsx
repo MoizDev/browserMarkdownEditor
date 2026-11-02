@@ -10,7 +10,7 @@ import { CANVAS_COMPONENTS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, a
 import { bindImageInvertKey } from './invertibleImageShape';
 import {
     flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,
-    writePdfViewPos, writeThumbnailsOpen,
+    writePdfViewPos, writeThumbnailsOpen, recordPdfNavigation,
 } from '../utils/pdfViewState';
 import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
@@ -18,6 +18,7 @@ import PageControls, { type PageControlsHandle } from './PageControls';
 import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView } from './pagedCanvas';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask } from 'pdfjs-dist';
+import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
 import { pdfWorker } from '../utils/pdfWorker';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import {
@@ -141,20 +142,12 @@ function refreshPageAsset(editor: Editor | null, index: number): void {
     });
 }
 
-/** One page's text as pdf.js extracts it: items in content order, a line
- *  break wherever pdf.js marks one. PdfViewer holds the same function (a
- *  component module may export only components, and a shared util would be a
- *  new pdf.js importer to police) — change both. */
 async function pageText(doc: pdfjs.PDFDocumentProxy, pageNumber: number): Promise<string> {
     const page = await doc.getPage(pageNumber);
-    const content = await page.getTextContent();
-    let out = '';
-    for (const item of content.items) {
-        if (!('str' in item)) continue;
-        out += item.str;
-        if (item.hasEOL) out += '\n';
-    }
-    return out.trim();
+    try {
+        const content = await page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        return projectPdfPageV1(content.items, pdfPageGeometry(page)).text;
+    } finally { page.cleanup(); }
 }
 
 /** Decode an image and draw it over the whole `w`×`h` of `ctx`. */
@@ -332,6 +325,13 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     const handleMount = useCallback((editor: Editor) => {
         if (!pages) return;
         editorRef.current = editor;
+        // Measured: a fast mode handoff during font loading produced 32
+        // AtomMap errors: tldraw clears FontManager before its load promises
+        // update that map. Defer only its bookkeeping cleanup, not the editor
+        // or canvas, until the document's in-flight fonts have settled.
+        const disposeFonts = editor.fonts.dispose.bind(editor.fonts);
+        const fontDocument = editor.getContainer().ownerDocument;
+        editor.fonts.dispose = () => { void fontDocument.fonts.ready.then(disposeFonts); };
 
         // Add the page backdrops ONLY if the snapshot didn't already bring them.
         //
@@ -534,6 +534,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         let persistTimer: ReturnType<typeof setTimeout> | null = null;
         let firstView = true;
         const stopViewWatch = watchPageView(editor, () => boxes, ({ top, offset, shown }) => {
+            if (!firstView && (viewPosRef.current.top !== top || viewPosRef.current.offset !== offset)) recordPdfNavigation(filePath, 'annotation');
             viewPosRef.current = { top, offset };
             if (shown !== shownPageRef.current || firstView) {
                 firstView = false;
@@ -563,6 +564,10 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             // so the builder leaves them untouched.
             const annotations = editor.getCurrentPageShapes()
                 .filter(s => !pageShapeIdsRef.current.has(s.id));
+            // Snapshot the same revision as the overlays before any async
+            // export. A later stroke belongs to the next serialized flush.
+            uiRef.current = readCanvasUi(editor);
+            const json = JSON.stringify({ ...getSnapshot(editor.store), ui: uiRef.current });
 
             // Bucket the shapes by page ONCE, rather than re-filtering the whole
             // annotation set per page. The old form called getShapePageBounds
@@ -653,8 +658,6 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             // Hand the binary to the save path, then report the snapshot as this
             // tab's content — that marks it dirty and triggers the write.
             setPdfRenderData(filePath, { original, overlays });
-            uiRef.current = readCanvasUi(editor);
-            const json = JSON.stringify({ ...getSnapshot(editor.store), ui: uiRef.current });
             if (immediate) onFlushNowRef.current(filePath, json);
             else onContentChangeRef.current(filePath, json);
         };
@@ -663,6 +666,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         // no export in flight: its strokes reach the save funnel only at its end.
         let pendingFlush: Promise<void> | null = null;
         const runFlush = (immediate = false): Promise<void> => {
+            if (pendingFlush) return pendingFlush.then(() => hasUnsavedRef.current ? runFlush(immediate) : undefined);
             const run = flush(immediate).finally(() => { if (pendingFlush === run) pendingFlush = null; });
             pendingFlush = run;
             return run;
@@ -696,6 +700,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 const { shapes, total } = summarizeShapes(editor, model, b => onScreen.has(pageAt(boxes, (b.minY + b.maxY) / 2) + 1));
                 return {
                     kind: 'pdf-annotate',
+                    surface: 'annotation',
                     pageCount: boxes.length,
                     page: viewPosRef.current.top + 1,
                     offset: viewPosRef.current.offset,
@@ -778,15 +783,24 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
            colour was clicked would stall the pen for nothing. The pen is
            captured by the next stroke's flush instead, which is the moment it
            first matters. */
-        const unlisten = editor.store.listen(() => {
+        const markUnsaved = () => {
             hasUnsavedRef.current = true;
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
             serializeTimerRef.current = setTimeout(() => { void runFlush(); }, SERIALIZE_DEBOUNCE_MS);
-        }, { source: 'user', scope: 'document' });
+        };
+        // store.listen delivers on a later frame: an immediate flush/mode
+        // handoff after a shape change previously saw no pending ink. These
+        // public side effects mark document changes synchronously. Remote page
+        // raster refinements and session/camera records remain display-only.
+        const stopDirty = (['shape', 'asset', 'binding'] as const).flatMap(type => [
+            editor.sideEffects.registerAfterCreateHandler(type, (_record, source) => { if (source === 'user') markUnsaved(); }),
+            editor.sideEffects.registerAfterChangeHandler(type, (_before, _after, source) => { if (source === 'user') markUnsaved(); }),
+            editor.sideEffects.registerAfterDeleteHandler(type, (_record, source) => { if (source === 'user') markUnsaved(); }),
+        ]);
 
         return () => {
             unregisterView();
-            unlisten();
+            stopDirty.forEach(stop => stop());
             disposePen();
             disposeInvert();
             stopViewWatch();

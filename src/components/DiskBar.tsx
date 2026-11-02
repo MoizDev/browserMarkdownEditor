@@ -2,6 +2,7 @@ import { memo, useState } from 'react';
 import type { DiskAction } from '../types';
 
 interface DiskBarProps {
+    readOnly?: boolean;
     /** The document's file name, as the bar names it. */
     name: string;
     state: 'conflict' | 'deleted';
@@ -28,7 +29,7 @@ function conflictName(name: string): string {
  * beside the file as a `(conflict)` copy (AGENTS.md: nothing the user made is
  * destroyed outright).
  */
-function DiskBar({ name, state, path, onAction }: DiskBarProps) {
+function DiskBar({ name, state, path, onAction, readOnly }: DiskBarProps) {
     const [busy, setBusy] = useState(false);
     const run = async (action: DiskAction) => {
         if (busy) return;
@@ -41,11 +42,11 @@ function DiskBar({ name, state, path, onAction }: DiskBarProps) {
         <div className={`disk-bar is-${state}`} role="status">
             <span className="disk-bar-message">
                 {state === 'conflict'
-                    ? <><strong>{name}</strong> changed on disk while you had unsaved edits.</>
+                    ? <><strong>{name}</strong> changed on disk{readOnly ? '.' : ' while you had unsaved edits.'}</>
                     : <><strong>{name}</strong> was deleted on disk.</>}
             </span>
             <span className="disk-bar-actions">
-                {state === 'conflict' ? (
+                {readOnly ? (<><button type="button" className="disk-bar-btn" disabled={busy} onClick={()=>void run('retry')}>Retry</button><button type="button" className="disk-bar-btn" disabled={busy} onClick={()=>void run('close')}>Close</button></>) : state === 'conflict' ? (
                     <>
                         <button
                             type="button"

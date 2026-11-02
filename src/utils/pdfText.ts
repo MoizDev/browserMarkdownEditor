@@ -14,6 +14,7 @@
 
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { pdfPageGeometry, projectPdfPageV1 } from './pdfPageText';
 import { pdfWorker } from './pdfWorker';
 
 async function withPdf<T>(bytes: Uint8Array, read: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
@@ -30,14 +31,8 @@ async function withPdf<T>(bytes: Uint8Array, read: (doc: PDFDocumentProxy) => Pr
 async function pageText(doc: PDFDocumentProxy, pageNumber: number): Promise<string> {
     const page = await doc.getPage(pageNumber);
     try {
-        const content = await page.getTextContent();
-        let text = '';
-        for (const item of content.items) {
-            if (!('str' in item)) continue; // marked-content boundaries
-            text += item.str;
-            if (item.hasEOL) text += '\n';
-        }
-        return text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+        const content = await page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        return projectPdfPageV1(content.items, pdfPageGeometry(page)).text;
     } finally {
         page.cleanup();
     }

@@ -1,5 +1,6 @@
 import { WidgetType } from '@codemirror/view';
 import type { EditorView } from '@codemirror/view';
+import { preserveTableReadingSelection, queueTableReadingSelection } from './tableReadingSelection';
 import { createFitProbes, observeTableFit, rekeyTableFit, releaseTableFit, retuneTableFit } from './tableFit';
 import { parseGrid } from './tableModel';
 import type { ColumnAlign, Grid } from './tableModel';
@@ -8,6 +9,9 @@ import { closeContextMenu, openContextMenu } from '../utils/contextMenu';
 import { findMathRegions } from './latexSource';
 import type { MathRegion } from './latexSource';
 import { renderMath } from './mathWidget';
+import { emphasisRanges } from '../utils/readingEmphasis';
+import type { Utf16Range } from '../utils/readingEmphasis';
+import type { ReadingEmphasisOptions } from './readingEmphasisConfig';
 
 /* ── A rendered table is an OBJECT with an inside ─────────────────────────
  *
@@ -178,10 +182,10 @@ function inlineCodeRanges(text: string): { from: number; to: number }[] {
  * Put `text` into `cell` as rendered content: the app's one allowlisted
  * innerHTML sink, with KaTeX-built DOM spliced in wherever the cell held maths.
  *
- * Depends on nothing but the cell's text — no selection, no editor mode — which
- * is what keeps reading mode a pure function of the document.
+ * Rendering depends on source plus explicit presentation options, never on
+ * selection. The authored text and the allowlist stay identical On and Off.
  */
-function renderCellContent(cell: HTMLElement, text: string): void {
+function renderCellContent(cell: HTMLElement, text: string, emphasis?: ReadingEmphasisOptions): void {
     // A note cannot forge a slot: the sentinels are removed before masking, so
     // every SLOT_OPEN in the masked string is one this function just wrote.
     const clean = text.replace(/[\uE000\uE001]/g, '');
@@ -217,6 +221,47 @@ function renderCellContent(cell: HTMLElement, text: string): void {
     // overflow on a cell), and on a CONNECTED cell this setter forces a style
     // and layout flush — which updateDOM does inside DocView.update.
     if (regions.length) cell.scrollLeft = 0;
+    if (emphasis?.enabled && emphasis.mode === 'read' && cell.tagName !== 'TH') emphasizeCell(cell, emphasis.locale);
+}
+
+/** Run collection finishes before any text node is split. No HTML strings,
+ * semantic strong tags, generated text or per-word accessibility labels. */
+function emphasizeCell(cell: HTMLElement, locale: string): void {
+    interface Holder { node: Text; from: number; to: number }
+    let text = '', holders: Holder[] = [], exclusions: Utf16Range[] = [];
+    const runs: { text: string; holders: Holder[]; exclusions: Utf16Range[] }[] = [];
+    const flush = () => {
+        if (text) runs.push({ text, holders, exclusions });
+        text = ''; holders = []; exclusions = [];
+    };
+    function walk(node: Node, strong: boolean): void {
+        if (node.nodeType === Node.TEXT_NODE) {
+            const from = text.length;
+            text += node.nodeValue ?? '';
+            holders.push({ node: node as Text, from, to: text.length });
+            if (strong) exclusions.push({ from, to: text.length });
+        } else if (node instanceof Element) {
+            if (node.matches('br, code, kbd, math, svg, ruby, sub, sup, .cm-table-math')) { flush(); return; }
+            const bold = strong || node.matches('b, strong');
+            for (const child of node.childNodes) walk(child, bold);
+        }
+    }
+    walk(cell, false); flush();
+    for (const run of runs) {
+        const ranges = emphasisRanges({ text: run.text, exclusions: run.exclusions, locale });
+        for (const holder of run.holders) {
+            // Work right-to-left: earlier offsets remain in the original node.
+            for (let i = ranges.length - 1; i >= 0; i--) {
+                const from = Math.max(ranges[i].from, holder.from), to = Math.min(ranges[i].to, holder.to);
+                if (from >= to) continue;
+                const selected = holder.node.splitText(from - holder.from);
+                selected.splitText(to - from);
+                const span = document.createElement('span');
+                span.className = 'cm-table-reading-prefix';
+                selected.replaceWith(span); span.appendChild(selected);
+            }
+        }
+    }
 }
 
 /** Swap every slot in the parsed subtree's text for its rendered formula, and
@@ -281,6 +326,7 @@ export interface TableModel {
     /** The markdown this DOM was last dressed from. */
     source: string;
     canEdit: boolean;
+    emphasis: ReadingEmphasisOptions;
     columns: number;
     /** The UNESCAPED text each rendered cell was built from, so a re-dress can
      *  touch only the cells that really changed. */
@@ -324,19 +370,19 @@ function dressCell(cell: HTMLTableCellElement, grid: Grid, row: number, col: num
     else cell.removeAttribute('contenteditable');
 }
 
-function buildRow(grid: Grid, row: number, tag: 'th' | 'td', canEdit: boolean): HTMLTableRowElement {
+function buildRow(grid: Grid, row: number, tag: 'th' | 'td', canEdit: boolean, emphasis: ReadingEmphasisOptions): HTMLTableRowElement {
     const tr = document.createElement('tr');
     for (let col = 0; col < grid.columns; col++) {
         const cell = document.createElement(tag);
         dressCell(cell, grid, row, col, canEdit);
-        renderCellContent(cell, grid.rows[row].cells[col].text);
+        renderCellContent(cell, grid.rows[row].cells[col].text, emphasis);
         tr.appendChild(cell);
     }
     return tr;
 }
 
 /** Build (or rebuild in place) the colgroup, head and body of one table. */
-function buildTable(table: HTMLTableElement, grid: Grid, canEdit: boolean): HTMLTableColElement[] {
+function buildTable(table: HTMLTableElement, grid: Grid, canEdit: boolean, emphasis: ReadingEmphasisOptions): HTMLTableColElement[] {
     table.textContent = '';
 
     // One <col> per column: the fitter writes each column's share of the width
@@ -351,11 +397,11 @@ function buildTable(table: HTMLTableElement, grid: Grid, canEdit: boolean): HTML
     table.appendChild(colgroup);
 
     const thead = document.createElement('thead');
-    thead.appendChild(buildRow(grid, 0, 'th', canEdit));
+    thead.appendChild(buildRow(grid, 0, 'th', canEdit, emphasis));
     table.appendChild(thead);
 
     const tbody = document.createElement('tbody');
-    for (let row = 1; row < grid.rows.length; row++) tbody.appendChild(buildRow(grid, row, 'td', canEdit));
+    for (let row = 1; row < grid.rows.length; row++) tbody.appendChild(buildRow(grid, row, 'td', canEdit, emphasis));
     table.appendChild(tbody);
 
     return cols;
@@ -388,7 +434,7 @@ export function restoreRenderedCell(dom: HTMLElement, cell: HTMLElement): void {
     if (!Number.isInteger(row) || !Number.isInteger(col)) return;
     if (row >= grid.rows.length || col >= grid.columns) return;
     dressCell(cell as HTMLTableCellElement, grid, row, col, model.canEdit);
-    renderCellContent(cell, grid.rows[row].cells[col].text);
+    renderCellContent(cell, grid.rows[row].cells[col].text, model.emphasis);
 }
 
 /** The two corner chips, in the shape imageWidget's toolButton established. */
@@ -416,6 +462,10 @@ function controlButton(cls: string, title: string, onPress: () => void): HTMLBut
         onPress();
     });
     return button;
+}
+
+function emphasisKey(options: ReadingEmphasisOptions, canEdit: boolean): string {
+    return !canEdit && options.enabled && options.mode === 'read' ? `latin-prefix-v1:${options.locale}` : 'off';
 }
 
 /**
@@ -447,14 +497,21 @@ export class TableWidget extends WidgetType {
          *  to say WHICH table: a note with two tables would otherwise outline
          *  both. ImageWidget carries `selected` for the same reason. */
         readonly selected: boolean,
+        readonly emphasis: ReadingEmphasisOptions = { enabled: false, mode: 'edit', locale: '' },
     ) {
         super();
     }
 
+    private effectiveEmphasis(): ReadingEmphasisOptions {
+        return this.canEdit ? { ...this.emphasis, enabled: false } : this.emphasis;
+    }
+    private fitKey(): string { return this.rawTable + '\u0000' + emphasisKey(this.emphasis, this.canEdit); }
+
     eq(other: TableWidget): boolean {
         return other.rawTable === this.rawTable
             && other.canEdit === this.canEdit
-            && other.selected === this.selected;
+            && other.selected === this.selected
+            && emphasisKey(other.emphasis, other.canEdit) === emphasisKey(this.emphasis, this.canEdit);
     }
 
     toDOM(view: EditorView): HTMLElement {
@@ -489,7 +546,7 @@ export class TableWidget extends WidgetType {
         const scroll = document.createElement('div');
         scroll.className = 'cm-table-scroll';
         const table = document.createElement('table');
-        const cols = buildTable(table, grid, this.canEdit);
+        const cols = buildTable(table, grid, this.canEdit, this.effectiveEmphasis());
         scroll.appendChild(table);
         container.appendChild(scroll);
 
@@ -499,6 +556,7 @@ export class TableWidget extends WidgetType {
         container[MODEL] = {
             source: this.rawTable,
             canEdit: this.canEdit,
+            emphasis: this.effectiveEmphasis(),
             columns: grid.columns,
             cellText: cellTextOf(grid),
             view,
@@ -514,7 +572,7 @@ export class TableWidget extends WidgetType {
         attachEdgeReveal(container);
 
         observeTableFit({
-            key: this.rawTable, view, container, widthProbe: probe, fontProbe, mathProbe, table, cols,
+            key: this.fitKey(), view, container, widthProbe: probe, fontProbe, mathProbe, table, cols,
             lastAvail: -1, lastFont: -1, lastBreaks: '', fitted: false,
         });
 
@@ -567,27 +625,29 @@ export class TableWidget extends WidgetType {
             // columns under the user's hands mid-word.
             model.source = this.rawTable;
             model.view = view;
-            rekeyTableFit(dom, this.rawTable);
+            rekeyTableFit(dom, this.fitKey());
             return true;
         }
         // ⌘E flipped the mode under a live edit: the cells are about to stop
         // being editable, so the session has to end before they are re-dressed.
         if (ours) endCellEdit();
 
-        if (model.source === this.rawTable && model.canEdit === this.canEdit) return true;
+        const styleChanged = emphasisKey(model.emphasis, model.canEdit) !== emphasisKey(this.emphasis, this.canEdit);
+        if (model.source === this.rawTable && model.canEdit === this.canEdit && !styleChanged) return true;
+        const restoreSelection = preserveTableReadingSelection(model.table, view);
 
         const shapeChanged = grid.columns !== model.columns
             || grid.rows.length !== model.cellText.length
             || this.canEdit !== model.canEdit;
 
         if (shapeChanged) {
-            const cols = buildTable(model.table, grid, this.canEdit);
+            const cols = buildTable(model.table, grid, this.canEdit, this.effectiveEmphasis());
             model.cols = cols;
             const controls = dom.querySelector('.cm-table-controls');
             if (this.canEdit && !controls) dom.appendChild(buildControls(view, dom));
             if (!this.canEdit && controls) controls.remove();
             attachCellEditing(view, dom);
-            retuneTableFit(dom, this.rawTable, { table: model.table, cols });
+            retuneTableFit(dom, this.fitKey(), { table: model.table, cols });
         } else {
             const rows = [model.table.tHead?.rows[0], ...Array.from(model.table.tBodies[0]?.rows ?? [])];
             for (let row = 0; row < grid.rows.length; row++) {
@@ -597,15 +657,17 @@ export class TableWidget extends WidgetType {
                     const cell = tr.cells[col];
                     if (!cell) continue;
                     dressCell(cell, grid, row, col, this.canEdit);
-                    if (model.cellText[row]?.[col] === grid.rows[row].cells[col].text) continue;
-                    renderCellContent(cell, grid.rows[row].cells[col].text);
+                    if (!styleChanged && model.cellText[row]?.[col] === grid.rows[row].cells[col].text) continue;
+                    renderCellContent(cell, grid.rows[row].cells[col].text, this.effectiveEmphasis());
                 }
             }
-            retuneTableFit(dom, this.rawTable);
+            retuneTableFit(dom, this.fitKey());
         }
 
         model.source = this.rawTable;
         model.canEdit = this.canEdit;
+        model.emphasis = this.effectiveEmphasis();
+        if (restoreSelection) queueTableReadingSelection(view, restoreSelection);
         model.columns = grid.columns;
         model.cellText = cellTextOf(grid);
         model.view = view;

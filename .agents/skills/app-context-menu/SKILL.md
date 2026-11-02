@@ -15,7 +15,8 @@ it, **and as `anchor`**, so a second press on it closes the menu: `openContextMe
 matching anchor (returning `false` — set a pressed look only on `true`), and ContextMenu's
 outside-pointerdown dismissal exempts the anchor, because closing there let the same press's click
 re-open it (the flicker bug). Right-click raisers pass no anchor — a second right-click re-raises.
-Command rows with `checked` set on every row draw a ✓ column (`menuitemradio`; the sort menu). A `label`
+Command rows with `checked` draw a shared ✓ column and use `menuitemradio` (the sort menu);
+actions without `checked` stay ordinary `menuitem`s even in a mixed menu. A `label`
 entry is quiet text, not a row (`role="none"`, outside the arrow-key walk; the agent panel's version). There is exactly **one** component
 and **one** module-level store; `App` reads it with `useSyncExternalStore` and renders
 `<ContextMenu>` once.

@@ -1,3 +1,4 @@
+import { decodeDocumentText } from './diskVersion';
 /**
  * Graph utilities — parse note-to-note links and build a graph
  * (nodes + edges + backlinks) for the Neural Brain view and the
@@ -93,10 +94,12 @@ async function linksFor(node: FileTreeFileNode): Promise<string[]> {
     if (prev && prev.mtime === file.lastModified && prev.size === file.size) return prev.targets;
     // Normalized exactly as readFile does, so link extraction sees the same
     // text the editor and the search index do.
-    const text = (await file.text()).replace(/\r\n?/g, '\n');
-    const targets = extractLinks(text);
+    const bytes = await file.arrayBuffer(); // IO failures remain retryable.
+    let targets: string[];
+    try { targets = extractLinks(decodeDocumentText(bytes).replace(/\r\n?/g, '\n')); }
+    catch { targets = []; } // A deterministic refusal costs one payload read per version.
     linkCache.set(node.path, { mtime: file.lastModified, size: file.size, targets });
-    return targets;   // `text` is garbage from here — one file's worth, not the vault's
+    return targets;   // Only links survive; the decoded or rejected payload is released.
 }
 
 /**

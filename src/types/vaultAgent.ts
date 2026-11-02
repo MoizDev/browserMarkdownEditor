@@ -47,7 +47,7 @@ export interface ChatIndex {
 
 /* ───────────────────────── what App tells the context builder ───────────────────────── */
 
-export type AgentDocKind = 'markdown' | 'text' | 'pdf' | 'drawing' | 'notebook' | 'image' | 'help' | 'other';
+export type AgentDocKind = 'epub' | 'markdown' | 'text' | 'pdf' | 'drawing' | 'notebook' | 'image' | 'help' | 'other';
 
 export interface AgentTabInfo {
     path: string;
@@ -62,6 +62,7 @@ export interface AgentTabInfo {
 /** Where a tab with NO mounted view was left — from the same localStorage records
  *  its pane restores from. Pages are 1-based. */
 export type RememberedPosition =
+    | { kind: 'epub'; locator: import('./reading').EpubLocator; flow: import('./reading').ReaderFlow }
     | { kind: 'markdown'; line: number }
     | { kind: 'pdf'; page: number; offset: number; zoom: number | null }
     | { kind: 'drawing'; x: number; y: number; z: number }

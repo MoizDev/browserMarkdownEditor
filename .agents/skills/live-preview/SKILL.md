@@ -513,3 +513,5 @@ being read stop landing. The agent panel's replies render in a read-only view bu
 `editor/replyView.ts` from this same read mode, which is how they get headings, code, KaTeX, mermaid
 and tables without a third `innerHTML` sink; streamed text is appended once per animation frame.
 
+
+Word emphasis uses readingEmphasis singleton outside readingEmphasisCompartment; fresh/adopt/live prose paths configure the same facet. Latest mode/preferences defer during IME; capture/restore word anchors around layout changes. Preference-only updates do not remint livePreview; cancel pending work before view teardown. Code/TeX/chat never install the option.

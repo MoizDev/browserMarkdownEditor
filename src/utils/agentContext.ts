@@ -120,7 +120,8 @@ function kindLabel(tab: AgentTabInfo, info: ViewInfo | undefined): string {
     switch (tab.kind) {
         case 'markdown': return `note, ${tab.mode === 'read' ? 'reading' : 'editing'} mode`;
         case 'text': return `text file, ${tab.mode === 'read' ? 'reading' : 'editing'} mode`;
-        case 'pdf': return info?.kind === 'pdf-annotate' ? 'PDF, annotating' : 'PDF';
+        case 'epub': return 'EPUB, read-only';
+        case 'pdf': return info?.kind === 'pdf-annotate' ? 'PDF, annotating' : info?.kind === 'pdf' && info.surface === 'text' ? 'PDF Text, extracted read-only text' : 'PDF Original';
         case 'drawing': return 'drawing';
         case 'notebook': return 'notebook';
         case 'image': return 'image';
@@ -131,6 +132,7 @@ function kindLabel(tab: AgentTabInfo, info: ViewInfo | undefined): string {
 
 function livePosition(info: ViewInfo): string {
     switch (info.kind) {
+        case 'epub': return `EPUB ${info.title?JSON.stringify(info.title):''}${info.author?' by '+info.author:''} ${info.status}${info.locator ? `, section ${info.locator.spineIndex+1}` : ', location unavailable'}; read-only canonical text`;
         case 'markdown': {
             const parts = [
                 // Named where it is known: "Python" tells the agent more than
@@ -147,6 +149,7 @@ function livePosition(info: ViewInfo): string {
         }
         case 'pdf':
         case 'pdf-annotate': {
+            if (info.surface === 'text') return `PDF Text, physical page ${info.page} of ${info.pageCount}, source UTF-16 offset ${info.textAnchor?.offsetUTF16 ?? 0}; extracted text, no page-image capture`;
             const parts = [`page ${info.page} of ${info.pageCount} (${pct(info.offset)} down the page)`, `zoom ${zoomPct(info.zoom)} of fit-width`, `pages on screen: ${pageList(info.visiblePages)}`];
             if (info.selectedText) parts.push('has a text selection');
             return parts.join(', ');
@@ -167,6 +170,7 @@ function livePosition(info: ViewInfo): string {
 function rememberedPosition(pos: RememberedPosition | null): string {
     if (!pos) return 'position not known (it opens at the start)';
     switch (pos.kind) {
+        case 'epub': return `book not loaded; remembered section ${pos.locator.spineIndex+1}, ${pos.flow} layout (unopened chapter extraction unavailable)`;
         case 'markdown': return `will reopen at line ${pos.line}`;
         case 'pdf': return `will reopen at page ${pos.page} (${pct(pos.offset)} down)${pos.zoom ? `, zoom ${zoomPct(pos.zoom)}` : ''}`;
         case 'drawing': return `will reopen with the camera at x ${r1(pos.x)}, y ${r1(pos.y)}, zoom ${zoomPct(pos.z)}`;
@@ -282,11 +286,13 @@ async function focusedSection(tab: AgentTabInfo, view: ViewReporter | undefined,
 
     if (!info || !view) {
         if (tab.kind === 'help') head.push('The user is reading the app\'s built-in Help guide.');
+        else if(tab.kind==='epub')head.push('Book not loaded. Unopened EPUB chapter extraction is unavailable; its browser remembers position.');
         else head.push('Its view is not available right now; read it with vault_read if you need it.');
         return head.join('\n');
     }
 
     switch (info.kind) {
+        case 'epub': return fit(`${head.join('\n')}\n${livePosition(info)}\nSelected canonical text: ${info.selectedCanonicalText??'(none)'}\nVisible canonical text (bounded, not all book content):\n${info.visibleCanonicalText}`,budget);
         case 'markdown': {
             head.push(`On screen: lines ${info.visibleLines.from}–${info.visibleLines.to} of ${info.lineCount}. Cursor: line ${info.cursor.line}, column ${info.cursor.col}.`);
             if (info.selections.length) {
@@ -307,6 +313,7 @@ async function focusedSection(tab: AgentTabInfo, view: ViewReporter | undefined,
                 if (info.selectedShapeIds?.length) head.push(`Selected annotations: ${info.selectedShapeIds.join(', ')}`);
             }
             let text = head.join('\n');
+            if (info.surface === 'text') return fit(`${text}\nVisible canonical extracted text (bounded):\n${info.visibleCanonicalText ?? ''}`, budget);
             if (info.kind === 'pdf-annotate') text += `\n${shapeBlock(info.shapes, info.shapesTotal, Math.floor((budget - text.length) / 3), 'Annotations on the pages on screen')}`;
             const pages = await pdfPagesText(view, info.visiblePages, budget - text.length - 1);
             return pages ? `${text}\n${pages}` : text;
@@ -329,9 +336,10 @@ async function focusedSection(tab: AgentTabInfo, view: ViewReporter | undefined,
 /** Another pane on screen: only what the user can see in it. */
 async function visibleSection(paneNo: number, tab: AgentTabInfo, view: ViewReporter | undefined, info: ViewInfo | undefined, budget: number): Promise<string> {
     const head = `=== Also on screen, pane ${paneNo}: ${tab.path} (${kindLabel(tab, info)}${tab.dirty ? ', unsaved changes' : ''}) ===`;
-    if (!info || !view) return `${head}\n(not available right now; read it with vault_read)`;
+    if (!info || !view) return `${head}\n${tab.kind==='epub'?'Book not loaded; unopened chapter extraction is unavailable.':'(not available right now; read it with vault_read)'}`;
     const room = budget - head.length - 1;
     switch (info.kind) {
+        case 'epub': return fit(`${head}\n${livePosition(info)}\n${info.visibleCanonicalText}`,budget);
         case 'markdown': {
             const { from, to } = info.visibleLines;
             const lines = info.text.split('\n').slice(from - 1, to).map((l, i) => `${from + i}\t${cutLine(l)}`);
@@ -340,6 +348,7 @@ async function visibleSection(paneNo: number, tab: AgentTabInfo, view: ViewRepor
         case 'pdf':
         case 'pdf-annotate': {
             let text = `${head}\n${livePosition(info)}.`;
+            if (info.surface === 'text') return fit(`${text}\n${info.visibleCanonicalText ?? ''}`, budget);
             if (info.selectedText) text += `\nSelected text: ${JSON.stringify(fit(info.selectedText, 1_000))}`;
             if (info.kind === 'pdf-annotate') text += `\n${shapeBlock(info.shapes, info.shapesTotal, Math.floor(room / 3), 'Annotations on screen')}`;
             const pages = await pdfPagesText(view, info.visiblePages, budget - text.length - 1);

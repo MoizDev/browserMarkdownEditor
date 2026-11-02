@@ -1,0 +1,10 @@
+EPUB dependencies are vendored with source locks and license texts in src/epub/vendor/.
+See source-lock.json for immutable URLs, versions, upstream git heads and registry integrities.
+Foliate epub.js/epubcfi.js: commit 78914aef4466eb960965702401634c2cb348e9b1, MIT (vendor/LICENSE).
+DOMPurify 3.4.17: Apache-2.0 option (full text in vendor/THIRD_PARTY_NOTICES.txt).
+css-tree 3.2.1: MIT; saxes 6.0.0: ISC; xmlchars 2.2.0: MIT;
+pako 2.1.0: MIT AND Zlib; mdn-data 2.27.1: CC0-1.0; source-map-js 1.2.2: BSD-3-Clause.
+Vendoring used esbuild 0.25.12; frame builds use the existing locked esbuild 0.27.3 (MIT). Full notices are in vendor/THIRD_PARTY_NOTICES.txt.
+The XHTML entity data carries the Python license in vendor/PYTHON-LICENSE.txt.
+Existing npm dependency licensing remains governed by each installed package's license.
+No production dependency or lockfile was added or upgraded by the central integrator.

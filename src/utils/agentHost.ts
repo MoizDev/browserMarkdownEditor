@@ -1,3 +1,5 @@
+import { readReaderViewState } from './readerViewState';
+import { canReadTabText,canUpdateTabContent } from './documentReading';
 // App's side of the AI agent panel: the two host objects the panel and the
 // tool executor are handed (types/vaultAgent.ts), built ONCE for the app's life.
 //
@@ -26,7 +28,7 @@ import { readPdfViewPos } from './pdfViewState';
 import { readCanvasViewPos } from './canvasViewState';
 import { isScrollAnchor } from '../editor/scrollAnchor';
 import {
-    isCanvasFile, isDrawingFile, isImageFile, isMarkdownFile, isNotebookFile, isPdfFile,
+    isEpubFile, isCanvasFile, isDrawingFile, isImageFile, isMarkdownFile, isNotebookFile, isPdfFile,
 } from './fileTypes';
 import { isTextFile } from './vaultSearch';
 import { nameTaken } from './entryNames';
@@ -41,6 +43,7 @@ const CANVAS_MOUNT_TIMEOUT_MS = 15_000;
 
 /** What the hosts need from App, re-read on every call. */
 export interface AgentHostDeps {
+    vaultId: string | null;
     root: FileSystemDirectoryHandle | null;
     fileTree: FileTreeNode[];
     tabs: OpenTab[];
@@ -49,6 +52,8 @@ export interface AgentHostDeps {
     /** App's EditorState cache, keyed `${tab.id}|${path}`. */
     stateCache: Map<string, EditorState>;
     readFile(handle: FileSystemFileHandle): Promise<string>;
+    readFileVersioned: import('../types').FileSystemContextValue['readFileVersioned'];
+    writeFileVersioned: import('../types').FileSystemContextValue['writeFileVersioned'];
     readFileBytes(handle: FileSystemFileHandle): Promise<Uint8Array>;
     writeFile(handle: FileSystemFileHandle, content: string): Promise<void>;
     createFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle>;
@@ -119,6 +124,7 @@ function openTabAt(deps: AgentHostDeps, path: string): OpenTab | undefined {
 function docKind(tab: OpenTab): AgentDocKind {
     const name = tab.file.name;
     if (tab.file.isHelp) return 'help';
+    if (tab.representation?.loadedKind === 'epub' || isEpubFile(name)) return 'epub';
     if (isPdfFile(name)) return 'pdf';
     if (isDrawingFile(name)) return 'drawing';
     if (isNotebookFile(name)) return 'notebook';
@@ -141,6 +147,7 @@ function rememberedPosition(deps: AgentHostDeps, path: string): RememberedPositi
     const tab = openTabAt(deps, path);
     if (!tab) return null;
     const name = tab.file.name;
+    if (tab.representation?.loadedKind === 'epub') { const record=deps.vaultId?readReaderViewState(deps.vaultId,path):undefined; return record ? {kind:'epub',locator:record.locator,flow:record.requestedLayout} : null; }
     if (isPdfFile(name)) {
         const pos = readPdfViewPos(path);
         return pos ? { kind: 'pdf', page: pos.page + 1, offset: pos.offset, zoom: pos.zoom ?? null } : null;
@@ -152,6 +159,7 @@ function rememberedPosition(deps: AgentHostDeps, path: string): RememberedPositi
             ? { kind: 'drawing', x: pos.x, y: pos.y, z: pos.z }
             : { kind: 'notebook', page: pos.page + 1, offset: pos.offset, zoom: pos.zoom ?? null };
     }
+    if (!canReadTabText(tab)) return null;
     const anchor = readRecord<unknown>(SCROLL_ANCHORS_KEY)[scopedKey(path)];
     return isScrollAnchor(anchor) ? { kind: 'markdown', line: lineAt(tab.content, anchor.pos) } : null;
 }
@@ -161,7 +169,7 @@ function rememberedPosition(deps: AgentHostDeps, path: string): RememberedPositi
  *  buffer. Undefined for anything else — a PDF's buffer is a tldraw snapshot. */
 function liveText(deps: AgentHostDeps, path: string): string | undefined {
     const tab = openTabAt(deps, path);
-    if (!tab || tab.readError || isPdfFile(tab.file.name)) return undefined;
+    if (!tab || !canReadTabText(tab)) return undefined;
     return getView(path)?.getText?.() ?? tab.content;
 }
 
@@ -237,7 +245,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const deps = getDeps();
             const live = liveText(deps, path);
             if (live !== undefined) return live;
-            if (!deps.root || isPdfFile(path)) return null;
+            if (!deps.root || isPdfFile(path) || isEpubFile(path) || openTabAt(deps,path) && !canReadTabText(openTabAt(deps,path)!)) return null;
             const found = await fileAt(deps.root, path);
             if (!found) return null;
             try { return await deps.readFile(found.handle); } catch { return null; }
@@ -256,12 +264,12 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
             // A canvas is JSON on disk but a live tldraw store on screen, which
             // would re-serialize over any text edit at its next change.
-            if (isCanvasFile(path) || isPdfFile(path)) {
-                return { ok: false, reason: 'invalid', message: 'Drawings, notebooks and PDFs are changed with canvas_apply, not as text.' };
+            if (isCanvasFile(path) || isPdfFile(path) || isEpubFile(path)) {
+                return { ok: false, reason: 'invalid', message: isEpubFile(path) ? 'EPUB is read-only; its source cannot be edited.' : 'Drawings, notebooks and PDFs are changed with canvas_apply, not as text.' };
             }
             if (!validChanges(expected, changes)) return { ok: false, reason: 'invalid', message: 'Change ranges are out of bounds or overlap.' };
             const tab = openTabAt(deps, path);
-            if (tab?.readError) return { ok: false, reason: 'error', message: 'This file could not be read by the editor; it cannot be changed until it is reopened.' };
+            if (tab && !canUpdateTabContent(tab)) return { ok: false, reason: 'error', message: 'This file could not be read by the editor; it cannot be changed until it is reopened.' };
 
             if (tab) {
                 const view = getView(path);
@@ -296,12 +304,14 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             // Closed: straight to disk, then the same tail a save runs.
             const found = await fileAt(deps.root, path);
             if (!found) return { ok: false, reason: 'missing' };
-            let current: string;
-            try { current = await deps.readFile(found.handle); } catch { return { ok: false, reason: 'error', message: 'The file could not be read.' }; }
-            if (current !== expected) return { ok: false, reason: 'stale' };
+            let read: Awaited<ReturnType<AgentHostDeps['readFileVersioned']>>;
+            try { read = await deps.readFileVersioned(found.handle); } catch { return { ok: false, reason: 'error', message: 'The file could not be read.' }; }
+            if (getDeps().root !== deps.root) return {ok:false,reason:'error',message:'The vault changed.'};
+            if (read.text !== expected) return { ok: false, reason: 'stale' };
             const next = applyToText(expected, changes);
             try {
-                await deps.writeFile(found.handle, next);
+                const result=await deps.writeFileVersioned(found.handle,next,read.version);
+                if(result.status!=='written')return {ok:false,reason:'stale'};
             } catch {
                 return { ok: false, reason: 'error', message: 'The file could not be written.' };
             }
@@ -310,6 +320,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         },
 
         async createFile(path, content) {
+            if (isEpubFile(path) || isPdfFile(path) || !isTextFile(path)) return {ok:false,reason:'invalid',message:'Create accepts text documents only; import an existing binary document.'};
             const deps = getDeps();
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
             const root = deps.root;
@@ -407,6 +418,8 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
 
         async openCanvasForAgent(path) {
             const deps = getDeps();
+            const open = openTabAt(deps,path);
+            if(isEpubFile(path)||open?.representation?.loadedKind==='epub'||open?.readError)return null;
             const pdf = isPdfFile(path);
             if (!pdf && !isCanvasFile(path)) return null;
             const hasCanvas = (r: ViewReporter) => !!r.canvas;

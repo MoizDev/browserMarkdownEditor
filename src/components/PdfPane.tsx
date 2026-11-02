@@ -117,7 +117,6 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     useEffect(() => () => { ++returnEpoch.current; flushPdfTextViewState(); }, []);
     const [textReader, setTextReader] = useState<PdfTextReader | null>(null);
     const [textSurface, setTextSurface] = useState(false);
-    const [textOpening, setTextOpening] = useState(false);
     const lastReturnRevision = useRef<number | undefined>(undefined);
     const textAnchor = useRef<PdfTextAnchor | undefined>(undefined);
     const [initialTextAnchor, setInitialTextAnchor] = useState<PdfTextAnchor>();
@@ -160,7 +159,6 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         if (textSurfaceRef.current) { focusReading(); return; }
         const epoch = ++returnEpoch.current;
         setMappingNotice('');
-        setTextOpening(true);
         const checkpoint = readPdfViewPos(file.path) ?? { page: 0, offset: 0, zoom: 1 };
         const revision = readPdfNavigationRevision(file.path);
         originalCheckpoint.current = { ...checkpoint, navigationRevision: revision };
@@ -183,7 +181,6 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             } catch { /* The Text surface owns its actionable page error/retry. */ }
         }
         if (returnEpoch.current !== epoch) return;
-        setTextOpening(false);
         if (readPdfNavigationRevision(file.path) !== revision) return;
         textAnchor.current = next;
         setInitialTextAnchor(next);
@@ -194,7 +191,6 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
 
     async function showOriginal(pageIndex?: number) {
         const epoch = ++returnEpoch.current;
-        setTextOpening(false);
         if (!textSurfaceRef.current) { focusReading(); return; }
         const checkpoint = originalCheckpoint.current ?? { page: 0, offset: 0, zoom: 1 };
         let target = checkpoint;
@@ -278,7 +274,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
        stays true after the first switch, so toggling back to reading does not
        throw away the original the canvas is drawing on. */
     const [needsSource, setNeedsSource] = useState(mode === 'edit');
-    useEffect(() => { if (mode === 'edit') { ++returnEpoch.current; restoredRecord.current = true; setTextOpening(false); setNeedsSource(true); textSurfaceRef.current = false; setTextSurface(false); } }, [mode]);
+    useEffect(() => { if (mode === 'edit') { ++returnEpoch.current; restoredRecord.current = true; setNeedsSource(true); textSurfaceRef.current = false; setTextSurface(false); } }, [mode]);
 
     // Load once per file (once activated and wanted). A file already annotated
     // here yields its pristine original and existing snapshot out of its
@@ -469,7 +465,6 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                     onEmphasisChange={reading?.onEmphasisChange} onTypographyChange={reading?.onTypographyChange} />
             ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer filePath={file.path} session={session} isActive={isFocused}
                 onLocation={() => publishLocation('layout', false)} />
-                <div className="pdf-surface-switch"><button type="button" disabled={textOpening || !textReader || !!disk} onClick={() => { void showText().catch(error => binding.current?.onNotify(String(error))); }}>{textOpening ? 'Extracting page…' : 'Read extracted text'}</button></div>
                 {mappingNotice && <div className="pdf-pane-mapping-notice" role="status">{mappingNotice}</div>}
             </>;
         }

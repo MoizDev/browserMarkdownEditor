@@ -5,11 +5,11 @@
 .pdf-reading-toolbar, .pdf-reading-find, .pdf-reading-pages, .pdf-reading-pages form { display: flex; align-items: center; gap: 8px; }
 .pdf-reading-toolbar { flex-wrap: wrap; padding: 12px 16px 6px; font: 12px system-ui, sans-serif; }
 .pdf-reading-label { font-weight: 600; margin-right: auto; }
-.pdf-reading button, .pdf-reading input, .pdf-surface-switch button { font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; border-color: color-mix(in srgb, currentColor 25%, transparent); border-radius: 6px; padding: 5px 9px; min-height: 30px; }
-.pdf-reading button, .pdf-surface-switch button { cursor: pointer; }
+.pdf-reading button, .pdf-reading input { font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; border-color: color-mix(in srgb, currentColor 25%, transparent); border-radius: 6px; padding: 5px 9px; min-height: 30px; }
+.pdf-reading button { cursor: pointer; }
 .pdf-reading button:disabled { opacity: .45; cursor: default; }
-.pdf-reading button:hover:not(:disabled), .pdf-surface-switch button:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
-.pdf-reading :focus-visible, .pdf-surface-switch :focus-visible { outline: 2px solid var(--interactive-accent, #7aacf8); outline-offset: 2px; }
+.pdf-reading button:hover:not(:disabled) { background: color-mix(in srgb, currentColor 8%, transparent); }
+.pdf-reading :focus-visible { outline: 2px solid var(--interactive-accent, #7aacf8); outline-offset: 2px; }
 .pdf-reading-pages input { width: 4ch; text-align: center; padding-inline: 3px; }
 .pdf-reading-warning { margin: 4px 16px 8px; font: 12px/1.5 system-ui, sans-serif; opacity: .8; }
 .pdf-reading-find { padding: 0 16px 10px; font: 12px system-ui, sans-serif; }
@@ -25,8 +25,7 @@
 .pdf-reading-quality { font: 12px/1.5 system-ui, sans-serif; padding-left: 10px; border-left: 2px solid color-mix(in srgb, currentColor 30%, transparent); opacity: .8; }
 .pdf-reading-copy { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--pdf-reading-size); line-height: var(--pdf-reading-leading); font-weight: 400; tab-size: 4; }
 .pdf-reading-prefix { font-weight: 700; }
-.pdf-surface-switch { position: absolute; z-index: 4; top: 10px; left: 50%; transform: translateX(-50%); padding: 4px; border-radius: 8px; background: var(--background-primary, #202124); box-shadow: 0 2px 12px #0003; font: 12px system-ui, sans-serif; }
-@media (forced-colors: active) { .pdf-reading, .pdf-surface-switch { background: Canvas; color: CanvasText; } .pdf-reading button, .pdf-reading input { border-color: ButtonText; } }
+@media (forced-colors: active) { .pdf-reading { background: Canvas; color: CanvasText; } .pdf-reading button, .pdf-reading input { border-color: ButtonText; } }
 @media (max-width: 600px) { .pdf-reading-scroll { padding-inline: 16px; } .pdf-reading-toolbar { gap: 6px; } }
 .pdf-pane-mapping-notice { position: absolute; left: 12px; bottom: 64px; max-width: min(420px, 85%); pointer-events: none; z-index: 4; font: 12px/1.5 system-ui, sans-serif; padding: 8px 12px; background: var(--background-primary, #202124); color: var(--text-normal, #ddd); border-radius: 8px; box-shadow: 0 2px 12px #0003; }
 .pdf-reading-appearance { display: flex; flex-wrap: wrap; gap: 10px 16px; margin: 4px 16px 10px; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 8px; font: 12px/1.5 system-ui, sans-serif; }

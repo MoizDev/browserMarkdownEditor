@@ -94,3 +94,4 @@ The macOS PTY host (`helper/ptyhost/vaultagent-pty`) is a committed, pinned bina
 ## Future Context & Limitations
 - The underlying architecture heavily depends on browser edge permissions. Users must initially and explicitly grant OS-level prompt access to their chosen folder.
 - Deleted items are structured to avoid destructive irreversible permanent OS actions, moving natively to parallel relative `.Garbage` container directories.
+

@@ -1,10 +1,16 @@
 // The agent panel's setup screens. The connection screens themselves are the
 // shared HelperGate (the terminal dock shows the same ones); this file is the
-// agent's copy for them, plus the warning above the composer.
+// agent's copy for them. An agent that is not ready is said by the composer
+// itself (AgentPanel's composerState), not here.
+//
+// Steps that are known to be done are ticked, so the screen asks only for
+// what is still missing: Install once this browser has reached VaultAgent, the login once
+// this page has heard an agent report itself logged in. Nothing is asked of
+// 127.0.0.1 to find out — only what earlier connections already said.
 
-import type { ReactNode } from 'react';
-import { AGENT_IDS, AGENT_LABELS } from '../../../shared/vaultAgentProtocol';
-import type { AgentId, AgentStatus } from '../../../shared/vaultAgentProtocol';
+import { AGENT_IDS, AGENT_LABELS, HELPER_NAME } from '../../../shared/vaultAgentProtocol';
+import type { AgentStatus } from '../../../shared/vaultAgentProtocol';
+import { hasConnectedBefore } from '../../utils/agentBridge';
 import type { BridgeState } from '../../utils/agentBridge';
 import { AGENT_LOGIN_HINTS } from '../../utils/platform';
 import type { CpuArch, OsKind } from '../../utils/platform';
@@ -37,16 +43,27 @@ const LOGIN_STEP = (
     </li>
 );
 
+/** "Claude Code and Codex" — the agents this page last heard were ready. */
+function loggedInLine(agents: AgentStatus[]): string | null {
+    const names = agents.filter(a => a.installed && a.loggedIn === true).map(a => AGENT_LABELS[a.agent]);
+    if (!names.length) return null;
+    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    return `${list} ${names.length === 1 ? 'is' : 'are'} logged in.`;
+}
+
 export interface SetupGuideProps {
     os: OsKind;
     arch: CpuArch;
     supported: boolean;
     bridge: BridgeState;
+    /** What the helper last said about the agents (chatStore), [] = unknown. */
+    agents: AgentStatus[];
     onConnect: () => void;
     onUpdate: () => void;
 }
 
-export function SetupGuide(props: SetupGuideProps) {
+export function SetupGuide({ agents, ...props }: SetupGuideProps) {
+    const loggedIn = loggedInLine(agents);
     return (
         <HelperGate
             {...props}
@@ -57,46 +74,13 @@ export function SetupGuide(props: SetupGuideProps) {
                 Chat with Claude Code, Codex or OpenCode about what you're looking at. It runs on this computer
                 with your agent's full access, and its edits to this vault land in your editor.
             </>}
-            preface={LOGIN_STEP}
+            preface={loggedIn ? (
+                <li className="is-done">
+                    <h3>Log in to your agent in a terminal</h3>
+                    <p className="agent-muted">{loggedIn}</p>
+                </li>
+            ) : LOGIN_STEP}
+            done={hasConnectedBefore() ? { installed: `${HELPER_NAME} is set up on this computer.` } : undefined}
         />
-    );
-}
-
-/** The chosen agent cannot take a message — said above the composer. */
-export function AgentWarning({ agent, status, onRecheck }: {
-    agent: AgentId;
-    status: AgentStatus | null;
-    onRecheck: () => void;
-}) {
-    if (!status) return null;
-    const name = AGENT_LABELS[agent];
-    let body: ReactNode = null;
-    let tone: 'error' | 'warning' = 'error';
-    if (!status.installed) {
-        body = (
-            <>
-                <p><b>{name} isn't installed</b> on this computer. Install it in a terminal:</p>
-                <CommandLine command={status.installCommand} />
-            </>
-        );
-    } else if (status.loggedIn === false) {
-        const hint = AGENT_LOGIN_HINTS[agent];
-        body = (
-            <>
-                <p><b>You're not logged in to {name}.</b> Log in from a terminal on this computer:</p>
-                <CommandLine command={status.loginCommand} />
-                {status.loginCommand.trim() === 'claude' && hint.note && <span className="agent-muted"> {hint.note}</span>}
-            </>
-        );
-    } else if (status.loggedIn === null) {
-        tone = 'warning';
-        body = <p>Couldn't confirm you're logged in to {name}. If sending fails, log in from a terminal: <CommandLine command={status.loginCommand} /></p>;
-    }
-    if (!body) return null;
-    return (
-        <div className={'agent-warning ' + tone} role="status">
-            {body}
-            <button type="button" className="agent-link" onClick={onRecheck}>Check again</button>
-        </div>
     );
 }

@@ -1,0 +1,1309 @@
+/* =============================================================
+   The conversation: the scroller and its column,
+   user messages (bubble, hover row, versions, edit), replies (the editor's
+   Reading mode re-fitted to chat prose), thinking, step stacks, change cards,
+   the action row under a reply, notices, and the Jump-to-latest pill.
+   Reads tokens.css (--va-reply-font/-size/-leading for the reply face,
+   --va-col-max/--va-gutter for the column).
+   ============================================================= */
+
+/* ── The scroller ──
+   .va-conversation is the flex child the panel lays out; it holds the
+   scroller and the pill that floats over it (a child of the scroller itself
+   would scroll away with the content). */
+.va-conversation {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.agent-messages {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--va-bg-500) transparent;
+}
+
+/* The list takes the keyboard for ⌘↑/⌘↓ and arrow scrolling; its ring sits
+   inside the edge so the panel's border does not clip it. */
+.agent-messages:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The column: 6px over the first turn, 20px under the last, 14px
+   between turns. */
+.agent-messages-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 6px;
+  padding-bottom: 20px;
+  min-width: 0;
+}
+
+@container agent-panel (max-width: 340px) {
+  .agent-messages-inner {
+    padding-bottom: 16px;
+  }
+}
+
+/* Every turn is a flex item of a column: without this a long line (a code
+   block, a path) would set the column's min width and push the whole panel
+   sideways instead of scrolling inside its own box. */
+.agent-messages-inner > *,
+.va-turn > *,
+.va-a > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* ── Turns ──
+   10px between the pieces of one turn; a new turn (and each step, card and
+   reply as it arrives) fades in rising 4px. `backwards`, never `both`: an
+   opacity/transform animation that keeps filling after it ends keeps its
+   element on a compositor layer for good — every turn, step, card and reply
+   of the chat (measured on a 40-turn scroll sweep: layerize + commit 700ms a
+   pass, 290ms without). */
+.va-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: va-rise 180ms ease backwards;
+}
+
+/* The turn just sent: at least the view's height (less the column's 26px of
+   padding), so scrolled to the bottom it sits at the TOP of the view and the
+   reply grows into the room below it. */
+.va-turn.is-pinned {
+  min-height: calc(var(--va-view-h, 0px) - 26px);
+}
+
+.va-a {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@keyframes va-rise {
+  from { opacity: 0; transform: translateY(4px); }
+}
+
+@keyframes va-fade {
+  from { opacity: 0; }
+}
+
+/* ── The user's message ── */
+.va-u {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.va-bubble {
+  max-width: 86%;
+  padding: 9px 14px;
+  border-radius: 16px;
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+  font-size: calc(14.5px * var(--va-text-scale));
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.va-u-images {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 86%;
+  margin-bottom: 4px;
+}
+
+.va-u-images img {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid var(--va-border);
+}
+
+.va-u-image-count {
+  margin-bottom: 4px;
+  color: var(--va-text-500);
+  font-size: calc(12px * var(--va-text-scale));
+}
+
+/* The row under the bubble: quiet until the message is hovered or holds the
+   keyboard; a message with versions keeps it, the arrows being the only sign
+   the other branch exists. */
+.va-utools {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 24px;
+  color: var(--va-text-500);
+  font-size: calc(12px * var(--va-text-scale));
+  opacity: 0;
+  transition: opacity var(--va-fast) ease;
+}
+
+.va-u:hover .va-utools,
+.va-u:focus-within .va-utools,
+.va-u.is-versioned .va-utools {
+  opacity: 1;
+}
+
+/* The quiet buttons under a message and a reply: the secondary ink and the
+   header buttons' 8px radius at every size (the row's own grey is for the
+   version count). */
+.va-utools .va-icon-btn,
+.va-acts .va-icon-btn {
+  border-radius: 8px;
+  color: var(--va-text-300);
+}
+
+.va-utools .va-icon-btn:hover:not(:disabled):not(.is-inert) {
+  color: var(--va-text-100);
+}
+
+.va-icon-btn.is-inert {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.va-icon-btn.is-inert:hover {
+  background: transparent;
+}
+
+.va-versions {
+  display: inline-flex;
+  align-items: center;
+}
+
+.va-version-count {
+  padding: 0 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* DEV only. At the row's far left, so it never moves the buttons the reader
+   aims at. */
+.va-u-context-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 6px;
+  padding: 0 4px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--va-text-500);
+  font-size: calc(11.5px * var(--va-text-scale));
+  cursor: pointer;
+}
+
+.va-u-context-toggle:hover {
+  color: var(--va-text-200);
+}
+
+.va-u-context-toggle > svg {
+  width: 11px;
+  height: 11px;
+  transition: transform 160ms ease;
+}
+
+.va-u-context-toggle[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+
+.va-u-context {
+  align-self: stretch;
+  max-height: 260px;
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--va-code-bg);
+  color: var(--va-code-fg);
+  font-family: var(--va-mono);
+  font-size: calc(11.5px * var(--va-text-scale));
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Editing: the bubble becomes a full-width field on the lifted surface, ringed
+   in the accent — the one place a message wears it. */
+.va-u.is-editing {
+  align-items: stretch;
+  gap: 8px;
+}
+
+.va-uedit-field {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 14px;
+  /* The focus ink (tokens.css: the accent in dark, #B5532F in light), not
+     the raw accent: the field's only edge, and #D97757 on the light canvas
+     is 2.96:1 — under the 3:1 a control's boundary needs. */
+  border: 1px solid var(--va-focus, var(--va-accent));
+  border-radius: 16px;
+  background: var(--va-bg-000);
+  color: var(--va-text-100);
+  font: inherit;
+  font-size: calc(14.5px * var(--va-text-scale));
+  line-height: 1.5;
+  resize: none;
+  overflow: hidden;
+  outline: none;
+}
+
+.va-uedit-field:focus-visible {
+  outline: none;
+}
+
+.va-uedit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* Text buttons: "Cancel", and the dark "Send" (text-colour fill). */
+.va-tbtn {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--va-text-300);
+  font-size: calc(13px * var(--va-text-scale));
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background-color var(--va-fast) ease, color var(--va-fast) ease;
+}
+
+.va-tbtn:hover {
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+}
+
+.va-tbtn.is-primary {
+  background: var(--va-text-100);
+  color: var(--va-bg-100);
+}
+
+.va-tbtn.is-primary:hover {
+  background: var(--va-text-200);
+  color: var(--va-bg-100);
+}
+
+/* Send while a reply runs: still hoverable (its tooltip says why), inert. */
+.va-tbtn.is-primary[aria-disabled="true"],
+.va-tbtn.is-primary[aria-disabled="true"]:hover {
+  background: var(--va-text-100);
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* "2 images can't be re-sent": under the field, in the quiet ink. */
+.va-uedit-note {
+  margin-top: -2px;
+  padding: 0 4px;
+  color: var(--va-text-400);
+  font-size: calc(12px * var(--va-text-scale));
+  line-height: 1.5;
+  text-align: right;
+}
+
+/* An inline text action inside a notice ("Try again"). */
+.va-text-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--va-text-100);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--va-border-2);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.va-text-btn:hover {
+  text-decoration-color: currentColor;
+}
+
+/* ── Thinking ── */
+.va-think {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.va-think-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--va-text-400);
+  font-size: calc(13px * var(--va-text-scale));
+  line-height: 1.5;
+}
+
+button.va-think-head {
+  cursor: pointer;
+}
+
+button.va-think-head:hover {
+  color: var(--va-text-200);
+}
+
+.va-think-chev {
+  width: 13px;
+  height: 13px;
+  color: var(--va-text-500);
+  transition: transform 160ms ease;
+}
+
+.va-think-head[aria-expanded="true"] .va-think-chev {
+  transform: rotate(90deg);
+}
+
+.va-think-body {
+  align-self: stretch;
+  max-height: 180px;
+  margin-left: 4px;
+  padding: 2px 0 2px 12px;
+  overflow: auto;
+  border-left: 2px solid var(--va-border-2);
+  color: var(--va-text-400);
+  font-size: calc(13px * var(--va-text-scale));
+  line-height: 1.5;
+  scrollbar-width: thin;
+  scrollbar-color: var(--va-bg-500) transparent;
+  animation: va-fade 180ms ease backwards;
+}
+
+.va-think-body p {
+  margin: 0 0 8px;
+}
+
+.va-think-body p:last-child {
+  margin: 0;
+}
+
+/* ── Steps ──
+   One hairline box per run of consecutive steps, hairlines between rows. */
+.va-steps {
+  overflow: hidden;
+  border: 1px solid var(--va-border);
+  border-radius: 12px;
+  animation: va-rise 180ms ease backwards;
+}
+
+.va-step {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--va-border);
+  animation: va-rise 180ms ease backwards;
+}
+
+.va-step:first-child {
+  border-top: 0;
+}
+
+.va-steprow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 12px;
+  border: 0;
+  background: none;
+  color: var(--va-text-300);
+  font-size: calc(13px * var(--va-text-scale));
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.va-steprow[aria-disabled="true"] {
+  cursor: default;
+}
+
+.va-steprow:hover:not([aria-disabled="true"]) {
+  background: var(--va-bg-200);
+}
+
+.va-steprow:focus-visible {
+  outline-offset: -2px;
+  border-radius: 0;
+}
+
+.va-step-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--va-text-500);
+}
+
+.va-step-icon > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.va-step-verb {
+  flex: none;
+  white-space: nowrap;
+}
+
+.va-step-target {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--va-text-100);
+  font-family: var(--va-mono);
+  font-size: calc(12px * var(--va-text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.va-step.is-running .va-step-target {
+  color: var(--va-text-300);
+}
+
+.va-step-extra {
+  flex: none;
+  color: var(--va-text-500);
+  font-size: calc(12px * var(--va-text-scale));
+  white-space: nowrap;
+}
+
+.va-step-failed {
+  flex: none;
+  color: var(--va-bad);
+  white-space: nowrap;
+}
+
+.va-step-chev {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-left: auto;
+  color: var(--va-text-500);
+  transition: transform 160ms ease;
+}
+
+.va-step.is-open .va-step-chev {
+  transform: rotate(90deg);
+}
+
+/* The 13px hairline spinner a running step wears in its icon's place. */
+.va-spin {
+  flex: none;
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid var(--va-border-2);
+  border-top-color: var(--va-text-200);
+  border-radius: 50%;
+  animation: va-spin 0.9s linear infinite;
+}
+
+@keyframes va-spin {
+  to { transform: rotate(360deg); }
+}
+
+.va-stepdetail {
+  position: relative;
+  max-height: 240px;
+  padding: 4px 34px 10px 35px;
+  overflow: auto;
+  color: var(--va-text-300);
+  font-family: var(--va-mono);
+  font-size: calc(12px * var(--va-text-scale));
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  scrollbar-color: var(--va-bg-500) transparent;
+}
+
+.va-stepdetail-label {
+  display: block;
+  margin-top: 6px;
+  color: var(--va-text-500);
+  font-family: var(--va-sans);
+  font-size: calc(11px * var(--va-text-scale));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.va-stepdetail-label:first-child {
+  margin-top: 2px;
+}
+
+.va-stepdetail-copy {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--va-text-500);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--va-fast) ease;
+}
+
+.va-stepdetail-copy > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.va-stepdetail:hover .va-stepdetail-copy,
+.va-stepdetail-copy:focus-visible {
+  opacity: 1;
+}
+
+.va-stepdetail-copy:hover {
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+}
+
+/* The fold's head: "Worked through N steps ›". */
+.va-step-head {
+  background: var(--va-bg-200);
+}
+
+.va-step-head .va-steprow {
+  color: var(--va-text-100);
+  font-weight: 500;
+}
+
+/* ── Change cards ── */
+.va-card {
+  overflow: hidden;
+  border: 1px solid var(--va-border);
+  border-radius: 12px;
+  background: var(--va-bg-000);
+  animation: va-rise 180ms ease backwards;
+}
+
+.va-cardh {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.va-cardh:hover {
+  background: var(--va-bg-200);
+}
+
+.va-cardh:focus-visible {
+  outline-offset: -2px;
+  border-radius: 12px 12px 0 0;
+}
+
+.va-card-box {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--va-bg-300);
+  color: var(--va-text-300);
+}
+
+.va-card-box > svg {
+  width: 17px;
+  height: 17px;
+}
+
+.va-card-titles {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Ellipsis at the START: the box runs right-to-left so the clipped end is the
+   left one, and the path itself is isolated left-to-right inside (<bdi>), so
+   "Notes/Ideas.md" is not reordered by the box's direction. */
+.va-card-path {
+  overflow: hidden;
+  color: var(--va-text-100);
+  font-size: calc(13.5px * var(--va-text-scale));
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+}
+
+.va-card-sub {
+  color: var(--va-text-400);
+  font-size: calc(12px * var(--va-text-scale));
+  line-height: 1.45;
+}
+
+.va-add {
+  color: var(--va-ok);
+}
+
+.va-del {
+  color: var(--va-bad);
+}
+
+.va-card-open {
+  flex: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--va-text-400);
+  font-size: calc(12.5px * var(--va-text-scale));
+  transition: background-color var(--va-fast) ease, color var(--va-fast) ease;
+}
+
+.va-cardh:hover .va-card-open,
+.va-cardh:focus-visible .va-card-open {
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+}
+
+.va-diff {
+  padding: 6px 0;
+  border-top: 1px solid var(--va-border);
+  font-family: var(--va-mono);
+  font-size: calc(12px * var(--va-text-scale));
+  line-height: 1.6;
+}
+
+/* A long line ends in an ellipsis under a fade into the row's own colour. */
+.va-diff-row {
+  position: relative;
+  padding: 1px 12px;
+  overflow: hidden;
+  color: var(--va-text-400);
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.va-diff-row::before {
+  content: "  ";
+  white-space: pre;
+}
+
+.va-diff-row::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  background: linear-gradient(90deg, transparent, var(--va-bg-000));
+  pointer-events: none;
+}
+
+.va-diff-row.is-add {
+  background: var(--va-ok-bg);
+  color: var(--va-text-100);
+}
+
+.va-diff-row.is-del {
+  background: var(--va-bad-bg);
+  color: var(--va-text-100);
+}
+
+.va-diff-row.is-add::before {
+  content: "+ ";
+  color: var(--va-ok);
+}
+
+.va-diff-row.is-del::before {
+  content: "− ";
+  color: var(--va-bad);
+}
+
+.va-diff-row.is-add::after {
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--va-ok-bg), var(--va-bg-000)));
+}
+
+.va-diff-row.is-del::after {
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--va-bad-bg), var(--va-bg-000)));
+}
+
+.va-diff-row.is-gap {
+  color: var(--va-text-500);
+}
+
+.va-diff-more {
+  display: block;
+  width: 100%;
+  padding: 4px 12px 2px;
+  border: 0;
+  background: none;
+  color: var(--va-text-400);
+  font-family: var(--va-sans);
+  font-size: calc(12.5px * var(--va-text-scale));
+  text-align: left;
+  cursor: pointer;
+}
+
+.va-diff-more:hover {
+  color: var(--va-text-100);
+}
+
+/* ── The action row under a reply ── */
+.va-acts {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  margin-top: -4px;
+  color: var(--va-text-500);
+  opacity: 0;
+  transition: opacity var(--va-fast) ease;
+}
+
+.va-a:hover .va-acts,
+.va-acts.is-shown,
+.va-acts:focus-within {
+  opacity: 1;
+}
+
+.va-acts .va-icon-btn:hover {
+  color: var(--va-text-100);
+}
+
+.va-acts-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--va-text-400);
+  font-size: calc(12.5px * var(--va-text-scale));
+  cursor: pointer;
+  transition: background-color var(--va-fast) ease, color var(--va-fast) ease;
+}
+
+.va-acts-retry > svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Retry turns clockwise, the way a reload arrow reads: the shared glyph is
+   Lucide's counter-clockwise RotateCcw, mirrored (the chevron is symmetric). */
+.va-acts-retry > svg:first-child {
+  transform: scaleX(-1);
+}
+
+.va-acts-retry .va-acts-chev {
+  width: 12px;
+  height: 12px;
+}
+
+.va-acts-retry:hover:not([aria-disabled="true"]),
+.va-acts-retry[aria-expanded="true"] {
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+}
+
+.va-acts-retry[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.va-acts-model {
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--va-text-500);
+  font-size: calc(11.5px * var(--va-text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.va-retry-menu {
+  width: 272px;
+}
+
+/* ── Notices ──
+   One quiet line, its first sentence a step brighter; never a tinted card. */
+.va-notice {
+  color: var(--va-text-400);
+  font-size: calc(13px * var(--va-text-scale));
+  line-height: 1.5;
+}
+
+.va-notice b {
+  color: var(--va-text-200);
+  font-weight: 500;
+}
+
+.va-notice.is-error b {
+  color: var(--va-bad);
+}
+
+.va-stopped {
+  margin-top: 6px;
+  color: var(--va-text-500);
+  font-size: calc(12.5px * var(--va-text-scale));
+}
+
+/* ── Jump to latest ── */
+.va-jump {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px 6px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--va-bg-000);
+  box-shadow: var(--va-shadow-pop);
+  color: var(--va-text-200);
+  font-size: calc(12.5px * var(--va-text-scale));
+  line-height: 1.5;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+  cursor: pointer;
+}
+
+.va-jump.is-shown {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.va-jump > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.va-jump:hover {
+  color: var(--va-text-100);
+}
+
+/* ── A reply: the editor's Reading mode, re-fitted to chat prose ──
+   cmTheme's editor chrome (its own background, 24px/32px padding, the note's
+   16px type) is overridden here, at a higher specificity than a theme rule
+   (`.ͼN .cm-content` is 0,2,0; these are 0,3,0). Every rule is under
+   .va-reply: a note in Reading mode is untouched. */
+.va-reply {
+  color: var(--va-text-100);
+  font-family: var(--va-reply-font);
+  font-size: var(--va-reply-size);
+  line-height: var(--va-reply-leading);
+  animation: va-fade 220ms ease backwards;
+}
+
+.va-reply .cm-editor {
+  height: auto;
+  background: transparent;
+  color: var(--va-text-100);
+  font-family: var(--va-reply-font);
+  font-size: var(--va-reply-size);
+}
+
+.va-reply .cm-editor.cm-focused {
+  outline: none;
+}
+
+.va-reply .cm-editor .cm-scroller {
+  overflow-x: auto;
+  overflow-y: hidden;
+  font-family: var(--va-reply-font);
+  line-height: var(--va-reply-leading);
+}
+
+.va-reply .cm-editor .cm-content {
+  padding: 0;
+  line-height: var(--va-reply-leading);
+  caret-color: auto;
+}
+
+.va-reply .cm-editor .cm-line {
+  padding: 0;
+}
+
+.va-reply-plain {
+  line-height: var(--va-reply-leading);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Maths must not set the reply's width.
+   MEASURED in a 400px panel (a 371px reply): one `$$…$$` whose KaTeX is 493px
+   wide made `.cm-content` 493px too, so EVERY line was laid out at 493px and
+   the prose ran off the right edge — the whole reply scrolled sideways instead
+   of the formula. Pinning the content to the scroller's width puts the overflow
+   back inside the formula, where `.cm-math-block`'s own `overflow-x: auto`
+   (index.css) has always been waiting for it. */
+.va-reply .cm-editor .cm-content {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Inline maths is NOT made a scroll box, and that is the finding of an
+   experiment: `overflow-x: auto` (to catch a long formula) forces the other
+   axis to a scrolling value too, and CSS turns a paired `clip` into `hidden` —
+   so every inline fraction drew a vertical scrollbar, and clipping it instead
+   cut the numerator off. A genuinely long one overflows the line instead of
+   widening the reply (the content above is pinned), and the scroller's own
+   horizontal bar reaches it.
+
+   A display formula scrolls sideways, never down, with 8px above and below
+   (a note gives it 12px, plus a blank row either side). Nothing is cut: the
+   padding is what a sum's limits grow into. */
+.va-reply .cm-math-block {
+  max-width: 100%;
+  padding: 8px 0;
+  overflow-y: hidden;
+}
+
+.va-reply .cm-math-block .katex-display {
+  margin: 0;
+}
+
+/* A block widget (display maths, a table) sits in a line between two of
+   CodeMirror's zero-width <img> buffers, and each image opens an anonymous
+   line box of a full text row: measured, a table's line 51px taller than the
+   table, a formula's 25px. A reply is read-only — no caret ever lands beside
+   the widget — so the buffers go and the line is the widget's height. */
+.va-reply .cm-line:has(> .cm-table-widget) > .cm-widgetBuffer,
+.va-reply .cm-line:has(> .cm-math-block) > .cm-widgetBuffer {
+  display: none;
+}
+
+/* The prose palette. cmTheme's highlight style inks bold, italic, headings
+   and list text with LITERAL colours (#dcddde — the editor's grey, not the
+   panel's text), so every span outside code takes the reply's own colour;
+   KaTeX's spans are left alone (they size themselves per span). */
+.va-reply .cm-line:not(.cm-live-codeblock) span:not(.katex *):not(.katex) {
+  color: inherit;
+}
+
+/* ── Rhythm: chat prose, not a note ──
+   A blank line that separates blocks is a PLAIN line holding only
+   CodeMirror's <br> — `[class="cm-line"]` leaves out blank lines inside a
+   code fence or a quote, which are content. In a note it is a whole 25px
+   row; here it is the 10px paragraph gap — scaled with the text, so a
+   larger Agent text size keeps the same rhythm instead of crowding its
+   paragraphs. CodeMirror measures line heights from the DOM, so nothing
+   drifts. */
+.va-reply .cm-content > .cm-line[class="cm-line"]:has(> br:only-child) {
+  line-height: calc(10px * var(--va-text-scale));
+}
+
+/* A reply's leading and trailing blank lines (agents end on "\n\n", and a
+   turn's texts are joined with one) are not paragraph gaps: the turn's own
+   10px already separates it from what comes next.
+   (Two rules, not one list: :has() cannot nest, and one invalid selector
+   drops a whole list.) */
+.va-reply .cm-content > .cm-line[class="cm-line"]:has(> br:only-child):is(:first-child, :last-child) {
+  line-height: 0;
+}
+
+.va-reply .cm-content > .cm-line[class="cm-line"]:has(> br:only-child):has(+ .cm-line[class="cm-line"]:last-child > br:only-child) {
+  line-height: 0;
+}
+
+/* Every heading in a reply is one size: 16.5px semibold, 12px above (the
+   blank line's 10 + 2) and 4px below — the blank line after it shrinks, so
+   the heading binds to what it heads. The highlight style's own em scaling
+   lives on the inner spans, which follow the line here. */
+.va-reply .cm-content > .cm-line.cm-live-heading {
+  padding: 2px 0 0;
+  font-size: calc(16.5px * var(--va-text-scale));
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.va-reply .cm-line.cm-live-heading span:not(.katex *):not(.katex):not(.cm-live-code) {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.va-reply .cm-content > .cm-line.cm-live-heading + .cm-line[class="cm-line"]:has(> br:only-child) {
+  line-height: calc(4px * var(--va-text-scale));
+}
+
+/* Lists: a 22px gutter (+20px a level), markers in the quietest ink, 3px
+   between items. The note's rules are !important (index.css), hence these. */
+.va-reply .cm-live-list-item {
+  padding-top: 1.5px !important;
+  padding-bottom: 1.5px !important;
+  padding-left: calc(22px + var(--list-indent, 0) * 20px) !important;
+}
+
+/* A bullet is drawn like the browser's own disc: a filled circle a third of
+   an em across, its centre a hair under the line's middle (the x-height's),
+   12px short of the text — not the "•" of the reply face, which in Source
+   Serif is a smaller, lighter dot (measured: 4×4px, half the ink of a native
+   disc's 5×5 at 15.5px). In ems, so it follows the reply size. */
+.va-reply .cm-live-list-bullet::before {
+  content: "";
+  left: calc(22px - 12px - 0.32em + var(--list-indent, 0) * 20px);
+  top: calc(1.5px + (var(--va-reply-leading) * 1em - 0.32em) / 2 + 0.06em);
+  width: 0.32em;
+  height: 0.32em;
+  border-radius: 50%;
+  background: var(--va-text-500);
+}
+
+.va-reply .cm-live-list-ordered::before {
+  right: calc(100% - 18px - var(--list-indent, 0) * 20px);
+  color: var(--va-text-500);
+}
+
+.va-reply .cm-live-list-item.cm-live-list-raw {
+  padding-left: calc(8px + var(--list-indent, 0) * 20px) !important;
+}
+
+/* Inline code: mono on the bubble's grey with a hairline, in the TEXT colour
+   (the app's accent purple is the note's, not the chat's). */
+.va-reply .cm-line:not(.cm-live-codeblock) span.cm-live-code {
+  padding: 1px 5px;
+  border: 1px solid var(--va-border);
+  border-radius: 5px;
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+  font-family: var(--va-mono);
+  font-size: calc(12.5px * var(--va-text-scale));
+}
+
+.va-reply .cm-live-code span {
+  font-family: inherit;
+}
+
+/* Links: the text's own colour, underlined. */
+.va-reply .cm-live-link,
+.va-reply .cm-line:not(.cm-live-codeblock) .cm-live-link span {
+  color: var(--va-text-100);
+  text-decoration: underline;
+  text-decoration-color: var(--va-text-500);
+  text-underline-offset: 2px;
+}
+
+.va-reply .cm-live-link:hover {
+  text-decoration-color: currentColor;
+}
+
+/* Blockquote: a 2px hairline, upright text one step quieter. */
+.va-reply .cm-live-blockquote {
+  border-left: 2px solid var(--va-border-2);
+  padding-left: 12px !important;
+  color: var(--va-text-300);
+  font-style: normal;
+}
+
+.va-reply .cm-hr-widget {
+  margin: 8px 0;
+  background: var(--va-border);
+}
+
+/* Tables: hairline rows only, no vertical rules and no banding; the table
+   scrolls in its own box (.cm-table-scroll). Its 8px margin would collapse
+   OUT of the line CodeMirror measures, so the room is padding on the line. */
+.va-reply .cm-table-widget {
+  margin: 0;
+}
+
+.va-reply .cm-line:has(> .cm-table-widget) {
+  padding: 2px 0;
+}
+
+.va-reply .cm-table-widget th,
+.va-reply .cm-table-widget td {
+  border: 0;
+  border-bottom: 1px solid var(--va-border);
+  padding: 0.4em 0.75em 0.4em 0;
+  background: transparent;
+}
+
+.va-reply .cm-table-widget th {
+  border-bottom-color: var(--va-border-2);
+  font-weight: 600;
+  background: transparent;
+}
+
+.va-reply .cm-table-widget tr:nth-child(even) td {
+  background: transparent;
+}
+
+.va-reply .cm-table-widget tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.va-reply .cm-table-widget code {
+  padding: 1px 5px;
+  border: 1px solid var(--va-border);
+  border-radius: 5px;
+  background: var(--va-bg-300);
+  font-family: var(--va-mono);
+  font-size: calc(12.5px * var(--va-text-scale));
+}
+
+/* ── Code blocks: dark in both themes, a thin header row ──
+   The block is CodeMirror lines, one class on each (livePreview's fence
+   pass). The FENCE row — hidden "```lang" — becomes the header: the language
+   from `data-lang` (replyView.ts puts it there) on the left, the copy button
+   (copyCodeWidget, absolutely placed in that row) labelled "Copy" on the
+   right. A closed fence's last row, also hidden, is the bottom padding. */
+.va-reply .cm-editor .cm-line.cm-live-codeblock {
+  padding: 0 14px;
+  background: var(--va-code-bg);
+  color: var(--va-code-fg);
+  font-family: var(--va-mono);
+  font-size: calc(12.5px * var(--va-text-scale));
+  line-height: 1.6;
+}
+
+.va-reply .cm-live-codeblock span {
+  font-family: inherit;
+}
+
+/* The palette's faint inks, re-inked for the block (replyView.ts names them):
+   comments/meta/markers in the panel's tertiary grey (6.05:1 dark, 5.03:1
+   light — the palette's #666 was 2.97 and 2.47), names a step lighter than
+   One Dark's red (6.03 / 5.01, was 5.34 / 4.44). Fixed hexes, like the block's
+   background: the block is dark in both themes. */
+.va-reply .cm-line.cm-live-codeblock .va-ink-quiet {
+  color: #9B9A94;
+}
+
+.va-reply .cm-line.cm-live-codeblock .va-ink-name {
+  color: #E47A85;
+}
+
+.va-reply .cm-live-codeblock-start {
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+}
+
+.va-reply .cm-live-codeblock-end {
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+}
+
+.va-reply .cm-editor .cm-line.cm-live-codeblock.cm-live-codeblock-start {
+  padding: 0 12px;
+  background: var(--va-code-head);
+  color: var(--va-code-muted);
+  font-family: var(--va-sans);
+  font-size: calc(11.5px * var(--va-text-scale));
+  line-height: 30px;
+}
+
+.va-reply .cm-line.cm-live-codeblock-start::before {
+  content: attr(data-lang);
+}
+
+/* The first line of code sits 10px under the header. */
+.va-reply .cm-editor .cm-line.cm-live-codeblock-start + .cm-line.cm-live-codeblock:not(.cm-live-codeblock-end) {
+  padding-top: 10px;
+}
+
+/* A closed block's hidden ``` row: 12px of padding, no text line. */
+.va-reply .cm-editor .cm-line.cm-live-codeblock-end:not(.cm-live-codeblock-start):has(> .cm-live-hidden) {
+  height: 12px;
+  font-size: 0;
+  line-height: 0;
+}
+
+.va-reply .cm-codeblock-copy {
+  top: 50%;
+  right: 6px;
+  gap: 5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: var(--va-code-muted);
+  font-family: var(--va-sans);
+  font-size: calc(11.5px * var(--va-text-scale));
+  line-height: 1.5;
+  transform: translateY(-50%);
+}
+
+.va-reply .cm-codeblock-copy > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.va-reply .cm-codeblock-copy::after {
+  content: "Copy";
+}
+
+.va-reply .cm-codeblock-copy-done::after {
+  content: "Copied";
+}
+
+.va-reply .cm-codeblock-copy:hover,
+.va-reply .cm-codeblock-copy-done,
+.va-reply .cm-codeblock-copy-done:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #FFFFFF;
+}
+
+/* ── Motion off ── */
+@media (prefers-reduced-motion: reduce) {
+  .va-turn,
+  .va-steps,
+  .va-step,
+  .va-card,
+  .va-reply,
+  .va-think-body {
+    animation: none;
+  }
+
+  .va-spin {
+    animation-duration: 2.4s;
+  }
+
+  /* Every transition in the panel and its popovers — hover fills, fades, the
+     chevrons' quarter turn — is instant: one rule here
+     rather than one per file, where a new hover transition was missed every
+     time (measured: icon buttons, chips, segments, Retry and three chevrons
+     still eased under `reduce`). !important because the rules it overrides
+     are more specific (`.va-acts .va-icon-btn`, `.agent-composer …`) and
+     nothing in the panel waits on a transitionend. */
+  :is(.agent-panel, .agent-panel-layer),
+  :is(.agent-panel, .agent-panel-layer) *,
+  :is(.agent-panel, .agent-panel-layer) *::before,
+  :is(.agent-panel, .agent-panel-layer) *::after {
+    transition: none !important;
+  }
+}

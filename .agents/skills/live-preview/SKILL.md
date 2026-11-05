@@ -512,6 +512,13 @@ dispatch and there is no transaction filter in `src` — keep it that way, or ag
 being read stop landing. The agent panel's replies render in a read-only view built by
 `editor/replyView.ts` from this same read mode, which is how they get headings, code, KaTeX, mermaid
 and tables without a third `innerHTML` sink; streamed text is appended once per animation frame.
+Replies differ from a note in three places, all inside `replyView.ts` and never in a note's view:
+the DARK token palette in both themes (their code blocks are dark); a reply-only ViewPlugin
+(`replyCodeBlocks`) putting the fence's language on the fence row as a `data-lang` line attribute
+(the panel's CSS draws it with `attr()` — text, no sink; it walks the whole tree per doc/tree change,
+fine at reply size, never in a note); and the same plugin turning `.cm-codeblock-copy[tabindex="-1"]`
+into a tab stop. So renaming that class, or the `tabIndex = -1` in `copyCodeWidget.ts`, silently
+takes the reply's Copy off the keyboard — change both together.
 
 
 Word emphasis uses readingEmphasis singleton outside readingEmphasisCompartment; fresh/adopt/live prose paths configure the same facet. Latest mode/preferences defer during IME; capture/restore word anchors around layout changes. Preference-only updates do not remint livePreview; cancel pending work before view teardown. Code/TeX/chat never install the option.

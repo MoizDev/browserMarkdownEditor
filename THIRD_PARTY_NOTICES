@@ -8,3 +8,5 @@ Vendoring used esbuild 0.25.12; frame builds use the existing locked esbuild 0.2
 The XHTML entity data carries the Python license in vendor/PYTHON-LICENSE.txt.
 Existing npm dependency licensing remains governed by each installed package's license.
 No production dependency or lockfile was added or upgraded by the central integrator.
+Added later, with the agent panel redesign — Source Serif 4 (Adobe, via @fontsource-variable/source-serif-4 5.3.1; latin subset, weight axis): SIL Open Font License 1.1.
+It is bundled only with the AI agent panel's lazy chunk; the licence text is emitted as licenses/SourceSerif4-OFL.txt.

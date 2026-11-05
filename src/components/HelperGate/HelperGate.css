@@ -3,15 +3,17 @@
    usable — set up, connect, update, problems — plus the buttons, notices and
    command lines the agent panel shares with it. Loaded by BOTH lazy chunks
    (the agent panel and the terminal dock), through HelperGate's own import, so
-   neither carries a copy. The class names keep the `agent-` prefix: the agent
-   panel's look must stay exactly as it was, and these rules were moved here
-   unchanged from AgentPanel.css.
+   neither carries a copy. The class names keep the `agent-` prefix: these
+   rules were moved here from the agent panel's stylesheet. Inside the panel,
+   AgentPanel/styles/gate.css restyles them (scoped to .agent-panel, so the
+   terminal dock's gate is untouched).
    ============================================================= */
 
-/* The tokens these rules read. The agent panel defines the same ones on its
-   root (AgentPanel.css); the terminal dock has no such root, so the screen
-   carries them itself. Values are identical to the panel's, so nothing shifts
-   inside it. Dark is the default (an absent data-theme means dark). */
+/* The tokens these rules read. The agent panel defines the same names on its
+   root (AgentPanel/styles/tokens.css, on its own palette) and re-points these
+   for a screen inside it (styles/gate.css); the terminal dock has no such
+   root, so the screen carries them itself. Dark is the default (an absent
+   data-theme means dark). */
 .agent-screen {
   --ai-card: var(--background-primary);
   --ai-ring: rgba(255, 255, 255, 0.12);

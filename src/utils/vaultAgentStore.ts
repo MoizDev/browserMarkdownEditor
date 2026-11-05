@@ -59,8 +59,12 @@ function parseChat(raw: unknown): ChatMeta | null {
     const r = raw as Record<string, unknown>;
     if (!isUuid(r.id) || !isAgentId(r.agent)) return null;
     const created = num(r.createdAt, 0);
+    // Only a real `true` stars a chat; anything else a hand edit left there
+    // is dropped rather than carried as a truthy string.
+    const { starred, ...rest } = r;
     return {
-        ...r,
+        ...rest,
+        ...(starred === true ? { starred: true } : {}),
         id: r.id,
         agent: r.agent,
         sessionId: str(r.sessionId),

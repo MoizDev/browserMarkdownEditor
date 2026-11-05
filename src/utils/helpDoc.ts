@@ -614,28 +614,57 @@ The sparkles button at the bottom of the sidebar (or \`Cmd + Shift + X\` / \`Ctr
 - Then click **Connect** in the panel. Chrome asks once whether this site may talk to apps on your computer — choose **Allow**. Until you click Connect the page never tries to reach the helper. If you chose Block by mistake, click the icon at the left of the address bar, open **Site settings**, and set **Local network access** to **Allow**; the panel reconnects by itself.
 
 ### Chatting
-Opening the panel puts you straight in the box at the bottom, and closing it puts you back where you were. Type there and press **Enter** to send (**Shift + Enter** for a new line). Paste images straight from the clipboard, drop them onto the box, or use the attach button. Right-click the box to **Paste**, or selected text anywhere in the panel to **Copy** it. Pick the agent in the panel's **⋯** menu, which also shows whether each one is installed and logged in, and the model and how hard it should think (effort) beside the message box — the model list opens with the few worth choosing between, and **Show all** has the rest — each chat remembers its own choice, and a new chat starts with the last one you used. Switching the agent starts a new chat. **Stop** ends a reply early.
+A new chat opens on a greeting, the box to type in, and up to three suggestions drawn from what you have open — **Summarize** the note, **Tighten this paragraph** (when you have text selected) and **Find related notes**. A suggestion only fills in the box, so you can change it before you send. Once you send, the box moves down to the bottom and the conversation fills the panel above it.
+
+Opening the panel puts you straight in the box, and closing it puts you back where you were. Type there and press **Enter** to send (**Shift + Enter** for a new line). Right-click the box to **Paste**, or selected text anywhere in the panel to **Copy** it. While a reply is being written the send button turns into **Stop**, and a small dot pulses after the chat's name at the top.
+
+Each chat keeps what you had half-typed in its box, pictures included: switch to another chat and back, or close the panel and open it again, and it is still there (until you reload the page). **New chat** always starts with an empty box.
+
+**Images:** the **+** at the bottom left of the box has **Attach images** (PNG, JPEG, WebP or GIF, up to 8 per message) and a reminder that **Cmd + V** pastes a screenshot straight in. You can also drag images onto the panel — anywhere on it; the box lights up to show where they will land. Point at a thumbnail and click its **×** to take it off again.
+
+**Model and effort:** the model's name at the bottom right of the box (for example "Opus · High") opens the model list — the main families first, each with a line on what it is good at, and **More models** for the rest — with **Effort**, how hard it should think, under it. Each chat remembers its own choice, and a new chat starts with the last one you used. Pick the agent itself in the panel's **⋯** menu, which also shows whether each one is installed and logged in; switching the agent starts a new chat. An agent that is not installed on this computer is greyed out there — point at it to see the command that installs it.
+
+**When the agent can't take a message** — not installed, or not logged in — the box says so in grey, and the line under it tells you the command to run in a terminal (click the command to copy it) and has **check again** for when you have done it.
+
+**If the connection to VaultAgent drops** — it restarted, or the computer woke from sleep — the chat stays on screen and a line under the header says "Reconnecting to VaultAgent…" while the panel keeps trying by itself; **Retry now** tries straight away. A reply that was being written stops where it was.
+
+**Keys:**
+- **Esc** closes a menu that is open; otherwise it stops a reply that is being written; otherwise, with the box empty, it closes the panel.
+- **↑** in an empty box opens your last message for editing (see below).
+- **Cmd + ↑** / **Cmd + ↓** jump to the previous or next of your messages in a long chat. They work from the message box too: once the cursor is already at the start of the box, **Cmd + ↑** jumps; at its end, **Cmd + ↓**.
+- Scroll up while a reply is being written and the panel stops following it; **Jump to latest** at the bottom takes you back down.
 
 ### How it answers, and Learning Mode
 Answers are meant to be short: the agent is told to lead with the answer, keep to a few sentences unless you ask for more, skip the preamble and the recap, and never paste back a diff the panel already shows you. Maths comes back as real maths, typeset the way your notes do it — it is told to write LaTeX (\`$x^2$\`, or \`$$…$$\` on its own line) and never to fake a formula with symbols like ∑ and √.
 
-When you are trying to **learn** something rather than get something done, that is the wrong shape, so the panel has a **learning mode** — the graduation cap beside the model chip. In learning mode the agent gives you **one idea at a time**: a short explanation with a concrete example, often built from your own notes, then one question back to check it landed, and then it waits for you. Say you follow and it takes the next step; say you're lost and it goes smaller.
+Replies are set in a serif typeface, like a page of a book. If you prefer the same typeface as the rest of the app, choose **Settings → Agent replies → Sans**. To make everything in the panel larger or smaller — replies, your messages, the message box and its menus — drag **Settings → Agent text size** (12–20px; 14px is the default).
 
-The cap has three settings, and clicking it moves to the next:
-- **Automatic** (the default): the panel decides per message. Ask it to explain something, say you don't understand, or ask why something works, and it teaches; ask it to add a table or fix a typo and it just does it. The cap **lights up** while a lesson is under way, so you can always see which one you are getting.
-- **On**: every answer is taught step by step.
+When you are trying to **learn** something rather than get something done, that is the wrong shape, so the panel has a **learning mode**. In learning mode the agent gives you **one idea at a time**: a short explanation with a concrete example, often built from your own notes, then one question back to check it landed, and then it waits for you. Say you follow and it takes the next step; say you're lost and it goes smaller.
+
+The **sliders** button beside the **+** opens **Learning mode**, with three settings (and **Effort** again, under it):
+- **Auto** (the default): the panel decides per message. Ask it to explain something, say you don't understand, or ask why something works, and it teaches; ask it to add a table or fix a typo and it just does it. A small **graduation cap** appears before the model's name while a lesson is under way, so you can always see which one you are getting.
+- **Always**: every answer is taught step by step (the cap stays on).
 - **Off**: it always answers directly.
 
 The setting is yours, not the chat's: it stays as you left it. A lesson in progress is remembered until you start a new chat or reload the page.
 
 ### Changing something you already sent
-Point at one of your own messages and a **pencil** appears. Click it, change the words, press **Enter** (or **Send**), and the agent answers the new version.
+Point at one of your own messages and a **pencil** appears. Click it — or press **↑** in the empty box to edit your last one — change the words, press **Enter** (or **Send**), and the agent answers the new version. **Esc** leaves it as it was.
 
 The old one is not thrown away. Your message now has **two versions**, and a small **‹ 1/2 ›** under it switches between them — along with everything that followed each one. Edit again and you get a third, and so on. It works on any message in the chat, not just the last, and a chat you started before this update can be edited the same way.
 
+**Retry** under a reply asks the same question again as a new version, and its arrow lists the models, so you can see how **another model** would answer it; the model a reply came from is named at the right of that row. The **Effort** in that list works the same way: set it first, then pick the model. Both are for that one retry — the chat keeps its own model and effort for your next message.
+
+Images you attached go along again when you edit or retry that message. After a reload the panel no longer has them, so it says so instead of quietly leaving them out: the edit box shows "2 images can't be re-sent", and the new answer starts with "2 images from the original message couldn't be sent again" ("The image from the original message…" for one). Attach them again if the agent needs them.
+
 Each version is a separate conversation from that point on: the agent answering your edited message does not know about the version you replaced, which is the point of editing it. It is told what came **before** the message you changed, so it still has the thread.
 
-Each chat keeps its own conversation. The chat list at the top lets you go back to an earlier one or start a new one, and deleting a chat removes it for good (after asking), including the agent's own record of it.
+### Your chats
+The chat's name at the top of the panel opens **Star**, **Rename** and **Delete chat** for it. A new chat is named after your first message; **Rename** lets you type a better one right there. Deleting a chat removes it for good (after asking), including the agent's own record of it.
+
+The **clock** button beside it lists this vault's chats: **Starred** ones first, then **Today**, **Yesterday** and **Earlier**, each with the agent it used and when — or "replying…" for one that is still being answered. The **Search chats** field at the top has the keyboard as soon as the list opens: type part of a name and press **Enter** to open the first match, or **↓** to move down the list. Point at a chat (or move to it with the arrow keys and press **→**) and its **⋯** has Star, Rename and Delete too. The **pencil-on-square** button starts a new chat.
+
+Reload the page and the panel opens on the chat you last had open in that vault — each vault remembers its own. If that chat has since been deleted, you start on a new chat instead.
 
 ### What the agent can see
 You never need to tell it what you are looking at. With **every** message it is told, fresh, which tabs and panes you have open, which one you are in, and exactly where you are in each: the lines on screen and your selection in a note (unsaved edits included), the page, zoom and selected text in a PDF, and what is in view on a drawing or notebook page. When the tab you are in is a drawing, notebook or PDF, a picture of what is on screen goes along too — but only when it changed since your last message. Scroll, switch tabs or keep writing between messages and the next message knows.
@@ -653,11 +682,11 @@ Your own MCP servers are left out of the panel's runs, and so are your hooks and
 The vault holds only a small list of its chats, in a hidden \`.VaultAgent\` folder (hidden from the file tree, search and the graph, as are \`.claude\`, \`.agents\`, \`.codex\` and \`.opencode\` folders at the top of the vault). The conversations themselves are kept by the agent in its own place, the way it keeps your terminal sessions; the agent works from a folder of its own for this vault, under \`~/.bme-agent-sessions\` in your home folder. A \`CLAUDE.md\` or \`AGENTS.md\` at the top of the vault, and skills in \`.claude/skills\` or \`.agents/skills\`, are passed on to the agent as instructions.
 
 ### Keeping it up to date
-Each time you load the page (once you have connected before, and Chrome still allows the connection), the editor asks VaultAgent whether a newer version has been released. When one has, a small dot appears on the sparkles button (and on the expand-sidebar button while the sidebar is hidden), and the panel says "**VaultAgent X** is available" with an **Update** button. The panel's **⋯** menu also has **Update VaultAgent**, which you can use any time; it is greyed out when you already have the latest version. The version you have is shown at the top of that menu.
+Each time you load the page (once you have connected before, and Chrome still allows the connection), the editor asks VaultAgent whether a newer version has been released. When one has, a small dot appears on the sparkles button (and on the expand-sidebar button while the sidebar is hidden), and a line under the panel's header says "**VaultAgent X** is available · **Update**" (its **×** hides it until the next version). The panel's **⋯** menu also has the update: **Update VaultAgent to X** when there is one, otherwise **Check for updates**, which asks again right away and answers in the menu — "VaultAgent X is the latest version", or the update, ready to click. The version you have is shown beside **Reconnect** in that menu.
 
-One click is all it takes: VaultAgent downloads the new version, checks that it runs on this computer, replaces the old copy and restarts. The panel shows the progress, reconnects by itself and says "Updated to VaultAgent X". Your chats are kept. If a reply is being written, the panel asks first, because updating stops it.
+One click is all it takes: VaultAgent downloads the new version, checks that it runs on this computer, replaces the old copy and restarts. A thin line under the panel's header shows the progress while your chat stays readable below it; the panel then reconnects by itself and says "Updated to VaultAgent X". Your chats are kept. If a reply is being written, the panel asks first, because updating stops it.
 
-If anything goes wrong, the version you have keeps running and the panel says what happened, with **Try again** and a **Download installer** link: opening the installer replaces the old copy just as well.
+If anything goes wrong, the version you have keeps running and the line under the header says it couldn't update (point at it to see why), with **Try again** and a **Download installer** link: opening the installer replaces the old copy just as well.
 
 VaultAgent versions older than 0.1.3 cannot update themselves. For those, the **⋯** menu keeps **Download installer**: download it and open it once, and later versions update from the panel.
 

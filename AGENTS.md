@@ -137,10 +137,10 @@ app — load `verify-in-browser` before claiming it works.
   parsed in memory (`readRecord`/`flushRecord`, `utils/storage.ts`) under its per-vault `scopedKey`.
   Never pruned (recency capping was **rejected**), so they grow per vault.
 - **Settings → CSS variables** on `document.documentElement`, persisted to `localStorage` — except **Tab
-  size** (a CodeMirror compartment), **Recent vaults shown** (a prop), the **Terminal** font/size (an
-  import-free store, `utils/terminalSettings.ts`), all clamped on read (`localStorage` is user-editable),
-  and **Vault name as tab title**. Theme is `data-theme` on `<html>` (**absent = dark**); custom
-  accent/code colors are inline `<html>` style overrides that intentionally outrank both theme blocks.
+  size** (a CodeMirror compartment), **Recent vaults shown** (a prop), **Terminal** font/size, **Agent replies**
+  and **Agent text size** (import-free stores the lazy chunk reads: `utils/terminalSettings.ts`, `agentReplyFont.ts`,
+  `agentTextSize.ts`), all clamped on read (`localStorage` is user-editable), and **Vault name as tab title**.
+  Theme is `data-theme` on `<html>` (**absent = dark**); custom accent/code colors, inline on `<html>`, outrank both.
 - **ESLint config carries intentional relaxations** (`eslint.config.ts`): `no-unused-vars` ignores
   PascalCase/UPPER vars, all args and catch bindings; `set-state-in-effect` is off (deliberate);
   `only-export-components` is off for `src/context/**`; `tsconfig` leaves unused locals to lint.

@@ -29,7 +29,7 @@ skill's context, tools or chat index reads one.
   vault's `FileSystemDirectoryHandle` through App's handlers); `helper/src/prompt.ts` and the MCP
   `initialize` instructions forbid touching vault files any other way. The agent is never told the
   vault's disk path (the browser cannot know it). Its own tool calls reach the panel as `tool` events
-  (`ToolCallCard.describeForeign`: "Ran …", "Read …", "Edited …").
+  (`toolSteps.describeForeign`: "Ran …", "Read …", "Edited …").
 - **Exclusions only where ONE stable switch exists — never a name list tracked per CLI version**
   (Codex's per-feature deny-list, which broke on each release, is exactly what was removed):
   - Claude: `--strict-mcp-config` (user/project/plugin MCP servers), `disableAllHooks`, and every id in
@@ -123,7 +123,7 @@ Two layers, split by what can change mid-chat:
   `agentContext.ts` appends `REPLY_MODE_LINE[mode]` as the LAST line of `<bme-context>` (closest to the
   user's words, and self-contained, so an old chat still gets the cadence).
 
-**The editor decides, not the model**: the cap in the composer lights on exactly the messages that were sent
+**The editor decides, not the model**: the cap before the composer's model name lights on exactly the messages that were sent
 as `teach`, and a badge the model controlled would mean parsing a marker out of a stream it may not emit.
 `ReplyModePref` (`auto`/`teach`/`direct`, localStorage `agentReplyMode`, app-wide) pins it; in `auto`,
 `looksLikeLearning` matches understanding-shaped wording and a TASK regex beats it ("explain this in a note"
@@ -135,7 +135,8 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
 - `.VaultAgent/vault.json` = the vault's permanent uuid (created on first send, serialized); it names
   the working folder `~/.bme-agent-sessions/<uuid>/`, so a vault maps to the same folder in every
   browser and machine. `.VaultAgent/chats.json` = `{chatId, agent, sessionId, title, model, effort,
-  timestamps, lastImageHash}` only — read-modify-write through one queue, unknown keys preserved.
+  timestamps, lastImageHash, starred?}` only — read-modify-write through one queue, unknown keys
+  preserved. Rename/star (`chatStore.renameChat`/`setStarred`) show at once, then go through it.
 - **The TRANSCRIPT is the app's, one file per chat: `.VaultAgent/chats/<chatId>.json`**
   (`utils/chatTree.ts`). It has to be: a message can be EDITED, which forks the conversation, and a
   CLI session is a line — no reading-back of `session.history` produces a fork. A folder rather than
@@ -144,6 +145,13 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   reply lands. `session.history` survives as the fallback: a chat with no tree file (made before this,
   or whose file was lost) is read from the CLI and becomes a straight-line tree it can then be
   branched from (`treeFromItems`).
+- **A turn reads the same after the next message, a reload or a branch switch.** An assistant node's
+  optional `segments` keep the run in streamed order (text / reasoning with start+end / tool by index
+  into `tools` / notice) under the LIVE item ids; the flat `text`/`reasoning`/`tools` are still
+  written, so old files (no segments: drawn in the old fixed order) and old builds both work. A
+  follow-up keeps the items above it as the same objects; redraws go through `keepIdentity`. Never
+  rebuild the list on screen from the tree with new ids: every row remounts (measured: the thesis
+  turn's edit card jumped above its text, "Thought for 1s" became "Thought").
 - **A branch is a SESSION of its own.** `activeSessionId` is the newest assistant turn on the branch
   being shown, so an edit starts a fresh CLI session and carries the kept turns as a
   `<bme-history>` transcript (`transcriptPrefix`, 40k budget, oldest dropped first). Resuming the
@@ -154,9 +162,40 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   (whitelisted, size-capped, stale files removed). Nothing else — never settings, `.mcp.json`,
   `opencode.json`, hooks.
 - Delete is permanent (after `ask`): the CLI's session (`session.delete`), the index entry, and the chat's tree file.
+- **A tree write names its vault** (`writeChatTree(id, tree, vaultToken)`): a run commits into the vault
+  it STARTED in, so a vault switch mid-reply saves the partial turn + "Stopped." into the old vault's
+  file and never touches the new one (nor the index). A reload mid-reply commits the same on
+  `pagehide`, and since that async write never lands before teardown (measured), also stashes the node
+  in localStorage `vaultAgentCutOffTurns`, folded in on the chat's next load only if the file is still
+  where the run left it. localStorage `vaultAgentOpenChat` = each vault's open chat (by the vault key
+  `attach` gets, not `scopedKey()`, whose scope App sets after the panel's effect), reopened on attach.
 
 ## Panel (`components/AgentPanel/`, lazy with its CSS)
 
+- **Look = a quiet chat column on its own `--va-*` tokens** (`styles/tokens.css`: dark default, light
+  override, on `.agent-panel` AND the popover layer `.agent-panel-layer`; fixed terracotta accent, not
+  the app's; accent-coloured TEXT reads `--va-accent-text` — deeper in light, where #D97757 is 2.96:1 —
+  and the solid focus ring `--va-focus` follows it). `index.tsx` imports `styles/*.css` in cascade order — tokens, frame, header,
+  conversation, composer, popovers, gate (panel-scoped HelperGate overrides; the terminal dock's gate
+  must not change). The `--ai-*`/`--orb-*` names HelperGate reads and the app's own colour variables
+  are re-pointed onto `--va-*` inside the panel only. Primitives in `ui/` (Shimmer, Segmented,
+  IconButton, MenuRow + MenuSection/MenuSeparator) and panel-only icons in `ui/icons.tsx` — never in
+  `components/icons.tsx`, which is main-bundle. Every menu (title, chats, ⋯, +, sliders, model, retry)
+  is a `Popover` of MenuRows, kept inside the panel's bounds, one open at a time (opening one closes
+  the other); `openContextMenu` is only the panel's right-click Copy/Paste. A popover's `role` is
+  `menu` for a pure list (⋯, +) and `dialog` once it holds a field or a Segmented (title,
+  chats, model, sliders, retry — its Effort) — a menu may own only menuitems (axe). MenuRow reads it
+  (`ui/popoverRole.ts`): menuitem/menuitemradio in a menu, button/radio in a dialog. ↑/↓ walk every
+  Tab-reachable control; `data-nav-skip` opts one out (a chat row's ⋯, reached by →).
+- **Replies are set in Source Serif 4**, bundled from `@fontsource-variable/source-serif-4` (latin,
+  weight + optical-size axes: without opsz every size drew one master, 7% wide at 27px) and referenced
+  only by `tokens.css`, so only this chunk fetches it, from the app's own
+  origin. Settings → Agent replies (`utils/agentReplyFont.ts`, `data-agent-reply-font` on `<html>`)
+  swaps `--va-reply-font/-size/-leading` live. Settings → Agent text size (`utils/agentTextSize.ts`,
+  12–20px, default 14) puts `--agent-text-scale` on `<html>` (absent at 14); tokens.css reads it as
+  `--va-text-scale`, and **every panel font-size is written `calc(Npx * var(--va-text-scale))`** (menu
+  widths too) — a bare px size in new panel CSS will not follow the setting. The Suspense fallback (`.workspace-agent-loading`) and
+  `.workspace-agent-panel` restate the canvas colour in `index.css` — change both with `tokens.css`.
 - One bridge (`utils/agentBridge.ts`) and one chat store (`chatStore.ts`) per page, outside React:
   closing the panel mid-reply keeps the run and its tool calls going; 5 s grace before the socket
   closes; in dev a hot reload unhooks the old store (two would each answer every tool call).
@@ -167,24 +206,67 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
 - App: `⌘⇧X` is a CAPTURE-phase listener — a Mod-Shift letter no keymap here (CodeMirror,
   tldraw), Chrome or Edge claims; never ⌘⇧K (the user keeps it as deleteLine). `⌘E` is ignored
   inside `[data-agent-panel]` (dropdowns are portalled and carry it too).
-- Header: the app's AI glyph (`StatusMark`, tinted and pulsed by `data-state`), the chat switcher,
-  New chat, ⋯, close. **Which CLI runs the next chat is a pick-one section of the ⋯ menu** (`checked`
-  rows + its health caption), not a header chip: it is chosen once, and the panel is 400px wide.
-  The menu opens on the connected helper's version (a `label` entry, absent unless connected).
-- The model list opens SHORT (`ModelPicker.shortlist`): the default, then family aliases (an id with no
-  digit — `opus`, `sonnet` — which is what someone picking a model means), then the agent's own order,
-  three in all plus whatever is chosen; `Show all N models` opens the rest. Claude reports a dozen, most
-  of them pinned old versions.
+- Header: title (TitleMenu: Star / Rename in the popover / Delete via `host.ask`; static "New chat" on
+  a draft), history (ChatList: Starred / Today / Yesterday / Earlier, an always-shown search whose Enter opens the first match, a row ⋯ for
+  the same actions), New chat (hidden on an empty chat), ⋯ (MoreMenu), close. **No connection light**:
+  connecting is one shimmering line over the chat with an inert composer — and so is a DROP of a
+  helper this page chatted with while the bridge redials ("Reconnecting to VaultAgent…" + Retry now,
+  `reconnectingNow`); an update of that helper is a progress line under the header (UpdateBar's
+  `UpdateProgress`), the chat readable beneath. The HelperGate is only for not installed / outdated /
+  foreign / blocked / uninstalled, or a bridge that stopped retrying (`retryAt` null); its optional
+  `done` prop (agent panel only — the terminal dock passes none) ticks Install once this browser has
+  connected. **Which CLI runs the next chat is a pick-one section of the ⋯ menu** (health as
+  each row's description), not a header chip; the helper's version is Reconnect's meta. Star/Rename
+  call `chatStore.setStarred`/`renameChat` (shown at once, rolled back + `host.notify` on a failed
+  write). The hairline under the header has ONE source: MessageList's `.va-conversation[data-scrolled]`,
+  read by header.css through `:has()` — the list alone knows which scroller is the conversation's.
+- New chat = greeting + the composer centred + chips from the focused note (`useFocusedNote`). The
+  composer is ONE element in both layouts (`.agent-body`), so the first send docks it with a FLIP
+  transform instead of a remount. Not-ready agents are said by the composer itself (placeholder =
+  reason, caption = the fix + "check again"), never a card. Esc: popover → stop run → close panel
+  (empty composer), from anywhere in the panel unless another field takes the key; ↑ in an empty
+  composer → `editRequest.requestEditLast()`; ⌘↑/⌘↓ with the caret already at that end of the box →
+  `turnNav.requestTurnJump`. Each chat keeps its own draft (text + thumbnails) in `drafts.ts`, in
+  memory for the page's life: the Composer parks the chat it leaves and restores the one it enters;
+  New chat discards the draft's (`discardDraft(DRAFT_KEY)`) so it always starts empty.
+- The model menu opens SHORT (`modelChoice.menuModels`): the default and the family aliases (an id
+  with no digit — `opus`, `sonnet` — which is what someone picking a model means), else the agent's
+  first three, plus whatever is chosen; "More models" opens the rest. Descriptions never show an id.
+  Learning mode (Auto/Always/Off ↔ `auto`/`teach`/`direct`) and Effort live in the sliders menu.
+  The reply's Retry menu draws the SAME rows (`ModelPicker.ModelRows` over `modelChoice.ts`), so the
+  two lists cannot disagree; keep model naming/ordering there, never in a component.
+- **The transcript** (`MessageList`): turns grouped per user message and memoized per turn (a token
+  re-renders its own turn only). In a turn: `Thinking` (live label in `<Shimmer>`, then "Thought for
+  Ns" from `reasoningDurationMs`, "Thought" when no times were stored), consecutive tool calls as one
+  `StepStack` of `ToolStep` rows folding past 3 (verbs in `toolSteps.ts`), vault edits/creates as a
+  `ChangeCard`, the reply, then `ReplyActions` (Copy · Retry ⌄ → `chatStore.retry(userNodeId, model)`
+  as a new version, one-run model override · the model name from the item's `model`). Notices are one
+  line; a stop ends in "Stopped.". Sending pins the new turn to the top of the view; "Jump to latest"
+  when scrolled up mid-reply; ⌘↑/⌘↓ between turns (the composer asks through `turnNav.ts`; the target
+  is the TURN, re-aimed as reply views mount under the smooth scroll). Stick-to-bottom lets go on the
+  DIRECTION of a scroll (any move above `lastTop`), never a distance threshold — a streamed reply pins
+  every frame, so a 48px "still at the bottom" undid every trackpad/touch/key step up; every pin goes
+  through `pin()`, which re-checks first. A move up with no hand on the list (wheel/touch/key/pointer/
+  focus) within 400ms of a pin that moved it is the browser's clamp of shrinking content and re-pins —
+  read as the reader, it left a chat restored on reload at its top 1 time in 2. Verify mid-stream with small CDP `mouseWheel` deltas (−10px), not wheel notches,
+  which escape any threshold. An empty chat renders nothing here (AgentPanel's
+  greeting), but loading/missing/error keep their notices.
 - **Editing a message** (`UserMessage`): the pencil turns the bubble into a textarea, Enter sends,
-  Escape abandons. `chatStore.editMessage` → `send(text, [], nodeId)`, which branches instead of
-  appending. `‹ 2/3 ›` under a message with siblings calls `selectVersionAt`; node ids ARE item ids,
-  so the arrows, the edit and the streaming updates all address one message by one name. Editing is
-  refused while a run is live (a second run would have nowhere to go).
+  Escape abandons (stopped, so the panel's own Escape does not fire). `chatStore.editMessage` →
+  `send(text, images, nodeId)`, which branches instead of appending; Retry is the same with the text
+  kept. Both re-send the message's images while `sentImages` (in memory, capped) still holds them;
+  `resendableImages(id)` → `{count, available}` is what the edit box shows, and a send short of
+  them adds a warning notice to the new turn — never a silent drop. `‹ 2/3 ›` under a message with
+  siblings calls `selectVersionAt`; node ids ARE item ids, so the arrows, the edit and the streaming
+  updates all address one message by one name. Editing, Retry and switching versions are refused
+  while a run is live (a second run would have nowhere to go; a switch would orphan its reply).
 - Replies render through `editor/replyView.ts` (read mode) — no new `innerHTML` sink. A reply's
   `.cm-content` is pinned to the scroller's width: one 493px formula in a 371px reply otherwise laid
-  EVERY line out at 493px, and the prose ran off the edge instead of the formula scrolling. aicss free
-  components are copied under `aicss/` (MIT, `LICENSE-aicss`); the composer and change cards are our
-  own — the aicss Pro components must never be copied.
+  EVERY line out at 493px, and the prose ran off the edge instead of the formula scrolling. Code
+  blocks in replies are dark in BOTH themes (the dark token palette always) with a language/Copy
+  header from the fence's `data-lang` (reply-only ViewPlugin; `live-preview` skill). Of aicss only
+  `aicss/Orb` remains (MIT, `LICENSE-aicss`), for the shared HelperGate — hidden inside the panel,
+  where the spark replaces it; the aicss Pro components must never be copied.
 
 ## Helper, installers, release (`helper/`)
 

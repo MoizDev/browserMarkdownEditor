@@ -94,6 +94,13 @@ export interface HelperGateProps extends PlatformProps {
     noun: string;
     /** A guide step of the feature's own, before "Install" (the agent's logins). */
     preface?: ReactNode;
+    /** Steps already satisfied (the agent panel's; the terminal dock passes
+     *  none and keeps its screens). `installed`: VaultAgent is known to be
+     *  set up here — this browser has reached it — so a returning reader
+     *  gets the guide with Install ticked (`installed` is its line, its
+     *  buttons gone) in place of the short Connect screen. A ticked step is
+     *  `li.is-done`; the caller's `preface` marks its own. */
+    done?: { installed: ReactNode };
 }
 
 /** The updating screen's one line, by the stage the helper reports. */
@@ -135,7 +142,7 @@ function UpdateProgress({ percent }: { percent: number | null }) {
 }
 
 export function HelperGate({
-    requirement, supported, bridge, os, arch, onConnect, onUpdate, title, lede, noun, preface,
+    requirement, supported, bridge, os, arch, onConnect, onUpdate, title, lede, noun, preface, done,
 }: HelperGateProps) {
     const forTerminal = requirement === 'terminal';
 
@@ -325,7 +332,7 @@ export function HelperGate({
     // idle, but this browser has used the helper before: the reload of a
     // public page whose permission Chrome would not report as granted (so no
     // auto-connect) must not look like a first run all over again.
-    if (hasConnectedBefore()) {
+    if (hasConnectedBefore() && !done) {
         return (
             <Screen title={`Connect to ${HELPER_NAME}`}>
                 <p className="agent-lede">{HELPER_NAME} is set up on this computer. Connect to pick up where you left off.</p>
@@ -336,20 +343,27 @@ export function HelperGate({
         );
     }
 
-    // idle: the first-time guide.
+    // idle: the first-time guide (or, with `done.installed`, the returning one).
     return (
-        <Screen title={title}>
+        <Screen title={done ? `Connect to ${HELPER_NAME}` : title}>
             <p className="agent-lede">{lede}</p>
             <ol className="agent-steps">
                 {preface}
-                <li>
-                    <h3>Install {HELPER_NAME}</h3>
-                    <div className="agent-actions">
-                        <DownloadButton os={os} arch={arch} />
-                        <OtherArch os={os} arch={arch} />
-                    </div>
-                    <InstallSteps os={os} arch={arch} />
-                </li>
+                {done ? (
+                    <li className="is-done">
+                        <h3>Install {HELPER_NAME}</h3>
+                        <p className="agent-muted">{done.installed}</p>
+                    </li>
+                ) : (
+                    <li>
+                        <h3>Install {HELPER_NAME}</h3>
+                        <div className="agent-actions">
+                            <DownloadButton os={os} arch={arch} />
+                            <OtherArch os={os} arch={arch} />
+                        </div>
+                        <InstallSteps os={os} arch={arch} />
+                    </li>
+                )}
                 <li>
                     <h3>Connect</h3>
                     <div className="agent-actions">

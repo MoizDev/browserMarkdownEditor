@@ -10,8 +10,13 @@
 
 import type { DiffLine } from '../types/vaultAgent';
 
-/** Lines of unchanged text kept around each change. */
-const CONTEXT = 3;
+/** How far either side of a change to look for a line of context, and how
+ *  many of the lines found there to show. One non-blank line a side ("## Chapter
+ *  2 — Method", the added line, the line after): with three lines each side,
+ *  blank ones included, a one-line edit's card was 220px tall, mostly empty
+ *  rows. */
+const CONTEXT_REACH = 3;
+const CONTEXT_SHOWN = 1;
 /** Rows a card may carry; a card is for reading, the file is the record. */
 const MAX_ROWS = 400;
 /** A single row's text; a minified line is not worth 200 KB of card. */
@@ -23,7 +28,8 @@ const MAX_EDIT_DISTANCE = 1000;
 type Op = { type: 'context' | 'add' | 'del'; text: string; oldLine?: number; newLine?: number };
 
 export interface LineDiff {
-    /** Hunks with CONTEXT lines around each change, `gap` rows between them. */
+    /** Changed lines with a line of context either side, `gap` rows
+     *  between hunks. */
     diff: DiffLine[];
     added: number;
     removed: number;
@@ -127,23 +133,38 @@ export function lineDiff(before: string, after: string): LineDiff {
         else if (op.type === 'del') removed++;
     }
 
-    // Keep each change plus CONTEXT lines either side; everything else folds
-    // into one `gap` row per run.
+    // Keep each change and the nearest non-blank line either side (within
+    // CONTEXT_REACH). The unchanged lines within reach that are not shown —
+    // the blank ones, mostly — belong to the hunk and vanish with it; a run
+    // that reaches beyond them folds into one `gap` row between hunks.
     const keep = new Uint8Array(ops.length);
+    const near = new Uint8Array(ops.length);
     ops.forEach((op, idx) => {
         if (op.type === 'context') return;
-        for (let k = Math.max(0, idx - CONTEXT); k <= Math.min(ops.length - 1, idx + CONTEXT); k++) keep[k] = 1;
+        keep[idx] = 1;
+        for (const dir of [-1, 1]) {
+            let shown = 0;
+            for (let k = idx + dir, steps = 0; k >= 0 && k < ops.length && steps < CONTEXT_REACH; k += dir, steps++) {
+                if (ops[k].type !== 'context') break;
+                near[k] = 1;
+                if (shown < CONTEXT_SHOWN && ops[k].text.trim()) { keep[k] = 1; shown++; }
+            }
+        }
     });
 
     const diff: DiffLine[] = [];
     let skipped = 0;
+    let far = false;
     let shownChanges = 0;
     const flushGap = () => {
-        if (skipped > 0) diff.push({ type: 'gap', text: `${skipped} unchanged line${skipped === 1 ? '' : 's'}` });
+        // Not before the first hunk (a card opens on its context line), and
+        // not for lines that were only the hunk's own blank edges.
+        if (far && diff.length > 0) diff.push({ type: 'gap', text: `${skipped} unchanged line${skipped === 1 ? '' : 's'}` });
         skipped = 0;
+        far = false;
     };
     for (let idx = 0; idx < ops.length; idx++) {
-        if (!keep[idx]) { skipped++; continue; }
+        if (!keep[idx]) { skipped++; if (!near[idx]) far = true; continue; }
         if (diff.length >= MAX_ROWS) {
             const hidden = added + removed - shownChanges;
             diff.push({ type: 'gap', text: hidden > 0 ? `… ${hidden} more changed line${hidden === 1 ? '' : 's'} not shown` : '…' });
@@ -154,9 +175,8 @@ export function lineDiff(before: string, after: string): LineDiff {
         if (op.type !== 'context') shownChanges++;
         diff.push({ ...op, text: clip(op.text) });
     }
-    // A trailing run of unchanged lines is not worth a row after the last hunk,
-    // but a leading one is (it says where the hunk sits); only mid gaps and the
-    // head get rows, so drop the tail.
+    // A trailing run of unchanged lines is not worth a row after the last
+    // hunk, nor a leading one before the first: only mid gaps get rows.
     return { diff, added, removed };
 }
 

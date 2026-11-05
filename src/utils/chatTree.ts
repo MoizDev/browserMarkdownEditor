@@ -46,6 +46,31 @@ export interface StoredTool {
     change?: unknown;
 }
 
+/**
+ * One piece of an assistant turn, in the order it streamed.
+ *
+ * WHY THIS EXISTS. A turn is not "some thinking, some tools, then the answer":
+ * the agent says what it is about to do, does it, and says what it did, and a
+ * change card belongs right under the sentence that introduced it. The flat
+ * fields (`text`, `reasoning`, `tools`) cannot hold that order, and drawing a
+ * turn from them regrouped every tool above the reply the moment the next
+ * message was sent (measured: thesis turn, 8 rows → 7, the edit card moved
+ * above the text that announced it, "Thought for 1s" became "Thought").
+ *
+ * `id` IS THE LIVE ITEM'S ID, kept so the turn redrawn from the tree is the
+ * same React element it was while streaming: nothing remounts, a reply's view
+ * keeps its height, and the list does not jump.
+ *
+ * A tool segment points into `tools` by index rather than copying it: a tool's
+ * input and output are the bulk of a turn, and the flat `tools` array is what
+ * a build without segments still reads.
+ */
+export type StoredSegment =
+    | { kind: 'text'; id: string; text: string }
+    | { kind: 'reasoning'; id: string; text: string; startedAt?: number; endedAt?: number }
+    | { kind: 'tool'; id: string; tool: number }
+    | { kind: 'notice'; id: string; tone: 'info' | 'warning' | 'error'; message: string };
+
 export interface ChatNode {
     id: string;
     /** null for the first message of the chat. */
@@ -64,6 +89,21 @@ export interface ChatNode {
     tools?: StoredTool[];
     /** assistant: the run ended badly, and the text is the reason. */
     error?: boolean;
+    /**
+     * assistant: the turn as it streamed (see StoredSegment). OPTIONAL, and
+     * the flat fields above are still written beside it, which is the whole
+     * compatibility story — no version bump:
+     *   · a file from before segments has none, and is drawn from the flat
+     *     fields in their old fixed order;
+     *   · a build from before segments reads the flat fields and drops this
+     *     key, so it shows the old order but loses nothing else.
+     * `text`/`reasoning` duplicate the text segments' words; tools are not
+     * duplicated (segments index into `tools`).
+     */
+    segments?: StoredSegment[];
+    /** assistant: the model id the run asked for (the CLI default's own id
+     *  when the chat had none chosen), when it was known. */
+    model?: string;
 }
 
 export interface ChatTree {
@@ -211,6 +251,48 @@ export function selectVersion(tree: ChatTree, id: string): ChatTree {
 
 /* ───────────────────────── storage ───────────────────────── */
 
+function finite(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * A node's segments, or undefined to draw it from its flat fields instead.
+ *
+ * All or nothing: one segment this build cannot read (a hand edit, a tool
+ * index past the end of `tools`, a kind from a newer build) and the node falls
+ * back to the flat fields, which hold everything — only the order is lost.
+ * Half a turn in the right order would be worse than all of it in the old one.
+ */
+function parseSegments(raw: unknown, toolCount: number): StoredSegment[] | undefined {
+    if (!Array.isArray(raw) || !raw.length) return undefined;
+    const out: StoredSegment[] = [];
+    const ids = new Set<string>();
+    for (const value of raw) {
+        if (!value || typeof value !== 'object') return undefined;
+        const s = value as Record<string, unknown>;
+        // Ids become React keys; a repeat would make two rows one.
+        if (typeof s.id !== 'string' || !s.id || ids.has(s.id)) return undefined;
+        ids.add(s.id);
+        if (s.kind === 'text' && typeof s.text === 'string') {
+            out.push({ kind: 'text', id: s.id, text: s.text });
+        } else if (s.kind === 'reasoning' && typeof s.text === 'string') {
+            out.push({
+                kind: 'reasoning', id: s.id, text: s.text,
+                ...(finite(s.startedAt) ? { startedAt: s.startedAt } : {}),
+                ...(finite(s.endedAt) ? { endedAt: s.endedAt } : {}),
+            });
+        } else if (s.kind === 'tool' && Number.isInteger(s.tool) && (s.tool as number) >= 0 && (s.tool as number) < toolCount) {
+            out.push({ kind: 'tool', id: s.id, tool: s.tool as number });
+        } else if (s.kind === 'notice' && typeof s.message === 'string'
+            && (s.tone === 'info' || s.tone === 'warning' || s.tone === 'error')) {
+            out.push({ kind: 'notice', id: s.id, tone: s.tone, message: s.message });
+        } else {
+            return undefined;
+        }
+    }
+    return out;
+}
+
 /**
  * Parse a tree file.
  *
@@ -238,7 +320,13 @@ export function parseTree(text: string | null): ChatTree {
         if (!n || typeof n !== 'object') continue;
         if (n.role !== 'user' && n.role !== 'assistant') continue;
         if (typeof n.text !== 'string') continue;
+        const tools = Array.isArray(n.tools) ? n.tools as StoredTool[] : undefined;
+        const segments = parseSegments((n as Record<string, unknown>).segments, tools?.length ?? 0);
+        // Spread first: keys a newer build put on a node survive this one
+        // rewriting the file (the index does the same, vaultAgentStore.ts).
+        const { segments: _rawSegments, model: _rawModel, ...rest } = n as Record<string, unknown>;
         nodes[id] = {
+            ...rest,
             id,
             parent: typeof n.parent === 'string' && n.parent ? n.parent : null,
             role: n.role,
@@ -247,9 +335,11 @@ export function parseTree(text: string | null): ChatTree {
             ...(typeof n.images === 'number' ? { images: n.images } : {}),
             ...(typeof n.sessionId === 'string' ? { sessionId: n.sessionId } : {}),
             ...(typeof n.reasoning === 'string' ? { reasoning: n.reasoning } : {}),
-            ...(Array.isArray(n.tools) ? { tools: n.tools as StoredTool[] } : {}),
+            ...(tools ? { tools } : {}),
             ...(n.error === true ? { error: true } : {}),
-        };
+            ...(segments ? { segments } : {}),
+            ...(typeof n.model === 'string' && n.model ? { model: n.model } : {}),
+        } as ChatNode;
     }
     // A parent that did not survive the loop above would orphan its children;
     // rebuilding `children` from the nodes themselves cannot disagree with them.

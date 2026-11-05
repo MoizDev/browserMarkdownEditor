@@ -549,15 +549,26 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             }
         },
 
-        writeChatTree(chatId: string, tree: ChatTree): Promise<void> {
-            const root = getDeps().root;
+        writeChatTree(chatId: string, tree: ChatTree, vault?: object | null): Promise<void> {
+            // The token IS the vault's root handle (toolHost.vaultToken above);
+            // shape-checked rather than trusted, since this writes to disk.
+            const named = vault && typeof (vault as FileSystemDirectoryHandle).getDirectoryHandle === 'function'
+                ? vault as FileSystemDirectoryHandle : null;
+            if (vault && !named) return Promise.resolve();
+            const root = named ?? getDeps().root;
             if (!root) return Promise.resolve();
             // Per chat, not one queue for all of them: two chats writing at once
             // touch different files, and a long transcript must not hold up the
             // chat the user is actually typing in.
             const serialize = (treeQueues.get(chatId) ?? treeQueues.set(chatId, queue()).get(chatId))!;
             return serialize(async () => {
-                if (getDeps().root !== root) return;   // a vault switch mid-write
+                // A vault switch mid-write drops an unnamed write. A NAMED one is
+                // meant for that vault whichever is open now, and touches nothing
+                // but `root`'s own .VaultAgent/chats/<chatId>.json — never the
+                // open vault, never the index (whose queue re-checks the open
+                // root itself). Queued behind this chat's earlier writes, so the
+                // newest tree is the one that lands.
+                if (!named && getDeps().root !== root) return;
                 const handle = await chatTreeFile(root, chatId, true);
                 if (handle) await getDeps().writeFile(handle, serializeTree(tree));
             }).catch(err => {

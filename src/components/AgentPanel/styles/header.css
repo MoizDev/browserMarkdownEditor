@@ -1,0 +1,253 @@
+/* =============================================================
+   The header (title, chats, new chat, ⋯, close) and the lines under it: the
+   update strip and the update's progress line (UpdateBar.tsx), the panel's
+   transient error, and the "Connecting / Reconnecting to VaultAgent…" line.
+   Reads tokens.css.
+   ============================================================= */
+
+/* ── Header: 44px on the panel's own canvas — no band, no mark ──
+   App's Suspense fallback (.workspace-agent-loading, index.css) paints the
+   same 44px in the same colour, so nothing flashes as the chunk lands. A
+   hairline appears under it only once the conversation has scrolled beneath
+   it: MessageList marks its own wrapper (.va-conversation[data-scrolled]),
+   the one element that knows which scroller is the conversation's, and the
+   rule follows it here, fading in. Keep it the only signal:
+   a panel-level scroll listener would have to guess that scroller by size. */
+.agent-header {
+  position: relative;
+  z-index: 3;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--va-header-height);
+  padding: 0 8px 0 10px;
+  background: var(--va-bg-100);
+  min-width: 0;
+}
+
+.agent-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--va-border);
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+
+.agent-panel:has(> .agent-body > .va-conversation[data-scrolled]) > .agent-header::after {
+  opacity: 1;
+}
+
+/* ── The title: the chat's name, medium weight, chevron in the tertiary ──
+   flex: 1 so the icon buttons sit at the right, and a long title truncates
+   rather than pushing them off the end. */
+.agent-title {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--va-text-100);
+  font-size: calc(14px * var(--va-text-scale));
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-title.is-static {
+  cursor: default;
+}
+
+button.agent-title:hover,
+button.agent-title[aria-expanded="true"] {
+  background: var(--va-bg-300);
+}
+
+.agent-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-title-chev {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--va-text-500);
+}
+
+/* A reply is streaming in this chat. */
+.agent-title-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--va-accent);
+  animation: va-title-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes va-title-pulse {
+  50% { opacity: 0.3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-title-dot {
+    animation: none;
+  }
+}
+
+/* ── The strips under the header: one quiet 12.5px line each ── */
+.agent-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--va-border);
+  color: var(--va-text-400);
+  font-size: calc(12.5px * var(--va-text-scale));
+  line-height: 1.45;
+}
+
+.agent-strip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-strip-bad {
+  color: var(--va-bad);
+  font-weight: 500;
+}
+
+.agent-strip-act,
+.agent-strip-link {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--va-accent-text, var(--va-accent));
+  font-size: inherit;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* An underline, not a lighter accent: the verb keeps its contrast. */
+.agent-strip-act:hover,
+.agent-strip-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* The alternate is a link in the strip's own ink: the accent is the verb's. */
+.agent-strip-link {
+  color: var(--va-text-300);
+  font-weight: 400;
+}
+
+.agent-strip-link:hover {
+  color: var(--va-text-100);
+  text-decoration: underline;
+}
+
+.agent-strip-sep {
+  flex: none;
+}
+
+.agent-strip-close {
+  margin-left: auto;
+}
+
+.agent-strip-close.va-icon-btn[data-size="24"] {
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+}
+
+.agent-strip-close.va-icon-btn > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.agent-strip.is-error {
+  color: var(--va-bad);
+}
+
+/* ── An update in progress: the phase over a thin accent line ──
+   The strip's own line, so the conversation under it stays where it was. */
+.agent-update-progress {
+  position: relative;
+}
+
+.agent-update-line {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+}
+
+.agent-update-line > span {
+  display: block;
+  height: 100%;
+  background: var(--va-accent);
+  transition: width 200ms var(--va-ease);
+}
+
+/* No size known (yet), or a phase with no measure: a segment slides. */
+.agent-update-line.is-indeterminate > span {
+  width: 30%;
+  animation: agent-update-slide 1.4s var(--va-ease) infinite;
+}
+
+@keyframes agent-update-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-update-line > span {
+    transition: none;
+  }
+
+  .agent-update-line.is-indeterminate > span {
+    width: 100%;
+    opacity: 0.4;
+    animation: none;
+  }
+}
+
+/* ── "Connecting to VaultAgent…": one shimmering line above the chat ──
+   Reconnecting, with "Retry now" after it. */
+.agent-connecting {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-top: 8px;
+  padding-bottom: 2px;
+  font-size: calc(13px * var(--va-text-scale));
+}
+
+.agent-connecting .agent-text-btn {
+  flex: none;
+  font-size: inherit;
+}

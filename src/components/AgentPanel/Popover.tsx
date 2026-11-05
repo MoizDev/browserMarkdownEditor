@@ -9,13 +9,24 @@
 //
 // Non-modal, like VaultMenu: Escape through utils/escapeDismiss.ts (one press,
 // one surface), outside pointerdown closes it, the keyboard returns to the
-// button that opened it.
+// button that opened it. Only one is ever open: opening another closes it,
+// whatever opened the second — an outside pointerdown covered the mouse, but a
+// keyboard-opened second menu left both up, overlapping, with one Escape
+// closing only the newer (measured: chats + ⋯, model + sliders).
+//
+// `role` is what the surface is (ui/popoverRole.ts): a `menu` of actions, or a
+// `dialog` when it also holds a field or a segmented control. Either way ↑/↓
+// walk every control in it — rows, the chosen segment of each segmented
+// control, a field, a form's buttons — which a menuitem-only walk missed
+// (↑/↓ did nothing in the sliders menu).
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { dismissOnEscape } from '../../utils/escapeDismiss';
 import type { Theme } from '../../types';
+import { PopoverRoleContext } from './ui/popoverRole';
+import type { PopoverRole } from './ui/popoverRole';
 
 const GAP = 6;
 const MARGIN = 8;
@@ -26,6 +37,8 @@ export interface PopoverProps {
     theme: Theme;
     /** aria-label of the surface. */
     label: string;
+    /** `dialog` when it holds more than rows (a field, a segmented control). */
+    role?: PopoverRole;
     /** Opens below the anchor unless told otherwise (the composer's chip opens above). */
     placement?: 'below' | 'above';
     align?: 'start' | 'end';
@@ -33,9 +46,21 @@ export interface PopoverProps {
     children: ReactNode;
 }
 
-const ITEM_SELECTOR = '[role="menuitem"]:not([disabled]), [role="menuitemradio"]:not([disabled]), [role="option"]:not([disabled])';
+const CONTROLS = 'button:not(:disabled), input:not(:disabled), [tabindex]';
 
-export function Popover({ anchor, onClose, theme, label, placement = 'below', align = 'start', className, children }: PopoverProps) {
+/** What ↑/↓ visit, in document order: whatever Tab could reach — so a
+ *  segmented control's unchosen segments (tabIndex -1) are left to its own
+ *  ←/→ — minus a control that marks itself `data-nav-skip` (a chat row's ⋯,
+ *  reached by → or Tab from its row: in the walk it doubled every stop). */
+function controls(root: HTMLElement | null): HTMLElement[] {
+    return Array.from(root?.querySelectorAll<HTMLElement>(CONTROLS) ?? [])
+        .filter(el => el.tabIndex >= 0 && !el.hasAttribute('data-nav-skip'));
+}
+
+/** The open popover's close, so the next to open can close it first. */
+let closeOpen: (() => void) | null = null;
+
+export function Popover({ anchor, onClose, theme, label, role = 'menu', placement = 'below', align = 'start', className, children }: PopoverProps) {
     const ref = useRef<HTMLDivElement>(null);
     const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
     const onCloseRef = useRef(onClose);
@@ -48,9 +73,16 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
         if (!anchor || !el) return;
         const place = () => {
             const r = anchor.getBoundingClientRect();
+            // Kept inside the panel, so a menu never covers the note beside
+            // it: at the 300px minimum a 272px model menu anchored on the
+            // right-hand selector otherwise hung 30px out over the note.
+            const panel = anchor.closest('.agent-panel')?.getBoundingClientRect();
+            const minLeft = Math.max(MARGIN, panel ? panel.left + MARGIN : 0);
+            const maxRight = Math.min(window.innerWidth, panel ? panel.right : Infinity) - MARGIN;
+            el.style.maxWidth = `${Math.max(0, maxRight - minLeft)}px`;
             const w = el.offsetWidth;
             let left = align === 'end' ? r.right - w : r.left;
-            left = Math.max(MARGIN, Math.min(left, window.innerWidth - w - MARGIN));
+            left = Math.max(minLeft, Math.min(left, maxRight - w));
             if (placement === 'above') {
                 // Never over the panel's header: a long model list (OpenCode
                 // lists dozens) grew to the window's top and hid the header's
@@ -74,14 +106,21 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
     // inside" was never true (measured: Escape left the chip unfocused).
     useLayoutEffect(() => {
         const el = ref.current;
-        const first = el?.querySelector<HTMLElement>('[aria-checked="true"]') ?? el?.querySelector<HTMLElement>(ITEM_SELECTOR);
-        first?.focus({ preventScroll: true });
+        const chosen = el?.querySelector<HTMLElement>('[aria-checked="true"]:not(:disabled)');
+        (chosen ?? controls(el)[0])?.focus({ preventScroll: true });
         return () => {
             if (el && el.contains(document.activeElement) && anchor?.isConnected) anchor.focus({ preventScroll: true });
         };
     }, [anchor]);
 
     useEffect(() => dismissOnEscape(() => onCloseRef.current()), []);
+
+    useEffect(() => {
+        const close = () => onCloseRef.current();
+        closeOpen?.();
+        closeOpen = close;
+        return () => { if (closeOpen === close) closeOpen = null; };
+    }, []);
 
     useEffect(() => {
         const onPointerDown = (e: PointerEvent) => {
@@ -100,7 +139,7 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
         if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
         // The effort slider takes the arrows itself.
         if ((e.target as HTMLElement).getAttribute('role') === 'slider') return;
-        const items = Array.from(ref.current?.querySelectorAll<HTMLElement>(ITEM_SELECTOR) ?? []);
+        const items = controls(ref.current);
         if (!items.length) return;
         e.preventDefault();
         const at = items.indexOf(document.activeElement as HTMLElement);
@@ -115,9 +154,11 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
         <div className="agent-panel-layer" data-agent-panel="" data-theme={theme}>
             <div
                 ref={ref}
-                role="menu"
+                role={role}
                 aria-label={label}
                 className={'agent-popover' + (className ? ' ' + className : '')}
+                // Which way the 120ms fade drifts: away from the opener.
+                data-placement={placement}
                 style={pos
                     ? { left: pos.left, top: pos.top, bottom: pos.bottom, maxHeight: pos.maxHeight }
                     : { left: 0, top: 0, opacity: 0 }}
@@ -127,7 +168,7 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
                 onDragOver={e => e.preventDefault()}
                 onDrop={e => e.preventDefault()}
             >
-                {children}
+                <PopoverRoleContext value={role}>{children}</PopoverRoleContext>
             </div>
         </div>,
         document.body,

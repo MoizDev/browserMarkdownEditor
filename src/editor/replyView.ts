@@ -17,12 +17,14 @@
 // rebuild per frame over a document of a few KB — the memoized analyzeDoc keys
 // on each new Text, so nothing is re-flattened for the OTHER replies on screen.
 
-import { EditorView } from '@codemirror/view';
-import { Compartment, EditorState } from '@codemirror/state';
+import { Decoration, EditorView, ViewPlugin } from '@codemirror/view';
+import type { DecorationSet, ViewUpdate } from '@codemirror/view';
+import { Compartment, EditorState, RangeSetBuilder } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
-import { LanguageDescription } from '@codemirror/language';
-import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from './cmTheme';
+import { HighlightStyle, LanguageDescription, syntaxHighlighting, syntaxTree } from '@codemirror/language';
+import { tags } from '@lezer/highlight';
+import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme } from './cmTheme';
 import { createLivePreviewPlugin } from './livePreview';
 import type { ImageEmbedActions } from './imageWidget';
 import { modeExtensions } from './readingMode';
@@ -38,11 +40,100 @@ const noImageActions: ImageEmbedActions = { confirmDelete: () => {} };
 /** Shared by every reply view; a Compartment is an identity key, not state. */
 const themeCompartment = new Compartment();
 
+/* The editor chrome follows the theme, the token palette does not: a reply's
+   code blocks are dark in BOTH panel themes (the panel's
+   --va-code-bg), and the light palette's inks are drawn for a white page —
+   on the dark block they measured near-invisible. The prose spans the
+   palette also colours (headings, bold, links) are re-inked by the panel's
+   CSS, so only code tokens reach the screen from here. */
 function themeExtensions(theme: Theme) {
-    return theme === 'light'
-        ? [obsidianLightTheme, obsidianLightHighlightStyle]
-        : [obsidianDarkTheme, obsidianHighlightStyle];
+    return [theme === 'light' ? obsidianLightTheme : obsidianDarkTheme, obsidianHighlightStyle, replyCodeInk];
 }
+
+/* Three of that palette's inks are too faint on the reply's code block:
+   comments and meta #666 (2.97:1 on the dark theme's #1C1C1A, 2.47:1 on the
+   light theme's #2B2B29), the processing-instruction grey (3.68:1) and the
+   One Dark red of names (4.44:1 light). The panel re-inks them (≥ 5:1 on
+   both, conversation.css) through these stable class names — the palette's
+   own are generated. This is the code half of cmTheme's obsidianHighlightStyle
+   tag for tag, in its order, because a highlighter resolves each token to its
+   most specific rule: a class on `name` alone would also land on
+   `definition(name)` and every other name the palette draws in another ink.
+   Change the two together. */
+const replyCodeInk = syntaxHighlighting(HighlightStyle.define([
+    { tag: tags.meta, class: 'va-ink-quiet' },
+    { tag: tags.comment, class: 'va-ink-quiet' },
+    { tag: tags.processingInstruction, class: 'va-ink-quiet' },
+    { tag: tags.keyword, class: 'va-ink-keyword' },
+    { tag: [tags.name, tags.deleted, tags.character, tags.propertyName, tags.macroName], class: 'va-ink-name' },
+    { tag: [tags.function(tags.variableName), tags.labelName], class: 'va-ink-function' },
+    { tag: [tags.color, tags.constant(tags.name), tags.standard(tags.name)], class: 'va-ink-constant' },
+    { tag: [tags.definition(tags.name), tags.separator, tags.punctuation, tags.bracket], class: 'va-ink-punctuation' },
+    { tag: [tags.typeName, tags.className, tags.number, tags.changed, tags.annotation, tags.modifier, tags.self, tags.namespace], class: 'va-ink-type' },
+    { tag: [tags.operator, tags.operatorKeyword, tags.escape, tags.regexp, tags.special(tags.string)], class: 'va-ink-operator' },
+    { tag: [tags.atom, tags.bool, tags.special(tags.variableName)], class: 'va-ink-atom' },
+    { tag: [tags.string, tags.inserted], class: 'va-ink-string' },
+]));
+
+/* A code block's header row names its language, and the fence that says it is
+   hidden in Reading mode (livePreview's HIDE), so CSS cannot read it. This
+   puts it back as an ATTRIBUTE on the fence row (`data-lang`, drawn by the
+   panel's CSS with `content: attr()`) — text, never markup, so no new sink.
+   Reply-only: a note's code block keeps its corner button and no header. */
+const langDecorations = new Map<string, Decoration>();
+function langLine(lang: string): Decoration {
+    let deco = langDecorations.get(lang);
+    if (!deco) {
+        deco = Decoration.line({ attributes: { 'data-lang': lang } });
+        // Bounded by what agents write after ``` — a few dozen names — but a
+        // reply can say anything, so the cache is not allowed to grow forever.
+        if (langDecorations.size < 64) langDecorations.set(lang, deco);
+    }
+    return deco;
+}
+
+function fenceLanguages(state: EditorState): DecorationSet {
+    const builder = new RangeSetBuilder<Decoration>();
+    syntaxTree(state).iterate({
+        enter: node => {
+            if (node.name !== 'FencedCode') return;
+            const line = state.doc.lineAt(node.from);
+            const lang = line.text.trim().match(/^(?:`{3,}|~{3,})\s*([^\s`]*)/)?.[1] ?? '';
+            builder.add(line.from, line.from, langLine(lang));
+            return false;
+        },
+    });
+    return builder.finish();
+}
+
+/* The note's copy button is never a tab stop (copyCodeWidget.ts says why: a
+   note's scroller holds the keyboard). A reply is not a note — Tab walks the
+   panel, and every affordance in it must be reachable — so here it is one. */
+function makeCopyButtonsTabbable(view: EditorView): void {
+    view.requestMeasure({
+        read: () => null,
+        write: () => {
+            for (const button of view.contentDOM.querySelectorAll<HTMLElement>('.cm-codeblock-copy[tabindex="-1"]')) {
+                button.tabIndex = 0;
+            }
+        },
+    });
+}
+
+const replyCodeBlocks = ViewPlugin.fromClass(class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+        this.decorations = fenceLanguages(view.state);
+        makeCopyButtonsTabbable(view);
+    }
+    update(update: ViewUpdate) {
+        // The tree advances in idle time as well as on edits (livePreview's
+        // own rebuild rule), and a fence is only known once it is parsed.
+        if (!update.docChanged && syntaxTree(update.startState) === syntaxTree(update.state)) return;
+        this.decorations = fenceLanguages(update.state);
+        makeCopyButtonsTabbable(update.view);
+    }
+}, { decorations: plugin => plugin.decorations });
 
 /** Built once: the field is a pure function of the document in read mode. */
 const readPreview = createLivePreviewPlugin(noAsset, 'read', noImageActions);
@@ -63,6 +154,7 @@ function replyState(text: string, theme: Theme): EditorState {
             themeCompartment.of(themeExtensions(theme)),
             modeExtensions('read'),
             readPreview,
+            replyCodeBlocks,
             EditorView.contentAttributes.of({ 'aria-label': 'Agent reply' }),
         ],
     });
@@ -75,9 +167,16 @@ interface PendingAppend {
 
 const pendingAppends = new WeakMap<EditorView, PendingAppend>();
 
-/** A read-only view of `text` inside `parent`. The caller destroys it. */
+/** A read-only view of `text` inside `parent`. The caller destroys it.
+ *  Built detached and attached after: the constructor sets the content's
+ *  attributes, and `contenteditable` set on a CONNECTED element forced a
+ *  style recalc of the document each time — measured in a 40-turn chat
+ *  scrolled end to end, 74 view mounts spent ~0.9s per pass in setAttribute
+ *  (14ms detached). */
 export function createReplyView(parent: HTMLElement, text: string, theme: Theme): EditorView {
-    return new EditorView({ parent, state: replyState(text, theme) });
+    const view = new EditorView({ state: replyState(text, theme) });
+    parent.appendChild(view.dom);
+    return view;
 }
 
 /**

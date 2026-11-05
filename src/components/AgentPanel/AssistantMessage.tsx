@@ -6,7 +6,7 @@
 // text at their last measured height, and get their view back as they scroll
 // near (IntersectionObserver, 800px ahead). The streaming reply always has one.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { EditorView } from '@codemirror/view';
 import { appendReply, createReplyView, destroyReplyView, setReplyText, setReplyTheme } from '../../editor/replyView';
 import type { Theme } from '../../types';
@@ -23,7 +23,7 @@ export interface AssistantMessageProps {
     initiallyNear: boolean;
 }
 
-export function AssistantMessage({ text, streaming, theme, scrollRoot, initiallyNear }: AssistantMessageProps) {
+function AssistantMessageImpl({ text, streaming, theme, scrollRoot, initiallyNear }: AssistantMessageProps) {
     const wrapRef = useRef<HTMLDivElement>(null);
     const hostRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -77,13 +77,17 @@ export function AssistantMessage({ text, streaming, theme, scrollRoot, initially
     return (
         <div
             ref={wrapRef}
-            className="agent-reply"
+            className="va-reply"
             data-streaming={streaming ? '' : undefined}
             style={!mounted && restHeight ? { minHeight: restHeight } : undefined}
         >
             {mounted
-                ? <div ref={hostRef} className="agent-reply-view" />
-                : <div className="aic-prose agent-reply-plain">{text}</div>}
+                ? <div ref={hostRef} className="va-reply-view" />
+                : <div className="va-reply-plain">{text}</div>}
         </div>
     );
 }
+
+/** Re-rendered only when its own text, state or theme changes: a streamed
+ *  token re-renders the reply it extends and nothing above it. */
+export const AssistantMessage = memo(AssistantMessageImpl);

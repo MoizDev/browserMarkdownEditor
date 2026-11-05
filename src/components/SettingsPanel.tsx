@@ -8,6 +8,11 @@ import {
 } from '../utils/terminalSettings';
 import type { CaretStyle, SettingsDefaults } from '../types';
 import { VaultFolderSetting } from './VaultFolderSetting';
+import { getAgentReplyFont, resetAgentReplyFont, setAgentReplyFont, subscribeAgentReplyFont } from '../utils/agentReplyFont';
+import {
+    AGENT_TEXT_SIZE_MAX, AGENT_TEXT_SIZE_MIN, getAgentTextSize, resetAgentTextSize, setAgentTextSize,
+    subscribeAgentTextSize,
+} from '../utils/agentTextSize';
 
 const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
 
@@ -70,6 +75,9 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
     const terminalFontRef = useRef<HTMLInputElement | null>(null);
     const applyTerminalFont = () => setTerminalFontFamily(terminalFontRef.current?.value ?? '');
     const terminalSize = terminal.fontSize ?? terminal.detectedSize ?? 13;
+    // The agent panel's reply face and text size, likewise stores the lazy panel chunk reads.
+    const agentReplyFont = useSyncExternalStore(subscribeAgentReplyFont, getAgentReplyFont);
+    const agentTextSize = useSyncExternalStore(subscribeAgentTextSize, getAgentTextSize);
 
     // A modal dialog (`aria-modal`, which DocumentPane's ⌘F guard also reads)
     // has to hold the keyboard, or a screen reader is told to ignore the very
@@ -359,6 +367,72 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                         </div>
                     </div>
 
+                    <h4 className="settings-section">AI agent</h4>
+
+                    <div className="setting-row">
+                        <div className="setting-info">
+                            <div className="setting-name">Agent replies</div>
+                            <div className="settings-hint">
+                                The typeface the agent panel sets its replies in.
+                            </div>
+                        </div>
+                        <div className="setting-control">
+                            {/* A radio group is ONE Tab stop, the chosen face; any
+                                arrow moves the choice, as the panel's own segmented
+                                controls do (two Tab stops and dead arrows read as
+                                two buttons, not one choice). */}
+                            <div
+                                className="settings-segmented"
+                                role="radiogroup"
+                                aria-label="Agent replies"
+                                onKeyDown={(e) => {
+                                    if (!e.key.startsWith('Arrow')) return;
+                                    e.preventDefault();
+                                    const next = agentReplyFont === 'serif' ? 'sans' : 'serif';
+                                    setAgentReplyFont(next);
+                                    e.currentTarget.querySelector<HTMLElement>(`[data-face="${next}"]`)?.focus();
+                                }}
+                            >
+                                {(['serif', 'sans'] as const).map(face => (
+                                    <button
+                                        key={face}
+                                        type="button"
+                                        role="radio"
+                                        data-face={face}
+                                        aria-checked={agentReplyFont === face}
+                                        tabIndex={agentReplyFont === face ? 0 : -1}
+                                        className={`settings-segment${agentReplyFont === face ? ' active' : ''}`}
+                                        onClick={() => setAgentReplyFont(face)}
+                                    >
+                                        {face === 'serif' ? 'Serif' : 'Sans'}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="setting-row">
+                        <div className="setting-info">
+                            <div className="setting-name">Agent text size</div>
+                            <div className="settings-hint">
+                                Scales all the agent panel's text — replies, your messages, the message box and its menus.
+                            </div>
+                        </div>
+                        <div className="setting-control">
+                            <span className="settings-value">{agentTextSize}px</span>
+                            <input
+                                id="agent-text-size-input"
+                                type="range"
+                                min={AGENT_TEXT_SIZE_MIN}
+                                max={AGENT_TEXT_SIZE_MAX}
+                                step="1"
+                                value={agentTextSize}
+                                onChange={(e) => setAgentTextSize(parseInt(e.target.value, 10))}
+                                className="settings-slider"
+                            />
+                        </div>
+                    </div>
+
                     <h4 className="settings-section">Colors</h4>
 
                     <div className="setting-row">
@@ -501,7 +575,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     <div className="settings-footer">
                         <button
                             className="settings-reset-btn"
-                            onClick={() => { onResetDefaults(DEFAULTS); resetTerminalSettings(); resetReadingPreferences(); }}
+                            onClick={() => { onResetDefaults(DEFAULTS); resetTerminalSettings(); resetReadingPreferences(); resetAgentReplyFont(); resetAgentTextSize(); }}
                         >
                             Reset to Defaults
                         </button>

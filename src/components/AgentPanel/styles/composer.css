@@ -1,0 +1,514 @@
+/* =============================================================
+   The new-chat screen (greeting, context line, chips), the footer and the
+   composer: the field, its bottom bar (attach, sliders, model selector,
+   send/stop), the image tray, the drop state, the caption and the blocked
+   states. Reads tokens.css (--va-shadow-composer*, --va-composer-max,
+   --va-composer-gutter).
+   ============================================================= */
+
+/* ── The body: the conversation (or the greeting) over the footer ──
+   One flex column in both states, so the composer keeps its place in the tree
+   and only the layout around it changes (AgentPanel's dock move). */
+.agent-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* A new chat: greeting, composer and chips centred as one group. `safe`
+   keeps the greeting reachable (the body scrolls) when the panel is too short
+   to centre them. */
+.agent-panel.is-empty .agent-body {
+  justify-content: safe center;
+  gap: 10px;
+  padding: 6px 0 48px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.agent-greet-block {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* One centred run of inline content, the spark its first word: a greeting
+   that wraps (a large text size in a narrow panel) wraps as one block with
+   the spark leading its first line. As a flex row the wrapped text became
+   one two-line item with the spark hanging alone at its left (measured at
+   20px text in a 300px panel). */
+.agent-greet {
+  margin: 0;
+  color: var(--va-text-100);
+  font-family: var(--va-serif);
+  font-size: calc(27px * var(--va-text-scale));
+  font-weight: 400;
+  line-height: 1.2;
+  text-align: center;
+}
+
+/* Top-aligned and pushed down by half the line's spare height: centred on
+   the first line at any text size, as the flex row centred it on one. */
+.agent-greet-spark {
+  display: inline-block;
+  width: 26px;
+  height: 26px;
+  margin: calc((1.2em - 26px) / 2) 10px 0 0;
+  vertical-align: top;
+  color: var(--va-accent);
+}
+
+.agent-greet-sub {
+  margin: 2px 0 10px;
+  color: var(--va-text-400);
+  font-size: calc(14px * var(--va-text-scale));
+  text-align: center;
+}
+
+.agent-chips {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.agent-chip-suggest {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px solid var(--va-border-2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--va-text-300);
+  font-size: calc(12.5px * var(--va-text-scale));
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background-color var(--va-fast) ease, color var(--va-fast) ease;
+}
+
+.agent-chip-suggest:hover:not(:disabled) {
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+}
+
+/* The box cannot take text (blocked, connecting): the chips cannot fill it. */
+.agent-chip-suggest:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-chip-suggest > svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--va-text-500);
+}
+
+.agent-chip-suggest > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Footer: the composer's box, a touch wider than the text column ── */
+.agent-footer {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--va-composer-max);
+  margin: 0 auto;
+  padding: 0 var(--va-composer-gutter) 10px;
+}
+
+/* On the new-chat screen it sits in the text column itself. */
+.agent-panel.is-empty .agent-footer {
+  max-width: var(--va-col-max);
+  padding: 4px var(--va-gutter) 0;
+}
+
+.agent-composer-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-composer-error {
+  padding: 0 6px 6px;
+  color: var(--va-bad);
+  font-size: calc(12px * var(--va-text-scale));
+}
+
+/* ── The card: the one element with weight ── */
+.agent-composer {
+  position: relative;
+  padding: 12px 12px 10px;
+  border-radius: 18px;
+  background: var(--va-bg-000);
+  box-shadow: var(--va-shadow-composer);
+  transition: box-shadow 150ms ease, opacity 150ms ease;
+}
+
+.agent-composer:focus-within {
+  box-shadow: var(--va-shadow-composer-focus);
+}
+
+/* Blocked or connecting: present, but not to be typed into. */
+.agent-composer.is-inert {
+  opacity: 0.78;
+}
+
+/* Blocked, the placeholder IS the reason: it keeps full strength in the
+   secondary ink and only the controls fade (measured before: tertiary ink
+   at 78% = 2.48:1 dark, 2.37:1 light). */
+.agent-composer-wrap.is-blocked .agent-composer.is-inert {
+  opacity: 1;
+}
+
+.agent-composer-wrap.is-blocked .agent-composer-bar,
+.agent-composer-wrap.is-blocked .agent-tray {
+  opacity: 0.78;
+}
+
+.agent-composer-wrap.is-blocked .agent-textarea::placeholder {
+  color: var(--va-text-400);
+}
+
+/* A drag carrying images over the panel: the composer, not the panel, says
+   where they will land (the drop is still taken anywhere on the panel). */
+.agent-composer.is-drop::before {
+  content: "Drop images to attach";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--va-accent);
+  border-radius: 18px;
+  /* The soft accent laid over the card's own colour, not over its contents:
+     translucent, the placeholder and the bar read through the words. */
+  background: linear-gradient(var(--va-accent-soft), var(--va-accent-soft)), var(--va-bg-000);
+  color: var(--va-accent-text, var(--va-accent));
+  font-size: calc(13px * var(--va-text-scale));
+  font-weight: 500;
+  pointer-events: none;
+}
+
+.agent-textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 36px;
+  max-height: 220px;
+  margin: 0;
+  padding: 2px 4px 10px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--va-text-100);
+  font-family: var(--va-sans);
+  font-size: calc(14.5px * var(--va-text-scale));
+  line-height: 1.5;
+}
+
+/* The card's own ring is the focus mark; a second one on the field inside
+   it would double it. */
+.agent-panel .agent-textarea:focus-visible {
+  outline: none;
+}
+
+.agent-textarea::placeholder {
+  color: var(--va-text-500);
+  opacity: 1;
+}
+
+.agent-textarea:disabled {
+  cursor: default;
+}
+
+/* ── The bar: + and sliders left, model and send right ── */
+.agent-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-composer-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-round-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--va-border-2);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--va-text-300);
+  cursor: pointer;
+  transition: background-color var(--va-fast) ease, color var(--va-fast) ease;
+}
+
+.agent-round-btn > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.agent-round-btn:hover:not(:disabled),
+.agent-round-btn[aria-expanded="true"] {
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+}
+
+.agent-round-btn:disabled,
+.agent-model-btn:disabled {
+  cursor: default;
+}
+
+/* The model as plain text: "Opus · High ⌄". */
+.agent-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--va-text-300);
+  font-size: calc(12.5px * var(--va-text-scale));
+  cursor: pointer;
+  transition: background-color var(--va-fast) ease, color var(--va-fast) ease;
+}
+
+.agent-model-btn:hover:not(:disabled),
+.agent-model-btn[aria-expanded="true"] {
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+}
+
+.agent-model-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-model-chev {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--va-text-500);
+}
+
+/* Learning mode is teaching this chat (or pinned Always). */
+.agent-model-cap {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--va-text-400);
+}
+
+/* ── Send / Stop: a 32px rounded square ── */
+.agent-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: var(--va-accent);
+  color: var(--va-on-accent);
+  cursor: pointer;
+  transition: background-color var(--va-fast) ease, color var(--va-fast) ease;
+}
+
+.agent-send > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.agent-send:hover:not(:disabled) {
+  background: var(--va-accent-hover);
+}
+
+.agent-send.is-idle {
+  background: var(--va-bg-400);
+  color: var(--va-text-500);
+  cursor: default;
+}
+
+.agent-send.is-stop {
+  background: var(--va-text-100);
+  color: var(--va-bg-100);
+}
+
+.agent-send.is-stop:hover:not(:disabled) {
+  background: var(--va-text-200);
+}
+
+.agent-send.is-stop:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-send,
+  .agent-composer,
+  .agent-round-btn,
+  .agent-model-btn,
+  .agent-chip-suggest,
+  .agent-thumb-remove {
+    transition: none;
+  }
+}
+
+/* ── The image tray ── */
+.agent-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 4px 10px;
+}
+
+.agent-thumb {
+  position: relative;
+  flex: none;
+  box-sizing: border-box;
+  width: 54px;
+  height: 54px;
+  border: 1px solid var(--va-border);
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--va-bg-400), var(--va-bg-300));
+}
+
+.agent-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 9px;
+  object-fit: cover;
+}
+
+.agent-thumb.is-loading {
+  animation: agent-thumb-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes agent-thumb-pulse {
+  50% { opacity: 0.5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-thumb.is-loading {
+    animation: none;
+  }
+}
+
+.agent-thumb-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--va-text-100);
+  color: var(--va-bg-100);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--va-fast) ease;
+}
+
+.agent-thumb-remove > svg {
+  width: 10px;
+  height: 10px;
+}
+
+.agent-thumb:hover .agent-thumb-remove,
+.agent-thumb-remove:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .agent-thumb-remove { opacity: 1; }
+}
+
+/* ── The caption under the card ──
+   The standing sentence, or — blocked — the fix, with the command (a click
+   copies it) and "check again" in the accent. */
+.agent-caption {
+  min-height: 16px;
+  margin-top: 8px;
+  padding: 0 6px;
+  color: var(--va-text-500);
+  font-size: calc(11.5px * var(--va-text-scale));
+  line-height: 1.45;
+  text-align: center;
+}
+
+.agent-caption.is-warn {
+  color: var(--va-warn);
+}
+
+/* The standing sentence goes where there is no room for it, and on the
+   new-chat screen, where the chips sit under the composer instead. */
+.agent-panel.is-empty .agent-caption.is-std {
+  display: none;
+}
+
+@container agent-panel (max-width: 340px) {
+  .agent-caption.is-std {
+    display: none;
+  }
+
+  .agent-model-effort {
+    display: none;
+  }
+}
+
+.agent-cap-cmd {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: copy;
+}
+
+.agent-cap-cmd code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--va-bg-300);
+  color: var(--va-text-200);
+  font-family: var(--va-mono);
+  font-size: calc(11px * var(--va-text-scale));
+}
+
+.agent-cap-cmd:hover code {
+  color: var(--va-text-100);
+}

@@ -1,0 +1,439 @@
+/* =============================================================
+   Every popover the panel opens (Popover.tsx: portalled to <body> inside
+   .agent-panel-layer, which carries the tokens) and what goes in them: the
+   MenuRow / MenuSection / MenuSeparator rows and the Segmented control
+   (ui/), and what each menu adds: hints, the chats search, the rename
+   form, the chats rows' ⋯. Reads tokens.css (--va-shadow-pop).
+   ============================================================= */
+
+/* ── The surface (Popover.tsx; portalled to <body>, tokens from
+   .agent-panel-layer) ──
+   --va-bg-000, 14px radius, the pop shadow (a hairline ring inside it), 6px
+   of padding, and a 120ms fade with a 3px drift away from the opener. */
+.agent-popover {
+  position: fixed;
+  z-index: 900; /* the app's band for dismissible popovers (index.css) */
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: min(calc(320px * var(--va-text-scale)), calc(100vw - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--va-bg-000);
+  box-shadow: var(--va-shadow-pop);
+  color: var(--va-text-100);
+  font-family: var(--va-sans);
+  font-size: calc(13.5px * var(--va-text-scale));
+  line-height: 1.5;
+  scrollbar-width: thin;
+  scrollbar-color: var(--va-bg-500) transparent;
+  animation: va-pop-in var(--va-fast) ease both;
+}
+
+.agent-popover[data-placement="above"] {
+  animation-name: va-pop-up;
+}
+
+@keyframes va-pop-in {
+  from { opacity: 0; transform: translateY(-3px); }
+}
+
+@keyframes va-pop-up {
+  from { opacity: 0; transform: translateY(3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-popover {
+    animation: none;
+  }
+}
+
+/* ── MenuRow / MenuSection / MenuSeparator (ui/MenuRow.tsx) ──
+   A row: optional 15px icon, the title (13.5px) over an optional 12px
+   --va-text-500 description, then at the right a ✓ for the chosen row, a
+   meta string, or a › for a row that opens more. 9px radius, --va-bg-300 on
+   hover AND on keyboard focus (the popover's arrow keys move focus row to
+   row, so focus is the highlight) — plus, for the keyboard only, an inset
+   ring: the fill alone is 1.14:1 against the popover, a highlight you had to
+   hunt for (WCAG 1.4.11). */
+.va-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--va-text-100);
+  font: inherit;
+  font-size: calc(13.5px * var(--va-text-scale));
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.va-menu-row:hover:not(:disabled),
+.va-menu-row:focus-visible {
+  background: var(--va-bg-300);
+}
+
+.agent-panel-layer .va-menu-row:focus-visible {
+  outline: 2px solid var(--va-focus);
+  outline-offset: -2px;
+}
+
+/* The quiet parts come up a step on the lit row: --va-text-500 on --va-bg-300
+   is 2.76:1; --va-text-400 is ~4:1. */
+.va-menu-row:hover:not(:disabled) :is(.va-menu-row-desc, .va-menu-row-meta, .va-menu-row-icon, .va-menu-row-end.is-more),
+.va-menu-row:focus-visible :is(.va-menu-row-desc, .va-menu-row-meta, .va-menu-row-icon, .va-menu-row-end.is-more) {
+  color: var(--va-text-400);
+}
+
+.va-menu-row.is-danger:hover:not(:disabled) .va-menu-row-icon,
+.va-menu-row.is-danger:focus-visible .va-menu-row-icon {
+  color: inherit;
+}
+
+.va-menu-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.va-menu-row.is-danger {
+  color: var(--va-bad);
+}
+
+.va-menu-row-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--va-text-500);
+}
+
+.va-menu-row-icon > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.va-menu-row.is-danger .va-menu-row-icon {
+  color: inherit;
+}
+
+.va-menu-row-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.va-menu-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.va-menu-row-desc {
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--va-text-500);
+  font-size: calc(12px * var(--va-text-scale));
+}
+
+.va-menu-row-meta {
+  flex: none;
+  margin-left: auto;
+  color: var(--va-text-500);
+  font-size: calc(12px * var(--va-text-scale));
+  white-space: nowrap;
+}
+
+.va-menu-row-end {
+  display: inline-flex;
+  flex: none;
+  margin-left: auto;
+  color: var(--va-text-100);
+}
+
+.va-menu-row-end > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.va-menu-row-end.is-more {
+  color: var(--va-text-500);
+}
+
+.va-menu-row-end.is-more > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.va-menu-section {
+  padding: 8px 10px 4px;
+  color: var(--va-text-500);
+  font-size: calc(11px * var(--va-text-scale));
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  text-transform: uppercase;
+}
+
+.va-menu-sep {
+  flex: none;
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--va-border);
+}
+
+/* ── Segmented (ui/Segmented.tsx) ──
+   A --va-bg-300 track holding equal segments; the chosen one is a --va-bg-000
+   pill with a 1px shadow. In a popover it sits indented to the rows' text
+   (10px); elsewhere the caller's layout places it. The box: 34.75px
+   tall (12.5px at 1.5, 5px above and below, a 3px track). */
+.va-segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--va-bg-300);
+}
+
+.agent-popover .va-segmented {
+  margin: 2px 10px 8px;
+}
+
+/* A larger Agent text size wraps the labels that cannot share one line — in
+   a panel at its 300px minimum (Popover.tsx caps the menu there) they ran
+   past the menu's edge. Only off the default, where every label fits its
+   equal share: Claude's five levels are shortened to fit (ModelPicker.tsx,
+   "Med", "X-high"), the widest 40px of the 42.8 each gets in the 260px tools
+   menu (measured). */
+@container not style(--va-text-scale: 1) {
+  .agent-popover .va-segmented {
+    flex-wrap: wrap;
+  }
+
+  .agent-popover .va-segment {
+    min-width: max-content;
+  }
+}
+
+.va-segment {
+  /* Equal widths: a zero basis grows them alike. Sized to
+     their labels, five levels were 33.6px for "Low" beside 60 for "Extra
+     high", with "Max" jammed against the end. */
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--va-text-300);
+  font: inherit;
+  font-size: calc(12.5px * var(--va-text-scale));
+  line-height: 1.5;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background-color var(--va-fast) ease, color var(--va-fast) ease;
+}
+
+.va-segment:hover:not([aria-checked="true"]):not(:disabled) {
+  color: var(--va-text-100);
+}
+
+.va-segment[aria-checked="true"] {
+  background: var(--va-bg-000);
+  color: var(--va-text-100);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.va-segment:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The pill IS the selection; the ring marks only where the keyboard is. */
+.agent-panel-layer .va-segment:focus-visible {
+  outline-offset: -2px;
+}
+
+/* ── Each menu's width ──
+   Grown with Agent text size like the text inside, or a larger size squeezed
+   the effort control past the model menu's edge (measured at 20px: "Extra
+   high" cut off). Popover.tsx still caps each at the panel's width. */
+.agent-model-popover { width: calc(272px * var(--va-text-scale)); }
+.agent-tools-popover { width: calc(260px * var(--va-text-scale)); }
+.agent-attach-popover { width: calc(250px * var(--va-text-scale)); }
+.agent-title-popover { width: calc(220px * var(--va-text-scale)); }
+.agent-title-popover:has(.agent-pop-dialog),
+.agent-chats-popover:has(.agent-pop-dialog) { width: calc(280px * var(--va-text-scale)); }
+.agent-chats-popover { width: calc(290px * var(--va-text-scale)); }
+.agent-more-popover { width: calc(262px * var(--va-text-scale)); }
+
+/* "More models ›": quieter than a model. */
+.va-menu-row.is-quiet {
+  color: var(--va-text-300);
+}
+
+/* A line of help inside a menu: Learning mode's meaning, the drop hint, a
+   loading or error note. */
+.agent-pop-hint {
+  padding: 0 10px 8px;
+  color: var(--va-text-500);
+  font-size: calc(12px * var(--va-text-scale));
+  line-height: 1.45;
+}
+
+.agent-pop-hint:first-child {
+  padding-top: 8px;
+}
+
+/* The chat a ⋯ opened its actions for, above them. */
+.agent-pop-head {
+  padding: 8px 10px 4px;
+  overflow: hidden;
+  color: var(--va-text-500);
+  font-size: calc(12px * var(--va-text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Rows inside a wrapper are still the popover's flex children. */
+.agent-pop-view {
+  display: contents;
+}
+
+/* ── Chats: the search field and the rows ── */
+.agent-pop-search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 4px 6px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: var(--va-bg-300);
+  color: var(--va-text-500);
+  font-size: calc(13px * var(--va-text-scale));
+  cursor: text;
+}
+
+.agent-pop-search > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.agent-pop-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--va-text-100);
+  font: inherit;
+}
+
+/* Always on screen now (the field opens with every chats menu), so it is
+   read, not glimpsed: text-500 on the field's fill was 2.76:1 in both themes,
+   text-300 is 6.34:1 dark and 5.67:1 light. */
+.agent-pop-search input::placeholder {
+  color: var(--va-text-300);
+}
+
+/* The field's own raised fill marks it: no ring. */
+.agent-panel-layer .agent-pop-search input:focus-visible {
+  outline: none;
+}
+
+.agent-chats-scroll {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 380px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.agent-chat-row {
+  position: relative;
+}
+
+/* The ⋯ takes the ✓'s place at the right of the hovered or focused row. */
+.agent-chat-more.va-icon-btn {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity var(--va-fast) ease;
+}
+
+/* :focus-visible, not :focus-within: the menu focuses the open chat's row as
+   it opens, and after a click that is not keyboard focus — the ✓ stays. */
+.agent-chat-row:hover .agent-chat-more,
+.agent-chat-row:has(:focus-visible) .agent-chat-more {
+  opacity: 1;
+}
+
+.agent-chat-row:hover .va-menu-row-end,
+.agent-chat-row:has(:focus-visible) .va-menu-row-end {
+  visibility: hidden;
+}
+
+@media (hover: none) {
+  .agent-chat-more.va-icon-btn { opacity: 1; }
+}
+
+/* ── Rename, inside the popover ── */
+.agent-pop-dialog {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 8px 4px;
+}
+
+.agent-pop-dialog p {
+  margin: 0 0 10px;
+  color: var(--va-text-200);
+  font-size: calc(13.5px * var(--va-text-scale));
+}
+
+.agent-pop-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--va-border-2);
+  border-radius: 9px;
+  outline: none;
+  background: var(--va-bg-100);
+  color: var(--va-text-100);
+  font: inherit;
+  font-size: calc(13.5px * var(--va-text-scale));
+}
+
+.agent-panel-layer .agent-pop-input:focus-visible {
+  outline: none;
+}
+
+/* --va-focus, not the accent: #D97757 against the light field is 2.96:1,
+   under the 3:1 a focus indicator needs. */
+.agent-pop-input:focus {
+  border-color: var(--va-focus);
+}
+
+.agent-pop-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}

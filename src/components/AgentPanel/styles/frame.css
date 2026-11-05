@@ -1,0 +1,236 @@
+/* =============================================================
+   The panel's frame: the root box (canvas colour, base type, the size
+   container every @container query here names), focus rings, the drop
+   overlay, the shared column, and the primitives every region uses —
+   IconButton (ui/IconButton.tsx) and Shimmer (ui/Shimmer.tsx).
+   Reads tokens.css.
+   ============================================================= */
+
+/* ── Frame ── */
+.agent-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--va-bg-100);
+  color: var(--va-text-100);
+  font-family: var(--va-sans);
+  font-size: calc(14px * var(--va-text-scale));
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  /* The size container every `@container agent-panel` query reads: the
+     gutter (tokens.css), the model label and the caption under 340px. */
+  container-type: inline-size;
+  container-name: agent-panel;
+}
+
+.agent-panel button,
+.agent-panel-layer button {
+  font-family: inherit;
+}
+
+/* 2px of solid --va-focus, clear of the control: an accent ring at 60%
+   was under the 3:1 a focus indicator needs (tokens.css). */
+.agent-panel :focus-visible,
+.agent-panel-layer :focus-visible {
+  outline: 2px solid var(--va-focus);
+  outline-offset: 1px;
+}
+
+.agent-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* (A drag over the panel lights the COMPOSER — composer.css, .is-drop — not
+   a dashed box over the whole panel.) */
+
+/* ── Text buttons ──
+   `.agent-text-btn`: a word that acts — "Cancel" (plain: secondary ink and a
+   hover fill) or, in the accent, "check again" inside a sentence (the one
+   text button that wears the accent). `.agent-fill-btn`: the
+   dark text-colour fill for the one primary action of a small form
+   ("Rename") — the accent belongs to Send alone. */
+.agent-text-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--va-text-300);
+  font: inherit;
+  cursor: pointer;
+}
+
+.agent-text-btn:hover {
+  color: var(--va-text-100);
+}
+
+.agent-text-btn.is-accent {
+  color: var(--va-accent-text);
+  font-weight: 500;
+}
+
+/* Underlined rather than darkened: --va-accent-hover as text is 3.8:1 on the
+   dark canvas, under what the word needs while the pointer is on it. */
+.agent-text-btn.is-accent:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agent-text-btn.is-plain,
+.agent-fill-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: calc(13px * var(--va-text-scale));
+  line-height: 1.4;
+}
+
+.agent-text-btn.is-plain:hover {
+  background: var(--va-bg-300);
+}
+
+.agent-fill-btn {
+  border: 0;
+  background: var(--va-text-100);
+  color: var(--va-bg-100);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.agent-fill-btn:hover {
+  background: var(--va-text-200);
+}
+
+/* ── The shared column ──
+   Messages, the greeting and anything else in the conversation's flow sit in
+   this: centred, capped at --va-col-max, --va-gutter either side (14px under
+   340px). The composer uses --va-composer-max / --va-composer-gutter instead,
+   so it reads a little wider than the text. */
+.va-col {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--va-col-max);
+  margin-inline: auto;
+  padding-inline: var(--va-gutter);
+}
+
+/* ── Icon buttons (the pre-redesign header/composer class) ── */
+.agent-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: transparent;
+  color: var(--va-text-400);
+  cursor: pointer;
+}
+
+.agent-icon-btn:hover:not(:disabled) {
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+}
+
+.agent-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+
+/* ── IconButton (ui/IconButton.tsx) ──
+   The header's 30px square with a 17px glyph, 8px radius, --va-bg-300 on
+   hover; 26 and 24 are the reply-actions and user-message rows. The glyph's
+   size is the CSS's, not the icon's prop, so one icon component serves all
+   three. */
+.va-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--va-text-300);
+  cursor: pointer;
+  transition: background-color var(--va-fast) ease, color var(--va-fast) ease;
+}
+
+.va-icon-btn > svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+}
+
+.va-icon-btn[data-size="26"] {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+
+.va-icon-btn[data-size="24"] {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+.va-icon-btn[data-size="26"] > svg,
+.va-icon-btn[data-size="24"] > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.va-icon-btn:hover:not(:disabled, [aria-disabled="true"]),
+.va-icon-btn[aria-expanded="true"],
+.va-icon-btn[aria-pressed="true"] {
+  background: var(--va-bg-300);
+  color: var(--va-text-100);
+}
+
+/* aria-disabled is the one that can still say why in its tooltip: a disabled
+   button gets no pointer events, so the bubble never came. */
+.va-icon-btn:disabled,
+.va-icon-btn[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── Shimmer (ui/Shimmer.tsx) ──
+   The live label's brightness sweep ("Thinking…", "Connecting to
+   VaultAgent…"): a tertiary base with a text-100 band crossing it every 2.2s,
+   clipped to the glyphs. Static tertiary text under reduced motion. */
+.va-shimmer {
+  background: linear-gradient(90deg, var(--va-text-500) 0%, var(--va-text-100) 45%, var(--va-text-500) 90%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: va-shimmer 2.2s linear infinite;
+}
+
+@keyframes va-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -20% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .va-shimmer {
+    animation: none;
+    background: none;
+    color: var(--va-text-400);
+    -webkit-text-fill-color: currentColor;
+  }
+}

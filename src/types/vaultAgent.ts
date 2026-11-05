@@ -36,6 +36,9 @@ export interface ChatMeta {
     /** SHA-256 of the last canvas/PDF image sent, so an unchanged view is not
      *  re-sent — even after a reload. */
     lastImageHash?: string | null;
+    /** Pinned to the chats menu's Starred group. Absent = not starred (an
+     *  unstar removes the key rather than writing false). */
+    starred?: boolean;
 }
 
 export interface ChatIndex {
@@ -172,8 +175,16 @@ export interface AgentHost {
      *  chat, or an unreadable file, reads as an empty tree — the CLI's own
      *  history is the fallback (utils/chatTree.ts). */
     readChatTree(chatId: string): Promise<ChatTree>;
-    /** Replace that file. Serialized per chat, like the index. */
-    writeChatTree(chatId: string, tree: ChatTree): Promise<void>;
+    /**
+     * Replace that file. Serialized per chat, like the index.
+     *
+     * `vault` (a `toolHost.vaultToken()`) names the vault the chat LIVES in,
+     * and the file goes there even after a switch: a reply cut off by one is
+     * still saved into its own chat, and never into the vault opened since.
+     * Omitted, it is the vault open at the call, and a switch before the write
+     * runs drops it.
+     */
+    writeChatTree(chatId: string, tree: ChatTree, vault?: object | null): Promise<void>;
     /** Drop it, when the chat itself is deleted. */
     deleteChatTree(chatId: string): Promise<void>;
     /** Serialized read-modify-write: re-reads the file, applies `update`, writes. */

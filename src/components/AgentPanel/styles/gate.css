@@ -1,0 +1,262 @@
+/* =============================================================
+   The setup gate INSIDE the agent panel: panel-scoped overrides of the shared
+   HelperGate (components/HelperGate/HelperGate.css), which the terminal dock
+   renders too and which must not change there — so every rule here is under
+   .agent-panel. Reads tokens.css.
+
+   The look is the new-chat screen's voice: a serif title with the accent
+   spark where the orb was, the lede in secondary ink, numbered steps on
+   hairline circles, ONE dark text-colour button for the next action, hairline
+   buttons for the others, text links for alternates. The accent stays off the
+   buttons: it belongs to Send.
+   ============================================================= */
+
+/* ── Setup screens ── */
+.agent-setup {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 28px var(--va-gutter) 24px;
+}
+
+
+/* HelperGate.css gives .agent-screen its own copy of the legacy tokens (the
+   terminal dock has no panel root to inherit them from), which would shadow
+   the panel's re-pointed ones. Re-point them again for a screen inside the
+   panel. Four classes deep on purpose: HelperGate.css's light block is
+   `:root[data-theme="light"] .agent-screen` (0,3,0) and lives in a chunk
+   shared with the terminal, so its order against this file is not ours to
+   fix. */
+:root .agent-panel[data-theme] .agent-screen {
+  --ai-card: var(--va-bg-000);
+  --ai-ring: var(--va-border);
+  --ai-shadow: 0 0 0 1px var(--va-border);
+  --ai-green: var(--va-ok);
+  --ai-red: var(--va-bad);
+  --ai-amber: var(--va-warn);
+  --tr-code-bg: var(--va-bg-300);
+  --orb-fg: var(--va-text-100);
+  --orb-pill-bg: var(--va-bg-000);
+  --orb-pill-shadow: 0 0 0 1px var(--va-border);
+  --orb-label: var(--va-text-400);
+}
+
+.agent-panel .agent-screen {
+  gap: 14px;
+  max-width: 440px;
+}
+
+/* The spark replaces the orb — the greeting's mark, so the front door looks
+   like the room behind it. Drawn as a mask so it takes the accent. */
+.agent-panel .agent-screen-head {
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-panel .agent-screen-head .aic-orb {
+  display: none;
+}
+
+.agent-panel .agent-screen-head::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 22px;
+  background: var(--va-accent);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.5c.4 4.3 2.3 7.4 6.6 9.5-4.3 2.1-6.2 5.2-6.6 9.5-.4-4.3-2.3-7.4-6.6-9.5 4.3-2.1 6.2-5.2 6.6-9.5Z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.5c.4 4.3 2.3 7.4 6.6 9.5-4.3 2.1-6.2 5.2-6.6 9.5-.4-4.3-2.3-7.4-6.6-9.5 4.3-2.1 6.2-5.2 6.6-9.5Z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.agent-panel .agent-screen-head h2 {
+  margin: 0;
+  color: var(--va-text-100);
+  font-family: var(--va-serif);
+  font-size: calc(22px * var(--va-text-scale));
+  font-weight: 400;
+  line-height: 1.25;
+}
+
+.agent-panel .agent-lede {
+  margin: 0;
+  color: var(--va-text-300);
+  font-size: calc(14px * var(--va-text-scale));
+  line-height: 1.55;
+}
+
+.agent-panel .agent-lede b {
+  color: var(--va-text-100);
+  font-weight: 500;
+}
+
+.agent-panel .agent-muted {
+  color: var(--va-text-500);
+  font-size: calc(12.5px * var(--va-text-scale));
+}
+
+/* ── Steps: numbered on hairline circles ── */
+.agent-panel .agent-steps {
+  gap: 20px;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.agent-panel .agent-steps > li {
+  padding-left: 34px;
+}
+
+.agent-panel .agent-steps > li::before {
+  top: -2px;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  border: 1px solid var(--va-border-2);
+  background: transparent;
+  box-shadow: none;
+  color: var(--va-text-400);
+  font-size: calc(12px * var(--va-text-scale));
+  font-weight: 500;
+}
+
+/* A step already satisfied (HelperGate's `done`, SetupGuide's login): a
+   filled text-colour disc with a check in the canvas colour, its line in
+   secondary ink and no buttons: only what is still missing asks for a click. */
+.agent-panel .agent-steps > li.is-done::before {
+  content: "";
+  border-color: transparent;
+  background: var(--va-text-100);
+}
+
+.agent-panel .agent-steps > li.is-done::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 22px;
+  height: 22px;
+  background: var(--va-bg-100);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E") center / 12px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E") center / 12px no-repeat;
+}
+
+.agent-panel .agent-steps > li.is-done .agent-muted {
+  margin: 0;
+  color: var(--va-text-400);
+  font-size: calc(13px * var(--va-text-scale));
+}
+
+.agent-panel .agent-steps h3 {
+  margin: 0;
+  color: var(--va-text-100);
+  font-size: calc(14px * var(--va-text-scale));
+  font-weight: 500;
+}
+
+.agent-panel .agent-substeps {
+  margin: 0;
+  padding: 0;
+  color: var(--va-text-400);
+  font-size: calc(13px * var(--va-text-scale));
+}
+
+.agent-panel .agent-logins {
+  margin: 0;
+  padding: 0;
+}
+
+.agent-panel .agent-logins-name {
+  color: var(--va-text-400);
+  font-size: calc(13px * var(--va-text-scale));
+}
+
+/* ── Buttons: hairline by default, the next action filled dark ── */
+.agent-panel .agent-btn {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--va-border-2);
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--va-text-100);
+  font-size: calc(13px * var(--va-text-scale));
+  font-weight: 500;
+  transition: background-color var(--va-fast) ease;
+}
+
+.agent-panel .agent-btn:hover {
+  background: var(--va-bg-300);
+}
+
+.agent-panel .agent-btn.primary {
+  border-color: transparent;
+  background: var(--va-text-100);
+  color: var(--va-bg-100);
+}
+
+.agent-panel .agent-btn.primary:hover {
+  background: var(--va-text-200);
+}
+
+/* ONE filled button per screen: in the first-time guide every step's main
+   button is `primary` (HelperGate cannot know which steps are done), so only
+   the first step's keeps the fill and the later ones are hairline. */
+.agent-panel .agent-steps > li:has(.agent-btn.primary) ~ li .agent-btn.primary {
+  border-color: var(--va-border-2);
+  background: transparent;
+  color: var(--va-text-100);
+}
+
+.agent-panel .agent-steps > li:has(.agent-btn.primary) ~ li .agent-btn.primary:hover {
+  background: var(--va-bg-300);
+}
+
+/* Alternates ("Linux ARM64 instead"): a quiet underlined link. */
+.agent-panel .agent-screen .agent-link {
+  color: var(--va-text-300);
+  font-size: calc(13px * var(--va-text-scale));
+  text-decoration: underline;
+  text-decoration-color: var(--va-border-2);
+  text-underline-offset: 2px;
+}
+
+.agent-panel .agent-screen .agent-link:hover {
+  color: var(--va-text-100);
+  text-decoration-color: currentColor;
+}
+
+/* ── Command lines: mono on the raised colour, a copy glyph ── */
+.agent-panel .agent-command {
+  border-radius: 7px;
+  background: var(--va-bg-300);
+  color: var(--va-text-200);
+  font-family: var(--va-mono);
+  font-size: calc(12px * var(--va-text-scale));
+}
+
+.agent-panel .agent-command-copy {
+  color: var(--va-text-500);
+}
+
+.agent-panel .agent-command-copy:hover {
+  background: var(--va-bg-400);
+  color: var(--va-text-100);
+}
+
+/* ── A failure inside a screen: one red sentence, no tinted card ── */
+.agent-panel .agent-screen .agent-notice {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--va-bad);
+  font-size: calc(13px * var(--va-text-scale));
+}
+
+/* ── The update's download bar ── */
+.agent-panel .agent-progress {
+  height: 3px;
+  background: var(--va-bg-300);
+}
+
+.agent-panel .agent-progress > span {
+  background: var(--va-text-300);
+}

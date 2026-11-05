@@ -27,6 +27,9 @@ export default defineConfig({
       for (const name of ['THIRD_PARTY_NOTICES', 'src/epub/vendor/LICENSE', 'src/epub/vendor/PYTHON-LICENSE.txt', 'src/epub/vendor/THIRD_PARTY_NOTICES.txt', 'src/epub/vendor/source-lock.json', 'src/epub/reader-frame.integrity.json']) {
         this.emitFile({ type: 'asset', fileName: name, source: readFileSync(new URL(name, import.meta.url)) })
       }
+      // The agent panel's bundled reply face (OFL-1.1 asks that the licence
+      // travel with the font files).
+      this.emitFile({ type: 'asset', fileName: 'licenses/SourceSerif4-OFL.txt', source: readFileSync(new URL('node_modules/@fontsource-variable/source-serif-4/LICENSE', import.meta.url)) })
     },
   }],
 })

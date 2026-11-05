@@ -371,8 +371,8 @@ body {
 }
 
 /* The AI agent panel, docked on the right — the sidebar's mirror image: the
-   same 4px handle (on the panel's LEFT edge, so its header band continues the
-   tab strip's), the same border, and a width App clamps to 300px…50%. The
+   same 4px handle (on the panel's LEFT edge, its top continuing the tab
+   strip's band up to the panel), and a width App clamps to 300px…50%. The
    panel's own look lives in its lazy chunk (components/AgentPanel/). */
 .workspace-agent-panel {
   flex-shrink: 0;
@@ -383,8 +383,17 @@ body {
      shrinks afterwards, so the editor never loses more than half. */
   max-width: max(300px, 50vw);
   overflow: hidden;
-  background: var(--background-secondary);
-  border-left: 1px solid var(--background-modifier-border);
+  /* The panel's canvas and hairline (--va-bg-100 / --va-border in
+     AgentPanel/styles/tokens.css — that chunk's tokens do not exist here yet,
+     so they are restated; change both together). Painted by this box too so
+     the frame before the chunk lands is already the panel's colour. */
+  background: #262624;
+  border-left: 1px solid rgba(194, 192, 182, 0.14);
+}
+
+:root[data-theme="light"] .workspace-agent-panel {
+  background: #FAF9F5;
+  border-left-color: rgba(94, 93, 89, 0.15);
 }
 
 .workspace-agent-panel > * {
@@ -392,17 +401,21 @@ body {
   min-height: 0;
 }
 
-/* The one frame before the chunk lands: the header band only, so nothing jumps. */
+/* The one frame before the chunk lands: the panel's 44px header on its own
+   canvas — no band, no rule, as the header it turns into — so nothing jumps
+   or changes colour. */
 .workspace-agent-loading {
   flex: 0 0 auto;
-  height: var(--header-height);
+  height: 44px;
   display: flex;
   align-items: center;
-  padding: 0 12px;
-  font-size: 12px;
-  color: var(--text-faint);
-  background: var(--tab-container-background);
-  border-bottom: 1px solid var(--tab-rule-color);
+  padding: 0 18px;
+  font-size: 13px;
+  color: #7D7C76;
+}
+
+:root[data-theme="light"] .workspace-agent-loading {
+  color: #91908A;
 }
 
 /* ── Terminal dock (TerminalDock.tsx) ──

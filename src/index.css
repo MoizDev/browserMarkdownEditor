@@ -3709,8 +3709,12 @@ body.is-resizing-panes * {
   left: var(--pdf-thumbs-width);
 }
 
+/* The pill's icon buttons: thumbnails, invert, and the two quarter turns. One
+   rule, because they sit shoulder to shoulder in the same pill and any
+   difference between them would read as a mistake. */
 .pdf-viewer-thumbs-toggle,
-.pdf-viewer-invert-toggle {
+.pdf-viewer-invert-toggle,
+.pdf-viewer-rotate-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3723,13 +3727,20 @@ body.is-resizing-panes * {
 }
 
 .pdf-viewer-thumbs-toggle:hover,
-.pdf-viewer-invert-toggle:hover {
+.pdf-viewer-invert-toggle:hover,
+.pdf-viewer-rotate-btn:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
 .pdf-viewer-thumbs-toggle.is-on,
 .pdf-viewer-invert-toggle.is-on {
+  color: var(--interactive-accent);
+}
+
+/* Rotation has no on-state to show — it is a turn, not a mode — so the press
+   itself is the only feedback the button can give. */
+.pdf-viewer-rotate-btn:active {
   color: var(--interactive-accent);
 }
 

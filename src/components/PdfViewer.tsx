@@ -10,6 +10,8 @@ import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
 import { pdfWorker } from '../utils/pdfWorker';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
+import { LEFT, RIGHT } from '../utils/pdfRotation';
+import { RotateCcw, RotateCw } from './icons';
 
 /**
  * The view half of a PDF: a pdf.js-rendered continuous scroll of pages.
@@ -56,6 +58,15 @@ interface PdfViewerProps {
      *  several viewers stay mounted (hidden) at once, and only the visible
      *  one may respond to the keyboard. */
     isActive: boolean;
+    /**
+     * Turn the pages a quarter and write the file (App.rotatePdf).
+     *
+     * `pageIndex` names ONE page; left out, the whole document turns. The
+     * viewer does not rotate anything itself and holds no rotation state:
+     * `/Rotate` goes into the file, the pane remounts on the new bytes, and
+     * pdf.js reports the turned geometry like any other document's.
+     */
+    onRotate?: (delta: number, pageIndex?: number) => void;
 }
 
 interface DocState {
@@ -307,7 +318,7 @@ interface PinchGesture {
     timer: number | null;
 }
 
-function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
+function PdfViewer({ filePath, data, isActive, onRotate }: PdfViewerProps) {
     // Read once per mount: where this file was last left, and at what zoom.
     // Keyed by vault as well as path — two vaults can both hold `refs/spec.pdf`
     // and page 47 of one is nowhere in the other (see utils/storage.ts).
@@ -1248,6 +1259,19 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
         return () => root.removeEventListener('wheel', onWheel);
     }, [commitGesture]);
 
+    /**
+     * Turn the document (or, with ⌥ held, just the page being read).
+     *
+     * ⌥ for one page rather than a second pair of buttons: rotating the whole
+     * document is what a sideways scan needs and is what the control should
+     * say plainly, while a single crooked page in an otherwise straight scan is
+     * the rarer repair. The page comes from `shownPageRef`, the same number the
+     * page box shows, so "this page" means the one under the top edge.
+     */
+    const rotate = useCallback((delta: number, onePage: boolean) => {
+        onRotate?.(delta, onePage ? shownPageRef.current : undefined);
+    }, [onRotate]);
+
     // +/- (and =, its unshifted key) step the zoom exactly like the pill
     // buttons — but only for the front tab's viewer, never while typing in an
     // input/editor, and never with modifiers held (⌘± stays browser zoom).
@@ -1263,11 +1287,20 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
             } else if (e.key === '-') {
                 e.preventDefault();
                 nudgeZoom(1 / 1.2);
+            } else if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
+                // Next to each other under the right hand, and free: this
+                // viewer has no other bracket gesture. By CODE, not key: the
+                // modifier that means "this page only" everywhere else is ⌥,
+                // and ⌥] on a Mac is not `]` at all — but this handler ignores
+                // modified keys anyway, so the keys turn the whole document and
+                // ⌥-clicking a button is the way to turn one page.
+                e.preventDefault();
+                rotate(e.code === 'BracketRight' ? RIGHT : LEFT, false);
             }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isActive, nudgeZoom]);
+    }, [isActive, nudgeZoom, rotate]);
 
     // A drag that starts on the page is a text selection, and must be able to
     // sweep straight across a link instead of stopping dead at its edge. Links
@@ -1375,6 +1408,31 @@ function PdfViewer({ filePath, data, isActive }: PdfViewerProps) {
                     <div className="pdf-viewer-pill">
                         <ThumbnailsToggle open={thumbsOpen} onToggle={toggleThumbs} />
                         <PdfInvertToggle />
+                        {onRotate && (
+                            <>
+                                {/* A quarter turn, written into the file — see
+                                    utils/pdfRotate.ts. ⌥-click turns only the
+                                    page being read; the tooltip says so,
+                                    because an invisible modifier that nothing
+                                    announces may as well not exist. */}
+                                <button
+                                    className="pdf-viewer-rotate-btn"
+                                    onClick={e => rotate(LEFT, e.altKey)}
+                                    data-tooltip="Rotate left ([) — hold ⌥ for this page only"
+                                    aria-label="Rotate the document left"
+                                >
+                                    <RotateCcw size={15} />
+                                </button>
+                                <button
+                                    className="pdf-viewer-rotate-btn"
+                                    onClick={e => rotate(RIGHT, e.altKey)}
+                                    data-tooltip="Rotate right (]) — hold ⌥ for this page only"
+                                    aria-label="Rotate the document right"
+                                >
+                                    <RotateCw size={15} />
+                                </button>
+                            </>
+                        )}
                     </div>
                     <div className="pdf-viewer-pill pdf-viewer-pages">
                         <input

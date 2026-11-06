@@ -61,6 +61,34 @@ as live tldraw shapes.
 - `pdfBuildClient` keeps one warm `Worker` for the app's life, and on `worker.onerror` rejects every
   in-flight build and nulls the worker so the next call re-spawns it.
 
+## Rotation (`utils/pdfRotate.ts`, `utils/pdfRotation.ts`, `App.rotatePdf`)
+
+- **It is a real edit, not a view setting** — the angle goes into each page's `/Rotate`, and the file
+  is written. Chosen over a view-only rotation (which `PdfInvertToggle` would have been the model
+  for) because EVERY consumer here already honours `/Rotate`: pdf.js applies it when it builds a
+  viewport, `displaySpace()` undoes it when stamping, the thumbnails and link layer come from the
+  same viewports. A view rotation would have been a second coordinate system that all of those, and
+  the saved file, would have to be kept in step with.
+- `pdfRotation.ts` is pure quarter-turn arithmetic with no imports (tested in `test:app`);
+  `pdfRotate.ts` holds the pdf-lib half and is **dynamically imported only** (App's handler), or
+  ~400kB joins the main bundle. A page in the wild can carry 450, -90 or 89.9 — `asQuarter`
+  normalizes on the way in as well as out, because pdf-lib throws on a non-multiple of 90.
+- **`App.rotatePdf` writes it like any other save**: `writeFileVersioned` against the tab's baseline
+  (PDF baselines are hashed in the background — wait the seed out), queued on the same per-tab chain
+  as `flushTab` so a rotation cannot interleave with an annotation save, then `setBaseline`,
+  `recordFileWritten`, `clearPdfRenderData` (the parked original predates the turn) and a `diskRev`
+  bump, which is what remounts the pane on the new bytes. The reader comes back on its page because
+  the position record is per path and survives the remount.
+- **Refused on a PDF this app has annotated**, with a notice that says why: the strokes are authored
+  against the pages as they are and `/Rotate` would turn the paper out from under every mark.
+  The role read that decides it happens in the HANDLER, at the moment of the gesture — doing it on
+  open would undo `needsSource`'s whole point (an attachment read for every PDF merely read).
+- UI: two buttons in the reader's first pill, `[` / `]` on the keyboard (by `e.code`, since ⌥] is
+  not `]`), and **⌥-click** to turn the page being read rather than the document. The keys have no
+  one-page form on purpose: the modifier that would say so is the one that changes what the key
+  produces. Annotate mode has no rotate control — the refusal above is why there would be nothing
+  for it to do.
+
 ## One pdf.js worker for the whole app — `utils/pdfWorker.ts`
 
 pdf.js spawns a worker **per `getDocument`** unless it is handed one, and a loading task only tears

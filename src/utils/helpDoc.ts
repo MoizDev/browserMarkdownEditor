@@ -373,6 +373,19 @@ to go to that page. The button next to it **inverts the pages** so they are easy
 eyes in the dark, while reading and while writing on them. It only changes how
 they look: the file, and any PDF made from it, keeps its real colours.
 
+**Turning a sideways scan the right way up.** The two curved arrows beside the
+invert button turn the pages a quarter at a time — \`]\` turns right, \`[\` turns
+left. It turns the whole document; hold \`Alt\` (\`Option\`) while clicking an
+arrow to turn only the page you are reading, which is what a single crooked page
+in an otherwise straight scan wants. Unlike inverting, this is a real change to
+the file: the PDF is saved the way round you left it, and it opens that way
+here, in your browser and in anything else you open it with. Four turns bring it
+back where it started.
+
+A PDF you have already written on is left alone, with a note saying so. Your
+marks are drawn against the pages as they are, and turning the paper would move
+every one of them — so straighten a scan before you start annotating it.
+
 \`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
 **writing on it** — the same toggle every other file has. Draw on it as you would
 on a notebook. It opens **on the page you were reading**, with the same page box

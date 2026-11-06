@@ -154,6 +154,16 @@ export function RotateCcw({ size = 16, ...props }: IconProps) {
     );
 }
 
+/** The same arrow, curling the other way — "turn this a quarter clockwise". */
+export function RotateCw({ size = 16, ...props }: IconProps) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+            <path d="M21 2v6h-6" />
+            <path d="M20.49 15a9 9 0 1 1-2.13-9.36L21 8" />
+        </svg>
+    );
+}
+
 export function Settings({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>

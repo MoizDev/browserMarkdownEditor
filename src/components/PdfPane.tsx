@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfAnnotation';
@@ -53,6 +53,9 @@ interface PdfPaneProps {
     /** This PDF is a notebook's export — open that notebook instead. Takes the
      *  PDF's own path too, so App can put its tab back into reading mode. */
     onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void;
+    /** Turn the pages a quarter and write the file (App.rotatePdf). Reading
+     *  only: the annotate canvas draws against the pages as they are. */
+    onRotate: (path: string, delta: number, pageIndex?: number) => void;
     /** True while this tab has strokes not yet written to disk. */
     isDirty: boolean;
     /** The file parted ways with the tab on disk (OpenTab.disk). The bar is
@@ -86,7 +89,7 @@ interface PdfSource {
  * modes rather than one blended view because a rasterized page has no text to
  * select — the pixels are all that's left. See utils/pdfAnnotation.ts.
  */
-function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, isDirty, disk, onDiskAction }: PdfPaneProps) {
+function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction }: PdfPaneProps) {
     const { readFileBytes } = useFileSystem();
     const [source, setSource] = useState<PdfSource | null>(null);
     const [viewBytes, setViewBytes] = useState<Uint8Array | null>(null);
@@ -212,6 +215,12 @@ function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, o
         return () => { cancelled = true; };
     }, [activated, mode, flushing, isDirty, viewBytes, file.handle, readFileBytes]);
 
+    // Bound to this pane's path once: a fresh arrow per render would re-render
+    // the memoized viewer on every keystroke anywhere in the app.
+    const rotateThis = useCallback(
+        (delta: number, pageIndex?: number) => onRotate(file.path, delta, pageIndex),
+        [onRotate, file.path]);
+
     let body: ReactNode = null;
     if (activated) {
         if (error) {
@@ -266,7 +275,14 @@ function PdfPane({ file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, o
         } else if (!viewBytes) {
             body = <div className="pdf-pane-message">Loading PDF…</div>;
         } else {
-            body = <PdfViewer filePath={file.path} data={viewBytes} isActive={isFocused} />;
+            body = (
+                <PdfViewer
+                    filePath={file.path}
+                    data={viewBytes}
+                    isActive={isFocused}
+                    onRotate={rotateThis}
+                />
+            );
         }
     }
 

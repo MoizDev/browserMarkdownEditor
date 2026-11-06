@@ -1835,6 +1835,88 @@ export default function App() {
     await flushTab(path, true, content);
   }, [flushTab]);
 
+  /**
+   * Turn a PDF's pages a quarter at a time, and write it.
+   *
+   * A REAL EDIT, not a view setting (utils/pdfRotate.ts says why): the angle
+   * goes into each page's `/Rotate`, so a sideways scan is fixed for the
+   * reader, the annotate canvas, the thumbnails and every other app at once,
+   * through the one attribute all of them already honour.
+   *
+   * It writes through `writeFileVersioned` against the tab's disk baseline and
+   * queues on the same per-tab chain `flushTab` uses — a rotation is a save
+   * like any other, and must not overtake or interleave with one.
+   *
+   * REFUSED on a PDF this app has annotated. Its strokes are authored against
+   * the pages as they were, and `/Rotate` would turn the paper out from under
+   * every mark; the honest answer is to say so rather than move the ink. The
+   * role read that decides it happens HERE, at the moment of the gesture, so
+   * that merely opening a PDF to read still costs no attachment read.
+   */
+  const rotatePdf = useCallback(async (path: string, delta: number, pageIndex?: number) => {
+    const tab = tabsRef.current.find(t => t.file.path === path);
+    const handle = tab?.file.handle as FileSystemFileHandle | undefined;
+    if (!tab || !handle) return;
+    if (diskStateRef.current.get(tab.id)) {
+      notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.');
+      return;
+    }
+    if (tab.dirty || flushingRef.current.has(tab.id)) {
+      notifyRef.current('This PDF has annotations still being saved. Try again in a moment.');
+      return;
+    }
+
+    const { id } = tab;
+    const run = async (): Promise<void> => {
+      try {
+        const bytes = await readFileBytes(handle);
+        const { readPdfRole } = await import('./utils/pdfAnnotation');
+        const role = await readPdfRole(bytes);
+        if (role.alreadyAnnotated) {
+          notifyRef.current('This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.');
+          return;
+        }
+        const { rotatePdfPages } = await import('./utils/pdfRotate');
+        const rotated = await rotatePdfPages(bytes, delta, pageIndex);
+
+        // Same baseline resolution as flushTab's write: a PDF's is hashed in
+        // the background at open, so wait the seed out rather than write blind.
+        const seed = pdfSeedsRef.current.get(id);
+        const seeded = seed ? await seed : null;
+        const expected = getBaseline(id) ?? seeded ?? null;
+        const result = await writeFileVersionedRef.current(handle, rotated.bytes, expected);
+        if (result.status !== 'written') {
+          setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
+          return;
+        }
+        if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
+        recordFileWritten(path, result.version.lastModified);
+        // The parked original predates the rotation, and the next annotation
+        // save would rebuild the old orientation over this one.
+        clearPdfRenderData(path);
+        // `diskRev` is how a PDF pane is told its bytes are not the bytes any
+        // more: it remounts on the new file, exactly as a reload from disk
+        // does, and comes back on the page that was being read.
+        setTabs(prev => prev.map(t => (t.id === id
+          ? { ...t, dirty: false, disk: undefined, diskRev: (t.diskRev ?? 0) + 1 }
+          : t)));
+        bumpSaveEpoch();
+      } catch (err) {
+        console.error('Could not rotate the PDF:', err);
+        notifyRef.current(`Could not rotate this PDF: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+
+    const chains = flushChainsRef.current;
+    const chained = (chains.get(id) ?? Promise.resolve()).then(run);
+    chains.set(id, chained);
+    try {
+      await chained;
+    } finally {
+      if (chains.get(id) === chained) chains.delete(id);
+    }
+  }, [readFileBytes, setDiskState]);
+
   /** Everything that has to happen for ONE document to stop being open, short
    *  of the two state updates (which differ per caller). */
   const releaseTab = useCallback((path: string, flush: boolean) => {
@@ -4239,6 +4321,7 @@ export default function App() {
             onContentChange={updateTabContent}
             onDiskAction={handleDiskAction}
             onFlushNow={flushTabNow}
+            onRotatePdf={rotatePdf}
             onRetryRead={retryUnreadTab}
             onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}

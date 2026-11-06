@@ -1,3 +1,8 @@
+import { runReaderHostCommand } from './utils/documentReading';
+import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,getReadingSurface } from './utils/documentReading';
+import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
+import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
+import { flushSync } from 'react-dom';
 import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
@@ -19,7 +24,7 @@ import { sameStat, type DiskVersion } from './utils/diskVersion';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
-import { ensureNotebookExt, isCanvasFile, isCodeFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
+import { ensureNotebookExt, isEpubFile, isCanvasFile, isCodeFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -354,6 +359,7 @@ export default function App() {
     moveFile,
     renameFile,
     readFileVersioned,
+    readFileSnapshot,
     readBytesVersioned,
     statFile,
     writeFileVersioned,
@@ -812,7 +818,11 @@ export default function App() {
   /* The sidebar footer's buttons. Stable for the app's life for the reason
      `collapseSidebar` below spells out: SidebarFooter is memoized too, and one
      inline arrow here re-rendered it on every App render. */
-  const toggleGraph = useCallback(() => setMainView(v => (v === 'graph' ? 'editor' : 'graph')), []);
+  const toggleGraph = useCallback(() => {
+    const root = rootHandleRef.current;
+    const captures = tabsRef.current.map(tab => getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.());
+    void Promise.allSettled(captures).then(() => { if(rootHandleRef.current===root)setMainView(v=>v==='graph'?'editor':'graph'); });
+  }, []);
   const openTrash = useCallback(() => setShowTrash(true), []);
   const openSettings = useCallback(() => setShowSettings(true), []);
   const toggleTheme = useCallback(() => setTheme(t => (t === 'dark' ? 'light' : 'dark')), []);
@@ -868,6 +878,7 @@ export default function App() {
 
   // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
+  const invalidReaderTokens = useRef(new Set<string>());
   const layoutRef = useRef<TabLayout>(layout);
   const activeTabPathRef = useRef<string | null>(activeTabPath);
   // The documents currently on screen — one per column, since a pane shows one
@@ -887,7 +898,9 @@ export default function App() {
     setSaveStatus(message);
     saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 5000);
   }, []);
-  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  // A binary host acquires in its passive effect. Publish the new tab first;
+  // lazy dev imports hid this parent/child effect ordering race in production.
+  useLayoutEffect(() => { tabsRef.current = tabs; }, [tabs]);
   useEffect(() => {
     layoutRef.current = layout;
     visiblePathsRef.current = visiblePaths(layout);
@@ -963,7 +976,7 @@ export default function App() {
   // that commits the tree before awaiting `recordVault`. The id alone
   // cannot tell that pass a switch happened underneath it (see there).
   const currentVaultIdRef = useRef<string | null>(currentVaultId);
-  useEffect(() => { currentVaultIdRef.current = currentVaultId; }, [currentVaultId]);
+  useLayoutEffect(() => { currentVaultIdRef.current = currentVaultId; }, [currentVaultId]);
   const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(rootHandle);
   useEffect(() => { rootHandleRef.current = rootHandle; }, [rootHandle]);
 
@@ -1249,10 +1262,11 @@ export default function App() {
 
   // Returns whether the file was actually opened (as a tab or externally).
   const handleFileClick = useCallback(async (node: FileTreeNode): Promise<boolean> => {
+    const rootAtOpen = rootHandleRef.current;
     try {
       // PDFs open in a pane like any other file. Everything else non-textual
       // (images, video, …) still hands off to the browser.
-      if (!isTextFile(node.name) && !isPdfFile(node.name)) {
+      if (!opensInApp(node.name)) {
         const file = await (node.handle as FileSystemFileHandle).getFile();
         window.open(externalOpenUrl(node.path, file), '_blank');
         return true;
@@ -1279,13 +1293,15 @@ export default function App() {
       // save of this document is checked against (writeFileVersioned) and every
       // outside change is compared with (checkOpenDocs).
       const handle = node.handle as FileSystemFileHandle;
-      const read = isPdfFile(node.name) ? null : await readFileVersioned(handle);
+      let readError: string | undefined;
+      const read = (isPdfFile(node.name) || isEpubFile(node.name)) ? null : await readFileVersioned(handle).catch(error => { readError=describeReadError(error); return null; });
+      if (rootHandleRef.current !== rootAtOpen) return false;
       const content = read?.text ?? '';
       // What this note referred to when it was opened — the baseline every
       // later save's asset diff is taken against.
       rememberAssetRefs(node, content);
       const id = newTabId();
-      if (read) setBaseline(id, read.version); else seedPdfBaseline(id, handle);
+      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, handle);
       // Re-check inside the updater: a second click can land while the first
       // read is still in flight, and tabsRef only updates post-commit.
       // A source file opens ready to type in: there is no "reading mode" worth
@@ -1294,7 +1310,7 @@ export default function App() {
       const mode: EditorMode = isCodeFile(node.name) ? 'edit' : 'read';
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
-        : [...prev, { id, file: node, content, mode, dirty: false }]);
+        : [...prev, { id, file: node, content, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, readError, representation: representationFor(node.name,false,0,!!readError) }]);
       // openTab re-checks too, and focuses an existing tab rather than minting a
       // second one — the same race, answered the same way.
       setLayout(l => openTabIn(l, node.path));
@@ -1673,7 +1689,7 @@ export default function App() {
     // A tab restored without its text (OpenTab.readError) has an empty buffer
     // that is NOT the file: ⌘S forces a flush of the focused tab, and writing
     // that '' would erase a note the app merely failed to read.
-    if (tab.readError) return 'skipped';
+    if (!canFlushTab(tab) && !(contentOverride !== undefined && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !force) return 'skipped';
     // contentOverride exists for callers who have fresher content than the tab
@@ -1809,6 +1825,8 @@ export default function App() {
   // editor/externalReload.ts). It is buffered like any edit, but it IS the file,
   // so the tab stays clean and nothing is scheduled to write it back.
   const updateTabContent = useCallback((path: string, content: string, options?: ContentChangeOptions) => {
+    const target = tabsRef.current.find(t => t.file.path === path);
+    if (!target || !canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')) return;
     latestContentRef.current.set(path, content);
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
@@ -1816,7 +1834,7 @@ export default function App() {
       setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content } : t));
       return;
     }
-    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true } : t));
+    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     scheduleSave(path);
   }, [scheduleSave]);
 
@@ -1831,7 +1849,9 @@ export default function App() {
    * setTabs above hasn't committed yet when flushTab runs.
    */
   const flushTabNow = useCallback(async (path: string, content: string) => {
-    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true } : t));
+    const target = tabsRef.current.find(t => t.file.path === path);
+    if (!target || !canUpdateTabContent(target, 'annotation')) return;
+    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     await flushTab(path, true, content);
   }, [flushTab]);
 
@@ -1928,6 +1948,9 @@ export default function App() {
     // captured its baseline synchronously.
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
+      invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
+      flushReaderViewState(); flushPdfTextViewState();
+      readerIdentityCache.current.forEach((value,key)=>{if(value.documentId===doc.id)readerIdentityCache.current.delete(key)});
       dropBaseline(doc.id);
       pdfSeedsRef.current.delete(doc.id);
       diskStateRef.current.delete(doc.id);
@@ -2011,8 +2034,10 @@ export default function App() {
   }, []);
 
   const closeTab = useCallback((path: string) => {
-    rememberClosed([path]);
-    removeTab(path, true);
+    const tab=tabsRef.current.find(t=>t.file.path===path),root=rootHandleRef.current;
+    const close=()=>{if(rootHandleRef.current!==root||!tabsRef.current.some(t=>t.id===tab?.id&&t.representation.generation===tab.representation.generation))return;rememberClosed([path]);removeTab(path,true)};
+    const checkpoint=tab&&getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.();
+    if(checkpoint)return checkpoint.catch(()=>{}).then(close);else close();
   }, [removeTab, rememberClosed]);
 
   /**
@@ -2031,7 +2056,7 @@ export default function App() {
       if (tabsRef.current.some(t => t.file.path === path)) continue;
       const node = collectFiles(fileTreeRef.current).find(f => f.path === path);
       if (!node) continue;
-      if (await handleFileClick(node)) return;
+      if (await handleFileClick(node)) return path;
     }
   }, [handleFileClick]);
 
@@ -2050,6 +2075,19 @@ export default function App() {
   const retryingReadsRef = useRef(new Set<string>());
   const retryUnreadTab = useCallback(async (path: string): Promise<boolean> => {
     const tab = tabsRef.current.find(t => t.file.path === path);
+    if (tab?.representation.loadedKind === 'epub') {
+      if (retryingReadsRef.current.has(tab.id)) return false;
+      retryingReadsRef.current.add(tab.id);
+      try {
+        const handle = await resolveFileHandle(path);
+        if (!tabsRef.current.some(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation)) return false;
+        if (!handle) { setDiskState(tab.id, 'deleted'); return false; }
+        invalidReaderTokens.current.add(`${tab.id}|${tab.representation.generation}`);
+        dropBaseline(tab.id); diskStateRef.current.delete(tab.id);
+        setTabs(prev => prev.map(t => t.id === tab.id ? { ...t, file: {...t.file,handle}, readError: undefined, disk: undefined, readerCapabilities: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) } : t));
+        return true;
+      } finally { retryingReadsRef.current.delete(tab.id); }
+    }
     if (!tab?.readError || !tab.file.handle) return !!tab && !tab.readError;
     if (retryingReadsRef.current.has(tab.id)) return false;
     retryingReadsRef.current.add(tab.id);
@@ -2064,7 +2102,7 @@ export default function App() {
         rememberAssetRefs(current.file, content);
       }
       setTabs(prev => prev.map(t =>
-        t.id === tab.id && t.readError ? { ...t, content, readError: undefined } : t));
+        t.id === tab.id && t.readError ? { ...t, content, readError: undefined, representation: representationFor(t.file.name, false, t.representation.generation + 1) } : t));
       return true;
     } catch (err) {
       const current = tabsRef.current.find(t => t.id === tab.id);
@@ -2091,7 +2129,7 @@ export default function App() {
     } finally {
       retryingReadsRef.current.delete(tab.id);
     }
-  }, [readFileVersioned, rememberAssetRefs, removeTab, tell]);
+  }, [readFileVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState]);
   // handleFileClick is declared long before this, and reads it through a ref
   // (the rebuildGraphRef pattern) rather than growing a dependency.
   useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab]);
@@ -2121,17 +2159,30 @@ export default function App() {
    *  pane-explicit — two columns may hold tabs with the same name, and the id
    *  is what says which strip was clicked. */
   const selectTabInPane = useCallback(
-    (paneId: string, path: string) => setLayout(l => selectTabIn(l, paneId, path)), []);
+    (paneId: string, path: string) => {
+      const outgoing=paneById(layoutRef.current,paneId)?.activePath,tab=tabsRef.current.find(t=>t.file.path===outgoing),root=rootHandleRef.current;
+      const select=()=>{if(rootHandleRef.current===root&&paneById(layoutRef.current,paneId)?.activePath===outgoing)setLayout(l=>selectTabIn(l,paneId,path))};
+      const checkpoint=tab&&outgoing!==path&&getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.();
+      if(checkpoint)return checkpoint.catch(()=>{}).then(select);else select();
+    }, []);
   const focusPane = useCallback((path: string) => setLayout(l => focusTab(l, path)), []);
   /** A tab dropped on the editor body: it leaves its column and becomes one of
    *  its own at `at`. Refused past MAX_PANES by splitToPane itself. */
-  const splitTabToPane = useCallback(
-    (path: string, at: number) => setLayout(l => splitToPane(l, path, at)), []);
+  const splitTabToPane = useCallback((path: string, at: number) => {
+    const tab=tabsRef.current.find(t=>t.file.path===path),root=rootHandleRef.current;
+    const split=()=>{if(rootHandleRef.current===root&&tabsRef.current.some(t=>t.id===tab?.id))setLayout(l=>splitToPane(l,path,at))};
+    const checkpoint=tab&&getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.();
+    if(checkpoint)void checkpoint.catch(()=>{}).then(split);else split();
+  }, []);
   /** A tab dragged within its own strip (a reorder) or into another one.
    *  `toIndex` indexes the destination's tabs as they were DRAWN, which is
    *  where the drop indicator sat. */
-  const moveTab = useCallback((path: string, toPaneId: string, toIndex: number) =>
-    setLayout(l => moveTabToPane(l, path, toPaneId, toIndex)), []);
+  const moveTab = useCallback((path: string, toPaneId: string, toIndex: number) => {
+    const tab=tabsRef.current.find(t=>t.file.path===path),root=rootHandleRef.current;
+    const move=()=>{if(rootHandleRef.current===root&&tabsRef.current.some(t=>t.id===tab?.id))setLayout(l=>moveTabToPane(l,path,toPaneId,toIndex))};
+    const checkpoint=tab&&getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.();
+    if(checkpoint)void checkpoint.catch(()=>{}).then(move);else move();
+  }, []);
   /** How the editor divides its width between its columns; null evens them up.
    *  One update at the END of a divider drag, never per frame: the persist
    *  effect is keyed on `layout`, so a live commit would write the whole
@@ -2146,13 +2197,37 @@ export default function App() {
   const paneBack = useCallback((paneId: string) => setLayout(l => goBack(l, paneId)), []);
   const paneForward = useCallback((paneId: string) => setLayout(l => goForward(l, paneId)), []);
 
-  const toggleTabMode = useCallback((path: string | null) => {
+  const pendingPdfMode = useRef(new Set<string>());
+  const changeTabMode = useCallback((path: string | null, requestedMode?: EditorMode) => {
     if (!path) return;
+    const tab = tabsRef.current.find(t => t.file.path === path);
+    if (!tab || !canChangeTabMode(tab)) return;
+    const mode = requestedMode ?? (tab.mode === 'edit' ? 'read' : 'edit');
+    if (mode === tab.mode) return;
+    const view = getView(path);
+    if (tab.representation.loadedKind === 'pdf' && tab.mode === 'edit' && view?.hasPendingEdits?.() && view.flushPending) {
+      if (pendingPdfMode.current.has(tab.id)) return;
+      pendingPdfMode.current.add(tab.id);
+      void Promise.resolve(view.flushPending()).then(() => {
+        setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation && t.mode === tab.mode ? {...t,mode} : t));
+      }).catch(error => notifyRef.current(`Could not finish saving PDF annotations: ${String(error)}`)).finally(() => pendingPdfMode.current.delete(tab.id));
+      return;
+    }
+    const surface = getReadingSurface({vaultId:currentVaultIdRef.current ?? '',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation});
+    if (mode === 'edit' && surface?.capabilities().surface === 'pdf-text' && surface.showPdfOriginal) {
+      if (pendingPdfMode.current.has(tab.id)) return;
+      pendingPdfMode.current.add(tab.id);
+      void surface.showPdfOriginal().then(() => {
+        setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation && t.mode === tab.mode ? {...t,mode} : t));
+      }).finally(() => pendingPdfMode.current.delete(tab.id));
+      return;
+    }
     setTabs(prev => prev.map(t =>
-      t.file.path === path && !t.file.isHelp && !t.readError
-        ? { ...t, mode: t.mode === 'edit' ? 'read' : 'edit' }
+      t.file.path === path && canChangeTabMode(t)
+        ? { ...t, mode }
         : t));
   }, []);
+  const toggleTabMode = useCallback((path: string | null) => changeTabMode(path), [changeTabMode]);
 
   // Open a note by its name (used by [[wikilinks]], graph nodes, backlinks).
   //
@@ -2189,7 +2264,9 @@ export default function App() {
   const handleOpenSearchResult = useCallback(async (node: FileTreeFileNode, range: TextRange | null) => {
     const opened = await handleFileClick(node);
     // Non-text files opened externally (pdf/image): no view switch, no reveal.
-    if (!opened || !isTextFile(node.name)) return;
+    if (!opened) return;
+    if (isEpubFile(node.name) || isPdfFile(node.name)) { setMainView('editor'); return; }
+    if (!isTextFile(node.name)) return;
     setMainView('editor');
     // Drawings match by NAME only (their JSON isn't indexed), so there's no text
     // range to reveal — and a char offset would be meaningless on a canvas.
@@ -2231,6 +2308,7 @@ export default function App() {
       clearNotebookRenderData(tab.file.path);
     }
     // Every registered pane belongs to the vault being left.
+    flushReaderViewState(); flushPdfTextViewState();
     clearViews();
     // So does every open document's disk baseline and standoff (the flushes
     // above captured theirs synchronously).
@@ -2276,7 +2354,7 @@ export default function App() {
   // search reads the file from disk rather than matching an empty buffer.
   const getOpenTabContent = useCallback((path: string) => {
     const tab = tabsRef.current.find(t => t.file.path === path);
-    return tab && !tab.readError ? tab.content : null;
+    return tab && canReadTabText(tab) ? tab.content : null;
   }, []);
 
   /**
@@ -2384,7 +2462,7 @@ export default function App() {
     const linkHere = !!link?.file && findLinkedVault(link.vault, recentVaults)?.id === currentVaultId;
     if (!link?.file || !link.vault || linkHere) linkPendingRef.current = false;
     const linkedNode = link?.file && linkHere
-      ? vaultFiles.find(f => f.path === link.file && (isTextFile(f.name) || isPdfFile(f.name)))
+      ? vaultFiles.find(f => f.path === link.file && opensInApp(f.name))
       : undefined;
     // Spent with nothing to open for it, so nothing must keep it in the address
     // bar. A link still waiting for the vault it names keeps it: the writer only
@@ -2455,7 +2533,7 @@ export default function App() {
             // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
             // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
             // fill the buffer with garbage.
-            if (isPdfFile(path.slice(path.lastIndexOf('/') + 1))) {
+            if (isPdfFile(path) || isEpubFile(path)) {
               entry.content = '';
               break;
             }
@@ -2525,6 +2603,11 @@ export default function App() {
             if (entry.help || entry.dropped || (entry.content === undefined && entry.readError === undefined)) continue;
             try {
               const { handle, parentHandle } = await resolveVaultFile(root, entry.path);
+              if (classifyRequestedKind(entry.origin) !== classifyRequestedKind(handle.name)) {
+                if (isEpubFile(handle.name) || isPdfFile(handle.name)) { entry.content=''; entry.readError=undefined; readVersions.delete(entry); }
+                else try { const read=await readFileVersioned(handle); entry.content=read.text; entry.readError=undefined; readVersions.set(entry,read.version); }
+                catch(error){entry.content='';entry.readError=describeReadError(error);}
+              }
               live.set(entry, { name: handle.name, kind: 'file', path: entry.path, handle, parentHandle });
             } catch {
               // Gone (or a folder now) — left out, like a note deleted since the
@@ -2553,7 +2636,7 @@ export default function App() {
         for (const entry of pending.entries) {
           if (claimed.has(entry.path)) continue;
           if (entry.help) {
-            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path: entry.path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false });
+            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path: entry.path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false, representation: representationFor('Help Guide', true) });
           } else {
             const node = live.get(entry);
             if (!node) continue;
@@ -2564,8 +2647,8 @@ export default function App() {
               else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
             }
             restored.push(entry.readError !== undefined
-              ? { id, file: node, content: '', mode: 'read', dirty: false, readError: entry.readError }
-              : { id, file: node, content: entry.content!, mode: 'read', dirty: false });
+              ? { id, file: node, content: '', mode: 'read', dirty: false, readError: entry.readError, representation: representationFor(node.name, false, 0, true) }
+              : { id, file: node, content: entry.content!, mode: 'read', dirty: false, representation: representationFor(node.name) });
             if (entry.path !== entry.origin) relabel.set(entry.origin, entry.path);
           }
           claimed.add(entry.path);
@@ -2700,12 +2783,13 @@ export default function App() {
    */
   useEffect(() => {
     if (!fileTree.length) return;
-    const kinds = { pdf: false, drawing: false, notebook: false };
+    const kinds = { epub: false, pdf: false, drawing: false, notebook: false };
     for (const file of collectFiles(fileTree)) {
-      if (isPdfFile(file.name)) kinds.pdf = true;
+      if (isEpubFile(file.name)) kinds.epub = true;
+      else if (isPdfFile(file.name)) kinds.pdf = true;
       else if (isNotebookFile(file.name)) kinds.notebook = true;
       else if (isCanvasFile(file.name)) kinds.drawing = true;
-      if (kinds.pdf && kinds.drawing && kinds.notebook) break;
+      if (kinds.epub && kinds.pdf && kinds.drawing && kinds.notebook) break;
     }
     prefetchPanes(kinds);
   }, [fileTree]);
@@ -2766,6 +2850,7 @@ export default function App() {
       id: newTabId(),
       file: { name: 'Help Guide', isHelp: true, path },
       content: HELP_DOC_CONTENT,
+      representation: representationFor('Help Guide', true),
       mode: 'read',
       dirty: false,
     }]);
@@ -2774,6 +2859,7 @@ export default function App() {
   }, []);
 
   const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath = '') => {
+    if (isEpubFile(name) || isPdfFile(name)) { void tell({title:'Import an existing document',body:'EPUB and PDF documents must be imported as original binary files.',confirmLabel:'OK'}); return; }
     const where = parentPath || parentHandle?.name || 'this folder';
     try {
       // Nothing here overwrites a file by accident — the rule the rest of the
@@ -3370,7 +3456,8 @@ export default function App() {
   const retargetPaths = useCallback(async (
     fromPath: string, isFolder: boolean, newPath: string, sources: readonly string[], fromDisk = false,
   ): Promise<Array<{ from: string; to: string }>> => {
-    if (!rootHandle || newPath === fromPath) return [];
+    if (!rootHandle || rootHandleRef.current !== rootHandle || newPath === fromPath) return [];
+    const vaultIdAtMove = currentVaultIdRef.current ?? '';
     const prefix = `${fromPath}/`;
     /** Where a path under `fromPath` ends up. */
     const to = (path: string) => (isFolder ? newPath + path.slice(fromPath.length) : newPath);
@@ -3386,7 +3473,7 @@ export default function App() {
     // Every open document this move carries…
     const moving = tabsRef.current
       .filter(t => (isFolder ? t.file.path.startsWith(prefix) : t.file.path === fromPath))
-      .map(t => ({ from: t.file.path, to: to(t.file.path), dirty: t.dirty }));
+      .map(t => ({ from: t.file.path, to: to(t.file.path), dirty: t.dirty, doc: t }));
 
     // …and every open document it OVERWRITES. renameFile/moveFile deliberately
     // land on a taken name, and for a folder that is a MERGE: each file inside
@@ -3412,12 +3499,57 @@ export default function App() {
       if (open.has(dest)) releaseOverwritten(dest, source, fromDisk);
     }
 
-    for (const { from, to: dest, dirty } of moving) {
+    for (const { from, to: dest, doc } of moving) {
       try {
+        await getReadingSurface({vaultId:vaultIdAtMove,vaultEpoch:readerEpochRef.current.epoch,documentId:doc.id,byteGeneration:doc.representation.generation})?.captureReading?.().catch(()=>{});
+        if(rootHandleRef.current!==rootHandle)return [];
+        invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
         const { handle, parentHandle } = await resolveVaultFile(rootHandle, dest);
+        if (rootHandleRef.current !== rootHandle) return [];
+        const changedKind = classifyRequestedKind(handle.name) !== doc.representation.loadedKind;
+        let replacement: { content: string; readError?: string } | undefined;
+        if (changedKind) {
+          if (isEpubFile(handle.name) || isPdfFile(handle.name)) replacement = { content: '' };
+          else try { const read = await readFileVersioned(handle); replacement = { content: read.text }; setBaseline(doc.id, read.version); }
+          catch (error) { replacement = { content: '', readError: describeReadError(error) }; }
+        }
+        // Awaiting lookup, destination decoding or a conflict-copy write leaves the
+        // old editor live. Preserve its CURRENT revision, then repeat if a later
+        // edit arrived during that await. No await separates the final check from
+        // the synchronous tab/layout commit below.
+        let needsSave = false;
+        for (;;) {
+          if (rootHandleRef.current !== rootHandle) return [];
+          const live = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
+          if (!live) break;
+          needsSave = live.dirty || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from) || (contentOf(from) ?? live.content) !== doc.content;
+          if (!changedKind || !needsSave) break;
+          await getView(from)?.flushPending?.();
+          if (rootHandleRef.current !== rootHandle) return [];
+          if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) break;
+          const text = contentOf(from) ?? live.content;
+          let data: string | Uint8Array = text;
+          if (live.representation.loadedKind === 'pdf') {
+            const pdf = getPdfRenderData(from);
+            if (!pdf) throw Error('Pending PDF edits cannot be preserved yet. Keep this tab open and retry.');
+            data = await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdf.original, text, pdf.overlays);
+          } else if (!canReadTabText(live)) throw Error('Pending source edits cannot be preserved. Keep this tab open.');
+          const kept = await writeConflictCopy(from, data, rootHandle);
+          announce(`Your edits were kept as “${kept.slice(kept.lastIndexOf('/') + 1)}” before changing document kind.`);
+          if (rootHandleRef.current !== rootHandle) return [];
+          const latest = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
+          if (!latest) break;
+          if ((contentOf(from) ?? latest.content) === text && !getView(from)?.hasPendingEdits?.()) break;
+        }
+        if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
+        // A destination opened during retargeting must not share this path or
+        // lose its new edits. Closing preservation uses its own loaded kind.
+        if (tabsRef.current.some(t => t.file.path === dest)) releaseOverwritten(dest, from, true);
+        moveReaderViewState({vaultId:vaultIdAtMove,vaultEpoch:0,documentId:doc.id,byteGeneration:doc.representation.generation,path:from,diskRev:doc.diskRev??0},from,dest);
         clearSaveTimer(from);          // cancel any save pending against the OLD handle
         // An annotated PDF's parked original + overlays are keyed by path; re-key
         // them or the next save finds nothing and silently writes nothing.
+        if (changedKind) { clearPdfRenderData(from); assetRefsRef.current.delete(from); }
         movePdfRenderData(from, dest);
         // Same trap, same fix: an exporter left under the old path means Export
         // to PDF on the renamed notebook silently finds nothing.
@@ -3427,25 +3559,37 @@ export default function App() {
         // the pane's remount under the new one (paneKey includes the path).
         moveView(from, dest);
         moveAssetRefs(from, dest);
+        flushSync(() => {
         setTabs(prev => prev
           .filter(t => t.file.path !== dest)
-          .map(t => t.file.path === from
+          .map(t => t.id === doc.id && t.file.path === from
             // `handle.name` covers both: a renamed file takes its new name, and
             // a file carried along by its folder keeps the one it had.
-            ? { ...t, file: { ...t.file, name: handle.name, path: dest, handle, parentHandle } }
+            ? { ...t, file: { ...t.file, name: handle.name, path: dest, handle, parentHandle }, readerCapabilities: undefined,
+                representation: changedKind ? representationFor(handle.name,false,t.representation.generation+1,!!replacement?.readError) : {...t.representation,generation:t.representation.generation+1},
+                ...(replacement ? {...replacement,dirty:false,disk:undefined,mode:'read' as const} : {}), diskRev:(t.diskRev??0)+1 }
             : t));
         // The layout indexes documents by path too — a tab left pointing at
         // the old one would have no document to draw.
         setLayout(l => renamePath(l, from, dest));
+        });
+        latestContentRef.current.delete(from);
+        if (changedKind) {
+          editorStates.delete(`${doc.id}|${from}`);
+          clearPdfRenderData(from);
+          assetRefsRef.current.delete(from);
+          diskStateRef.current.delete(doc.id);
+        }
         // Buffered edits go to the NEW handle, never the old one. They are not
         // in the copy the rename made: that read the file from disk.
-        if (dirty) scheduleSave(dest);
+        if (needsSave && !changedKind) scheduleSave(dest);
       } catch (err) {
         console.error('Could not follow a document to its new path:', from, '→', dest, err);
+        notifyRef.current(`Could not finish following “${from}”. Your editor is still open: ${describeReadError(err)}`);
       }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -3485,13 +3629,22 @@ export default function App() {
   // Both tracked from the first FS call to the end of retargetTabs — see
   // vaultMovesRef for what the restore pass waits on and why.
   const handleRenameFile = useCallback((node: FileTreeNode, newName: string) => trackVaultMove(async () => {
+    if (node.kind === 'file' && classifyRequestedKind(node.name) !== classifyRequestedKind(newName)) {
+      const tab = tabsRef.current.find(t => t.file.path === node.path);
+      if (tab) {
+        await getView(node.path)?.flushPending?.();
+        const result = await flushTab(node.path);
+        await flushChainsRef.current.get(tab.id);
+        if (['failed','changed','deleted'].includes(result) || diskStateRef.current.has(tab.id)) return false;
+      }
+    }
     const success = await renameFile(node, newName);
     if (!success) return false;
     const newPath = joinVaultPath(parentVaultPath(node.path), newName);
     retargetExpanded(node, newPath);
     await retargetTabs(node, newPath);
     return true;
-  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove]);
+  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab]);
 
   // Wrap moveFile so a moved document's tab tracks its new path and handle —
   // including every document inside a moved FOLDER.
@@ -3539,16 +3692,17 @@ export default function App() {
   const reloadFromDisk = useCallback((tab: OpenTab, text: string, version: DiskVersion) => {
     const { id, file } = tab;
     const path = file.path;
+    if (isEpubFile(file.name) || isPdfFile(file.name)) invalidReaderTokens.current.add(`${id}|${tab.representation.generation}`);
     clearSaveTimer(path);
     setBaseline(id, version);
     diskStateRef.current.delete(id);
-    if (isCanvasFile(file.name) || isPdfFile(file.name)) {
+    if (isCanvasFile(file.name) || isPdfFile(file.name) || isEpubFile(file.name)) {
       // The parked original would otherwise be rebuilt over the new file by
       // the next annotation save.
       if (isPdfFile(file.name)) clearPdfRenderData(path);
       latestContentRef.current.set(path, text);
       setTabs(prev => prev.map(t => (t.id === id
-        ? { ...t, content: text, dirty: false, disk: undefined, diskRev: (t.diskRev ?? 0) + 1 }
+        ? { ...t, content: text, dirty: false, disk: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) }
         : t)));
       return;
     }
@@ -3702,10 +3856,11 @@ export default function App() {
         if (sameStat(stat, baseline)) { if (held) lift(id, path); continue; }
         let read: { text: string; version: DiskVersion };
         try {
-          read = isPdfFile(file.name)
-            ? { text: '', version: (await readBytesVersioned(handle)).version }
+          read = (isPdfFile(file.name) || isEpubFile(file.name))
+            ? { text: '', version: isEpubFile(file.name) ? await (async () => { const snap = await readFileSnapshot(handle); try { return await snap.fingerprint(); } finally { snap.dispose(); } })() : (await readBytesVersioned(handle)).version }
             : await readFileVersioned(handle);
         } catch (err) {
+          if (!hasUnsaved(now) && err instanceof Error && /binary data|valid UTF-8/.test(err.message)) { setTabs(prev => prev.map(t=>t.id===id?{...t,readError:err.message,representation:{...t.representation,status:'unavailable' as const,contentWritable:false}}:t)); continue; }
           console.warn('Could not read an open document that changed on disk; will retry:', path, err);
           retry.add(path);
           continue;
@@ -3753,7 +3908,7 @@ export default function App() {
             if (!dest) continue;
             try {
               const h = await resolveFileHandle(dest);
-              const v = h ? (await readBytesVersioned(h)).version : null;
+              const v = h ? await (async()=>{const snapshot=await readFileSnapshot(h);try{return await snapshot.fingerprint()}finally{snapshot.dispose()}})() : null;
               if (v && v.hash === getBaseline(tab.id)?.hash) pairs.set(tab.file.path, dest);
             } catch { /* unreadable: no proof, no move */ }
           }
@@ -3836,6 +3991,11 @@ export default function App() {
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || resolvingRef.current.has(tab.id)) return;
     const { id, file } = tab;
+    if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf') {
+      if (action === 'close') removeTab(path, false);
+      else if (action === 'retry' || action === 'reload') await retryUnreadTabRef.current(path);
+      return;
+    }
     const isPdf = isPdfFile(file.name);
     resolvingRef.current.add(id);
     const shortName = (p: string) => p.slice(p.lastIndexOf('/') + 1);
@@ -3943,18 +4103,20 @@ export default function App() {
   const addTabQuietly = useCallback(async (node: FileTreeNode, mode: EditorMode): Promise<boolean> => {
     if (node.kind !== 'file') return false;
     if (tabsRef.current.some(t => t.file.path === node.path)) return true;
+    const rootAtOpen = rootHandleRef.current;
     try {
       // As handleFileClick: a PDF's bytes are read by its pane, and decoding one
       // as UTF-8 would corrupt it.
-      const read = isPdfFile(node.name) ? null : await readFileVersioned(node.handle);
+      const read = (isPdfFile(node.name) || isEpubFile(node.name)) ? null : await readFileVersioned(node.handle);
+      if (rootHandleRef.current !== rootAtOpen) return false;
       const content = read?.text ?? '';
       rememberAssetRefs(node, content);
       // The disk baseline, as handleFileClick takes it.
       const id = newTabId();
-      if (read) setBaseline(id, read.version); else seedPdfBaseline(id, node.handle);
+      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
-        : [...prev, { id, file: node, content, mode, dirty: false }]);
+        : [...prev, { id, file: node, content, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]);
       return true;
     } catch (err) {
       console.error('Agent could not open a file:', err);
@@ -3998,6 +4160,7 @@ export default function App() {
   const agentDepsRef = useRef<AgentHostDeps | null>(null);
   useLayoutEffect(() => {
     agentDepsRef.current = {
+      vaultId: currentVaultId,
       root: rootHandle,
       fileTree,
       tabs,
@@ -4006,6 +4169,8 @@ export default function App() {
       stateCache: editorStates,
       readFile,
       readFileBytes,
+      readFileVersioned,
+      writeFileVersioned,
       writeFile,
       createFile,
       createFolder,
@@ -4021,8 +4186,7 @@ export default function App() {
       moveEntry: handleMoveFile,
       trashEntry: trashForAgent,
       addTabQuietly,
-      setTabMode: (path, mode) => setTabs(prev => prev.map(t =>
-        t.file.path === path && !t.file.isHelp && !t.readError ? { ...t, mode } : t)),
+      setTabMode: changeTabMode,
       showBeside: path => {
         // A canvas only exists while the editor is on screen; the graph view
         // unmounts every pane.
@@ -4044,6 +4208,56 @@ export default function App() {
   const agentVault = useMemo(
     () => (rootHandle ? { key: currentVaultId ?? rootHandle.name, name: rootHandle.name } : null),
     [rootHandle, currentVaultId]);
+
+  useEffect(() => {
+    const report = () => announce('Reading works, but this browser could not save reading preferences or position.');
+    window.addEventListener('reading-persistence-unavailable', report);
+    return () => window.removeEventListener('reading-persistence-unavailable', report);
+  }, [announce]);
+
+  const readerEpochRef = useRef({ root: rootHandle, epoch: 0 });
+  if (readerEpochRef.current.root !== rootHandle) readerEpochRef.current = { root: rootHandle, epoch: readerEpochRef.current.epoch + 1 };
+  const readerIdentityCache = useRef(new Map<string, ReaderIdentity>());
+  const readerDeps = useRef({ readFileSnapshot, notify, announce, closeTab, reopenClosedTab });
+  useLayoutEffect(() => { readerDeps.current = { readFileSnapshot, notify, announce, closeTab, reopenClosedTab }; });
+  const readerIntegration = useMemo<ReaderIntegration>(() => {
+    const current = (token: ReaderToken) => {
+      if (invalidReaderTokens.current.has(`${token.documentId}|${token.byteGeneration}`)) return undefined;
+      if (token.vaultId !== currentVaultIdRef.current || token.vaultEpoch !== readerEpochRef.current.epoch) return undefined;
+      return tabsRef.current.find(t => t.id === token.documentId && t.representation.generation === token.byteGeneration);
+    };
+    const identityForTab = (tab: OpenTab): ReaderIdentity => {
+      const key = `${currentVaultIdRef.current}|${readerEpochRef.current.epoch}|${tab.id}|${tab.file.path}|${tab.representation.generation}`;
+      let identity = readerIdentityCache.current.get(key);
+      if (!identity) { identity = { vaultId: currentVaultIdRef.current ?? '', vaultEpoch: readerEpochRef.current.epoch, documentId: tab.id, byteGeneration: tab.representation.generation, path: tab.file.path, diskRev: tab.diskRev ?? 0, rawVersion: getBaseline(tab.id) }; readerIdentityCache.current.set(key, identity); }
+      return identity;
+    };
+    return { identityForTab,
+      async acquireSnapshot(identity, signal) { const tab = current(identity); if (!tab?.file.handle || tab.file.path !== identity.path) throw new DOMException('Reader changed', 'AbortError'); return readerDeps.current.readFileSnapshot(tab.file.handle as FileSystemFileHandle, signal); },
+      onReaderVersion(token, version) { const tab = current(token); if (tab) setBaseline(tab.id, version); },
+      onReaderStatus(token, status) { if(!current(token))return; setTabs(prev=>{
+        if(!current(token))return prev;
+        const tab=prev.find(t=>t.id===token.documentId&&t.representation.generation===token.byteGeneration);
+        return !tab||JSON.stringify(tab.readerStatus)===JSON.stringify(status)?prev:prev.map(t=>t===tab?{...t,readerStatus:status}:t);
+      }); },
+      onReaderCapabilities(token, caps) { if(!current(token))return; setTabs(prev=>{
+        if(!current(token))return prev;
+        const tab=prev.find(t=>t.id===token.documentId&&t.representation.generation===token.byteGeneration);
+        return !tab||JSON.stringify(tab.readerCapabilities)===JSON.stringify(caps)?prev:prev.map(t=>t===tab?{...t,readerCapabilities:caps}:t);
+      }); },
+      onReaderLocation(token, location) { const tab = current(token); if (!tab) return; const identity = identityForTab(tab); if (location.kind === 'epub') writeReaderViewState(identity, location.value); else writePdfTextViewState(identity, location.value); },
+      onReaderCommand(token, command) { const tab = current(token); if (!tab || tab.file.path !== activeTabPathRef.current) return;
+        if (['close-document','reopen-document','next-document','previous-document'].includes(command) && runReaderHostCommand(command)) return;
+        if (command === 'close-document') readerDeps.current.closeTab(tab.file.path);
+        else if (command === 'read-only-mode') readerDeps.current.announce('EPUB books are read-only. Reading appearance changes only this browser.');
+        else if (command === 'find') getReadingSurface(token)?.findReading?.();
+        else if (command === 'dismiss') closeContextMenu();
+        else if (command === 'reopen-document') void readerDeps.current.reopenClosedTab();
+        else if (command === 'next-document' || command === 'previous-document') { const paths=layoutRef.current.panes.flatMap(p=>p.paths);if(!paths.length)return;const index=paths.indexOf(tab.file.path);setLayout(l=>focusTab(l,paths[(index+(command==='next-document'?1:paths.length-1))%paths.length])); }
+      },
+      onNotify(message) { readerDeps.current.notify(message); },
+    };
+  }, []);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -4300,6 +4514,7 @@ export default function App() {
           />
         ) : (
           <EditorPane
+            reading={readerIntegration}
             tabs={tabs}
             layout={layout}
             theme={theme}

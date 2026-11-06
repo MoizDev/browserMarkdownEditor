@@ -405,8 +405,8 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                             key={entry.id}
                             ref={el => { itemsRef.current[index] = el; }}
                             className={`context-menu-item${entry.danger ? ' is-danger' : ''}`}
-                            role={hasChecks ? 'menuitemradio' : 'menuitem'}
-                            aria-checked={hasChecks ? !!entry.checked : undefined}
+                            role={entry.checked !== undefined ? 'menuitemradio' : 'menuitem'}
+                            aria-checked={entry.checked !== undefined ? entry.checked : undefined}
                             disabled={entry.disabled}
                             // Required when disabled: a dead row that says
                             // nothing is indistinguishable from a broken one.

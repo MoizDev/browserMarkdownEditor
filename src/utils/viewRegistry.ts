@@ -12,7 +12,7 @@
 
 import type { CanvasOp } from '../../shared/vaultAgentProtocol';
 
-export type ViewKind = 'markdown' | 'pdf' | 'pdf-annotate' | 'drawing' | 'notebook';
+export type ViewKind = 'epub' | 'markdown' | 'pdf' | 'pdf-annotate' | 'drawing' | 'notebook';
 
 /** 1-based line and column (column counts UTF-16 units, like CodeMirror). */
 export interface LineCol {
@@ -46,6 +46,9 @@ export interface MarkdownViewInfo {
 
 export interface PdfViewInfo {
     kind: 'pdf' | 'pdf-annotate';
+    surface: 'original' | 'text' | 'annotation';
+    textAnchor?: import('../types/reading').PdfTextAnchor;
+    visibleCanonicalText?: string;
     pageCount: number;
     /** 1-based page under the top edge of the view. */
     page: number;
@@ -97,7 +100,13 @@ export interface NotebookViewInfo {
     shapesTotal: number;
 }
 
-export type ViewInfo = MarkdownViewInfo | PdfViewInfo | DrawingViewInfo | NotebookViewInfo;
+export interface EpubViewInfo {
+    kind:'epub'; status:import('../types/reading').ReaderStatus['phase']; title?:string; author?:string;
+    locator?:import('../types/reading').EpubLocator; flow?:import('../types/reading').ReaderFlow;
+    capabilities?:import('../types/reading').ReaderCapabilities;
+    visibleCanonicalText:string; selectedCanonicalText:string|null;
+}
+export type ViewInfo = EpubViewInfo | MarkdownViewInfo | PdfViewInfo | DrawingViewInfo | NotebookViewInfo;
 
 /** One shape as the agent sees it. On notebooks and PDF annotation layers `x`/`y`
  *  are page-relative (from `page`'s top-left, in page units); on drawings they

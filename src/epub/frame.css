@@ -1,0 +1,26 @@
+/* Shared asset is embedded in the opaque bootstrap. All publisher rules are scoped
+   below data-section; reader chrome and notices cannot be selected by book CSS. */
+html:has(>body>#surface),body:has(>#surface){margin:0;width:100%;height:100%;overflow:hidden;color-scheme:light dark}
+#surface{--reader-size:18px;--reader-leading:1.6;--reader-measure:65ch;--reader-margin:24px;width:100%;height:100%;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;font:var(--reader-size)/var(--reader-leading) Georgia,'Times New Roman',serif;background:#202124;color:#e8e6e0;padding:var(--reader-margin);outline:none;overflow-anchor:none}
+#surface[data-theme=light]{color-scheme:light;background:#fff;color:#242424}
+#surface[data-theme=sepia]{color-scheme:light;background:#f7f0df;color:#393021}
+#surface[data-theme=dark]{color-scheme:dark;background:#202124;color:#e8e6e0}
+#surface[data-family=sans]{font-family:system-ui,sans-serif}
+#surface .chapter{position:relative;max-width:var(--reader-measure);margin:0 auto 2.5em;isolation:isolate;overflow-wrap:anywhere}
+:where(#surface .chapter .pub-body){position:relative}
+#surface:not(.fixed-view) .chapter:not(.fixed) :where(img,svg){max-width:100%;height:auto}
+:where(#surface .chapter a[role=link]){color:#81aaff;text-decoration:underline;cursor:pointer}
+:where(#surface[data-theme=light] .chapter a[role=link],#surface[data-theme=sepia] .chapter a[role=link]){color:#285cba}
+#surface :focus-visible{outline:2px solid #718dff;outline-offset:3px}
+#surface.pages{column-width:var(--reader-column);column-gap:calc(2 * var(--reader-margin));column-fill:auto;overflow:hidden;scrollbar-gutter:auto}
+#surface.pages .chapter{break-before:column;max-width:100%;margin:0}
+#surface.fixed-view{padding:0;display:flex;align-items:flex-start;justify-content:safe center;gap:0;overflow:auto}
+#surface .chapter.fixed{flex:none;max-width:none;margin:0;overflow:hidden;contain:layout paint;isolation:isolate;overflow-wrap:normal;background:white;color:black}
+:where(#surface .chapter.fixed .pub-html,#surface .chapter.fixed .pub-body){width:100%;height:100%;margin:0}
+#surface .chapter.fixed img{max-width:none}
+#surface [hidden]{display:none!important}
+#notice{position:fixed;bottom:8px;inset-inline:12px;z-index:2147483647;pointer-events:none;font:12px/1.4 system-ui;background:#292b30ed;color:#eee;border-radius:6px;padding:6px 10px;max-height:3.5em;overflow:hidden}
+#notice:empty{display:none}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+/* Keep selected publisher text readable over both light pages and dark prose. */
+#surface ::selection{background:#b6d3ff;color:#142237;text-shadow:none}

@@ -2,7 +2,7 @@ import { EditorView, Decoration, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
-import { EditorSelection, Prec, RangeSet, RangeValue } from '@codemirror/state';
+import { EditorSelection, Facet, Prec, RangeSet, RangeValue } from '@codemirror/state';
 import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
@@ -15,11 +15,14 @@ import { ImageWidget, imageEmbedActions, imageEmbedKeymap } from './imageWidget'
 import type { ImageContext, ImageEmbedActions } from './imageWidget';
 import { embedPattern } from '../utils/assets';
 import { TableWidget } from './tableWidget';
+import { tableReadingSelection } from './tableReadingSelection';
 import { blankRowText, cellAt, delimiterCellText, findTables, parseTableLayout, rowColumnCount, tableLayoutAt } from './tableModel';
 import { focusTableCell, tableDomAt } from './tableEdit';
 import { MermaidWidget } from './mermaidWidget';
 import { HIDE } from './hiddenMarker';
 import { canWrite } from './readingMode';
+import { readingEmphasisFacet } from './readingEmphasisConfig';
+import type { EmphasisRun, SourceFragment, Utf16Range } from '../utils/readingEmphasis';
 
 /* ── Shared decoration values ──
    A Decoration is positionless and immutable — .range() produces the positioned
@@ -39,6 +42,7 @@ const LINK_MARK = Decoration.mark({ class: 'cm-live-link' });
 const HIGHLIGHT = Decoration.mark({ class: 'cm-live-highlight' });
 const LATEX_DELIM = Decoration.mark({ class: 'cm-latex-delim' });
 const BLOCKQUOTE_LINE = Decoration.line({ class: 'cm-live-blockquote' });
+const HTML_VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
 const HR_REPLACE = Decoration.replace({ widget: new HorizontalRuleWidget() });
 /** Indexed by heading level 1-6 (index 0 unused). */
 const HEADING_LINE = [null, 1, 2, 3, 4, 5, 6].map(l =>
@@ -303,6 +307,7 @@ interface LivePreview {
     imageSelected: boolean;
     tables: readonly { from: number; to: number }[];
     tableSelected: boolean;
+    prose: ReadingProjection;
 }
 
 /**
@@ -336,6 +341,10 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     const { state } = view;
     const decorations: Range<Decoration>[] = [];
     const atoms: Range<AtomicRange>[] = [];
+    const blocks: Utf16Range[] = [];
+    const strong: Utf16Range[] = [];
+    const html: Utf16Range[] = [];
+    const htmlOpen: { name: string; from: number; blockFrom: number; blockTo: number }[] = [];
 
     // Math is located BEFORE the markdown pass so formula innards can be
     // exempted from markdown styling — "[x](y)" inside an equation is LaTeX,
@@ -367,6 +376,34 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
             // Binary-searched, since this runs for every node of the tree —
             // see mathSkipsRange, which headingFold shares.
             if (mathSkipsRange(analysis, from, to)) return false;
+
+            // Eligibility travels with the existing syntax/decorations pass.
+            // Paragraphs exclude headings, code blocks and HTML blocks by shape.
+            if (name === 'Paragraph') blocks.push({ from, to });
+            if (name === 'StrongEmphasis') strong.push({ from, to });
+            if (name === 'HTMLBlock' || name === 'Comment' || name === 'Image') html.push({ from, to });
+            if (name === 'HTMLTag') {
+                html.push({ from, to });
+                // Raw HTML is not prose, including a paired tag's contents.
+                // Use the tags already found by Lezer, never a second document
+                // regex (and never turn their attributes into rendered DOM).
+                const tagText = doc.slice(from, to), tag = /^<\s*(\/?)\s*([a-z][a-z0-9:-]*)/i.exec(tagText);
+                let block = node.node.parent;
+                while (block && block.name !== 'Paragraph') block = block.parent;
+                if (tag && block) {
+                    const tagName = tag[2].toLowerCase();
+                    if (tag[1]) {
+                        for (let i = htmlOpen.length - 1; i >= 0; i--) {
+                            const open = htmlOpen[i];
+                            if (open.name === tagName && open.blockFrom === block.from) {
+                                html.push({ from: open.from, to }); htmlOpen.splice(i, 1); break;
+                            }
+                        }
+                    } else if (!/\/\s*>$/.test(tagText) && !HTML_VOID.has(tagName)) {
+                        htmlOpen.push({ name: tagName, from, blockFrom: block.from, blockTo: block.to });
+                    }
+                }
+            }
 
             // === HEADINGS ===
             // ATXHeading1 through ATXHeading6
@@ -969,13 +1006,15 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         tableSelected ||= selected;
         decorations.push(
             Decoration.replace({
-                widget: new TableWidget(doc.slice(span.from, span.to), editable, selected),
+                widget: new TableWidget(doc.slice(span.from, span.to), editable, selected,
+                    state.facet(readingEmphasisFacet)),
             }).range(span.from, span.to)
         );
         atoms.push(ATOMIC.range(span.from, span.to));
         tables.push(span);
     }
 
+    for (const open of htmlOpen) html.push({ from: open.from, to: open.blockTo });
     return {
         deco: Decoration.set(decorations, true),
         // SORTED: images and tables are each a left-to-right pass, but tables
@@ -987,7 +1026,109 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         imageSelected,
         tables,
         tableSelected,
+        prose: {
+            doc, blocks,
+            hidden: mergeProjectionRanges(decorations.filter(r => r.value === HIDE).map(r => ({ from: r.from, to: r.to }))),
+            barriers: mergeProjectionRanges([...codeRanges, ...mathRegions, ...html,
+                ...decorations.filter(r => r.from < r.to && r.value.spec.widget && r.value !== HIDE)
+                    .map(r => ({ from: r.from, to: r.to }))]),
+            strong: mergeProjectionRanges(strong),
+        },
     };
+}
+
+interface ReadingProjection {
+    doc: string;
+    blocks: readonly Utf16Range[];
+    hidden: readonly Utf16Range[];
+    barriers: readonly Utf16Range[];
+    strong: readonly Utf16Range[];
+}
+const readingProjection = Facet.define<ReadingProjection, ReadingProjection | null>({
+    combine: values => values[values.length - 1] ?? null,
+});
+function mergeProjectionRanges(input: readonly Utf16Range[]): Utf16Range[] {
+    const sorted = [...input].sort((a, b) => a.from - b.from || a.to - b.to);
+    const out: Utf16Range[] = [];
+    for (const range of sorted) {
+        const last = out[out.length - 1];
+        if (last && range.from <= last.to) last.to = Math.max(last.to, range.to);
+        else out.push({ from: range.from, to: range.to });
+    }
+    return out;
+}
+function firstProjectionRange(ranges: readonly Utf16Range[], from: number): number {
+    let lo = 0, hi = ranges.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (ranges[mid].to <= from) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+export interface ReadingProseRun { run: EmphasisRun; fragments: readonly SourceFragment[] }
+
+/** Visible source window -> real rendered prose. No second document scan.
+ * Hidden formatting is deleted from the projection, objects are hard run
+ * boundaries, and authored strong ranges remain whole-word exclusions. */
+export function readingProseRuns(state: EditorState, from: number, to: number): readonly ReadingProseRun[] {
+    const meta = state.facet(readingProjection);
+    if (!meta || from >= to) return [];
+    const frontier = Math.min(syntaxTree(state).length, state.doc.length);
+    // The adapter requests <=8K windows. Extend to real whitespace (up to
+    // 4K each way), dropping an oversized edge token rather than prefixing a
+    // clipped word/URL. No cached chunk retains more than 16K source units.
+    from = Math.max(0, Math.min(from, frontier));
+    to = Math.min(frontier, to, from + 8192);
+    const startLimit = Math.max(0, from - 4096), endLimit = Math.min(frontier, to + 4096);
+    while (from > startLimit && !/\s/u.test(meta.doc[from - 1])) from--;
+    if (from === startLimit && from > 0 && !/\s/u.test(meta.doc[from - 1])) {
+        while (from < to && !/\s/u.test(meta.doc[from])) from++;
+    }
+    while (to < endLimit && !/\s/u.test(meta.doc[to])) to++;
+    if (to === endLimit && to < frontier && !/\s/u.test(meta.doc[to])) {
+        while (to > from && !/\s/u.test(meta.doc[to - 1])) to--;
+    }
+    const result: ReadingProseRun[] = [];
+    for (let b = firstProjectionRange(meta.blocks, from); b < meta.blocks.length && meta.blocks[b].from < to; b++) {
+        const block = meta.blocks[b];
+        // Do not style a paragraph whose final word is still beyond the parser.
+        const end = Math.min(block.to, to);
+        let cursor = Math.max(block.from, from);
+        const barriers = meta.barriers;
+        const project = (a: number, z: number): void => {
+            if (a >= z) return;
+            const fragments: SourceFragment[] = [];
+            let text = '', p = a;
+            for (let i = firstProjectionRange(meta.hidden, a); i < meta.hidden.length && meta.hidden[i].from < z; i++) {
+                const h = meta.hidden[i], until = Math.min(h.from, z);
+                if (p < until) {
+                    fragments.push({ runFrom: text.length, runTo: text.length + until - p, sourceFrom: p, sourceTo: until });
+                    text += meta.doc.slice(p, until);
+                }
+                p = Math.max(p, h.to);
+            }
+            if (p < z) {
+                fragments.push({ runFrom: text.length, runTo: text.length + z - p, sourceFrom: p, sourceTo: z });
+                text += meta.doc.slice(p, z);
+            }
+            const exclusions: Utf16Range[] = [];
+            for (let i = firstProjectionRange(meta.strong, a); i < meta.strong.length && meta.strong[i].from < z; i++) {
+                const strong = meta.strong[i];
+                for (const f of fragments) {
+                    const x = Math.max(f.sourceFrom, strong.from), y = Math.min(f.sourceTo, strong.to);
+                    if (x < y) exclusions.push({ from: f.runFrom + x - f.sourceFrom, to: f.runFrom + y - f.sourceFrom });
+                }
+            }
+            if (text) result.push({ run: { text, exclusions }, fragments });
+        };
+        for (let i = firstProjectionRange(barriers, cursor); i < barriers.length && barriers[i].from < end; i++) {
+            project(cursor, Math.min(end, barriers[i].from));
+            cursor = Math.max(cursor, barriers[i].to);
+        }
+        project(cursor, end);
+    }
+    return result;
 }
 
 /**
@@ -1029,10 +1170,33 @@ export function createLivePreviewPlugin(
                 const viewShim = { state: tr.state };
                 return buildDecorations(viewShim, imageCtx, editorMode);
             }
+            if (tr.state.facet(readingEmphasisFacet) !== tr.startState.facet(readingEmphasisFacet)) {
+                // Preference-only changes reuse the document projection and all
+                // image/math/link decorations. Only table widgets consume this
+                // option in their identity; rewalking a book here defeats the
+                // visible-window emphasis adapter even though its cache hits.
+                if (!decorations.tables.length) return decorations;
+                let deco = decorations.deco;
+                for (const span of decorations.tables) {
+                    let table: TableWidget | undefined;
+                    deco.between(span.from, span.to, (from, to, value) => {
+                        if (from === span.from && to === span.to && value.spec.widget instanceof TableWidget) table = value.spec.widget;
+                    });
+                    if (!table) continue;
+                    const next = Decoration.replace({ widget: new TableWidget(table.rawTable, table.canEdit,
+                        table.selected, tr.state.facet(readingEmphasisFacet)) }).range(span.from, span.to);
+                    deco = deco.update({ filterFrom: span.from, filterTo: span.to,
+                        filter: (from, to, value) => !(from === span.from && to === span.to && value.spec.widget instanceof TableWidget),
+                        add: [next],
+                    });
+                }
+                return { ...decorations, deco };
+            }
             return decorations;
         },
         provide(field: StateField<LivePreview>) {
             return [
+                readingProjection.from(field, value => value.prose),
                 EditorView.decorations.from(field, value => value.deco),
                 // Makes each rendered image one indivisible step for the cursor:
                 // arrow keys move over it rather than into it, a drag-selection
@@ -1058,6 +1222,7 @@ export function createLivePreviewPlugin(
 
     return [
         field,
+        tableReadingSelection,
         imageEmbedActions.of(actions),
         imageEmbedKeymap,
         tableEntryKeymap(field),

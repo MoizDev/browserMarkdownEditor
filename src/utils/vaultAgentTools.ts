@@ -41,7 +41,7 @@ import { AGENT_IMAGE_MAX_SIDE, blobBytes, imageMimeFor, prepareImageForAgent, sh
 import { formatShape, summarizeCanvasFile, type FileShape } from './canvasFileSummary';
 import { createVaultTextCache, isTextFile } from './vaultSearch';
 import { collectFiles } from './tree';
-import { isCanvasFile, isImageFile, isNotebookFile, isPdfFile } from './fileTypes';
+import { isEpubFile, isCanvasFile, isImageFile, isNotebookFile, isPdfFile } from './fileTypes';
 import { ASSETS_DIR, TRASH_DIR } from './assets';
 import { isGitName } from './vaultEntries';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from './entryStyle';
@@ -576,6 +576,11 @@ async function vaultRead(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.path(a.path);
     await requireFile(ctx, path);
     const name = baseName(path);
+    if (isEpubFile(name)) {
+        const view=getView(path), info=view?await describe(view):undefined;
+        if(info?.kind!=='epub') throw new ToolError('This EPUB is not loaded. Open the book to provide bounded visible canonical text; unopened chapter extraction is unavailable.');
+        return ok(`EPUB · read-only · ${info.status}\n${info.locator?JSON.stringify(info.locator):'Location not available'}\nSelected canonical text:\n${info.selectedCanonicalText??'(none)'}\nVisible canonical text (bounded, not the whole book):\n${info.visibleCanonicalText}`);
+    }
     if (isPdfFile(name)) return readPdf(a, ctx, path);
     if (isCanvasFile(name)) {
         const { head, lines } = await canvasShapesFromAnywhere(ctx, path, undefined);
@@ -601,10 +606,15 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const page = typeof a.page === 'number' ? a.page : undefined;
     const max = AGENT_IMAGE_MAX_SIDE;
 
+    if (isEpubFile(name)) throw new ToolError('EPUB image capture is unavailable. vault_read can provide bounded visible canonical text from an open book.');
     if (isImageFile(name)) return readImage(ctx, path, 'view');
 
     if (isPdfFile(name)) {
         const view = openPdfView(path);
+        if (view) {
+            const info = await describe(view);
+            if (info.kind === 'pdf' && info.surface === 'text') throw new ToolError('PDF Text image capture is unavailable. Use vault_read for canonical text or switch to Original to view page images.');
+        }
         if (view?.renderPage) {
             const info = await describe(view);
             const count = 'pageCount' in info ? info.pageCount : 0;
@@ -733,7 +743,7 @@ async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
 
     const where = scope ? ` in "${scope}"` : '';
     if (!out.length) {
-        return ok(`No matches for ${JSON.stringify(query)}${where}. (Searched ${textFiles.length} text files and every file name; PDF text, drawings and notebooks are not searched — read those with vault_read.)`);
+        return ok(`No matches for ${JSON.stringify(query)}${where}. (Searched ${textFiles.length} text files and every file name; EPUB/PDF text, drawings and notebooks are not searched — read those with vault_read.)`);
     }
     const summary = `${count} match${count === 1 ? '' : 'es'} in ${fileCount} file${fileCount === 1 ? '' : 's'} for ${JSON.stringify(query)}${where} (format: path:line: text)`;
     if (stopped) out.push(`…[stopped at maxResults=${maxResults}; narrow the query, pass path to search one folder, or raise maxResults (≤ 500)]`);

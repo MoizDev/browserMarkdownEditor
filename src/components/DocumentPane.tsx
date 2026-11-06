@@ -1,4 +1,12 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { captureReadingSelection, queueTableReadingSelection } from '../editor/tableReadingSelection';
+import { readingEmphasis,readingEmphasisCompartment,readingEmphasisOptions,deferReadingConfiguration,cancelReadingConfiguration } from '../editor/readingEmphasis';
+import { captureWordReadingAnchor,restoreWordReadingAnchor,cancelWordReadingAnchor } from '../editor/scrollAnchor';
+import { getReadingPreferences,subscribeReadingPreferences,setWordEmphasis } from '../utils/readingPreferences';
+import { canReadTabText,readingCapabilities,getReadingSurface,subscribeReadingSurface } from '../utils/documentReading';
+import type { ReaderIntegration } from '../types/reading';
+import EpubReaderHost from './EpubReaderHost';
+import WordEmphasisToggle from './WordEmphasisToggle';
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { Compartment, EditorState } from '@codemirror/state';
 import type { ChangeDesc } from '@codemirror/state';
@@ -48,7 +56,7 @@ import TexView from './TexView';
 import { bracketColourCompartment, codeExtensions, codeLanguageFor, loadCodeLanguage, type CodeLanguage } from '../editor/codeEditor';
 import { rainbowBrackets as rainbowBracketsExtension } from '../editor/rainbowBrackets';
 import { codeDarkTheme, codeLightTheme } from '../editor/codeHighlight';
-import { isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, isTexFile, noteDisplayName } from '../utils/fileTypes';
+import { isCodeFile, isDrawingFile, isNotebookFile, isTexFile, noteDisplayName } from '../utils/fileTypes';
 import { ArrowLeft, ArrowRight, Edit2, Eye, MoreHorizontal, PenTool } from './icons';
 import DiskBar from './DiskBar';
 import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
@@ -486,6 +494,7 @@ export interface PaneImageDelete extends ImageDeleteRequest {
 }
 
 interface DocumentPaneProps {
+    reading: ReaderIntegration;
     tab: OpenTab;
     /** What this pane's EditorState is cached under — the same string React
      *  keys the pane by, so a pane and its state are one thing. It is NOT the
@@ -632,6 +641,7 @@ function DocumentPane({
     onConfirm,
     revealRequest,
     onRevealHandled,
+    reading,
 }: DocumentPaneProps) {
     const { getAssetUrl, saveAsset } = useFileSystem();
 
@@ -640,8 +650,9 @@ function DocumentPane({
     const mode = tab.mode;
     const isDrawing = !file.isHelp && isDrawingFile(file.name);
     const isNotebook = !file.isHelp && isNotebookFile(file.name);
-    const isPdf = !file.isHelp && isPdfFile(file.name);
-    const isCanvas = isDrawing || isNotebook || isPdf;
+    const isPdf = !file.isHelp && tab.representation.loadedKind === 'pdf';
+    const isEpub = !file.isHelp && tab.representation.loadedKind === 'epub';
+    const isCanvas = isDrawing || isNotebook || isPdf || isEpub;
     /** A LaTeX source file. Reading mode typesets it (components/TexView.tsx)
      *  instead of building a CodeMirror view, so the two modes are "the document"
      *  and "the source" rather than markdown's two readings of one text. */
@@ -653,7 +664,11 @@ function DocumentPane({
     /** Restored without its text (OpenTab.readError): this pane shows only
      *  that, and builds no view, drawing or notebook — each would take the
      *  empty buffer for the document and save it over the file. */
-    const unreadable = !!tab.readError;
+    const unreadable = !!tab.readError || (!isCanvas && !canReadTabText(tab));
+    const preferences = useSyncExternalStore(subscribeReadingPreferences,getReadingPreferences);
+    const readerIdentity = reading.identityForTab(tab);
+    const controller = useSyncExternalStore(useCallback(listener => subscribeReadingSurface(tab.id, listener), [tab.id]), useCallback(() => getReadingSurface(readerIdentity), [readerIdentity]));
+    const capability = readingCapabilities(tab, controller?.capabilities() ?? tab.readerCapabilities).emphasis;
     /** Showing the typeset LaTeX rather than a CodeMirror view: no view is built
      *  at all in this mode, which is why everything below reads `viewRef` when
      *  called instead of assuming one. */
@@ -704,6 +719,21 @@ function DocumentPane({
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [isCanvas]);
+
+    // The PDF floats outside this slot. Header/tab focus still belongs to its
+    // Text surface; Original intentionally retains the browser's native find.
+    useEffect(() => {
+        if (!isPdf && !isEpub) return;
+        const key = (event: KeyboardEvent) => {
+            if (!isFocusedRef.current || event.defaultPrevented || event.isComposing || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'f') return;
+            const target = event.target;
+            if (!(target instanceof Element) || target.closest('input, textarea, select, [contenteditable="true"], [role="menu"], [role="dialog"], [data-agent-panel], [data-terminal]') || document.querySelector('[aria-modal="true"]')) return;
+            if ((!isEpub && controller?.capabilities().surface !== 'pdf-text') || !controller?.findReading) return;
+            event.preventDefault(); controller.findReading();
+        };
+        window.addEventListener('keydown', key);
+        return () => window.removeEventListener('keydown', key);
+    }, [isPdf, isEpub, controller]);
 
     // What a tab-bar click hands the keyboard to: the note's SCROLLER, in both
     // modes. Not the text — Reading mode's cannot be focused at all, and Edit
@@ -900,6 +930,7 @@ function DocumentPane({
             noteSearchKeymap,
             keyboardAfterSearchClose,
             readOnlyCompartment.of(modeExtensions(mode)),
+            ...(!isCode && !isTex ? [readingEmphasis, readingEmphasisCompartment.of(readingEmphasisOptions({enabled: getReadingPreferences().emphasis.enabled, mode, locale: ''}))] : []),
             ...(isCode ? [] : [
                 tabIntoText,
                 wikiLinkAutocomplete(() => getTargetsRef.current()),
@@ -1046,6 +1077,8 @@ function DocumentPane({
             if (codeLanguage) void loadCodeLanguage(view, codeLanguage);
 
             if (cached) {
+                const restoreSelection = captureReadingSelection(view);
+                if (restoreSelection) queueTableReadingSelection(view, restoreSelection);
                 const wasReadOnly = view.state.readOnly;
                 view.dispatch({
                     effects: [
@@ -1053,6 +1086,7 @@ function DocumentPane({
                         readOnlyCompartment.reconfigure(modeExtensions(mode)),
                         livePreviewCompartment.reconfigure(livePreviewFor(mode)),
                         indentCompartment.reconfigure(indentSettings(tabSize)),
+                        ...(!isCode && !isTex ? [readingEmphasisCompartment.reconfigure(readingEmphasisOptions({enabled: preferences.emphasis.enabled, mode, locale: ''}))] : []),
                         // A leftover search flash from the last time this document
                         // was on screen.
                         setRevealHighlight.of(null),
@@ -1088,6 +1122,7 @@ function DocumentPane({
     useEffect(() => () => {
         const view = viewRef.current;
         if (view) {
+            cancelReadingConfiguration(view); cancelWordReadingAnchor(view);
             stateCache.set(stateKey, view.state);
             view.destroy();
             viewRef.current = null;
@@ -1137,20 +1172,30 @@ function DocumentPane({
         viewRef.current?.dispatch({ effects: indentCompartment.reconfigure(indentSettings(tabSize)) });
     }, [tabSize]);
 
+    const readingConfigRevision = useRef(0);
     useEffect(() => {
         if (!settled.current) return;
         const view = viewRef.current;
         if (!view) return;
-        const wasReadOnly = view.state.readOnly;
-        view.dispatch({
-            effects: [
-                readOnlyCompartment.reconfigure(modeExtensions(mode)),
-                livePreviewCompartment.reconfigure(livePreviewFor(mode)),
-            ],
+        const revision = ++readingConfigRevision.current;
+        deferReadingConfiguration(view, () => {
+            void captureWordReadingAnchor(view).then(anchor => {
+                if (viewRef.current !== view || revision !== readingConfigRevision.current) return;
+                const restoreSelection = captureReadingSelection(view);
+                if (restoreSelection) queueTableReadingSelection(view, restoreSelection);
+                const wasReadOnly = view.state.readOnly;
+                const modeChanged = wasReadOnly !== (mode === 'read');
+                view.dispatch({ effects: [
+                    ...(modeChanged ? [readOnlyCompartment.reconfigure(modeExtensions(mode)),livePreviewCompartment.reconfigure(livePreviewFor(mode))] : []),
+                    ...(!isCode && !isTex ? [readingEmphasisCompartment.reconfigure(readingEmphasisOptions({enabled: preferences.emphasis.enabled, mode, locale: ''}))] : []),
+                ] });
+                rebuildSearchPanelForMode(view, wasReadOnly);
+                if (anchor) restoreWordReadingAnchor(view, anchor);
+                restoreSelection?.();
+            });
         });
-        // An open search panel gains or loses its Replace row with the mode.
-        rebuildSearchPanelForMode(view, wasReadOnly);
-    }, [mode, livePreviewFor]);
+        return () => { if (readingConfigRevision.current === revision) readingConfigRevision.current = revision + 1; cancelReadingConfiguration(view); cancelWordReadingAnchor(view); };
+    }, [mode, livePreviewFor, preferences.emphasis.enabled, isCode, isTex]);
 
     // Declared LAST on purpose — effects run in declaration order, so the three
     // above see `false` on the mount pass and `true` on every pass after it. The
@@ -1261,10 +1306,23 @@ function DocumentPane({
         takeFocus();
         const button = event.currentTarget;
         const box = button.getBoundingClientRect();
-        const entries: ContextMenuEntry[] = [];
+        const entries: ContextMenuEntry[] = [
+            {kind:'command',id:'word-emphasis',label:'Word emphasis',checked:capability.kind==='toggle' && preferences.emphasis.enabled,disabled:capability.kind==='inactive',reason:capability.kind==='inactive'?capability.reason:undefined,run:()=>{if(capability.kind==='toggle')setWordEmphasis(!getReadingPreferences().emphasis.enabled)}},
+        ];
+        if (isEpub && controller?.showBookPanel) entries.push(
+            {kind:'command',id:'book-contents',label:'Book contents',run:()=>controller.showBookPanel?.('contents')},
+            {kind:'command',id:'book-find',label:'Find in book',run:()=>controller.showBookPanel?.('search')},
+            {kind:'command',id:'book-appearance',label:'Reading appearance',run:()=>controller.showBookPanel?.('appearance')},
+            ...(['scroll','pages'] as const).map(flow=>({kind:'command' as const,id:`book-${flow}`,label:flow==='scroll'?'Scroll layout':'Pages layout',checked:controller.bookFlow?.()===flow,disabled:controller.capabilities().surface==='epub-fixed',reason:controller.capabilities().surface==='epub-fixed'?'Publisher page geometry is preserved':undefined,run:()=>controller.setBookFlow?.(flow)})),
+        );
+        if (isPdf && mode === 'read' && controller) entries.push(
+            {kind:'command',id:'pdf-text',label:'Read extracted text',checked:controller.capabilities().surface==='pdf-text',disabled:!controller.showPdfText || tab.readerStatus?.phase==='loading' || !!tab.disk || tab.dirty,reason:tab.disk?'Resolve the PDF disk change first':tab.dirty?'Wait for annotations to finish saving':undefined,run:()=>{void controller.showPdfText?.().catch(error=>onNotify(String(error)))}},
+            {kind:'command',id:'pdf-original',label:'Original PDF',checked:controller.capabilities().surface==='pdf-original',run:()=>{void controller.showPdfOriginal?.().catch(error=>onNotify(String(error)))}},
+        );
+        if(canToggleMode) entries.push({kind:'command',id:'change-mode',label: canAnnotate ? 'Toggle view/annotate mode' : 'Toggle read/edit mode',run:()=>onToggleMode(path)});
         // Not for a .tex: a markdown table is not a `tabular`, and writing one
         // into a file that has to compile would be a syntax error.
-        if (canToggleRead && !isTex) {
+        if (canToggleRead && !isTex && !isCode) {
             entries.push({
                 kind: 'grid',
                 id: 'insert-table',
@@ -1334,6 +1392,7 @@ function DocumentPane({
                 onDrop={(e) => e.preventDefault()}
             >
                 <div className="editor-slot-nav">
+                    <button className="editor-slot-action editor-history-menu" aria-label="Document history" aria-haspopup="menu" data-tooltip="Document history" onClick={event=>{const button=event.currentTarget,box=button.getBoundingClientRect();openContextMenu({x:box.left,y:box.bottom,label:'Document history',opener:button,entries:[{kind:'command',id:'back',label:'Back',disabled:!canBack,reason:canBack?undefined:'No previous document',run:()=>onBack(paneId)},{kind:'command',id:'forward',label:'Forward',disabled:!canForward,reason:canForward?undefined:'No next document',run:()=>onForward(paneId)}]})}}>↔</button>
                     <button
                         className="editor-slot-action"
                         disabled={!canBack}
@@ -1359,9 +1418,10 @@ function DocumentPane({
                 <span className="editor-slot-title" data-tooltip={path}>{displayName}</span>
                 {tab.dirty && <span className="editor-slot-dot" aria-hidden="true" />}
                 <div className="editor-slot-actions">
+                    <WordEmphasisToggle className="editor-slot-action" capability={capability} />
                     {canToggleMode && (
                         <button
-                            className="editor-slot-action"
+                            className="editor-slot-action editor-mode-toggle"
                             data-tooltip={modeTitle}
                             aria-label={announce(canAnnotate ? 'Toggle view/annotate mode' : 'Toggle read/edit mode')}
                             onClick={() => onToggleMode(path)}
@@ -1382,10 +1442,11 @@ function DocumentPane({
             </div>
             {/* A canvas draws its own: its float stands over this slot and
                 would paint over a bar placed here. */}
-            {tab.disk && !isCanvas && (
-                <DiskBar name={file.name} state={tab.disk} path={path} onAction={onDiskAction} />
+            {tab.disk && (!isCanvas || isEpub) && (
+                <DiskBar readOnly={isEpub || !canReadTabText(tab)} name={file.name} state={tab.disk} path={path} onAction={onDiskAction} />
             )}
             <div className="editor-slot-body">
+                {isEpub && <EpubReaderHost key={`${readerIdentity.vaultId}|${readerIdentity.vaultEpoch}|${tab.id}|${readerIdentity.byteGeneration}`} identity={readerIdentity} integration={reading} isFocused={isFocused} onFocusPane={onFocusPane} onRetryRead={onRetryRead} registerKeyboardTarget={registerKeyboardTarget} theme={theme} />}
                 {unreadable && (
                     <div
                         className="pdf-pane-message unread-pane"

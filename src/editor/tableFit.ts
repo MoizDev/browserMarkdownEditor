@@ -1,4 +1,5 @@
 import type { EditorView } from '@codemirror/view';
+import { preserveTableReadingSelection } from './tableReadingSelection';
 
 /* ─────────────────────────────────────────────────────────────────────────
  * FITTING A RENDERED TABLE TO THE NOTE'S TEXT WIDTH
@@ -144,7 +145,7 @@ function editorMetrics(view: EditorView): { avail: number; font: string } {
 
 /** One rendered table being kept fitted to its container. */
 export interface TableFit {
-    /** The table's markdown source — the widget's identity, and the fit cache's key. */
+    /** Markdown source plus effective presentation — the fit cache's identity. */
     key: string;
     /** The editor holding this table — see the end of a fit, which is where a
      *  height change has to be announced or the caret is left behind by it. */
@@ -600,7 +601,11 @@ function applyFit(fit: TableFit): void {
        and a transaction per frame of a resize drag is not worth paying. */
     if (Math.abs(container.getBoundingClientRect().height - heightBefore) > 0.5) {
         fit.view.requestMeasure();
-        if (firstFitOfThisWidget) fit.view.dispatch({ selection: fit.view.state.selection });
+        if (firstFitOfThisWidget) {
+            const restore = preserveTableReadingSelection(table, fit.view);
+            fit.view.dispatch({ selection: fit.view.state.selection });
+            restore?.();
+        }
     }
 }
 
@@ -612,6 +617,16 @@ export function createFitProbes(): { probe: HTMLElement; fontProbe: HTMLElement;
 
     const fontProbe = document.createElement('span');
     fontProbe.textContent = FONT_PROBE_TEXT;
+    // Word emphasis can be the only use of a bold/bold-italic face. A delayed
+    // face changes cell widths while the regular sensor stays exactly still.
+    // Keep all three inside the existing observed probe (one coalesced fit).
+    for (const [bold, italic] of [[true, false], [true, true], [false, true]]) {
+        const weight = document.createElement('span');
+        weight.style.fontWeight = bold ? '700' : '400';
+        if (italic) weight.style.fontStyle = 'italic';
+        weight.textContent = FONT_PROBE_TEXT;
+        fontProbe.appendChild(weight);
+    }
     probe.appendChild(fontProbe);
 
     // The same sample in KaTeX's own fonts. Until they are loaded this measures

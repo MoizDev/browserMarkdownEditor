@@ -1,3 +1,6 @@
+import { decodeDocumentText } from '../utils/diskVersion';
+import { fingerprintSnapshot } from '../utils/snapshotFingerprint';
+import type { ReadOnlyFileSnapshot } from '../types/reading';
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
@@ -1139,7 +1142,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      */
     const readFile = useCallback(async (fileHandle: FileSystemFileHandle) => {
         const file = await fileHandle.getFile();
-        return (await file.text()).replace(/\r\n?/g, '\n');
+        return decodeDocumentText(await file.arrayBuffer()).replace(/\r\n?/g, '\n');
     }, []);
 
     /**
@@ -1864,7 +1867,37 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const readFileVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
         const { file, buf } = await readSnapshot(fileHandle);
         const version = await versionOfSnapshot(file, buf);
-        return { text: new TextDecoder('utf-8').decode(buf).replace(/\r\n?/g, '\n'), version };
+        return { text: decodeDocumentText(buf).replace(/\r\n?/g, '\n'), version };
+    }, []);
+
+    const readFileSnapshot = useCallback(async (handle: FileSystemFileHandle, signal?: AbortSignal): Promise<ReadOnlyFileSnapshot> => {
+        signal?.throwIfAborted();
+        let blob: File;
+        try { blob = await handle.getFile(); } catch (error) {
+            if (!(error instanceof DOMException) || error.name !== 'NotReadableError') throw error;
+            blob = await handle.getFile();
+        }
+        signal?.throwIfAborted();
+        const lifetime = new AbortController();
+        const abort = () => lifetime.abort();
+        signal?.addEventListener('abort', abort, { once: true });
+        const stat = { lastModified: blob.lastModified, size: blob.size };
+        let version: DiskVersion | undefined;
+        return { snapshotId: crypto.randomUUID(), blob, stat,
+            fingerprint(requestSignal) {
+                requestSignal?.throwIfAborted(); lifetime.signal.throwIfAborted();
+                if (version) return Promise.resolve(version);
+                // StrictMode replays a reader session against the SAME snapshot.
+                // Cancelling that consumer terminates its hash worker, not the
+                // immutable snapshot which the next session still owns.
+                const taskSignal = requestSignal ? AbortSignal.any([requestSignal, lifetime.signal]) : lifetime.signal;
+                return fingerprintSnapshot(blob, taskSignal).then(hash => {
+                    taskSignal.throwIfAborted();
+                    return version = { ...stat, hash };
+                });
+            },
+            dispose() { lifetime.abort(); signal?.removeEventListener('abort', abort); },
+        };
     }, []);
 
     const readBytesVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
@@ -2221,6 +2254,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         openLinkedVault,
         forgetRecentVault,
         readFile,
+        readFileSnapshot,
         writeFile,
         readFileBytes,
         writeFileBytes,

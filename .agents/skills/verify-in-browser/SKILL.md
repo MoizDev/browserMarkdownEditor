@@ -5,7 +5,7 @@ description: How to actually verify a change in this repo — there is no test s
 
 # Verifying a change
 
-**There is no test suite and no test runner.** `npm run typecheck` and `npm run lint` are the
+**There is no general UI test suite.** Pure chat modules run under `test:app`. `npm run typecheck` and `npm run lint` are the
 static gates; everything behavioural is verified by Playwright driving the running app in headless
 Chromium. A change is not verified because it typechecks.
 
@@ -139,3 +139,13 @@ user SEES, walk to the text node's parent — or take the screenshot and look at
 
 Per the repo's standing instruction: be picky about the UI. If something on screen is visibly
 wrong — misaligned, flickering, mis-sized — fix it even if it is not what you were sent to do.
+
+The existing pure app tests cover chatTree and chatStore; there is no general UI test suite. Reading integration additionally needs zero EPUB writes/hash equality, disguised-binary refusal, rename/retry/reload/vault identity, fresh/adopt/live/IME emphasis, native PDF/EPUB shared-toggle paint, reversible layout/anchor preservation, inactive-page capability, independent manual PDF Text and lazy-network checks. Isolated worker proofs are not integrated acceptance.
+
+EPUB opaque-frame runs must omit Playwright's `serviceWorkers:'block'`: its injected service-worker
+blocker reads navigator.serviceWorker in a sandboxed realm and throws SecurityError. Use a fresh
+context with no service worker instead; this does not loosen the frame CSP. Select file rows using
+the displayed name (`.md` hidden), scope shared emphasis to `.editor-slot-header`, and compare
+whole canonical words across prefix text nodes. Wait for reader navigation/restore to settle,
+not merely the first `.chapter` attach. Explicit Cmd+S on a clean NOTE intentionally writes it;
+separate that gesture from zero-write display-only tests. EPUB Cmd+S remains a required no-write probe.

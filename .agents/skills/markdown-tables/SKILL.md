@@ -454,3 +454,9 @@ something has to decide.
   everywhere, code spans included. Splitting on every pipe used to merely mis-render such a row; once
   rows are truncated to the header's column count it silently *drops* everything past the phantom
   split, so the two must stay in step.
+
+Reading emphasis is DOM-built after the existing safe cell sink, with canonical native selection preservation in tableReadingSelection.ts. TableWidget options and tableFit keys distinguish effective read-only emphasis; active editable cells keep source.
+
+Mixed native selections have one endpoint map (CM position or table/cell text offset). Capture before
+CM redraw, including measure updates, and restore once afterward; CM's widget ignore rule checks
+only the anchor, so the read-only selection guard covers both endpoints. Never apply it in Edit.

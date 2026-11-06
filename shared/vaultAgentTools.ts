@@ -93,7 +93,7 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
     {
         name: 'vault_read',
         mutates: false,
-        description: 'Read a file in the vault. Text and markdown come back as numbered lines ("<n>\\t<line>") — from the open tab\'s live buffer when the file is open, so unsaved edits are included — plus a `hash` of the whole current text, which vault_write needs. Long files are paginated with offset/limit (lines, 1-based). A PDF returns the text of a page range; an image returns the image; a .tldraw drawing or .notebook returns a summary of its shapes (use canvas_shapes for full detail).',
+        description: 'Read a file in the vault. Text and markdown come back as numbered lines ("<n>\\t<line>") — from the open tab\'s live buffer when the file is open, so unsaved edits are included — plus a `hash` of the whole current text, which vault_write needs. Long files are paginated with offset/limit (lines, 1-based). An open EPUB returns bounded visible/selected canonical text with a locator, without writable text hashes or line numbers; unopened EPUB extraction is unavailable. A PDF returns the text of a page range; an image returns the image; a .tldraw drawing or .notebook returns a summary of its shapes (use canvas_shapes for full detail).',
         inputSchema: {
             type: 'object', additionalProperties: false, required: ['path'],
             properties: { path: PATH, offset: { type: 'integer', minimum: 1, description: 'First line (text) or first page (PDF).' }, limit: { type: 'integer', minimum: 1, description: 'How many lines (text) or pages (PDF).' } },
@@ -102,7 +102,7 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
     {
         name: 'vault_view',
         mutates: false,
-        description: 'Look at a file as a picture: a rendered PDF page, a notebook page, a drawing, or an image file. Use it to see handwriting, diagrams and layout that text cannot convey.',
+        description: 'Look at a file as a picture: a rendered PDF page, a notebook page, a drawing, or an image file. Use it to see handwriting, diagrams and layout that text cannot convey. EPUB capture is unavailable; vault_read can read the bounded visible canonical text of a loaded book.',
         inputSchema: {
             type: 'object', additionalProperties: false, required: ['path'],
             properties: { path: PATH, page: PAGE },
@@ -111,7 +111,7 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
     {
         name: 'vault_search',
         mutates: false,
-        description: 'Search the text of every note and text file in the vault (and file names). Returns matching files with line numbers and the matching lines.',
+        description: 'Search the text of every note and text file in the vault (and file names). Returns matching files with line numbers and the matching lines. EPUB and PDF content are excluded; EPUB Find searches inside the book.',
         inputSchema: {
             type: 'object', additionalProperties: false, required: ['query'],
             properties: { query: { type: 'string', minLength: 1 }, regex: { type: 'boolean', default: false }, caseSensitive: { type: 'boolean', default: false }, path: { ...PATH, description: 'Limit the search to this folder.' }, maxResults: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },

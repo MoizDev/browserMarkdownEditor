@@ -169,8 +169,8 @@ requires reading it.
   fine print, so going soft at high zoom defeats the gesture. Now flat with zoom: 923MB → 63MB.
 - **Rasterize off-screen, then blit.** Sizing a canvas wipes it, so rendering in place left the page
   blank white for the length of every zoom step — and, now that a scroll at zoom can re-render, for
-  those too. The spare canvas is skipped on a page's FIRST render, where there is nothing to preserve
-  and it would only double the cold-open cost.
+  those too. Cold and warm paints both blit: Chromium antialiases a direct first paint differently,
+  so a shared route is needed for pixel-exact restoration after native emphasis is switched Off.
 - Canvas **bitmaps are windowed**: only pages within `EVICT_BEYOND` (3) of the viewport hold one
   (~25-31MB each at Retina fit-width); scrolled-away canvases are freed and re-rendered on approach,
   and pages further than `CLEANUP_BEYOND` (12) also get `page.cleanup()` so pdf.js releases their
@@ -510,8 +510,11 @@ while `editor.inputs.isPointing` — serializing underneath a moving pen is what
 on a 3,900-shape board, one ~6s stroke: 665ms blocked / longest stall 136ms → 435ms / 75ms. Anything
 that lengthens that debounce owes a matching flush: unmount, `flushPending` **and `pagehide`**.
 
-`store.listen` is scoped `{source:'user', scope:'document'}` so programmatic loads and camera moves
-don't dirty the file; a separate session-scope listener only reschedules a save when the UI-state
+Drawing/notebook `store.listen` is scoped `{source:'user', scope:'document'}`; PDF annotation uses
+synchronous user-only shape/asset/binding side effects, because a deferred listener missed immediate
+flushes. PDF exports serialize and snapshot before awaiting overlays; App awaits pending export before
+leaving annotation. FontManager cleanup waits for in-flight document fonts, avoiding late updates to
+its disposed map. Programmatic loads and camera moves don't dirty the file; a separate session-scope listener only reschedules a save when the UI-state
 slice actually changed. Unmounting mid-debounce flushes synchronously. `getEfficientZoomLevel` is
 patched to defeat tldraw's below-50%-zoom thin-line LOD under `FULL_INK_SHAPE_LIMIT` shapes.
 
@@ -539,12 +542,12 @@ covers both, and every site that used to say `isDrawingFile` for that purpose no
 - **Agent edits must save exactly like a pen stroke** — and do: they go through the editor API inside
   one `markHistoryStoppingPoint` + `editor.run` (one ⌘Z), which `@tldraw/store` records as
   `source: 'user'` (only `mergeRemoteChanges` is `'remote'`), so every pane's existing
-  `{source:'user', scope:'document'}` listener serializes them; a PDF still rebuilds from the pristine
+  user/document change handler serializes them; a PDF still rebuilds from the pristine
   original. NEVER apply agent ops headless or as a remote merge.
 - Page backdrops (ruled paper, PDF page images) are never listed; locked shapes are listed but never
   targetable. Agent shapes get every style set explicitly and `scale` reset to 1 — `applyPenDefaults`
   would otherwise stamp the user's pen onto them.
-- `pageText` exists in both `PdfViewer` and `PdfAnnotateCanvas` (and a whitespace-normalizing third in
+- `pageText` exists in both `PdfViewer` and `PdfAnnotateCanvas` (and a third in
   `utils/pdfText.ts`): change them together.
 
 ## Canvas positions (`utils/canvasViewState.ts`)
@@ -556,3 +559,8 @@ flushed on unmount and `pagehide`), a notebook's `{page, offset, zoom}` (from `w
 through `cameraFor`). A first open with no record behaves as before. Like the other path-keyed
 records it does not follow renames and is never pruned.
 
+
+Original and extracted Text share PdfDocumentSession with document/page leases; release, never direct page.cleanup while another consumer can use it. pdf-page-v1 replaces three old trim/collapse reporters with exact returned strings/order/EOL. PdfPane consumes the central PdfReadingBinding: displayed version, full-token surface controller, shared preferences and validated synchronous Text records. Original camera memory updates precede header actions; Text→annotation maps through Original before mounting the canvas. The actual Text reporter has no image-capture fallback. Word emphasis uses PdfReadingBinding.emphasisEnabled to paint original glyph ink in the retained Viewer/annotation backdrops; no Text transition. pdfNativeEmphasis is exactly pinned to pdf.js 6.1.200 glyph/font/paint contracts; re-audit on upgrade. Completed native renders compare a temporary counterpart pixel-by-pixel before publishing capability (clips/off-page/white/occlusion can hide successful calls). OFF output stays original; the discarded ON probe supplies visibility. High-zoom bands assess the whole page with a bounded probe. Annotation refresh chooses one visible/near stale backdrop at a time, rechecks the viewport after each await and cancels stale renders; distant cached emphasis is refreshed on approach. Only current-page results publish capability. Text is manual and emphasis-inactive; readerViewState migrates unmarked legacy Text records to Original and stamps new explicit Text writes with textChoice:manual. No source/annotation/history changes from preference painting.
+
+PDF Text native Copy, custom Copy and selected-text reporting share page-model selection extraction.
+Only page bodies contribute text; page controls/quality notices never enter that canonical slice.

@@ -582,3 +582,11 @@ a resizable pane one number rather than a rectangle.
   the next mount shows it and ⌘Z undoes it; a closed file is written and runs `afterWrite` (the tail of
   `flushTab`). See the `vault-agent` skill.
 
+
+OpenTab.representation is required; all constructors and retries classify it. EPUB uses a visible EpubReaderHost, not the retained PDF/canvas floats. Reader tokens include vault id/epoch, document id and byte generation; the scoped readerViewState writer outlives mounts. See epub-reader.
+
+EPUB semantic tab/close commands are token-validated in App then routed through EditorPane's
+existing navigation and keyboard-target path (all columns). Tab selection/close can await a
+bounded canonical checkpoint; hand the keyboard over after that promise. A lazy target can
+register later: retain the requested path until its CURRENT registration actually takes focus,
+not its first StrictMode setup. EpubPane itself queues a focus request until its adapter is ready.

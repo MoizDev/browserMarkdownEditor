@@ -104,7 +104,7 @@ so the list you switch vaults with looks like the tree you set up.
 The **Search** tab at the top of the sidebar looks through every note in the
 vault — file names *and* the text inside them — and replaces the file tree while
 it is open; the **Files** tab beside it brings the tree back. Picking a result
-opens that note and scrolls to the line it matched, then puts the tree back. Notebooks, drawings and PDFs match on their names only, since what is in
+opens that note and scrolls to the line it matched, then puts the tree back. EPUBs, notebooks, drawings and PDFs match on their names only, since what is in
 them is not text.
 
 ### Drag and Drop
@@ -245,7 +245,7 @@ Press \`Cmd + F\` / \`Ctrl + F\` with a note in front of you — in Read Mode or
 - **Replace** is only there in Edit Mode, because Read Mode never changes the note. Switch modes with the bar open and it appears or disappears; what you typed is kept.
 - \`Escape\` closes the bar while you are in it, and so does its **×**. The keys then work on the note again: in Read Mode \`Space\` and \`Page Down\` scroll it, and in Edit Mode you are back typing where you were. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the bar and a second closes the list.
 
-With more than one pane open, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; a PDF keeps the browser's own find (see *PDFs*).
+With more than one pane open, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; PDF Original keeps the browser's own find, while PDF Text searches its extracted text (see *PDFs*).
 
 ### Room Below the Last Line
 A note scrolls on past its last line by about half the height of its pane, so the end of what you are reading or writing can sit in the middle of the screen instead of against the bottom edge. A note shorter than that doesn't scroll at all. In Edit Mode, clicking in that space puts the cursor at the end of the note.
@@ -259,6 +259,7 @@ Your notes are ordinary files, so other programs can change them too — a \`git
 - **If you were in the middle of editing it**, neither version wins silently. A bar appears at the top of the note — "*changed on disk while you had unsaved edits*" — with two buttons. **Reload** shows the version on disk and keeps yours beside it as \`name (conflict).md\`; **Keep mine** saves your version and keeps the one from disk beside it as \`name (conflict).md\`. (If that name is taken, the copy is called \`name (conflict 2).md\`, and so on.) Until you choose, the note is not saved, but you can keep reading and editing it; its tab carries a warning sign meanwhile, so a note waiting on you is easy to spot behind other tabs.
 - **Even when a change could not be noticed as it happened**, every save first checks that the file is still the one you opened. If it is not, nothing is written and the same bar appears. A change that only touched the file's date (\`touch\`, or a checkout that wrote the very same text) is not counted as a change.
 - **If the file is deleted**, the bar says so, and typing does not quietly bring the file back: **Save again** writes your note back where it was (folders included), and **Close** closes the tab — asking first if it holds edits that exist nowhere else. Closing a note whose file changed or vanished in any other way (the × on its tab, say) keeps your unsaved edits beside it as a \`(conflict)\` copy rather than dropping them.
+- **Changing a document’s kind by renaming its extension** first preserves pending source edits. Edits made during the move are kept in a \`(conflict)\` copy with the original extension before the destination is reopened. A failed preservation keeps the original editor open.
 - **If the file is renamed or moved**, its tab follows it to the new name, and a renamed folder keeps its icon, colour, custom order and whether it was expanded — when your system reports the change as a rename. A sync service that copies and then deletes, or a folder renamed on Windows, looks like a new folder: open notes inside are followed when their contents match, but the folder's look starts fresh. When the app cannot be sure where a file went, the tab shows it as deleted rather than guess.
 - **The file tree updates by itself** as files and folders are created, deleted, moved or renamed outside the app, and so do search, the graph and the *Modified* sort. A \`.git\` folder is never shown.
 
@@ -364,7 +365,29 @@ switch tabs, close the file or reload the app.
 ### Inverting a Picture You Brought Over
 Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
 
+### EPUB books
+
+Open an imported \`.epub\` from the file tree, a file-name search result, a restored tab or a vault URL. Books are read-only: reading, Find and appearance never change their bytes. To add a book, drag its original file into the vault. There is no New EPUB command.
+
+**Contents** opens the reading order and any publisher-supplied **Print pages** and **Landmarks**; print labels are shown only when the book provides them. **Find** searches canonical book text and reports incomplete sections. **Aa** changes local fallback fonts, default size and line spacing, line width, margins and reader theme. Explicit publisher typography and colors take precedence; fixed pages retain publisher geometry. **Scroll** follows the reading order; **Pages** uses reading screens. Previous/Next move through the book and **Return** goes back after a jump. Select text to copy it; visually hidden publisher prose is omitted from Copy while canonical Find positions stay stable. The app's book menu offers Copy and Find. A book link outside the publication asks before opening a website.
+
+The pane header’s **⋯** also offers Contents, Find, Reading appearance and Scroll/Pages. **Cmd/Ctrl+F** searches the focused book from its header or content.
+
+Static fixed-layout sections preserve their page geometry: Aa offers fit, zoom and facing pages. Word emphasis paints eligible original XHTML text in both fixed and reflowable sections, including mixed-layout books. Image/SVG-only pages remain original and show why emphasis is inactive. Unsupported/protected or unreadable content reports why and offers Retry; this reader does not unlock DRM, run publisher scripts, fetch remote book assets or provide OCR. ZIP64 archives and animated/GIF/AVIF illustrations are unsupported; unavailable images are reported while prose remains readable. Exceptionally large Contents can exceed the metadata limit. Very large sections keep their text but may report Word emphasis unavailable. Complex author styles and reading order may differ from a publisher's reader.
+
+Position and reading layout live only in this browser, separately for each vault and file. Closing a pane releases its book frame. Switching vaults, moving a book or returning from Graph keeps a browser-local position; a changed edition restores the matching section occurrence and passage when available, otherwise it opens a valid section with an approximate-position notice. This is local reading in an already loaded app, not an offline installation guarantee.
+
+### Word emphasis
+
+The **Word emphasis** button in a reading header, its **⋯** row, and **Settings → Reading** share one preference, initially Off, across supported reading views. There are no per-file overrides. It visually emphasizes prefixes of eligible Latin prose, including rendered table body prose. In Markdown and EPUB, authored bold, code, math, URLs and unsupported scripts remain ordinary. PDF emphasis follows its original glyph mappings and supported painting routes. This optional visual heuristic makes no reading-speed or accessibility claim.
+
+It leaves the source, save state, undo history and copied text intact. PDF and EPUB emphasis paints eligible glyphs in the same document view, preserving original layout, artwork and reading position. Switching it Off restores the original paint. Image-only pages and unsupported text profiles remain unchanged and show why the control is inactive, while retaining your preference. Source editing and code/TeX keep their existing presentation. Notes, TXT and extensionless files keep their existing Markdown presentation and editor typography. Toggle with Enter/Space or a pointer; no new global shortcut is added. Reading preferences are stored in your browser, never in the vault.
+
 ### PDFs
+The pane header’s **Word emphasis** toggle paints supported glyphs directly on the original PDF page, including while annotating. It keeps the same tab, page layout, camera, links and annotations; switching Off restores the original paint. It never opens extracted text or performs OCR. Image-only scans, hidden OCR, fully clipped or covered text, missing font mappings and unsupported painting routes stay original. The header reports availability for the current page. **Aa** does not replace the native PDF’s fonts or geometry.
+
+The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by pdf.js, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find reports coverage and stops at 500 hits. **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically. **Cmd/Ctrl+F** searches extracted text while Text is focused; Original keeps the browser’s find. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
+
 A PDF opens in a reader: scroll it, select its text, search it with the browser's
 own \`Cmd + F\`, follow its links, and jump to a page with the box at the bottom.
 Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button

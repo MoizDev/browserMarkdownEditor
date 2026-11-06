@@ -25,3 +25,7 @@ dist-ssr
 
 # VaultAgent helper build output
 helper/dist
+
+# Generated opaque EPUB bootstrap (Vite regenerates before serving/building)
+src/epub/reader-frame.html
+src/epub/reader-frame.integrity.json

@@ -439,3 +439,5 @@ export function SquareTerminal({ size = 16, ...props }: IconProps) {
         </svg>
     );
 }
+
+export const BookOpen = ({ size = 16, ...props }: IconProps) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M12 5v15M12 5C9 3 5 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Z"/></svg>;

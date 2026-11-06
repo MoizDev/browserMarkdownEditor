@@ -1,3 +1,4 @@
+import { decodeDocumentText } from './diskVersion';
 // Vault-wide search (VSCode-style): matches file names and file contents
 // across the whole vault. The pure matching logic lives here so the sidebar
 // SearchPanel stays a thin view; contents are served from an in-memory cache
@@ -162,7 +163,7 @@ export function searchVault(
 interface CacheEntry {
     mtime: number;
     size: number;
-    text: string;
+    text?: string;
 }
 
 export interface VaultTextCache {
@@ -192,13 +193,14 @@ export function createVaultTextCache(): VaultTextCache {
                     if (totalSize + file.size > MAX_INDEXED_TOTAL_SIZE) return;
                     totalSize += file.size;
                     const prev = entries.get(node.path);
-                    const entry = prev && prev.mtime === file.lastModified && prev.size === file.size
-                        ? prev
-                        : {
-                            mtime: file.lastModified,
-                            size: file.size,
-                            text: (await file.text()).replace(/\r\n?/g, '\n'),
-                        };
+                    let entry = prev;
+                    if (!entry || entry.mtime !== file.lastModified || entry.size !== file.size) {
+                        const bytes = await file.arrayBuffer(); // Do not cache transient IO failures.
+                        let text: string | undefined;
+                        try { text = decodeDocumentText(bytes).replace(/\r\n?/g, '\n'); }
+                        catch { /* Invalid bytes are a stat-validated negative entry, not text. */ }
+                        entry = { mtime: file.lastModified, size: file.size, text };
+                    }
                     next.set(node.path, entry);
                 } catch {
                     // Unreadable (moved/locked) — its name remains searchable.
@@ -207,7 +209,7 @@ export function createVaultTextCache(): VaultTextCache {
             if (generation === startedGeneration) entries = next;
 
             const snapshot = new Map<string, string>();
-            for (const [path, entry] of next) snapshot.set(path, entry.text);
+            for (const [path, entry] of next) if (entry.text !== undefined) snapshot.set(path, entry.text);
             return snapshot;
         },
         clear() {

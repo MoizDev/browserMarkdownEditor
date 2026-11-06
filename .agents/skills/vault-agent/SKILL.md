@@ -251,3 +251,5 @@ dev server (loopback → loopback: no LNA prompt) and the `verify-in-browser` ha
 after any adapter change: a shell call shows as a "Ran …" row, a vault edit arrives as a `vault_edit`
 diff card in the open editor, and the CLI driven against a fake model server with scratch
 `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`XDG_*` still starts only our MCP server.
+
+EPUB is a read-only kind with bounded visible/selected canonical text from its live reporter. Unloaded extraction and raster capture are unsupported; never infer empty writable prose. Direct host and executor retain independent guards; closed text edits now use versioned IO. No CLI or terminal restriction was added.

@@ -26,7 +26,7 @@ export interface PendingRestoreEntry {
    * otherwise re-point or drop it — handleTrash's reason for the same test.
    */
   readonly help: boolean;
-  /** Set once read (a PDF's is '' without reading). undefined = not read, yet or ever. */
+  /** Set once read (PDF/EPUB binary sentinels are '' without text IO). undefined = not read, yet or ever. */
   content?: string;
   /**
    * Why the file could not be read, when it exists but every read failed. Such

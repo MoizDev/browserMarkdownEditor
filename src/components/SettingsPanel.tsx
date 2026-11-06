@@ -1,3 +1,5 @@
+import WordEmphasisToggle from './WordEmphasisToggle';
+import { resetReadingPreferences } from '../utils/readingPreferences';
 import React, { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import { DEFAULT_RECENT_VAULT_LIMIT, MAX_STORED_VAULTS } from '../utils/recentVaults';
 import {
@@ -231,6 +233,9 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                         </div>
                     </div>
 
+                    <h4 className="settings-section">Reading</h4>
+                    <div className="setting-row"><div className="setting-info"><div className="setting-name">Word emphasis</div><div className="setting-desc">One browser-local preference for supported reading views. PDF pages and EPUB text are emphasized in their original view without changing files or layout. Image-only pages and unsupported text stay unchanged; the header explains availability.</div></div><div className="setting-control"><WordEmphasisToggle capability={{kind:'toggle'}} /></div></div>
+                    <button type="button" className="settings-reset-btn" onClick={resetReadingPreferences}>Reset reading preferences</button>
                     <h4 className="settings-section">Editing</h4>
 
                     <div className="setting-row">
@@ -496,7 +501,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     <div className="settings-footer">
                         <button
                             className="settings-reset-btn"
-                            onClick={() => { onResetDefaults(DEFAULTS); resetTerminalSettings(); }}
+                            onClick={() => { onResetDefaults(DEFAULTS); resetTerminalSettings(); resetReadingPreferences(); }}
                         >
                             Reset to Defaults
                         </button>

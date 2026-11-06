@@ -6305,3 +6305,22 @@ h5.tex-heading { font-size: 1em; color: var(--text-muted); }
   color: var(--text-muted);
   font-size: 0.9em;
 }
+
+/* Equal header tracks keep the filename centred as reading actions appear. */
+.editor-slot { container-type: inline-size; }
+.editor-slot-nav, .editor-slot-actions { width: 76px; min-width: 76px; }
+.editor-history-menu { display: none; }
+.word-emphasis-toggle { min-width:24px; min-height:24px; color:inherit; background:transparent; border:0; border-radius:4px; cursor:pointer; }
+.word-emphasis-toggle[aria-pressed="true"] { color:var(--interactive-accent); background:var(--background-modifier-hover); }
+.word-emphasis-toggle[aria-disabled="true"] { opacity:.6; cursor:default; }
+.word-emphasis-toggle:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:-2px; }
+@container (width < 360px) {
+ .editor-slot-nav,.editor-slot-actions { width:50px; min-width:50px; }
+ .editor-mode-toggle { display:none; }
+}
+@container (width < 200px) {
+ .editor-slot-nav,.editor-slot-actions { width:24px; min-width:24px; }
+ .editor-slot-nav > button:not(.editor-history-menu),.editor-slot-actions > .word-emphasis-toggle { display:none; }
+ .editor-history-menu { display:flex; }
+ .editor-slot-title { padding-inline:2px; }
+}

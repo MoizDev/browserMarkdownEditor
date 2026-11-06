@@ -116,3 +116,16 @@ export function subscribePdfInverted(listener: () => void): () => void {
     invertListeners.add(listener);
     return () => { invertListeners.delete(listener); };
 }
+
+/** Navigation revisions distinguish a deliberate same-page movement from a
+ * geometry restore. Kept out of persisted legacy cameras; I owns reader records. */
+const navigationRevisions = new Map<string, number>();
+export type PdfNavigationCause = 'user-scroll' | 'user-navigation' | 'search' | 'link' | 'annotation';
+export function readPdfNavigationRevision(path: string): number {
+    return navigationRevisions.get(scopedKey(path)) ?? 0;
+}
+export function recordPdfNavigation(path: string, _cause: PdfNavigationCause): number {
+    const revision = readPdfNavigationRevision(path) + 1;
+    navigationRevisions.set(scopedKey(path), revision);
+    return revision;
+}

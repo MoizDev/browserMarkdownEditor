@@ -20,6 +20,7 @@
 // the bundler emits a second copy of each chunk instead of warming theirs.
 
 export interface CanvasKinds {
+    epub: boolean;
     pdf: boolean;
     drawing: boolean;
     notebook: boolean;
@@ -43,9 +44,10 @@ function warm(key: string, load: () => Promise<unknown>): void {
  * once, and a vault holding none of these kinds does nothing at all.
  */
 export function prefetchPanes(kinds: CanvasKinds): void {
-    if (!kinds.pdf && !kinds.drawing && !kinds.notebook) return;
+    if (!kinds.epub && !kinds.pdf && !kinds.drawing && !kinds.notebook) return;
 
     const run = () => {
+        if (kinds.epub) warm('epub', () => import('./EpubPane'));
         // PdfPane pulls pdf.js; the annotate canvas and its tldraw are left for
         // the moment someone actually annotates, since reading is the common case.
         // Starting the shared worker here too takes the ~1MB worker boot off the

@@ -1,4 +1,10 @@
-import React, { useEffect, useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
+import { registerReaderHostCommands } from '../utils/documentReading';
+import { useSyncExternalStore } from 'react';
+import { getReadingPreferences,subscribeReadingPreferences,setWordEmphasis,updateReadingTypography } from '../utils/readingPreferences';
+import { readPdfTextViewState } from '../utils/readerViewState';
+import type { PdfReadingBinding } from '../types/reading';
+import type { ReaderIntegration } from '../types/reading';
+import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
 import type { EditorState } from '@codemirror/state';
 import BacklinksPanel from './BacklinksPanel';
 import ConfirmDialog from './ConfirmDialog';
@@ -21,6 +27,7 @@ const PdfPane = lazy(() => import('./PdfPane'));
 const CanvasPane = lazy(() => import('./CanvasPane'));
 
 interface EditorPaneProps {
+    reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];
     /** The columns, each with its own tabs, and which column has focus. */
@@ -36,7 +43,7 @@ interface EditorPaneProps {
     /** Close ONE document. The last tab of a column takes the column with it. */
     onCloseTab: (path: string) => void;
     /** Put the last closed document back — ⌥⇧T. */
-    onReopenClosedTab: () => void;
+    onReopenClosedTab: () => void | Promise<string | void>;
     /** Close a whole column, and every tab in it. */
     onClosePane: (paneId: string) => void;
     /** Move a document into `toPaneId` so it lands at `toIndex` (an index into
@@ -228,7 +235,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onFlushNow, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onFlushNow, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -295,6 +302,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
         return vars as React.CSSProperties;
     }, [widths, edges]);
 
+    const readingPreferences = useSyncExternalStore(subscribeReadingPreferences,getReadingPreferences);
     const paneRootRef = useRef<HTMLDivElement | null>(null);
     const splitRef = useRef<HTMLDivElement | null>(null);
 
@@ -309,7 +317,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
     const isPdf = !!activeFile && !activeFile.isHelp && isPdfFile(activeFile.name);
     const isCode = !!activeFile && !activeFile.isHelp && isCodeFile(activeFile.name);
     /** True whenever a non-CodeMirror surface owns the focused pane. */
-    const isCanvas = isDrawing || isPdf;
+    const isCanvas = isDrawing || isPdf || focusedTab?.representation.loadedKind === 'epub';
 
     // ── The keyboard after a tab-bar click ─────────────────────────────────
     // A tab is a plain `<div>`, so clicking one leaves the keyboard on `<body>`,
@@ -322,15 +330,19 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
     // registers a "take the keyboard" function here, by path: one pane per
     // path is on screen at a time. A canvas pane registers nothing, and keeps
     // what it does today.
+    const pendingKeyboardPath = useRef<string|null>(null);
+    const focusedPathRef = useRef<string | null>(null);
     const [keyboardTargets] = useState(() => new Map<string, () => void>());
     const registerKeyboardTarget = useCallback((path: string, take: () => void) => {
         keyboardTargets.set(path, take);
+        if(pendingKeyboardPath.current===path){
+            requestAnimationFrame(()=>{const active=document.activeElement;if(keyboardTargets.get(path)===take&&focusedPathRef.current===path&&!(active instanceof HTMLElement&&(active.isContentEditable||active.closest('input,textarea,select,[role=dialog],[role=menu]')))){pendingKeyboardPath.current=null;take()}});
+        }
         // Only its OWN entry: a late cleanup (StrictMode's re-run, an unreadable
         // pane remounting readable) must not delete the newer pane's.
         return () => { if (keyboardTargets.get(path) === take) keyboardTargets.delete(path); };
     }, [keyboardTargets]);
-    const focusedPathRef = useRef<string | null>(null);
-    useEffect(() => { focusedPathRef.current = focusedPath; }, [focusedPath]);
+    useLayoutEffect(() => { focusedPathRef.current = focusedPath; }, [focusedPath]);
 
     /*
      * Give the keyboard to the focused note once a tab-bar gesture has settled.
@@ -359,17 +371,16 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
             const active = document.activeElement;
             if (active instanceof HTMLElement && (active.isContentEditable
                 || active.closest('input, textarea, select, .cm-panels, [role="dialog"], [role="menu"], [role="listbox"]'))) return;
-            const path = focusedPathRef.current;
-            if (path) keyboardTargets.get(path)?.();
+            const path = pendingKeyboardPath.current??focusedPathRef.current;
+            if (path) {const take=keyboardTargets.get(path);if(take){pendingKeyboardPath.current=null;take()}else pendingKeyboardPath.current=path;}
         });
     }, [keyboardTargets]);
     const selectFromTabBar = useCallback((paneId: string, path: string) => {
-        onSelectTab(paneId, path);
-        handKeyboardToNote();
+        pendingKeyboardPath.current=path;
+        void Promise.resolve(onSelectTab(paneId, path)).then(handKeyboardToNote);
     }, [onSelectTab, handKeyboardToNote]);
     const closeFromTabBar = useCallback((path: string) => {
-        onCloseTab(path);
-        handKeyboardToNote();
+        void Promise.resolve(onCloseTab(path)).then(handKeyboardToNote);
     }, [onCloseTab, handKeyboardToNote]);
     // ── The keyboard chords that move between tabs ─────────────────────────
     //
@@ -415,12 +426,17 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
                 closeFromTabBar(path);
             } else if (e.code === 'KeyT') {
                 take();
-                onReopenClosedTab();
+                void Promise.resolve(onReopenClosedTab()).then(path=>{if(path)pendingKeyboardPath.current=path;handKeyboardToNote()});
             }
         };
+        const unregister=registerReaderHostCommands(command=>{
+            const tab=command==='next-document'||command==='previous-document';
+            const code=tab?'Tab':command==='close-document'?'KeyW':'KeyT';
+            onKeyDown(new KeyboardEvent('keydown',{key:tab?'Tab':code.slice(3).toLowerCase(),code,altKey:true,shiftKey:!tab||command==='previous-document',cancelable:true}));
+        });
         window.addEventListener('keydown', onKeyDown, true);
-        return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, [selectFromTabBar, closeFromTabBar, onReopenClosedTab]);
+        return () => {unregister();window.removeEventListener('keydown', onKeyDown, true)};
+    }, [selectFromTabBar, closeFromTabBar, onReopenClosedTab, handKeyboardToNote]);
 
     /** A group's `+`. Focus its column FIRST: `openTab` opens into whichever
      *  pane has the focus, so without this the note lands in the column the
@@ -861,6 +877,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
             <div className={`editor-split${paneCount > 1 ? ' is-split' : ''}`} ref={splitRef}>
                 {paneTabs.map((tab, i) => (
                     <DocumentPane
+                        reading={reading}
                         // An unreadable document's pane is keyed apart from its
                         // readable self, so a retry that succeeds REMOUNTS it
                         // and every mount-time step (the view built from the
@@ -994,7 +1011,7 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
                 inside a DocumentPane, which exists only while its tab is shown;
                 each is positioned over the column its document occupies. Panes
                 defer their disk/pdf.js work until first shown. */}
-            {tabs.filter(t => !t.file.isHelp && isPdfFile(t.file.name)).map(tab => {
+            {tabs.filter(t => !t.file.isHelp && !t.readError && t.representation.loadedKind === 'pdf').map(tab => {
                 // From the RENDERED columns, not the layout's paths: a pane
                 // whose showing path has no open document draws no column, and
                 // there is then nothing for this to stand over. Visible now
@@ -1032,6 +1049,12 @@ export default function EditorPane({ tabs, layout, theme, tabSize, rainbowBracke
                         ) : null}
                     >
                         <PdfPane
+                            {...{reading: {
+                                ...reading, identity: reading.identityForTab(tab),
+                                initialRecord: readPdfTextViewState(reading.identityForTab(tab).vaultId,tab.file.path),
+                                emphasisEnabled: readingPreferences.emphasis.enabled, typography: readingPreferences.typography,
+                                onEmphasisChange: setWordEmphasis, onTypographyChange: updateReadingTypography, registerKeyboardTarget,
+                            } satisfies PdfReadingBinding}}
                             file={tab.file}
                             isVisible={visible}
                             isFocused={tab.file.path === focusedPath}

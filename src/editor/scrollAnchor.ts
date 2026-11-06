@@ -1,7 +1,8 @@
+import { captureReadingSelection } from './tableReadingSelection';
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import type { ViewUpdate } from '@codemirror/view';
-import { EditorState, StateEffect } from '@codemirror/state';
-import type { ChangeDesc, Extension, SelectionRange } from '@codemirror/state';
+import { EditorSelection, EditorState, StateEffect } from '@codemirror/state';
+import type { ChangeDesc, Extension, SelectionRange, Text } from '@codemirror/state';
 import { forceParsing } from '@codemirror/language';
 
 /* ── Where a note was being read, as a place in the TEXT ──────────────────
@@ -99,7 +100,11 @@ export function captureScrollAnchor(view: EditorView, key: string, save: (anchor
     const request: MeasureRequest<ScrollAnchor> = {
         key,
         read: (v) => {
-            const edge = topEdgeHeight(v);
+            const target = v.plugin(scrollAnchorPlugin)?.target;
+            // A typography hold has an exact source target. Persist its final
+            // measured destination, not the intermediate scrollTop CM may
+            // still be correcting in this same measure loop.
+            const edge = topEdgeHeight(v) + (target?.kind === 'word' ? distanceToTarget(v, target, true) : 0);
             const block = v.lineBlockAtHeight(edge);
             return { pos: block.from, offset: edge - block.top };
         },
@@ -156,6 +161,7 @@ const SCROLL_KEYS = new Set([' ', 'PageUp', 'PageDown', 'Home', 'End', 'ArrowUp'
 /** A restored place kept at the top edge, or a revealed match kept centred. */
 type HoldTarget =
     | { kind: 'top'; anchor: ScrollAnchor }
+    | { kind: 'word'; anchor: WordReadingAnchor; inBlock: number }
     | {
         kind: 'centre';
         pos: number;
@@ -217,14 +223,25 @@ function centreHeight(view: EditorView, target: Extract<HoldTarget, { kind: 'cen
 function distanceToTarget(view: EditorView, target: HoldTarget, measuring: boolean): number {
     const edge = topEdgeHeight(view);
     if (target.kind === 'top') return anchorHeight(view, target.anchor) - edge;
+    if (target.kind === 'word') {
+        const block = view.lineBlockAt(target.anchor.pos);
+        if (measuring) {
+            const rect = view.coordsAtPos(target.anchor.pos, 1);
+            if (rect) target.inBlock = rect.top - view.documentTop - block.top;
+        }
+        return block.top + target.inBlock - target.anchor.viewportOffset - edge;
+    }
     return centreHeight(view, target, measuring) - view.scrollDOM.clientHeight / 2 - edge;
 }
 
 class ScrollAnchorHold {
     private held: HoldTarget | null = null;
+    private revision = 0;
+    private captures = new Set<(anchor: WordReadingAnchor | null) => void>();
     private readonly view: EditorView;
     private readonly release = (event: Event): void => {
         if (event instanceof KeyboardEvent && event.target === this.view.scrollDOM && !SCROLL_KEYS.has(event.key)) return;
+        this.revision++;
         this.target = null;
     };
     /**
@@ -283,9 +300,78 @@ class ScrollAnchorHold {
         this.view.requestMeasure(this.pin);
     }
 
+    captureWord(): Promise<WordReadingAnchor | null> {
+        if (this.held?.kind === 'word' && this.held.anchor.doc === this.view.state.doc) {
+            // Successive typography/toggle changes are one presentation hold.
+            // Re-picking the first word of the newly wrapped row each time
+            // walks backwards through a paragraph even when each pin is exact.
+            return Promise.resolve({ ...this.held.anchor, inBlock: this.held.inBlock,
+                selection: this.view.state.selection, nativeSelection: captureReadingSelection(this.view) });
+        }
+        const revision = this.revision;
+        const doc = this.view.state.doc;
+        return new Promise(resolve => {
+            this.captures.add(resolve);
+            this.view.requestMeasure({
+                read: view => {
+                    if (revision !== this.revision || view.state.doc !== doc) return null;
+                    const box = view.scrollDOM.getBoundingClientRect();
+                    const content = view.contentDOM.getBoundingClientRect();
+                    const style = getComputedStyle(view.contentDOM);
+                    const x = Math.max(box.left + 2, content.left + parseFloat(style.paddingLeft || '0') + 2);
+                    const y = box.top + Math.min(view.defaultLineHeight / 2, box.height / 2);
+                    const point = view.posAtCoords({ x, y });
+                    if (point == null) return null;
+                    const word = boundedReadingWord(view.state, point);
+                    const pos = word?.from ?? point;
+                    const rect = view.coordsAtPos(pos, 1);
+                    // A virtual long-line gap can map to the preceding text's
+                    // edge. It is not a visible word: pinning that source offset
+                    // would turn temporary unmeasured space into a false place.
+                    if (!rect || rect.bottom <= box.top || rect.top > box.top + view.defaultLineHeight) return null;
+                    const line = doc.lineAt(pos), block = view.lineBlockAt(pos);
+                    return {
+                        doc, pos, wordTo: word?.to ?? pos,
+                        quote: word ? view.state.sliceDoc(pos, word.to) : '',
+                        before: view.state.sliceDoc(Math.max(0, pos - 64), pos),
+                        after: view.state.sliceDoc(pos, Math.min(doc.length, pos + 64)),
+                        intraLine: pos - line.from,
+                        viewportOffset: rect.top - box.top,
+                        inBlock: rect.top - view.documentTop - block.top,
+                        selection: view.state.selection,
+                        nativeSelection: captureReadingSelection(view),
+                        revision,
+                    } satisfies WordReadingAnchor;
+                },
+                write: anchor => {
+                    this.captures.delete(resolve);
+                    resolve(revision === this.revision && this.view.state.doc === doc ? anchor : null);
+                },
+            });
+        });
+    }
+    restoreWord(anchor: WordReadingAnchor): void {
+        if (anchor.doc !== this.view.state.doc || anchor.revision !== this.revision) return;
+        if (!this.view.state.selection.eq(anchor.selection)) {
+            this.view.dispatch({ selection: anchor.selection });
+        }
+        this.target = { kind: 'word', anchor, inBlock: anchor.inBlock };
+        anchor.nativeSelection?.();
+        this.view.requestMeasure(this.pin);
+    }
+    cancelWord(): void {
+        this.revision++;
+        if (this.held?.kind === 'word') this.target = null;
+    }
+
     update(update: ViewUpdate): void {
         for (const tr of update.transactions) {
             if (this.held && tr.docChanged) {
+                if (this.held.kind === 'word') {
+                    // Presentation holds never guess through a concurrent edit.
+                    this.cancelWord();
+                    continue;
+                }
                 this.target = this.held.kind === 'top'
                     ? { kind: 'top', anchor: mapScrollAnchor(this.held.anchor, tr.changes) }
                     : { ...this.held, pos: tr.changes.mapPos(this.held.pos, 1) };
@@ -339,6 +425,9 @@ class ScrollAnchorHold {
     }
 
     destroy(): void {
+        this.revision++;
+        for (const resolve of this.captures) resolve(null);
+        this.captures.clear();
         this.target = null;
         for (const type of READER_INPUT) {
             this.view.dom.removeEventListener(type, this.release, { capture: true });
@@ -369,6 +458,48 @@ export function holdScrollAnchor(view: EditorView, anchor: ScrollAnchor): void {
  *  lose the jump's landing place on the next tab switch. */
 export function isHoldingScrollAnchor(view: EditorView): boolean {
     return view.plugin(scrollAnchorPlugin)?.target?.kind === 'top';
+}
+
+/** Anchoring is a bounded navigation lookup, not another prose transform.
+ * EditorState.wordAt scans an entire unbroken token in both directions; a
+ * multi-megabyte pasted token must not stall the measure loop on a toggle. */
+function boundedReadingWord(state: EditorState, point: number): { from: number; to: number } | null {
+    const from = Math.max(0, point - 128), to = Math.min(state.doc.length, point + 128);
+    const local = state.sliceDoc(from, to), relative = point - from;
+    for (const match of local.matchAll(/[\p{L}\p{N}\p{M}_’']+/gu)) {
+        const end = match.index + match[0].length;
+        if (match.index > relative) break;
+        if (end < relative) continue;
+        if ((match.index === 0 && from > 0) || (end === local.length && to < state.doc.length)) return null;
+        return { from: from + match.index, to: from + end };
+    }
+    return null;
+}
+
+/** Opaque transient anchor. It holds source coordinates and the immutable
+ * document/selection, never a wrapper/node index and never a durable record. */
+export interface WordReadingAnchor {
+    readonly doc: Text;
+    readonly pos: number;
+    readonly wordTo: number;
+    readonly quote: string;
+    readonly before: string;
+    readonly after: string;
+    readonly intraLine: number;
+    readonly viewportOffset: number;
+    readonly inBlock: number;
+    readonly selection: EditorSelection;
+    readonly nativeSelection: (() => void) | null;
+    readonly revision: number;
+}
+export function captureWordReadingAnchor(view: EditorView): Promise<WordReadingAnchor | null> {
+    return view.plugin(scrollAnchorPlugin)?.captureWord() ?? Promise.resolve(null);
+}
+export function restoreWordReadingAnchor(view: EditorView, anchor: WordReadingAnchor): void {
+    view.plugin(scrollAnchorPlugin)?.restoreWord(anchor);
+}
+export function cancelWordReadingAnchor(view: EditorView): void {
+    view.plugin(scrollAnchorPlugin)?.cancelWord();
 }
 
 /** Characters past the match's line to parse before a reveal: live preview and

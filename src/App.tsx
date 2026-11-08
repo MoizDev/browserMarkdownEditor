@@ -1125,7 +1125,36 @@ export default function App() {
   // Each seed resolves to the version it read (null if it failed), so a save
   // whose document closed meanwhile still checks against it (flushTab).
   const pdfSeedsRef = useRef(new Map<string, Promise<DiskVersion | null>>());
+  /** Open PDFs whose fingerprint has not been needed yet — see seedPdfBaseline. */
+  const pdfSeedSourcesRef = useRef(new Map<string, FileSystemFileHandle>());
+  /**
+   * Remember HOW to fingerprint an open PDF, without doing it.
+   *
+   * This used to read the whole file and SHA-256 it the moment a PDF was
+   * opened, so that a later write would have a baseline to check the disk
+   * against. The pane then read the very same bytes to display them and
+   * reported the very same version (`onReaderVersion`), which is what actually
+   * set the baseline — the fingerprint was a second full read of a file the
+   * reader was already waiting on. Measured on a 10MB document: 19MB read and
+   * 19MB hashed before the first page appeared, and it scales straight up with
+   * the file. A 100MB scan paid 200MB of it.
+   *
+   * So nothing is read here. `pdfSeedFor` below starts the read at the one
+   * moment the answer is needed — a write, where it is awaited anyway — and
+   * skips it entirely when the pane has already supplied the version, which
+   * for any PDF that was actually opened is always.
+   */
   const seedPdfBaseline = useCallback((id: string, handle: FileSystemFileHandle) => {
+    pdfSeedSourcesRef.current.set(id, handle);
+  }, []);
+
+  /** The fingerprint a write needs, read now if nobody has supplied one. */
+  const pdfSeedFor = useCallback((id: string): Promise<DiskVersion | null> | undefined => {
+    if (getBaseline(id)) return undefined;
+    const started = pdfSeedsRef.current.get(id);
+    if (started) return started;
+    const handle = pdfSeedSourcesRef.current.get(id);
+    if (!handle) return undefined;
     const seed: Promise<DiskVersion | null> = readBytesVersioned(handle)
       .then(({ version }) => {
         if (pdfSeedsRef.current.get(id) === seed && !getBaseline(id)) setBaseline(id, version);
@@ -1134,7 +1163,13 @@ export default function App() {
       .catch(err => { console.warn('Could not fingerprint a PDF for outside-change checks:', handle.name, err); return null; })
       .finally(() => { if (pdfSeedsRef.current.get(id) === seed) pdfSeedsRef.current.delete(id); });
     pdfSeedsRef.current.set(id, seed);
+    return seed;
   }, [readBytesVersioned]);
+  /** Read through a ref for the same reason writeFile and rebuildGraph are: the
+   *  save helpers keep a stable identity, and a dependency here would re-arm
+   *  every timer and listener they own. */
+  const pdfSeedForRef = useRef(pdfSeedFor);
+  useEffect(() => { pdfSeedForRef.current = pdfSeedFor; }, [pdfSeedFor]);
 
   /** Follow a note to its new path (rename/move), so the next save there still
    *  has something to diff against. */
@@ -1831,9 +1866,10 @@ export default function App() {
     // Captured now too: a vault switch clears every baseline right after its
     // flushes, and this write still has to be checked against this one.
     const baselineAtCall = getBaseline(id);
-    // And a PDF's background fingerprint still in flight: a close drops it from
-    // pdfSeedsRef right after this call, and the write must still wait for it.
-    const seedAtCall = pdfSeedsRef.current.get(id);
+    // And a PDF's fingerprint — started here if this is the first thing to
+    // need one, since a close drops it right after this call and the write must
+    // still wait for it.
+    const seedAtCall = pdfSeedForRef.current(id);
     const rootAtCall = vaultRoot ?? rootHandleRef.current;
 
     // Held: the DiskBar is asking. Nothing is written over the file — but a tab
@@ -2031,7 +2067,7 @@ export default function App() {
 
         // Same baseline resolution as flushTab's write: a PDF's is hashed in
         // the background at open, so wait the seed out rather than write blind.
-        const seed = pdfSeedsRef.current.get(id);
+        const seed = pdfSeedForRef.current(id);
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? seeded ?? null;
         const result = await writeFileVersionedRef.current(handle, rotated.bytes, expected);
@@ -2083,6 +2119,7 @@ export default function App() {
       readerIdentityCache.current.forEach((value,key)=>{if(value.documentId===doc.id)readerIdentityCache.current.delete(key)});
       dropBaseline(doc.id);
       pdfSeedsRef.current.delete(doc.id);
+      pdfSeedSourcesRef.current.delete(doc.id);
       diskStateRef.current.delete(doc.id);
     }
     latestContentRef.current.delete(path);
@@ -2444,6 +2481,7 @@ export default function App() {
     // above captured theirs synchronously).
     clearBaselines();
     pdfSeedsRef.current.clear();
+    pdfSeedSourcesRef.current.clear();
     diskStateRef.current.clear();
     latestContentRef.current.clear();
     // Those flushes captured what they needed synchronously (see flushTab); the

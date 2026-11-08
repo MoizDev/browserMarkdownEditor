@@ -284,6 +284,30 @@ All three canvases pass `shapeUtils={CANVAS_SHAPE_UTILS}`, which substitutes tld
   grepping `dist`). **Reach for it before touching `PEN_STREAMLINE`**: the arithmetic predicted 0.35-0.45
   would be the floor and drawing on a real tablet disproved it.
 
+## The page list is built once, and its refs never move
+
+A document's page boxes are a `useMemo` over the layout, and each box's three refs come from
+`pageRef(kind, i)`, which hands back **the same function** for a slot every time.
+
+**Inline `ref={el => ...}` is a new function on every render, so React detaches and reattaches every
+one of them** — 1,200 ref calls on a 400-page document, each detach writing `null` into the very
+arrays the render loop reads, plus the reconciliation of 400 boxes. The viewer re-renders for the
+page number, the zoom, the native notice and its own visibility, so this was paid constantly, and
+the cost tracked PAGE COUNT rather than anything on screen: switching back to a 400-page PDF took
+305-757ms, against 128ms for a twelve-page one. With stable refs and the memo it is 44-264ms, and a
+400-page document costs about what a small one does.
+
+So: no inline ref callbacks in the page list, and nothing that rebuilds `pageEls` per render.
+
+## A PDF's fingerprint is computed only if a write needs it
+
+`seedPdfBaseline` records the HANDLE; `pdfSeedFor` does the read, at the one moment the answer is
+needed (a write, where it is awaited anyway), and not at all when the pane has already supplied the
+version through `onReaderVersion` — which for any PDF actually opened is always. Eagerly
+fingerprinting at open meant the file was read and SHA-256'd TWICE before its first page appeared:
+measured on a 10MB document, 19MB read and 19MB hashed, scaling straight up with the file, so a
+100MB scan paid 200MB of it.
+
 ## A hidden pane must let go
 
 Panes stay MOUNTED when another tab is shown and are hidden with `visibility` — that is what makes

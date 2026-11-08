@@ -197,7 +197,9 @@ function writeRefusal(path: string): string | null {
     if (inTrash(path)) {
         return `"${path}" is in a ${TRASH_DIR} folder (the trash), which is read-only. Delete things with vault_trash; restoring from the trash is for the user (the Trash panel in the sidebar).`;
     }
-    if (!path.includes('/') && (lower(path) === lower(ENTRY_STYLE_FILE) || lower(path) === lower(LEGACY_STYLE_FILE))) {
+    // At every depth for the looks file: there is one per customized folder.
+    if (lower(baseName(path)) === lower(ENTRY_STYLE_FILE)
+        || (!path.includes('/') && lower(path) === lower(LEGACY_STYLE_FILE))) {
         return `"${path}" is the app's own settings file (icons, colours, custom order) and cannot be changed with tools`;
     }
     return null;
@@ -371,7 +373,7 @@ async function vaultList(a: Args, ctx: Ctx): Promise<ToolExecution> {
             // that the agent is meant to see.
             const hidden = (c.kind === 'directory' && (name === lower(TRASH_DIR) || name === lower(ASSETS_DIR)))
                 || isGitName(c.name)
-                || (dir === '' && c.kind === 'file' && (c.name === ENTRY_STYLE_FILE || c.name === LEGACY_STYLE_FILE));
+                || (c.kind === 'file' && (c.name === ENTRY_STYLE_FILE || (dir === '' && c.name === LEGACY_STYLE_FILE)));
             if (hidden && !includeHidden) { hiddenSkipped++; return false; }
             return true;
         });

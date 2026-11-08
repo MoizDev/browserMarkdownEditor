@@ -1,29 +1,62 @@
 // How things in a vault look: an icon and a colour per file or folder, kept in
-// one file at the vault root.
+// an `.appearance.json` inside each folder that has any.
+//
+// The MERGED view this module's helpers take and return — every customized
+// entry in the open vault, keyed by vault path:
+//
+//   { version: 2,
+//     entries: { "Math": {icon: "sigma"}, "Math/A3.notebook": {color: "amber"} },
+//     icons:   { "sigma": [["path", { "d": "M18 7V5H6l6 7-6 7h12v-2" }]] },
+//     order:   { "": ["Inbox", "a.md", "Math"], "Math": ["b.md", "Sub"] } }
+//
+// and the two files on disk it is cut into (`shardEntryStyles`), each keyed by
+// its own folder's child names and carrying its own artwork:
 //
 //   <vault>/.appearance.json
-//   {
-//     "version": 1,
-//     "entries": {
-//       "Math": { "icon": "sigma", "color": "blue" },
-//       "Math/Assignment 3.notebook": { "color": "amber" }
-//     },
-//     "icons": { "sigma": [["path", { "d": "M18 7V5H6l6 7-6 7h12v-2" }]] },
-//     "order": { "": ["Inbox", "a.md", "Math"], "Math": ["b.md", "Sub"] }
-//   }
+//   { "version": 2, "entries": { "Math": { "icon": "sigma" } },
+//     "icons": { "sigma": […] }, "order": { "": ["Inbox", "a.md", "Math"] } }
 //
-// KEYED BY VAULT PATH, and a file's path is one just as much as a folder's — so
-// nothing here distinguishes the two, and the one place that has to (a folder
-// rename carries its descendants, a file's cannot have any) says so where it
-// matters, in `renameEntry`.
+//   <vault>/Math/.appearance.json
+//   { "version": 2, "entries": { "A3.notebook": { "color": "amber" } },
+//     "icons": {}, "order": { "": ["b.md", "Sub"] } }
 //
-// ONE FILE AT THE VAULT ROOT, not a dot-file inside each folder. `.Assets` and
-// `.Garbage` are per-folder because they hold that folder's own content and must
-// travel with it; this is a lookup table read once per tree walk, and the walk
-// runs after EVERY save (see AGENTS.md). A file per folder would turn that walk
-// into one read per customized folder; this makes it one read, full stop. The
-// cost is that a moved or renamed folder has to be re-keyed — `renameEntry`
-// below is that, and it rides the same hook `movePdfRenderData` already uses.
+// KEYED BY VAULT PATH in the merged view, and a file's path is one just as much
+// as a folder's — so nothing here distinguishes the two, and the one place that
+// has to (a folder rename carries its descendants, a file's cannot have any)
+// says so where it matters, in `renameEntry`.
+//
+// ONE FILE PER CUSTOMIZED FOLDER, each describing ITS OWN CHILDREN — the shape
+// above is the MERGED view the app works in, keyed by vault path; on disk it is
+// cut into shards (`shardEntryStyles`), one `.appearance.json` per folder that
+// has anything to say, holding its children by NAME and its own custom order.
+//
+// A LOOK BELONGS WITH THE THING IT DESCRIBES. With everything in one file at the
+// vault root, opening a folder from Finder — `Vault/Math` rather than `Vault` —
+// opened a vault whose styles sat in a file above the root, which the File System
+// Access API cannot reach at all: every icon, colour and arrangement vanished,
+// and the first pick wrote a fresh file that the outer vault would never see.
+// Sharded, the data for `Math/Deep` lives in `Math/.appearance.json`, which is
+// inside whichever of those two roots you opened, so the same icons show from
+// either one and a change made in one is read by the other. That is what makes
+// these keys ABSOLUTE in the only sense a browser has: anchored to the folder
+// itself rather than to whichever ancestor happened to be the root.
+//
+// It also makes moves free: `.Assets` and `.Garbage` are per-folder because they
+// hold that folder's own content and must travel with it, and a folder's looks
+// are now exactly that — a renamed or trashed folder carries its shards with it
+// on disk, and only its ENTRY in its parent's shard has to be re-keyed.
+//
+// The cost is the read: one per customized folder instead of one, full stop.
+// It is still once per vault OPEN, never per tree walk (the walk runs after
+// every save — see AGENTS.md): the tree walk already enumerates every folder, so
+// it hands App the handle of each `.appearance.json` it passed (`FileTreeDirNode.
+// styleFile`) and nothing is opened speculatively. A vault with no icons reads
+// nothing at all.
+//
+// MIGRATION IS AUTOMATIC AND ONE-WAY. A pre-shard file (deep keys like
+// `Math/Deep`, or an order keyed by anything but the root) is read whole — that
+// is exactly the merged view — and fanned back out the moment the tree lands.
+// Nobody loses an icon to a storage change we chose.
 //
 // WHY THE ARTWORK IS STORED TOO. `icons` holds the Lucide node data for exactly
 // the icons in use, deduplicated by name. The full set is 1,818 icons — 91KB
@@ -106,7 +139,10 @@ export const ENTRY_STYLE_FILE = '.appearance.json';
  */
 export const LEGACY_STYLE_FILE = '.folders.json';
 
-const FILE_VERSION = 1;
+/** 2 is the sharded layout: `entries` keyed by this folder's own child NAMES
+ *  and `order` holding at most the key `''`. 1 was one file at the vault root,
+ *  keyed by path all the way down — read forward by `needsFanOut` below. */
+const FILE_VERSION = 2;
 
 /**
  * The colours a file or folder can take.
@@ -199,10 +235,107 @@ export function serializeEntryStyles(file: EntryStyleFile): string {
         const nodes = file.icons[name as string];
         if (nodes) icons[name as string] = nodes;
     }
-    // `order` is left out entirely while nothing has been reordered, so a vault
-    // that only ever had icons keeps writing byte-for-byte the file it did.
+    // `order` is left out entirely while this folder has not been arranged, so
+    // a folder that only ever had icons writes no empty key for it.
     const order = Object.keys(file.order).length ? { order: file.order } : {};
     return JSON.stringify({ version: FILE_VERSION, entries: file.entries, icons, ...order }, null, 2);
+}
+
+/* ── Shards: the merged view, and the files it is cut into ──────────────────
+ * One `.appearance.json` per folder that has anything to say, describing that
+ * folder's own children by NAME and its own place in the custom order. The two
+ * functions below are inverses: `shardEntryStyles` cuts the merged view up for
+ * the writer, `mergeShard` folds one file back in as the reader meets it.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Every shard this merged view implies, keyed by the folder it belongs in
+ * (`''` = the vault root). A folder with no entries and no order of its own
+ * gets no shard at all, so a vault with three icons has three files, not one
+ * per folder.
+ *
+ * The artwork is handed to every shard whole; `serializeEntryStyles` prunes it
+ * to what that one file still refers to, which is what keeps each file's icons
+ * its own — a folder opened as a vault must draw its icons without the root's.
+ */
+export function shardEntryStyles(file: EntryStyleFile): Map<string, EntryStyleFile> {
+    const shards = new Map<string, EntryStyleFile>();
+    const at = (folder: string): EntryStyleFile => {
+        let shard = shards.get(folder);
+        if (!shard) {
+            shard = { version: FILE_VERSION, entries: {}, icons: file.icons, order: newOrder() };
+            shards.set(folder, shard);
+        }
+        return shard;
+    };
+    for (const [path, style] of Object.entries(file.entries)) {
+        if (isDefaultStyle(style)) continue;
+        at(parentVaultPath(path)).entries[lastSegment(path)] = style;
+    }
+    for (const [folder, list] of Object.entries(file.order)) {
+        if (list.length) at(folder).order[''] = list;
+    }
+    return shards;
+}
+
+/**
+ * Fold the file found in `folder` into the merged view — a NEW merged view, or
+ * the same one when it added nothing.
+ *
+ * WHAT IS ALREADY HELD WINS. Shards are read as the tree reaches their folders,
+ * which can be after the reader has already given something in there a look;
+ * the store is the newer truth, and a shard read late must not put back an icon
+ * that was just cleared.
+ *
+ * A key with a separator in it is folded in verbatim. That is not a shard — it
+ * is a pre-shard file at the root, whose keys are already full vault paths —
+ * and reading it is exactly this, which is why migration needs no second
+ * parser.
+ */
+export function mergeShard(file: EntryStyleFile, folder: string, shard: EntryStyleFile): EntryStyleFile {
+    const under = (key: string) => (folder ? (key ? `${folder}/${key}` : folder) : key);
+    let changed = false;
+
+    const entries = { ...file.entries };
+    for (const [name, style] of Object.entries(shard.entries)) {
+        const path = under(name);
+        if (path in entries || isDefaultStyle(style)) continue;
+        entries[path] = style;
+        changed = true;
+    }
+
+    let order = file.order;
+    for (const [key, list] of Object.entries(shard.order)) {
+        const target = under(key);
+        if (!list.length || orderListFor(order, target)) continue;
+        if (order === file.order) order = newOrder(file.order);
+        order[target] = list;
+        changed = true;
+    }
+
+    const icons = { ...file.icons };
+    for (const [name, nodes] of Object.entries(shard.icons)) {
+        if (name in icons) continue;
+        icons[name] = nodes;
+        changed = true;
+    }
+
+    return changed ? { version: FILE_VERSION, entries, icons, order } : file;
+}
+
+/**
+ * Was this file written before the looks were sharded — one file at the vault
+ * root, keyed by path all the way down?
+ *
+ * Read off the SHAPE rather than off `version`, because the shape is what
+ * actually has to be fanned out and a hand-edited file may say anything: a key
+ * with a separator in it, or an order keyed by a folder that is not this one.
+ * A root file that only ever styled things at the top level is already a valid
+ * shard and is left exactly as it is.
+ */
+export function needsFanOut(file: EntryStyleFile): boolean {
+    return Object.keys(file.entries).some(path => path.includes('/'))
+        || Object.keys(file.order).some(folder => folder !== '');
 }
 
 /** Only non-empty string names, no path separators, each once (first wins) —

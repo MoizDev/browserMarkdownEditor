@@ -42,11 +42,13 @@ export function isHiddenEntryName(name: string, atRoot: boolean, kind: EntryKind
     if (isGitName(name) || isSwapName(name)) return true;
     // The app's own record of how things look. Hidden for the same reason
     // .Assets and .Garbage are: it is bookkeeping, not something the reader put
-    // in their vault. Root-only, unlike those two — see entryStyle.ts. The
-    // legacy name goes too: migration reads it forward and deliberately leaves
-    // it on disk, and a file this app wrote should not then surface in the tree
-    // as though the reader had put it there. (Its `.crswap` is the swap rule.)
-    if (atRoot && (name === ENTRY_STYLE_FILE || name === LEGACY_STYLE_FILE)) return true;
+    // in their vault. At EVERY depth, exactly like those two, because that is
+    // where it lives now — one per customized folder, holding that folder's own
+    // children (see entryStyle.ts). The legacy name goes too: migration reads it
+    // forward and deliberately leaves it on disk, and a file this app wrote
+    // should not then surface in the tree as though the reader had put it there.
+    // (Its `.crswap` is the swap rule.)
+    if (name === ENTRY_STYLE_FILE || (atRoot && name === LEGACY_STYLE_FILE)) return true;
     if (kind === 'directory') {
         // The AI agent's folders (utils/vaultAgentStore.ts) — root-only, where the
         // agent CLIs look for them.

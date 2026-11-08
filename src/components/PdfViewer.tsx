@@ -15,6 +15,7 @@ import { bindPdfNativeEmphasis, pdfNativeEmphasisNotice } from '../utils/pdfNati
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { LEFT, RIGHT } from '../utils/pdfRotation';
+import { mapPool } from '../utils/pool';
 import { RotateCcw, RotateCw } from './icons';
 
 /**
@@ -360,6 +361,10 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
     /** A width this pane was resized to while it was hidden, applied on the way
      *  back in rather than re-rastering a document nobody is looking at. */
     const pendingWidthRef = useRef<number | null>(null);
+    /** The page range under the viewport as of the last window pass — the pages
+     *  a hidden pane keeps, so coming back shows pixels rather than painting
+     *  them (see the hide effect). */
+    const onScreenRef = useRef<{ first: number; last: number } | null>(null);
 
     const rootRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -455,15 +460,23 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
                 documentLease = await session.acquire();
                 if (cancelled) { documentLease.release(); return; }
                 const doc = documentLease.document;
-                const dims: Array<{ w: number; h: number }> = [];
-                for (let i = 1; i <= doc.numPages; i++) {
-                    const lease = await session.acquirePage(i - 1, 'render');
-                    try {
-                        if (cancelled) return;
-                        const vp = lease.page.getViewport({ scale: 1 });
-                        dims.push({ w: vp.width, h: vp.height });
-                    } finally { lease.release(); }
-                }
+                // Every page's size, because the scroll height depends on all
+                // of them — but not ONE AT A TIME. Each is a round trip to the
+                // pdf.js worker and nothing is drawn until the last one lands,
+                // so a 200-page document showed "Loading PDF…" for 200 of them
+                // in a row (measured: 565ms, and it grows with the page count).
+                // Bounded rather than unleashed, for the reason utils/pool.ts
+                // gives; `mapPool` keeps the results in page order.
+                const dims = await mapPool(
+                    Array.from({ length: doc.numPages }, (_, i) => i),
+                    async (i) => {
+                        const lease = await session.acquirePage(i, 'render');
+                        try {
+                            const vp = lease.page.getViewport({ scale: 1 });
+                            return { w: vp.width, h: vp.height };
+                        } finally { lease.release(); }
+                    },
+                );
                 if (cancelled) return;
                 const ds: DocState = { doc, dims, gen };
                 // Set the ref synchronously: the re-anchor layout effect (which
@@ -1086,10 +1099,20 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
      * a scanned book at a real page size.
      *
      * Eviction only ever ran inside `updateWindow`, which only runs on scroll
-     * or layout, so a hidden pane never reached it. Freeing is cheap and so is
-     * coming back: the pdf.js page objects and the text layers stay (⌘F still
-     * works), and `updateWindow` re-rasters the band under the viewport on the
-     * way in, which is the same work a scroll does.
+     * or layout, so a hidden pane never reached it.
+     *
+     * WHAT IS ON SCREEN IS KEPT. Freeing everything made coming back a repaint:
+     * cheap for a vector page, not cheap for a scan, which is a JPEG decode and
+     * a draw per page — and that repaint is the one thing the reader is waiting
+     * on. So the pages under the viewport stay exactly as they were rastered
+     * (usually one, two across a page boundary) and the switch back is a
+     * `visibility` flip with the pixels already there. Everything else goes:
+     * the RENDER_AHEAD prefetch, the EVICT_BEYOND margin either side, and
+     * anything left from wherever the reader scrolled through. That is most of
+     * what a hidden pane was holding.
+     *
+     * The pdf.js page objects and the text layers stay either way, so ⌘F still
+     * works, and `updateWindow` refills the margin on the way in.
      */
     useEffect(() => {
         if (isVisible) {
@@ -1102,7 +1125,11 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             return () => cancelAnimationFrame(id);
         }
         const n = docStateRef.current?.dims.length ?? 0;
-        for (let i = 0; i < n; i++) evictPage(i);
+        const seen = onScreenRef.current;
+        for (let i = 0; i < n; i++) {
+            if (seen && i >= seen.first && i <= seen.last) continue;
+            evictPage(i);
+        }
     }, [isVisible, evictPage]);
 
     /** One pass over the viewport: render pages near it, free pages far from
@@ -1120,6 +1147,9 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         while (first < n - 1 && L.tops[first] + L.pages[first].h + PAGE_GAP <= top) first++;
         let last = first;
         while (last < n - 1 && L.tops[last + 1] < bottom) last++;
+
+        // What is literally under the viewport, for the hide path below.
+        onScreenRef.current = { first, last };
 
         const renderFrom = Math.max(0, first - RENDER_AHEAD);
         const renderTo = Math.min(n - 1, last + RENDER_AHEAD);
@@ -1480,6 +1510,50 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         return () => { cancelled = true; };
     }, [docState, hasLayout, isVisible, ensureText]);
 
+    /**
+     * The page boxes — one per page, built ONCE per layout.
+     *
+     * This list used to be rebuilt inline on every render of the viewer, with
+     * three INLINE arrow refs per page. An inline ref is a new function each
+     * time, so React detached and reattached every one of them: 1,200 refs on a
+     * 400-page document, each detach writing `null` into the very arrays the
+     * render loop reads, plus the reconciliation of 400 boxes — on every render,
+     * and the viewer re-renders for the page number, the zoom, the native
+     * notice and (now) its own visibility. Switching back to a 400-page PDF
+     * cost 305-757ms, scaling with the page count rather than with anything on
+     * screen.
+     *
+     * `pageRef` hands back the SAME function for a given slot every time, so
+     * React leaves the refs alone, and the memo means an unrelated re-render
+     * reconciles one element instead of four hundred.
+     */
+    const pageRefs = useRef(new Map<string, (el: HTMLElement | null) => void>());
+    const pageRef = useCallback((kind: 'canvas' | 'text' | 'link', i: number) => {
+        const key = `${kind}:${i}`;
+        let fn = pageRefs.current.get(key);
+        if (!fn) {
+            const target = kind === 'canvas' ? canvasElsRef : kind === 'text' ? textElsRef : linkElsRef;
+            fn = (el: HTMLElement | null) => {
+                (target.current as (HTMLElement | null)[])[i] = el;
+            };
+            pageRefs.current.set(key, fn);
+        }
+        return fn;
+    }, []);
+    const pageEls = useMemo(() => (layout && docState ? layout.pages.map((p, i) => (
+        <div
+            key={`${docState.gen}:${i}`}
+            className="pdf-viewer-page"
+            style={{ width: p.w, height: p.h, marginBottom: PAGE_GAP }}
+        >
+            <canvas width={0} height={0} ref={pageRef('canvas', i) as React.Ref<HTMLCanvasElement>} />
+            <div className="textLayer" ref={pageRef('text', i)} />
+            {/* Above the text layer, or its links could never be clicked; see
+                .pdf-selecting. */}
+            <div className="pdf-link-layer" ref={pageRef('link', i)} />
+        </div>
+    )) : null), [layout, docState, pageRef]);
+
     if (error) {
         return (
             <div className="pdf-viewer" ref={rootRef}>
@@ -1519,19 +1593,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
                             '--scale-factor': String(layout.scale),
                         } as React.CSSProperties}
                     >
-                        {layout.pages.map((p, i) => (
-                            <div
-                                key={`${docState.gen}:${i}`}
-                                className="pdf-viewer-page"
-                                style={{ width: p.w, height: p.h, marginBottom: PAGE_GAP }}
-                            >
-                                <canvas width={0} height={0} ref={el => { canvasElsRef.current[i] = el; }} />
-                                <div className="textLayer" ref={el => { textElsRef.current[i] = el; }} />
-                                {/* Above the text layer, or its links could
-                                    never be clicked; see .pdf-selecting. */}
-                                <div className="pdf-link-layer" ref={el => { linkElsRef.current[i] = el; }} />
-                            </div>
-                        ))}
+                        {pageEls}
                     </div>
                 ) : (
                     <div className="pdf-pane-message">Loading PDF…</div>

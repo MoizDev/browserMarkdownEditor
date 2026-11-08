@@ -59,6 +59,7 @@ import { codeDarkTheme, codeLightTheme } from '../editor/codeHighlight';
 import { isCodeFile, isDrawingFile, isNotebookFile, isTexFile, noteDisplayName } from '../utils/fileTypes';
 import { ArrowLeft, ArrowRight, Edit2, Eye, MoreHorizontal, PenTool } from './icons';
 import DiskBar from './DiskBar';
+import { warmMath } from '../editor/mathWidget';
 import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
 
 /** localStorage key: per-file editor scroll places (editor/scrollAnchor.ts). */
@@ -1070,6 +1071,11 @@ function DocumentPane({
         try {
             const view = new EditorView({ state: cached ?? createTabState(tab.content), parent: node });
             viewRef.current = view;
+            // KaTeX is fetched on demand (editor/mathWidget.ts). Start it the
+            // moment a document that could contain a formula opens, so the
+            // renderer is usually already here when one scrolls into view; a
+            // note with no `$` in it never asks for it at all.
+            if (tab.content.includes('$')) warmMath();
             returnKeyboard(view, keyboardBefore);
             // Every grammar is a dynamic import, so a code pane paints at once
             // in plain text and takes its colours a tick later. A cached state

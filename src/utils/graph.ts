@@ -12,6 +12,7 @@ import { decodeDocumentText } from './diskVersion';
  */
 
 import { collectFiles } from './tree';
+import { mapPool } from './pool';
 import { isMarkdownFile, noteDisplayName } from './fileTypes';
 import type {
     FileTreeNode,
@@ -88,9 +89,35 @@ export function clearLinkCache(): void {
     linkCache = new Map();
 }
 
-async function linksFor(node: FileTreeFileNode): Promise<string[]> {
+/**
+ * Put a note's links into the cache from text the app is already holding, and
+ * say whether they differ from what was there.
+ *
+ * This is what makes a save cost no disk at all: `flushTab` has just written
+ * the bytes and knows their stat, so the one file a rebuild would have read is
+ * primed here, and if the answer is `false` — which is every keystroke that
+ * does not add or remove a link, i.e. nearly all of them — the rebuild is not
+ * worth running: the graph it would produce is the graph on screen.
+ */
+export function primeLinks(path: string, mtime: number, size: number, text: string): boolean {
+    let targets: string[];
+    try { targets = extractLinks(text); }
+    catch { targets = []; }
+    const prev = linkCache.get(path);
+    linkCache.set(path, { mtime, size, targets });
+    return !prev || prev.targets.length !== targets.length
+        || targets.some((t, i) => t !== prev.targets[i]);
+}
+
+async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<string[]> {
+    const cached = linkCache.get(node.path);
+    // The caller knows nothing on disk has moved since the last build (one of
+    // this app's own saves, already primed above). Believing it is the whole
+    // saving: a `getFile()` is a round trip to the browser's file thread, and
+    // there is one per note in the vault.
+    if (!revalidate && cached) return cached.targets;
     const file = await node.handle.getFile();
-    const prev = linkCache.get(node.path);
+    const prev = cached;
     if (prev && prev.mtime === file.lastModified && prev.size === file.size) return prev.targets;
     // Normalized exactly as readFile does, so link extraction sees the same
     // text the editor and the search index do.
@@ -106,7 +133,8 @@ async function linksFor(node: FileTreeFileNode): Promise<string[]> {
  * Build the link graph over the vault's markdown files.
  *
  * Reads only files whose (lastModified, size) have moved since the last build —
- * see the link cache above. Reads its own text rather than taking a readFile
+ * see the link cache above — and with `revalidate` false does not even stat the
+ * ones it has already extracted, which is what a save after `primeLinks` wants. Reads its own text rather than taking a readFile
  * callback, because it needs the File object for that validation anyway.
  *
  * @param {Array} fileTree  nested file tree from FileSystemContext
@@ -116,7 +144,7 @@ async function linksFor(node: FileTreeFileNode): Promise<string[]> {
  *   backlinks: { [id]: [sourceId, ...] }
  *   outlinks:  { [id]: [targetId, ...] }
  */
-export async function buildGraph(fileTree: FileTreeNode[]): Promise<GraphData> {
+export async function buildGraph(fileTree: FileTreeNode[], revalidate = true): Promise<GraphData> {
     const files = collectMarkdownFiles(fileTree);
 
     // Index note name -> path for link resolution (case-insensitive).
@@ -142,9 +170,11 @@ export async function buildGraph(fileTree: FileTreeNode[]): Promise<GraphData> {
     const outlinks: GraphAdjacency = {};
     const seen = new Set<string>(); // dedupe identical source->target edges
 
-    // Concurrent, and — thanks to the (mtime, size) cache — a stat rather than a
-    // read for every file that hasn't changed since the last rebuild.
-    const targetsPerFile = await Promise.all(files.map(f => linksFor(f).catch(() => [] as string[])));
+    // Bounded, and — thanks to the (mtime, size) cache — a stat rather than a
+    // read for every file that hasn't changed since the last rebuild. With
+    // `revalidate` false it is neither: every note already extracted is taken
+    // from the cache, and only a note this build has never seen is opened.
+    const targetsPerFile = await mapPool(files, f => linksFor(f, revalidate).catch(() => [] as string[]));
 
     // Track the vault: drop entries for files that have been deleted or renamed,
     // so the cache can never outgrow the notes it describes.

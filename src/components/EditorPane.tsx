@@ -22,6 +22,47 @@ import type { ActiveFile, ContentChangeOptions, DiskAction, OpenTab, GraphData, 
 // Same reasoning as the drawing canvas: pdf.js + pdf-lib only load once a PDF
 // is actually opened.
 const PdfPane = lazy(() => import('./PdfPane'));
+
+/**
+ * One PDF tab's reading binding, built once per document rather than once per
+ * render of the workspace.
+ *
+ * EditorPane re-renders on every keystroke in any note, on every "Saved" flip
+ * and on every tab switch. Assembled inline in the list below, the binding was
+ * a NEW object each time — so `React.memo(PdfPane)` compared unequal, and with
+ * it `React.memo(PdfViewer)`, which then reconciled one div per page of the
+ * document. For a long PDF left open beside the note being written, that was
+ * the whole page list rebuilt on every keystroke, plus a `structuredClone` of
+ * the saved view state to go with it.
+ *
+ * A component, not a `useMemo` at the call site: the call site is inside a
+ * `.map()`, where a hook would run a different number of times per render.
+ */
+const PdfPaneHost = React.memo(function PdfPaneHost({
+    reading, tab, emphasisEnabled, typography, onEmphasisChange, onTypographyChange,
+    registerKeyboardTarget, ...rest
+}: Omit<React.ComponentProps<typeof PdfPane>, 'reading'> & {
+    reading: ReaderIntegration;
+    tab: OpenTab;
+    emphasisEnabled: boolean;
+    typography: PdfReadingBinding['typography'];
+    onEmphasisChange: PdfReadingBinding['onEmphasisChange'];
+    onTypographyChange: PdfReadingBinding['onTypographyChange'];
+    registerKeyboardTarget: PdfReadingBinding['registerKeyboardTarget'];
+}) {
+    const identity = reading.identityForTab(tab);
+    const path = tab.file.path;
+    const binding = React.useMemo<PdfReadingBinding>(() => ({
+        ...reading,
+        identity,
+        // Read once, with the binding: it is the state this document OPENED
+        // with, and re-reading it per render re-ran its validation and cloned
+        // the record for nothing.
+        initialRecord: readPdfTextViewState(identity.vaultId, path),
+        emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget,
+    }), [reading, identity, path, emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget]);
+    return <PdfPane reading={binding} {...rest} />;
+});
 // Whiteboards and notebooks float over their column for the same reason PDFs
 // do, and through the same geometry — see components/floatingSlot.ts.
 const CanvasPane = lazy(() => import('./CanvasPane'));
@@ -1048,13 +1089,14 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                             </div>
                         ) : null}
                     >
-                        <PdfPane
-                            {...{reading: {
-                                ...reading, identity: reading.identityForTab(tab),
-                                initialRecord: readPdfTextViewState(reading.identityForTab(tab).vaultId,tab.file.path),
-                                emphasisEnabled: readingPreferences.emphasis.enabled, typography: readingPreferences.typography,
-                                onEmphasisChange: setWordEmphasis, onTypographyChange: updateReadingTypography, registerKeyboardTarget,
-                            } satisfies PdfReadingBinding}}
+                        <PdfPaneHost
+                            reading={reading}
+                            tab={tab}
+                            emphasisEnabled={readingPreferences.emphasis.enabled}
+                            typography={readingPreferences.typography}
+                            onEmphasisChange={setWordEmphasis}
+                            onTypographyChange={updateReadingTypography}
+                            registerKeyboardTarget={registerKeyboardTarget}
                             file={tab.file}
                             isVisible={visible}
                             isFocused={tab.file.path === focusedPath}

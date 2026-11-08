@@ -1,5 +1,34 @@
 import { WidgetType } from '@codemirror/view';
-import katex from 'katex';
+
+/* ── KaTeX, fetched when a formula first needs it ───────────────────────────
+ * KaTeX is ~250KB of the main bundle — the largest single library in it, bigger
+ * than React — and it is parsed before anybody can type, in every session,
+ * including the many that never open a note with a `$` in them. Behind a
+ * dynamic import it is a chunk of its own.
+ *
+ * The seam is `renderMath`, which WRITES INTO AN ELEMENT THE CALLER OWNS, so
+ * nothing needs invalidating when the module lands: the formula's own source
+ * stands in its place until then — which is exactly what the editor shows while
+ * the caret is inside it anyway — and the same element is rendered into the
+ * moment KaTeX arrives. `warmMath` starts that fetch as soon as a document
+ * holding maths is opened, so by the time a formula scrolls into view it is
+ * usually already here.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+type Katex = typeof import('katex').default;
+let katex: Katex | null = null;
+let loading: Promise<void> | null = null;
+
+function loadKatex(): Promise<void> {
+    loading ??= import('katex').then(m => { katex = m.default; }).catch(() => { loading = null; });
+    return loading;
+}
+
+/** Start fetching the renderer. Call it when opening something with maths in
+ *  it; harmless and free once it has been called. */
+export function warmMath(): void {
+    if (!katex) void loadKatex();
+}
 
 /**
  * KaTeX doesn't implement the top-level LaTeX document environments that
@@ -49,8 +78,23 @@ function normalizeForKatex(latex: string): string {
  *    deliberate open question rather than an oversight.
  */
 export function renderMath(el: HTMLElement, latex: string, displayMode: boolean): void {
+    if (!katex) {
+        // The source, in its own place, until the renderer lands. Tagged so a
+        // late arrival cannot paint a formula into an element the caller has
+        // since reused for another one.
+        el.textContent = latex;
+        el.dataset.mathPending = latex;
+        void loadKatex().then(() => {
+            if (!katex || el.dataset.mathPending !== latex) return;
+            delete el.dataset.mathPending;
+            el.textContent = '';
+            renderMath(el, latex, displayMode);
+        });
+        return;
+    }
+    delete el.dataset.mathPending;
     try {
-        katex.render(normalizeForKatex(latex), el, {
+        katex!.render(normalizeForKatex(latex), el, {
             displayMode,
             throwOnError: false,
             output: 'html',

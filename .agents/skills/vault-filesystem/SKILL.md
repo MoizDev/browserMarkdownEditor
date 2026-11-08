@@ -217,6 +217,25 @@ it). A changed directory keeps its old handle and its children are re-pointed at
 **ticketed** (`publishTree`): a walk publishes only if no later-started one already has and its root
 is still the open vault, and the provider writes root and tree only via `commitRoot`/`commitTree`.
 
+## What a save may NOT cost
+
+A cache HIT still costs a `getFile()` — one browser round trip per note. Measured: a 1,000-note
+vault paid 1,004 of them every time the autosave landed, because `buildGraph` re-validated the whole
+vault to discover nothing had changed. So:
+
+- **`flushTab` primes rather than re-reads.** `graph.primeLinks(path, mtime, size, text)` puts the
+  text the app just wrote into the link cache and returns whether that note's links MOVED. They
+  usually have not, and then no rebuild runs at all. When they have, `rebuildGraph(false)` runs
+  without revalidating: pure arithmetic over what is in memory.
+- **`revalidate: true` is for somebody ELSE's write** — a tree change, a watcher rescan, a vault
+  open. Never for one of ours.
+- **No `Promise.all` over the vault.** `utils/pool.ts` (`mapPool`, `Limiter`, `VAULT_CONCURRENCY`)
+  bounds it; `Limiter` is counted across a whole recursion, which is what the tree walk needs.
+- **The first full index runs `onIdle`**, behind the notes the reader actually asked for.
+- **Do not refresh the tree for something the tree cannot show.** `saveAsset` walked every folder in
+  the vault after writing a pasted image into a `.Assets` the tree hides. Same trap as
+  `App.writeEntryStyles`.
+
 Hidden from the tree — ONE predicate, `utils/vaultEntries.ts` (`isHiddenVaultEntry`; the observer
 filter `isIgnoredChangePath` is built on it, so the two cannot drift): `.Assets`, `.Garbage`,
 `.DS_Store`, `.appearance.json` — the first three **per folder** — plus **`.git` (file or folder) and

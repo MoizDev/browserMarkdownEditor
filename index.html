@@ -8,10 +8,18 @@
     content="A browser-based Markdown editor with Obsidian-style live preview, LaTeX support, and local file editing." />
   <!-- The pen-tool glyph, duplicated from the "New drawing" button's icon. -->
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <!-- Fira Code: the LaTeX-source editing font (ligatures included). -->
+  <!-- Fira Code: the LaTeX-source editing font (ligatures included). Fetched
+       WITHOUT blocking the first paint: it is wanted by one rule (.cm-math-src,
+       the revealed source of a formula), and as a render-blocking stylesheet it
+       put a DNS + TLS + CSS round trip to a third party in front of the app
+       appearing at all — on a cold connection, most of the wait before anything
+       was on screen. `media="print"` is not matched while it loads, so it never
+       blocks; the onload swaps it in the moment it lands, and the monospace
+       stack stands in for the few milliseconds before that. -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet"
+    media="print" onload="this.media='all'" />
   <title>Markdown Editor</title>
 </head>
 

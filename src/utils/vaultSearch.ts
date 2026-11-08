@@ -1,3 +1,4 @@
+import { mapPool } from './pool';
 import { decodeDocumentText } from './diskVersion';
 // Vault-wide search (VSCode-style): matches file names and file contents
 // across the whole vault. The pure matching logic lives here so the sidebar
@@ -184,7 +185,12 @@ export function createVaultTextCache(): VaultTextCache {
             const startedGeneration = generation;
             const next = new Map<string, CacheEntry>();
             let totalSize = 0;
-            await Promise.all(files.map(async (node) => {
+            // Bounded: firing a whole vault's `getFile()` at once queues every
+            // one of them on the browser's file thread and holds every decoded
+            // payload alive until the slowest lands (utils/pool.ts). In tree
+            // order too, so which files fit the budget below is the same answer
+            // every time rather than a race.
+            await mapPool(files, async (node) => {
                 try {
                     const file = await node.handle.getFile();
                     if (file.size > MAX_INDEXED_FILE_SIZE) return;
@@ -205,7 +211,7 @@ export function createVaultTextCache(): VaultTextCache {
                 } catch {
                     // Unreadable (moved/locked) — its name remains searchable.
                 }
-            }));
+            });
             if (generation === startedGeneration) entries = next;
 
             const snapshot = new Map<string, string>();

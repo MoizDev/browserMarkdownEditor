@@ -1,7 +1,7 @@
 import { decodeDocumentText } from '../utils/diskVersion';
 import { fingerprintSnapshot } from '../utils/snapshotFingerprint';
 import type { ReadOnlyFileSnapshot } from '../types/reading';
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault, setVaultPinned, withVaultPaths } from '../utils/recentVaults';
@@ -11,6 +11,7 @@ import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { sortTrashChildren, sortTrashRoot } from '../utils/trash';
 import { ENTRY_STYLE_FILE } from '../utils/entryStyle';
+import { Limiter } from '../utils/pool';
 import { isGitName, isHiddenEntryName } from '../utils/vaultEntries';
 import { findDirNode, shareTree, spliceDir } from '../utils/treeShare';
 import { hashBytes, sameStat } from '../utils/diskVersion';
@@ -231,9 +232,16 @@ async function listDir(
     dirHandle: FileSystemDirectoryHandle,
     path = '',
     reuse?: ReadonlyMap<string, FileTreeNode>,
+    limiter: Limiter = new Limiter(WALK_CONCURRENCY),
 ): Promise<{ children: FileTreeNode[]; styleFile?: FileSystemFileHandle }> {
     const children: FileTreeNode[] = [];
     let styleFile: FileSystemFileHandle | undefined;
+    // Subfolders are listed AFTER this directory's own entries, several at a
+    // time (below). Walking them inline made the whole vault one long chain:
+    // every folder's round trip waited for the previous folder's entire
+    // subtree, so opening a vault took the SUM of every directory read on the
+    // disk, and the sidebar showed "Loading vault…" for all of it.
+    const subdirs: { index: number; name: string; handle: FileSystemDirectoryHandle; path: string }[] = [];
 
     for await (const [name, handle] of dirHandle.entries()) {
         if (name === ENTRY_STYLE_FILE && handle.kind === 'file') styleFile = handle;
@@ -247,16 +255,11 @@ async function listDir(
                 children.push(kept);
                 continue;
             }
-            const sub = await listDir(handle, entryPath);
-            children.push({
-                name,
-                kind: 'directory',
-                path: entryPath,
-                handle,
-                parentHandle: dirHandle,
-                children: sub.children,
-                styleFile: sub.styleFile,
-            });
+            // A placeholder keeps this child's place in the list while its own
+            // walk runs; the sort below is by name and kind, so the slot is
+            // filled before anything reads it.
+            subdirs.push({ index: children.length, name, handle, path: entryPath });
+            children.push(null as unknown as FileTreeNode);
         } else {
             children.push({
                 name,
@@ -267,6 +270,19 @@ async function listDir(
             });
         }
     }
+
+    await Promise.all(subdirs.map(dir => limiter.run(async () => {
+        const sub = await listDir(dir.handle, dir.path, undefined, limiter);
+        children[dir.index] = {
+            name: dir.name,
+            kind: 'directory',
+            path: dir.path,
+            handle: dir.handle,
+            parentHandle: dirHandle,
+            children: sub.children,
+            styleFile: sub.styleFile,
+        };
+    })));
 
     // Sort: directories first, then files. Alphabetical within each group.
     children.sort((a, b) => {
@@ -709,6 +725,13 @@ async function relistDirs(
     }
     return tree;
 }
+
+/* How many directories the tree walk reads at once, counted across the WHOLE
+   walk however deep it recurses (utils/pool.ts explains why that matters). The
+   walk is pure IO — the browser's file thread does the work — so this is a
+   queue depth rather than parallelism; serial, it was a chain as long as the
+   vault has folders, and the sidebar said "Loading vault…" for the sum of it. */
+const WALK_CONCURRENCY = 12;
 
 /** The watcher's polling cadence — see FileSystemProvider's watcher effect. */
 const POLL_THROTTLE_MS = 3000;
@@ -1473,8 +1496,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         await writable.write(blob);
         await writable.close();
 
-        await refreshTree(rootHandle);
-    }), [rootHandle, refreshTree, withMutation]);
+        // NO tree refresh. `.Assets` is hidden from the tree at every depth
+        // (utils/vaultEntries.ts), so nothing that just happened can appear in
+        // it — and the refresh was a walk of every folder in the vault, run
+        // while the reader waited for a pasted image to land. Same trap, same
+        // answer as App.writeEntryStyles.
+    }), [rootHandle, withMutation]);
 
     /**
      * Move an asset out of a folder's `.Assets` and into its `.Garbage` — what
@@ -2287,7 +2314,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         };
     }, [rootHandle, processVaultBatch]);
 
-    const value: FileSystemContextValue = {
+    /* MEMOIZED, and every value in it is a `useCallback` or a piece of state.
+       Without this the provider handed out a new object on every one of its own
+       renders — a tree publish, a watcher tick, a `recentVaults` update — and a
+       context value's identity goes STRAIGHT THROUGH `React.memo`. DocumentPane
+       and PdfPane, both memoized precisely so they do not re-render while the
+       reader types, re-rendered anyway. */
+    const value: FileSystemContextValue = useMemo(() => ({
         rootHandle,
         fileTree,
         isLoading,
@@ -2336,7 +2369,49 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         resolveFileHandle,
         subscribeVaultChanges,
         liveDetection,
-    };
+    }), [
+        rootHandle,
+        fileTree,
+        isLoading,
+        previousVault,
+        linkedVault,
+        recentVaults,
+        currentVaultId,
+        pickDirectory,
+        openRecentVault,
+        openVaultHandle,
+        openLinkedVault,
+        forgetRecentVault,
+        pinRecentVault,
+        readFile,
+        readFileSnapshot,
+        writeFile,
+        readFileBytes,
+        writeFileBytes,
+        importFiles,
+        createFile,
+        createFolder,
+        getAssetUrl,
+        saveAsset,
+        retireAsset,
+        restoreAsset,
+        restoreVault,
+        moveToTrash,
+        listTrash,
+        restoreFromTrash,
+        deleteFromTrash,
+        emptyTrash,
+        moveFile,
+        renameFile,
+        readFileVersioned,
+        readBytesVersioned,
+        writeFileVersioned,
+        writeConflictCopy,
+        recreateFile,
+        resolveFileHandle,
+        subscribeVaultChanges,
+        liveDetection,
+    ]);
 
     return (
         <FileSystemContext.Provider value={value}>

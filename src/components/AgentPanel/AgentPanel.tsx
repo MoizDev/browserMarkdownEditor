@@ -529,6 +529,7 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
                             onSend={send}
                             onStop={stop}
                             registerDrop={registerDrop}
+                            draftKey={vaultKey ? `${vaultKey}|${key}` : null}
                         />
                     </div>
                 </>

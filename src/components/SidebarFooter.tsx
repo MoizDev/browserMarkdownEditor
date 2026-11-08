@@ -60,6 +60,8 @@ interface SidebarFooterProps {
     onOpenRecentVault: (vault: RecentVault) => Promise<VaultOpenResult>;
     /** Drop one vault from the recent list, false if it could not be dropped. */
     onForgetRecentVault: (id: string) => Promise<boolean>;
+    /** Pin or unpin one, false if the list could not be rewritten. */
+    onPinRecentVault: (id: string, pinned: boolean) => Promise<boolean>;
     /** Open the native folder picker — a double-click on the switcher, or the
      *  menu's "Open folder…" row. Reports the switch's outcome, which that row
      *  needs: the picker shares one gate with every other raiser. */
@@ -102,6 +104,7 @@ function SidebarFooter({
     recentVaultLimit,
     onOpenRecentVault,
     onForgetRecentVault,
+    onPinRecentVault,
     onChangeVault,
     graphOpen,
     onToggleGraph,
@@ -119,10 +122,22 @@ function SidebarFooter({
      *  focus to. Null while closed. */
     const [vaultMenu, setVaultMenu] = useState<{ pos: VaultMenuPos; anchor: HTMLElement } | null>(null);
 
-    const listedVaults = useMemo(
-        () => recentVaults.slice(0, recentVaultLimit),
-        [recentVaults, recentVaultLimit]
-    );
+    /**
+     * What the menu prints: every PINNED vault, then as many of the rest as
+     * "Recent vaults shown" allows.
+     *
+     * Pinned rows are outside that limit rather than counted against it. The
+     * limit exists to keep the menu short by hiding vaults you have stopped
+     * using; a pin says this is not one of those, and a setting that could hide
+     * the folder someone pinned on purpose would make the pin a suggestion.
+     * They lead the list for the same reason — the point of pinning is not
+     * hunting for it.
+     */
+    const listedVaults = useMemo(() => {
+        const pinned = recentVaults.filter(v => v.pinned);
+        const rest = recentVaults.filter(v => !v.pinned);
+        return [...pinned, ...rest.slice(0, Math.max(0, recentVaultLimit - pinned.length))];
+    }, [recentVaults, recentVaultLimit]);
 
     // Per tree refresh, never per keystroke: `fileTree` only changes when the
     // vault's shape does.
@@ -268,6 +283,7 @@ function SidebarFooter({
                     currentVaultId={currentVaultId}
                     onOpen={onOpenRecentVault}
                     onForget={onForgetRecentVault}
+                    onPin={onPinRecentVault}
                     onBrowse={browseForVault}
                     onClose={closeVaultMenu}
                 />

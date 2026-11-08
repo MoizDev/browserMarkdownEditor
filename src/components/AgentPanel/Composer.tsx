@@ -29,10 +29,21 @@ export interface ComposerProps {
     onStop: () => void;
     /** AgentPanel hands dropped files here. */
     registerDrop: (handler: ((files: File[]) => void) | null) => void;
+    /**
+     * Where to keep an unsent message, so closing the tab mid-sentence does not
+     * throw it away — `<vault>|<chat>`, or null when there is no vault to key
+     * it by. One draft per chat: typing a question in one chat and switching to
+     * another must not carry the words across.
+     *
+     * Images are deliberately NOT kept: a prepared image is an object URL and
+     * some megabytes of data URL, neither of which belongs in localStorage or
+     * survives the page that minted it.
+     */
+    draftKey: string | null;
 }
 
-export function Composer({ blockedReason, running, stopping, imagesAllowed, chip, onSend, onStop, registerDrop }: ComposerProps) {
-    const [text, setText] = useState('');
+export function Composer({ blockedReason, running, stopping, imagesAllowed, chip, onSend, onStop, registerDrop, draftKey }: ComposerProps) {
+    const [text, setText] = useState(() => readDraft(draftKey));
     const [images, setImages] = useState<PreparedImage[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [preparing, setPreparing] = useState(0);
@@ -40,6 +51,21 @@ export function Composer({ blockedReason, running, stopping, imagesAllowed, chip
     const fileInput = useRef<HTMLInputElement>(null);
     const imagesRef = useRef(images);
     useEffect(() => { imagesRef.current = images; });
+
+    // Follow the chat: the draft on screen belongs to the chat on screen, so a
+    // switch puts this one away and brings that one out. Keyed reads, not a
+    // remount, because the composer holds the image tray and the textarea's
+    // height, neither of which should be thrown away by a chat switch.
+    const lastDraftKey = useRef(draftKey);
+    useEffect(() => {
+        if (lastDraftKey.current === draftKey) return;
+        lastDraftKey.current = draftKey;
+        setText(readDraft(draftKey));
+    }, [draftKey]);
+
+    // Written on every keystroke: a draft is a few hundred bytes, and the one
+    // moment it has to be right is the one nobody announces — the tab closing.
+    useEffect(() => { writeDraft(draftKey, text); }, [draftKey, text]);
 
     // Thumbnails still in the tray when the panel unmounts are nobody's.
     useEffect(() => () => { for (const img of imagesRef.current) URL.revokeObjectURL(img.url); }, []);
@@ -213,4 +239,56 @@ export function Composer({ blockedReason, running, stopping, imagesAllowed, chip
             </div>
         </div>
     );
+}
+
+/* ───────────────────────── the unsent message ─────────────────────────
+   One localStorage key holding every chat's draft, so a tab closed mid-sentence
+   comes back with the sentence. Per browser, not per vault file, for the reason
+   the open-chat memory is (openChatMemory.ts): this is one window's state, not
+   something to push into a vault other machines sync. */
+
+const DRAFTS_KEY = 'vaultAgentDrafts';
+
+function readDrafts(): Record<string, string> {
+    try {
+        const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? 'null') as unknown;
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+        const out: Record<string, string> = {};
+        for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+            if (typeof value === 'string' && value) out[key] = value;
+        }
+        return out;
+    } catch {
+        return {};
+    }
+}
+
+function readDraft(key: string | null): string {
+    if (!key) return '';
+    return readDrafts()[key] ?? '';
+}
+
+/** Keep the thirty most recent drafts. Deleting a chat does not come past
+ *  here, so without a cap an abandoned draft would outlive its chat for ever. */
+const MAX_DRAFTS = 30;
+
+function writeDraft(key: string | null, text: string): void {
+    if (!key) return;
+    try {
+        const drafts = readDrafts();
+        if (!text.trim()) {
+            if (!(key in drafts)) return;        // nothing to clear
+            delete drafts[key];
+        } else {
+            if (drafts[key] === text) return;    // unchanged
+            delete drafts[key];                  // re-insert, so this key is the youngest
+            drafts[key] = text;
+        }
+        const keys = Object.keys(drafts);
+        const kept = keys.length <= MAX_DRAFTS ? drafts : Object.fromEntries(
+            keys.slice(keys.length - MAX_DRAFTS).map(k => [k, drafts[k]]));
+        localStorage.setItem(DRAFTS_KEY, JSON.stringify(kept));
+    } catch {
+        // Full or blocked: the draft lives as long as the page does, as before.
+    }
 }

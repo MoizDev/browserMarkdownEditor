@@ -4,7 +4,8 @@ import type { ReadOnlyFileSnapshot } from '../types/reading';
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
-import { forgetVault, labelVaults, loadRecentVaults, rememberVault, withVaultPaths } from '../utils/recentVaults';
+import { forgetVault, labelVaults, loadRecentVaults, rememberVault, setVaultPinned, withVaultPaths } from '../utils/recentVaults';
+import { requestPersistentStorage } from '../utils/storagePersistence';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
@@ -1004,6 +1005,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             commitRoot(handle);
             commitTree(tree, handle);
             await recordVault(handle);
+            // Opening a vault is the moment this app has something worth
+            // keeping — the handle just stored is the only way back into that
+            // folder without the picker. Chrome never prompts for this; it
+            // decides from engagement, so asking on each open is how a refusal
+            // early on turns into a grant later (utils/storagePersistence.ts).
+            void requestPersistentStorage();
             return 'ok';
         } catch (err) {
             // Cancelling the picker is not a failure — nothing was asked for and
@@ -1033,6 +1040,22 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             return true;
         } catch (err) {
             console.warn('Could not drop the vault from the recent list:', err);
+            return false;
+        }
+    }, [publishVaults]);
+
+    /**
+     * Pin or unpin a vault, so the menu keeps it at the top and the stored cap
+     * never trims it away (utils/recentVaults.ts). Reports like
+     * `forgetRecentVault`: an IndexedDB write can fail, and a pin that silently
+     * did not take would be worse than one that says so.
+     */
+    const pinRecentVault = useCallback(async (id: string, pinned: boolean) => {
+        try {
+            await publishVaults(await setVaultPinned(id, pinned), rootHandleRef.current);
+            return true;
+        } catch (err) {
+            console.warn('Could not change the vault pin:', err);
             return false;
         }
     }, [publishVaults]);
@@ -1095,6 +1118,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             commitRoot(handle);
             commitTree(tree, handle);
             await recordVault(handle);
+            // Opening a vault is the moment this app has something worth
+            // keeping — the handle just stored is the only way back into that
+            // folder without the picker. Chrome never prompts for this; it
+            // decides from engagement, so asking on each open is how a refusal
+            // early on turns into a grant later (utils/storagePersistence.ts).
+            void requestPersistentStorage();
             return 'ok';
         } catch (err) {
             if ((err as DOMException)?.name === 'NotFoundError') return 'missing';
@@ -2253,6 +2282,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         openFolderAsVault: openVaultHandle,
         openLinkedVault,
         forgetRecentVault,
+        pinRecentVault,
         readFile,
         readFileSnapshot,
         writeFile,

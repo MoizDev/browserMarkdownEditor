@@ -144,6 +144,15 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   reply lands. `session.history` survives as the fallback: a chat with no tree file (made before this,
   or whose file was lost) is read from the CLI and becomes a straight-line tree it can then be
   branched from (`treeFromItems`).
+- **Which chat was on screen is remembered per vault** (`components/AgentPanel/openChatMemory.ts`,
+  localStorage, capped at 20 vaults) and put back when the index finishes loading — the transcripts
+  always survived a reload as files, but the panel used to reopen on a blank draft, so the
+  conversation LOOKED lost. Restored only when nothing is open yet: a chat picked, or a run started,
+  while the index was still loading is the user's own choice and outranks it. Written at the four
+  moments the choice changes — `openChat`, `selectAgent` (a new chat clears it, or reloading would
+  reopen the chat just stepped out of), the draft becoming a real chat mid-run, and `deleteChat`. The
+  composer's unsent text rides along in the same spirit (`Composer`, keyed `<vault>|<chat>`, images
+  deliberately excluded: object URLs do not survive the page that minted them).
 - **A branch is a SESSION of its own.** `activeSessionId` is the newest assistant turn on the branch
   being shown, so an edit starts a fresh CLI session and carries the kept turns as a
   `<bme-history>` transcript (`transcriptPrefix`, 40k budget, oldest dropped first). Resuming the

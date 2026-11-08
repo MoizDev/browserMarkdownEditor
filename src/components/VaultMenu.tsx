@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Check, FolderIcon, Minus } from './icons';
+import { Check, FolderIcon, Minus, Pin } from './icons';
 import LucideGlyph from './LucideGlyph';
 import { entryColorVar } from '../utils/entryStyle';
 import { getEntryStyles, subscribeEntryStyles } from '../utils/entryStyleStore';
@@ -18,6 +18,10 @@ interface VaultMenuProps {
     /** Drop a row from the recent list — the folder is not touched. Resolves
      *  false if the list could not be rewritten. */
     onForget: (id: string) => Promise<boolean>;
+    /** Pin or unpin a row: pinned vaults head the menu, are listed whatever the
+     *  "Recent vaults shown" limit is, and are never trimmed from storage.
+     *  Resolves false if the list could not be rewritten. */
+    onPin: (id: string, pinned: boolean) => Promise<boolean>;
     /** Fall through to the native folder picker ("Open folder…"). Reports like
      *  `onOpen` — the picker is a vault switch too, so it can come back 'busy'
      *  with no picker ever shown, and this menu is what closes on the result. */
@@ -70,7 +74,7 @@ const focusedRowIn = (menu: HTMLElement | null): number =>
  * Positioned `fixed` from the anchor's rect, like the linked-mentions popover:
  * the sidebar clips its overflow and can be narrower than this menu.
  */
-export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onForget, onBrowse, onClose, style }: VaultMenuProps) {
+export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onForget, onPin, onBrowse, onClose, style }: VaultMenuProps) {
     const [error, setError] = useState<string | null>(null);
     // The vault being opened, if any — a second click while a switch is in
     // flight would race two vaults into the same app.
@@ -87,6 +91,9 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
     // repeatable; a minus click that handed focus to a vault row would arm the
     // next Enter to open a vault nobody chose. Null when nothing is pending.
     const focusRowRef = useRef<{ index: number; control: 'row' | 'forget' } | null>(null);
+    /** The vault whose pin was just pressed — by id, because pinning re-orders
+     *  the list and a row index would land on somebody else. */
+    const pinFocusRef = useRef<string | null>(null);
 
     // Focus goes back to the button on the way out — the menu takes it on open
     // (below), so Escape or a pick would otherwise strand a keyboard user at the
@@ -198,6 +205,24 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
         setError(`Could not remove “${vault.label}” from this list.`);
     }, [opening, onForget]);
 
+    /**
+     * Pin or unpin a row.
+     *
+     * The list re-orders underneath (pinned vaults head the menu), so focus is
+     * put back on the pin of the vault it belonged to rather than on a row
+     * index — which after a re-order names a different vault. Looked up by id
+     * for that reason, where `forget` can use a position: nothing moves when a
+     * row is removed except what comes after it.
+     */
+    const pin = useCallback(async (vault: RecentVault) => {
+        if (opening) return;
+        setError(null);
+        pinFocusRef.current = vault.id;
+        if (await onPin(vault.id, !vault.pinned)) return;
+        pinFocusRef.current = null;
+        setError(`Could not ${vault.pinned ? 'unpin' : 'pin'} “${vault.label}”.`);
+    }, [opening, onPin]);
+
     // Hand focus to whichever row slid into the removed one's place (or, when
     // the last one went, to "Open folder…"). Without this, removing the focused
     // row drops focus to <body> and the arrow keys — which are handled on this
@@ -215,6 +240,18 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
         row?.querySelector<HTMLButtonElement>(
             pending.control === 'forget' ? '.vault-menu-forget, .vault-menu-item' : '.vault-menu-item'
         )?.focus();
+    }, [vaults]);
+
+    // The same courtesy for pinning, which moves the row rather than removing
+    // it: follow the vault to wherever it went, so the pin can be pressed twice
+    // in a row from the keyboard.
+    useEffect(() => {
+        const id = pinFocusRef.current;
+        if (!id) return;
+        pinFocusRef.current = null;
+        menuRef.current
+            ?.querySelector<HTMLButtonElement>(`.vault-menu-pin[data-vault="${CSS.escape(id)}"]`)
+            ?.focus();
     }, [vaults]);
 
     return (
@@ -256,6 +293,21 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
                             <VaultRowIcon vault={vault} />
                             <span className="vault-menu-label">{vault.label}</span>
                             {isCurrent && <Check size={13} className="vault-menu-check" aria-hidden="true" />}
+                        </button>
+                        {/* Shown for every row, the open vault included: the
+                            vault you are in is the likeliest one to want kept,
+                            and unlike the minus a pin on it means something. */}
+                        <button
+                            className={`vault-menu-pin tree-action-btn${vault.pinned ? ' is-on' : ''}`}
+                            role="menuitem"
+                            data-vault={vault.id}
+                            aria-label={vault.pinned ? `Unpin “${vault.label}”` : `Pin “${vault.label}” to the top of this list`}
+                            aria-pressed={!!vault.pinned}
+                            data-tooltip={vault.pinned ? 'Unpin from the top' : 'Keep at the top of this list'}
+                            disabled={opening !== null}
+                            onClick={() => void pin(vault)}
+                        >
+                            <Pin size={12} filled={!!vault.pinned} aria-hidden="true" />
                         </button>
                     </div>
                 );

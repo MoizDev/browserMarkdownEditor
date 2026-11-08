@@ -8,6 +8,7 @@ import {
 } from '../utils/terminalSettings';
 import type { CaretStyle, SettingsDefaults } from '../types';
 import { VaultFolderSetting } from './VaultFolderSetting';
+import { StorageDurabilitySetting } from './StorageDurabilitySetting';
 
 const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
 
@@ -281,6 +282,8 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                             </button>
                         </div>
                     </div>
+
+                    <StorageDurabilitySetting />
 
                     <div className="setting-row">
                         <div className="setting-info">

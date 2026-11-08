@@ -24,6 +24,7 @@ import {
     activePath, activeSessionId, append as appendNode, branchFrom, emptyTree, isEmpty,
     selectVersion as selectVersionIn, type ChatNode, type ChatTree, type StoredTool,
 } from '../../utils/chatTree';
+import { readOpenChat, rememberOpenChat } from './openChatMemory';
 
 /* ───────────────────────── shapes ───────────────────────── */
 
@@ -380,6 +381,15 @@ class ChatStore {
             const index = await host.readChatIndex();
             if (seq !== this.indexLoadSeq || vaultKey !== this.state.vaultKey) return;
             this.set({ chats: [...index.chats].sort(byRecent), indexStatus: 'ready', indexError: undefined });
+            // Put back the chat this vault was left in — the rest of what the
+            // editor already restores (tabs, reading places, canvas cameras),
+            // now for the panel. Only when nothing is open yet: a chat picked,
+            // or a run started, while the index was still loading is the user's
+            // own choice and outranks the remembered one.
+            if (!this.state.activeChatId) {
+                const remembered = readOpenChat(vaultKey);
+                if (remembered && this.state.chats.some(c => c.id === remembered)) this.openChat(remembered);
+            }
         } catch (e) {
             if (seq !== this.indexLoadSeq) return;
             this.set({ indexStatus: 'error', indexError: e instanceof Error ? e.message : String(e) });
@@ -489,6 +499,9 @@ class ChatStore {
         const teaching = { ...this.state.teaching };
         delete teaching[DRAFT_KEY];
         this.set({ draft, activeChatId: null, conversations, teaching });
+        // A new chat has nothing to come back to, and leaving the last id
+        // remembered would reopen a conversation the user just stepped out of.
+        rememberOpenChat(this.state.vaultKey, null);
         void this.ensureModels(agent);
     }
 
@@ -513,6 +526,7 @@ class ChatStore {
         const chat = this.state.chats.find(c => c.id === id);
         if (!chat) return;
         this.set({ activeChatId: id });
+        rememberOpenChat(this.state.vaultKey, id);
         void this.ensureModels(chat.agent);
         const conversation = this.state.conversations[id];
         if (!conversation || conversation.history === 'error') void this.loadHistory(chat);
@@ -644,6 +658,7 @@ class ChatStore {
         delete conversations[id];
         const teaching = { ...this.state.teaching };
         delete teaching[id];
+        if (readOpenChat(this.state.vaultKey) === id) rememberOpenChat(this.state.vaultKey, null);
         this.set({
             conversations,
             teaching,
@@ -746,6 +761,9 @@ class ChatStore {
                     chats: [created, ...this.state.chats],
                     run: { ...this.state.run!, chatId: created.id },
                 });
+                // The draft just became a real chat: it is the one to come back
+                // to, and until now there was nothing to remember.
+                rememberOpenChat(this.state.vaultKey, created.id);
                 await this.writeIndex(index => ({ ...index, chats: [...index.chats.filter(c => c.id !== created.id), created] }));
                 if (!stillOurs()) return;
             }

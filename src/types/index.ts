@@ -279,6 +279,10 @@ export interface StoredVault {
   name: string;                          // the folder's own name (handle.name)
   handle: FileSystemDirectoryHandle;     // structured-cloned into IndexedDB
   openedAt: number;                      // ms epoch; the list is sorted by it
+  /** Kept at the top of the menu, never trimmed by the stored cap, and listed
+   *  whatever "Recent vaults shown" is set to — the vaults you live in, as
+   *  opposed to the ones you looked at once. */
+  pinned?: boolean;
 }
 
 /** A stored vault plus what the menu prints for it — the folder name, or
@@ -431,6 +435,9 @@ export interface FileSystemContextValue {
   /** Take one vault off the recent list — a record only, nothing on disk.
    *  Resolves false if the list could not be rewritten. */
   forgetRecentVault: (id: string) => Promise<boolean>;
+  /** Pin or unpin a vault in the recent list. False if the list could not be
+   *  rewritten (blocked storage), so the menu can say so. */
+  pinRecentVault: (id: string, pinned: boolean) => Promise<boolean>;
   readFileSnapshot: (handle: FileSystemFileHandle, signal?: AbortSignal) => Promise<import('./reading').ReadOnlyFileSnapshot>;
   readFile: (fileHandle: FileSystemFileHandle) => Promise<string>;            // :143
   writeFile: (fileHandle: FileSystemFileHandle, content: string) => Promise<void>; // :151

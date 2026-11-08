@@ -322,6 +322,19 @@ prints is Settings → Vault → "Recent vaults shown" (`recentVaultLimit`, clam
 `tabSize` — it reaches `Array.slice`). The store deliberately keeps more than the default 10 so
 raising the setting later still has history to show.
 
+- **PINNED vaults sit outside both caps.** `StoredVault.pinned` keeps a vault at the head of the menu
+  (`SidebarFooter.listedVaults`), listed whatever "Recent vaults shown" is set to, and exempt from the
+  `MAX_STORED_VAULTS` trim (`trim()` spends the cap on unpinned entries only). The cap exists to stop
+  one-off folders piling up; a pin says this is not one of those, and quietly dropping the folder
+  someone works in daily — because they had opened thirty others since — is what it is for. Unknown
+  keys on a stored entry are deliberately NOT shape-checked, so an older build's entries read as
+  unpinned rather than as broken records.
+- **The whole list can be evicted, and `utils/storagePersistence.ts` is the only lever against it.**
+  Handles are the one thing here with no path to rebuild them from, so an evicted origin means
+  finding every vault in the picker again. `requestPersistentStorage()` runs on each vault open (the
+  gesture that proves the app is in real use); Chrome never prompts, it decides from engagement, so a
+  refusal is not final and asking again later is the point. Settings → Vault reports which footing
+  the origin is on (`StorageDurabilitySetting`).
 - **The handle itself is what's stored**, because re-opening a vault needs a real handle and there is
   no path to rebuild one from. Which makes **`isSameEntry` the only identity test**: two handles for
   one folder are always distinct objects (a reload deserializes a new one out of IndexedDB, a re-pick

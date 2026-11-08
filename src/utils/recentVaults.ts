@@ -17,7 +17,12 @@ const IDB_KEY = 'recent-vaults';
 /** Hard cap on the stored list, so it can't grow without bound across a
  *  lifetime of vault-hopping. The user's "Recent vaults shown" setting decides
  *  how many of these the menu prints, and it can be raised up to this cap —
- *  which is why the store deliberately keeps more entries than the default. */
+ *  which is why the store deliberately keeps more entries than the default.
+ *
+ *  PINNED VAULTS ARE OUTSIDE IT. The cap exists to stop one-off folders piling
+ *  up; a pinned vault is the opposite of a one-off, and a list that quietly
+ *  dropped the folder someone works in every day — because they had opened
+ *  thirty others since — would be exactly the wrong thing to forget. */
 export const MAX_STORED_VAULTS = 30;
 
 /** How many recent vaults the menu lists until the user says otherwise. */
@@ -58,6 +63,9 @@ function isStoredVault(v: unknown): v is StoredVault {
         && typeof entry.name === 'string'
         && !!entry.handle
         && entry.handle.kind === 'directory';
+    // `pinned` is deliberately not checked: an older build wrote entries
+    // without it, and a newer one may write keys this build has never heard of.
+    // Both read back as "not pinned" rather than as a broken record.
 }
 
 function newId(): string {
@@ -115,11 +123,44 @@ export function rememberVault(handle: FileSystemDirectoryHandle): Promise<{ list
             name: handle.name,
             handle,
             openedAt: Date.now(),
+            // A re-open must not unpin what was pinned.
+            ...(existing >= 0 && list[existing].pinned ? { pinned: true } : {}),
         };
 
-        const next = [entry, ...list.filter((_, i) => i !== existing)].slice(0, MAX_STORED_VAULTS);
+        const next = trim([entry, ...list.filter((_, i) => i !== existing)]);
         await set(IDB_KEY, next);
         return { list: next, id: entry.id };
+    });
+}
+
+/**
+ * The stored list, capped — but counting only the vaults the cap is FOR.
+ *
+ * Pinned entries are kept whatever happens and in their existing order, and the
+ * cap is then spent on the rest. A user who pins more vaults than the cap keeps
+ * all of them: they asked for each one by name, which is the opposite of the
+ * runaway the cap guards against.
+ */
+function trim(list: StoredVault[]): StoredVault[] {
+    const pinned = list.filter(v => v.pinned);
+    const rest = list.filter(v => !v.pinned).slice(0, Math.max(0, MAX_STORED_VAULTS - pinned.length));
+    // Rebuilt in the ORIGINAL order, not pinned-first: this is the storage
+    // order (newest first), and where the menu puts a pinned row is the menu's
+    // business — see SidebarFooter.
+    const keep = new Set([...pinned, ...rest]);
+    return list.filter(v => keep.has(v));
+}
+
+/** Pin or unpin one vault, and return the list as it now stands. */
+export function setVaultPinned(id: string, pinned: boolean): Promise<StoredVault[]> {
+    return serialize(async () => {
+        const list = await readList();
+        if (!list.some(v => v.id === id)) return list;
+        const next = list.map(v => (v.id === id
+            ? (pinned ? { ...v, pinned: true } : (() => { const { pinned: _was, ...rest } = v; return rest; })())
+            : v));
+        await set(IDB_KEY, next);
+        return next;
     });
 }
 

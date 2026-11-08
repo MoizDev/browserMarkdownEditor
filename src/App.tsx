@@ -341,6 +341,7 @@ export default function App() {
     openFolderAsVault,
     openLinkedVault,
     forgetRecentVault,
+    pinRecentVault,
     readFile,
     writeFile,
     readFileBytes,
@@ -4488,6 +4489,7 @@ export default function App() {
           recentVaultLimit={recentVaultLimit}
           onOpenRecentVault={openRecentVault}
           onForgetRecentVault={forgetRecentVault}
+          onPinRecentVault={pinRecentVault}
           onChangeVault={pickDirectory}
           graphOpen={mainView === 'graph'}
           onToggleGraph={toggleGraph}

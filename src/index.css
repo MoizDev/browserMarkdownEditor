@@ -744,9 +744,13 @@ body.is-resizing-terminal * {
    placeholder element to hold the gap. The column is the 22px control plus the
    2px that keeps its hover chip off the menu's own 4px padding; flush at 4, the
    chip's rounded corner sat almost on the border. */
+/* Three columns: the minus, the vault itself, and the pin. The two controls
+   bracket the label rather than crowding one end, and each keeps its column
+   whether or not the row draws it — a row whose minus is missing (the open
+   vault) must not shift its label. */
 .vault-menu-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
   align-items: center;
   border-radius: var(--radius-s);
 }
@@ -805,14 +809,40 @@ body.is-resizing-terminal * {
   color: var(--text-normal);
 }
 
-.vault-menu-forget:disabled {
+.vault-menu-forget:disabled,
+.vault-menu-pin:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* The pin: faint until the row is hovered or focused, like the minus — except
+   when it is ON, where it is the row's own state and has to read at a glance. */
+.vault-menu-row .vault-menu-pin {
+  grid-column: 3;
+  justify-self: start;
+  color: var(--text-faint);
+  opacity: 0;
+}
+
+.vault-menu-row:hover .vault-menu-pin,
+.vault-menu-row:has(:focus-visible) .vault-menu-pin,
+.vault-menu-row .vault-menu-pin.is-on {
+  opacity: 1;
+}
+
+.vault-menu-row .vault-menu-pin.is-on {
+  color: var(--interactive-accent);
+}
+
+.vault-menu-row .vault-menu-pin:hover:not(:disabled) {
+  background: var(--background-modifier-border);
+  color: var(--text-normal);
 }
 
 /* The row draws one ring for both of its buttons, so neither draws its own —
    without this the UA's default ring nests inside the row's. */
 .vault-menu-forget:focus-visible,
+.vault-menu-pin:focus-visible,
 .vault-menu-item:focus-visible {
   outline: none;
   color: var(--text-normal);
@@ -2510,6 +2540,14 @@ body.is-resizing-panes * {
   background: rgba(127, 90, 240, 0.1);
   padding: 2px 8px;
   border-radius: 10px;
+}
+
+/* A setting's current STATE, as against `.settings-value`'s number: no chip and
+   no accent, because it sits beside the control that changes it and only one of
+   the two should look pressable. */
+.settings-status {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .settings-slider {

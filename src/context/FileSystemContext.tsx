@@ -10,6 +10,7 @@ import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { sortTrashChildren, sortTrashRoot } from '../utils/trash';
+import { ENTRY_STYLE_FILE } from '../utils/entryStyle';
 import { isGitName, isHiddenEntryName } from '../utils/vaultEntries';
 import { findDirNode, shareTree, spliceDir } from '../utils/treeShare';
 import { hashBytes, sameStat } from '../utils/diskVersion';
@@ -211,9 +212,31 @@ async function buildFileTree(
     path = '',
     reuse?: ReadonlyMap<string, FileTreeNode>,
 ): Promise<FileTreeNode[]> {
+    return (await listDir(dirHandle, path, reuse)).children;
+}
+
+/**
+ * `buildFileTree` for one directory, plus the one thing about the directory
+ * ITSELF that the walk is the cheap place to learn: whether it holds an
+ * `.appearance.json`, and its handle if it does.
+ *
+ * App reads a folder's icons out of that handle (utils/entryStyle.ts — a look
+ * is stored beside the thing it describes, so it survives that folder being
+ * opened as a vault of its own). Noticed HERE because this loop already has
+ * every entry of every folder in its hand: the alternative is a speculative
+ * `getFileHandle` per folder at every vault open, nearly all of them rejections.
+ * A folder with no custom looks costs nothing at all.
+ */
+async function listDir(
+    dirHandle: FileSystemDirectoryHandle,
+    path = '',
+    reuse?: ReadonlyMap<string, FileTreeNode>,
+): Promise<{ children: FileTreeNode[]; styleFile?: FileSystemFileHandle }> {
     const children: FileTreeNode[] = [];
+    let styleFile: FileSystemFileHandle | undefined;
 
     for await (const [name, handle] of dirHandle.entries()) {
+        if (name === ENTRY_STYLE_FILE && handle.kind === 'file') styleFile = handle;
         if (isHiddenEntryName(name, !path, handle.kind)) continue;
 
         const entryPath = path ? `${path}/${name}` : name;
@@ -224,14 +247,15 @@ async function buildFileTree(
                 children.push(kept);
                 continue;
             }
-            const subtree = await buildFileTree(handle, entryPath);
+            const sub = await listDir(handle, entryPath);
             children.push({
                 name,
                 kind: 'directory',
                 path: entryPath,
                 handle,
                 parentHandle: dirHandle,
-                children: subtree,
+                children: sub.children,
+                styleFile: sub.styleFile,
             });
         } else {
             children.push({
@@ -250,7 +274,7 @@ async function buildFileTree(
         return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
 
-    return children;
+    return { children, styleFile };
 }
 
 /* ── The trash bin's crawl ───────────────────────────────────────────────────

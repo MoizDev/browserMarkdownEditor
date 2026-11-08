@@ -76,9 +76,10 @@ app — load `verify-in-browser` before claiming it works.
   goes through `freeEntryName`, which counts **both** files and folders; `moveFile`/`renameFile` and
   the notebook PDF export are the deliberate exceptions. **`createFile` is the hole** — it
   opens-or-*truncates*, guarded at `App.handleCreateFile` and the agent host; anything new inherits it.
-- **`.Assets` (images) and `.Garbage` (trash) are per FOLDER**, hidden, owned by `utils/assets.ts` — a
-  folder carries its own pictures and deletions wherever it goes. `.appearance.json` (looks, custom
-  tree order; **new keys need the user's OK**) is root-only, like `.VaultAgent` (`vault-filesystem`).
+- **`.Assets` (images), `.Garbage` (trash) and `.appearance.json` (looks, custom tree order; **new
+  keys need the user's OK**) are per FOLDER**, hidden at every depth — a folder carries its own
+  pictures, deletions and looks wherever it goes, and a folder opened as a vault of its own still
+  has them. `.VaultAgent` stays root-only (`vault-filesystem`).
 - **Paths are vault-root-relative with no vault-name prefix**, centralized in `utils/paths.ts`;
   `buildFileTree` and every create/move/rename tab handler must agree or tabs stop deduping.
 - **The URL hash mirrors `{vault, file}`** (`utils/appUrl.ts`), NAMING a stored vault. Read ONCE on

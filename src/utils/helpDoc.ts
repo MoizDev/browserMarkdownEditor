@@ -48,7 +48,7 @@ The left sidebar displays your vault's folder structure. You can click on any no
 ### Sorting and Finding Your Place
 **Change sort order** (the arrow beside the lines) lists the tree by **File name (A to Z)**, **File name (Z to A)**, **Modified time (new to old)**, **Modified time (old to new)** or **Custom**; the tick shows the one in use, and the app remembers it. Under all but Custom, folders stay at the top, in name order. Under a modified-time order a note moves to the top the moment it saves. Moving or renaming a file counts as modifying it, since the app copies it to its new place. There is no "created time" order: browsers do not tell a web page when a file was created.
 
-**Custom** is your own order: drag files and folders into whatever arrangement you like, folders mixed in among the files if you want (see *Drag and Drop*). Until you move something, a folder looks just as it does under File name (A to Z). Anything added later — a new note, something put back from the Trash — appears at the end of its folder until you place it. The order is kept per vault, in the hidden \`.appearance.json\` at the top of it, so it travels with the vault; choosing another sort order leaves it untouched, and choosing **Custom** again brings it straight back.
+**Custom** is your own order: drag files and folders into whatever arrangement you like, folders mixed in among the files if you want (see *Drag and Drop*). Until you move something, a folder looks just as it does under File name (A to Z). Anything added later — a new note, something put back from the Trash — appears at the end of its folder until you place it. The order is kept in the hidden \`.appearance.json\` inside each folder you have arranged, so it travels with the vault and with the folder; choosing another sort order leaves it untouched, and choosing **Custom** again brings it straight back.
 
 **Auto-reveal current file** is an on/off switch, off to begin with. While it is on (its button stays shaded), whatever you switch to in the editor is found in the tree for you: the folders it is in open, and its row scrolls into view. It acts when you change notes (and when you turn it on, or come back to Files from Search) — never on its own after that, so a folder you close yourself stays closed.
 
@@ -95,10 +95,14 @@ On a file, the colour is usually the part you want: a file's icon already says
 what it is (a note, a notebook, a drawing), so replacing it is offered but never
 the default.
 
-This is remembered in a hidden \`.appearance.json\` at the top of your vault, so
-the icons travel with the vault rather than living in one browser. Renaming or
-moving something takes its icon along — a folder's carries everything inside it —
-and trashing it forgets it.
+This is remembered in a hidden \`.appearance.json\` inside the folder the thing
+sits in, so the icons travel with the vault rather than living in one browser.
+Because a look is kept beside what it describes, opening a folder on its own —
+from Finder, or with **Open as Vault** — shows exactly the icons it showed from
+the whole vault, and anything you change in there is there when you go back out.
+Renaming or moving something takes its icon along — a folder's carries everything
+inside it — and trashing it forgets it. Icons set in an older version of the app
+move across by themselves the first time you open the vault.
 
 A folder you have also opened as a vault shows the same icon in the vault menu,
 so the list you switch vaults with looks like the tree you set up.

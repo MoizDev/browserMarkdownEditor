@@ -219,8 +219,9 @@ is still the open vault, and the provider writes root and tree only via `commitR
 
 Hidden from the tree — ONE predicate, `utils/vaultEntries.ts` (`isHiddenVaultEntry`; the observer
 filter `isIgnoredChangePath` is built on it, so the two cannot drift): `.Assets`, `.Garbage`,
-`.DS_Store` — the first two **per folder** — plus **`.git` (file or folder) and `*.crswap` at any
-depth**; and at the vault ROOT only, `.appearance.json` and `ROOT_HIDDEN_DIRS` (`utils/vaultAgentStore.ts`:
+`.DS_Store`, `.appearance.json` — the first three **per folder** — plus **`.git` (file or folder) and
+`*.crswap` at any depth**; and at the vault ROOT only, `.folders.json` (the legacy looks file) and
+`ROOT_HIDDEN_DIRS` (`utils/vaultAgentStore.ts`:
 `.VaultAgent`, `.claude`, `.agents`, `.codex`, `.opencode` — the AI agent's folders). `.git` is never
 even walked (the tree, the observer, the trash crawl and `emptyTrash`'s sweep all skip it), yet
 `copyDirRecursive` still copies it when its folder moves. Graph and vault search are built from the

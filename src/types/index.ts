@@ -35,6 +35,12 @@ export interface FileTreeDirNode {
   handle: FileSystemDirectoryHandle;       // FileSystemContext.jsx:45
   parentHandle: FileSystemDirectoryHandle; // FileSystemContext.jsx:46
   children: FileTreeNode[];                // FileSystemContext.jsx:47 (recursive)
+  /** This folder's own `.appearance.json`, when it has one — the icons and
+   *  colours of the things INSIDE it (utils/entryStyle.ts). Noticed by the tree
+   *  walk, which is already holding every entry of every folder, and read by
+   *  App once per vault open. Undefined for a folder nothing was ever given a
+   *  look in, which is nearly all of them. */
+  styleFile?: FileSystemFileHandle;
 }
 
 /** The recursive file/folder tree node union. */

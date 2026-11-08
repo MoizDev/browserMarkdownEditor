@@ -12,6 +12,7 @@ import {
 import { isTabDrag } from '../utils/tabDrag';
 import { openContextMenu } from '../utils/contextMenu';
 import { isActiveFilePath, subscribeActiveFile } from '../utils/activeFile';
+import { isExpanded, subscribeExpanded } from '../utils/expandedPaths';
 import LucideGlyph from './LucideGlyph';
 import { getEntryStyle, getEntryStyles, subscribeEntryStyles } from '../utils/entryStyleStore';
 import { entryColorVar, type IconNode } from '../utils/entryStyle';
@@ -39,7 +40,9 @@ interface TreeNodeProps {
     /** Give a folder an icon and a colour, or clear them. Stable for the app's
      *  life — TreeNode is memoized, and a fresh closure would defeat that. */
     onStyleEntry: (path: string, icon: string | undefined, color: string | undefined, nodes?: IconNode[]) => void;
-    expandedPaths: Set<string>;
+    /** Toggle one folder open or shut. The ANSWER is read from the store (see
+     *  utils/expandedPaths.ts), per row and as a boolean, so one chevron does
+     *  not re-render every row in the tree. */
     onToggleExpand: (path: string) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
     onRenameFile: (node: FileTreeNode, newName: string) => unknown;
@@ -49,7 +52,7 @@ interface TreeNodeProps {
 }
 
 
-function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, onStyleEntry, expandedPaths, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
+function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, onStyleEntry, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
     /* This row's own icon and colour, read from the store rather than taken as
        a prop — see utils/folderStyleStore.ts. The snapshot is the STORED object,
        so a row whose folder was not the one that changed sees an unchanged
@@ -86,7 +89,12 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
     const dropClass = dropPosition === 'before' ? ' drop-before'
         : dropPosition === 'after' ? ' drop-after'
             : dropPosition === 'first-child' ? ' drop-first-child' : '';
-    const expanded = expandedPaths.has(node.path);
+    // This row's own disclosure, from the store: a primitive snapshot, so the
+    // rows that did not move see no change at all (utils/expandedPaths.ts).
+    const expanded = useSyncExternalStore(
+        useCallback(listener => subscribeExpanded(node.path, listener), [node.path]),
+        useCallback(() => isExpanded(node.path), [node.path]),
+    );
     const [dragOver, setDragOver] = useState(false);
     const [isRenaming, setIsRenaming] = useState(false);
     const [renameValue, setRenameValue] = useState(node.name);
@@ -122,8 +130,8 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
     // to render is inside a subtree nobody can see. Its ANCESTORS are opened by
     // whoever raised the request: this row is not rendered until they are.
     useEffect(() => {
-        if (creating && !expandedPaths.has(node.path)) onToggleExpand(node.path);
-    }, [creating, expandedPaths, node.path, onToggleExpand]);
+        if (creating && !expanded) onToggleExpand(node.path);
+    }, [creating, expanded, node.path, onToggleExpand]);
 
     useEffect(() => {
         if (isRenaming && renameInputRef.current) {
@@ -580,7 +588,6 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                             onTrash={onTrash}
                             onOpenAsVault={onOpenAsVault}
                             onStyleEntry={onStyleEntry}
-                            expandedPaths={expandedPaths}
                             onToggleExpand={onToggleExpand}
                             onMoveFile={onMoveFile}
                             onRenameFile={onRenameFile}

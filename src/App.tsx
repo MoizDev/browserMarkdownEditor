@@ -6,9 +6,9 @@ import { flushSync } from 'react-dom';
 import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
-import { HELP_DOC_CONTENT } from './utils/helpDoc';
-import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache } from './utils/graph';
-import { readJSON, setRecordScope, writeJSON } from './utils/storage';
+import { loadHelpDoc } from './utils/helpDocLoader';
+import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache, primeLinks } from './utils/graph';
+import { setRecordScope } from './utils/storage';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
 import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
@@ -24,7 +24,7 @@ import { sameStat, type DiskVersion } from './utils/diskVersion';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
-import { ensureNotebookExt, isEpubFile, isCanvasFile, isCodeFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
+import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -61,6 +61,11 @@ import {
 } from './utils/entryStyle';
 import { getEntryStyles, setEntryStyles } from './utils/entryStyleStore';
 import { findDirNode } from './utils/treeShare';
+import { onIdle } from './utils/pool';
+import {
+  collapsePaths as collapsePathsInStore, expandPaths as expandPathsInStore,
+  retargetExpandedPaths as retargetExpandedPathsInStore, toggleExpanded,
+} from './utils/expandedPaths';
 import { setTableNotify } from './editor/tableEdit';
 import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/contextMenu';
 // Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
@@ -78,9 +83,6 @@ import { scheduleAgentUpdateCheck } from './components/agentUpdateHint';
 import ConfirmDialog from './components/ConfirmDialog';
 import ContextMenu from './components/ContextMenu';
 import EditorPane from './components/EditorPane';
-import SettingsPanel from './components/SettingsPanel';
-import TrashPanel from './components/TrashPanel';
-import GraphView from './components/GraphView';
 import TerminalDock from './components/TerminalDock';
 import { connectHelperForTerminal } from './components/terminalLaunch';
 import type {
@@ -108,6 +110,13 @@ import type {
 // the reply renderer, the aicss components) load on first open — a reader who
 // never opens it downloads none of it.
 const AgentPanel = lazy(() => import('./components/AgentPanel'));
+// Opened on demand and never on the way to typing: Settings, the Trash bin and
+// the graph are each a panel the reader asks for, so none of them belongs in
+// the chunk that has to land before the editor does. `prefetchPanes` warms the
+// heavy ones at idle; these are small enough to fetch on the click.
+const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
+const TrashPanel = lazy(() => import('./components/TrashPanel'));
+const GraphView = lazy(() => import('./components/GraphView'));
 
 /**
  * Object URLs handed to `window.open` for files this app doesn't edit (images,
@@ -853,49 +862,12 @@ export default function App() {
    *  the one thing that memo exists to prevent. */
   const collapseSidebar = useCallback(() => setSidebarCollapsed(true), []);
 
-  // Expanded folder paths (persisted via localStorage)
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
-    () => new Set<string>(readJSON<string[]>('expandedPaths', []))
-  );
-
-  const handleToggleExpand = useCallback((path: string) => {
-    setExpandedPaths(prev => {
-      const next = new Set<string>(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      writeJSON('expandedPaths', [...next]);
-      return next;
-    });
-  }, []);
-
-  /** Open every one of `paths` — the explorer's Expand all, auto-reveal, and
-   *  the New-something buttons opening the way down to their target. One state
-   *  update for the lot, where a handleToggleExpand per folder was N renders
-   *  of the whole tree. Returns `prev` when nothing is new, so a reveal of a
-   *  file whose folders are already open re-renders nothing. */
-  const expandPaths = useCallback((paths: string[]) => {
-    setExpandedPaths(prev => {
-      if (paths.every(p => prev.has(p))) return prev;
-      const next = new Set<string>(prev);
-      for (const p of paths) next.add(p);
-      writeJSON('expandedPaths', [...next]);
-      return next;
-    });
-  }, []);
-
-  /** Close every one of `paths` — the explorer's Collapse all, handed THIS
-   *  vault's folders. Not a blanket clear: `expandedPaths` is one record for
-   *  every vault, and emptying it closed the folders of vaults the user was
-   *  not even looking at. */
-  const collapsePaths = useCallback((paths: string[]) => {
-    setExpandedPaths(prev => {
-      if (!paths.some(p => prev.has(p))) return prev;
-      const next = new Set<string>(prev);
-      for (const p of paths) next.delete(p);
-      writeJSON('expandedPaths', [...next]);
-      return next;
-    });
-  }, []);
+  // Expanded folder paths live in a store, not in state (utils/expandedPaths.ts):
+  // as a `Set` prop they re-rendered every mounted row of the tree to turn one
+  // chevron. These wrappers keep the callbacks App already hands out.
+  const handleToggleExpand = useCallback((path: string) => { toggleExpanded(path); }, []);
+  const expandPaths = useCallback((paths: string[]) => { expandPathsInStore(paths); }, []);
+  const collapsePaths = useCallback((paths: string[]) => { collapsePathsInStore(paths); }, []);
 
   // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
@@ -1679,9 +1651,21 @@ export default function App() {
     externalUrls.clear();
   }, [rootHandle]);
 
-  // Rebuild the link graph. Re-runs when the tree changes and after every save;
-  // buildGraph itself only re-reads files whose (mtime, size) moved.
-  const rebuildGraph = useCallback(async () => {
+  /**
+   * Rebuild the link graph.
+   *
+   * `revalidate` is whether the vault may have moved under us. TRUE for a tree
+   * change, a watcher rescan or a vault open — anything that could have been
+   * somebody else's edit. FALSE after one of our own saves, which has just
+   * primed the one note it touched (`primeLinks`): the rebuild is then pure
+   * arithmetic over what is already in memory.
+   *
+   * That distinction is the difference between 0 and N file handles per save.
+   * Measured on a 1,000-note vault: typing twelve characters cost 1,004
+   * `getFile()` round trips, one per note, every time the autosave landed —
+   * because a cache HIT still had to open the file to find out it was a hit.
+   */
+  const rebuildGraph = useCallback(async (revalidate = true) => {
     if (!fileTree || fileTree.length === 0) {
       // Through the same identity guard as the built graph below: a fresh empty
       // object here would re-seed GraphView on every tree change just as surely.
@@ -1689,7 +1673,7 @@ export default function App() {
       return;
     }
     try {
-      const g = await buildGraph(fileTree);
+      const g = await buildGraph(fileTree, revalidate);
       // Keep the OLD object when nothing about the graph changed. A fresh
       // identity on every save propagates all the way into GraphView's effects,
       // which re-seed the simulation (alpha = 1) and tear down and rebuild the
@@ -1701,7 +1685,13 @@ export default function App() {
     }
   }, [fileTree]);
 
-  useEffect(() => { rebuildGraph(); }, [rebuildGraph]);
+  // AT IDLE, not the moment a tree lands. The first build reads every note in
+  // the vault (nothing is cached yet) — measured at 1,000 reads and 2.6MB on a
+  // 1,000-note vault — and it was racing the session restore for the same file
+  // thread, so the notes the reader actually asked for arrived behind an index
+  // nobody had looked at yet. Nothing on screen waits for the graph: the Neural
+  // Brain view and the backlinks count fill in when it lands.
+  useEffect(() => onIdle(() => { void rebuildGraph(); }), [rebuildGraph]);
 
   // ── Per-tab autosave ────────────────────────────────────────────────────
   // rebuildGraph/writeFile are read through refs so the save helpers keep a
@@ -1912,7 +1902,15 @@ export default function App() {
           if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
           saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 2000);
         }
-        rebuildGraphRef.current();
+        // The graph's reading of this note, from the text we just wrote — the
+        // one file a rebuild would have had to open. `primeLinks` answers
+        // whether the note's links actually MOVED; for the ordinary keystroke
+        // they did not, and then the graph on screen is already the right one
+        // and no rebuild runs at all. When they did, the rebuild is told not to
+        // revalidate: nothing else on disk has changed, so it needs no handles.
+        const linksMoved = isMarkdownFile(file.name)
+          && primeLinks(path, result.version.lastModified, result.version.size, snapshot);
+        if (linksMoved) rebuildGraphRef.current(false);
         // Notifies the vault-search index (see utils/saveEpoch.ts) so a file that
         // was edited, saved and then closed is re-read from disk. Deliberately not
         // React state: as a prop it re-rendered the whole file tree every save.
@@ -2638,7 +2636,10 @@ export default function App() {
           origin: p,
           path: p,
           help,
-          content: help ? HELP_DOC_CONTENT : undefined,
+          // The guide's own text is fetched where it is used, below: it is a
+          // chunk of its own now, and `entry.help` short-circuits every reader
+          // of this field anyway.
+          content: undefined,
           dropped: !help && !vaultFiles.some(f => f.path === p),
         };
       }),
@@ -2768,7 +2769,7 @@ export default function App() {
         for (const entry of pending.entries) {
           if (claimed.has(entry.path)) continue;
           if (entry.help) {
-            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path: entry.path }, content: HELP_DOC_CONTENT, mode: 'read', dirty: false, representation: representationFor('Help Guide', true) });
+            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path: entry.path }, content: await loadHelpDoc(), mode: 'read', dirty: false, representation: representationFor('Help Guide', true) });
           } else {
             const node = live.get(entry);
             if (!node) continue;
@@ -2972,16 +2973,19 @@ export default function App() {
     });
   }, [rootHandle, currentVaultId, recentVaults, activeFile, pendingLinkFile, initialLocation]);
 
-  const handleHelpClick = useCallback(() => {
+  const handleHelpClick = useCallback(async () => {
     const path = 'help-guide';
     if (tabsRef.current.some(t => t.file.path === path)) {
       setLayout(l => focusTab(l, path));
       return;
     }
+    // The guide is its own chunk (utils/helpDocLoader.ts). One network round
+    // trip on the first open of a session, nothing on every other start.
+    const content = await loadHelpDoc();
     setTabs(prev => prev.some(t => t.file.path === path) ? prev : [...prev, {
       id: newTabId(),
       file: { name: 'Help Guide', isHelp: true, path },
-      content: HELP_DOC_CONTENT,
+      content,
       representation: representationFor('Help Guide', true),
       mode: 'read',
       dirty: false,
@@ -3735,25 +3739,8 @@ export default function App() {
    * looks like the contents went somewhere. It is the same folder; it answers
    * to a new name.
    */
-  const retargetExpandedPaths = useCallback((fromPath: string, newPath: string) => {
-    if (newPath === fromPath) return;
-    setExpandedPaths(prev => {
-      const prefix = `${fromPath}/`;
-      const next = new Set<string>();
-      let moved = false;
-      for (const path of prev) {
-        if (path === fromPath || path.startsWith(prefix)) {
-          next.add(newPath + path.slice(fromPath.length));
-          moved = true;
-        } else {
-          next.add(path);
-        }
-      }
-      if (!moved) return prev;
-      writeJSON('expandedPaths', [...next]);
-      return next;
-    });
-  }, []);
+  const retargetExpandedPaths = retargetExpandedPathsInStore;
+
   const retargetExpanded = useCallback((node: FileTreeNode, newPath: string) => {
     if (node.kind === 'directory') retargetExpandedPaths(node.path, newPath);
   }, [retargetExpandedPaths]);
@@ -4601,7 +4588,6 @@ export default function App() {
           onTrash={handleTrash}
           onOpenAsVault={handleOpenAsVault}
           onStyleEntry={handleStyleEntry}
-          expandedPaths={expandedPaths}
           onToggleExpand={handleToggleExpand}
           onExpandPaths={expandPaths}
           onCollapsePaths={collapsePaths}
@@ -4638,6 +4624,7 @@ export default function App() {
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
         {mainView === 'graph' ? (
+          <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView
             nodes={graph.nodes}
             links={graph.links}
@@ -4645,6 +4632,7 @@ export default function App() {
             onOpenNode={handleOpenNode}
             theme={theme}
           />
+          </Suspense>
         ) : (
           <EditorPane
             reading={readerIntegration}
@@ -4703,6 +4691,7 @@ export default function App() {
         </>
       )}
       {showSettings && (
+        <Suspense fallback={null}>
         <SettingsPanel
           editorFontSize={editorFontSize}
           codeFontSize={codeFontSize}
@@ -4738,11 +4727,13 @@ export default function App() {
           onResetDefaults={handleResetDefaults}
           onClose={() => setShowSettings(false)}
         />
+        </Suspense>
       )}
       {/* Over the workspace like Settings, and before ConfirmDialog for the
           same reason the menu is: nearly everything this panel does raises a
           question, and the dialog has to cover the panel that asked it. */}
       {showTrash && (
+        <Suspense fallback={null}>
         <TrashPanel
           onClose={() => setShowTrash(false)}
           onCrawl={listTrash}
@@ -4752,6 +4743,7 @@ export default function App() {
           onReadText={handleTrashReadText}
           onReadFile={handleTrashReadFile}
         />
+        </Suspense>
       )}
       {/* Before the dialog, so ConfirmDialog still covers it: a menu row can
           raise a question (Move to Trash), and the menu closes first anyway. */}

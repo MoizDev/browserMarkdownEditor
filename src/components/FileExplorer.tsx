@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore } from 'react';
+import { getExpandedPaths, isExpanded, subscribeExpandedPaths } from '../utils/expandedPaths';
 import TreeNode from './TreeNode';
 import {
     peekDraggedNode, setTreeDropTarget, setTreeReorderMode, takeDraggedNode, type TreeDropPosition,
@@ -81,7 +82,6 @@ interface FileExplorerProps {
     /** Give a folder an icon and colour, or clear them. Stable for the app's
      *  life: this component is memoized and TreeNode is too. */
     onStyleEntry: (path: string, icon: string | undefined, color: string | undefined, nodes?: IconNode[]) => void;
-    expandedPaths: Set<string>;
     onToggleExpand: (path: string) => void;
     /** Open all of these folders in one update (Expand all, auto-reveal). */
     onExpandPaths: (paths: string[]) => void;
@@ -111,7 +111,6 @@ function FileExplorer({
     onTrash,
     onOpenAsVault,
     onStyleEntry,
-    expandedPaths,
     onToggleExpand,
     onExpandPaths,
     onCollapsePaths,
@@ -211,6 +210,11 @@ function FileExplorer({
         walk(fileTree);
         return paths;
     }, [fileTree]);
+    // The whole set, from the store (utils/expandedPaths.ts): this component
+    // re-rendering on a toggle is fine and the ROWS are what must not, which is
+    // why they subscribe to their own path instead of taking a prop. The
+    // snapshot's identity changes exactly when the set does.
+    const expandedPaths = useSyncExternalStore(subscribeExpandedPaths, getExpandedPaths);
     const anyExpanded = useMemo(
         () => folderPaths.some(p => expandedPaths.has(p)),
         [folderPaths, expandedPaths],
@@ -453,7 +457,7 @@ function FileExplorer({
         if (node.kind === 'file') spot = y < 0.5 ? 'before' : 'after';
         else if (y < 0.25) spot = 'before';
         else if (y < 0.75) spot = 'into';
-        else spot = expandedPaths.has(node.path) && node.children.length > 0 ? 'first-child' : 'after';
+        else spot = isExpanded(node.path) && node.children.length > 0 ? 'first-child' : 'after';
         return { path: node.path, spot, plan: planTreeDrop(dropIndex, dragged, node.path, spot) };
     };
 
@@ -714,7 +718,6 @@ function FileExplorer({
                             onTrash={onTrash}
                             onOpenAsVault={onOpenAsVault}
                             onStyleEntry={onStyleEntry}
-                            expandedPaths={expandedPaths}
                             onToggleExpand={onToggleExpand}
                             onMoveFile={onMoveFile}
                             onRenameFile={onRenameFile}

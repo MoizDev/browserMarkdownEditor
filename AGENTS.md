@@ -103,8 +103,18 @@ app — load `verify-in-browser` before claiming it works.
   never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'` DOMPurify pass).
   This origin holds the vault's handle — and, through the terminal, a shell. Do not open a third.
 - **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
-  (`utils/graph.ts`, `utils/vaultSearch.ts`), one file's text at a time — both run after *every* save;
-  uncached, each is a full vault read per autosave. Exempt: the bin's crawl, `fileTimes`' metadata stat.
+  (`utils/graph.ts`, `utils/vaultSearch.ts`) and a bounded pool (`utils/pool.ts`), never
+  `Promise.all` over the vault. **A CACHE HIT IS NOT FREE**: finding out it is a hit costs a
+  `getFile()`, and that is one browser round trip PER NOTE. Measured on a 1,000-note vault, a save
+  after twelve keystrokes cost 1,004 of them. So a save does not walk at all: `flushTab` feeds the
+  text it just wrote into the cache (`primeLinks`) and rebuilds only if the note's links actually
+  moved, with `revalidate: false` — no handles. Revalidation is for a tree change, a watcher rescan
+  or a vault open, i.e. when somebody ELSE may have written. Exempt: the bin's crawl, `fileTimes`'
+  metadata stat.
+- **Nothing the reader is waiting for may queue behind an index.** The first graph build reads every
+  note in the vault; it runs `onIdle` so the session's own notes reach the file thread first. The
+  tree walk itself is bounded-concurrent across the whole recursion (one `Limiter`, not a pool per
+  level), because serial it was a chain as long as the vault has folders.
 - **The decoration pass runs per keystroke, per arrow key, on every open pane** — memoize on immutable
   identity or measure it; read mode stays a pure function of the document + its folds (`live-preview`).
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,

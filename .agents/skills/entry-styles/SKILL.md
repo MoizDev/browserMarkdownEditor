@@ -76,6 +76,11 @@ file — needs the user's explicit permission first.** Ask; never add one on you
   ones in canonical order (`utils/treeSort.ts`, stable sort); a folder with no list is plain A→Z.
   Folders are NOT forced first under Custom. The *selection* of Custom is global
   (`fileTreeSortOrder` in localStorage); only the arrangement is per vault.
+- **Which folders are OPEN is a store too** (`utils/expandedPaths.ts`), and for the same reason: as
+  a `Set` prop it was a new object per toggle, so every mounted row's memo compared unequal and a
+  thousand rows reconciled to turn one chevron (measured: 31ms a toggle on 1,020 rows, 13ms after).
+  A row subscribes to ITS OWN path and reads a boolean; `FileExplorer` takes the whole set, and its
+  own re-render is harmless because the rows' props do not change.
 - **`order`'s identity must survive every helper that does not change it** (`withEntryStyle`,
   `renameEntry`, `forgetEntry`, `withEntryOrder` on a no-op): FileExplorer subscribes to it (only
   while Custom is chosen — a constant snapshot otherwise), and a fresh object re-sorts the tree.

@@ -111,6 +111,13 @@ app — load `verify-in-browser` before claiming it works.
   moved, with `revalidate: false` — no handles. Revalidation is for a tree change, a watcher rescan
   or a vault open, i.e. when somebody ELSE may have written. Exempt: the bin's crawl, `fileTimes`'
   metadata stat.
+- **A MOUNTED-BUT-HIDDEN PANE MUST BE TOLD.** Panes are kept mounted and hidden with `visibility`,
+  so anything that holds memory or runs work needs an `isVisible` and has to let go: a hidden PDF
+  held 62MB of page bitmaps and went on extracting text for 300 pages while a whiteboard was
+  mounting over it (`pdf-and-drawings`). `isActive` is keyboard focus and is NOT this.
+- **Third-party CDNs are not a dependency of drawing a line.** tldraw fetches its fonts, icons and
+  translations from `cdn.tldraw.com` unless given `assetUrls` — 37 off-origin requests per board
+  open, in an app that holds the vault's directory handle. Serve them from here.
 - **Nothing the reader is waiting for may queue behind an index.** The first graph build reads every
   note in the vault; it runs `onIdle` so the session's own notes reach the file thread first. The
   tree walk itself is bounded-concurrent across the whole recursion (one `Limiter`, not a pool per

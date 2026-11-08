@@ -3,7 +3,7 @@ import { Box, Tldraw, getSnapshot, react } from 'tldraw';
 import type { Editor, TLEditorSnapshot } from 'tldraw';
 import 'tldraw/tldraw.css';
 import type { Theme } from '../types';
-import { CANVAS_COMPONENTS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, serializeDelay, type CanvasUiState } from './canvasPen';
+import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, serializeDelay, type CanvasUiState } from './canvasPen';
 import { bindImageInvertKey } from './invertibleImageShape';
 import { subscribePenScale } from '../utils/penStyle';
 import { flushCanvasViewPositions, readCanvasViewPos, writeCanvasViewPos } from '../utils/canvasViewState';
@@ -68,13 +68,20 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
     const onContentChangeRef = useRef(onContentChange);
     useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
 
-    // The colorScheme prop is only honored at mount (and a persisted tldraw
-    // user preference can override even that) — so the app theme is pushed
-    // into tldraw's user preferences on mount and on every toggle. Dark mode
-    // then picks up the custom canvas color via .tl-theme__dark CSS; light
-    // mode keeps tldraw's stock white.
+    // THE THEME IS PUSHED THROUGH USER PREFERENCES, NEVER THROUGH THE PROP.
+    // `colorScheme` is in `<Tldraw>`'s editor-creation dependency list
+    // (@tldraw/editor 5.2.4, TldrawEditor.mjs:279), so changing it DESTROYS the
+    // editor and builds a new one — on every mounted board at once, hidden ones
+    // included, losing each one's undo history and selection and flashing its
+    // loading screen, because the app's theme toggle is global. The scheme the
+    // prop is given is therefore frozen at mount (below), and the effect here
+    // is what actually moves: `updateUserPreferences` re-themes the live editor
+    // in place. Dark mode then picks up the custom canvas colour via
+    // .tl-theme__dark CSS; light mode keeps tldraw's stock white.
     const editorRef = useRef<Editor | null>(null);
     const themeRef = useRef(theme);
+    /** What the prop is handed, once and for the pane's life — see above. */
+    const mountScheme = useRef<'light' | 'dark'>(theme === 'light' ? 'light' : 'dark').current;
     useEffect(() => {
         themeRef.current = theme;
         editorRef.current?.user.updateUserPreferences({ colorScheme: theme === 'light' ? 'light' : 'dark' });
@@ -268,7 +275,8 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
                 components={CANVAS_COMPONENTS}
                 shapeUtils={CANVAS_SHAPE_UTILS}
                 options={CANVAS_OPTIONS}
-                colorScheme={theme === 'light' ? 'light' : 'dark'}
+                assetUrls={CANVAS_ASSET_URLS}
+                colorScheme={mountScheme}
                 // Required once deployed, not cosmetic: on a non-localhost HTTPS
                 // origin, tldraw with no key reports `unlicensed-production` and
                 // replaces the canvas with an empty gate 5s after load. Localhost

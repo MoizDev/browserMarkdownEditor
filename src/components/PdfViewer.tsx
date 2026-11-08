@@ -65,6 +65,12 @@ interface PdfViewerProps {
      *  several viewers stay mounted (hidden) at once, and only the visible
      *  one may respond to the keyboard. */
     isActive: boolean;
+    /** Whether this pane is on screen. A PDF pane is kept MOUNTED when another
+     *  tab is shown and merely hidden with `visibility` (EditorPane), so
+     *  without this the viewer goes on holding every page bitmap it had
+     *  rastered and goes on extracting text for the whole document — behind a
+     *  whiteboard that is now competing with it for the main thread. */
+    isVisible?: boolean;
     /**
      * Turn the pages a quarter and write the file (App.rotatePdf).
      *
@@ -321,7 +327,7 @@ interface PinchGesture {
     timer: number | null;
 }
 
-function PdfViewer({ filePath, session, isActive, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult }: PdfViewerProps) {
+function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult }: PdfViewerProps) {
     const [nativeNotice, setNativeNotice] = useState('');
     const nativePages = useRef(new Map<number, PdfNativeEmphasisResult>());
     const showNativeNotice = useCallback((index: number) => {
@@ -347,6 +353,13 @@ function PdfViewer({ filePath, session, isActive, onRotate, onLocation, emphasis
      *  a stale width when deciding "is this the first measurement". */
     const containerWidthRef = useRef(0);
     useEffect(() => { containerWidthRef.current = containerWidth; }, [containerWidth]);
+    /** Read by the ResizeObserver and the render loop, which are created once
+     *  and must not close over a stale `isVisible`. */
+    const visibleRef = useRef(isVisible);
+    useEffect(() => { visibleRef.current = isVisible; }, [isVisible]);
+    /** A width this pane was resized to while it was hidden, applied on the way
+     *  back in rather than re-rastering a document nobody is looking at. */
+    const pendingWidthRef = useRef<number | null>(null);
 
     const rootRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -509,7 +522,13 @@ function PdfViewer({ filePath, session, isActive, onRotate, onLocation, emphasis
         const el = scrollRef.current;
         if (!el) return;
         let timer: ReturnType<typeof setTimeout> | null = null;
-        const commit = (w: number) => setContainerWidth(prev => (Math.abs(prev - w) < 1 ? prev : w));
+        // Not while hidden: the slot is a percentage of the column, so every
+        // sidebar toggle and window resize re-fits and re-rasters the hidden
+        // panes too. The width is applied on the way back in (below).
+        const commit = (w: number) => {
+            if (!visibleRef.current) { pendingWidthRef.current = w; return; }
+            setContainerWidth(prev => (Math.abs(prev - w) < 1 ? prev : w));
+        };
         const ro = new ResizeObserver(entries => {
             const w = Math.round(entries[0].contentRect.width);
             if (containerWidthRef.current <= 0) { commit(w); return; }
@@ -1053,6 +1072,39 @@ function PdfViewer({ filePath, session, isActive, onRotate, onLocation, emphasis
         }).catch(() => { /* teardown races — nothing to release */ });
     }, []);
 
+    /**
+     * Hand back everything this pane is holding while it is off screen, and
+     * take it again when it comes back.
+     *
+     * A PDF pane stays MOUNTED when you switch tabs — it is hidden with
+     * `visibility`, which is what makes coming back to it instant — but nothing
+     * ever told the viewer it was hidden. So it went on holding the page
+     * bitmaps it had rastered: the visible band plus EVICT_BEYOND either side,
+     * at devicePixelRatio, for every open PDF. Measured with two modest
+     * documents open behind a whiteboard: 322 page canvases and 62MB of
+     * bitmaps still resident, none of it on screen, and far more than that for
+     * a scanned book at a real page size.
+     *
+     * Eviction only ever ran inside `updateWindow`, which only runs on scroll
+     * or layout, so a hidden pane never reached it. Freeing is cheap and so is
+     * coming back: the pdf.js page objects and the text layers stay (⌘F still
+     * works), and `updateWindow` re-rasters the band under the viewport on the
+     * way in, which is the same work a scroll does.
+     */
+    useEffect(() => {
+        if (isVisible) {
+            const pending = pendingWidthRef.current;
+            pendingWidthRef.current = null;
+            if (pending !== null && Math.abs(containerWidthRef.current - pending) >= 1) setContainerWidth(pending);
+            // A frame later: the pane has to be laid out before the window
+            // under its viewport means anything.
+            const id = requestAnimationFrame(() => updateWindowRef.current?.());
+            return () => cancelAnimationFrame(id);
+        }
+        const n = docStateRef.current?.dims.length ?? 0;
+        for (let i = 0; i < n; i++) evictPage(i);
+    }, [isVisible, evictPage]);
+
     /** One pass over the viewport: render pages near it, free pages far from
      *  it, and record the current {page, offset} for persistence. */
     const updateWindow = useCallback(() => {
@@ -1107,6 +1159,10 @@ function PdfViewer({ filePath, session, isActive, onRotate, onLocation, emphasis
         writePdfViewPos(filePath, { ...currentPosRef.current, zoom: zoomRef.current }, false);
         schedulePersist();
     }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice]);
+    /** So the hide/show effect above can call the latest `updateWindow` without
+     *  being re-created (and re-evicting) every time one of its deps moves. */
+    const updateWindowRef = useRef(updateWindow);
+    useEffect(() => { updateWindowRef.current = updateWindow; }, [updateWindow]);
 
     // This changes paint only. Do not re-anchor, rebuild TextLayer, or remount
     // the retained viewer: selection, native find and the page camera stay put.
@@ -1407,8 +1463,13 @@ function PdfViewer({ filePath, session, isActive, onRotate, onLocation, emphasis
     // commit scheduled hundreds of pointless macrotasks. This boolean flips false
     // → true once per document and then stays put.
     const hasLayout = layout !== null;
+    // ...and not while the pane is hidden. Up to 300 TextLayer.render calls,
+    // each with a worker round trip, were still running after the reader had
+    // switched to a whiteboard — which is exactly when tldraw is mounting and
+    // wants the main thread. It resumes where it left off when the pane comes
+    // back, and `ensureText` is idempotent, so nothing is redone.
     useEffect(() => {
-        if (!docState || !hasLayout || docState.dims.length > TEXT_EAGER_LIMIT) return;
+        if (!docState || !hasLayout || !isVisible || docState.dims.length > TEXT_EAGER_LIMIT) return;
         let cancelled = false;
         (async () => {
             for (let i = 0; i < docState.dims.length && !cancelled; i++) {
@@ -1417,7 +1478,7 @@ function PdfViewer({ filePath, session, isActive, onRotate, onLocation, emphasis
             }
         })();
         return () => { cancelled = true; };
-    }, [docState, hasLayout, ensureText]);
+    }, [docState, hasLayout, isVisible, ensureText]);
 
     if (error) {
         return (

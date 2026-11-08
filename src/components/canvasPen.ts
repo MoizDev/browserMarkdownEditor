@@ -9,6 +9,7 @@
 
 import type { Editor, TLShape } from 'tldraw';
 import { DefaultDashStyle, DefaultSizeStyle } from 'tldraw';
+import { getAssetUrlsByImport } from '@tldraw/assets/imports.vite';
 import { getPenScale, seedPenScale } from '../utils/penStyle';
 import CanvasStylePanel from './CanvasStylePanel';
 import { InvertibleImageShapeUtil } from './invertibleImageShape';
@@ -99,7 +100,30 @@ export const CANVAS_SHAPE_UTILS = [TightDrawShapeUtil, InvertibleImageShapeUtil]
  * number (`maxShapesPerPage * 2`, plus a band per nested background), so it has
  * to stay finite and small enough to index with.
  */
-export const CANVAS_OPTIONS = { maxShapesPerPage: 1_000_000 };
+/**
+ * Tldraw's fonts, icons and translations, SERVED FROM THIS ORIGIN.
+ *
+ * By default tldraw fetches them from `cdn.tldraw.com` at runtime. Measured:
+ * opening one whiteboard made **37 off-origin requests** — five font files, a
+ * merged icon sheet, the translation table and twenty embed-service icons —
+ * before the board was usable. In a local-first app that holds the vault's
+ * directory handle, drawing on a board should not depend on somebody else's
+ * CDN being up, or be slower on a bad connection, or leak when a board is
+ * opened. `@tldraw/assets` is the library's own published copy of exactly
+ * those files, pinned to the same version; Vite emits them beside the app and
+ * the browser caches them like anything else here.
+ */
+export const CANVAS_ASSET_URLS = getAssetUrlsByImport();
+
+export const CANVAS_OPTIONS = {
+    maxShapesPerPage: 1_000_000,
+    /* Tldraw waits for EVERY font before it draws anything (the default is
+       Infinity), so a board with text on it showed its loading screen until the
+       last woff2 landed. Served locally they arrive in milliseconds, but a cold
+       cache is still a cold cache, and ink needs no font at all: paint the board
+       and let the lettering swap in. */
+    maxFontsToLoadBeforeRender: 0,
+};
 
 /**
  * How long a canvas waits before serializing itself, given how much is on it.

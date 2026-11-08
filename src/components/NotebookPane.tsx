@@ -10,7 +10,7 @@ import { parseNotebookFile, serializeNotebookFile, type NotebookUiState } from '
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
-import { CANVAS_COMPONENTS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, serializeDelay } from './canvasPen';
+import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, serializeDelay } from './canvasPen';
 import { bindImageInvertKey } from './invertibleImageShape';
 import { subscribePenScale } from '../utils/penStyle';
 import { getPdfInverted, readThumbnailsOpen, subscribePdfInverted, writeThumbnailsOpen } from '../utils/pdfViewState';
@@ -748,6 +748,7 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
                         components={NOTEBOOK_COMPONENTS}
                         shapeUtils={CANVAS_SHAPE_UTILS}
                         options={CANVAS_OPTIONS}
+                assetUrls={CANVAS_ASSET_URLS}
                         colorScheme={NOTEBOOK_COLOR_SCHEME}
                         licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                     />

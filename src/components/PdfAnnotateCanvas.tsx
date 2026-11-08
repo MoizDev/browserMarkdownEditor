@@ -6,7 +6,7 @@ import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type Pdf
 import { setPdfRenderData } from '../utils/pdfRenderCache';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
-import { CANVAS_COMPONENTS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
 import { bindImageInvertKey } from './invertibleImageShape';
 import {
     flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,
@@ -876,6 +876,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                     components={CANVAS_COMPONENTS}
                     shapeUtils={CANVAS_SHAPE_UTILS}
                     options={CANVAS_OPTIONS}
+                assetUrls={CANVAS_ASSET_URLS}
                     colorScheme={ANNOTATE_COLOR_SCHEME}
                     licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                 />

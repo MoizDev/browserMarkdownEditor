@@ -284,6 +284,41 @@ All three canvases pass `shapeUtils={CANVAS_SHAPE_UTILS}`, which substitutes tld
   grepping `dist`). **Reach for it before touching `PEN_STREAMLINE`**: the arithmetic predicted 0.35-0.45
   would be the floor and drawing on a real tablet disproved it.
 
+## A hidden pane must let go
+
+Panes stay MOUNTED when another tab is shown and are hidden with `visibility` — that is what makes
+coming back instant — so **the pane has to be told, or it goes on working for a reader who is not
+there.** `PdfViewer` takes `isVisible` (not `isActive`, which is keyboard focus) and on the way out:
+
+- **evicts every page bitmap.** Eviction lived only inside `updateWindow`, which runs on scroll and
+  layout, so a hidden pane never reached it and kept the band it had rastered — at dpr, per open
+  PDF. Measured with two documents open behind a whiteboard: **322 canvases, 62MB of bitmaps, none
+  of it on screen → 3MB**. A scanned book at a real page size is far worse.
+- **stops the eager text pass.** Up to `TEXT_EAGER_LIMIT` (300) `TextLayer.render` calls, each with
+  a worker round trip, were still running after the reader had switched to a whiteboard — which is
+  exactly when tldraw is mounting and wants the main thread. It resumes where it left off.
+- **stops committing resizes.** The slot is a percentage of its column, so every sidebar toggle and
+  window resize re-fit and re-rastered the hidden panes too. The last width is applied on the way in.
+
+What is KEPT: the pdf.js page objects and the text layers (⌘F still works), and the scroll position.
+Coming back re-rasters the band under the viewport, which is the work a scroll already does.
+
+## Tldraw's assets are OURS
+
+`assetUrls={CANVAS_ASSET_URLS}` on every `<Tldraw>` (`canvasPen.ts`), from `@tldraw/assets` pinned
+to the same version. By default tldraw fetches fonts, icons and translations from `cdn.tldraw.com`:
+measured, **37 off-origin requests to open one whiteboard**. A local-first app holding the vault's
+directory handle does not need a third party to be up in order to draw a line. `maxFontsToLoadBeforeRender: 0`
+too — tldraw waits for every font before it paints anything, and ink needs no font.
+
+**`colorScheme` is frozen at mount.** It is in `<Tldraw>`'s editor-creation dependency list
+(@tldraw/editor 5.2.4, `TldrawEditor.mjs:279`), so changing it DESTROYS the editor and builds a new
+one — on every mounted board at once, hidden ones included, losing each one's undo history. The app
+theme is global, so a toggle hit all of them: measured, **18 `AtomMap: key not found` page errors per
+toggle**. The theme moves through `editor.user.updateUserPreferences` instead, which re-themes in
+place. The same applies to `options`, `assetUrls`, `shapeUtils` and `components`: all module
+constants, and they must stay that way.
+
 ## Panes
 
 - **Every canvas floats over its column, one pane per open tab**: `PdfPane` for PDFs and `CanvasPane`

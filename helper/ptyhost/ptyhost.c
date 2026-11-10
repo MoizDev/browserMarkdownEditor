@@ -11,7 +11,7 @@
  * cdhash, so every helper update silently dropped every grant. This host is its
  * own LaunchAgent (dev.bme.vaultagent.pty) and the parent of every terminal shell,
  * so the grants belong to IT. Its bytes are committed (helper/ptyhost/vaultagent-pty,
- * pinned in PINNED.json, asserted by helper/test/ptyhost.test.ts), embedded into the
+ * pinned in PINNED.json, checked by the release workflow's macOS step), embedded into the
  * helper, and never rebuilt by CI: the cdhash, hence every grant, survives updates.
  *
  * Rebuild only deliberately, with helper/ptyhost/build.sh. It is small and

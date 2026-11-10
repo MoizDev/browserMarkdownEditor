@@ -19,5 +19,5 @@
     // hide Bun-only options such as spawn's argument arrays).
     "types": ["bun"]
   },
-  "include": ["src", "test", "scripts", "../shared"]
+  "include": ["src", "scripts", "../shared"]
 }

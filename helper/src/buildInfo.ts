@@ -1,5 +1,5 @@
 // Values baked in by `bun build --define` (helper/scripts/build.ts). Running
-// from source (`npm run helper:dev`, `bun test`) they are undefined and the
+// from source (`npm run helper:dev`) they are undefined and the
 // fallbacks apply.
 //
 // Allowed origins are compile-time on purpose: an origin read from the

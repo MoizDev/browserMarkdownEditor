@@ -13,16 +13,13 @@ nothing. So the test is never "is this true and useful" (almost everything is) b
 > **Is this worth removing something else to make room for?**
 
 If no, it does not go here. If yes, name what you cut and cut it in the same change — though while the
-file is *under* 150 that room already exists, so add freely: spare budget is there to be spent, and a
-file that uses it well beats one that leaves it on the table. Where it goes instead:
+file is *under* 150 that room already exists, so spend it freely. Where it goes instead:
 
-1. **Has a detectable trigger** ("when editing a table", "when touching the PDF pipeline") → a
-   **skill**, loaded only when needed and costing nothing otherwise. This is the default answer.
+1. **Has a detectable trigger** ("when editing a table", "when touching the PDF pipeline") → a **skill**
+   (`.agents/skills/<name>/SKILL.md`), loaded only when needed, free otherwise. The default answer.
 2. **Broad and unconditional** — every change must respect it, whatever it touches → this file.
 3. **Neither** → bloat: delete it, or leave it as a comment beside the code, where a narrow fact stays
    honest longest. A fact with no trigger is not a skill either — never invent one to hold it.
-
-Skills live in `.agents/skills/<name>/SKILL.md`.
 
 ## What this is
 
@@ -41,13 +38,13 @@ npm run typecheck  # tsc for src+shared, then -p helper (the real "did I break t
 npm run lint       # eslint .      (flat config, loaded via jiti)
 npm run preview    # serve a production build
 npm run helper:dev # the VaultAgent helper (Bun) from source, dev origins allowed; helper:build compiles
-npm run helper:test # bun test helper/ — security, CLI stream parsers, self-update, terminal + PTY host
-npm run test:app   # bun test src/ — pure chat tree/store tests
 ```
 
-**Checks:** `test:app` covers pure chat tree/store modules; `helper:test` covers the helper.
-`typecheck` and `lint` are static gates. UI behaviour needs headless Playwright against the
-app — load `verify-in-browser` before claiming it works.
+**Checks — CODE-BASED TESTS ARE BANNED (the user's decision; never reintroduce them unasked).** No
+unit tests, test suites, `.test`/`.spec` files, test runner or `test` script, in-file test or self-test
+functions — all were deleted. The ONLY tests are headless-browser runs driving the real app (load
+`verify-in-browser` before claiming anything works); `typecheck` and `lint` are the static gates. **One
+exception:** when the user EXPLICITLY asks for a code-based test, write it — only that test, that task.
 
 **Env:** `VITE_TLDRAW_LICENSE_KEY` — production only; a missing key never shows up in `npm run dev`.
 
@@ -66,9 +63,8 @@ app — load `verify-in-browser` before claiming it works.
   and every FS call goes through it; no undo stack stands behind it.
 - **The AI agent changes the vault ONLY through the app** — its CLI runs never-ask with full normal tools
   (the user's decision; never restrict them again), but each vault read/write is a `vault_*`/`canvas_*` MCP
-  call run in the browser (`utils/vaultAgentTools.ts` → `utils/agentHost.ts` → App); the prompt bans disk edits.
-  The **terminal** (`integrated-terminal`) is the same helper's PTY running the user's own login shell:
-  unconstrained by the user's decision (add no restriction), and invisible to the agent both ways.
+  call run in the browser (`utils/agentHost.ts` → App); the prompt bans disk edits. The **terminal** is the
+  helper's PTY running the user's login shell: unrestricted (also their decision), invisible to the agent.
 - **Every document write is versioned** — `flushTab` writes only via `writeFileVersioned` against the
   document's disk baseline (`utils/docBaselines.ts`, by tab id); a file changed or gone on disk raises the
   DiskBar instead. Observer records are hints, stat + hash the truth. Never write a document around it.
@@ -103,36 +99,25 @@ app — load `verify-in-browser` before claiming it works.
   never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'` DOMPurify pass).
   This origin holds the vault's handle — and, through the terminal, a shell. Do not open a third.
 - **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
-  (`utils/graph.ts`, `utils/vaultSearch.ts`) and a bounded pool (`utils/pool.ts`), never
-  `Promise.all` over the vault. **A CACHE HIT IS NOT FREE**: finding out it is a hit costs a
-  `getFile()`, and that is one browser round trip PER NOTE. Measured on a 1,000-note vault, a save
-  after twelve keystrokes cost 1,004 of them. So a save does not walk at all: `flushTab` feeds the
-  text it just wrote into the cache (`primeLinks`) and rebuilds only if the note's links actually
-  moved, with `revalidate: false` — no handles. Revalidation is for a tree change, a watcher rescan
-  or a vault open, i.e. when somebody ELSE may have written. Exempt: the bin's crawl, `fileTimes`'
-  metadata stat.
-- **A MOUNTED-BUT-HIDDEN PANE MUST BE TOLD.** Panes are kept mounted and hidden with `visibility`,
-  so anything that holds memory or runs work needs an `isVisible` and has to let go: a hidden PDF
-  held 62MB of page bitmaps and went on extracting text for 300 pages while a whiteboard was
-  mounting over it (`pdf-and-drawings`). `isActive` is keyboard focus and is NOT this.
-- **Third-party CDNs are not a dependency of drawing a line.** tldraw fetches its fonts, icons and
-  translations from `cdn.tldraw.com` unless given `assetUrls` — 37 off-origin requests per board
-  open, in an app that holds the vault's directory handle. Serve them from here.
-- **Nothing the reader is waiting for may queue behind an index.** The first graph build reads every
-  note in the vault; it runs `onIdle` so the session's own notes reach the file thread first. The
-  tree walk itself is bounded-concurrent across the whole recursion (one `Limiter`, not a pool per
-  level), because serial it was a chain as long as the vault has folders.
+  (`utils/graph.ts`, `utils/vaultSearch.ts`) and a bounded pool (`utils/pool.ts`), never `Promise.all`
+  over the vault. **A CACHE HIT IS NOT FREE** — it costs a `getFile()` round trip PER NOTE — so a save
+  never walks: it primes the cache (`primeLinks`) and revalidates nothing (`vault-filesystem`).
+- **A MOUNTED-BUT-HIDDEN PANE MUST BE TOLD.** Panes stay mounted, hidden with `visibility`, so anything
+  that holds memory or runs work needs an `isVisible` and has to let go — a hidden PDF held 62MB of
+  page bitmaps (`pdf-and-drawings`). `isActive` is keyboard focus and is NOT this.
+- **Third-party CDNs are not a dependency of drawing a line.** tldraw fetches fonts, icons and
+  translations from `cdn.tldraw.com` unless given `assetUrls` (37 requests per board). Serve them here.
+- **Nothing the reader is waiting for may queue behind an index** — the first graph build runs `onIdle`,
+  and the tree walk is bounded-concurrent across the whole recursion (one `Limiter`, not one per level).
 - **The decoration pass runs per keystroke, per arrow key, on every open pane** — memoize on immutable
   identity or measure it; read mode stays a pure function of the document + its folds (`live-preview`).
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,
   asset reconciles, the recent-vaults read-modify-write and every vault switch each hold an in-flight
   ref or a promise queue: `StrictMode` (on, `main.tsx`) double-runs effects; users click twice mid-copy.
 - **The PDF/tldraw module split is bundle-size discipline enforced only by import discipline** —
-  there is no manual chunking in `vite.config.ts`, so one new import silently pulls pdf-lib (~400kB),
-  pdf.js or tldraw into the main bundle. Check the `pdf-and-drawings` skill (it covers notebooks and
-  drawings too) before adding one; `utils/paper.ts` importing nothing is part of that split. Those
-  chunks warm at idle via `components/prefetchPanes.ts`, gated on the kinds the open vault holds —
-  a markdown-only vault must keep fetching nothing.
+  there is no manual chunking, so one new import silently pulls pdf-lib (~400kB), pdf.js or tldraw into
+  the main bundle; load `pdf-and-drawings` (notebooks and drawings too) before adding one. The chunks
+  warm at idle (`components/prefetchPanes.ts`) by the kinds the vault holds: markdown-only fetches none.
 - **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it** — CodeMirror does
   the same, so buffers and search offsets stay in step; a reader that skips it drifts on CRLF.
 - **The app's user documentation is a file in this repo** — `utils/helpDoc.ts`, one exported string
@@ -146,22 +131,18 @@ app — load `verify-in-browser` before claiming it works.
   for life; a fresh closure per call makes every image widget compare unequal on every ⌘E and tab switch.
 - **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, as are the context-menu,
   entry-style, create-request, file-times and **active-file** stores. `FileExplorer`/`TreeNode` are
-  `React.memo`'d so the tree stops re-rendering while the user types: never thread such a value through,
-  nor an inline arrow — one un-`useCallback`'d prop in `App.tsx` defeats the memo outright. Rows
-  subscribe to a BOOLEAN ("am I active?"), so a tab switch re-renders the two that changed, not 2,300.
+  `React.memo`'d: never thread such a value through, nor an inline arrow — one un-`useCallback`'d prop in
+  `App.tsx` defeats the memo. Rows subscribe to a BOOLEAN ("am I active?"), so a switch re-renders two.
 - **Anything repeated thousands of times carries `content-visibility: auto`** (`.tree-item`,
   `.pdf-viewer-page`) plus a known box — or all of them lay out and paint on every ancestor's frame.
 - **The path-keyed records** (`fileScrollAnchors`, `pdf`/`canvasViewPositions`, `collapsedHeadings`) live
-  parsed in memory (`readRecord`/`flushRecord`, `utils/storage.ts`) under its per-vault `scopedKey`.
-  Never pruned (recency capping was **rejected**), so they grow per vault.
+  parsed in memory (`utils/storage.ts`) per-vault `scopedKey`; never pruned (capping was **rejected**).
 - **Settings → CSS variables** on `document.documentElement`, persisted to `localStorage` — except **Tab
-  size** (a CodeMirror compartment), **Recent vaults shown** (a prop), the **Terminal** font/size (an
-  import-free store, `utils/terminalSettings.ts`), all clamped on read (`localStorage` is user-editable),
-  and **Vault name as tab title**. Theme is `data-theme` on `<html>` (**absent = dark**); custom
-  accent/code colors are inline `<html>` style overrides that intentionally outrank both theme blocks.
-- **ESLint config carries intentional relaxations** (`eslint.config.ts`): `no-unused-vars` ignores
-  PascalCase/UPPER vars, all args and catch bindings; `set-state-in-effect` is off (deliberate);
-  `only-export-components` is off for `src/context/**`; `tsconfig` leaves unused locals to lint.
+  size** (a CodeMirror compartment), **Recent vaults shown** (a prop), the **Terminal** font/size
+  (`utils/terminalSettings.ts`), all clamped on read (`localStorage` is user-editable), and **Vault name
+  as tab title**. Theme is `data-theme` on `<html>` (**absent = dark**); custom accent/code colors are
+  inline `<html>` overrides that intentionally outrank both theme blocks.
+- **ESLint's relaxations are intentional**, each explained in `eslint.config.ts` — do not tighten them.
 - **Match the house comment style.** Explain *why*, beside the code, with the measured evidence that
   forced it ("measured: 7 tabs → 0"); a comment restating what the line does is not it.
 - **Two things exist twice — change both halves.** "Is this name taken by either kind" is

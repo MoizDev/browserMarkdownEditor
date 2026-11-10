@@ -15,6 +15,7 @@ import { bindPdfNativeEmphasis, pdfNativeEmphasisNotice } from '../utils/pdfNati
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { LEFT, RIGHT } from '../utils/pdfRotation';
+import { isPdfRotating, subscribePdfRotating } from '../utils/pdfRotating';
 import { mapPool } from '../utils/pool';
 import { RotateCcw, RotateCw } from './icons';
 
@@ -1428,6 +1429,11 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
     const rotate = useCallback((delta: number, onePage: boolean) => {
         onRotate?.(delta, onePage ? shownPageRef.current : undefined);
     }, [onRotate]);
+    /** A turn of THIS file is being written. Shown on the buttons, never used
+     *  to block them: a second click while one is pending queues a second
+     *  quarter turn, which is what the user asked for. */
+    const readRotating = useCallback(() => isPdfRotating(filePath), [filePath]);
+    const rotating = useSyncExternalStore(subscribePdfRotating, readRotating);
 
     // +/- (and =, its unshifted key) step the zoom exactly like the pill
     // buttons — but only for the front tab's viewer, never while typing in an
@@ -1613,15 +1619,17 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
                                     because an invisible modifier that nothing
                                     announces may as well not exist. */}
                                 <button
-                                    className="pdf-viewer-rotate-btn"
+                                    className={rotating ? 'pdf-viewer-rotate-btn is-busy' : 'pdf-viewer-rotate-btn'}
+                                    aria-busy={rotating}
                                     onClick={e => rotate(LEFT, e.altKey)}
                                     data-tooltip="Rotate left ([) — hold ⌥ for this page only"
                                     aria-label="Rotate the document left"
                                 >
-                                    <RotateCcw size={15} />
+                                    <RotateCcw size={15} className="pdf-viewer-rotate-ccw" />
                                 </button>
                                 <button
-                                    className="pdf-viewer-rotate-btn"
+                                    className={rotating ? 'pdf-viewer-rotate-btn is-busy' : 'pdf-viewer-rotate-btn'}
+                                    aria-busy={rotating}
                                     onClick={e => rotate(RIGHT, e.altKey)}
                                     data-tooltip="Rotate right (]) — hold ⌥ for this page only"
                                     aria-label="Rotate the document right"

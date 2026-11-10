@@ -65,11 +65,28 @@ export function buildNotebookPdfAsync(
     return dispatch(id => ({ kind: 'notebook', id, paper, overlays, source }));
 }
 
-function dispatch(build: (id: number) => PdfBuildRequest): Promise<Uint8Array> {
+/**
+ * Turn a PDF's pages a quarter (`/Rotate`) off the main thread, and get the
+ * rewritten file back.
+ *
+ * `bytes` is TRANSFERRED, not cloned, and is DETACHED (length 0) once this
+ * returns: the caller read it fresh for this one gesture and has no further use
+ * for it, and a 220MB textbook should not be copied to be turned. A view onto
+ * part of a larger buffer is copied out first, since transferring would hand
+ * over (and detach) bytes the view does not own.
+ */
+export function rotatePdfAsync(bytes: Uint8Array, delta: number, pageIndex?: number): Promise<Uint8Array> {
+    const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+        ? bytes
+        : bytes.slice();
+    return dispatch(id => ({ kind: 'rotate', id, bytes: whole, delta, pageIndex }), [whole.buffer as ArrayBuffer]);
+}
+
+function dispatch(build: (id: number) => PdfBuildRequest, transfer: Transferable[] = []): Promise<Uint8Array> {
     const id = nextId++;
     const request = build(id);
     return new Promise<Uint8Array>((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        getWorker().postMessage(request);
+        getWorker().postMessage(request, transfer);
     });
 }

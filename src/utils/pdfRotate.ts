@@ -9,18 +9,14 @@
 // no second coordinate system for a view-only rotation to keep in step with.
 // That is the whole reason this is written into the file.
 //
-// pdf-lib ONLY. Imported dynamically (App's rotate handler), like every other
-// pdf-lib caller, or ~400kB lands in the main bundle for sessions that never
-// open a PDF — see the module-split rules in the `pdf-and-drawings` skill.
+// pdf-lib ONLY, and imported ONLY by pdfBuild.worker.ts, like pdfBuild.ts: App
+// reaches it through `pdfBuildClient.rotatePdfAsync`. It used to run on the
+// main thread, where pdf-lib's idle ticks made a 1,105-page book take 1.3s
+// focused and never finish with the window hidden — see SAVE_WITHOUT_TICKS.
 
 import { PDFDocument, degrees } from 'pdf-lib';
+import { LOAD_WITHOUT_TICKS, SAVE_WITHOUT_TICKS } from './pdfBuild';
 import { asQuarter, turn } from './pdfRotation';
-
-export interface RotateResult {
-    bytes: Uint8Array;
-    /** What the pages now read, for the notice the app shows. */
-    angle: number;
-}
 
 /**
  * Turn `delta` degrees: every page, or just `pageIndex` when one is named.
@@ -34,22 +30,22 @@ export async function rotatePdfPages(
     bytes: Uint8Array,
     delta: number,
     pageIndex?: number,
-): Promise<RotateResult> {
-    // A copy, because pdf-lib keeps a reference to what it is handed and the
-    // caller still holds these bytes for the viewer.
-    const doc = await PDFDocument.load(bytes.slice(), { ignoreEncryption: true });
+): Promise<Uint8Array> {
+    // No defensive copy: the worker owns these bytes outright (App TRANSFERS
+    // them), and pdf-lib's load() only reads its input — see the ownership note
+    // in pdfBuild.buildAnnotatedPdf. The copy this replaces was a whole extra
+    // document, 220MB for the largest textbook measured.
+    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, ...LOAD_WITHOUT_TICKS });
     const pages = doc.getPages();
     if (!pages.length) throw new Error('This PDF has no pages to rotate.');
 
     const chosen = pageIndex === undefined
         ? pages
         : [pages[Math.min(pages.length - 1, Math.max(0, pageIndex))]];
-    let angle = 0;
     for (const page of chosen) {
-        angle = turn(asQuarter(page.getRotation().angle), delta);
-        page.setRotation(degrees(angle));
+        page.setRotation(degrees(turn(asQuarter(page.getRotation().angle), delta)));
     }
     // useObjectStreams defaults true and is what keeps a rewritten file from
     // bloating; nothing here needs the uncompressed form.
-    return { bytes: await doc.save(), angle };
+    return doc.save(SAVE_WITHOUT_TICKS);
 }

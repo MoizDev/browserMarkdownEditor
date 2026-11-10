@@ -82,6 +82,13 @@ export default defineConfig([
     },
   },
   {
+    // foliate-js, byte-pinned to upstream (its sha256 is in source-lock.json), so
+    // its own eslint-disable comments cannot be edited — and with no rules run on
+    // .js here, every one of them reports as an unused directive.
+    files: ['src/epub/vendor/**/*.js'],
+    linterOptions: { reportUnusedDisableDirectives: 'off' },
+  },
+  {
     // The FileSystem context module intentionally exports its Provider together with the
     // useFileSystem hook (a standard React pattern). Don't let the fast-refresh rule
     // force a structural split of an unchanged file.

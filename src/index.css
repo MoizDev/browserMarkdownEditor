@@ -3782,6 +3782,31 @@ body.is-resizing-panes * {
   color: var(--interactive-accent);
 }
 
+/* A turn is being written (utils/pdfRotating.ts) — over a second on a big book,
+   during which nothing else on screen moves, and an unmoving button read as
+   "rotate does nothing". Each arrow spins the way it turns. The button stays
+   live: another click queues another quarter turn. */
+.pdf-viewer-rotate-btn.is-busy {
+  color: var(--interactive-accent);
+}
+
+.pdf-viewer-rotate-btn.is-busy svg {
+  animation: pdf-viewer-rotate-spin 0.9s linear infinite;
+}
+
+.pdf-viewer-rotate-btn.is-busy .pdf-viewer-rotate-ccw {
+  animation-direction: reverse;
+}
+
+@keyframes pdf-viewer-rotate-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Without the motion, the accent colour alone still says "working". */
+@media (prefers-reduced-motion: reduce) {
+  .pdf-viewer-rotate-btn.is-busy svg { animation: none; }
+}
+
 /* ── Inverted pages (PdfInvertToggle) ──
    A VIEW preference and nothing more: the file and its exported PDF keep their
    colours. Done as a CSS filter, so it is instant, costs no re-render, and leaves

@@ -7,12 +7,27 @@
 // It lives apart from pdfAnnotation.ts for that reason alone — the two halves
 // are one feature.
 
-import { PDFDocument, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
+import { PDFDocument, ParseSpeeds, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
 import type { PDFPage, PDFImage } from 'pdf-lib';
 import { NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT, type NotebookSource } from './pdfFormat';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from './paper';
 import type { PageOverlay } from './pdfOverlay';
 import type { VectorOp } from './pdfVector';
+
+/**
+ * pdf-lib's own pacing, switched off — for every load and save in the worker.
+ *
+ * By default `load()` stops on a `setTimeout(0)` every 100 objects and `save()`
+ * every 50, so that a main-thread caller can paint in between. What that costs
+ * is the browser's call, not pdf-lib's: a chained zero-delay timer is clamped to
+ * ≥4ms, and a HIDDEN page's timers run once a SECOND. Measured on a 1,105-page,
+ * 7,032-object PDF: 176 ticks, 1.3-1.5s for ~0.3s of actual parse + serialize —
+ * and with the window minimized, still unfinished after ten minutes. The cost
+ * tracked OBJECT COUNT, not bytes or work. A worker has nobody to yield to, so
+ * the ticks buy nothing here; this is why the pdf-lib callers live in one.
+ */
+export const LOAD_WITHOUT_TICKS = { parseSpeed: ParseSpeeds.Fastest } as const;
+export const SAVE_WITHOUT_TICKS = { objectsPerTick: Infinity } as const;
 
 /**
  * How a page's annotations were authored versus how pdf-lib will draw them.
@@ -137,7 +152,8 @@ export async function buildAnnotatedPdf(
 ): Promise<Uint8Array> {
     // No defensive copy of `original`, on two independent grounds:
     //
-    //  1. OWNERSHIP. This module is imported ONLY by pdfBuild.worker.ts, and the
+    //  1. OWNERSHIP. This module is reached ONLY from pdfBuild.worker.ts (and
+    //     pdfRotate.ts, itself worker-only, for the options above), and the
     //     worker received `original` as a structured clone — nothing outside
     //     this thread can see it. The main thread's copy lives untouched in
     //     pdfRenderCache and is what every subsequent save rebuilds from.
@@ -149,7 +165,7 @@ export async function buildAnnotatedPdf(
     // Re-check both if this is ever called from the main thread, or on a pdf-lib
     // upgrade. The two .slice()s this replaces cost a full extra copy of the
     // document EACH, on a path that runs every ~2.5s while annotating.
-    const doc = await PDFDocument.load(original);
+    const doc = await PDFDocument.load(original, LOAD_WITHOUT_TICKS);
     const pages = doc.getPages();
 
     for (let i = 0; i < pages.length; i++) {
@@ -178,7 +194,7 @@ export async function buildAnnotatedPdf(
         description: 'tldraw snapshot: the editable form of the annotations stamped on the pages.',
     });
 
-    return doc.save();
+    return doc.save(SAVE_WITHOUT_TICKS);
 }
 
 /* ── Notebooks ──────────────────────────────────────────────────────────── */
@@ -257,5 +273,5 @@ export async function buildNotebookPdf(
         doc.setProducer(`Exported from ${source.path}`);
     }
 
-    return doc.save();
+    return doc.save(SAVE_WITHOUT_TICKS);
 }

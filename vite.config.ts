@@ -29,4 +29,10 @@ export default defineConfig({
       }
     },
   }],
+  // `@tldraw/assets/imports.vite` is ~100 `import x from './font.woff2?url'`
+  // lines. Dev pre-bundling hands them to esbuild, which has no `?url` and makes
+  // every one `undefined` — so `getAssetUrlsByImport()` threw at canvasPen's
+  // module scope and no canvas (annotate, drawing, notebook) could open under
+  // `npm run dev`. Served unbundled, Vite resolves them as it does in a build.
+  optimizeDeps: { exclude: ['@tldraw/assets'] },
 })

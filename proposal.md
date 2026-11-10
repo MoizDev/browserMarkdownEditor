@@ -865,15 +865,17 @@ Harness limitations a future agent should know:
 
 ## 13. Corrections to the published summary
 
-The summary page was written before this file. Differences:
+The summary page was written before this file. Two points in its first versions were wrong
+or loose and have since been corrected on the page (version 3); one caveat still applies.
 
-- It states "278 MB heap, 40,000 DOM nodes" for a 10,000-stroke board. Those figures were
-  taken with a 3,000-stroke board also mounted (13,004 shapes in total). See §5.5.
-- It labels the 4.9 s stroke cost as "board with 10,000 strokes". Precisely: 10,000 strokes
-  **all in view** (after zoom-to-fit). With few strokes in view it is lower (735 ms task at
-  3,000 strokes, versus 1,600 ms with all 3,000 in view).
-- It gives PDF figures as UI-thread task time. On a machine with GPU canvas the script share
-  (135–976 ms per zoom step) is the more portable figure. See §4.3.
+- Corrected: it stated "278 MB heap, 40,000 DOM nodes" for a 10,000-stroke board. Those
+  figures were taken with a 3,000-stroke board also mounted (13,004 shapes in total). The page
+  now gives the per-stroke figures instead. See §5.5.
+- Corrected: it labelled the 4.9 s stroke cost as "board with 10,000 strokes". Precisely:
+  10,000 strokes **all in view** (after zoom-to-fit). With few strokes in view it is lower
+  (735 ms task at 3,000 strokes, versus 1,600 ms with all 3,000 in view).
+- Still applies: it gives PDF figures as UI-thread task time. On a machine with GPU canvas the
+  script share (135–976 ms per zoom step) is the more portable figure. See §4.3.
 
 ---
 

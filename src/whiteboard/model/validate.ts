@@ -1,10 +1,9 @@
 import { normalizePaper, PAPER_SIZES, type NotebookPaper } from '../../utils/paper';
-import { MEDIA_MIMES } from '../format/schema';
 import type { Op, TouchedSet } from '../change/ops';
 import type { RichText } from '../text/richText';
 import { childrenOf, isSheetParent, sheetOf, type BoardDoc } from './doc';
 import { isValidId, type NodeId, type ParentId, type SheetId } from './ids';
-import type { MediaId } from './media';
+import { MEDIA_MIMES, type MediaId } from './media';
 import type { Node, NodeKind } from './nodes';
 import { isValidKey } from './orderKey';
 import type { SampleStoreReader } from './samples';

@@ -1,6 +1,7 @@
 import type { Node, NodeBase, NodeKind } from './nodes';
 import type { ViewFlags } from './doc';
 import type { UiBlock } from './styles';
+import type { MediaEntry } from './media';
 
 // document-model.md §§3.1–3.2, R-W13: constructor defaults and native-format
 // omission/fill share this table. An unlisted property has no implied default.
@@ -75,3 +76,6 @@ export const VIEW_DEFAULTS = {
     debugMode: false,
     ext: null,
 } as const satisfies ViewFlags;
+
+// R-W35: fields omitted by an older/native media record, shared with its reader.
+export const MEDIA_DEFAULTS = { name: '', animated: false, file: null } as const satisfies Partial<MediaEntry>;

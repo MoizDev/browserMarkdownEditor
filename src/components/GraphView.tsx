@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import type { GraphNode, GraphLink, OpenNodeHandler, Theme } from '../types';
+import { perfRoot } from '../utils/perfHooks';
 
 /**
  * GraphView — an Obsidian-style "Neural Brain" graph of the vault.
@@ -69,6 +70,15 @@ interface SimNode {
     vy: number;
 }
 
+interface GraphMeasurement {
+    ids: string[];
+    ring: Array<{ step: number; x: number[]; y: number[] }>;
+    nodes: GraphNode[] | null;
+    links: GraphLink[];
+    publications: number;
+    steps: number;
+}
+
 /** Pan/zoom viewport state. */
 interface GraphViewport {
     scale: number;
@@ -114,6 +124,47 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     const fitRef = useRef<() => void>(() => {});
 
     const [hoverName, setHoverName] = useState<string | null>(null);
+    const measurementRef = useRef<GraphMeasurement | null>(null);
+
+    useEffect(() => {
+        if (__BME_BENCH__) {
+            try {
+                const data: GraphMeasurement = { ids: [], ring: [], nodes: null, links: [], publications: 0, steps: 0 };
+                measurementRef.current = data;
+                perfRoot().graph = {
+                    positions: () => ({
+                        ids: data.ids.slice(),
+                        ring: data.ring.map(frame => ({ step: frame.step, x: frame.x.slice(), y: frame.y.slice() })),
+                    }),
+                    snapshot: () => data.links.map(link => [link.source, link.target]),
+                    get publications() { return data.publications; },
+                    get steps() { return data.steps; },
+                };
+                return () => {
+                    data.ids = [];
+                    data.ring = [];
+                    data.nodes = null;
+                    data.links = [];
+                    data.publications = 0;
+                    data.steps = 0;
+                    measurementRef.current = null;
+                };
+            } catch { /* Measurement failures must not enter the app's path. */ }
+        }
+    }, []);
+
+    useEffect(() => {
+        if (__BME_BENCH__) {
+            try {
+                const data = measurementRef.current;
+                if (data && (data.nodes !== nodes || data.links !== links)) {
+                    data.nodes = nodes;
+                    data.links = links;
+                    data.publications++;
+                }
+            } catch { /* Measurement failures must not enter the app's path. */ }
+        }
+    }, [nodes, links]);
 
     // Adjacency map for neighbour highlighting.
     const adjacency = useMemo(() => {
@@ -158,6 +209,18 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         // Re-energise the layout so it re-settles into the new topology, then rests.
         alphaRef.current = 1;
         dirtyRef.current = true;
+        if (__BME_BENCH__) {
+            try {
+                const data = measurementRef.current;
+                if (data) {
+                    // This effect reheats even a same-id topology publication;
+                    // each fresh alpha=1 run needs its own equal-step history.
+                    data.ids = nodes.map(node => node.id);
+                    data.ring = [];
+                    data.steps = 0;
+                }
+            } catch { /* Measurement failures must not enter the app's path. */ }
+        }
     }, [nodes]);
 
     // Read theme colors from CSS variables whenever the theme flips.
@@ -330,6 +393,23 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
 
             // Cool toward rest (unless actively dragging, which holds it warm).
             if (!dragging) alphaRef.current = alpha + (0 - alpha) * ALPHA_DECAY;
+            if (__BME_BENCH__) {
+                try {
+                    const data = measurementRef.current;
+                    if (data) {
+                        const x: number[] = [], y: number[] = [];
+                        for (const id of data.ids) {
+                            const position = sim.get(id)!;
+                            x.push(position.x);
+                            y.push(position.y);
+                        }
+                        // Independent RAF clocks rarely expose the same latest
+                        // step; retain all 300 settling steps for exact TB-GR pairs.
+                        data.ring.push({ step: ++data.steps, x, y });
+                        if (data.ring.length > 512) data.ring.shift();
+                    }
+                } catch { /* Measurement failures must not enter the app's path. */ }
+            }
             return true;
         };
 

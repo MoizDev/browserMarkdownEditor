@@ -23,6 +23,16 @@ function fail(reason, detail) {
     error.detail = detail;
     throw error;
 }
+function invalid(detail) {
+    const error = new Error(detail);
+    error.invalid = true;
+    error.reason = 'identity';
+    error.detail = detail;
+    throw error;
+}
+function product(reason, condition, detail) {
+    if (!condition) fail(reason, detail);
+}
 function hand(field, got, want) {
     if (JSON.stringify(got) !== JSON.stringify(want)) fail('hand-count', `${field} ${JSON.stringify(got)}!=${JSON.stringify(want)}`);
 }
@@ -41,10 +51,10 @@ async function scan(id, arm, identity, page, fetched, drain, supplementalUrls) {
     const supplemental = [];
     const checkBody = item => {
         const url = new URL(item.url);
-        assert.equal(url.origin, new URL(arm.url).origin, `${id}: off-origin script`);
+        if (url.origin !== new URL(arm.url).origin) invalid(`${id}: off-origin script`);
         const path = decodeURIComponent(url.pathname).replace(/^\//, '');
         const hash = sha256(item.body);
-        if (id !== 'D') assert.equal(hash, identity.files[path], `${id}: body identity mismatch for ${path}`);
+        if (id !== 'D' && hash !== identity.files[path]) invalid(`${id}: body identity mismatch for ${path}`);
         return { source: item.body.toString('utf8'), url: item.url, path, sha256: hash };
     };
     await drain();
@@ -64,7 +74,7 @@ async function scan(id, arm, identity, page, fetched, drain, supplementalUrls) {
                 }
                 return { status: response.status, body: btoa(binary) };
             }, url);
-            assert.equal(response.status, 200, `${id}: missing supplemental script ${url}`);
+            if (response.status !== 200) invalid(`${id}: missing supplemental script ${url}`);
             supplemental.push({ url, body: Buffer.from(response.body, 'base64') });
         }
     }
@@ -76,7 +86,7 @@ async function scan(id, arm, identity, page, fetched, drain, supplementalUrls) {
     const supplementalHits = hits(extra);
     if (id === 'D') {
         const app = observed.find(item => new URL(item.url).pathname === '/src/App.tsx');
-        assert(app?.source.includes(`${arm.root}/src/App.tsx`), 'D: JSX dev source must name the recorded worktree root');
+        if (!app?.source.includes(`${arm.root}/src/App.tsx`)) invalid('D: JSX dev source must name the recorded worktree root');
     }
     const manifest = items => items.map(item => ({ url: item.url, path: item.path, sha256: item.sha256 }));
     const report = {
@@ -90,7 +100,7 @@ async function scan(id, arm, identity, page, fetched, drain, supplementalUrls) {
         fail('P-anchor', `${hit.anchor} ${hit.url}`);
     }
     if (id === 'B') for (const anchor of anchors) {
-        if (!observedHits.some(hit => hit.anchor === anchor)) fail('positive-control', `${anchor} absent from browser-fetched scripts`);
+        if (!observedHits.some(hit => hit.anchor === anchor)) fail('B-control', `${anchor} absent from browser-fetched scripts`);
     }
     return { observed: observed.length, supplemental: extra.length, observedHits, supplementalHits, loss: report.loss };
 }
@@ -128,7 +138,7 @@ async function runFlow(id) {
         });
         const drain = async () => {
             while (pending.size) await Promise.all([...pending]);
-            assert.deepEqual(responseErrors, [], 'A fetched script body could not be read');
+            if (responseErrors.length) invalid(`A fetched script body could not be read: ${responseErrors.join('; ')}`);
         };
         await page.route('**/*', route => new URL(route.request().url()).origin === new URL(arm.url).origin ? route.continue() : route.abort());
         await page.addInitScript(() => {
@@ -197,8 +207,12 @@ async function runFlow(id) {
             }
             assert.fail(`Disk did not reach ${JSON.stringify(expected)} within 10 seconds`);
         };
+        let entered = false;
         try {
-            await page.goto(arm.url);
+            const navigation = await page.goto(arm.url);
+            if (navigation?.status() !== 200) invalid(`${id}: missing app URL ${arm.url}`);
+            if (id !== 'D' && sha256(await navigation.body()) !== identity.files['index.html']) invalid(`${id}: app HTML identity mismatch`);
+            entered = true;
             await writeOutside('Initial note.\n');
             await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
             await page.locator('.vault-switcher').waitFor();
@@ -224,8 +238,8 @@ async function runFlow(id) {
             const counters = await page.evaluate(() => ({ witness: window.__witness, funnel: window.__perf?.funnel ?? null,
                 reports: window.__perf?.vault?.reports() ?? [], perfUndefined: window.__perf === undefined }));
             const disk = await readDisk();
-            assert.equal(counters.witness.writes.length, 2, 'Autosave and close must each write once');
-            assert.equal(counters.witness.closed, 2, 'Both writes must complete');
+            product(`${id}-write`, counters.witness.writes.length === 2, 'Autosave and close must each write once');
+            product(`${id}-write`, counters.witness.closed === 2, 'Both writes must complete');
             await page.locator('.tree-item').filter({ hasText: /^note$/ }).click();
             await page.waitForFunction(() => document.querySelector('.cm-content')?.textContent.includes('Dirty when closed.'));
             await page.evaluate(() => document.fonts.ready);
@@ -237,7 +251,7 @@ async function runFlow(id) {
             const bundle = await scan(id, arm, identity, page, fetched, drain, supplementalUrls);
             const result = { ...metadata, id, url: arm.url, identity, counters, disk, visible, errors, bundle };
             await writeFile(join(artifacts, `${id}.json`), JSON.stringify(result, null, 2));
-            assert.deepEqual(errors, [], 'The app must not throw');
+            product(`${id}-render`, errors.length === 0, `The app threw: ${errors.join('; ')}`);
             if (id === 'B') {
                 if (!counters.funnel) fail('hand-count', 'funnel missing');
                 if (!(counters.funnel.reports['pane:note'] >= 2)) fail('hand-count', 'pane:note <2');
@@ -249,16 +263,23 @@ async function runFlow(id) {
                 hand('write-reports', writes.length, counters.witness.writes.length);
                 hand('write-callers', writes.map(report => [report.caller, report.path]), [['flushTab', 'note.md'], ['flushTab', 'note.md']]);
                 hand('write-events', counters.witness.events.length, writes.length);
-                writes.forEach((report, index) => assert(report.t <= counters.witness.writes[index].t, 'Report must precede writable'));
+                writes.forEach((report, index) => product('hand-count', report.t <= counters.witness.writes[index].t, 'Report must precede writable'));
             } else {
-                assert.equal(counters.perfUndefined, true, `${id}: window.__perf must be undefined`);
-                assert.equal(counters.funnel, null, `${id}: no funnel hook`);
-                assert.deepEqual(counters.reports, [], `${id}: no hook reports`);
-                assert.deepEqual(counters.witness.events, [], `${id}: no hook events`);
+                product(`${id}-hook`, counters.perfUndefined, 'window.__perf must be undefined');
+                product(`${id}-hook`, counters.funnel === null, 'No funnel hook may exist');
+                product(`${id}-hook`, counters.reports.length === 0, 'No hook reports may exist');
+                product(`${id}-hook`, counters.witness.events.length === 0, 'No hook events may occur');
             }
             console.log(`PASS ${id} browser=${browser.version()} driver=${driver} readRetries=${counters.witness.readRetries}`);
             return result;
         } catch (error) {
+            // Once the real app is entered, an unnamed flow/render assertion is
+            // a product failure, never an invalid setup. Identity failures carry
+            // their explicit invalid flag through this boundary.
+            if (entered && !error.reason) {
+                error.reason = `${id}-render`;
+                error.detail = error.message;
+            }
             await page.screenshot({ path: join(artifacts, `${id}-failure.png`) }).catch(() => {});
             await writeFile(join(artifacts, `${id}-failure.json`), JSON.stringify({ ...metadata, id, identity, error: error.stack, errors,
                 witness: await page.evaluate(() => window.__witness).catch(() => null) }, null, 2));
@@ -271,14 +292,14 @@ try {
     const production = await runFlow('P');
     const benchmark = await runFlow('B');
     const development = await runFlow('D');
-    assert.equal(benchmark.disk, production.disk, 'P/B bytes differ');
-    assert.deepEqual(benchmark.visible, production.visible, 'P/B visible DOM differs');
-    assert.equal(development.disk, production.disk, 'D bytes differ');
-    assert.deepEqual(development.visible, production.visible, 'D visible DOM differs');
+    product('PB-parity', benchmark.disk === production.disk, 'P/B bytes differ');
+    product('PB-parity', JSON.stringify(benchmark.visible) === JSON.stringify(production.visible), 'P/B visible DOM differs');
+    product('D-parity', development.disk === production.disk, 'D bytes differ');
+    product('D-parity', JSON.stringify(development.visible) === JSON.stringify(production.visible), 'D visible DOM differs');
     await writeFile(join(artifacts, 'result.json'), JSON.stringify({ ...metadata, result: 'pass', arms: ['P', 'B', 'D'], parity: true }, null, 2));
     console.log(`PASS C-15a P/B/D parity artifacts=${artifacts}`);
 } catch (error) {
     console.error(`FAIL ${error.reason ?? 'setup'} ${error.detail ?? error.message}`);
     await writeFile(join(artifacts, 'result.json'), JSON.stringify({ ...metadata, result: 'fail', reason: error.reason ?? 'setup', error: error.stack }, null, 2));
-    process.exitCode = 1;
+    process.exitCode = error.invalid || !error.reason ? 2 : 1;
 }

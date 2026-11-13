@@ -117,5 +117,7 @@ The runner checks these **named** reasons, not arbitrary nonzero exits:
 ```
 
 A missing URL, unapplied patch, wrong commit/browser/driver, body hash mismatch,
-or any setup error is **invalid**, never a mutant kill. The same clean gate
-must exit 0 for P/B/D before either negative result is offered.
+or any setup error is **invalid** (exit 2), never a mutant kill. Product
+failures have named reasons and exit 1: P-anchor, P-hook, D-hook, B-control,
+hand-count, per-arm render/write failures and parity. The same clean gate must
+exit 0 for P/B/D before either negative result is offered.

@@ -228,8 +228,10 @@ export async function generateUnicode(out, seed) {
         probes.push({ page, pageId, annotationId: target, role: def.role, embedded: !def.fallback, pairedPage: def.pairedPage ?? null, logicalString: def.text,
             sourceVisualUnicode: def.visual ?? def.keys.map(key => glyphs.find(g => g.key === key).unicode).join(''), direction: def.direction,
             glyphCodes: def.keys.map(codeFor), x: def.vertical ? 250 : x, y: def.vertical ? 200 : y, size,
-            glyphAdvancePoints: def.vertical ? size : glyphWidth(def.keys) * size / 1000,
-            glyphs: def.keys.map(key => { const g = glyphs.find(glyph => glyph.key === key); return { key, unicode: g.unicode, advance: g.width, bounds: [Math.min(...g.contours.flat().map(p => p[0])), Math.min(...g.contours.flat().map(p => p[1])), Math.max(...g.contours.flat().map(p => p[0])), Math.max(...g.contours.flat().map(p => p[1]))] }; }),
+            perGlyphAdvancePoints: def.keys.map(key => def.vertical ? size : glyphWidth([key]) * size / 1000),
+            totalRunAdvancePoints: def.vertical ? size * def.keys.length : glyphWidth(def.keys) * size / 1000,
+            runDisplacementPoints: def.vertical ? [0, size * def.keys.length] : [glyphWidth(def.keys) * size / 1000, 0],
+            glyphs: def.keys.map(key => { const g = glyphs.find(glyph => glyph.key === key); return { key, unicode: g.unicode, advanceFontUnits: g.width, bounds: [Math.min(...g.contours.flat().map(p => p[0])), Math.min(...g.contours.flat().map(p => p[1])), Math.max(...g.contours.flat().map(p => p[0])), Math.max(...g.contours.flat().map(p => p[1]))] }; }),
             copy: { logical: def.text, normalized: def.text.normalize('NFKC'), policy: 'Exact logical code points; native layout breaks recorded separately by P-00, not made the oracle.' },
             find: { query: def.role.startsWith('ligature-') ? 'office' : def.text.normalize('NFKC'), expectedOnThisPage: true },
             caret: def.role.startsWith('ligature-') ? { glyph: def.keys[2], canonicalInterval: [2, def.role === 'ligature-sequence' ? 4 : 3], sourceCharacters: def.role === 'ligature-sequence' ? 'fi' : '\ufb01', normalizedInterval: [2, 4], geometry: 'One glyph box for the interval; do not invent a second glyph.' } : null });

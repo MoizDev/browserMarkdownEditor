@@ -111,7 +111,9 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
     return typeof value.event === 'string' && 'data' in value;
 }
 
-// structuredClone itself permits shared buffers, file handles and platform objects beyond C5.
+// Check caller arguments and contained replies only: structuredClone permits shared buffers and
+// handles beyond C5. Trusted same-origin replies already cloned without functions/accessors; walking
+// their large index snapshots again on the main thread would defeat moving that work off-thread.
 // Walk containers only; never scan the bytes of a buffer, bitmap or Blob.
 export function assertPayload(value: unknown, seen = new Set<object>()): void {
     if (value === null || value === undefined || ['string', 'boolean', 'number', 'bigint'].includes(typeof value)) return;

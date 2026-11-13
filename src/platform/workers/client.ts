@@ -30,6 +30,7 @@ type Job = {
     admitted: boolean;
     bootstrap?: number;
     permit?: CpuPermit;
+    admission?: object;
     abort?: () => void;
     resolve(value: unknown): void;
     reject(error: WorkerHostError): void;
@@ -46,6 +47,7 @@ type Connection = {
     sent: Map<number, Job>;
     killAt?: number;
     polling: boolean;
+    poll: number;
     polled: number;
     pollAt?: number;
     eventsAt: number;
@@ -80,7 +82,6 @@ class Client implements WorkerClient {
     private spawningAt = 0;
     private respawnAt = 0;
     private crashes: number[] = [];
-    private restartCount = 0;
     private pumping = false;
     private pumpAgain = false;
     private poison = new Map<string, number>();
@@ -138,6 +139,22 @@ class Client implements WorkerClient {
         return promise;
     }
 
+    private syncClock(): void {
+        const connection = this.connection;
+        const timed = this.state === 'backoff' || (this.state === 'starting' && !connection?.hello)
+            || !!connection?.sent.size || connection?.killAt !== undefined;
+        if (timed) this.stopClock ??= watchClock(this.tick);
+        else if (this.stopClock) {
+            this.stopClock();
+            this.stopClock = undefined;
+            if (connection) {
+                ++connection.poll;
+                connection.polling = false;
+                connection.polled = now();
+            }
+        }
+    }
+
     private armDeadline(job: Job): void {
         if (job.deadline === undefined || job.phase === 'settled') return;
         const left = job.deadline - now();
@@ -166,11 +183,16 @@ class Client implements WorkerClient {
                         if (!job.admitted && !job.permit) {
                             if (job.options.cpu === 'light') job.admitted = true;
                             else {
+                                const admission = job.admission = {};
                                 job.permit = (this.spec.permits ?? immediatePermits).acquire({
                                     name: this.spec.name, id: job.id, priority: job.options.priority,
-                                    start: () => { job.admitted = true; if (job.permit) this.pump(); },
-                                    pause: () => this.pause(job, true),
-                                    resume: () => this.pause(job, false),
+                                    start: () => {
+                                        if (job.admission !== admission) return;
+                                        job.admitted = true;
+                                        if (job.permit) this.pump();
+                                    },
+                                    pause: () => { if (job.admission === admission) this.pause(job, true); },
+                                    resume: () => { if (job.admission === admission) this.pause(job, false); },
                                 });
                                 // Admission callbacks can synchronously settle another job and re-enter
                                 // the client. The pump serialises them; a cancelled admission releases too.
@@ -196,7 +218,7 @@ class Client implements WorkerClient {
                     }
                 }
             } while (this.pumpAgain);
-        } finally { this.pumping = false; }
+        } finally { this.pumping = false; this.syncClock(); }
     }
 
     reprioritise = (promise: Promise<unknown>, priority: Priority): void => {
@@ -240,8 +262,7 @@ class Client implements WorkerClient {
         job.options.signal = undefined;
         job.options.transfer = undefined;
         job.abort = undefined;
-        job.permit?.release();
-        job.permit = undefined;
+        this.release(job);
         if (__BME_BENCH__) {
             const timing = this.timings!.find(t => t.id === job.id);
             if (timing) timing.settled = now();
@@ -250,6 +271,26 @@ class Client implements WorkerClient {
         else job.resolve(result);
         job.resolve = () => {};
         job.reject = () => {};
+        this.syncClock();
+    }
+
+    private release(job: Job): void {
+        job.admission = undefined;
+        job.permit?.release();
+        job.permit = undefined;
+    }
+
+    // Never replay work a worker may already have performed. Unposted caller jobs belong to the
+    // client, not the dead generation; keep their deadline and args, but reacquire a CPU ticket.
+    private retainQueued(): void {
+        for (const job of [...this.pending.values()]) {
+            if (job.phase !== 'queued') continue;
+            if (job.bootstrap !== undefined) this.cancel(job, 'Cancelled', 'Worker initialisation superseded');
+            else {
+                this.release(job);
+                job.admitted = job.paused = false;
+            }
+        }
     }
 
     on = (event: string, handler: (data: unknown) => void): (() => void) => {
@@ -269,7 +310,7 @@ class Client implements WorkerClient {
         this.state = 'starting';
         const generation = ++this.generation;
         this.spawningAt = now();
-        this.stopClock ??= watchClock(this.tick);
+        this.syncClock();
         let spawned: Worker | Promise<ContainedPort>;
         try { spawned = this.spec.spawn(); }
         catch (error) { this.fail(`Cannot spawn worker: ${String(error)}`); return; }
@@ -288,7 +329,7 @@ class Client implements WorkerClient {
                     endpoint.removeEventListener('messageerror', messageerror);
                     endpoint.removeEventListener('error', error);
                 },
-                hello: false, started: this.spawningAt, sent: new Map(), polling: false, polled: now(), eventsAt: now(), events: 0,
+                hello: false, started: this.spawningAt, sent: new Map(), polling: false, poll: 0, polled: now(), eventsAt: now(), events: 0,
             };
             const message = (event: MessageEvent<unknown>) => this.receive(connection, event.data);
             const messageerror = () => this.crash(connection, 'Worker message could not be deserialised');
@@ -318,6 +359,7 @@ class Client implements WorkerClient {
         if (!connection.hello) {
             if (!('hello' in data) || data.hello.protocol !== this.spec.protocol) { this.fail('Worker protocol mismatch'); return; }
             connection.hello = true;
+            this.syncClock();
             // A bootstrap facade marks initialisation requests without letting unrelated callers
             // jump ahead of onStart. Its generation fence also catches an async hook after a crash.
             const bootstrap = Object.create(this) as WorkerClient;
@@ -333,10 +375,12 @@ class Client implements WorkerClient {
             return;
         }
         if ('hello' in data) { this.crash(connection, 'Duplicate worker hello'); return; }
-        try {
-            if ('event' in data) assertPayload(data.data);
-            else if (data.ok) assertPayload(data.result);
-        } catch { this.crash(connection, 'Forbidden value in worker reply'); return; }
+        if (connection.alive) {
+            try {
+                if ('event' in data) assertPayload(data.data);
+                else if (data.ok) assertPayload(data.result);
+            } catch { this.crash(connection, 'Forbidden value in worker reply'); return; }
+        }
         if ('event' in data) { this.event(connection, data); return; }
         const job = connection.sent.get(data.id);
         if (!job) {
@@ -350,6 +394,7 @@ class Client implements WorkerClient {
             if (data.ok) this.discard(job.op, data.result);
         } else if (data.ok) this.settle(job, undefined, data.result);
         else this.settle(job, new WorkerHostError(data.error.name, data.error.message));
+        this.syncClock();
     }
 
     private event(connection: Connection, message: Extract<WorkerMessage, { event: string }>): void {
@@ -409,11 +454,14 @@ class Client implements WorkerClient {
             if (!connection.polling && time - connection.polled >= 1000) {
                 connection.polling = true;
                 connection.pollAt = connection.polled = time;
+                const poll = ++connection.poll;
                 void Promise.resolve().then(() => connection.alive!()).then(alive => {
-                    if (this.connection !== connection) return;
+                    if (this.connection !== connection || connection.poll !== poll) return;
                     connection.polling = false;
                     if (!alive) this.fail('Contained worker frame is no longer alive');
-                }, () => { if (this.connection === connection) this.fail('Contained worker liveness check failed'); });
+                }, () => {
+                    if (this.connection === connection && connection.poll === poll) this.fail('Contained worker liveness check failed');
+                });
             }
         }
     };
@@ -423,18 +471,21 @@ class Client implements WorkerClient {
         const keyed = new Set<string>();
         for (const job of connection.sent.values()) if (job.options.key !== undefined) keyed.add(`${job.op}\0${job.options.key}`);
         for (const key of keyed) this.poison.set(key, (this.poison.get(key) ?? 0) + 1);
+        const posted = [...connection.sent.values()];
         this.disconnect();
-        for (const job of [...this.pending.values()]) {
+        for (const job of posted) {
             const poisoned = job.options.key !== undefined && (this.poison.get(`${job.op}\0${job.options.key}`) ?? 0) >= 2;
             this.settle(job, this.error('WorkerCrashed', reason, poisoned));
         }
+        this.retainQueued();
         const time = now();
         this.crashes = this.crashes.filter(t => time - t < 60000);
         this.crashes.push(time);
         if (this.crashes.length >= 4) { this.fail(`Four worker crashes in 60 seconds: ${reason}`); return; }
         this.state = 'backoff';
-        this.respawnAt = time + backoff[Math.min(this.restartCount++, backoff.length - 1)];
+        this.respawnAt = time + backoff[this.crashes.length - 1];
         if (this.respawnAt === time) this.spawn();
+        else this.syncClock();
     }
 
     private disconnect(): void {
@@ -460,7 +511,6 @@ class Client implements WorkerClient {
         if (this.state !== 'failed') return;
         this.failure = undefined;
         this.crashes = [];
-        this.restartCount = 0;
         this.poison.clear();
         this.state = 'idle';
         this.spawn();
@@ -471,10 +521,11 @@ class Client implements WorkerClient {
         if (this.state === 'failed') return Promise.reject(this.failure);
         if (this.recyclePromise) return this.recyclePromise;
         this.state = 'recycling';
-        // Choose the documented cancel alternative, not a drain that could wait forever on WASM.
-        // New calls queue for the next generation; none of the cancelled calls is replayed.
-        for (const job of [...this.pending.values()]) this.cancel(job, 'Cancelled', `Worker recycled: ${reason}`);
+        // Cancel posted work rather than drain forever on WASM; unposted calls survive.
+        const posted = [...(this.connection?.sent.values() ?? [])];
         this.disconnect();
+        for (const job of posted) this.cancel(job, 'Cancelled', `Worker recycled: ${reason}`);
+        this.retainQueued();
         const promise = new Promise<void>((resolve, reject) => this.readyWaiters.push({ resolve, reject }));
         this.recyclePromise = promise;
         void promise.then(() => { this.recyclePromise = undefined; }, () => { this.recyclePromise = undefined; });

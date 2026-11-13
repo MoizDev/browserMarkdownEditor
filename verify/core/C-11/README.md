@@ -113,6 +113,15 @@ the normal production configuration. Typecheck/lint passed through L; logs
 `W/scratch/c-e/C-11-{typecheck,lint}.txt`. Earlier queue-only cancellations during
 the timing window are not gate results.
 
+Review follow-up adds real `C#.md` and `What?.md` files and `[C#](C#.md)` /
+`[What?](What?.md)` fixture rows. Reading mode renders both as inert SPAN link
+marks (no href or wikilink target). Clicking each stays on its source throughout
+a bounded negative UI observation; neither opens its existing local target.
+Thus rejection matches the observed reader, rather than assuming those filenames
+are invalid. The extended 39-note gate PASS cold/save/reload, still seven local
+edges and zero backlinks on those two targets. Evidence and per-phase reader
+markup/click observations: `W/scratch/c-e/C-11-D07-punctuation-reader/report.json`.
+
 D08 graph-side normal candidate PASS: `W/scratch/c-e/C-11-D08-graph-after`.
 D07 regression after graph/resolver integration also PASS (`C-11-D07-after-resolver`).
 The last-wins probe without the App seam failed its named click-graph-agree

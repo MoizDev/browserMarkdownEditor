@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { args, launch, openFile, backlinks, graph, editor, saveText, reload } from './browser.mjs';
+import { args, launch, openFile, activePath, backlinks, graph, editor, saveText, reload } from './browser.mjs';
 
 const cases = [
     ['E01_https', '[web](https://example.com/README.md)'],
@@ -36,8 +36,10 @@ const cases = [
     ['E06_encoded_control', '[bad](https%09:/README.md)'],
     ['E06_encoded_traversal', '[bad](%2e%2e/README.md)'],
     ['E06_fragment_only', '[bad](#README.md)'],
+    ['E06_hash_name', '[C#](C#.md)'],
+    ['E06_query_name', '[What?](What?.md)'],
 ];
-const targets = ['README.md', 'Space Note.md', 'folder/Prefixed.md'];
+const targets = ['README.md', 'Space Note.md', 'folder/Prefixed.md', 'C#.md', 'What?.md'];
 const files = Object.fromEntries([...targets.map(name => [name, `# Target ${name}\n`]), ...cases.map(([name, link]) => [`${name}.md`, `# ${name}\n\n${link}\n`])]);
 const expected = Object.fromEntries(targets.map(target => [target, cases.filter(row => row[2] === target).map(row => `${row[0]}.md`).sort()]));
 const out = args.out ?? '/Users/adham/Developer/bme-impl/scratch/c-e/C-11-D07';
@@ -55,6 +57,26 @@ try {
         await openFile(page, 'E01_https.md');
         result.href = await page.locator('.cm-content a.cm-external-link').getAttribute('href');
         assert.equal(result.href, 'https://example.com/README.md', 'external reader anchor changed');
+        result.punctuationReader = [];
+        for (const [source, label] of [['E06_hash_name.md', 'C#'], ['E06_query_name.md', 'What?']]) {
+            await openFile(page, source);
+            assert.notEqual(await page.locator('.cm-content').getAttribute('contenteditable'), 'true', 'reader probe is not in Reading mode');
+            const link = page.locator('.cm-content .cm-live-link').filter({ hasText: label });
+            const mark = await link.evaluate(element => ({ tag: element.tagName, href: element.getAttribute('href'), wiki: element.getAttribute('data-wikilink') }));
+            const before = await activePath(page);
+            await link.click();
+            // A bounded negative UI observation, not a disk-completion sleep:
+            // every sample must stay on this source after the real mark click.
+            const until = Date.now() + 500;
+            let observations = 0;
+            while (Date.now() < until) {
+                assert.equal(await activePath(page), before, `${label} reader click opened a local note`);
+                observations++;
+                await page.waitForTimeout(50);
+            }
+            result.punctuationReader.push({ source, label, mark, before, after: await activePath(page), observations });
+            assert.deepEqual(mark, { tag: 'SPAN', href: null, wiki: null }, `${label} is not the reader's inert link mark`);
+        }
         result.graph = await graph(page);
         await page.locator('.graph-canvas-wrap canvas').screenshot({ path: `${out}/${name}.png` });
         await editor(page);

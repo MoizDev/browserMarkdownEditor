@@ -2,7 +2,8 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { createRequire } from 'node:module';
-import { buildIdentity, bindServedBodies } from '../../lib/identity.mjs';
+import { loadIdentityToolbox } from '../lib/identityToolbox.mjs';
+const { buildIdentity, bindServedBodies, toolboxIdentity } = await loadIdentityToolbox();
 
 // Browser-only gate: no app-module imports, no product hooks, no synthetic
 // selection events. The only selection writes clear the previous gesture.
@@ -36,7 +37,7 @@ const oracle = JSON.parse(await readFile(resolve(fixtureDir, 'selection-geometry
 const driver = createRequire(import.meta.url)('playwright/package.json').version;
 if (driver !== '1.63.0') throw new Error(`Wrong Playwright: ${driver}`);
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME });
-const report = { build: identity, mutant, requiredBodies, browser: browser.version(), driver, mode, gate, fixtures: fixtureEntries, cases: [], failures: [] };
+const report = { build: identity, toolbox: toolboxIdentity, mutant, requiredBodies, browser: browser.version(), driver, mode, gate, fixtures: fixtureEntries, cases: [], failures: [] };
 const requiredArms = gate === 'all' ? ['R3a', 'R3b', 'R3c'] : [gate];
 const normal = text => text.normalize('NFKC').replace(/\s+/g, ' ').trim();
 const variants = mode === 'record' ? [{ theme: 'dark', dpr: 2 }] : [

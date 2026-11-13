@@ -127,6 +127,41 @@
       "version": 1,
       "seed": 1346651697,
       "args": []
+    },
+    {
+      "id": "GEN-P11b-first-font-30",
+      "file": "first-font-title.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Entirely authored text and layout; Base14 Courier reference, no font bytes. Licence act awaits the owner.",
+      "purpose": "First-font 30pt/DPR1 ascent-cache collision, paired with DPR2 as a noncollision control.",
+      "gates": ["P-11b"],
+      "sha256": "167fe05651bbe2edc2f11599efeffae168335975f19645ed3b3ae1588ae70428",
+      "bytes": 1093,
+      "generator": "verify/fixtures/pdf/generators/first-font-title.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 1,
+      "validity": "valid",
+      "expected": "first-font-title.expected.json"
+    },
+    {
+      "id": "GEN-P11b-first-font-30-oracle",
+      "file": "first-font-title.expected.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored string/advance/point oracle; licence act awaits the owner.",
+      "purpose": "Exact logical title, 18pt per-character advances and real pointer endpoints for first-font control.",
+      "gates": ["P-11b"],
+      "sha256": "038a1a8b97be2a047b299c8155b0ac40c2c7425f1b11b65ac393e7ddf0872b6d",
+      "bytes": 1439,
+      "generator": "verify/fixtures/pdf/generators/first-font-title.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": []
     }
   ]
 }

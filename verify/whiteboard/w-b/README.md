@@ -1,84 +1,113 @@
 # W-01: native drawing registration
 
-These are plain Playwright runs of the real production app, not code-based tests. They never
-import application modules into the browser. Use the shared-machine lock for every build,
-server and browser, and run slow commands in an `hc run --bg` terminal.
+Plain Playwright runs of the real production app, not code-based tests. No application module is
+imported into the browser. Use the shared lock and run slow commands in `hc run --bg` terminals.
+Stop preview **between runs**, before writing code; start nothing during a timing window.
+
+## Clean candidate
+
+Commit the candidate first. The independently expected identity names that reviewed checkout:
 
 ```sh
 W=/Users/adham/Developer/bme-impl
 L=$W/scratch/bin/bme-lock
 S=$W/scratch/w-b/candidate
-node verify/whiteboard/w-b/w-01-build.mjs --scratch "$S" # takes the build lock itself
+C=$(git rev-parse HEAD)
+node verify/whiteboard/w-b/w-01-build.mjs --scratch "$S" # holds L build for copy + Vite
 $L serve -- ./node_modules/.bin/vite preview --config "$S/vite.config.mjs" --port 6520 --strictPort
-# In another terminal, after the preview is ready:
-$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6520/ --out "$S/results"
+# After preview is ready, in another terminal:
+$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6520/ \
+  --expected-commit "$C" --out "$S/results"
+# Stop preview immediately after the run.
 ```
 
-Repeat the last command with `--theme light --dpr 2` (all four light/dark × DPR 1/2 combinations
-are meaningful). Stop preview after each use. The driver is the worktree's pinned Playwright 1.63.0;
-the browser is Chrome for Testing 157.0.8103.39, not bundled Chromium or auto-updating Chrome.
-The run opens a named OPFS vault in each of two isolated contexts (weight 2); it does not deserialize
-stored handles or require an IDB shim.
+Repeat with `--theme dark/light --dpr 1/2`. The run asserts the **installed** Playwright package is
+1.63.0, compares the real executable path with the pinned CfT path, then asserts the launched
+browser is 157.0.8103.39. Post-launch failures close all contexts and the browser. Three isolated
+contexts (weight 2) use fresh OPFS vaults/cache; no stored-handle reads or IDB shim are needed.
 
 ## Witness, identity, false pass and loss
 
-- **Witness:** the named native file is clicked in the tree and its unsupported notice is visible;
-  the ordinary note's `positivecontrol` content is found before native-only `zebracorn` is searched;
-  the legacy file mounts tldraw with four actual rendered shapes, not merely a loading container.
-  Twenty keyboard attempts and twenty pointer strokes are followed by the save debounce, a write
-  counter and a full native-byte comparison. The tree's *type* icon (not its action icons) is compared
-  with the legacy drawing's icon. An isolated context holds only `board.drawing` and `note.md`:
-  it observes beyond App's 4-second prefetch deadline and witnesses two real idle callbacks before
-  asserting no `DrawingPane` request. The legacy control must fetch that chunk and render shapes.
-- **Identity:** the build script records the source commit and source-diff SHA-256 in a scratch-only
-  build receipt. After Vite has written its final chunks it hashes the actual entry file. The run
-  fetches this receipt and checks the SHA-256 of the main chunk returned in the browser's network
-  log. A mismatched server or transformed entry chunk fails. The legacy rendered shapes witness the
-  old host/backend; no library/React internals are probed.
-- **False pass:** checking only an empty result panel could mean search never ran; the positive
-  note-content arm prevents that. Checking the last SVG in a row would compare Trash buttons,
-  not type icons; the selector explicitly scopes to `.tree-item-icon`. A zero-write counter alone
-  could miss an instrumentation mistake; byte equality is independently checked. The native-only
-  network arm has its own context/cache and exact file-list assertion; it neither inherits a warmed
-  module from the legacy control nor declares success before idle prefetch could have run.
-- **Loss:** this samples one valid native envelope, one corpus drawing, one note and ordinary
-  pointer/keyboard input. It does not prove every suffix/case, hostile file, concurrent rename or
-  physical stylus. Agent arms remain **pending-V02** until the real-bridge helper stand-in exists;
-  no direct tool imports substitute for it. This package adds no reference-internals probe.
+- **Native witness:** clicking the native tree row shows the unsupported notice, with neither
+  CodeMirror nor tldraw. Twenty keyboard attempts and twenty pointer strokes are followed by the
+  save debounce, a write counter and byte comparison. The counter starts after fixture seeding,
+  **before opening the vault/native document**, and raw writes plus expected/observed hashes are
+  saved before assertions, even when the mutant fails.
+- **Search witness:** the ordinary note's `positivecontrol` content is found before native-only
+  `zebracorn` is searched. Search precedes attempted editing, so the mutant cannot destroy the
+  marker and accidentally pass search exclusion.
+- **Prefetch witness:** native-only (`board.drawing`, `note.md`) and legacy-only (`old.tldraw`)
+  contexts open their vaults, **click no document**, then share the same 4.5-second observation
+  window and two real idle callbacks each. Exact file lists and no mounted document renderer are
+  asserted. Native must request no DrawingPane chunk; legacy must request it **by idle prefetch
+  alone**. The separate clicked legacy control must actually render all four fixture shapes.
+- **Icons:** the tree's type SVG, not its action SVG, is compared with the legacy drawing's type
+  icon. Trash's two drawing icons are independently compared with that legacy tree icon.
+- **Identity:** `--expected-commit` is required and must equal the local reviewed git checkout.
+  The source-diff SHA is computed from git and must equal `--expected-diff` (empty diff by default).
+  `--expected-mutant none/registration/prefetch` chooses an independently known committed patch;
+  its on-disk bytes must equal `git show <reviewed-commit>:<patch-file>`, and the SHA is calculated
+  locally. The served receipt must match **every** expected commit/diff/mutant/patch/path/mode field.
+  Then the actual entry chunk body from the browser network log is hashed and compared with the
+  receipt's final-file hash. Each idle context repeats this identity assertion. A stale server with
+  its own matching receipt/chunk fails against the independently supplied expected commit.
+- **False passes excluded:** empty search is not credited without its positive note-content arm;
+  a quiet native network window is not credited without same-wait **no-click** legacy prefetch;
+  fast snapshots cannot skip App's 4-second idle deadline; a receipt's self-consistency cannot
+  substitute for the expected git/patch identity. A write-counter mistake is checked against bytes.
+- **Loss:** one valid native envelope, one corpus drawing and ordinary keyboard/pointer input are
+  sampled, not every suffix/case, hostile file, concurrent rename or physical stylus. Idle prefetch
+  is observed by requested chunks, not by importing App internals. Agent arms are explicitly
+  **NOT COVERED (pending-V02)** until the real-bridge helper stand-in exists; no direct tool imports
+  substitute for it. This package adds no old-library/React-internals probe.
 
-## Working mutant
+## Both working mutants
+
+The builder makes a fresh independent source/dependency copy under scratch (no shared node_modules),
+checks and applies the committed unified patch with `git apply`, then builds with the production
+configuration. A patch that no longer applies fails before Vite. Patch hashes enter the receipt.
 
 ```sh
-M=$W/scratch/w-b/mutant
+M=$W/scratch/w-b/registration-mutant
 node verify/whiteboard/w-b/w-01-build.mjs --scratch "$M" --mutant
 $L serve -- ./node_modules/.bin/vite preview --config "$M/vite.config.mjs" --port 6521 --strictPort
-$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6521/ --out "$M/results"
+$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6521/ \
+  --expected-commit "$C" --expected-mutant registration --out "$M/results"
+# Expected exit 1. Stop preview.
 ```
 
-The build script copies the app and its dependencies into scratch (no shared `node_modules`),
-requires one exact source anchor, removes `.drawing` **only** from `isCanvasFile`, then builds the
-patched app with the same production config. A stale patch stops before the build. The browser run
-must exit nonzero, specifically failing `unsupported-editor`, `search-exclusion` and `zero-writes`.
-`nativeWriteObservation` must record a `board.drawing` write, `changed: true` and unequal expected /
-observed byte hashes; a failure caused only by missing focus is not proof of the write counter.
-It collects the failures rather than aborting on the first. Identity and the positive search/legacy witnesses must
-still pass. This mutant proves the central predicate actually protects the open and search paths.
+`mutants/registration.patch` removes `.drawing` only from `isCanvasFile`. It must fail
+`unsupported-editor`, `search-exclusion` **and** `zero-writes`. `nativeWriteObservation` must record
+an actual `board.drawing` write, `changed: true`, and unequal byte hashes. Identity, positive note
+search, both idle-prefetch arms, the four-shape legacy control and Trash control must still pass.
+The native tree icon also rejects this mutant. A failure caused only by missing focus is not proof.
 
-For the prefetch arm, use a separate scratch directory and `--prefetch-mutant` instead of `--mutant`.
-That exact-source patch changes only App's legacy-only prefetch predicate back to `isCanvasFile`.
-The same production browser run must fail `native-only-prefetch`, while the legacy network/control
-and the other safety arms still pass. A changed anchor fails before building. This is also the
-bug reproduced on the original W-01 production build before the prefetch correction.
+```sh
+M=$W/scratch/w-b/prefetch-mutant
+node verify/whiteboard/w-b/w-01-build.mjs --scratch "$M" --prefetch-mutant
+$L serve -- ./node_modules/.bin/vite preview --config "$M/vite.config.mjs" --port 6522 --strictPort
+$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6522/ \
+  --expected-commit "$C" --expected-mutant prefetch --out "$M/results"
+# Expected exit 1. Stop preview.
+```
+
+`mutants/prefetch.patch` changes only App's legacy-only prefetch predicate back to `isCanvasFile`.
+It must fail `native-only-prefetch`, while the genuine no-click `legacy-only-idle-prefetch` and all
+other safety/control arms still pass. A prefetch-disabled implementation cannot pass the positive
+idle control, even though clicking a legacy document would still fetch its renderer.
+
+**Stale-server identity control:** serve a retained older clean build, but run the current driver
+from the reviewed checkout with its current `--expected-commit "$C"`. Identity must fail before
+behaviour is credited. Do not pass the older server's own commit back as the expected candidate.
 
 ## Fixture origins
 
-- `fixtures/old.tldraw`: byte-for-byte copy of the planning corpus's
-  `team/TEXT--prod-dpr1--corpus-whiteboard.tldraw`, app-written text actions; its provenance is listed
-  in `planning/10-whiteboard/formats/corpus/INDEX.md` and `manifest.json` (original SHA-256
-  `83faaf830494…`; the full hash is recorded in this directory's `fixtures/ORIGIN.md`).
-- `board.drawing`: generated by the run from `formats/native-format.md` §3.1, with one sheet whose
-  name is `zebracorn`, the R-W15 plain-language compatibility fence label and end-record count.
-  No third-party source copied.
-- `note.md`: generated by the run, containing only the positive search control.
+- `fixtures/old.tldraw`: byte-for-byte copy of planning corpus
+  `team/TEXT--prod-dpr1--corpus-whiteboard.tldraw`; full SHA and script provenance in
+  `fixtures/ORIGIN.md` (four app-written text shapes). No third-party package source was copied.
+- `board.drawing`: generated from `formats/native-format.md` §3.1, with one `zebracorn` sheet,
+  the R-W15 plain-language fence label and end-record count.
+- Notes are generated positive/control inputs; Trash holds copies of the two drawing fixtures.
 
-All output (JSON reports and screenshots) stays in the requested scratch directory.
+Reports and screenshots stay in the requested scratch directory. `CALLERS.md` inventories every
+isCanvasFile caller and the native safety reason, including the corrected legacy-only prefetch.

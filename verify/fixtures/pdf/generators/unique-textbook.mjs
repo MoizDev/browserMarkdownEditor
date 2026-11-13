@@ -37,7 +37,7 @@ export function textbook(pages, seed) {
             { query: quote, pages: sentinelPages, count: sentinelPages.length },
             { query: 'interoperability', pages: sentinelPages, count: sentinelPages.length, construction: ['inter-', 'operability'] }],
         gestures: { title: { page: 1, from: [42, 44], to: [42 + 'Chapter 01 - Authored systems'.length * 9, 44], correct: 'Chapter 01 - Authored systems' },
-            twoLine: { page: 1, from: [42, 142], to: [42 + 64 * 5.4, 157], correct: result.expectedPages[0].lines.filter(line => line.y === 146 || line.y === 161).map(line => line.text).join('\n') },
+            twoLine: { page: 1, from: [42, 142], to: [42 + result.expectedPages[0].lines.find(line => line.y === 161).text.length * 5.4, 157], correct: result.expectedPages[0].lines.filter(line => line.y === 146 || line.y === 161).map(line => line.text).join('\n') },
             crossPage: { from: { page: 1, point: [42, 748] }, to: { page: 2, point: [42 + 'Chapter 01 - Authored systems'.length * 9, 44] }, correct: 'Textbook footer 0001.\nChapter 01 - Authored systems' } },
         anchor: { page: 450, quote: 'The midpoint anchor is independent.', point: [42, 605] },
         correctSelectAll: { scope: 'All physical pages, only PDF content', source: 'pageModels.lines[].text in authored content order' } } };

@@ -33,7 +33,7 @@
       "id": "GEN-18-876-oracle", "file": "unique-textbook-876.expected.json", "tier": 1,
       "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Independent generator inputs, not extracted PDF text.",
       "purpose": "Full authored string/page/query/geometry oracle for the 876-page role.", "gates": ["P-00a", "D7", "TXT-G7"],
-      "sha256": "15924a812da9c63fcdf30477a7ea900728cec1a9c0857c427cc420c47acf87e4", "bytes": 7752074,
+      "sha256": "094b8b6669470ea262d368f453d499d3d740fd761da4dabc02d92ffdecca934b", "bytes": 7752087,
       "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs", "version": 1, "seed": 1346651697, "args": ["--pages", "876"]
     },
     {
@@ -49,7 +49,7 @@
       "id": "GEN-18-1000-oracle", "file": "unique-textbook-1000.expected.json", "tier": 1,
       "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Independent generator inputs, not extracted PDF text.",
       "purpose": "Full authored string/page/query/geometry oracle for the 1000-page additional role.", "gates": ["P-00a", "D7", "TXT-G7"],
-      "sha256": "904aba654d64a57991713044bf07fb697851aa384f50215903db589686929e11", "bytes": 8847723,
+      "sha256": "d564535d209be21bab5c04f7356fb6a3328a2b49f912b1dc7e321fc441b8b384", "bytes": 8847736,
       "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs", "version": 1, "seed": 1346651697, "args": ["--pages", "1000"]
     },
     {

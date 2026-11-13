@@ -7,18 +7,27 @@ import { fixtureMetadata, invocations, SEED } from '../catalog.mjs';
 import { sha256, writeManifest } from './output.mjs';
 export const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 const execute = promisify(execFile);
-export async function generateCorpus(out, { clockMutant = false } = {}) {
+export async function generateCorpus(out, { clockMutant = false, browserMutant = false } = {}) {
     const records = [];
     for (const invocation of invocations) {
         let generator = resolve(REPO, invocation.generator);
-        if (clockMutant && invocation.key === 'core/notes') {
+        if ((clockMutant && invocation.key === 'core/notes') || (browserMutant && invocation.key === 'core/vault-100')) {
             const source = await readFile(generator, 'utf8');
-            const anchor = "await write('Every construct.md', allConstructs)";
-            if (source.split(anchor).length !== 2)
-                throw new Error('Clock mutant anchor no longer matches; V-05 is unproven');
-            const patched = source.replace(anchor, "await write('Every construct.md', allConstructs + `Clock: ${Date.now()} / ${process.hrtime.bigint()}\\n`)")
-                .replaceAll(/from '(\.\.\/\.\.\/lib\/[^']+)'/g, (_, relative) => `from '${pathToFileURL(resolve(dirname(generator), relative)).href}'`);
-            const mutant = resolve(out, 'clock-mutant.mjs');
+            const kind = clockMutant ? 'clock' : 'browser';
+            const anchor = clockMutant
+                ? "await write('Every construct.md', allConstructs)"
+                : "content: allConstructs });";
+            const replacement = clockMutant
+                ? "await write('Every construct.md', allConstructs + `Clock: ${Date.now()} / ${process.hrtime.bigint()}\\n`)"
+                : "content: allConstructs.replace('![[checker.png]]', '![[missing-v05-mutant.png]]') });";
+            if (source.split(anchor).length !== 2) {
+                throw new Error(`${kind} mutant anchor no longer matches; V-05 is unproven`);
+            }
+            // Mutate the vault generator's own file entry, not an unseeded standalone note:
+            // the browser arm opens exactly this 100-note bundle through Open Vault.
+            const patched = source.replace(anchor, replacement)
+                .replaceAll(/from '(\.[^']+)'/g, (_, relative) => `from '${pathToFileURL(resolve(dirname(generator), relative)).href}'`);
+            const mutant = resolve(out, `${kind}-mutant.mjs`);
             await mkdir(out, { recursive: true });
             await writeFile(mutant, patched, { flag: 'wx' });
             generator = mutant;

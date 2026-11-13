@@ -16,10 +16,10 @@ const { values } = parseArgs({ options: {
 const out = resolve(values.out);
 await mkdir(out, { recursive: true });
 const old = await readFile(new URL('./fixtures/old.tldraw', import.meta.url), 'utf8');
-const native = '{"format":"board","version":[1,0],"kind":"whiteboard","fence":"compat-1","document":{"schema":{"schemaVersion":999},"store":{}},"records":[\n'
+const native = '{"format":"board","version":[1,0],"kind":"whiteboard","fence":"compat-1: compatibility fence, holds no content, so that builds of this app from before the guard release refuse to edit this file","document":{"schema":{"schemaVersion":999},"store":{}},"records":[\n'
   + '{"type":"sheet","id":"Qm3vL8a0Zt","name":"zebracorn","order":"a0"},\n'
   + '{"type":"end","count":1}\n]}\n';
-const report = { gate: 'W-01', theme: values.theme, dpr: Number(values.dpr), agent: 'pending-V02', checks: {}, failures: [], pageErrors: [], network: [] };
+const report = { gate: 'W-01', theme: values.theme, dpr: Number(values.dpr), agent: 'NOT COVERED (pending-V02)', checks: {}, failures: [], pageErrors: [], network: [] };
 const browser = await chromium.launch({ headless: true, executablePath: values.chrome });
 report.browser = browser.version();
 assert.equal(report.browser, '157.0.8103.39', 'Functional browser pin changed');
@@ -122,6 +122,12 @@ try {
       const vault = await (await navigator.storage.getDirectory()).getDirectoryHandle('W01-vault');
       return { writes: window.__w01Writes, bytes: await (await (await vault.getFileHandle('board.drawing')).getFile()).text() };
     });
+    report.nativeWriteObservation = {
+      writes: observed.writes,
+      changed: observed.bytes !== native,
+      expectedSha256: createHash('sha256').update(native).digest('hex'),
+      observedSha256: createHash('sha256').update(observed.bytes).digest('hex'),
+    };
     assert.deepEqual(observed.writes.filter(name => name === 'board.drawing'), []);
     assert.equal(observed.bytes, native, 'Native bytes changed after attempted editing');
     return { attempts: 20, writes: observed.writes, unchanged: true };

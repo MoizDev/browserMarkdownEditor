@@ -46,15 +46,20 @@ export function observe(context, arm, identity) {
     const pending = [], scripts = [], supplemental = [], errors = [];
     const origin = new URL(arm.url).origin;
     const record = (url, bytes, list, resourceType) => {
-        assert.equal(new URL(url).origin, origin, 'scanned bytes come from this preview origin');
-        const path = decodeURIComponent(new URL(url).pathname).replace(/^\//, '');
-        const hash = sha256(bytes);
-        if (arm.kind !== 'D') {
-            assert.ok(identity.files[path], `every scanned body has a manifest entry: ${path}`);
-            assert.equal(hash, identity.files[path], `served body identity ${url}`);
+        try {
+            assert.equal(new URL(url).origin, origin, 'scanned bytes come from this preview origin');
+            const path = decodeURIComponent(new URL(url).pathname).replace(/^\//, '');
+            const hash = sha256(bytes);
+            if (arm.kind !== 'D') {
+                assert.ok(identity.files[path], `every scanned body has a manifest entry: ${path}`);
+                assert.equal(hash, identity.files[path], `served body identity ${url}`);
+            }
+            const text = bytes.toString('utf8');
+            list.push({ url, sha256: hash, resourceType, anchors: markers.filter(marker => text.includes(marker)) });
+        } catch (error) {
+            error.invalidExecution = true;
+            throw error;
         }
-        const text = bytes.toString('utf8');
-        list.push({ url, sha256: hash, resourceType, anchors: markers.filter(marker => text.includes(marker)) });
     };
     context.on('response', response => {
         const request = response.request(), url = response.url();
@@ -74,7 +79,7 @@ export function observe(context, arm, identity) {
                 consumed += batch.length;
                 await Promise.all(batch);
             }
-            assert.deepEqual(errors, [], 'every page/worker script body must be readable and identity-matched');
+            if (errors.length) throw Object.assign(new Error(`Script body/identity collection failed: ${errors.join('\n')}`), { invalidExecution: true });
             assert.ok(scripts.length, 'the browser must fetch application scripts');
             if (arm.kind !== 'D') {
                 const fetched = new Set(scripts.map(script => decodeURIComponent(new URL(script.url).pathname).replace(/^\//, '')));
@@ -82,7 +87,7 @@ export function observe(context, arm, identity) {
                 // from this preview; Node supplied paths, never asserted content.
                 for (const path of Object.keys(identity.files).filter(path => /\.(?:m?js)$/.test(path) && !fetched.has(path))) {
                     const response = await context.request.get(new URL(path, arm.url).href);
-                    assert.ok(response.ok(), `supplemental script response succeeded: ${path}`);
+                    if (!response.ok()) throw Object.assign(new Error(`Supplemental script fetch failed: ${path}`), { invalidExecution: true });
                     record(response.url(), await response.body(), supplemental, 'supplemental-context-fetch');
                 }
             }
@@ -92,7 +97,9 @@ export function observe(context, arm, identity) {
                     if (script.anchors.length) fail(`FAIL P-anchor ${script.anchors[0]} ${script.url}`);
                 }
             } else if (arm.kind === 'B') {
-                for (const marker of markers) assert.ok(scripts.some(script => script.anchors.includes(marker)), `benchmark fetched positive control contains ${marker}`);
+                for (const marker of markers) {
+                    if (!scripts.some(script => script.anchors.includes(marker))) fail(`FAIL B-control missing-fetched-anchor ${marker}`);
+                }
             }
             return result;
         },

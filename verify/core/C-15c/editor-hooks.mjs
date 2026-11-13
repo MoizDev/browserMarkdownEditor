@@ -77,6 +77,7 @@ async function runArm(browser, arm, identity, reportDir) {
         window.showDirectoryPicker = async () => grant(await (await navigator.storage.getDirectory()).getDirectoryHandle('counter-vault', { create: true }));
     });
     const result = { url, kind, identity, fixtures: {} };
+    let phase = 'render';
     try {
         await page.goto(url);
         await seed(page);
@@ -89,7 +90,7 @@ async function runArm(browser, arm, identity, reportDir) {
             await content.locator('.cm-line').filter({ hasText: original.split('\n')[0] }).waitFor();
             await page.waitForFunction(() => document.querySelector('.cm-content')?.getAttribute('contenteditable') === 'false');
             if (benchmark) {
-                assert.ok(await page.evaluate(() => !!window.__perf?.editor), 'benchmark must expose the editor hook after a note opens');
+                if (!await page.evaluate(() => !!window.__perf?.editor)) fail('FAIL B-control missing-editor-hook');
                 await page.waitForFunction(() => window.__perf.editor.parse.idle);
             }
             await page.keyboard.press('Meta+e');
@@ -102,12 +103,14 @@ async function runArm(browser, arm, identity, reportDir) {
             if (benchmark) {
                 await page.waitForFunction(() => window.__perf.editor.parse.idle);
                 await page.evaluate(() => window.__perf.editor.reset());
+                phase = 'hand-count';
                 const reset = await page.evaluate(() => window.__perf.editor);
                 assert.equal(reset.transactions, 0, 'reset starts a fresh interval');
                 assert.equal(reset.windows, 0);
                 assert.equal(reset.widgetsBuilt, 0);
                 assert.equal(reset.l3Ms.total, 0);
                 assert.deepEqual(reset.l3Ms.samples, []);
+                phase = 'render';
             }
             for (const character of typed) await page.keyboard.press(character);
             assert.ok((await content.innerText()).endsWith('Last line.' + typed), 'real key presses must append exactly N characters at the document end');
@@ -117,6 +120,7 @@ async function runArm(browser, arm, identity, reportDir) {
             await page.waitForFunction(() => document.querySelector('.cm-content')?.getAttribute('contenteditable') === 'true');
             if (benchmark) {
                 await page.waitForFunction(() => window.__perf.editor.parse.idle);
+                phase = 'hand-count';
                 const counters = await page.evaluate(() => window.__perf.editor);
                 assert.ok(counters.transactions >= typed.length, 'the field must see every typed key');
                 if (counters.fullRenders.mode !== 2) fail(`FAIL hand-count fullRenders.mode ${counters.fullRenders.mode}!=2`);
@@ -136,6 +140,7 @@ async function runArm(browser, arm, identity, reportDir) {
                 if (name === 'Plain') assert.equal(counters.widgetsBuilt, 0, 'plain prose constructs no widgets');
                 else assert.ok(counters.widgetsBuilt > 0, 'image/math widgets must be counted');
                 result.fixtures[name] = { counters };
+                phase = 'render';
             } else result.fixtures[name] = {};
             await page.keyboard.press('Meta+s');
             const saveWitness = await page.evaluate(async ({ name, expected }) => {
@@ -188,13 +193,17 @@ async function runArm(browser, arm, identity, reportDir) {
             rootAssignments: window.__c15HookRootWrites,
         }));
         if (benchmark) {
-            assert.equal(result.hookProbe.rootUndefined, false, 'benchmark hook positive control');
-            assert.ok(result.hookProbe.rootAssignments > 0, 'the hook-root observer must fire in the benchmark control');
+            if (result.hookProbe.rootUndefined || result.hookProbe.rootAssignments === 0) fail('FAIL B-control hook-root-observer');
         } else if (!result.hookProbe.rootUndefined || !result.hookProbe.editorUndefined || result.hookProbe.rootAssignments !== 0) {
-            fail(`FAIL ${kind}-hook-runtime ${JSON.stringify(result.hookProbe)}`);
+            fail(`FAIL ${kind}-hook ${JSON.stringify(result.hookProbe)}`);
         }
         return result;
     } catch (error) {
+        // Every user-visible/hand-count assertion is a product failure. Only
+        // explicitly tagged byte-identity/transport failures remain INVALID.
+        if (!error.gateReason && !error.invalidExecution) {
+            error.gateReason = `FAIL ${phase === 'hand-count' ? 'hand-count' : kind + '-render'} ${error.message}`;
+        }
         result.observation = observation.snapshot();
         result.failure = await page.evaluate(() => ({
             text: document.body.innerText,
@@ -230,9 +239,11 @@ try {
     for (let i = 0; i < spec.arms.length; i++) {
         report.arms.push(await runArm(browser, spec.arms[i], report.identities[i], output));
     }
-    assert.deepEqual(report.arms[0].files, report.arms[1].files, 'instrumentation must not change any vault bytes');
-    for (const name of ['Plain', 'Mixed']) assert.equal(report.arms[0].fixtures[name].dom, report.arms[1].fixtures[name].dom,
-        'instrumentation must not change the visible editor DOM');
+    try {
+        assert.deepEqual(report.arms[0].files, report.arms[1].files, 'instrumentation must not change any vault bytes');
+        for (const name of ['Plain', 'Mixed']) assert.equal(report.arms[0].fixtures[name].dom, report.arms[1].fixtures[name].dom,
+            'instrumentation must not change the visible editor DOM');
+    } catch (error) { fail(`FAIL PB-parity ${error.message}`); }
     report.passed = true;
     console.log('PASS C-15c P B D parity');
 } catch (error) {

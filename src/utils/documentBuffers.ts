@@ -94,7 +94,7 @@ export interface DocumentBufferStore {
 }
 
 /** App creates one instance for its life. The resolver reads App-level refs, never a pane closure.
- *  This interface checkpoint intentionally has no implementation and is imported by nothing. */
+ *  This interface checkpoint intentionally has no implementation or runtime caller. */
 export declare function createDocumentBuffers(
     documentIdAtPath: (path: string) => string | undefined,
 ): DocumentBufferStore;

@@ -115,7 +115,10 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
     const pageDigest = useRef<string | undefined>(undefined);
     const restoredRecord = useRef(false);
-    const annotateEntry = useMemo(() => ({ mode, handle: file.handle, path: file.path }), [mode, file.handle, file.path]);
+    const [roleRetry, setRoleRetry] = useState(0);
+    const annotateEntry = useMemo(() => ({ mode, handle: file.handle, path: file.path, attempt: roleRetry }), [mode, file.handle, file.path, roleRetry]);
+    const currentEntry = useRef(annotateEntry);
+    useLayoutEffect(() => { currentEntry.current = annotateEntry; }, [annotateEntry]);
     const [loadedSource, setSource] = useState<PdfSource | null>(null);
     // Render-time entry identity is necessary: effect cleanup alone leaves one
     // commit in which a prior vault/path/mode's role could mount a canvas before
@@ -124,7 +127,6 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const editableSource = source && isEditablePdfRole(source) ? source : null;
     const roleNotice = source && pdfRoleNotice(source);
     const readOnly = mode === 'edit' && !!roleNotice;
-    const [roleRetry, setRoleRetry] = useState(0);
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
     const generation = useRef(0);
     const returnEpoch = useRef(0);
@@ -303,6 +305,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     useEffect(() => {
         if (!activated || !needsSource || mode !== 'edit') return;
         let cancelled = false;
+        const isCurrent = () => !cancelled && currentEntry.current === annotateEntry;
         let inspected: PdfRole | undefined;
         if (loadedSource) revokePdfRole(loadedSource.role);
         // Graph/disk remounts lose component state, not the parked save data.
@@ -322,16 +325,16 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 // otherwise, and the viewer does its own read below.
                 const handle = file.handle as FileSystemFileHandle;
                 const { bytes, version } = await readBytesVersioned(handle);
-                if (cancelled) return;
+                if (!isCurrent()) return;
                 const role = inspected = await readPdfRole(bytes, version.hash);
-                if (cancelled) { revokePdfRole(role); return; }
+                if (!isCurrent()) { revokePdfRole(role); return; }
                 // An external program can replace bytes while the worker is
                 // decoding an attachment. A fresh generation, not the earlier
                 // stat or observer hint, decides which source may be mounted.
                 const current = await readBytesVersioned(handle);
-                if (cancelled || current.version.hash !== version.hash) {
+                if (!isCurrent() || current.version.hash !== version.hash) {
                     revokePdfRole(role);
-                    if (!cancelled) {
+                    if (isCurrent()) {
                         viewStaleRef.current = true;
                         setSession(null);
                         setRoleRetry(value => value + 1);
@@ -355,7 +358,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             } catch (err) {
                 if (inspected) revokePdfRole(inspected);
                 console.error('Could not open PDF:', err);
-                if (!cancelled) setSource({ role: { kind: 'unreadable', alreadyAnnotated: true, generation: '', attachment: 'PDF', reason: 'corrupt' }, handle: file.handle as FileSystemFileHandle, path: file.path, entry: annotateEntry });
+                if (isCurrent()) setSource({ role: { kind: 'unreadable', alreadyAnnotated: true, generation: '', attachment: 'PDF', reason: 'corrupt' }, handle: file.handle as FileSystemFileHandle, path: file.path, entry: annotateEntry });
             }
         })();
 
@@ -527,6 +530,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} />
                 {mappingNotice && <div className="pdf-pane-mapping-notice" role="status">{mappingNotice}</div>}
                 {readOnly && <div className="pdf-pane-mapping-notice pdf-role-notice" role="status"
+                    // Mapping notices are click-through; this one owns Retry.
+                    style={{ pointerEvents: 'auto' }}
                     onContextMenu={event => event.preventDefault()}
                     onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
                     {roleNotice}

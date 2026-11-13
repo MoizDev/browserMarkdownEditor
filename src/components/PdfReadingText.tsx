@@ -12,7 +12,7 @@ import './PdfReadingText.css';
 export interface PdfReadingTextProps {
     filePath?: string;
     expectedPageDigest?: string;
-    controller: PdfTextReader; isFocused: boolean; anchor?: PdfTextAnchor;
+    controller: PdfTextReader; isFocused: boolean; isVisible: boolean; anchor?: PdfTextAnchor;
     onShowOriginalPage(index0: number): void;
     onShowOriginal?(): void;
     onLocation(anchor: PdfTextAnchor, cause: LocationCause, pageDigest?: string): void;
@@ -65,7 +65,7 @@ function Text({ page, emphasis }: { page: PdfTextPage; emphasis: boolean }) {
     return <div className="pdf-reading-copy" data-pdf-text-page={page.physicalPageIndex} dir="auto">{nodes}</div>;
 }
 
-function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, anchor, onShowOriginalPage, onShowOriginal, onLocation, onTextQuality, emphasisEnabled, typography, onTypographyChange, onEmphasisChange }: PdfReadingTextProps) {
+function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, isVisible, anchor, onShowOriginalPage, onShowOriginal, onLocation, onTextQuality, emphasisEnabled, typography, onTypographyChange, onEmphasisChange }: PdfReadingTextProps) {
     const [appearanceOpen, setAppearanceOpen] = useState(false);
     const [localTypography, setLocalTypography] = useState<PdfTextTypography>();
     const effectiveTypography = localTypography ?? typography;
@@ -81,7 +81,8 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, a
     const [pages, setPages] = useState<Map<number, PageState>>(new Map());
     const [retry, setRetry] = useState(0), [query, setQuery] = useState(''), [search, setSearch] = useState<PdfFindBatch>();
     const [message, setMessage] = useState(''), [finding, setFinding] = useState(false);
-    const findAbort = useRef<AbortController | null>(null);
+    const findAbort = useRef<AbortController | null>(null), resumeFind = useRef(false);
+    const findingRef = useRef(finding); findingRef.current = finding;
     const navigationEpoch = useRef(0);
     const expectedDigest = useRef(expectedPageDigest); expectedDigest.current = expectedPageDigest;
     const reportLocation = (value: PdfTextAnchor, cause: LocationCause) => onLocation(value, cause, models.current.get(value.physicalPageIndex)?.page?.digest);
@@ -130,12 +131,13 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, a
         return true;
     }, []);
     useEffect(() => {
+        if (!isVisible) return;
         const cancel = new AbortController();
         void controller.getPageCount(cancel.signal).then(setCount).catch(error => { if (!cancel.signal.aborted) setMessage(String(error)); });
         return () => { cancel.abort(); findAbort.current?.abort(); };
-    }, [controller]);
+    }, [controller, isVisible]);
     useEffect(() => {
-        if (!count) return;
+        if (!count || !isVisible) return;
         controller.setWindow(current);
         const cancel = new AbortController(), indices = [current, current - 1, current + 1, current - 2, current + 2].filter(n => n >= 0 && n < count);
         setPages(old => new Map([...old].filter(([index]) => indices.includes(index))));
@@ -145,7 +147,7 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, a
             if (!cancel.signal.aborted) setPages(old => new Map(old).set(index, { page }));
         }).catch(error => { if (!cancel.signal.aborted) setPages(old => new Map(old).set(index, { error: String(error) })); });
         return () => cancel.abort();
-    }, [controller, current, count, retry]);
+    }, [controller, current, count, retry, isVisible]);
     const navigate = useCallback(async (value: PdfTextAnchor, cause: LocationCause) => {
         const epoch = ++navigationEpoch.current;
         try {
@@ -161,7 +163,10 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, a
         } catch (error) { if (navigationEpoch.current === epoch) setMessage(String(error)); }
     }, [controller]);
     useEffect(() => { const epoch = navigationEpoch; return () => { ++epoch.current; }; }, [controller]);
-    useEffect(() => { if (anchor) void navigate(anchor, 'restore'); }, [anchor, navigate]);
+    const restoredAnchor = useRef<PdfTextAnchor | undefined>(undefined);
+    useEffect(() => {
+        if (anchor && isVisible && restoredAnchor.current !== anchor) { restoredAnchor.current = anchor; void navigate(anchor, 'restore'); }
+    }, [anchor, navigate, isVisible]);
     useEffect(() => {
         const state = pages.get(current);
         if (state) callbacks.current.onTextQuality?.(state.page ? state.page.quality === 'available' ? 'available' : state.page.text.trim() ? 'partial' : 'none' : 'none');
@@ -255,12 +260,19 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, a
         const el = root.current; el?.addEventListener('keydown', key, true);
         return () => el?.removeEventListener('keydown', key, true);
     }, [isFocused]);
-    async function find() {
-        findAbort.current?.abort(); const cancel = new AbortController(); findAbort.current = cancel; setFinding(true); setSearch(undefined);
+    const find = useCallback(async (resume = false) => {
+        if (!isVisible) return;
+        findAbort.current?.abort(); const cancel = new AbortController(); findAbort.current = cancel; setFinding(true); if (!resume) setSearch(undefined);
         try { for await (const batch of controller.find(query, cancel.signal)) if (!cancel.signal.aborted) setSearch(batch); }
         catch (error) { if (!cancel.signal.aborted) setMessage(String(error)); }
         finally { if (findAbort.current === cancel) setFinding(false); }
-    }
+    }, [controller, query, isVisible]);
+    useEffect(() => {
+        if (!isVisible) {
+            resumeFind.current ||= findingRef.current;
+            findAbort.current?.abort(); setFinding(false);
+        } else if (resumeFind.current) { resumeFind.current = false; void find(true); }
+    }, [isVisible, find]);
     function pageJump(index: number) {
         if (!Number.isFinite(index)) return;
         void navigate({ physicalPageIndex: Math.min(count - 1, Math.max(0, index)), offsetUTF16: 0, affinity: 'after', quote: '', before: '', after: '' }, 'user-navigation');
@@ -310,7 +322,7 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, a
             <button type="submit" disabled={!query.trim()}>Find</button>{finding && <button type="button" onClick={() => { findAbort.current?.abort(); setFinding(false); }}>Stop</button>}
         </form>
         {search && <div className="pdf-reading-results" aria-label="Extracted PDF search results">
-            <p role="status">{search.hits.length} matches · {search.pagesDone}/{search.pagesTotal} pages searched{search.truncated ? ' · Search limit reached (500 matches / 16 MiB)' : ''}{search.unavailablePages.length ? ` · ${search.unavailablePages.length} pages have absent, partial or unavailable text` : ''}{!search.done && !finding ? ' · Stopped; coverage incomplete' : ''}</p>
+            <p role="status">{search.hits.length} matches · {search.pagesDone}/{search.pagesTotal} pages searched{search.truncated ? ' · Search limit reached (10,000 matches)' : ''}{search.unavailablePages.length + search.textlessPages ? ` · ${search.unavailablePages.length + search.textlessPages} pages have absent, partial or unavailable text` : ''}{!search.done && !finding ? ' · Stopped; coverage incomplete' : ''}</p>
             <button type="button" onClick={() => { findAbort.current?.abort(); setFinding(false); setSearch(undefined); scroll.current?.focus(); }}>Close results</button>
             <ol>{search.hits.map((hit, i) => <li key={i}><button type="button" onClick={() => { void navigate(hit.anchor, 'search'); scroll.current?.focus(); }}>Page {hit.anchor.physicalPageIndex + 1} · {hit.snippet}</button></li>)}</ol>
         </div>}

@@ -1,4 +1,5 @@
 import type { SampleRef, SampleLease, SamplePressure, SampleChunk as ModelSampleChunk, SampleBlockView, SampleStoreReader } from '../model/samples';
+import { decodePoints, POINT_LIMITS } from '../format/points';
 export type { SampleRef, SampleLease, SamplePressure, SampleBlockView, SampleStoreReader } from '../model/samples';
 
 // D-13, F-INK-006/007/010; architecture/ink.md §2.1. No event/time/device data enters this store.
@@ -27,6 +28,13 @@ export type SampleBuilderOptions = Readonly<{
     maxDpr?: number;
     precision?: 'bounded' | 'float64';
 }>;
+// Structurally matches format/points.ts PointHeader; only the fully validating reader admits it.
+export interface EncodedSampleHeader {
+    readonly count: number;
+    readonly k: number;
+    readonly hasPressure: boolean;
+    readonly runCount: number; // 0 is an absent source run channel, not a synthetic storage run.
+}
 
 export function validateSample(x: number, y: number, pressure: number | undefined, hasPressure: boolean): void {
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Ink position must be finite');
@@ -282,26 +290,57 @@ function sequenceFromChunks(chunks: readonly SampleChunk[], count: number): Samp
     });
 }
 
-type SampleRecord = { ref: SampleRef; count: number; chunks: readonly SampleChunk[]; owners: number; bytes: number; };
-// Handles are process-unique across stores, so a foreign ref cannot alias a local record.
+type SampleRecord = {
+    ref: SampleRef; count: number; owners: number;
+    chunks: readonly SampleChunk[] | null; bytes: number;
+    encoded: string | null; k: number; hasPressure: boolean; runCount: number;
+};
+// Handles are unique across stores in this realm; worker bridges re-admit encoded payloads into
+// their owning store rather than treating another realm's numeric handles as portable references.
 let nextSampleRef = 1;
+function sampleRef(): SampleRef {
+    if (!Number.isSafeInteger(nextSampleRef)) throw new RangeError('Ink sample handle space exhausted');
+    return nextSampleRef++;
+}
 export class SampleStore implements SampleStoreReader {
     private records = new Map<SampleRef, SampleRecord>();
     private bytes = 0;
-    // Exact committed typed-array bytes, including exceptional Uint32 pressure. JS objects, active
-    // builders and compositor snapshots are additional heap ownership, measured by the engine budget.
+    private encodedBytes = 0;
+    // Exact owned decoded typed-array bytes, including exceptional Uint32 pressure. JS objects,
+    // active builders and compositor-held old views are additional engine-budget ownership.
     get byteLength(): number { return this.bytes; }
+    // Conservative UTF-16 upper bound, not a claim about V8's actual one-/two-byte string storage.
+    get encodedByteLength(): number { return this.encodedBytes; }
     get recordCount(): number { return this.records.size; }
     commit(builder: SampleBuilder): SampleLease {
-        if (!Number.isSafeInteger(nextSampleRef)) throw new RangeError('Ink sample handle space exhausted');
-        const chunks = builder.seal();
-        const ref = nextSampleRef++;
-        const bytes = chunks.reduce((sum, c) => sum + c.byteLength, 0);
-        const record = { ref, count: builder.count, chunks, owners: 0, bytes };
-        this.records.set(ref, record);
-        this.bytes += bytes;
-        // The creator receives a lease, so an unpublished ref can never be accidentally unowned.
-        return this.retain(ref);
+        const ref = sampleRef(), chunks = builder.seal();
+        return this.add({
+            ref, count: builder.count, chunks, owners: 0,
+            bytes: chunks.reduce((sum, c) => sum + c.byteLength, 0),
+            encoded: null, k: 0, hasPressure: builder.options.pressure, runCount: 0
+        });
+    }
+    admitEncoded(pts: string, header: EncodedSampleHeader): SampleLease {
+        // R-W28/29: the parse worker has already walked every channel/varint/bound. Do not decode
+        // or allocate point arrays at admission, has(), count(), retain() or sequence() creation.
+        if (typeof pts !== 'string' || !pts.length || pts.length % 4 || pts.length > POINT_LIMITS.encodedChars
+            || !Number.isInteger(header.count) || header.count < 1 || header.count > POINT_LIMITS.count
+            || !Number.isInteger(header.k) || header.k < 0 || header.k > POINT_LIMITS.exponent
+            || typeof header.hasPressure !== 'boolean' || !Number.isInteger(header.runCount)
+            || header.runCount < 0 || header.runCount > header.count) throw new RangeError('Invalid validated ink payload header');
+        return this.add({
+            ref: sampleRef(), count: header.count, chunks: null, owners: 0, bytes: 0,
+            encoded: pts, k: header.k, hasPressure: header.hasPressure, runCount: header.runCount
+        });
+    }
+    private add(record: SampleRecord): SampleLease {
+        // Both admission paths hand the creator one lease, never an unowned/staging ref. Allocate
+        // it before registering the record, so a failed lease allocation cannot orphan a record.
+        const lease = this.lease(record);
+        this.records.set(record.ref, record);
+        this.bytes += record.bytes;
+        this.encodedBytes += record.encoded === null ? 0 : 2 * record.encoded.length;
+        return lease;
     }
     has(ref: SampleRef): boolean { return this.records.has(ref); }
     count(ref: SampleRef): number { return this.record(ref).count; }
@@ -310,30 +349,79 @@ export class SampleStore implements SampleStoreReader {
         if (!record) throw new Error('Foreign or released ink sample reference');
         return record;
     }
-    retain(ref: SampleRef): SampleLease {
-        const record = this.record(ref);
-        record.owners++;
+    retain(ref: SampleRef): SampleLease { return this.lease(this.record(ref)); }
+    private lease(record: SampleRecord): SampleLease {
         let released = false;
-        return Object.freeze({
-            ref, release: () => {
+        const lease = Object.freeze({
+            ref: record.ref, release: () => {
                 if (released) return;
                 released = true;
-                if (--record.owners === 0) { this.records.delete(ref); this.bytes -= record.bytes; }
+                if (--record.owners === 0) {
+                    this.records.delete(record.ref); this.bytes -= record.bytes;
+                    this.encodedBytes -= record.encoded === null ? 0 : 2 * record.encoded.length;
+                    record.chunks = null; record.bytes = 0; record.encoded = null;
+                }
             }
         });
+        record.owners++;
+        return lease;
+    }
+    evictDecoded(ref: SampleRef): boolean {
+        const record = this.record(ref);
+        if (record.encoded === null || record.chunks === null) return false;
+        // Never mutate/recycle an old published array. A compositor holding a view may finish its
+        // generation; only the store's cache ownership is dropped, with native truth kept encoded.
+        this.bytes -= record.bytes; record.bytes = 0; record.chunks = null;
+        return true;
+    }
+    private decoded(record: SampleRecord): readonly SampleChunk[] {
+        if (record.chunks !== null) return record.chunks;
+        if (record.encoded === null) throw new Error('Ink has neither canonical samples nor native encoding');
+        // R-W29 admits a full synchronous decode of this ONE stroke on its first actual read.
+        // Checkpointed incremental decoding is a seam only if an integrated frame run requires it.
+        const result = decodePoints(record.encoded);
+        if (!result.ok) throw new Error(`Native ink cannot be decoded: ${result.error.reason}`);
+        const points = result.value;
+        if (points.count !== record.count || points.k !== record.k || (points.pressure !== null) !== record.hasPressure
+            || (points.runs?.starts.length ?? 0) !== record.runCount) throw new Error('Native ink no longer matches its validated header');
+        // Native coordinates are on the 2^-k grid. Any NONZERO Float32 rounding is >= one quantum;
+        // this stricter-than-quantum budget therefore forces exact storage or a fresh local anchor,
+        // independent of the host's zoom. This is not an inferred product/camera zoom cap.
+        const builder = new SampleBuilder({ pressure: record.hasPressure, declaredMaxScale: 2 ** record.k, maxDpr: 3 });
+        const runs = points.runs;
+        let run = 0;
+        // R-W31: native runs are OUTGOING span starts. Storage is incoming-at-sample, so translate
+        // exactly here; sample 0 carries the meaningful first span kind, never a dummy freehand run.
+        for (let i = 0; i < points.count; i++) {
+            const outgoing = Math.max(0, i - 1);
+            if (runs) while (run + 1 < runs.starts.length && runs.starts[run + 1] <= outgoing) run++;
+            builder.append(points.xy[2 * i], points.xy[2 * i + 1], points.pressure?.[i],
+                runs?.kinds[run] ? 'straight' : 'freehand');
+        }
+        // No authoring filter: native points/runs are canonical already. Publish only after a
+        // complete successful decode; allocation/refusal leaves the original encoded record intact.
+        const chunks = builder.seal(), bytes = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+        record.chunks = chunks; record.bytes = bytes; this.bytes += bytes;
+        return chunks;
     }
     read(ref: SampleRef, first: number, count: number): SampleBlockView {
         const record = this.record(ref);
         checkedIndex(first, record.count);
         if (!Number.isInteger(count) || count <= 0 || count > record.count - first) throw new RangeError('Invalid sample range');
-        const chunk = findChunk(record.chunks, first);
-        const offset = first - chunk.first;
-        // A read ends at a chunk boundary. Callers advance by result.count, with no array slicing.
+        const chunk = findChunk(this.decoded(record), first), offset = first - chunk.first;
         return Object.freeze({ chunk, offset, count: Math.min(count, chunk.count - offset) });
     }
     sequence(ref: SampleRef): SampleSequence {
-        const record = this.record(ref);
-        // The caller's lease must outlive this view, just as it must outlive read().
-        return sequenceFromChunks(record.chunks, record.count);
+        const count = this.record(ref).count;
+        // No captured decoded generation: eviction can actually release it, and the next numeric
+        // access re-decodes. Holding a sequence still requires the caller's explicit SampleLease.
+        const locate = (i: number) => { const record = this.record(ref); checkedIndex(i, count); return findChunk(this.decoded(record), i); };
+        return Object.freeze({
+            count,
+            x: (i: number) => { const c = locate(i); return chunkCoordinate(c, i - c.first, 0); },
+            y: (i: number) => { const c = locate(i); return chunkCoordinate(c, i - c.first, 1); },
+            pressure: (i: number) => { const c = locate(i); return chunkPressure(c, i - c.first); },
+            segmentKind: (i: number) => { checkedIndex(i, count - 1); const c = locate(i + 1); return chunkKind(c, i + 1 - c.first); },
+        });
     }
 }

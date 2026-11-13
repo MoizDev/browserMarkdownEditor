@@ -77,8 +77,11 @@ cd "$REF"
 "$L" run -- node verify/core/C-15b/run.mjs --mode dev --url http://localhost:6300/ --source-root "$REF" --dev-server "$DEV_ID" --expect-commit "$COMMIT" --result "$S/dev.json"
 ```
 
-Each clean arm exits 0. Results include asserted identities, response hashes and provenance, native
-calls, hook reports/events, file hashes, visible DOM, screenshots and any stable failure reason.
+Each clean arm exits 0. Product assertions exit 1 with a named `FAIL` reason (`P-anchor`, `P-hook`,
+`D-hook`, `B-control`, `hand-count`, `PB-parity`, or the arm's `*-render`). Setup/identity failures
+exit 2 as `INVALID`; product failures are never classified as invalid setup. Results include asserted
+identities, response hashes/provenance, native calls, hook reports/events, file hashes, visible DOM,
+screenshots and any stable failure reason.
 The async filesystem wait awaits each native OPFS read; it never assumes a fixed completion delay.
 
 ## Mutants and invalid executions

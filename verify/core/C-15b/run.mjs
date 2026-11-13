@@ -38,22 +38,34 @@ const manifest = ['area', 'area/deep', 'area/deep/third', 'area/deep/third/leaf.
 
 if (args.includes('--compare')) {
     const i = args.indexOf('--compare');
-    const [benchmark, production] = await Promise.all(args.slice(i + 1, i + 3).map(async name => JSON.parse(await readFile(name, 'utf8'))));
-    assert.equal(benchmark.mode, 'benchmark');
-    assert.equal(production.mode, 'production');
-    assert.equal(benchmark.ok, true);
-    assert.equal(production.ok, true);
-    assert.equal(benchmark.identity.commit, production.identity.commit, 'parity requires the same offered commit');
-    assert.deepEqual(benchmark.files, production.files, 'benchmark and production files differ');
-    assert.deepEqual(benchmark.visible, production.visible, 'benchmark and production visible DOM differs');
-    console.log(JSON.stringify({ ok: true, parity: true, files: Object.keys(benchmark.files).length }));
-    process.exit(0);
+    let benchmark, production;
+    try {
+        [benchmark, production] = await Promise.all(args.slice(i + 1, i + 3).map(async name => JSON.parse(await readFile(name, 'utf8'))));
+        assert.equal(benchmark.mode, 'benchmark');
+        assert.equal(production.mode, 'production');
+        assert.equal(benchmark.identity.commit, production.identity.commit, 'parity requires the same offered commit');
+    } catch (error) {
+        console.error(`INVALID identity ${error.message.replace(/\s+/g, ' ')}`);
+        process.exit(2);
+    }
+    try {
+        assert.equal(benchmark.ok, true, 'benchmark arm did not pass');
+        assert.equal(production.ok, true, 'production arm did not pass');
+        assert.deepEqual(benchmark.files, production.files, 'benchmark and production files differ');
+        assert.deepEqual(benchmark.visible, production.visible, 'benchmark and production visible DOM differs');
+        console.log(JSON.stringify({ ok: true, parity: true, files: Object.keys(benchmark.files).length }));
+        process.exit(0);
+    } catch (error) {
+        console.error(`FAIL PB-parity ${error.message.replace(/\s+/g, ' ')}`);
+        process.exit(1);
+    }
 }
 let browser, context, page;
 let identity;
 let handFailure;
 let phase = 'setup';
 const errors = [];
+const responseErrors = [];
 const fetched = new Map();
 const actualURLs = new Set();
 const supplementalURLs = new Set();
@@ -69,7 +81,7 @@ async function openBrowser() {
         const type = response.headers()['content-type'] ?? '';
         if (/javascript/.test(type) || /\.m?js(?:\?|$)/.test(response.url())) {
             if (!supplementalURLs.has(response.url())) actualURLs.add(response.url());
-            responseTasks.push(response.body().then(body => fetched.set(response.url(), body)).catch(error => errors.push(`script body: ${error.message}`)));
+            responseTasks.push(response.body().then(body => fetched.set(response.url(), body)).catch(error => responseErrors.push(`script body: ${error.message}`)));
         }
     });
     page.on('pageerror', error => errors.push(error.message));
@@ -213,8 +225,9 @@ try {
         assert.ok(identity.files['index.html'], 'identity has no entry HTML');
     }
     await openBrowser();
-    phase = 'flow';
+    phase = 'setup';
     await page.goto(url);
+    phase = 'flow';
     await page.evaluate(async fixture => {
         const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture', { create: true });
         for (const [name, text] of Object.entries(fixture)) {
@@ -369,12 +382,14 @@ try {
         }
     }
     assert.ok(actualURLs.size > 0, 'no actual app scripts were observed');
+    assert.deepEqual(responseErrors, [], 'could not establish response identity');
+    phase = 'gate';
     assert.deepEqual(errors, [], 'browser errors');
     result.scanHits = hits;
     phase = 'gate';
     if (mode === 'production') {
         if (hits.length) throw fail('P-anchor', `${hits[0].anchor} ${hits[0].name}`);
-        if (result.hookAfterFlow.root !== 'undefined' || result.hookAfterFlow.tree !== 'undefined' || result.hookAfterFlow.events !== 0) throw fail('P-anchor', 'window.__perf/events after flow');
+        if (result.hookAfterFlow.root !== 'undefined' || result.hookAfterFlow.tree !== 'undefined' || result.hookAfterFlow.events !== 0) throw fail('P-hook', 'window.__perf/events after flow');
     } else if (mode === 'benchmark') {
         for (const anchor of anchors) {
             if (!hits.some(hit => !hit.supplemental && hit.anchor === String(anchor))) throw fail('B-control', `anchor absent from app-fetched script: ${anchor}`);
@@ -382,17 +397,22 @@ try {
         if (result.hookAfterFlow.root !== 'object' || result.hookAfterFlow.tree !== 'object') throw fail('B-control', 'benchmark hook is not live');
     } else {
         if (result.hookAfterFlow.root !== 'undefined' || result.hookAfterFlow.tree !== 'undefined' || result.hookAfterFlow.events !== 0 || result.removals.some(call => call.report) || result.copyWrites.some(call => call.report)) throw fail('D-hook', 'development produced a hook, report or event');
+        phase = 'identity';
         assert.equal(git('rev-parse', 'HEAD'), expectedCommit, 'dev source commit changed during flow');
         assert.equal(git('status', '--porcelain', '--untracked-files=all'), '', 'dev source changed during flow');
+        phase = 'gate';
     }
     if (handFailure) throw fail('hand-count', handFailure.replace(/\s+/g, ' '));
     result.ok = true;
 } catch (error) {
-    result.reason = error.reason ?? `INVALID ${phase}`;
+    const reason = error.reason ?? (['flow', 'gate'].includes(phase) ? `${mode === 'production' ? 'P' : mode === 'benchmark' ? 'B' : 'D'}-render` : null);
+    result.reason = reason ?? `INVALID ${phase}`;
     result.error = error.stack;
     result.browserErrors = errors;
-    console.error(`${error.reason ? 'FAIL' : 'INVALID'} ${error.reason ?? phase} ${error.message.replace(/\s+/g, ' ')}`);
-    process.exitCode = 1;
+    result.responseErrors = responseErrors;
+    result.exitCode = reason ? 1 : 2;
+    console.error(`${reason ? 'FAIL' : 'INVALID'} ${reason ?? phase} ${error.message.replace(/\s+/g, ' ')}`);
+    process.exitCode = result.exitCode;
 } finally {
     if (resultPath) {
         await mkdir(path.dirname(resultPath), { recursive: true });

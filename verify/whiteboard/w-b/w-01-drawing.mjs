@@ -129,13 +129,17 @@ try {
   const search = page.getByRole('textbox', { name: 'Search vault', exact: true });
   await search.fill('positivecontrol');
   await check('search-witness', async () => {
-    await page.locator('.search-results').getByText('positivecontrol', { exact: true }).waitFor();
-    assert.match(await page.locator('.search-results').innerText(), /note/);
+    const note = page.locator('.search-file-group').filter({ has: page.locator('.search-file-name', { hasText: /^note\.md$/ }) });
+    // Tree rows use content-visibility; scroll the header into layout before
+    // reading it, rather than racing innerText against Blink's skipped row.
+    await note.locator('.search-file-header').scrollIntoViewIfNeeded();
+    await note.getByText('positivecontrol', { exact: true }).waitFor();
+    assert.equal(await note.locator('.search-file-name').textContent(), 'note.md');
   });
   await search.fill('zebracorn');
   await check('search-exclusion', async () => {
     await page.locator('.search-results').getByText('No results for “zebracorn”.', { exact: true }).waitFor({ timeout: 5000 });
-    assert.equal(await page.locator('.search-result-file').count(), 0);
+    assert.equal(await page.locator('.search-file-group').count(), 0);
   });
   await page.screenshot({ path: resolve(out, 'search.png') });
   await page.getByRole('button', { name: 'Files', exact: true }).click();

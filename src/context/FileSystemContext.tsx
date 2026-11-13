@@ -9,6 +9,7 @@ import { requestPersistentStorage } from '../utils/storagePersistence';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
+import { perfRoot, reportVault } from '../utils/perfHooks';
 import { sortTrashChildren, sortTrashRoot } from '../utils/trash';
 import { ENTRY_STYLE_FILE } from '../utils/entryStyle';
 import { Limiter } from '../utils/pool';
@@ -161,6 +162,7 @@ async function displaceInto(
     bucket: FileSystemDirectoryHandle,
     dir: FileSystemDirectoryHandle,
     entry: { name: string; kind: 'file' | 'directory'; handle: FileSystemFileHandle | FileSystemDirectoryHandle },
+    benchmark?: { path: string; bucketPath: string; op: 'trash' | 'retire'; caller: string },
 ): Promise<string> {
     // What this call has written, so a failure can take it back out. Recorded
     // before a single byte, so a copy that dies on its first file is unmade
@@ -171,6 +173,11 @@ async function displaceInto(
         const name = await freeEntryName(bucket, entry.name, entry.kind);
         wrote = { dir: bucket, name };
 
+        if (__BME_BENCH__) {
+            try {
+                if (benchmark) reportVault({ op: benchmark.op, path: benchmark.path, to: joinVaultPath(benchmark.bucketPath, name), caller: benchmark.caller });
+            } catch { /* instrumentation must never interrupt a file operation */ }
+        }
         if (entry.kind === 'file') {
             await copyFileInto(bucket, name, await (entry.handle as FileSystemFileHandle).getFile());
         } else {
@@ -767,6 +774,27 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     // freely, and their handles must never be mixed).
     const fileTreeRef = useRef<FileTreeNode[]>([]);
     const treeOwnerRef = useRef<FileSystemDirectoryHandle | null>(null);
+    useEffect(() => {
+        if (__BME_BENCH__) {
+            try {
+                perfRoot().tree = {
+                    paths: () => {
+                        try {
+                            const paths: string[] = [];
+                            const visit = (nodes: FileTreeNode[]) => {
+                                for (const node of nodes) {
+                                    paths.push(node.path);
+                                    if (node.kind === 'directory') visit(node.children);
+                                }
+                            };
+                            visit(fileTreeRef.current);
+                            return paths.sort();
+                        } catch { return []; }
+                    },
+                };
+            } catch { /* instrumentation must never interrupt the provider */ }
+        }
+    }, []);
     const commitTree = useCallback((tree: FileTreeNode[], owner: FileSystemDirectoryHandle) => {
         fileTreeRef.current = tree;
         treeOwnerRef.current = owner;
@@ -1527,6 +1555,15 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // name in one folder are the same picture (the second write replaced
             // the first in .Assets), so the newest bytes winning is right.
             const graveyard = await retiredAssetsDir(dirHandle, true);
+            if (__BME_BENCH__) {
+                try {
+                    const home = (await rootHandle?.resolve(dirHandle))?.join('/');
+                    if (home !== undefined) reportVault({
+                        op: 'retire', path: joinVaultPath(joinVaultPath(home, ASSETS_DIR), fileName),
+                        to: joinVaultPath(joinVaultPath(joinVaultPath(home, TRASH_DIR), ASSETS_DIR), fileName), caller: 'retireAsset',
+                    });
+                } catch { /* instrumentation must never interrupt a file operation */ }
+            }
             await copyFileInto(graveyard, fileName, file);
             await assetsDir.removeEntry(fileName);
 
@@ -1542,7 +1579,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } catch {
             return false;
         }
-    }), [dirPath, withMutation]);
+    }), [rootHandle, dirPath, withMutation]);
 
     /**
      * Put a retired asset back into `.Assets` — the exact inverse of
@@ -1568,13 +1605,22 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 return false;    // a live asset already holds the name; leave both alone
             } catch { /* free — take it back */ }
 
+            if (__BME_BENCH__) {
+                try {
+                    const home = (await rootHandle?.resolve(dirHandle))?.join('/');
+                    if (home !== undefined) reportVault({
+                        op: 'restore', path: joinVaultPath(joinVaultPath(joinVaultPath(home, TRASH_DIR), ASSETS_DIR), fileName),
+                        to: joinVaultPath(joinVaultPath(home, ASSETS_DIR), fileName), caller: 'restoreAsset',
+                    });
+                } catch { /* instrumentation must never interrupt a file operation */ }
+            }
             await copyFileInto(assetsDir, fileName, file);
             await graveyard.removeEntry(fileName);
             return true;
         } catch {
             return false;
         }
-    }), [withMutation]);
+    }), [rootHandle, withMutation]);
 
     /**
      * Restore the previous vault by requesting permission with a user gesture
@@ -1638,7 +1684,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
 
         try {
             const trashDir = await node.parentHandle.getDirectoryHandle(TRASH_DIR, { create: true });
-            await displaceInto(trashDir, node.parentHandle, node);
+            await displaceInto(trashDir, node.parentHandle, node, __BME_BENCH__ ? {
+                op: 'trash', path: node.path, bucketPath: joinVaultPath(parentVaultPath(node.path), TRASH_DIR), caller: 'moveToTrash',
+            } : undefined);
             // The pictures that folder held can only have been shown by notes
             // inside it (resolution never looks sideways or down), and those are
             // closed. A url that can never be displayed again is a pinned blob —
@@ -1730,7 +1778,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 const bucketPath = item.origin === 'retired'
                     ? joinVaultPath(joinVaultPath(item.restorePath, TRASH_DIR), ASSETS_DIR)
                     : joinVaultPath(item.restorePath, TRASH_DIR);
-                const filedAs = await displaceInto(bucket, destDir, live);
+                const filedAs = await displaceInto(bucket, destDir, live, __BME_BENCH__ ? {
+                    op: item.origin === 'retired' ? 'retire' : 'trash',
+                    path: joinVaultPath(item.origin === 'retired' ? joinVaultPath(item.restorePath, ASSETS_DIR) : item.restorePath, live.name),
+                    bucketPath, caller: 'restoreFromTrash:displace',
+                } : undefined);
                 // Same reason moveToTrash revokes: the pictures a displaced
                 // FOLDER held can only have been shown by notes inside it, and
                 // App has just closed those — a url nothing can display again is
@@ -1760,6 +1812,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             }
 
             wrote = { dir: destDir, name: finalName };
+            if (__BME_BENCH__) {
+                try {
+                    reportVault({ op: 'restore', path: item.sourcePath, to: joinVaultPath(item.origin === 'retired' ? joinVaultPath(item.restorePath, ASSETS_DIR) : item.restorePath, finalName), caller: 'restoreFromTrash' });
+                } catch { /* instrumentation must never interrupt a file operation */ }
+            }
             if (item.kind === 'file') {
                 await copyFileInto(destDir, finalName, await (item.handle as FileSystemFileHandle).getFile());
             } else {
@@ -1804,6 +1861,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         // — the crawl diverts both names before it builds an item.
         if (item.kind === 'directory' && (item.name === TRASH_DIR || item.name === ASSETS_DIR)) return false;
         try {
+            if (__BME_BENCH__) {
+                try { reportVault({ op: 'empty-trash', path: item.sourcePath, caller: 'deleteFromTrash' }); } catch { /* instrumentation only */ }
+            }
             await item.parentHandle.removeEntry(item.name, { recursive: item.kind === 'directory' });
             return true;
         } catch (err) {
@@ -1850,6 +1910,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
 
             if (hasTrash) {
                 try {
+                    if (__BME_BENCH__) {
+                        try {
+                            const home = await rootHandle.resolve(dir);
+                            if (home) reportVault({ op: 'empty-trash', path: joinVaultPath(home.join('/'), TRASH_DIR), caller: 'emptyTrash' });
+                        } catch { /* instrumentation must never interrupt a file operation */ }
+                    }
                     await dir.removeEntry(TRASH_DIR, { recursive: true });
                     removed++;
                 } catch (err) {
@@ -1880,6 +1946,14 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } catch { /* cannot tell: proceed as before */ }
 
         try {
+            if (__BME_BENCH__) {
+                try {
+                    const target = await rootHandle?.resolve(targetDirHandle);
+                    if (target) {
+                        reportVault({ op: 'move', path: sourceNode.path, to: joinVaultPath(target.join('/'), sourceNode.name), caller: 'moveFile' });
+                    }
+                } catch { /* instrumentation must never interrupt a file operation */ }
+            }
             if (sourceNode.kind === 'file') {
                 // Copy file content to target
                 const file = await sourceNode.handle.getFile();
@@ -1911,6 +1985,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         if (sourceNode.name === newName) return true; // No change
 
         try {
+            if (__BME_BENCH__) {
+                try {
+                    reportVault({ op: 'move', path: sourceNode.path, to: joinVaultPath(parentVaultPath(sourceNode.path), newName), caller: 'renameFile' });
+                } catch { /* instrumentation must never interrupt a file operation */ }
+            }
             if (sourceNode.kind === 'file') {
                 // Copy file content to a new file with the new name
                 const file = await sourceNode.handle.getFile();

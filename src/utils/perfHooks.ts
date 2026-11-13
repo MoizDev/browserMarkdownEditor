@@ -22,9 +22,10 @@ export function perfRoot(): PerfRoot {
 export interface VaultReport {
     seq: number;
     t: number;                  // performance.now() when the operation started
-    op: 'write' | 'trash' | 'move' | 'retire' | 'restore' | 'empty-trash';
+    op: 'write' | 'trash' | 'trash-done' | 'move' | 'retire' | 'restore' | 'empty-trash';
     path: string;               // vault-root-relative (utils/paths.ts), the entry acted on
-    to?: string;                // for a move or a rename: where it went
+    to?: string;                // known destination; trash names arrive on trash-done
+    opens?: number;             // trash-done: seq of the operation's opening report
     caller: string;             // which sanctioned path started it, e.g. 'flushTab', 'rotate', 'trash'
 }
 
@@ -44,9 +45,10 @@ export function perfVault(): PerfVault {
     return root.vault as PerfVault;
 }
 
-/** Call immediately before the operation's first write or removal starts. */
-export function reportVault(report: Omit<VaultReport, 'seq' | 't'>): void {
+/** Before the first mutation (directory creation included); returns the opener's seq. */
+export function reportVault(report: Omit<VaultReport, 'seq' | 't'>): number {
     const full: VaultReport = { ...report, seq: ++seq, t: performance.now() };
     log.push(full);
     perfVault().dispatchEvent(new CustomEvent(full.op, { detail: full }));
+    return full.seq;
 }

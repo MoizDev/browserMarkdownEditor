@@ -24,7 +24,7 @@ const fail = (reason, detail) => Object.assign(new Error(detail), { reason });
 const chrome = option('--chrome', '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing');
 const plant = 'bme-perf-hooks-plant-7f3a';
 // These identify the hook, not ordinary app words such as tree or paths.
-const anchors = [plant, '__perf', /\.tree\s*=\s*\{\s*paths\s*:/, /\.reports\s*=\s*\(\)\s*=>/];
+const anchors = [plant, '__perf', 'trash-done', /\.tree\s*=\s*\{\s*paths\s*:/, /\.reports\s*=\s*\(\)\s*=>/];
 const fixture = {
     'trash.md': 'Keep these bytes when trashing and restoring.\n',
     'move.md': 'Keep these bytes when moving and renaming.\n',
@@ -63,6 +63,7 @@ if (args.includes('--compare')) {
 let browser, context, page;
 let identity;
 let handFailure;
+let directoryFailure;
 let phase = 'setup';
 const errors = [];
 const responseErrors = [];
@@ -91,9 +92,19 @@ async function openBrowser() {
         handle.requestPermission = async () => 'granted';
         return handle;
     };
+    window.__directoryCreates = [];
     const getDir = FileSystemDirectoryHandle.prototype.getDirectoryHandle;
     FileSystemDirectoryHandle.prototype.getDirectoryHandle = async function (...args) {
-        return grant(await getDir.apply(this, args));
+        const counted = window.__countCopies && args[1]?.create === true;
+        const t = performance.now();
+        const report = counted ? window.__perf?.vault?.reports().at(-1) ?? null : null;
+        const handle = await getDir.apply(this, args);
+        const completed = performance.now();
+        if (counted) {
+            const root = await getDir.call(await navigator.storage.getDirectory(), 'c15b-fixture');
+            window.__directoryCreates.push({ path: (await root.resolve(handle))?.join('/'), t, completed, report });
+        }
+        return grant(handle);
     };
     window.showDirectoryPicker = async () => grant(await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture', { create: true }));
     window.__removals = [];
@@ -118,14 +129,17 @@ async function openBrowser() {
     };
     const writable = FileSystemFileHandle.prototype.createWritable;
     FileSystemFileHandle.prototype.createWritable = async function (...args) {
+        const t = performance.now();
         const report = window.__perf?.vault?.reports().at(-1) ?? null;
         const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture');
         const relative = (await root.resolve(this))?.join('/');
-        if (window.__countCopies) window.__copyWrites.push({ path: relative, report });
+        const copy = { path: relative, report, t };
+        if (window.__countCopies) window.__copyWrites.push(copy);
         const stream = await writable.apply(this, args);
         const close = stream.close.bind(stream);
         stream.close = async (...args) => {
             const result = await close(...args);
+            copy.completed = performance.now();
             if (relative !== undefined) window.__completedCloses[relative] = (window.__completedCloses[relative] ?? 0) + 1;
             return result;
         };
@@ -328,33 +342,85 @@ try {
     await closeBin();
     result.removals = await page.evaluate(() => window.__removals);
     result.copyWrites = await page.evaluate(() => window.__copyWrites);
+    result.directoryCreates = await page.evaluate(() => window.__directoryCreates);
     try {
         assert.deepEqual(result.removals.map(call => call.path), ['trash.md', '.Garbage/trash.md', 'trash.md', '.Garbage/trash.md', 'move.md', 'target/move.md', '.Assets/pixel.png', '.Garbage/.Assets/pixel.png', '.Garbage', 'area/.Garbage']);
     } catch (error) { handFailure ??= error.message; }
     if (mode === 'benchmark') {
-        try {
-        const expected = ['trash', 'restore', 'trash', 'empty-trash', 'move', 'move', 'retire', 'restore', 'empty-trash', 'empty-trash'];
-        const used = new Set();
-        result.removals.forEach((call, index) => {
-            assert.ok(call.report, `unreported removal: ${call.path}`);
-            assert.equal(call.report.op, expected[index], `wrong operation for ${call.path}`);
-            assert.equal(call.report.path, call.path, `report path differs from native removal: ${call.path}`);
-            assert.ok(call.report.t <= call.t, 'report must precede native removal');
-            assert.ok(!used.has(call.report.seq), 'one report cannot cover two native removals');
-            used.add(call.report.seq);
-        });
-        for (const call of result.copyWrites.filter(call => call.report?.to === call.path)) {
-            assert.ok(used.has(call.report.seq), 'copy and removal must share the operation-start report');
-        }
-        assert.equal(result.copyWrites.filter(call => call.report?.to === call.path).length, 7, 'every move copy starts with an operation report');
-        result.finalPaths = await page.evaluate(() => window.__savedTreePaths());
-        assert.deepEqual(result.finalPaths, manifest.filter(name => !['trash.md', 'move.md'].includes(name)).concat('target/renamed.md').sort(), 'getter held a stale tree');
         result.reports = await page.evaluate(() => window.__perf.vault.reports().filter(report => report.op !== 'write'));
         result.events = await page.evaluate(() => window.__vaultEvents.filter(event => event.detail.op !== 'write'));
-        assert.equal(result.reports.length, 10, 'one report per context-started relocation or deletion');
-        assert.deepEqual(result.events.map(event => event.detail), result.reports, 'EventTarget events must agree with the report log');
-        assert.deepEqual(result.events.map(event => event.type), expected);
+        const bySeq = new Map(result.reports.map(report => [report.seq, report]));
+        const starts = result.reports.filter(report => report.op !== 'trash-done');
+        const done = result.reports.filter(report => report.op === 'trash-done');
+        const spans = [];
+        try {
+            const trash = starts.filter(report => report.op === 'trash' || report.caller === 'restoreFromTrash:displace');
+            assert.equal(done.length, trash.length, 'every trash/displacement must have one completion');
+            for (const open of trash) {
+                const matches = done.filter(report => report.opens === open.seq);
+                assert.equal(matches.length, 1, `trash opening ${open.seq} needs exactly one done`);
+                const close = matches[0];
+                assert.equal(open.to, undefined, 'trash destination is honestly unknown until copying finishes');
+                assert.equal(close.path, open.path);
+                assert.equal(close.caller, open.caller);
+                assert.ok(close.t >= open.t);
+                spans.push({ open, close });
+            }
+            const used = new Set();
+            const expected = ['trash', 'restore', 'trash', 'empty-trash', 'move', 'move', 'retire', 'restore', 'empty-trash', 'empty-trash'];
+            result.removals.forEach((call, index) => {
+                const report = call.report?.op === 'trash-done' ? bySeq.get(call.report.opens) : call.report;
+                assert.ok(report, `unreported removal: ${call.path}`);
+                assert.equal(report.op, expected[index], `wrong operation for ${call.path}`);
+                assert.equal(report.path, call.path, `report path differs from native removal: ${call.path}`);
+                assert.ok(report.t <= call.t, 'report must precede native removal');
+                assert.ok(!used.has(report.seq), 'one opener cannot cover two native removals');
+                used.add(report.seq);
+            });
+            // Outside fixture facts, not the hook's own destination claims.
+            const expectedCopies = [
+                ['.Garbage/trash.md', 'trash', 'trash.md'],
+                ['trash.md', 'restore', '.Garbage/trash.md'],
+                ['.Garbage/trash.md', 'trash', 'trash.md'],
+                ['target/move.md', 'move', 'move.md'],
+                ['target/renamed.md', 'move', 'target/move.md'],
+                ['.Garbage/.Assets/pixel.png', 'retire', '.Assets/pixel.png'],
+                ['.Assets/pixel.png', 'restore', '.Garbage/.Assets/pixel.png'],
+            ];
+            const copies = result.copyWrites.filter(call => call.path !== 'asset.md');
+            assert.equal(copies.length, 7, 'the seven relocation copies, not document saves');
+            copies.forEach((call, index) => {
+                const span = spans.find(span => call.t >= span.open.t && call.completed <= span.close.t && call.path === span.close.to);
+                const report = span?.open ?? call.report;
+                const [destination, op, source] = expectedCopies[index];
+                assert.equal(call.path, destination, 'native copy destination differs from fixture');
+                assert.equal(report?.op, op);
+                assert.equal(report?.path, source);
+                assert.ok(used.has(report.seq), 'copy and removal must share the opener');
+                if (report.to !== undefined) assert.equal(report.to, destination, 'known-at-start destination must agree');
+                if (op === 'trash') assert.ok(span, 'trash copy must belong to its open..done span and actual final name');
+            });
+            result.finalPaths = await page.evaluate(() => window.__savedTreePaths());
+            assert.deepEqual(result.finalPaths, manifest.filter(name => !['trash.md', 'move.md'].includes(name)).concat('target/renamed.md').sort(), 'getter held a stale tree');
+            assert.equal(starts.length, 10, 'one opener per relocation or deletion');
+            assert.equal(done.length, 2, 'both successful trash copies complete');
+            assert.deepEqual(result.events.map(event => event.detail), result.reports);
+            assert.deepEqual(result.events.map(event => event.type), ['trash', 'trash-done', 'restore', 'trash', 'trash-done', 'empty-trash', 'move', 'move', 'retire', 'restore', 'empty-trash', 'empty-trash']);
         } catch (error) { handFailure ??= error.message; }
+        try {
+            assert.deepEqual(result.directoryCreates.map(call => call.path), ['.Garbage', '.Garbage', '.Garbage', '.Garbage/.Assets', '.Assets']);
+            const expected = ['trash', 'trash', 'retire', 'retire', 'restore'];
+            const sources = ['trash.md', 'trash.md', '.Assets/pixel.png', '.Assets/pixel.png', '.Garbage/.Assets/pixel.png'];
+            result.directoryCreates.forEach((call, index) => {
+                const span = spans.find(span => call.t >= span.open.t && call.completed <= span.close.t && (span.close.to.startsWith(`${call.path}/`) || call.path === span.close.to || call.path.startsWith(`${span.close.to}/`)));
+                const report = span?.open ?? call.report;
+                assert.ok(report, `directory creation ${call.path} has no prior report`);
+                assert.equal(report.op, expected[index], `directory creation ${call.path} must be preceded by ${expected[index]}`);
+                assert.equal(report.path, sources[index], `directory creation ${call.path} has the wrong opener path`);
+                assert.ok(report.t <= call.t, `directory creation ${call.path} started before its report`);
+                if (expected[index] === 'trash') assert.ok(span, 'trash bucket creation must belong to the completed span');
+            });
+        } catch (error) { directoryFailure = error.message; }
     }
     result.hookAfterFlow = await page.evaluate(() => ({ root: typeof window.__perf, tree: typeof window.__perf?.tree, events: window.__vaultEvents.length }));
     const files = await page.evaluate(async () => {
@@ -426,13 +492,14 @@ try {
         }
         if (result.hookAfterFlow.root !== 'object' || result.hookAfterFlow.tree !== 'object') throw fail('B-control', 'benchmark hook is not live');
     } else {
-        if (result.hookAfterFlow.root !== 'undefined' || result.hookAfterFlow.tree !== 'undefined' || result.hookAfterFlow.events !== 0 || result.removals.some(call => call.report) || result.copyWrites.some(call => call.report)) throw fail('D-hook', 'development produced a hook, report or event');
+        if (result.hookAfterFlow.root !== 'undefined' || result.hookAfterFlow.tree !== 'undefined' || result.hookAfterFlow.events !== 0 || result.removals.some(call => call.report) || result.copyWrites.some(call => call.report) || result.directoryCreates.some(call => call.report)) throw fail('D-hook', 'development produced a hook, report or event');
         phase = 'identity';
         assert.equal(git('rev-parse', 'HEAD'), expectedCommit, 'dev source commit changed during flow');
         assert.equal(git('status', '--porcelain', '--untracked-files=all'), '', 'dev source changed during flow');
         phase = 'gate';
     }
     if (handFailure) throw fail('hand-count', handFailure.replace(/\s+/g, ' '));
+    if (directoryFailure) throw fail('directory-precedence', directoryFailure.replace(/\s+/g, ' '));
     result.ok = true;
 } catch (error) {
     const invalidPhase = error.invalid ? 'witness' : phase;

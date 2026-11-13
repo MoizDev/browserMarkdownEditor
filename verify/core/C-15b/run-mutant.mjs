@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 const args = process.argv.slice(2);
 const split = args.indexOf('--');
 const reason = args[args.indexOf('--expect') + 1];
-if (split < 0 || !['P-anchor', 'hand-count'].includes(reason)) {
-    console.error('INVALID mutant invocation: --expect P-anchor|hand-count -- <normal run.mjs arguments>');
+if (split < 0 || !['P-anchor', 'hand-count', 'directory-precedence'].includes(reason)) {
+    console.error('INVALID mutant invocation: --expect P-anchor|hand-count|directory-precedence -- <normal run.mjs arguments>');
     process.exit(2);
 }
 const result = spawnSync(process.execPath, [fileURLToPath(new URL('./run.mjs', import.meta.url)), ...args.slice(split + 1)], {

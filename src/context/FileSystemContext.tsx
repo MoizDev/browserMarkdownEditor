@@ -162,7 +162,7 @@ async function displaceInto(
     bucket: FileSystemDirectoryHandle,
     dir: FileSystemDirectoryHandle,
     entry: { name: string; kind: 'file' | 'directory'; handle: FileSystemFileHandle | FileSystemDirectoryHandle },
-    benchmark?: { path: string; bucketPath: string; op: 'trash' | 'retire'; caller: string },
+    benchmark?: { path: string; bucketPath: string; opens: number | undefined; caller: string },
 ): Promise<string> {
     // What this call has written, so a failure can take it back out. Recorded
     // before a single byte, so a copy that dies on its first file is unmade
@@ -173,11 +173,6 @@ async function displaceInto(
         const name = await freeEntryName(bucket, entry.name, entry.kind);
         wrote = { dir: bucket, name };
 
-        if (__BME_BENCH__) {
-            try {
-                if (benchmark) reportVault({ op: benchmark.op, path: benchmark.path, to: joinVaultPath(benchmark.bucketPath, name), caller: benchmark.caller });
-            } catch { /* instrumentation must never interrupt a file operation */ }
-        }
         if (entry.kind === 'file') {
             await copyFileInto(bucket, name, await (entry.handle as FileSystemFileHandle).getFile());
         } else {
@@ -185,6 +180,13 @@ async function displaceInto(
             await copyDirRecursive(entry.handle as FileSystemDirectoryHandle, grave);
         }
 
+        if (__BME_BENCH__) {
+            try {
+                // Close the copy's attribution span before removal: the copy
+                // is complete and its collision-free name is now a fact.
+                if (benchmark?.opens !== undefined) reportVault({ op: 'trash-done', opens: benchmark.opens, path: benchmark.path, to: joinVaultPath(benchmark.bucketPath, name), caller: benchmark.caller });
+            } catch { /* instrumentation must never interrupt a file operation */ }
+        }
         // Remove the original. Recursively for a folder — it still holds
         // everything that was just copied out of it.
         await dir.removeEntry(entry.name, { recursive: entry.kind === 'directory' });
@@ -1560,7 +1562,6 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // findable again by the name the note used. Two assets that share a
             // name in one folder are the same picture (the second write replaced
             // the first in .Assets), so the newest bytes winning is right.
-            const graveyard = await retiredAssetsDir(dirHandle, true);
             if (__BME_BENCH__) {
                 try {
                     const home = (await benchmarkRoot?.resolve(dirHandle))?.join('/');
@@ -1570,6 +1571,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     });
                 } catch { /* instrumentation must never interrupt a file operation */ }
             }
+            const graveyard = await retiredAssetsDir(dirHandle, true);
             await copyFileInto(graveyard, fileName, file);
             await assetsDir.removeEntry(fileName);
 
@@ -1607,14 +1609,6 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             const source = await graveyard.getFileHandle(fileName);   // throws => never retired
             const file = await source.getFile();
 
-            // Only now is there anything to restore — and only now is creating
-            // the folder's .Assets warranted.
-            const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR, { create: true });
-            try {
-                await assetsDir.getFileHandle(fileName);
-                return false;    // a live asset already holds the name; leave both alone
-            } catch { /* free — take it back */ }
-
             if (__BME_BENCH__) {
                 try {
                     const home = (await benchmarkRoot?.resolve(dirHandle))?.join('/');
@@ -1624,6 +1618,14 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     });
                 } catch { /* instrumentation must never interrupt a file operation */ }
             }
+            // Only now is there anything to restore — and only now is creating
+            // the folder's .Assets warranted.
+            const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR, { create: true });
+            try {
+                await assetsDir.getFileHandle(fileName);
+                return false;    // a live asset already holds the name; leave both alone
+            } catch { /* free — take it back */ }
+
             await copyFileInto(assetsDir, fileName, file);
             await graveyard.removeEntry(fileName);
             return true;
@@ -1693,9 +1695,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         if (node.kind === 'directory' && (node.name === TRASH_DIR || node.name === ASSETS_DIR)) return false;
 
         try {
+            let benchmarkOpen: number | undefined;
+            if (__BME_BENCH__) {
+                try { benchmarkOpen = reportVault({ op: 'trash', path: node.path, caller: 'moveToTrash' }); } catch { /* instrumentation only */ }
+            }
             const trashDir = await node.parentHandle.getDirectoryHandle(TRASH_DIR, { create: true });
             await displaceInto(trashDir, node.parentHandle, node, __BME_BENCH__ ? {
-                op: 'trash', path: node.path, bucketPath: joinVaultPath(parentVaultPath(node.path), TRASH_DIR), caller: 'moveToTrash',
+                opens: benchmarkOpen, path: node.path, bucketPath: joinVaultPath(parentVaultPath(node.path), TRASH_DIR), caller: 'moveToTrash',
             } : undefined);
             // The pictures that folder held can only have been shown by notes
             // inside it (resolution never looks sideways or down), and those are
@@ -1782,6 +1788,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 // A displaced picture is a RETIRED picture: it belongs in the
                 // bucket retireAsset uses, not beside the trashed notes, or
                 // putting it back later would land it outside `.Assets`.
+                let benchmarkOpen: number | undefined;
+                if (__BME_BENCH__) {
+                    try {
+                        benchmarkOpen = reportVault({ op: item.origin === 'retired' ? 'retire' : 'trash', path: joinVaultPath(item.origin === 'retired' ? joinVaultPath(item.restorePath, ASSETS_DIR) : item.restorePath, live.name), caller: 'restoreFromTrash:displace' });
+                    } catch { /* instrumentation must never interrupt a file operation */ }
+                }
                 const bucket = item.origin === 'retired'
                     ? await retiredAssetsDir(home, true)
                     : await destDir.getDirectoryHandle(TRASH_DIR, { create: true });
@@ -1789,8 +1801,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     ? joinVaultPath(joinVaultPath(item.restorePath, TRASH_DIR), ASSETS_DIR)
                     : joinVaultPath(item.restorePath, TRASH_DIR);
                 const filedAs = await displaceInto(bucket, destDir, live, __BME_BENCH__ ? {
-                    op: item.origin === 'retired' ? 'retire' : 'trash',
-                    path: joinVaultPath(item.origin === 'retired' ? joinVaultPath(item.restorePath, ASSETS_DIR) : item.restorePath, live.name),
+                    opens: benchmarkOpen, path: joinVaultPath(item.origin === 'retired' ? joinVaultPath(item.restorePath, ASSETS_DIR) : item.restorePath, live.name),
                     bucketPath, caller: 'restoreFromTrash:displace',
                 } : undefined);
                 // Same reason moveToTrash revokes: the pictures a displaced
@@ -1806,6 +1817,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 ? await freeEntryName(destDir, item.name, item.kind)
                 : item.name;
 
+            if (__BME_BENCH__) {
+                try {
+                    reportVault({ op: 'restore', path: item.sourcePath, to: joinVaultPath(item.origin === 'retired' ? joinVaultPath(item.restorePath, ASSETS_DIR) : item.restorePath, finalName), caller: 'restoreFromTrash' });
+                } catch { /* instrumentation must never interrupt a file operation */ }
+            }
             // Only now is there anything to restore, and only now is creating
             // the folder's `.Assets` warranted.
             if (!destDir) {
@@ -1822,11 +1838,6 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             }
 
             wrote = { dir: destDir, name: finalName };
-            if (__BME_BENCH__) {
-                try {
-                    reportVault({ op: 'restore', path: item.sourcePath, to: joinVaultPath(item.origin === 'retired' ? joinVaultPath(item.restorePath, ASSETS_DIR) : item.restorePath, finalName), caller: 'restoreFromTrash' });
-                } catch { /* instrumentation must never interrupt a file operation */ }
-            }
             if (item.kind === 'file') {
                 await copyFileInto(destDir, finalName, await (item.handle as FileSystemFileHandle).getFile());
             } else {

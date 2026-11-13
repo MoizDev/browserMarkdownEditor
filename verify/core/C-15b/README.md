@@ -14,8 +14,13 @@ not merely recorded. There is no IndexedDB shim.
   already exists then. Native parent handles are resolved independently of app path code. The ten
   required removals are: trash, put-back, trash again, permanent bin delete, drag-move, rename,
   embed removal/retire, embed re-add/restore, root bin empty, nested bin empty. They must match ten
-  distinct operation-start reports. Seven relocation copies share those reports. EventTarget events
-  must equal the report log. The count comes from those gestures, never from observed calls.
+  distinct operation-start reports. Seven relocation copies share those openers. The two trash
+  openings each have exactly one `trash-done` (12 records total); its `opens` names the opener and
+  its `to` must match the native copy's real final name. EventTarget events equal the full log.
+- Five native `getDirectoryHandle({create:true})` completions are independently recorded: two trash
+  bucket lookups, retire's bucket and asset subfolder, then restore's asset folder. Each request must
+  start AFTER its own opener. Trash directory/copy calls are attributed within the opener..done span;
+  fixture-owned source/destination pairs, not optional hook claims, identify the seven copies. The count comes from those gestures, never from observed calls.
 - **P:** scan every actual page/worker script response, then labelled supplemental fetches of every
   remaining `.js` in the identity inventory, made by `fetch` in that same browser context/origin.
   Assert every response-body SHA-256 against the build identity, then assert no anchor and no
@@ -36,9 +41,14 @@ not merely recorded. There is no IndexedDB shim.
 - Not covered: rollback fault paths, replace collisions, concurrent operations, native-disk
   permissions/FSEvents, devices, timing/layout equivalence, or workers the flow does not start.
 
-One report is emitted at operation start, before its first copy/write or deletion (the c-lead's
-C-15a/C-15b split ruling). It covers that operation's own copies and source removal; `to` identifies
-an app-created copy cleaned up on failure. Rollback is not a second user operation.
+One opening report is emitted before the first mutation, DIRECTORY CREATION INCLUDED (c-lead /
+vr-lead ruling). Trash/displacement openers deliberately omit `to`: a collision-free name has not
+been chosen yet. `displaceInto` emits `trash-done` AFTER the copy and BEFORE removing the source,
+when the actual name and completed copy are facts. Its `opens` links the start and `to` identifies
+that real copy; removal may then be matched to the opener through this completion. Failed-copy /
+rollback traces are statically inventoried, not fault-driven or asserted complete by this happy-flow
+gate. Move/rename/asset destinations known at start remain asserted. Original production statements
+are not reordered and callback dependencies stay identical to the uninstrumented reference.
 
 ## Build and run
 
@@ -78,7 +88,7 @@ cd "$REF"
 ```
 
 Each clean arm exits 0. Product assertions exit 1 with a named `FAIL` reason (`P-anchor`, `P-hook`,
-`D-hook`, `B-control`, `hand-count`, `PB-parity`, or the arm's `*-render`). Setup/identity failures
+`D-hook`, `B-control`, `hand-count`, `directory-precedence`, `PB-parity`, or the arm's `*-render`). Setup/identity failures
 exit 2 as `INVALID`; product failures are never classified as invalid setup. Results include asserted
 identities, response hashes/provenance, native calls, hook reports/events, file hashes, visible DOM,
 screenshots and any stable failure reason.
@@ -101,6 +111,9 @@ its actual `--mode`, `--out-dir <mutant-dist>` and `--patch <absolute-patch>`.
 - `missing-retire.patch`: benchmark build, run B with the same normal invocation plus `--patch` and
   the mutant outDir. Required reason: **`FAIL hand-count`** (retire's native removal has no retire
   report). Dropping this report never changes the required ten native removals.
+- `late-retire.patch`: benchmark build, identical invocation. Moves the retire report AFTER its
+  directory creation while preserving the copy/removal reports. Required reason:
+  **`FAIL directory-precedence`**. This proves the new precedence check independently of old checks.
 
 Wrap the ordinary invocation as below. It accepts only exit 1 **and the named reason line**;
 missing URLs, changed patches, wrong identities and setup errors are invalid, not kills.
@@ -108,7 +121,8 @@ missing URLs, changed patches, wrong identities and setup errors are invalid, no
 ```sh
 "$L" run -- node verify/core/C-15b/run-mutant.mjs --expect P-anchor -- --mode production --url http://localhost:6300/ --out-dir "$S/mutant-a-dist" --expect-commit "$COMMIT" --patch "$LANE/verify/core/C-15b/unguarded-tree.patch" --result "$S/mutant-a.json"
 "$L" run -- node verify/core/C-15b/run-mutant.mjs --expect hand-count -- --mode benchmark --url http://localhost:6300/ --out-dir "$S/mutant-b-dist" --expect-commit "$COMMIT" --patch "$LANE/verify/core/C-15b/missing-retire.patch" --result "$S/mutant-b.json"
+"$L" run -- node verify/core/C-15b/run-mutant.mjs --expect directory-precedence -- --mode benchmark --url http://localhost:6300/ --out-dir "$S/mutant-c-dist" --expect-commit "$COMMIT" --patch "$LANE/verify/core/C-15b/late-retire.patch" --result "$S/mutant-c.json"
 ```
 
-P/B scan anchors: `bme-perf-hooks-plant-7f3a`, `__perf`,
+P/B scan anchors: `bme-perf-hooks-plant-7f3a`, `__perf`, `trash-done`,
 `/\.tree\s*=\s*\{\s*paths\s*:/`, `/\.reports\s*=\s*\(\)\s*=>/`. Bare `tree` is not an anchor.

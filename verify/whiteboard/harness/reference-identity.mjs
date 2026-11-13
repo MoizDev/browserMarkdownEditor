@@ -46,7 +46,7 @@ export async function referenceIdentity(h, options) {
     for (const [url, response] of h.responseObjects) {
       if (checked.has(response) || response.request().resourceType() !== 'script' || response.status() !== 200) continue;
       const pathname = new URL(url).pathname.replace(/^\//, '');
-      const original = expected.chunks[pathname];
+      const original = expected.scripts[pathname];
       if (!original) throw Error(`REFERENCE_BUILD_ASSERT: unidentified script ${url}`);
       const mutations = h.mutations.flatMap(mutation => mutation.targets ?? [mutation]);
       const mutation = mutations.find(mutation => mutation.url === url);
@@ -56,6 +56,6 @@ export async function referenceIdentity(h, options) {
       checked.add(response);
     }
     h.referenceBuildAssertions = (h.referenceBuildAssertions ?? 0) + 1;
-    return { referenceCommit: expected.referenceCommit, harnessCommit: expected.harnessCommit, variant: expected.variant, entry: expected.entry, entrySha256: expected.chunks[expected.entry] };
+    return { referenceCommit: expected.referenceCommit, harnessCommit: expected.harnessCommit, variant: expected.variant, entry: expected.entry, entrySha256: expected.scripts[expected.entry] };
   };
 }

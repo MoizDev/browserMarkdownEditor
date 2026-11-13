@@ -75,8 +75,8 @@ export default {
   plugins: [...original.plugins, { name: 'reference-artifact-receipt', writeBundle(options, bundle) {
     const entry = Object.values(bundle).find(item => item.type === 'chunk' && item.isEntry && item.facadeModuleId === ${JSON.stringify(path.join(tree, 'index.html'))});
     if (!entry) throw new Error('Build has no app entry');
-    const chunks = Object.fromEntries(Object.values(bundle).filter(item => item.type === 'chunk').map(item => [item.fileName, sha(readFileSync(resolve(options.dir, item.fileName)))]));
-    writeFileSync(resolve(options.dir, ${JSON.stringify(receiptName)}), JSON.stringify({ ...${JSON.stringify(record)}, entry: entry.fileName, chunks }));
+    const scripts = Object.fromEntries(Object.values(bundle).filter(item => /\\.m?js$/.test(item.fileName)).map(item => [item.fileName, sha(readFileSync(resolve(options.dir, item.fileName)))]));
+    writeFileSync(resolve(options.dir, ${JSON.stringify(receiptName)}), JSON.stringify({ ...${JSON.stringify(record)}, entry: entry.fileName, scripts }));
   } }],
 };
 `);

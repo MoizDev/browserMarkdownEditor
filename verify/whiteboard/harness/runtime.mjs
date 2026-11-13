@@ -137,6 +137,6 @@ export async function launchRuntime(options = {}) {
 export const frames = (page, n=2) => page.evaluate(n=>new Promise(resolve=>{ const tick=()=>--n<=0?resolve():requestAnimationFrame(tick);requestAnimationFrame(tick); }),n);
 export async function until(fn, { timeout=15000, interval=50, description='condition' }={}) {
   const start=Date.now();let last;
-  while(Date.now()-start<timeout){try{const x=await fn();if(x)return x;}catch(e){if(/PROBE_(?:OBJECT|VERSION|PATH|CONTROL)_ASSERT/.test(e.message))throw e;last=e;}await new Promise(r=>setTimeout(r,interval));}
+  while(Date.now()-start<timeout){try{const x=await fn();if(x)return x;}catch(e){if(/PROBE_(?:OBJECT|VERSION|PATH|CONTROL)_ASSERT|REFERENCE_BUILD_ASSERT|HARNESS_(?:BROWSER|DRIVER)_ASSERT/.test(e.message))throw e;last=e;}await new Promise(r=>setTimeout(r,interval));}
   throw Error(`Timed out after ${timeout}ms: ${description}${last?`: ${last.message}`:''}`);
 }

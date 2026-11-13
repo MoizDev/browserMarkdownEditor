@@ -242,7 +242,7 @@ export function installProbe() {
       if (element) {
         const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
         let node;
-        while (node = walker.nextNode()) if (node.textContent.trim()) {
+        while ((node = walker.nextNode())) if (node.textContent.trim()) {
           const parent = node.parentElement, style = getComputedStyle(parent), rect = parent.getBoundingClientRect();
           if (!rect.width || !rect.height || style.display === 'none' || style.visibility === 'hidden') continue;
           const range = document.createRange(); range.selectNodeContents(parent);

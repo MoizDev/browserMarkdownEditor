@@ -23,7 +23,7 @@ export async function prepareMutation(h,{kind,chunk,find,replace,count=1,maxModu
   if(matches(chunk,url)){target={url,body};break;}
   for(const m of body.matchAll(/["']([^"'\\]+\.m?js(?:\?[^"'\\]*)?)["']/g)){
    const ref=m[1];if(ref.startsWith('http')&&new URL(ref).origin!==new URL(h.baseURL).origin)continue;
-   try{queue.push(new URL(ref.startsWith('assets/')?'/'+ref:ref,url).href);}catch{}
+   try{queue.push(new URL(ref.startsWith('assets/')?'/'+ref:ref,url).href);}catch{ /* Non-URL literals are not module-graph edges. */ }
   }
  }
  if(!target)throw Error(`No built chunk matching ${chunk} discovered in ${seen.size} served modules`);

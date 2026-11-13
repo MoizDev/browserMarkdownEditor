@@ -1,98 +1,128 @@
 # Graph measurement surface (C-15d)
 
-This is a headless-browser gate driving the real application, not an extracted
-simulation or a code-based test. The reference branch is `impl/reference`
-(`b10d0d3` plus `ff3d755`) plus this package; no implementation-domain merge.
+A headless-browser gate drives the real application, not an extracted simulation.
+The reference branch is main `b10d0d3` plus its benchmark-constant commits and this
+hook package, never an implementation-domain merge.
 
 ## Surface and lifetime
 
 Benchmark builds expose `window.__perf.graph`:
 
-- `positions()` copies `{ ids, ring: [{ step, x, y }] }`. Coordinates are the
-  unrounded doubles after each completed working physics step, in node-array
-  order. The ring holds at most 512 frames (all 300 fresh settling steps fit).
-- `snapshot()` copies the directed edge list passed to the drawing loop.
+- `positions()` copies `{ ids, ring: [{ step, x, y }] }`: unrounded doubles after
+  completed working physics steps, in node-array order. At most 512 frames remain.
+- `snapshot()` copies the directed edges passed to the drawing loop.
 - `steps` counts completed physics steps, not animation callbacks.
-- `publications` counts distinct node/link prop-array pairs received by the
-  mounted view, including the first pair. Active-note/theme/hover renders do not
-  count. The app retains the arrays when a graph rebuild finds no change.
+- `publications` counts distinct node/link prop-array pairs received by the mounted
+  view, including the first. Active-note/theme/hover renders do not count.
 
-Today the `[nodes]` seeding effect reheats to alpha 1 even when only degrees
-changed. That effect resets `steps`, the ring and `ids`, preserving the real
-simulation's survivor positions/velocities exactly as before. A links-only
-publication restarts the loop but neither reheats nor resets the counter. A
-pointer-down reheat continues the current history. Unmount releases retained
-arrays; existing hook references then return empty arrays and zero counters.
+Today's `[nodes]` seeding effect reheats to alpha 1 even for changed degrees with
+unchanged IDs. It resets steps, IDs and history without changing survivor positions
+or velocities. A links-only publication neither reheats nor resets. A pointer-down
+reheat continues history. Unmount releases arrays; held hook references read empty
+arrays and zero counters.
 
-## Witness, identity and loss
+## Three-arm gate, identity and losses
 
-Five real OPFS notes form A→B→C→D→E. The browser opens the named vault and clicks
-Neural Brain. It checks the five exact IDs, four exact directed edges, and
-independently observes five canvas arcs/four edge draws. Two reads 500 ms apart
-must advance. All frames 1–300 must be finite and present; after settling, a
-one-second read must be identical. Mutating returned copies must have no effect.
+One invocation always supplies P (production preview), B (benchmark preview), and
+D (dev server). All three arms must pass on clean code. Every arm seeds the same
+five-note A→B→C→D→E fixture, opens the real vault/graph, checks the five circles and
+four drawn edges, captures the settled canvas, then saves E→A using a fresh OPFS
+handle outside app code. The real observer/poll must show five links. It leaves
+the graph through its real button. No app module is imported into the page.
 
-A screenshot supplies A's painted centre (its independently hand-counted palette
-colour). Its projected reported position must agree within 1 CSS pixel. A fresh
-OPFS handle writes E→A outside the app's code path; the real observer/poll must
-publish five edges and increment publications exactly once. Leaving the graph
-must empty the surface. No application module is imported into the page.
+P scans bodies from every script response the browser observed (page and worker
+requests through the browser context). It then fetches every remaining `.js` in
+the build inventory from that SAME preview origin, labelled supplemental. Node
+never supplies asserted bundle content. Every scanned body's SHA-256 must match
+its entry in the build identity. No plant/`__perf`/graph-hook anchor may occur;
+`window.__perf` and its graph key must be undefined after the flow, with no observed
+root creation or hook reports.
 
-The same browser actions on production must leave identical file bytes, visible
-graph text, canvas draw coordinates and settled PNG bytes. Every emitted JS/HTML
-chunk is scanned for the plant/`__perf` anchors: absent in production and present
-in benchmark. Bare `graph` is intentionally not a scan anchor: ordinary graph
-UI/CSS already contains it. These are functional gates, not timing sign-off.
-No native-disk observer/FSEvents claim is made; storage is OPFS with real IDB.
+B is the positive control: an anchor must occur in an actual app-requested script,
+and the graph hook must be live. Hand counts require exact IDs/edges, advancing
+steps over 500 ms, all frames 1..300, finite doubles, and no change in an idle
+one-second read. Returned-copy mutation cannot change another read. A's painted
+centre from a screenshot must agree with the reported-position projection within
+one CSS pixel. The outside save raises publications exactly once; unmount empties
+the surface. P/B disk bytes, graph DOM, canvas coordinates and settled PNG bytes
+must agree.
 
-Mutants are patches applied with `git apply` to independent scratch source
-copies, with their own `npm ci`, built through the normal Vite configuration:
+D asserts no root creation/report and undefined hook state. **Loss:** dev serves
+source with dead guarded hook text; dev-source text exclusion is not claimed.
+The required run uses default development mode. An additional invocation against
+`vite --mode benchmark`, with gate argument `--dev-mode=benchmark`, exercises the
+repaired command-and-mode constant; it must also pass.
 
-- `unguarded.patch`: registers the surface outside the benchmark guard. Its
-  production scan must fail; otherwise shipping instrumentation is undetected.
-- `frame-count.patch`: increments once per RAF, including idle callbacks. Its
-  one-second settled read must fail; otherwise equal-step comparison is unsound.
+Every report asserts Chrome for Testing 157.0.8103.39 and Playwright 1.63.0. Each
+build's `write-identity.mjs` output sits beside its outDir and records commit,
+clean source (or mutant patch SHA-256), mode and every output file's SHA-256. The
+browser requires the expected commit/patch and binds every scanned served body
+to that inventory. D has no outDir: it checks the clean dev worktree's Git HEAD,
+and checks its supervised hc program's explicit positional Vite root, cwd and
+strict port match the requested worktree and URL; observed response hashes are
+recorded. There is no app diagnostic route. These are functional OPFS gates, not
+native-disk/FSEvents or timing sign-off. Ring wraparound and the full layout/input
+catalogue are left to later graph gates.
 
-A patch failure is a failed mutant setup, never evidence that a mutant was killed.
+## Build and run
 
-## Run
+Obey `scratch/HOWTO.md`: own installs, private cache, pinned browser, every build/
+static/browser/serve operation under bme-lock, slow commands in hc terminals.
+Reference has no Playwright dependency. Copy `graph-hooks.mjs` into the lane's
+same `verify/core/C-15d/` path, resolving the lane's I-0 driver; do not merge I-0
+into reference. Static gates likewise use unchanged mirrored hook source in lane.
 
-Follow the integrator's `scratch/HOWTO.md` for builds, private cache and locks.
-Use the pinned Chrome for Testing 157.0.8103.39 and Playwright 1.63.0 from I-0.
-The reference worktree has no driver dependency: copy `graph-hooks.mjs` into the
-lane worktree's same `verify/core/C-15d/` path and run that copy against the
-reference previews. Do not merge I-0 into the reference branch.
+Set `W=/Users/adham/Developer/bme-impl`, `L=$W/scratch/bin/bme-lock`,
+`REF=$W/wt/c-e-ref`, `S=$W/scratch/c-e/c15-v2`, and `COMMIT=$(git -C "$REF" rev-parse HEAD)`.
+Create a scratch Vite config importing the reference config, with `root: REF`, a
+private `cacheDir` and scratch outDir. From the CLEAN reference worktree, build
+both modes and write identity immediately in the same locked command:
 
-For the original run, `$W=/Users/adham/Developer/bme-impl`, `$L=$W/scratch/bin/bme-lock`.
-The reference scratch config is `$W/scratch/c-e/vite.config.mjs`, with root
-`$W/wt/c-e-ref`, private cache `$W/scratch/c-e/vite-cache` and scratch output.
-Build with `$L build -- ./node_modules/.bin/vite build --config <config>`;
-add `--mode benchmark` for the benchmark. Serve the two outputs through `$L serve`
-with `vite preview --config <config> --outDir <output> --port <port> --strictPort`.
-Run slow commands in hc terminals. From `$W/wt/c-e`:
+```sh
+$L build -- bash -c './node_modules/.bin/vite build --config <cfg> --outDir <P> && node verify/core/C-15d/write-identity.mjs --output=<P> --mode=production'
+$L build -- bash -c './node_modules/.bin/vite build --config <cfg> --outDir <B> --mode benchmark && node verify/core/C-15d/write-identity.mjs --output=<B> --mode=benchmark'
+```
+
+Serve P/B at 6360/6361 with `$L serve -- vite preview --config <cfg> --outDir <P|B>
+--port <port> --strictPort`. Start D in an hc terminal, keeping its returned ID:
+`$L serve -- ./node_modules/.bin/vite "$REF" --config <cfg> --port 6362 --strictPort`.
+The explicit positional root is required for the dev identity assertion. From lane:
 
 ```sh
 $L run -- node verify/core/C-15d/graph-hooks.mjs \
-  --bench-url=http://localhost:6361/ --prod-url=http://localhost:6362/ \
-  --bench-dist=$W/scratch/c-e/benchmark --prod-dist=$W/scratch/c-e/production \
-  --out=$W/scratch/c-e/paired
+  --commit=$COMMIT \
+  --prod-url=http://localhost:6360/ --prod-identity=$S/production.identity.json \
+  --bench-url=http://localhost:6361/ --bench-identity=$S/benchmark.identity.json \
+  --dev-url=http://localhost:6362/ --dev-root=$REF --dev-terminal=<hc-ID> \
+  --out=$S/clean
 ```
 
-For the frame-count scratch preview, run with only
-`--bench-url=http://localhost:6363/ --out=$W/scratch/c-e/frame-count` (expect exit 1).
-For the unguarded production output, run with only
-`--prod-dist=$W/scratch/c-e/mutant-unguarded-dist --out=$W/scratch/c-e/unguarded`
-(expect exit 1 before any browser launch).
+Expect `PASS C-15d P/B/D`, exit 0. Full identities, response provenance/hashes,
+hand counts, runtime observations and parity inputs are in `report.json`.
 
-## Recorded evidence
+## Mutants: same invocation, named failure only
 
-Under `$W/scratch/c-e/`: `reproduction/report.json` records the unmodified
-reference failing after the real graph opens because its hook is absent.
-`paired/report.json` passes: steps 31→61 over 500 ms, settled 300, all 300 frames,
-publications 1→2, and A's pixel/projection centres differ by about 0.012 px.
-Both builds have 211 served JS/HTML chunks; production has zero planted chunks,
-benchmark has one (GraphView). Production/benchmark settled PNGs are byte-identical.
-`unguarded/report.json` fails the production plant scan. `frame-count/report.json`
-fails because idle steps rise from 300 to 361 over one second.
-`logs/` holds successful build, typecheck and lint output. Static gates ran in the
-I-0 lane worktree with the two hook files mirrored unchanged from the reference.
+Apply each `.patch` to an independent scratch source copy of `COMMIT` (patch
+failure is invalid setup), install independently, and build normal production
+and benchmark modes. Pass `--commit=$COMMIT --patch=<absolute-patch-file>` to the
+identity writer; it records the patch SHA-256. Never patch the source worktree.
+
+Use the SAME gate invocation above, changing only that mutant's P/B URLs/identity
+paths/output and adding `--prod-patch=<patch-sha256> --bench-patch=<patch-sha256>`.
+D remains the same clean reference dev server control. The mutant is killed only
+when exit 1 accompanies its exact stable reason line:
+
+- `unguarded.patch`: `FAIL P-anchor ...` (shipping hook code).
+- `frame-count.patch`: `FAIL hand-count ...` (idle RAFs counted as physics steps).
+
+A missing URL, wrong browser/driver, hash/commit mismatch, patch or build failure,
+timeout or other setup failure exits 2 and is INVALID, never a mutant kill. The
+mutant runner must match the reason prefix, not just nonzero exit status.
+
+## Earlier evidence, superseded method
+
+The initial `2beff49` five-note flow passed its hand counts and killed both
+mutants, but r-gates correctly refused its Node-side dist scan, absent dev arm
+and missing asserted build/browser identity. Those logs remain under
+`scratch/c-e/{paired,unguarded,frame-count}` as historical evidence only; they are
+NOT sign-off for this revised gate. The fresh three-arm reports supersede them.

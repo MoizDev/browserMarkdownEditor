@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 
 // Drives only the real app. An independent OPFS writer saves the link while
@@ -21,26 +24,72 @@ const fixture = {
 };
 const ids = Object.keys(fixture);
 const edges = [['A.md', 'B.md'], ['B.md', 'C.md'], ['C.md', 'D.md'], ['D.md', 'E.md']];
-const report = { fixture, idbShim: false, dpr: 1, arms: {} };
+const require = createRequire(import.meta.url);
+const report = { fixture, idbShim: false, dpr: 1, driver: require('playwright/package.json').version, expectedBrowser: '157.0.8103.39', expectedCommit: args.commit, arms: {} };
 await mkdir(out, { recursive: true });
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const anchors = /__perf|bme-perf-hooks-plant-7f3a|PERF_PLANT|get publications\s*\(/;
 
-async function chunks(dir) {
-    const result = [];
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-        const file = path.join(dir, entry.name);
-        if (entry.isDirectory()) result.push(...await chunks(file));
-        else if (/\.(?:js|html)$/.test(file)) result.push([file, await readFile(file, 'utf8')]);
-    }
-    return result;
+function fail(reason, detail) {
+    const error = new Error(`FAIL ${reason} ${detail}`);
+    error.reason = reason;
+    throw error;
 }
 
-async function scan(dir, benchmark) {
-    const served = await chunks(dir);
-    assert(served.length, `no served chunks in ${dir}`);
-    const found = served.filter(([, text]) => /__perf|bme-perf-hooks-plant-7f3a|PERF_PLANT/.test(text)).map(([file]) => file);
-    assert.equal(found.length > 0, benchmark, `${benchmark ? 'benchmark lacks' : 'production exposes'} the C9 plant/hooks`);
-    if (benchmark) assert(served.some(([, text]) => /publications/.test(text)), 'benchmark lacks graph publication hook');
-    return { chunks: served.length, plantedChunks: found };
+function identity(condition, detail) {
+    if (!condition) fail('identity', detail);
+}
+
+async function buildIdentity(prefix) {
+    const name = prefix === 'bench' ? 'benchmark' : 'production';
+    const manifest = JSON.parse(await readFile(args[`${prefix}-identity`], 'utf8'));
+    report.arms[name] = { identity: manifest, scripts: [] };
+    identity(manifest.commit === args.commit, `${name} commit ${manifest.commit} != ${args.commit}`);
+    identity(manifest.mode === (name === 'benchmark' ? 'benchmark' : 'production'), `${name} wrong mode`);
+    const expectedPatch = args[`${prefix}-patch`];
+    identity(expectedPatch ? manifest.tree.patchSha256 === expectedPatch : manifest.tree.clean === true, `${name} source tree/patch differs`);
+    identity(Object.keys(manifest.files).some(file => file.endsWith('.js')), `${name} empty script inventory`);
+    return manifest;
+}
+
+function observeScripts(context, manifest, url, name) {
+    const pending = [], actual = [], observed = new Set();
+    const origin = new URL(url).origin;
+    context.on('response', response => {
+        const request = response.request();
+        if (request.resourceType() !== 'script' && !new URL(response.url()).pathname.endsWith('.js')) return;
+        pending.push((async () => {
+            const bytes = await response.body();
+            let owner = 'worker';
+            try { owner = request.frame() ? 'page' : 'worker'; } catch { /* Worker requests have no frame. */ }
+            actual.push({ url: response.url(), bytes, owner, status: response.status() });
+        })().catch(error => { actual.push({ url: response.url(), error: error.message }); }));
+    });
+    return async () => {
+        await Promise.all(pending);
+        const scanned = report.arms[name].scripts;
+        const check = (record, source) => {
+            if (record.error || record.status !== 200) fail('setup', `${name} script response ${record.url}: ${record.error ?? record.status}`);
+            identity(new URL(record.url).origin === origin, `${name} script is not from its own origin: ${record.url}`);
+            const file = decodeURIComponent(new URL(record.url).pathname).replace(/^\//, '');
+            const sha256 = hash(record.bytes);
+            if (manifest) identity(manifest.files[file] === sha256, `${name} served body differs from build identity: ${file}`);
+            const anchor = record.bytes.toString('utf8').match(anchors)?.[0];
+            scanned.push({ url: record.url, file, sha256, source, owner: record.owner, anchor: anchor ?? null });
+            observed.add(file);
+            if (name === 'production' && anchor) fail('P-anchor', `${anchor} ${record.url}`);
+        };
+        for (const record of actual) check(record, 'app-request');
+        if (manifest) {
+            // The manifest is only an inventory/hash identity, never the content
+            // oracle: even lazy chunks are fetched from this preview's origin.
+            for (const file of Object.keys(manifest.files).filter(file => file.endsWith('.js') && !observed.has(file))) {
+                const response = await context.request.get(new URL(file, url).href);
+                check({ url: response.url(), bytes: await response.body(), status: response.status(), owner: 'supplemental' }, 'supplemental-browser-context-fetch');
+            }
+        }
+        if (name === 'benchmark' && !scanned.some(script => script.source === 'app-request' && script.anchor)) fail('B-control', 'no anchor in a script the app actually fetched');
+    };
 }
 
 async function prepare(context, url) {
@@ -51,6 +100,18 @@ async function prepare(context, url) {
     await context.addInitScript(() => {
         // Init scripts also run in initial/opaque frames without a storage API.
         if (typeof FileSystemDirectoryHandle === 'undefined') return;
+        let perf;
+        window.__hookObservation = { rootWrites: 0, reports: 0 };
+        Object.defineProperty(window, '__perf', {
+            configurable: true,
+            get: () => perf,
+            set: value => { window.__hookObservation.rootWrites++; perf = value; },
+        });
+        const dispatch = EventTarget.prototype.dispatchEvent;
+        EventTarget.prototype.dispatchEvent = function (event) {
+            if (event.detail?.caller && event.detail?.path && typeof event.detail?.seq === 'number') window.__hookObservation.reports++;
+            return dispatch.call(this, event);
+        };
         const grant = handle => {
             handle.queryPermission = async () => 'granted';
             handle.requestPermission = async () => 'granted';
@@ -156,8 +217,10 @@ async function saveOutsideApp(page) {
     });
 }
 
-async function arm(browser, name, url, benchmark) {
+async function arm(browser, name, url, manifest) {
+    const benchmark = name === 'benchmark';
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+    const scan = observeScripts(context, manifest, url, name);
     const errors = [];
     context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
     try {
@@ -196,7 +259,7 @@ async function arm(browser, name, url, benchmark) {
             assert(Math.hypot(centre.x - projected.x, centre.y - projected.y) <= 1, `painted node differs from reported positions: ${JSON.stringify({ centre, projected })}`);
             data.hook = { first: first.steps, later: later.steps, settled: settled.steps, publications: settled.publications, ring: settled.positions.ring.length, centre, projected };
         } else {
-            assert.equal(await page.evaluate(() => '__perf' in window), false, 'production exposes __perf');
+            assert.equal(await page.evaluate(() => window.__perf), undefined, `${name} exposes __perf`);
             // Production has no step surface. Observe the platform draw arguments
             // stop changing, rather than assuming a fixed duration means settled.
             let stable = false;
@@ -225,15 +288,26 @@ async function arm(browser, name, url, benchmark) {
         data.finalDom = await page.locator('.graph-view').innerText();
         data.finalDisk = await disk(page);
         assert.deepEqual(errors, [], 'browser raised an application error');
+        await page.getByRole('button', { name: 'Back to the editor', exact: true }).click();
         if (benchmark) {
-            await page.getByRole('button', { name: 'Back to the editor', exact: true }).click();
             const empty = await readGraph(page);
             assert.deepEqual(empty.positions, { ids: [], ring: [] }, 'unmounted graph retains positions');
             assert.deepEqual(empty.edges, [], 'unmounted graph retains edges');
             assert.equal(empty.steps, 0, 'unmounted graph retains step count');
             assert.equal(empty.publications, 0, 'unmounted graph retains publications');
+        } else {
+            data.hooks = await page.evaluate(() => ({ rootUndefined: window.__perf === undefined, keyUndefined: window.__perf?.graph === undefined, ...window.__hookObservation }));
+            if (!data.hooks.rootUndefined || !data.hooks.keyUndefined || data.hooks.rootWrites || data.hooks.reports) fail(name === 'dev' ? 'D-hook' : 'P-hook', JSON.stringify(data.hooks));
         }
+        await scan();
+        Object.assign(report.arms[name], data);
         return data;
+    } catch (error) {
+        // An anchor leak must keep its own reason even when runtime exposure
+        // would also fail. A setup/identity error is never a mutant kill.
+        if (!error.reason) await scan();
+        if (benchmark && error.code === 'ERR_ASSERTION') fail('hand-count', error.message);
+        throw error;
     } finally {
         await context.close();
     }
@@ -241,25 +315,40 @@ async function arm(browser, name, url, benchmark) {
 
 let browser;
 try {
-    if (args['prod-dist']) report.productionScan = await scan(args['prod-dist'], false);
-    if (args['bench-dist']) report.benchmarkScan = await scan(args['bench-dist'], true);
-    assert(args['bench-url'] || args['prod-url'], 'supply --bench-url=URL and/or --prod-url=URL');
+    for (const key of ['commit', 'prod-url', 'bench-url', 'dev-url', 'prod-identity', 'bench-identity', 'dev-root', 'dev-terminal']) if (!args[key]) fail('setup', `missing --${key}`);
+    identity(report.driver === '1.63.0', `Playwright ${report.driver} != 1.63.0`);
     browser = await chromium.launch({ executablePath: chrome, headless: true });
     report.browser = browser.version();
-    if (args['bench-url']) report.arms.benchmark = await arm(browser, 'benchmark', args['bench-url'], true);
-    if (args['prod-url']) report.arms.production = await arm(browser, 'production', args['prod-url'], false);
-    if (report.arms.benchmark && report.arms.production) {
-        const benchmark = report.arms.benchmark, production = report.arms.production;
-        assert.deepEqual(benchmark.paint, production.paint, 'benchmark hook perturbs the drawn positions');
-        for (const key of ['initialDom', 'initialDisk', 'finalDom', 'finalDisk']) assert.deepEqual(benchmark[key], production[key], `benchmark changes ${key}`);
-        assert.deepEqual(await readFile(path.join(out, 'benchmark-settled.png')), await readFile(path.join(out, 'production-settled.png')), 'settled canvas screenshots differ');
-    }
+    identity(report.browser === report.expectedBrowser, `Chrome ${report.browser} != ${report.expectedBrowser}`);
+    const production = await buildIdentity('prod');
+    const benchmark = await buildIdentity('bench');
+    // The supervised serve terminal is part of the setup identity, not an app
+    // diagnostic route. Its explicit positional Vite root must be this clean tree.
+    const root = path.resolve(args['dev-root']);
+    const dev = report.arms.dev = { identity: { root, commit: execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), status: execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }) }, scripts: [], loss: 'Dev serves source text with dead guarded hook code; text exclusion is not claimed.' };
+    const terminal = JSON.parse(execFileSync('hc', ['get', args['dev-terminal']], { encoding: 'utf8' }));
+    dev.identity.terminal = terminal;
+    identity(dev.identity.commit === args.commit && !dev.identity.status, 'dev worktree is not clean at expected commit');
+    identity(terminal.state === 'live' && path.resolve(terminal.cwd) === root && terminal.argv.some((value, i) => value === root && /(?:^|\/)vite$/.test(terminal.argv[i - 1] ?? '')), 'dev terminal does not launch Vite with the expected explicit root');
+    identity(terminal.argv[terminal.argv.indexOf('--port') + 1] === new URL(args['dev-url']).port && terminal.argv.includes('--strictPort'), 'dev URL does not match the supervised strict port');
+    dev.identity.mode = terminal.argv.includes('--mode') ? terminal.argv[terminal.argv.indexOf('--mode') + 1] : 'development';
+    identity(dev.identity.mode === (args['dev-mode'] ?? 'development'), 'dev mode differs from the requested control');
+    await arm(browser, 'production', args['prod-url'], production);
+    await arm(browser, 'benchmark', args['bench-url'], benchmark);
+    await arm(browser, 'dev', args['dev-url'], null);
+    const b = report.arms.benchmark, p = report.arms.production;
+    assert.deepEqual(b.paint, p.paint, 'benchmark hook perturbs the drawn positions');
+    for (const key of ['initialDom', 'initialDisk', 'finalDom', 'finalDisk']) assert.deepEqual(b[key], p[key], `benchmark changes ${key}`);
+    assert.deepEqual(await readFile(path.join(out, 'benchmark-settled.png')), await readFile(path.join(out, 'production-settled.png')), 'settled canvas screenshots differ');
     report.result = 'PASS';
+    console.log('PASS C-15d P/B/D');
 } catch (error) {
     report.result = 'FAIL'; report.error = error.stack;
-    process.exitCode = 1;
+    report.reason = error.reason ?? 'setup';
+    console.log(error.reason ? error.message.split('\n')[0] : `FAIL setup ${error.message.split('\n')[0]}`);
+    process.exitCode = ['P-anchor', 'hand-count'].includes(error.reason) ? 1 : 2;
 } finally {
     await browser?.close();
     await writeFile(path.join(out, 'report.json'), JSON.stringify(report, null, 2) + '\n');
-    console.log(JSON.stringify(report, null, 2));
+    console.log(`Report: ${path.join(out, 'report.json')}`);
 }

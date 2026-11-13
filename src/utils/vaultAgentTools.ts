@@ -297,13 +297,13 @@ function assertDecodedText(path: string, text: string): void {
     }
 }
 
-/** Text files the agent may edit as text: not a PDF/image/binary, and not a
- *  drawing or notebook (JSON on disk, but edited through canvas_apply so the
- *  open canvas and its undo history stay the source of truth). */
 function assertSupportedCanvasFormat(path: string): void {
     if (isNativeDrawingFile(path)) throw new ToolError(`"${path}" is a native .drawing whiteboard; this build cannot read or change it with text or canvas tools.`);
 }
 
+/** Text files the agent may edit as text: not a PDF/image/binary, and not a
+ *  drawing or notebook (JSON on disk, but edited through canvas_apply so the
+ *  open canvas and its undo history stay the source of truth). */
 function assertEditableText(path: string): void {
     assertSupportedCanvasFormat(path);
     const name = baseName(path);

@@ -77,6 +77,12 @@ try {
       await stream.write(content);
       await stream.close();
     }
+    const trash = await vault.getDirectoryHandle('.Garbage', { create: true });
+    for (const [name, content] of [['trashed.drawing', native], ['trashed.tldraw', old]]) {
+      const stream = await (await trash.getFileHandle(name, { create: true })).createWritable();
+      await stream.write(content);
+      await stream.close();
+    }
   }, { native, old });
   await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
   const board = page.locator('.tree-item').filter({ hasText: /^board\.drawing$/ });
@@ -141,6 +147,17 @@ try {
     return { mounted: true, shapes: await page.locator('.tl-shape').count() };
   });
   await page.screenshot({ path: resolve(out, 'legacy.png') });
+  await page.getByRole('button', { name: 'Trash', exact: true }).click();
+  await check('trash-drawing-icons', async () => {
+    const trash = page.getByRole('dialog', { name: 'Trash', exact: true });
+    const nativeRow = trash.locator('.trash-row').filter({ hasText: 'trashed.drawing' });
+    const legacyRow = trash.locator('.trash-row').filter({ hasText: 'trashed.tldraw' });
+    await nativeRow.waitFor();
+    const icon = await nativeRow.locator('.tree-item-icon > svg').innerHTML();
+    assert.equal(icon, await legacyRow.locator('.tree-item-icon > svg').innerHTML());
+    assert.equal(icon, report.checks['drawing-icon'].svg, 'Trash must use the drawing type icon, not the text icon');
+  });
+  await page.screenshot({ path: resolve(out, 'trash.png') });
   await check('no-page-errors', () => assert.deepEqual(report.pageErrors, []));
 } catch (error) {
   report.failures.push(`harness: ${error.stack}`);

@@ -1,6 +1,6 @@
 import type { NotebookPaper } from '../../utils/paper';
 import type { NodeId, ParentId, SheetId } from './ids';
-import type { JsonObject } from './json';
+import type { ExtBag, RawJson } from './json';
 import type { MediaEntry, MediaId, MediaTable } from './media';
 import { createNode, type Node, type NodeRecord, type NodeTable } from './nodes';
 import { compareOrder, type OrderKey } from './orderKey';
@@ -12,6 +12,7 @@ export interface Sheet {
     readonly id: SheetId;
     readonly name: string;
     readonly order: OrderKey;
+    readonly ext: ExtBag | null;
 }
 export type SheetTable = ReadonlyMap<SheetId, Sheet>;
 
@@ -21,15 +22,21 @@ export interface ViewFlags {
     readonly toolLock: boolean;
     readonly transparent: boolean;
     readonly debugMode: boolean;
+    readonly ext: ExtBag | null;
 }
 
 // R-W5 (contracts C2.2 v4.5): the PDF writer owns this opaque bookkeeping.
 export type HostBlock =
     | { readonly kind: 'whiteboard' }
-    | { readonly kind: 'notebook'; readonly paper: Readonly<NotebookPaper> }
-    | { readonly kind: 'pdf-ink'; readonly pdf: JsonObject; readonly pages: readonly (readonly [number, number])[] };
+    | { readonly kind: 'notebook'; readonly paper: Readonly<NotebookPaper>; readonly ext: ExtBag | null }
+    | { readonly kind: 'pdf-ink'; readonly pdf: RawJson; readonly pages: readonly (readonly [number, number])[]; readonly ext: ExtBag | null };
 
-export type PreservedBlock = JsonObject;
+// R-W17: unknown header fields and whole records retain their source lexemes.
+export interface PreservedBlock {
+    readonly version: readonly [number, number];
+    readonly fields: ReadonlyMap<string, RawJson>;
+    readonly records: readonly { readonly type: string; readonly id: string; readonly raw: RawJson }[];
+}
 
 // Consumers read the live tables by reference (M-10). Only the model's apply path
 // writes them; readonly reaches nested values so a scene cannot mutate an attachment.
@@ -43,6 +50,7 @@ export interface BoardDoc {
     readonly attachedTo: ReadonlyMap<NodeId, ReadonlySet<NodeId>>;
     readonly bySheet: ReadonlyMap<SheetId, ReadonlySet<NodeId>>;
     readonly byPage: ReadonlyMap<number, ReadonlySet<NodeId>>; // Paged root nodes only; all sheets.
+    readonly mediaRefs: ReadonlyMap<MediaId, ReadonlySet<NodeId>>;
     readonly ui: UiBlock;
     readonly view: ViewFlags;
     readonly host: HostBlock;
@@ -116,12 +124,13 @@ export function createBoardDoc(input: BoardDocInput): BoardDoc {
     const attachedTo = new Map<NodeId, Set<NodeId>>();
     const bySheet = new Map<SheetId, Set<NodeId>>();
     const byPage = new Map<number, Set<NodeId>>();
+    const mediaRefs = new Map<MediaId, Set<NodeId>>();
     const doc: BoardDoc = {
-        kind: input.kind, sheets, nodes, media, sheetOrder, children, attachedTo, bySheet, byPage,
+        kind: input.kind, sheets, nodes, media, sheetOrder, children, attachedTo, bySheet, byPage, mediaRefs,
         ui: input.ui, view: input.view, host: input.host, preserved: input.preserved, rev: 0,
     };
     for (const record of input.sheets) {
-        const sheet = { id: record.id, name: record.name, order: record.order };
+        const sheet = { id: record.id, name: record.name, order: record.order, ext: record.ext };
         sheets.set(sheet.id, sheet);
         sheetOrder.push(sheet);
     }
@@ -143,6 +152,11 @@ export function createBoardDoc(input: BoardDocInput): BoardDoc {
         if (node.kind === 'connector') {
             if (node.start.attach) addMember(attachedTo, node.start.attach.target, node.id);
             if (node.end.attach) addMember(attachedTo, node.end.attach.target, node.id);
+        }
+        if ((node.kind === 'picture' || node.kind === 'clip') && node.media) addMember(mediaRefs, node.media, node.id);
+        if (node.kind === 'linkcard' && node.preview) {
+            if (node.preview.image) addMember(mediaRefs, node.preview.image, node.id);
+            if (node.preview.favicon) addMember(mediaRefs, node.preview.favicon, node.id);
         }
     }
     for (const entry of input.media ?? []) media.set(entry.id, entry);

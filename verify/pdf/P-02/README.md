@@ -36,7 +36,8 @@ app module is imported by a run. Build/serve/static/browser commands take the ru
    A genuinely blank page still requires that live completed-paint witness. Authored CCITT and
    local JPX masks have independent black/white landmarks, not just an ink count. Every served
    body is awaited and checked against the expected artifact, including `.mjs` workers and
-   `.wasm`; a missing/mismatched body fails closed. The run requires the app entry and native
+   `.wasm`; functional runs bind `route.fetch()` bytes and fulfill that response unchanged
+   (not CDP's potentially re-encoded body). A missing/mismatched body fails closed. The run requires the app entry and native
    worker bodies, fixture/oracle hashes, all named arms, and a positive PDF-asset fetch control.
 
 `local` is a separate, explicitly named arm: it additionally requires the three SHA-checked
@@ -50,7 +51,10 @@ not committed or admitted as a reproducible GEN-09 replacement. Generated record
 X-ORIGIN means zero **additional** off-origin attempts beyond the independently recorded
 Markdown baseline, as verification.md defines it. The baseline is itself constrained to the
 existing optional Google Fonts hosts; all off-origin requests are aborted. A new PDF CDN request
-cannot join that allow-list. A Markdown-only vault must fetch zero PDF chunks/assets.
+cannot join that allow-list. A Markdown-only vault must fetch zero PDF chunks/assets; the entry
+bodies are also checked for pinned renderer markers, so merging unnamed PDF code into an entry
+chunk cannot hide behind a non-PDF filename. The matrix pins its verifier SHA and refuses mixed
+script versions across cases.
 
 ## The mutant must actually lose
 

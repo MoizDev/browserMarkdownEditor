@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
+import { fileURLToPath } from 'node:url';
 
 const [url, fixtureDir, outDir, identityFile, mode] = process.argv.slice(2);
 if (process.argv.length !== 7 || !url || !fixtureDir || !outDir || !identityFile || !['generated', 'local'].includes(mode)) throw new Error('Usage: node view-codecs.mjs <built-app-url> <generated-fixture-dir> <result-dir> <artifact-identity.json> <generated|local>');
@@ -44,7 +45,7 @@ await mkdir(outDir, { recursive: true });
 const sha = data => createHash('sha256').update(data).digest('hex');
 const report = {
     gate: 'P-02a assets/View slice', build: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-    sourceDiff: sha(execFileSync('git', ['diff', 'HEAD'])), driver: pin.driver, browser: null, url,
+    sourceDiff: sha(execFileSync('git', ['diff', 'HEAD'])), verifierSha256: sha(await readFile(fileURLToPath(import.meta.url))), driver: pin.driver, browser: null, url,
     mode, theme, dpr, applicationIdentity: { commit: identity.commit, mutant: identity.mutant, sha256: sha(await readFile(identityFile)) }, cases: [], notCovered: [
         'Annotate/thumbnail/closed-file agent surfaces (seam/integration follow-up)',
         'Independent local JBIG2 reference crops and CJK glyph-outline oracle; ink alone is not full fidelity',
@@ -59,21 +60,35 @@ async function session() {
     const page = await context.newPage();
     const network = [], responses = [], pending = [], consoleMessages = [], errors = [];
     page.on('request', r => network.push(r.url()));
-    page.on('response', r => {
-        if (new URL(r.url()).origin !== origin.origin) return;
-        pending.push(r.body().then(body => {
-            const path = decodeURIComponent(new URL(r.url()).pathname.slice(origin.pathname.length)) || 'index.html';
-            const expected = identity.files[path];
-            const actual = { url: r.url(), file: path, status: r.status(), sha256: sha(body), bytes: body.length, contentType: r.headers()['content-type'] };
-            actual.matchesExpected = !!expected && expected.sha256 === actual.sha256 && expected.bytes === actual.bytes && actual.status === 200;
-            responses.push(actual);
-        }).catch(error => responses.push({ url: r.url(), error: String(error), matchesExpected: false })));
-    });
     page.on('console', m => consoleMessages.push({ type: m.type(), text: m.text() }));
     page.on('pageerror', e => errors.push(String(e)));
     // The run is offline apart from its own static origin. Attempted off-origin
     // traffic is still counted, never hidden by the abort.
-    await context.route('**/*', route => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
+    await context.route('**/*', route => {
+        const requested = route.request().url();
+        if (new URL(requested).origin !== origin.origin) return route.abort();
+        // Functional-only raw-byte binding (vr-lead ruling): route.fetch's
+        // bytes are bound, then the identical response is fulfilled unchanged.
+        // CDP response.body can re-encode some initiators' binary bodies.
+        const binding = (async () => {
+            try {
+                const response = await route.fetch();
+                const body = await response.body();
+                const path = decodeURIComponent(new URL(requested).pathname.slice(origin.pathname.length)) || 'index.html';
+                const expected = identity.files[path];
+                const actual = { url: requested, file: path, status: response.status(), sha256: sha(body), bytes: body.length, contentType: response.headers()['content-type'] };
+                actual.pdfRendererMarkers = /\.(?:js|mjs)$/.test(path) ? ['wasmUrl', 'standardFontDataUrl', 'Setting up fake worker'].filter(marker => body.includes(Buffer.from(marker))) : [];
+                actual.matchesExpected = !!expected && expected.sha256 === actual.sha256 && expected.bytes === actual.bytes && actual.status === 200;
+                responses.push(actual);
+                await route.fulfill({ response });
+            } catch (error) {
+                responses.push({ url: requested, error: String(error), matchesExpected: false });
+                await route.abort().catch(() => {});
+            }
+        })();
+        pending.push(binding);
+        return binding;
+    });
     await page.addInitScript(({ theme }) => {
         localStorage.setItem('theme', theme);
         window.__codecAction = 'not-opened';
@@ -148,7 +163,7 @@ try {
     await collect(baseline, false);
     const baselineOffOrigin = baseline.network.filter(u => new URL(u).origin !== origin.origin);
     if (baselineOffOrigin.some(u => !u.startsWith('https://fonts.googleapis.com/') && !u.startsWith('https://fonts.gstatic.com/'))) throw new Error('Unapproved off-origin request in the baseline');
-    report.markdown = { network: baseline.network, responses: baseline.responses, errors: baseline.errors, pdfRequests: baseline.network.filter(pdfResource), baselineOffOrigin, waitedMs: 5000, executed: 1 };
+    report.markdown = { network: baseline.network, responses: baseline.responses, errors: baseline.errors, pdfRequests: [...new Set([...baseline.network.filter(pdfResource), ...baseline.responses.filter(r => r.pdfRendererMarkers?.length).map(r => r.url)])], baselineOffOrigin, waitedMs: 5000, executed: 1 };
     await baseline.page.screenshot({ path: resolve(outDir, 'markdown-baseline.png') });
     await baseline.context.close();
     for (const fixture of fixtures) {
@@ -162,6 +177,7 @@ try {
         await page.evaluate(action => { window.__codecAction = action; }, action);
         await page.locator('.tree-item').filter({ hasText: fixture.file }).first().click();
         await page.waitForFunction(action => [...document.querySelectorAll('.pdf-viewer-page > canvas')].some(c => c.width > 0 && c.__codecAction === action && c.__lastBlit && performance.now() - c.__lastBlit > 500), action, { timeout: 20000 });
+        await collect(s, true);
         const pixels = await page.locator('.pdf-viewer-page > canvas').first().evaluate((c, expected) => {
             const rgba = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
             const dark = (x, y) => Math.min(...rgba.slice((y * c.width + x) * 4, (y * c.width + x) * 4 + 3)) < 128;
@@ -179,7 +195,6 @@ try {
         const messages = await page.evaluate(() => window.__codecMessages);
         const notices = await page.locator('[role="alert"], .pdf-pane-message').allTextContents();
         await page.screenshot({ path: resolve(outDir, `${fixture.file}.png`) });
-        await collect(s, true);
         const warnings = consoleMessages.filter(m => /decode|wasmUrl|OpenJPEG|jbig2|CMap/i.test(m.text));
         const additionalOffOrigin = network.filter(u => new URL(u).origin !== new URL(url).origin && !baselineOffOrigin.includes(u));
         const blank = fixture.expected.blank === true;

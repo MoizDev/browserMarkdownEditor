@@ -38,8 +38,12 @@ interval control. Playwright is asserted to be 1.63.0 and Chrome for Testing 157
 - P/B parity compares every vault file's bytes and the rendered editor DOM for both notes. Random
   `blob:` object-URL IDs are normalized; image dimensions and its backing bytes are independently
   checked. SVG/KaTeX/font readiness is witnessed, and screenshots are retained for visual review.
-- The outside saved-file witness has a ten-second deadline, at most three `NotReadableError`
-  retries and 30 ms yields. Every attempt/retry is reported. **App page errors are never retried.**
+- The outside saved-file witness first waits for the path's completed successful native closes
+  to reach the flow's target (seed closes count too; the target is captured before typing). This
+  awaited loop has a ten-second deadline and 30 ms yields; a missing close is a harness fault.
+  Only after that boundary does it read the bytes once, with at most three counted `NotReadableError`
+  retries. A byte mismatch is never polled away; **NotFoundError and app page errors are never retried**.
+  Probe errors, close polls, completed counts and every read/retry are retained in the report.
 - Mutant (a), `unguarded-widget.patch`: moves one constructor count outside the guard. The **same
   invocation** must fail with `FAIL P-anchor ...`. Without it, shipped instrumentation could pass.
 - Mutant (b), `mode-uncounted.patch`: rebuilds but omits the mode increment. The **same invocation**

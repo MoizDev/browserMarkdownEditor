@@ -65,6 +65,26 @@ async function runArm(browser, arm, identity, reportDir) {
             get: () => perf,
             set: value => { window.__c15HookRootWrites++; perf = value; },
         });
+        const writes = window.__c15WriteProbe = { completed: {}, errors: [], witnesses: {} };
+        const createWritable = FileSystemFileHandle.prototype.createWritable;
+        let storageRoot;
+        FileSystemFileHandle.prototype.createWritable = async function (...args) {
+            let path;
+            try {
+                storageRoot ??= navigator.storage.getDirectory();
+                path = (await (await storageRoot).resolve(this))?.join('/');
+                if (!path) writes.errors.push('A writable handle had no OPFS path');
+            } catch (error) { writes.errors.push(String(error)); }
+            const stream = await createWritable.apply(this, args);
+            const close = stream.close.bind(stream);
+            stream.close = async (...closeArgs) => {
+                const result = await close(...closeArgs);
+                // Count only a successful native close, after its atomic swap.
+                if (path) writes.completed[path] = (writes.completed[path] || 0) + 1;
+                return result;
+            };
+            return stream;
+        };
         const grant = handle => {
             handle.queryPermission = async () => 'granted';
             handle.requestPermission = async () => 'granted';
@@ -118,6 +138,9 @@ async function runArm(browser, arm, identity, reportDir) {
                 assert.deepEqual(reset.l3Ms.samples, []);
                 phase = 'render';
             }
+            const closeTarget = await page.evaluate(path => ({
+                path, count: (window.__c15WriteProbe.completed[path] || 0) + 1,
+            }), `counter-vault/${name}.md`);
             for (const character of typed) await page.keyboard.press(character);
             assert.ok((await content.innerText()).endsWith('Last line.' + typed), 'real key presses must append exactly N characters at the document end');
             await page.keyboard.press('Meta+e');
@@ -149,34 +172,49 @@ async function runArm(browser, arm, identity, reportDir) {
                 phase = 'render';
             } else result.fixtures[name] = {};
             await page.keyboard.press('Meta+s');
-            const saveWitness = await page.evaluate(async ({ name, expected }) => {
-                const witness = { attempts: 0, notReadableRetries: 0, passed: false, error: null };
+            const saveWitness = await page.evaluate(async ({ name, expected, closeTarget }) => {
+                const probe = window.__c15WriteProbe;
+                const witness = probe.witnesses[name] = { path: closeTarget.path,
+                    expectedCloses: closeTarget.count, completedCloses: 0, closePolls: 0,
+                    readAttempts: 0, notReadableRetries: 0, passed: false, harnessFault: null, actual: null };
                 const deadline = performance.now() + 10000;
-                while (performance.now() < deadline) {
-                    witness.attempts++;
-                    try {
-                        const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('counter-vault');
-                        if (await (await (await dir.getFileHandle(name + '.md')).getFile()).text() === expected) {
-                            witness.passed = true;
-                            return witness;
-                        }
-                    } catch (error) {
-                        // Only the outside witness retries a raced File snapshot.
-                        // App pageerrors are captured separately and always fail.
-                        if (error.name !== 'NotReadableError') throw error;
-                        witness.notReadableRetries++;
-                        if (witness.notReadableRetries > 3) {
-                            witness.error = 'Outside save witness exhausted its three NotReadableError retries';
-                            return witness;
-                        }
+                // Mirror readWitness's completed-close precondition: do not
+                // inspect a directory entry while close() is swapping it.
+                while ((probe.completed[closeTarget.path] || 0) < closeTarget.count) {
+                    witness.closePolls++;
+                    if (performance.now() >= deadline || probe.errors.length) {
+                        witness.harnessFault = 'completed-close-timeout-or-probe-error';
+                        return witness;
                     }
                     await new Promise(resolve => setTimeout(resolve, 30));
                 }
-                witness.error = 'Saved source did not match within 10 seconds';
-                return witness;
-            }, { name, expected: original + typed });
+                witness.completedCloses = probe.completed[closeTarget.path];
+                if (probe.errors.length) {
+                    witness.harnessFault = 'write-probe-error';
+                    return witness;
+                }
+                for (;;) {
+                    witness.readAttempts++;
+                    try {
+                        const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('counter-vault');
+                        witness.actual = await (await (await dir.getFileHandle(name + '.md')).getFile()).text();
+                        witness.passed = witness.actual === expected;
+                        return witness; // A byte mismatch is not polled away.
+                    } catch (error) {
+                        // Never retry NotFoundError, or any error from the app.
+                        if (error.name !== 'NotReadableError') throw error;
+                        if (witness.notReadableRetries === 3) {
+                            witness.harnessFault = 'not-readable-retry-budget';
+                            return witness;
+                        }
+                        witness.notReadableRetries++;
+                        await new Promise(resolve => setTimeout(resolve, 30));
+                    }
+                }
+            }, { name, expected: original + typed, closeTarget });
             result.fixtures[name].saveWitness = saveWitness;
-            assert.equal(saveWitness.passed, true, saveWitness.error || 'saved source must match');
+            if (saveWitness.harnessFault) throw Object.assign(new Error(saveWitness.harnessFault), { invalidExecution: true });
+            assert.equal(saveWitness.passed, true, 'saved source must match after the successful close');
             await page.keyboard.press('Meta+e');
             await page.waitForFunction(() => document.querySelector('.cm-content')?.getAttribute('contenteditable') === 'false');
             if (name === 'Mixed') {
@@ -191,6 +229,8 @@ async function runArm(browser, arm, identity, reportDir) {
             await page.screenshot({ path: join(reportDir, `${kind}-${name}.png`), animations: 'disabled', caret: 'hide' });
         }
         result.files = await files(page);
+        result.writeProbe = await page.evaluate(() => window.__c15WriteProbe);
+        result.pageErrors = errors;
         assert.deepEqual(errors, [], 'the real app must raise no page errors');
         result.observation = await observation.finish();
         result.hookProbe = await page.evaluate(() => ({
@@ -208,6 +248,8 @@ async function runArm(browser, arm, identity, reportDir) {
         // Every user-visible/hand-count assertion is a product failure. Only
         // explicitly tagged byte-identity/transport failures remain INVALID.
         result.observation = observation.snapshot();
+        result.writeProbe = await page.evaluate(() => window.__c15WriteProbe).catch(() => null);
+        result.pageErrors = errors;
         if (result.observation.errors.length) error.invalidExecution = true;
         if (!error.gateReason && !error.invalidExecution) {
             error.gateReason = `FAIL ${phase === 'hand-count' ? 'hand-count' : kind + '-render'} ${error.message}`;
@@ -269,6 +311,7 @@ try {
         identities: report.identities.map(identity => ({ ...identity, files: Object.keys(identity.files).length, sources: Object.keys(identity.sources || {}).length })),
         arms: report.arms.map(arm => ({
             url: arm.url, kind: arm.kind, hookProbe: arm.hookProbe,
+            pageErrors: arm.pageErrors, writeProbe: arm.writeProbe,
             scripts: arm.observation?.scripts.length, supplemental: arm.observation?.supplemental.length,
             sourceTextLoss: arm.observation?.sourceTextLoss,
             fixtures: Object.fromEntries(Object.entries(arm.fixtures).map(([name, value]) => [name, { counters: value.counters, saveWitness: value.saveWitness }])),

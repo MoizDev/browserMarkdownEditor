@@ -79,8 +79,14 @@ async function runArm(browser, arm, identity, reportDir) {
     const result = { url, kind, identity, fixtures: {} };
     let phase = 'render';
     try {
-        await page.goto(url);
-        await seed(page);
+        try {
+            const navigation = await page.goto(url);
+            assert.ok(navigation?.ok(), `app origin must be reachable: ${url}`);
+            await seed(page);
+        } catch (error) {
+            error.invalidExecution = true;
+            throw error;
+        }
         await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
         for (const [name, original] of [['Plain', plain], ['Mixed', mixed]]) {
             await page.locator('.tree-item').filter({ hasText: new RegExp(`^${name}$`) }).click();
@@ -201,10 +207,11 @@ async function runArm(browser, arm, identity, reportDir) {
     } catch (error) {
         // Every user-visible/hand-count assertion is a product failure. Only
         // explicitly tagged byte-identity/transport failures remain INVALID.
+        result.observation = observation.snapshot();
+        if (result.observation.errors.length) error.invalidExecution = true;
         if (!error.gateReason && !error.invalidExecution) {
             error.gateReason = `FAIL ${phase === 'hand-count' ? 'hand-count' : kind + '-render'} ${error.message}`;
         }
-        result.observation = observation.snapshot();
         result.failure = await page.evaluate(() => ({
             text: document.body.innerText,
             focus: document.activeElement ? {
@@ -250,10 +257,10 @@ try {
     report.passed = false;
     if (error.arm) report.arms.push(error.arm);
     report.error = error.stack;
-    report.reason = error.gateReason || `INVALID ${error.message}`;
+    report.reason = !error.invalidExecution && error.gateReason ? error.gateReason : `INVALID ${error.message}`;
     report.actual = error.actual;
     report.expected = error.expected;
-    process.exitCode = error.gateReason ? 1 : 2;
+    process.exitCode = !error.invalidExecution && error.gateReason ? 1 : 2;
     console.log(report.reason);
 } finally {
     await browser?.close();

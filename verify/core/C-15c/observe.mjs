@@ -86,9 +86,16 @@ export function observe(context, arm, identity) {
                 // Supplemental bytes still come through this browser context
                 // from this preview; Node supplied paths, never asserted content.
                 for (const path of Object.keys(identity.files).filter(path => /\.(?:m?js)$/.test(path) && !fetched.has(path))) {
-                    const response = await context.request.get(new URL(path, arm.url).href);
+                    const response = await context.request.get(new URL(path, arm.url).href).catch(error => {
+                        error.invalidExecution = true;
+                        throw error;
+                    });
                     if (!response.ok()) throw Object.assign(new Error(`Supplemental script fetch failed: ${path}`), { invalidExecution: true });
-                    record(response.url(), await response.body(), supplemental, 'supplemental-context-fetch');
+                    const body = await response.body().catch(error => {
+                        error.invalidExecution = true;
+                        throw error;
+                    });
+                    record(response.url(), body, supplemental, 'supplemental-context-fetch');
                 }
             }
             const result = { scripts, supplemental, sourceTextLoss: arm.kind === 'D' ? 'dev source text carries dead guarded code; absence is behavioural, not a text claim' : null };

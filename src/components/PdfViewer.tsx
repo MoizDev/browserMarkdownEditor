@@ -17,6 +17,7 @@ import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { LEFT, RIGHT } from '../utils/pdfRotation';
 import { isPdfRotating, subscribePdfRotating } from '../utils/pdfRotating';
 import { mapPool } from '../utils/pool';
+import { bindPdfTextLayerSelection } from '../utils/pdfTextLayerSelection';
 import { RotateCcw, RotateCw } from './icons';
 
 /**
@@ -1464,6 +1465,11 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, [isActive, nudgeZoom, rotate]);
+
+    useEffect(() => {
+        const root = rootRef.current;
+        return root ? bindPdfTextLayerSelection(root) : undefined;
+    }, []);
 
     // A drag that starts on the page is a text selection, and must be able to
     // sweep straight across a link instead of stopping dead at its edge. Links

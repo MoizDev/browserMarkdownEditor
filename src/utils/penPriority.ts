@@ -1,7 +1,7 @@
 // Today's canvas engine admits a pinch mid-pen and never finishes the stroke
 // (W-00: WB/NB omit it on disk; PDF saves it incomplete, then joins the next pen).
-// Install before rendering: a capture listener added by a lazy canvas chunk is
-// already too late to run ahead of the library's window listeners.
+// Install before rendering so the permanent pointer gate precedes the library's
+// window listeners, including when the canvas arrives through a lazy chunk.
 let installed = false;
 
 export function installPenPriority(): void {
@@ -13,6 +13,9 @@ export function installPenPriority(): void {
     // must be stopped; neither id can be used to stand in for the other.
     const stoppedPointers = new Set<number>();
     const stoppedTouches = new Set<number>();
+    const touchTypes = ['touchstart', 'touchmove', 'touchend', 'touchcancel'] as const;
+    const touchOptions = { capture: true, passive: false } as const;
+    let touchListening = false;
     const insideLegacyBoard = (target: EventTarget | null): boolean =>
         target instanceof Element && target.closest('[data-legacy-board]') !== null;
     const stop = (event: Event): void => {
@@ -25,9 +28,11 @@ export function installPenPriority(): void {
         if (event.pointerType === 'pen') {
             if (event.type === 'pointerdown' && insideLegacyBoard(event.target)) {
                 pens.add(event.pointerId);
+                syncTouchListeners();
             } else if (event.type === 'pointerup' || event.type === 'pointercancel') {
                 // Release wherever it lands, even after leaving the pane.
                 pens.delete(event.pointerId);
+                syncTouchListeners();
             }
             return;
         }
@@ -58,14 +63,23 @@ export function installPenPriority(): void {
         // Never clear at pen-up: a palm that started under the pen remains a
         // rejected contact until its own end, not a fresh gesture after pen-up.
         if (stopped) stop(event);
+        syncTouchListeners();
     };
+
+    function syncTouchListeners(): void {
+        const needed = pens.size > 0 || stoppedTouches.size > 0;
+        if (needed === touchListening) return;
+        touchListening = needed;
+        // Chrome waits on non-passive window touch listeners even when they
+        // return immediately. Do not make a Markdown scroll wait for this pen
+        // guard; keep it armed only until the last rejected touch ends.
+        for (const type of touchTypes) {
+            if (needed) window.addEventListener(type, onTouch, touchOptions);
+            else window.removeEventListener(type, onTouch, touchOptions);
+        }
+    }
 
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel'] as const) {
         window.addEventListener(type, onPointer, { capture: true, passive: false });
-    }
-    for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel'] as const) {
-        // Window touch listeners default to passive in Chrome; an implicit
-        // passive listener cannot prevent the pinch's browser/default path.
-        window.addEventListener(type, onTouch, { capture: true, passive: false });
     }
 }

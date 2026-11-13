@@ -1,4 +1,5 @@
 import type { WidthModel } from '../model/nodes';
+import type { InkCoverage } from './outline';
 import type { CurveGeometry } from './curve';
 import { CurveFlag } from './curve';
 
@@ -45,6 +46,18 @@ export type VisibleInkChunk = Readonly<{
     // the original cubic's t, using arc length. Linear interpolation in t is NOT substituted here.
     radiusAt?: (span: number, t: number) => number;
 }>;
+// Width/outline own these channels. The renderer receives their very same geometry and arc-length
+// radius evaluator, not a separately fitted stroke or a placeholder mouse-pressure profile.
+export function visibleInkCoverageChunk(key: string, coverage: InkCoverage, sourcePackingErrorWorld: number): VisibleInkChunk {
+    const geometry = coverage.geometry, discs = new Float64Array(coverage.discs.length);
+    for (let i = 0; i < discs.length; i += 3) {
+        discs[i] = coverage.discs[i] - geometry.originX;
+        discs[i + 1] = coverage.discs[i + 1] - geometry.originY;
+        discs[i + 2] = coverage.discs[i + 2];
+    }
+    return Object.freeze({ key, geometry, radii: coverage.radii, discs, sourcePackingErrorWorld, radiusAt: coverage.radiusAt });
+}
+
 type PackedChunk = InkRenderPacket['chunks'][number];
 type Bounds = { x: number; y: number; w: number; h: number; };
 

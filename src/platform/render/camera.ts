@@ -343,9 +343,16 @@ export class CameraController {
         this.panBy(delta);
     }
 
-    zoomTo(z: number, anchor: Point = { x: this.viewportValue.width / 2, y: this.viewportValue.height / 2 }): void {
+    /** Animations must clamp BEFORE deriving the fixed-anchor origin, not clamp z afterward (C1.2:154–158). */
+    clampZoom(z: number): number {
         if (!positive(z)) throw new RangeError('Camera zoom must be finite and positive');
-        const clampedZ = this.constraint.clampZoom(z, this.viewportValue);
+        const clamped = this.constraint.clampZoom(z, this.viewportValue);
+        if (!positive(clamped)) throw new RangeError('Camera constraint returned an invalid zoom');
+        return clamped;
+    }
+
+    zoomTo(z: number, anchor: Point = { x: this.viewportValue.width / 2, y: this.viewportValue.height / 2 }): void {
+        const clampedZ = this.clampZoom(z);
         this.setCamera(cameraAtAnchor(surfaceToWorld(anchor, this.cameraValue), anchor, clampedZ));
     }
 

@@ -1,3 +1,4 @@
+import type { WidthModel } from '../model/nodes'
 import type { CurveGeometry } from './curve'
 import { CurveFlag } from './curve'
 
@@ -23,7 +24,7 @@ export type InkRenderPacket = Readonly<{
 
 export const INK_PACKING_ERROR_DEVICE_PX = 1 / 16
 export const INK_MAX_PACKED_CHUNKS = 65536
-export type InkWidthModel = Readonly<{ id: 'uniform' }> | Readonly<{ id: 'pressure-linear-v1'; rMin: number; rMax: number }>
+export type InkWidthModel = WidthModel
 export type InkPacketIdentity = Readonly<{
   geometryKey: string; nodeId: string; nodeRevision: number; gestureSequence: number
   phase: InkRenderPacket['phase']
@@ -197,7 +198,8 @@ export function createInkRenderPacket(identity: InkPacketIdentity, visibleChunks
     checkRadius(model.rMin); checkRadius(model.rMax)
     if (model.rMax < model.rMin) throw new RangeError('Ink pressure radius gain cannot be negative')
   }
-  const scale = identity.declaredDeviceScale * maxSingularScale(m)
+  const singularScale = maxSingularScale(m)
+  const scale = identity.declaredDeviceScale * singularScale
   if (!Number.isFinite(scale)) throw new RangeError('Ink transform scale overflows')
   const budget = scale === 0 ? Infinity : INK_PACKING_ERROR_DEVICE_PX / scale
   const chunks: PackedChunk[] = []
@@ -207,10 +209,17 @@ export function createInkRenderPacket(identity: InkPacketIdentity, visibleChunks
     if (chunks.length > INK_MAX_PACKED_CHUNKS) throw new RangeError('Too many visible ink packing chunks')
   }
   for (const chunk of chunks) bounds = union(bounds, transformBounds(chunk.boundsLocal, m))
+  // Error was certified in stroke-local units. The packet advertises WORLD error even during a
+  // non-rigid preview; the largest singular scale is conservative for every displacement direction.
+  const worldChunks = chunks.map(chunk => {
+    const packingErrorWorld = chunk.packingErrorWorld * singularScale
+    if (!Number.isFinite(packingErrorWorld)) throw new RangeError('Ink world packing error overflows')
+    return Object.freeze({ ...chunk, packingErrorWorld })
+  })
   // Copy the tuple as well: a caller changing a preview matrix cannot mutate an earlier generation.
   const localToWorld = Object.freeze([...m]) as InkRenderPacket['localToWorld']
   return Object.freeze({ geometryKey: identity.geometryKey, nodeId: identity.nodeId, nodeRevision: identity.nodeRevision,
     gestureSequence: identity.gestureSequence, phase: identity.phase, localToWorld,
-    boundsWorld: Object.freeze(bounds ?? { x: m[4], y: m[5], w: 0, h: 0 }), chunks: Object.freeze(chunks),
+    boundsWorld: Object.freeze(bounds ?? { x: m[4], y: m[5], w: 0, h: 0 }), chunks: Object.freeze(worldChunks),
     widthModel: model.id, paintKey: identity.paintKey })
 }

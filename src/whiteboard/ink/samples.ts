@@ -1,3 +1,6 @@
+import type { SampleRef, SampleLease, SamplePressure, SampleChunk as ModelSampleChunk, SampleBlockView, SampleStoreReader } from '../model/samples'
+export type { SampleRef, SampleLease, SamplePressure, SampleBlockView, SampleStoreReader } from '../model/samples'
+
 // D-13, F-INK-006/007/010; architecture/ink.md §2.1. No event/time/device data enters this store.
 export const SAMPLE_CHUNK_CAPACITY = 4096
 export const PRESSURE_QUANTUM = 1 / 65535
@@ -5,33 +8,11 @@ export const MAX_PRESSURE = 16
 export const SAMPLE_POSITION_ERROR_DEVICE_PX = 0.01
 
 export type SegmentKind = 'freehand' | 'straight'
-export type SampleRef = number
-export type SampleLease = Readonly<{ ref: SampleRef; release(): void }>
-export type PressureChannel =
-  | Readonly<{ kind: 'none' }>
-  | Readonly<{ kind: 'constant'; value: number }>
-  | Readonly<{ kind: 'u16'; values: Uint16Array }>
-  | Readonly<{ kind: 'u32'; values: Uint32Array }>
+export type PressureChannel = SamplePressure
 
 // Arrays are immutable by ownership: only the private builder writes, and seal transfers ownership.
 // read() returns offsets into these very arrays, never newly allocated subarray views.
-export type SampleChunk = Readonly<{
-  first: number; count: number
-  originX: number; originY: number
-  positions: Float32Array | Float64Array
-  firstX: number; firstY: number; lastX: number; lastY: number
-  pressure: PressureChannel
-  runStarts: Uint16Array; runKinds: Uint8Array
-  positionErrorWorld: number
-  byteLength: number
-}>
-export type SampleBlockView = Readonly<{ chunk: SampleChunk; offset: number; count: number }>
-export interface SampleStoreReader {
-  has(ref: SampleRef): boolean
-  count(ref: SampleRef): number
-  read(ref: SampleRef, first: number, count: number): SampleBlockView
-  retain(ref: SampleRef): SampleLease
-}
+export type SampleChunk = ModelSampleChunk & Readonly<{ positionErrorWorld: number; byteLength: number }>
 export interface SampleSequence {
   readonly count: number
   x(index: number): number
@@ -207,8 +188,8 @@ export class SampleBuilder implements SampleSequence {
   readonly options: SampleBuilderOptions
   constructor(options: SampleBuilderOptions) {
     this.options = Object.freeze({ ...options })
-    const scale = options.declaredMaxScale * (options.maxDpr ?? 3)
-    if (!Number.isFinite(scale) || scale <= 0) throw new RangeError('Ink needs a finite positive declared device scale')
+    const maxDpr = options.maxDpr ?? 3, scale = options.declaredMaxScale * maxDpr
+    if (!Number.isFinite(scale) || options.declaredMaxScale <= 0 || maxDpr <= 0) throw new RangeError('Ink needs a finite positive declared device scale')
     this.maxErrorWorld = SAMPLE_POSITION_ERROR_DEVICE_PX / scale
   }
   get count(): number { return this.length }

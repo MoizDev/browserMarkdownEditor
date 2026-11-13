@@ -43,7 +43,7 @@ export type CurvePublication = Readonly<{
 
 export function curveParameters(declaredMaxScale: number, fairingToleranceWorld?: number, maxDpr = 3): CurveParameters {
   const deviceScale = declaredMaxScale * maxDpr
-  if (!Number.isFinite(deviceScale) || deviceScale <= 0) throw new RangeError('Invalid declared ink scale')
+  if (!Number.isFinite(deviceScale) || declaredMaxScale <= 0 || maxDpr <= 0) throw new RangeError('Invalid declared ink scale')
   const limit = FAIRING_CONTROL_ERROR_DEVICE_PX / deviceScale
   const tolerance = fairingToleranceWorld ?? limit
   if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > limit) throw new RangeError('Saved fairing tolerance exceeds the v1 bound')
@@ -52,7 +52,7 @@ export function curveParameters(declaredMaxScale: number, fairingToleranceWorld?
 
 function validateParameters(p: CurveParameters): void {
   const scale = p.declaredMaxScale * p.maxDpr
-  if (p.version !== CURVE_VERSION || !Number.isFinite(scale) || scale <= 0
+  if (p.version !== CURVE_VERSION || !Number.isFinite(scale) || p.declaredMaxScale <= 0 || p.maxDpr <= 0
     || !Number.isFinite(p.fairingToleranceWorld) || p.fairingToleranceWorld < 0
     || p.fairingToleranceWorld > FAIRING_CONTROL_ERROR_DEVICE_PX / scale) throw new RangeError('Invalid saved v1 ink curve parameters')
 }

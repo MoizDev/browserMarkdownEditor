@@ -227,7 +227,6 @@ interface Ctx {
 function makeCtx(host: VaultToolHost, run: { vaultToken: object | null; signal?: AbortSignal }): Ctx {
     const ensureLive = () => {
         if (!run.vaultToken || host.vaultToken() !== run.vaultToken) throw new ToolError(SWITCHED);
-        if (run.signal?.aborted) throw new ToolError('The user stopped this run; nothing was done.');
     };
     const path = (value: unknown) => {
         const r = checkPath(value);

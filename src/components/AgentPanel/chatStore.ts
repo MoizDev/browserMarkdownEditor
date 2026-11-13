@@ -1084,10 +1084,9 @@ class ChatStore {
         } catch (e) {
             result = { content: [{ type: 'text', text: `The editor failed to run ${call.name}: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
         }
-        // Stop waits for run.done: while that same run is still stopping, the helper may be
-        // awaiting this tool's honest cancelled/partial result. Only a closed/replaced run is stale.
-        if (this.state.run?.runId !== call.runId) return;
-        reply(result);
+        // A still-stopping helper may need the partial result. After run.done it does not, but
+        // the card must still record any change a mutating tool committed before the run closed.
+        if (this.state.run?.runId === call.runId) reply(result);
         const output = resultText(result);
         this.updateItems(key, items => items.map(item =>
             item.id === itemId && item.kind === 'tool'

@@ -53,6 +53,14 @@ await page.addInitScript(() => {
         paths.set(handle, childPath(this, name));
         return grant(handle);
     };
+    const entries = FileSystemDirectoryHandle.prototype.entries;
+    FileSystemDirectoryHandle.prototype.entries = async function* (...args) {
+        for await (const [name, handle] of entries.apply(this, args)) {
+            paths.set(handle, childPath(this, name));
+            if (handle.kind === 'directory') grant(handle);
+            yield [name, handle];
+        }
+    };
     const getFile = FileSystemDirectoryHandle.prototype.getFileHandle;
     FileSystemDirectoryHandle.prototype.getFileHandle = async function (name, ...args) {
         const handle = await getFile.call(this, name, ...args);

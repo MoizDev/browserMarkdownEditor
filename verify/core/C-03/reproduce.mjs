@@ -195,7 +195,8 @@ try {
     }
     await writeFile(join(artifacts, 'observation.json'), JSON.stringify({ ...identity, state, errors, scripts }, null, 2));
     assert.deepEqual(errors, []);
-    assert.equal(state.saved, '# removed\n');
+    // Heading input preserves its terminal blank line, as in the planning run.
+    assert.equal(state.saved, '# removed\n\n');
     assert.equal(state.neighbour, '# neighbour\n![[x.png]]\n');
     assert(state.witness.removed.some(event => event.path === 'A/.Assets/x.png'), 'The native source removal must actually complete');
     assert.equal(state.retired, true, 'The recoverable retired copy must exist');

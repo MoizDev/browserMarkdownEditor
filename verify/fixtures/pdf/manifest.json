@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "stream": "pdf",
+  "fixtures": [
+    {
+      "id": "GEN-P11-selection",
+      "file": "selection-page.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Entirely authored text and geometry; no external artwork or fonts. Licence act awaits the owner.",
+      "purpose": "Blank-margin anchoring and positioned line-break selection paint on a two-column page.",
+      "gates": ["P-11/R3a", "P-11/R3c"],
+      "sha256": "f3960c7cbb9881c25c4c36ae7ecb9d4dba0a07d9f413f88c44aed5cb78e32372",
+      "bytes": 2315,
+      "generator": "verify/fixtures/pdf/generators/selection-page.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 1,
+      "validity": "valid",
+      "expected": "selection-geometry.json"
+    },
+    {
+      "id": "GEN-P11-dense40",
+      "file": "dense-40-selection.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Entirely authored text and geometry; no external artwork or fonts. Licence act awaits the owner.",
+      "purpose": "Eager-layer select-all copies exactly forty pages and no app chrome.",
+      "gates": ["P-11/R3b"],
+      "sha256": "5807fa2c2b72e33f78d8f20ac9a855d3973010a7fb51fee45ccf24d8d9bd41de",
+      "bytes": 70056,
+      "generator": "verify/fixtures/pdf/generators/selection-page.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 40,
+      "validity": "valid",
+      "expected": "selection-geometry.json"
+    },
+    {
+      "id": "GEN-P11-oracle",
+      "file": "selection-geometry.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored coordinate and string oracle. Licence act awaits the owner.",
+      "purpose": "Fixture identities, page geometry, margin/native/multiline gesture points and expected copied strings.",
+      "gates": ["P-11/R3a", "P-11/R3b", "P-11/R3c"],
+      "sha256": "516d781358d5098dc598757e1ef6b454ffa28655e82e1b074861694f1e0c40c8",
+      "bytes": 3798,
+      "generator": "verify/fixtures/pdf/generators/selection-page.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": []
+    }
+  ]
+}

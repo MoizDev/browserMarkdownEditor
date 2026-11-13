@@ -15,8 +15,8 @@ export function perfRoot(): PerfRoot {
 }
 
 /**
- * One write or deletion the app itself started (contract C9, v4.3), so a run
- * can match every `createWritable` and `removeEntry` it observes to a
+ * One operation the app started, or the completion of its trash copy, so a run
+ * can match observed directory creation, `createWritable` and `removeEntry` to a
  * sanctioned caller (X-FUNNEL, X-NODESTROY).
  */
 export interface VaultReport {
@@ -45,7 +45,7 @@ export function perfVault(): PerfVault {
     return root.vault as PerfVault;
 }
 
-/** Before the first mutation (directory creation included); returns the opener's seq. */
+/** Publish an opening or trash-copy completion; return this record's seq for pairing. */
 export function reportVault(report: Omit<VaultReport, 'seq' | 't'>): number {
     const full: VaultReport = { ...report, seq: ++seq, t: performance.now() };
     log.push(full);

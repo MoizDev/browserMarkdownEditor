@@ -25,7 +25,7 @@ not merely recorded. There is no IndexedDB shim.
   remaining `.js` in the identity inventory, made by `fetch` in that same browser context/origin.
   Assert every response-body SHA-256 against the build identity, then assert no anchor and no
   `window.__perf`/tree/events after the flow. Node never reads asserted script content from dist.
-- **B:** same commit and flow; all four anchors must appear in an **actual app-fetched** script;
+- **B:** same commit and flow; every listed anchor must appear in an **actual app-fetched** script;
   tree/vault hooks must be live and the independent hand counts must agree. This is P's positive
   control. P/B parity compares final vault bytes by SHA-256 and initial/final visible DOM; an image
   must actually be visible and decoded after restoration, not just present on disk.

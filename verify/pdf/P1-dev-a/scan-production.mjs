@@ -26,34 +26,44 @@ const driver = JSON.parse(await readFile(resolve(root, 'node_modules/playwright/
 if (driver.version !== '1.63.0') throw new Error('Pinned Playwright driver required')
 const forbiddenHashes = new Set([manifest.sha256, ...Object.values(manifest.files).map(file => file.sha256)])
 const executablePath = resolve(process.env.BME_CHROME_ROOT ?? '/Users/adham/Developer/bme-impl/scratch/browsers', pin.version, pin.executable)
-const browser = await chromium.launch({ headless: true, executablePath })
 await mkdir(output, { recursive: true })
+const browser = await chromium.launch({ headless: true, executablePath })
 try {
   if (browser.version() !== pin.version) throw new Error('Unexpected browser identity')
   const page = await browser.newPage()
   const received = []
-  const pending = []
-  page.on('response', response => {
-    if (new URL(response.url()).origin !== new URL(base).origin) return
-    pending.push((async () => {
+  const networkErrors = []
+  await page.route('**/*', async route => {
+    if (new URL(route.request().url()).origin !== new URL(base).origin) return route.abort()
+    try {
+      // CDP getResponseBody re-encoded a fetched CSS body on this Chrome (+4
+      // bytes despite identical HTTP bytes). APIResponse preserves raw decoded
+      // bytes: capture those, then fulfil the browser with the exact same body.
+      const response = await route.fetch()
       const body = await response.body()
-      const type = response.headers()['content-type'] ?? ''
-      const text = /javascript|json|html|css|text/.test(type) ? body.toString('utf8') : ''
+      const headers = { ...response.headers() }
+      const text = /javascript|json|html|css|text/.test(headers['content-type'] ?? '') ? body.toString('utf8') : ''
       received.push({
         url: response.url(), status: response.status(), bytes: body.byteLength,
         sha256: createHash('sha256').update(body).digest('hex'),
         devBuildId: /dev-[a-f0-9]{64}/.test(text), developmentQualification: /["']development["']/.test(text),
       })
-    })())
+      delete headers['content-encoding']
+      delete headers['content-length']
+      delete headers['transfer-encoding']
+      await route.fulfill({ status: response.status(), headers, body })
+    } catch (error) {
+      networkErrors.push(String(error))
+      await route.abort()
+    }
   })
-  await page.route('**/*', route => new URL(route.request().url()).origin === new URL(base).origin ? route.continue() : route.abort())
   await page.goto(base)
   await page.getByRole('button', { name: 'Open Vault', exact: true }).waitFor()
   // The scratch build config emits this inventory from Rollup's output graph.
   // Each entry is then fetched through the browser, so unvisited lazy chunks and
   // unreferenced emitted assets cannot escape a network-log scan.
   const inventory = await page.evaluate(async () => {
-    const response = await fetch('./__p1_bundle_inventory.json')
+    const response = await fetch('./__p1_bundle_inventory.json', { cache: 'no-store' })
     if (!response.ok) throw new Error('Missing served build inventory')
     return response.json()
   })
@@ -64,22 +74,24 @@ try {
   await page.evaluate(async files => {
     for (const name of files) {
       if (name.startsWith('/') || name.split('/').includes('..')) throw new Error('Unsafe build inventory path')
-      const response = await fetch('./' + name)
+      const response = await fetch('./' + name, { cache: 'no-store' })
       if (!response.ok) throw new Error(`Served build file missing: ${name}`)
       await response.arrayBuffer()
     }
   }, inventory.files)
-  await Promise.all(pending)
+  // Each fetch resolves only after its routed body has been awaited and logged.
+  if (networkErrors.length) throw new Error(`Network body collection failed: ${networkErrors.join('; ')}`)
   for (const name of required) {
     const responses = received.filter(item => new URL(item.url).pathname === new URL(name, base).pathname)
     const wanted = expected.files[name]
-    if (!responses.length || responses.some(item => item.status !== 200 || item.sha256 !== wanted.sha256 || item.bytes !== wanted.bytes)) throw new Error(`Missing or wrong served artifact bytes: ${name}`)
+    if (!responses.length || responses.some(item => item.status !== 200 || item.sha256 !== wanted.sha256 || item.bytes !== wanted.bytes)) throw new Error(`Missing or wrong served artifact bytes: ${name}; expected=${JSON.stringify(wanted)}; observed=${JSON.stringify(responses)}`)
   }
   const violations = received.filter(item => forbiddenHashes.has(item.sha256) || item.devBuildId || item.developmentQualification)
   const report = {
     gate: 'BLD-DEV-G1', status: violations.length ? 'failed' : 'passed', browser: browser.version(), driver: driver.version,
     buildCommit: inventory.buildCommit, sourceMutation: inventory.sourceMutation ?? null,
     expectedIdentitySha256: createHash('sha256').update(await readFile(identityPath)).digest('hex'),
+    runnerSha256: createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex'),
     witness: { welcomePainted: true, fetchedBuildFiles: inventory.files.length, networkResponses: received.length },
     violations, network: received,
     falsePass: 'Only opening the welcome screen misses unvisited lazy chunks and unreferenced emitted assets; every output-graph entry is fetched.',

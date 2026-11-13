@@ -65,7 +65,8 @@ export interface DocumentBufferStore {
      *  deferred/binary/build handling is typed only here and comes in a later package. */
     report(documentId: string, source: ContentSource, fromDisk?: boolean): Readonly<DocumentBuffer> | undefined;
 
-    /** Acknowledges only a captured, existing revision; an old write never cleans a newer edit. */
+    /** Acknowledges only a captured, existing revision; an old write never cleans a newer edit.
+     *  Returns true only when savedRevision advances, not whether the disk write succeeded. */
     markSaved(documentId: string, revision: number): boolean;
 
     /** The single dirty predicate for the ledger (sessions add their own unreported work). */
@@ -94,7 +95,123 @@ export interface DocumentBufferStore {
 }
 
 /** App creates one instance for its life. The resolver reads App-level refs, never a pane closure.
- *  This interface checkpoint intentionally has no implementation or runtime caller. */
-export declare function createDocumentBuffers(
+ *  Still unwired: C-20 owns representation/save guards and the existing save funnel. */
+export function createDocumentBuffers(
     documentIdAtPath: (path: string) => string | undefined,
-): DocumentBufferStore;
+): DocumentBufferStore {
+    const buffers = new Map<string, Readonly<DocumentBuffer>>();
+    // A React external-store snapshot must stay identical on a cache fill or
+    // owner change, and must not retain the document's content inside React.
+    const revisions = new Map<string, BufferRevision>();
+    const listeners = new Map<string, Set<() => void>>();
+    const notify = (documentId: string) => {
+        for (const listener of [...(listeners.get(documentId) ?? [])]) listener();
+    };
+    const publish = (documentId: string, next: DocumentBuffer): Readonly<DocumentBuffer> => {
+        const buffer = Object.freeze(next);
+        buffers.set(documentId, buffer);
+        const previous = revisions.get(documentId);
+        if (!previous || previous.revision !== buffer.revision || previous.savedRevision !== buffer.savedRevision) {
+            revisions.set(documentId, Object.freeze({ revision: buffer.revision, savedRevision: buffer.savedRevision }));
+            notify(documentId);
+        }
+        return buffer;
+    };
+    const atPath = (path: string): Readonly<DocumentBuffer> | undefined => {
+        const documentId = documentIdAtPath(path);
+        return documentId === undefined ? undefined : buffers.get(documentId);
+    };
+
+    return {
+        open(documentId, source, readable) {
+            const existing = buffers.get(documentId);
+            if (existing) return existing;
+            return publish(documentId, {
+                owner: Object.freeze({ documentId, session: 0 }),
+                source, revision: 0, savedRevision: 0, readable,
+            });
+        },
+        get: documentId => buffers.get(documentId),
+        setOwner(documentId, owner) {
+            const buffer = buffers.get(documentId);
+            if (!buffer) return;
+            if (owner.documentId !== documentId || !Number.isSafeInteger(owner.session) || owner.session < 0) {
+                throw new TypeError('A buffer owner must name this document and a nonnegative session serial');
+            }
+            if (buffer.owner.session === owner.session) return;
+            publish(documentId, { ...buffer, owner: Object.freeze({ ...owner }) });
+        },
+        setReadable(documentId, readable) {
+            const buffer = buffers.get(documentId);
+            if (buffer && buffer.readable !== readable) publish(documentId, { ...buffer, readable });
+        },
+        report(documentId, source, fromDisk = false) {
+            const buffer = buffers.get(documentId);
+            // Deferred/binary/build sources are interface-only until their
+            // migration package: never pretend one was accepted or read it here.
+            if (!buffer || typeof source !== 'string') return undefined;
+            const revision = buffer.revision + 1;
+            if (!Number.isSafeInteger(revision)) throw new RangeError('Document revision exhausted');
+            return publish(documentId, {
+                owner: buffer.owner, source, revision,
+                savedRevision: fromDisk ? revision : buffer.savedRevision,
+                readable: buffer.readable,
+            });
+        },
+        markSaved(documentId, revision) {
+            const buffer = buffers.get(documentId);
+            if (!buffer || !Number.isSafeInteger(revision) || revision < 0
+                || revision > buffer.revision || revision <= buffer.savedRevision) return false;
+            publish(documentId, { ...buffer, savedRevision: revision });
+            return true;
+        },
+        isDirty(documentId) {
+            const buffer = buffers.get(documentId);
+            return !!buffer && buffer.revision > buffer.savedRevision;
+        },
+        revisionForDocument: documentId => revisions.get(documentId),
+        subscribe(documentId, listener) {
+            let set = listeners.get(documentId);
+            if (!set) listeners.set(documentId, set = new Set());
+            const subscribed = set;
+            subscribed.add(listener);
+            return () => {
+                subscribed.delete(listener);
+                if (!subscribed.size && listeners.get(documentId) === subscribed) listeners.delete(documentId);
+            };
+        },
+        contentOf(path) {
+            const documentId = documentIdAtPath(path);
+            if (documentId === undefined) return undefined;
+            const buffer = buffers.get(documentId);
+            if (!buffer || !buffer.readable || typeof buffer.source !== 'string') return undefined;
+            if (buffer.flat?.revision === buffer.revision) return buffer.flat.text;
+            const flat = Object.freeze({ revision: buffer.revision, text: buffer.source });
+            buffers.set(documentId, Object.freeze({ ...buffer, flat }));
+            return flat.text;
+        },
+        snapshotOf(path) {
+            const buffer = atPath(path);
+            if (!buffer || typeof buffer.source !== 'string') return undefined;
+            return { revision: buffer.revision, data: buffer.source };
+        },
+        revisionOf(path) {
+            const documentId = documentIdAtPath(path);
+            return documentId === undefined ? undefined : revisions.get(documentId);
+        },
+        remove(documentId) {
+            if (!buffers.delete(documentId)) return false;
+            revisions.delete(documentId);
+            notify(documentId);
+            return true;
+        },
+        clear() {
+            const documentIds = [...buffers.keys()];
+            buffers.clear();
+            revisions.clear();
+            // Subscriptions outlive an entry until their caller unsubscribes;
+            // dropping them here would miss a same-id kind replacement.
+            for (const documentId of documentIds) notify(documentId);
+        },
+    };
+}

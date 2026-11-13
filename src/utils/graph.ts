@@ -14,6 +14,7 @@ import { decodeDocumentText } from './diskVersion';
 import { collectFiles } from './tree';
 import { mapPool } from './pool';
 import { isMarkdownFile, noteDisplayName } from './fileTypes';
+import { localMarkdownTarget } from './linkClassify';
 import type {
     FileTreeNode,
     FileTreeFileNode,
@@ -49,9 +50,8 @@ export function extractLinks(text: string): string[] {
     // Markdown links pointing at a .md file
     const mdRegex = /\[[^\]]*\]\(([^)]+?\.md)\)/g;
     while ((m = mdRegex.exec(text)) !== null) {
-        let target = m[1];
-        try { target = decodeURIComponent(target); } catch { /* keep raw */ }
-        targets.push(target);
+        const target = localMarkdownTarget(m[1]);
+        if (target !== null) targets.push(target);
     }
 
     return targets;
@@ -76,7 +76,12 @@ export function collectMarkdownFiles(fileTree: FileTreeNode[]): FileTreeFileNode
    stat. That is the same staleness signal the vault-search index already ships
    with, applied to the same files. */
 
+// URL-derived targets from the old extractor are not local-note references.
+// Cold reads and own-save priming must invalidate the same extraction revision.
+const LINK_SCHEMA = 2;
+
 interface LinkCacheEntry {
+    schema: number;
     mtime: number;
     size: number;
     targets: string[];
@@ -104,13 +109,14 @@ export function primeLinks(path: string, mtime: number, size: number, text: stri
     try { targets = extractLinks(text); }
     catch { targets = []; }
     const prev = linkCache.get(path);
-    linkCache.set(path, { mtime, size, targets });
-    return !prev || prev.targets.length !== targets.length
+    linkCache.set(path, { schema: LINK_SCHEMA, mtime, size, targets });
+    return !prev || prev.schema !== LINK_SCHEMA || prev.targets.length !== targets.length
         || targets.some((t, i) => t !== prev.targets[i]);
 }
 
 async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<string[]> {
-    const cached = linkCache.get(node.path);
+    const entry = linkCache.get(node.path);
+    const cached = entry?.schema === LINK_SCHEMA ? entry : undefined;
     // The caller knows nothing on disk has moved since the last build (one of
     // this app's own saves, already primed above). Believing it is the whole
     // saving: a `getFile()` is a round trip to the browser's file thread, and
@@ -125,7 +131,7 @@ async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<st
     let targets: string[];
     try { targets = extractLinks(decodeDocumentText(bytes).replace(/\r\n?/g, '\n')); }
     catch { targets = []; } // A deterministic refusal costs one payload read per version.
-    linkCache.set(node.path, { mtime: file.lastModified, size: file.size, targets });
+    linkCache.set(node.path, { schema: LINK_SCHEMA, mtime: file.lastModified, size: file.size, targets });
     return targets;   // Only links survive; the decoded or rejected payload is released.
 }
 

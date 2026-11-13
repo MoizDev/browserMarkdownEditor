@@ -148,7 +148,7 @@ export function setNodeFieldForApply(board: BoardDoc, op: NodeSetOp): PropValue 
 
 export function insertSheetForApply(board: BoardDoc, record: Sheet): Sheet {
     const doc = forApply(board);
-    const sheet = { id: record.id, name: record.name, order: record.order };
+    const sheet = { id: record.id, name: record.name, order: record.order, ext: record.ext };
     doc.sheets.set(sheet.id, sheet);
     doc.sheetOrder.splice(lowerBound(doc.sheetOrder, sheet), 0, sheet);
     return sheet;
@@ -191,7 +191,7 @@ export function setBoardFieldForApply(board: BoardDoc, op: BoardOp): BoardValue 
         case 'host.paper': {
             if (doc.host.kind !== 'notebook') throw new Error('Apply expected notebook paper');
             const previous = doc.host.paper;
-            doc.host = { kind: 'notebook', paper: op.value };
+            doc.host = { kind: 'notebook', paper: op.value, ext: doc.host.ext };
             return previous;
         }
         case 'host.pdf': {

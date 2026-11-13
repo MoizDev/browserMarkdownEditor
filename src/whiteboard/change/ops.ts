@@ -1,7 +1,7 @@
 import type { NotebookPaper } from '../../utils/paper';
 import type { Sheet } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
-import type { JsonObject } from '../model/json';
+import type { RawJson } from '../model/json';
 import type { MediaEntry, MediaId } from '../model/media';
 import type { Node, NodeRecord } from '../model/nodes';
 import type { NextStyles, ToolId } from '../model/styles';
@@ -22,7 +22,7 @@ export type PropValue = NodeSetOp['value'];
 
 export interface BoardProps {
     readonly 'host.paper': Readonly<NotebookPaper>;
-    readonly 'host.pdf': JsonObject; // R-W5: writer bookkeeping, history-silent and non-dirtying.
+    readonly 'host.pdf': RawJson; // R-W5/R-W19: opaque writer bookkeeping, history-silent and non-dirtying.
     readonly 'ui.tool': ToolId;
     readonly 'ui.next': NextStyles;
     readonly 'ui.penWidth': number;

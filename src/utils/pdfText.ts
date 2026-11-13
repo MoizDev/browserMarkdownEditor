@@ -14,15 +14,15 @@
 
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { pdfPageGeometry, projectPdfPageV1 } from './pdfPageText';
-import { openClassicPdf } from './pdfClassicOpen';
+import { openClassicPdf, loadClassicPdf, closeClassicPdf, classicPdfHealth } from './pdfClassicOpen';
 
 async function withPdf<T>(bytes: Uint8Array, read: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
     // pdf.js detaches the buffer it is handed; give it a copy.
     const task = await openClassicPdf({ bytes, purpose: 'agent' });
     try {
-        return await read(await task.promise);
+        return await classicPdfHealth(task).guard(read(await loadClassicPdf(task)));
     } finally {
-        await task.destroy();
+        await closeClassicPdf(task);
     }
 }
 
@@ -76,7 +76,9 @@ export async function renderPdfPage(bytes: Uint8Array, pageNumber: number, maxSi
             if (!context) throw new Error('no 2D canvas context');
             context.fillStyle = '#ffffff';
             context.fillRect(0, 0, canvas.width, canvas.height);
-            await page.render({ canvas, canvasContext: context, viewport }).promise;
+            const health = classicPdfHealth(doc);
+            await health.guard(page.render({ canvas, canvasContext: context, viewport }).promise);
+            health.assertComplete(pageNumber - 1);
             const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
             if (!png) throw new Error(`could not rasterize page ${pageNumber}`);
             return { png, pageCount: doc.numPages };

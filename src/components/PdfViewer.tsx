@@ -18,6 +18,8 @@ import { LEFT, RIGHT } from '../utils/pdfRotation';
 import { isPdfRotating, subscribePdfRotating } from '../utils/pdfRotating';
 import { mapPool } from '../utils/pool';
 import { RotateCcw, RotateCw } from './icons';
+import { recordClassicRenderFailure } from '../utils/pdfClassicHealth';
+import PdfRenderNotice from './PdfRenderNotice';
 
 /**
  * The view half of a PDF: a pdf.js-rendered continuous scroll of pages.
@@ -56,6 +58,8 @@ import { RotateCcw, RotateCw } from './icons';
  */
 
 interface PdfViewerProps {
+    onRetry?: () => void;
+    retryDisabled?: boolean;
     emphasisEnabled?: boolean;
     onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;
     onLocation?(): void;
@@ -171,7 +175,7 @@ const canvasDpr = () => Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
 async function pageText(session: PdfDocumentSession, pageNumber: number): Promise<string> {
     const lease = await session.acquirePage(pageNumber - 1, 'agent');
     try {
-        const content = await lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        const content = await session.health.guard(lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true }));
         return projectPdfPageV1(content.items, pdfPageGeometry(lease.page)).text;
     } finally { lease.release(); }
 }
@@ -329,7 +333,9 @@ interface PinchGesture {
     timer: number | null;
 }
 
-function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult }: PdfViewerProps) {
+function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult, onRetry, retryDisabled = false }: PdfViewerProps) {
+    const renderDiagnostics = useSyncExternalStore(session.health.subscribe, session.health.getSnapshot);
+    const pageRenderIssues = useMemo(() => new Map(renderDiagnostics.filter(issue => issue.incomplete && issue.pageIndex !== undefined).map(issue => [issue.pageIndex!, issue])), [renderDiagnostics]);
     const [nativeNotice, setNativeNotice] = useState('');
     const nativePages = useRef(new Map<number, PdfNativeEmphasisResult>());
     const showNativeNotice = useCallback((index: number) => {
@@ -616,7 +622,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
                 });
                 textLayersRef.current.add(layer);
                 try {
-                    await layer.render();
+                    await session.health.guard(layer.render());
                 } finally {
                     textLayersRef.current.delete(layer);
                 }
@@ -629,7 +635,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             }
         })();
         return st.textPromise;
-    }, [getState, getPage]);
+    }, [getState, getPage, session]);
 
     /**
      * Put a page under the viewport's top edge — the one way to move to a page,
@@ -678,7 +684,8 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             canvas.height = Math.max(1, Math.ceil(viewport.height));
             const ctx = canvas.getContext('2d');
             if (!ctx) throw new Error('No 2D canvas context for a thumbnail');
-            await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+            await session.health.guard(page.render({ canvas, canvasContext: ctx, viewport }).promise);
+            session.health.assertComplete(index);
             const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.8));
             canvas.width = 0;
             canvas.height = 0;
@@ -741,6 +748,11 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         // what the reader sees minus the chrome, and never inverted (that is a
         // CSS filter; the canvases hold the real page).
         async capture(maxSide) {
+            const visible = visiblePageIndices();
+            for (const i of visible) {
+                session.health.assertComplete(i);
+                if (!canvasElsRef.current[i]?.width || !pageStatesRef.current.get(i)?.rendered) return null;
+            }
             const el = scrollRef.current;
             if (!el) return null;
             const view = el.getBoundingClientRect();
@@ -787,6 +799,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             const png = await new Promise<Blob | null>(resolve => out.toBlob(resolve, 'image/png'));
             out.width = 0;
             out.height = 0;
+            for (const i of visible) session.health.assertComplete(i);
             return png;
         },
         async pdfText(pages) {
@@ -815,7 +828,8 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
                 canvas.height = Math.max(1, Math.ceil(viewport.height));
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return null;
-                await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+                await session.health.guard(page.render({ canvas, canvasContext: ctx, viewport }).promise);
+                session.health.assertComplete(pageNumber - 1);
                 const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
                 canvas.width = 0;
                 canvas.height = 0;
@@ -915,7 +929,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         const gen = docGenRef.current;
         st.linksPromise = (async () => {
             try {
-                const links = await readPageLinks(await getPage(i));
+                const links = await session.health.guard(readPageLinks(await getPage(i)));
                 if (docGenRef.current !== gen || linkElsRef.current[i] !== container) return;
                 for (const link of links) container.append(createLinkElement(link));
             } catch (err) {
@@ -923,7 +937,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             }
         })();
         return st.linksPromise;
-    }, [getState, getPage, createLinkElement]);
+    }, [getState, getPage, createLinkElement, session]);
 
     /** Render one page's canvas, chasing `st.want` until the bitmap answers it
      *  (a zoom or a scroll mid-render cancels the task and the loop goes again
@@ -955,7 +969,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
                 const ctx = work.getContext('2d');
                 if (!ctx) return;
 
-                const emphasis = await bindPdfNativeEmphasis(page, ctx, target.emphasis);
+                const emphasis = await session.health.guard(bindPdfNativeEmphasis(page, ctx, target.emphasis));
                 // Metadata can arrive after a new toggle/zoom/eviction request.
                 if (docGenRef.current !== gen || !st.wantRender || st.want !== target) {
                     emphasis?.dispose();
@@ -977,13 +991,13 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
                 st.renderTask = task;
                 st.rendering = target;
                 try {
-                    await task.promise;
+                    await session.health.guard(task.promise);
                     const current = () => docGenRef.current === gen && !!st.wantRender && st.want === target;
                     if (!current()) continue;
-                    await emphasis.verify({ viewport: vp, transform: rect
+                    await session.health.guard(emphasis.verify({ viewport: vp, transform: rect
                         ? [dpr, 0, 0, dpr, -rect.x * dpr, -rect.y * dpr]
                         : (dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined) },
-                        probe => { st.renderTask = probe; }, current, !!rect);
+                        probe => { st.renderTask = probe; }, current, !!rect));
                     if (!current()) continue;
                     if (work !== canvas) {
                         canvas.width = cw;
@@ -1015,6 +1029,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             void ensureText(i);
             void ensureLinks(i);
         } catch (err) {
+            recordClassicRenderFailure(session.health, err, i);
             console.error(`Could not render PDF page ${i + 1}:`, err);
         } finally {
             st.busy = false;
@@ -1023,9 +1038,10 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
                 st.rendered = undefined;
             }
         }
-    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice]);
+    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice, session]);
 
     const ensurePage = useCallback((i: number) => {
+        if (session.health.getSnapshot().some(issue => issue.incomplete && issue.pageIndex === i)) return;
         const L = layoutRef.current;
         const el = scrollRef.current;
         if (!L || !el) return;
@@ -1046,7 +1062,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             return;
         }
         st.loopPromise = renderLoop(i, st);
-    }, [getState, renderLoop, ensureText, ensureLinks]);
+    }, [getState, renderLoop, ensureText, ensureLinks, session]);
 
     const evictPage = useCallback((i: number) => {
         const st = pageStatesRef.current.get(i);
@@ -1557,13 +1573,16 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             {/* Above the text layer, or its links could never be clicked; see
                 .pdf-selecting. */}
             <div className="pdf-link-layer" ref={pageRef('link', i)} />
+            {pageRenderIssues.has(i) && <PdfRenderNotice
+                issue={pageRenderIssues.get(i)!} page
+                onRetry={onRetry} retryDisabled={retryDisabled} />}
         </div>
-    )) : null), [layout, docState, pageRef]);
+    )) : null), [layout, docState, pageRef, pageRenderIssues, onRetry, retryDisabled]);
 
     if (error) {
         return (
             <div className="pdf-viewer" ref={rootRef}>
-                <div className="pdf-pane-message">Could not display this PDF: {error}</div>
+                <div className="pdf-pane-message">PDF rendering is unavailable.</div>
             </div>
         );
     }

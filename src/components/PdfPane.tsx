@@ -1,9 +1,12 @@
-import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfAnnotation';
 import { createPdfDocumentSession } from '../utils/pdfDocumentSession';
 import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
+import { prepareClassicPdfRetry } from '../utils/pdfClassicOpen';
+import { ClassicPdfError, classicAnnotationHealth, classicPdfFailureIsFatal, createClassicPdfHealth, recordClassicRenderFailure } from '../utils/pdfClassicHealth';
+import PdfRenderNotice from './PdfRenderNotice';
 import { createPdfTextReader, pdfTextAnchor } from '../utils/pdfReadingText';
 import type { PdfTextAnchor, PdfTextReader, PdfTextTypography } from '../utils/pdfReadingText';
 import { readPdfNavigationRevision, readPdfViewPos, writePdfViewPos } from '../utils/pdfViewState';
@@ -118,6 +121,24 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const restoredRecord = useRef(false);
     const [source, setSource] = useState<PdfSource | null>(null);
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
+    const [idleHealth] = useState(createClassicPdfHealth);
+    const [sourceLoadHealth, setSourceLoadHealth] = useState(createClassicPdfHealth);
+    const [retryEpoch, setRetryEpoch] = useState(0);
+    const [retryBusy, setRetryBusy] = useState(false);
+    const retryInFlight = useRef(false);
+    const renderHealth = useMemo(() => mode === 'edit' ? source ? classicAnnotationHealth(source.original) : sourceLoadHealth : session?.health ?? idleHealth,
+        [mode, source, sourceLoadHealth, session, idleHealth]);
+    const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
+    const fatalRenderIssue = renderDiagnostics.find(classicPdfFailureIsFatal);
+    const documentRenderIssue = renderDiagnostics.find(issue => issue.incomplete && (mode === 'edit' || issue.pageIndex === undefined));
+    useEffect(() => {
+        if (mode !== 'edit' || !source) return;
+        const health = classicAnnotationHealth(source.original);
+        return () => health.close();
+    }, [mode, source]);
+    useEffect(() => {
+        if (mode === 'read' && fatalRenderIssue && session) void session.dispose().catch(console.error);
+    }, [mode, fatalRenderIssue, session]);
     const generation = useRef(0);
     const returnEpoch = useRef(0);
     useEffect(() => () => { ++returnEpoch.current; flushPdfTextViewState(); }, []);
@@ -282,6 +303,19 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const viewStaleRef = useRef(false);
     useEffect(() => { if (isDirty) viewStaleRef.current = true; }, [isDirty]);
 
+    const retryRendering = useCallback(() => {
+        if (mode !== 'read' || isDirty || flushing || disk || retryInFlight.current) return;
+        retryInFlight.current = true;
+        setRetryBusy(true);
+        prepareClassicPdfRetry();
+        viewStaleRef.current = true;
+        setViewError(null);
+        setSourceError(null);
+        setSource(null);
+        setSession(null);
+        setRetryEpoch(epoch => epoch + 1);
+    }, [mode, isDirty, flushing, disk]);
+
     /* Read the file's role only once annotating is actually wanted.
        Every PDF can be annotated now, so this can no longer be gated on the
        filename — and reading every PDF on open just to find out would be an
@@ -300,6 +334,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     useEffect(() => {
         if (!activated || !needsSource) return;
         let cancelled = false;
+        const health = createClassicPdfHealth();
+        setSourceLoadHealth(health);
         setSource(null);
         setSourceError(null);
 
@@ -322,12 +358,15 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 });
             } catch (err) {
                 console.error('Could not open PDF:', err);
-                if (!cancelled) setSourceError(err instanceof Error ? err.message : String(err));
+                if (!cancelled) {
+                    recordClassicRenderFailure(health, err);
+                    setSourceError(err instanceof Error ? err.message : String(err));
+                }
             }
         })();
 
-        return () => { cancelled = true; };
-    }, [activated, needsSource, file.path, file.handle, file.name, readFileBytes]);
+        return () => { cancelled = true; health.close(); };
+    }, [activated, needsSource, file.path, file.handle, file.name, readFileBytes, retryEpoch]);
 
     // Read the bytes the viewer shows: once on first need, and again only after
     // a save of THIS file lands (mid-flush the bytes on disk still predate the
@@ -371,18 +410,21 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 // the pane on "Loading PDF…" for the rest of the session.
                 console.error('Could not refresh the PDF view:', err);
                 if (!cancelled) setViewError(err instanceof Error ? err.message : String(err));
+            } finally {
+                if (!cancelled) { retryInFlight.current = false; setRetryBusy(false); }
             }
         })();
 
         return () => { cancelled = true; };
-    }, [activated, mode, flushing, isDirty, session, file.handle, file.path, readBytesVersioned]);
+    }, [activated, mode, flushing, isDirty, session, file.handle, file.path, readBytesVersioned, retryEpoch]);
 
     function focusReading() {
         root.current?.querySelector<HTMLElement>(mode === 'edit' ? '.tl-container' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-viewer-scroll')?.focus({ preventScroll: true });
     }
     const capabilities: ReaderCapabilities = {
         surface: mode === 'edit' ? 'pdf-annotation' : textSurface ? 'pdf-text' : 'pdf-original',
-        emphasis: disk ? { kind: 'inactive', reason: 'Resolve the PDF disk change to refresh Word emphasis' }
+        emphasis: fatalRenderIssue ? { kind: 'inactive', reason: 'Try again to restart PDF rendering' }
+            : disk ? { kind: 'inactive', reason: 'Resolve the PDF disk change to refresh Word emphasis' }
             : mode === 'edit' ? nativeAnnotation
             : isDirty || flushing || !session ? { kind: 'inactive', reason: 'Waiting for the PDF to finish loading or saving' }
             : textSurface ? { kind: 'inactive', reason: 'Word emphasis applies to Original PDF pages. Choose Original PDF to use it.' }
@@ -409,8 +451,9 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     useEffect(() => {
         const b = binding.current;
         b?.onReaderCapabilities(b.identity, actions.current.capabilities);
-        b?.onReaderStatus(b.identity, error ? { phase: 'error', message: error } : { phase: session || mode === 'edit' && source ? 'ready' : 'loading' });
-    }, [capabilityKey, error, session, mode, source]);
+        b?.onReaderStatus(b.identity, fatalRenderIssue ? { phase: 'error', message: new ClassicPdfError(fatalRenderIssue).message }
+            : error ? { phase: 'error', message: error } : { phase: session || mode === 'edit' && source ? 'ready' : 'loading' });
+    }, [capabilityKey, error, fatalRenderIssue, session, mode, source]);
     useEffect(() => {
         if (!isVisible) { actions.current.publishLocation('layout'); flushPdfTextViewState(); }
     }, [isVisible]);
@@ -423,8 +466,13 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
 
     let body: ReactNode = null;
     if (activated) {
-        if (error) {
-            body = <div className="pdf-pane-message">Could not open this PDF: {error}</div>;
+        if (fatalRenderIssue) {
+            body = <div className="pdf-render-failed"><PdfRenderNotice issue={fatalRenderIssue} annotation={mode === 'edit'}
+                onRetry={retryRendering} retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>;
+        } else if (error) {
+            body = documentRenderIssue ? <div className="pdf-render-failed"><PdfRenderNotice issue={documentRenderIssue} annotation={mode === 'edit'}
+                onRetry={retryRendering} retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>
+                : <div className="pdf-pane-message">Could not open this PDF: {error}</div>;
         } else if (mode === 'edit' && !source) {
             /* Waiting on the ROLE read, which is lazy — only annotating needs
                it. Gating every branch on it (as this did) left a PDF opened for
@@ -490,7 +538,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                     onTypographyChange={reading?.onTypographyChange} />
             ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer filePath={file.path} session={session} isActive={isFocused} isVisible={isVisible} onRotate={rotateThis}
                 onLocation={() => publishLocation('layout', false)} emphasisEnabled={reading?.emphasisEnabled ?? false}
-                onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} />
+                onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} onRetry={retryRendering}
+                retryDisabled={retryBusy || isDirty || flushing || !!disk} />
                 {mappingNotice && <div className="pdf-pane-mapping-notice" role="status">{mappingNotice}</div>}
             </>;
         }
@@ -511,7 +560,12 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             {disk && <DiskBar name={file.name} state={disk} path={file.path} onAction={onDiskAction} />}
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the viewer and lose the reading position. */}
-            <div className="pdf-pane-body">{body}</div>
+            <div className="pdf-pane-body">
+                {body}
+                {!fatalRenderIssue && !error && documentRenderIssue && <div className="pdf-render-document-notice"><PdfRenderNotice
+                    issue={documentRenderIssue} annotation={mode === 'edit'} onRetry={retryRendering}
+                    retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>}
+            </div>
         </div>
     );
 }

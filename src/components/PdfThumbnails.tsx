@@ -25,6 +25,7 @@
 // `invalidate`, which keeps the old image up until its replacement is ready.
 
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import './PdfRenderNotice.css';
 
 export interface PdfThumbnailsHandle {
     /** Mark `index` as the page on screen and bring its row into view. */
@@ -141,10 +142,13 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
                     evict();
                     setVersion(v => v + 1);
                 } catch (err) {
-                    // A page that will not rasterize keeps its blank frame rather
-                    // than being retried on every scroll.
+                    // No automatic retry loop; a failed capture must not look
+                    // like a successfully rendered blank page.
                     failedRef.current.add(next);
-                    if (aliveRef.current) console.warn(`Could not render the thumbnail for page ${next + 1}:`, err);
+                    if (aliveRef.current) {
+                        console.warn(`Could not render the thumbnail for page ${next + 1}:`, err);
+                        setVersion(v => v + 1);
+                    }
                 }
             }
         } finally {
@@ -237,11 +241,11 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
                             className={`pdf-thumb${i === current ? ' is-current' : ''}`}
                             style={{ top: geometry.tops[i], width: THUMB_WIDTH }}
                             onClick={() => onSelect(i)}
-                            aria-label={`Page ${i + 1}`}
+                            aria-label={`Page ${i + 1}${failedRef.current.has(i) ? ' — thumbnail unavailable' : ''}`}
                             aria-current={i === current ? 'page' : undefined}
                         >
                             <span className="pdf-thumb-page" style={{ height: geometry.imageHeights[i] }}>
-                                {url && <img src={url} alt="" draggable={false} />}
+                                {failedRef.current.has(i) ? <span className="pdf-thumb-failure">Thumbnail unavailable</span> : url && <img src={url} alt="" draggable={false} />}
                             </span>
                             <span className="pdf-thumb-label">{i + 1}</span>
                         </button>

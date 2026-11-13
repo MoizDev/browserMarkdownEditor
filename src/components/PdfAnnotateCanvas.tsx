@@ -858,7 +858,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     }
 
     return (
-        <div className={`drawing-pane pdf-annotate-pane${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`}>
+        <div className={`drawing-pane pdf-annotate-pane${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`} data-legacy-board="">
             {thumbsOpen && (
                 <PdfThumbnails
                     ref={thumbsRef}

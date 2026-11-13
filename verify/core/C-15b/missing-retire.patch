@@ -1,12 +1,12 @@
 --- a/src/context/FileSystemContext.tsx
 +++ b/src/context/FileSystemContext.tsx
-@@ -1555,15 +1555,6 @@
+@@ -1561,15 +1561,6 @@
              // name in one folder are the same picture (the second write replaced
              // the first in .Assets), so the newest bytes winning is right.
              const graveyard = await retiredAssetsDir(dirHandle, true);
 -            if (__BME_BENCH__) {
 -                try {
--                    const home = (await rootHandle?.resolve(dirHandle))?.join('/');
+-                    const home = (await benchmarkRoot?.resolve(dirHandle))?.join('/');
 -                    if (home !== undefined) reportVault({
 -                        op: 'retire', path: joinVaultPath(joinVaultPath(home, ASSETS_DIR), fileName),
 -                        to: joinVaultPath(joinVaultPath(joinVaultPath(home, TRASH_DIR), ASSETS_DIR), fileName), caller: 'retireAsset',

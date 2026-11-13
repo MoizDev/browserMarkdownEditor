@@ -1545,6 +1545,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      */
     const retireAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
         if (!isAssetName(fileName)) return false;
+        // Snapshot before IO can outlive a vault switch, without giving the
+        // shipped callback a new dependency (and therefore a new identity).
+        let benchmarkRoot: FileSystemDirectoryHandle | null = null;
+        if (__BME_BENCH__) {
+            try { benchmarkRoot = rootHandleRef.current; } catch { /* instrumentation only */ }
+        }
         try {
             const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR);
             const source = await assetsDir.getFileHandle(fileName);   // throws => nothing to retire
@@ -1557,7 +1563,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             const graveyard = await retiredAssetsDir(dirHandle, true);
             if (__BME_BENCH__) {
                 try {
-                    const home = (await rootHandle?.resolve(dirHandle))?.join('/');
+                    const home = (await benchmarkRoot?.resolve(dirHandle))?.join('/');
                     if (home !== undefined) reportVault({
                         op: 'retire', path: joinVaultPath(joinVaultPath(home, ASSETS_DIR), fileName),
                         to: joinVaultPath(joinVaultPath(joinVaultPath(home, TRASH_DIR), ASSETS_DIR), fileName), caller: 'retireAsset',
@@ -1579,7 +1585,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } catch {
             return false;
         }
-    }), [rootHandle, dirPath, withMutation]);
+    }), [dirPath, withMutation]);
 
     /**
      * Put a retired asset back into `.Assets` — the exact inverse of
@@ -1592,6 +1598,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      */
     const restoreAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
         if (!isAssetName(fileName)) return false;
+        let benchmarkRoot: FileSystemDirectoryHandle | null = null;
+        if (__BME_BENCH__) {
+            try { benchmarkRoot = rootHandleRef.current; } catch { /* instrumentation only */ }
+        }
         try {
             const graveyard = await retiredAssetsDir(dirHandle, false);
             const source = await graveyard.getFileHandle(fileName);   // throws => never retired
@@ -1607,7 +1617,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
 
             if (__BME_BENCH__) {
                 try {
-                    const home = (await rootHandle?.resolve(dirHandle))?.join('/');
+                    const home = (await benchmarkRoot?.resolve(dirHandle))?.join('/');
                     if (home !== undefined) reportVault({
                         op: 'restore', path: joinVaultPath(joinVaultPath(joinVaultPath(home, TRASH_DIR), ASSETS_DIR), fileName),
                         to: joinVaultPath(joinVaultPath(home, ASSETS_DIR), fileName), caller: 'restoreAsset',
@@ -1620,7 +1630,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } catch {
             return false;
         }
-    }), [rootHandle, withMutation]);
+    }), [withMutation]);
 
     /**
      * Restore the previous vault by requesting permission with a user gesture

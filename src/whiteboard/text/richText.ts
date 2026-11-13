@@ -10,13 +10,13 @@ export interface Block {
     readonly start?: number;
     readonly dir: 'auto' | 'ltr' | 'rtl';
     readonly runs: readonly Run[];
-    readonly tail?: RawJson; // R-W19: unknown tuple elements, kept by the native reader.
+    readonly tail?: RawJson; // R-W19/R-W21: JSON ARRAY of trailing tuple elements; writer splices its interior.
 }
 
 export interface Run {
     readonly text: string;
     readonly marks: Marks;
-    readonly tail?: RawJson; // R-W19: unknown tuple elements/marks; TX-2 finalizes editing semantics.
+    readonly tail?: RawJson; // R-W19/R-W21: JSON ARRAY of trailing tuple elements; TX-2 finalizes editing semantics.
 }
 
 export interface Marks {

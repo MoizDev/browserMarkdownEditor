@@ -7,6 +7,9 @@ import { compareOrder } from './orderKey';
 
 // DM-2: only change/apply may import this module. These helpers assume validated
 // ops and maintain indexes; they do not validate, normalize, record or notify.
+// R-W23: CH-1 uses fileFields.ts to drop superseded native-token ext.raw entries
+// inside its transaction, capturing the old ext for inverse/rollback. These value-only helpers
+// must not silently discard preservation metadata outside that atomic capture.
 type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
     'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage'> & {
     nodes: Map<NodeId, Node>;
@@ -197,7 +200,7 @@ export function setBoardFieldForApply(board: BoardDoc, op: BoardOp): BoardValue 
         case 'host.pdf': {
             if (doc.host.kind !== 'pdf-ink') throw new Error('Apply expected PDF bookkeeping');
             const previous = doc.host.pdf;
-            doc.host = { kind: 'pdf-ink', pdf: op.value, pages: doc.host.pages };
+            doc.host = { kind: 'pdf-ink', pdf: op.value, pages: doc.host.pages, ext: doc.host.ext };
             return previous;
         }
         case 'ui.tool': {

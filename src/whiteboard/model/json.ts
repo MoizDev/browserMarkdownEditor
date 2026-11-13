@@ -8,6 +8,6 @@ declare const rawJsonBrand: unique symbol;
 export type RawJson = string & { readonly [rawJsonBrand]: true };
 
 export interface ExtBag {
-    readonly fields: ReadonlyMap<string, RawJson>; // Unknown top-level properties of this record.
-    readonly raw: ReadonlyMap<string, RawJson>; // Whole known-property values with unknown nested data (R-W20).
+    readonly fields: ReadonlyMap<string, RawJson>; // Decoded top-level keys; only values are byte-preserved (R-W21).
+    readonly raw: ReadonlyMap<string, RawJson>; // Whole known-property values, keyed by native record field (R-W23).
 }

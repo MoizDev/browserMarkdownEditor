@@ -8,6 +8,8 @@ import type { NextStyles, ToolId } from '../model/styles';
 import type { RichFragment } from '../text/richText';
 
 // change-and-history.md §2.1, H-1/H-2: immutable identity and preserved data are not setters.
+// R-W23: explicit sets invalidate the native-token ext.raw entries named by
+// model/fileFields.ts; CH-1 captures/restores ext in the transaction and its inverse.
 type SetOpFor<N extends Node> = N extends Node ? {
     [K in Exclude<keyof N, 'id' | 'kind' | 'ext' | 'raw'>]: {
         readonly t: 'set';

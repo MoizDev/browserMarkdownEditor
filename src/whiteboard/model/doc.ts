@@ -29,7 +29,7 @@ export interface ViewFlags {
 export type HostBlock =
     | { readonly kind: 'whiteboard' }
     | { readonly kind: 'notebook'; readonly paper: Readonly<NotebookPaper>; readonly ext: ExtBag | null }
-    | { readonly kind: 'pdf-ink'; readonly pdf: RawJson; readonly pages: readonly (readonly [number, number])[] };
+    | { readonly kind: 'pdf-ink'; readonly pdf: RawJson; readonly pages: readonly (readonly [number, number])[]; readonly ext: ExtBag | null };
 
 // R-W17: unknown header fields and whole records retain their source lexemes.
 export interface PreservedBlock {

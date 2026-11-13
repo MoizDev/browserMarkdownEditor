@@ -36,6 +36,7 @@ export interface PreservedBlock {
     readonly version: readonly [number, number];
     readonly fields: ReadonlyMap<string, RawJson>;
     readonly records: readonly { readonly type: string; readonly id: string; readonly raw: RawJson }[];
+    readonly end: ExtBag | null; // R-W30: unknown end-record fields, never its derived count.
 }
 
 // Consumers read the live tables by reference (M-10). Only the model's apply path
@@ -51,6 +52,7 @@ export interface BoardDoc {
     readonly bySheet: ReadonlyMap<SheetId, ReadonlySet<NodeId>>;
     readonly byPage: ReadonlyMap<number, ReadonlySet<NodeId>>; // Paged root nodes only; all sheets.
     readonly mediaRefs: ReadonlyMap<MediaId, ReadonlySet<NodeId>>;
+    readonly preservedMediaRefs: ReadonlyMap<MediaId, number>;
     readonly ui: UiBlock;
     readonly view: ViewFlags;
     readonly host: HostBlock;
@@ -67,6 +69,7 @@ export interface BoardDocInput {
     readonly view: ViewFlags;
     readonly host: HostBlock;
     readonly preserved: PreservedBlock;
+    readonly preservedMediaRefs: ReadonlyMap<MediaId, number>; // Reader counts only RawJson retained in the model (R-W25).
 }
 
 const EMPTY_CHILDREN: readonly Node[] = Object.freeze([]);
@@ -125,8 +128,9 @@ export function createBoardDoc(input: BoardDocInput): BoardDoc {
     const bySheet = new Map<SheetId, Set<NodeId>>();
     const byPage = new Map<number, Set<NodeId>>();
     const mediaRefs = new Map<MediaId, Set<NodeId>>();
+    const preservedMediaRefs = new Map(input.preservedMediaRefs);
     const doc: BoardDoc = {
-        kind: input.kind, sheets, nodes, media, sheetOrder, children, attachedTo, bySheet, byPage, mediaRefs,
+        kind: input.kind, sheets, nodes, media, sheetOrder, children, attachedTo, bySheet, byPage, mediaRefs, preservedMediaRefs,
         ui: input.ui, view: input.view, host: input.host, preserved: input.preserved, rev: 0,
     };
     for (const record of input.sheets) {

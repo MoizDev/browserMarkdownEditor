@@ -19,7 +19,7 @@ third-party code included (normally "none") · date.
 | `model/orderKey.ts` | lane w-c | M-4, E-DOC-4/5/6 | document-model §4; rulings R-W7/R-W12 | Literature via document-model §4/Sources: E. Wallace, Realtime editing of ordered sequences (Figma, 2017); D. Greenspan, Implementing Fractional Indexing (2020); neither original article read by coder; independent base62 arithmetic from design/rulings | none | 2026-11-13 |
 | `model/styles.ts` | lane w-c | M-7 | document-model §7; 00-frame §1 | Design; spec/styles named value inventory; no tldraw source | none | 2026-11-13 |
 | `model/json.ts` | lane w-c | M-3 | document-model §9.3 | Design only | none | 2026-11-13 |
-| `model/media.ts` | lane w-c | M-9 | document-model §8 | Design only | none | 2026-11-13 |
+| `model/media.ts` | lane w-c | M-9, R-W14b | document-model §8; native-format §5 | Design and lead ruling only; nullable video-duration metadata | none | 2026-11-13 |
 | `model/nodes.ts` | lane w-c | M-3, M-6/7/8/10 | document-model §§3/10; ink §4; rulings R-W8/R-W13 | Design and lead rulings only; explicit fixed-order constructors, shared defaults | none | 2026-11-13 |
 | `model/defaults.ts` | lane w-c | M-3/7, R-W13 | document-model §§3.1–3.2 | Design and lead ruling only; explicit defaults, no inferred values | none | 2026-11-13 |
 | `model/samples.ts` | lane w-c | M-10, V-10 | ink §2.1; document-model §10.2 | Design and interface agreement with lane w-e only | none | 2026-11-13 |

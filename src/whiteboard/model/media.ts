@@ -6,6 +6,7 @@ export interface MediaEntry {
     readonly bytes: number;
     readonly w: number;
     readonly h: number;
+    readonly duration: number | null; // R-W14b: video seconds, finite >= 0; pictures use null.
     readonly animated: boolean;
     readonly name: string;
     readonly file: string | null;

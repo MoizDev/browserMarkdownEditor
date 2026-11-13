@@ -1,4 +1,5 @@
 import { normalizePaper, PAPER_SIZES, type NotebookPaper } from '../../utils/paper';
+import { MEDIA_MIMES } from '../format/schema';
 import type { Op, TouchedSet } from '../change/ops';
 import type { RichText } from '../text/richText';
 import { childrenOf, isSheetParent, sheetOf, type BoardDoc } from './doc';
@@ -43,7 +44,6 @@ const FIELDS = {
     embed: ['w', 'h', 'url'],
     opaque: ['raw'],
 } as const satisfies Record<NodeKind, readonly string[]>;
-const MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'video/mp4', 'video/webm', 'video/quicktime'];
 const MEDIA_HASH = /^sha256:[0-9a-f]{64}$/;
 const NON_WHITESPACE = /\S/;
 const MARK_KEYS = ['b', 'i', 'u', 's', 'code', 'hl', 'link', 'x'];
@@ -68,6 +68,7 @@ const VALUES = {
 const BAD_RAW_ENTRY = Symbol('invalid raw entry');
 export const MAX_COORDINATE = 10_000_000; // R-W21: same world bound for every coordinate.
 export const MAX_TEXT_LENGTH = 1_000_000;
+export const MAX_TEXT_BLOCKS = 100_000; // R-W30 bounds the number of empty/short blocks too.
 
 function refuse(code: ValidationCode, opIndex: number, nodeId: string | null, reason: string): ValidationResult {
     return { ok: false, code, opIndex, nodeId, reason };
@@ -144,24 +145,11 @@ function rawArray(value: unknown): boolean {
     while (last >= first && (value.charCodeAt(last) === 32 || value.charCodeAt(last) === 9 || value.charCodeAt(last) === 10 || value.charCodeAt(last) === 13)) last--;
     return value[first] === '[' && value[last] === ']'; // Reader already validated the opaque JSON value.
 }
-function json(value: unknown): boolean {
-    if (value === null || typeof value === 'boolean' || typeof value === 'string') return true;
-    if (typeof value === 'number') return Number.isFinite(value);
-    if (Array.isArray(value)) {
-        for (let i = 0; i < value.length; i++) if (!json(value[i])) return false;
-        return true;
-    }
-    if (!object(value)) return false;
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== null && prototype !== Object.prototype) return false;
-    for (const key in value) if (!Object.hasOwn(value, key) || !json(value[key])) return false;
-    return true;
-}
-
 // V-11, text.md §§4.1/4.3. u/s are supported marks (§4.1); the shortened §4.3
 // inventory must not silently turn underline/strike into unsupported data.
 function richText(value: unknown): value is RichText {
-    if (!object(value) || !closed(value, KEYS.rich) || !Array.isArray(value.blocks) || value.blocks.length === 0) return false;
+    if (!object(value) || !closed(value, KEYS.rich) || !Array.isArray(value.blocks)
+        || value.blocks.length === 0 || value.blocks.length > MAX_TEXT_BLOCKS) return false;
     let length = value.blocks.length - 1;
     if (length > MAX_TEXT_LENGTH) return false;
     for (let b = 0; b < value.blocks.length; b++) {
@@ -184,7 +172,7 @@ function richText(value: unknown): value is RichText {
                 if (flag !== undefined && flag !== true) return false;
             }
             if (marks.link !== undefined && !url(marks.link)) return false;
-            if (marks.x !== undefined && !json(marks.x)) return false;
+            if (marks.x !== undefined && typeof marks.x !== 'string') return false; // Reader-owned RawJson, never parsed.
             length += run.text.length;
             if (length > MAX_TEXT_LENGTH) return false;
         }
@@ -346,7 +334,7 @@ function paper(value: unknown): boolean {
 }
 function mediaEntry(value: unknown): boolean {
     return object(value) && closed(value, KEYS.media)
-        && typeof value.id === 'string' && MEDIA_HASH.test(value.id) && known(value.mime, MIME_TYPES)
+        && typeof value.id === 'string' && MEDIA_HASH.test(value.id) && known(value.mime, MEDIA_MIMES)
         && integer(value.bytes, 0) && number(value.w, 1, 1_000_000) && number(value.h, 1, 1_000_000)
         && (value.mime.startsWith('video/') ? number(value.duration, 0) : value.duration === null)
         && boolean(value.animated) && string(value.name, 10000) && (value.file === null || string(value.file)) && extension(value.ext);
@@ -431,7 +419,8 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 if (op.op === 'drop' && closed(op, KEYS.recordDelete) && typeof op.id === 'string' && MEDIA_HASH.test(op.id)) {
                     const media = op.id as MediaId;
                     if (!doc.media.has(media)) return refuse('V-9', opIndex, null, 'Media does not exist');
-                    return !doc.mediaRefs.get(media)?.size ? OK : refuse('V-9', opIndex, null, 'Media is still referenced');
+                    return !doc.mediaRefs.get(media)?.size && !(doc.preservedMediaRefs.get(media) ?? 0)
+                        ? OK : refuse('V-9', opIndex, null, 'Media is still referenced by content or preserved data');
                 }
                 return refuse('schema', opIndex, null, 'Unknown media operation');
             default: return refuse('schema', opIndex, nodeId, 'Unknown op type');

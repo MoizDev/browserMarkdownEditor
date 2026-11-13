@@ -11,7 +11,7 @@ import { compareOrder } from './orderKey';
 // inside its transaction, capturing the old ext for inverse/rollback. These value-only helpers
 // must not silently discard preservation metadata outside that atomic capture.
 type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
-    'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage' | 'mediaRefs'> & {
+    'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage' | 'mediaRefs' | 'preservedMediaRefs'> & {
     nodes: Map<NodeId, Node>;
     sheets: Map<SheetId, Sheet>;
     media: Map<MediaId, MediaEntry>;
@@ -21,6 +21,7 @@ type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
     bySheet: Map<SheetId, Set<NodeId>>;
     byPage: Map<number, Set<NodeId>>;
     mediaRefs: Map<MediaId, Set<NodeId>>;
+    preservedMediaRefs: Map<MediaId, number>;
 };
 
 function forApply(doc: BoardDoc): MutableDoc {

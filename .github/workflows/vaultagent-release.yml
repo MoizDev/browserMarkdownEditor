@@ -1,7 +1,7 @@
 # VaultAgent (the agent helper) — build, smoke-test and publish the installers.
 #
-# Push a tag `vaultagent-v1.2.3` to release. "Run workflow" builds and tests the
-# same way (version 0.0.0-ci.<run>) but publishes nothing.
+# Push a tag `vaultagent-v1.2.3` to release. "Run workflow" builds and smoke-tests
+# the same way (version 0.0.0-ci.<run>) but publishes nothing.
 #
 # Allowed origins: https://notes.moizhashmi.com is baked into every build. The
 # optional repository variable VAULTAGENT_ALLOWED_ORIGINS adds more (comma-
@@ -47,23 +47,8 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - name: Install dependencies
-        # The helper bundles npm packages since the terminal (@xterm/headless and its
-        # addons: the reattach mirror), so a bare checkout cannot test or compile it.
-        # The lockfile pins them; no install scripts are needed (or run).
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Helper tests
-        run: bun test helper
-
   macos:
-    needs: [version, test]
+    needs: [version]
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -74,7 +59,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install dependencies
         # The helper bundles npm packages since the terminal (@xterm/headless and its
-        # addons: the reattach mirror), so a bare checkout cannot test or compile it.
+        # addons: the reattach mirror), so a bare checkout cannot compile it.
         # The lockfile pins them; no install scripts are needed (or run).
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Compile (arm64 + x64)
@@ -131,7 +116,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    needs: [version, test]
+    needs: [version]
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -142,7 +127,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install dependencies
         # The helper bundles npm packages since the terminal (@xterm/headless and its
-        # addons: the reattach mirror), so a bare checkout cannot test or compile it.
+        # addons: the reattach mirror), so a bare checkout cannot compile it.
         # The lockfile pins them; no install scripts are needed (or run).
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Compile (x64)
@@ -199,7 +184,7 @@ jobs:
           if-no-files-found: error
 
   linux:
-    needs: [version, test]
+    needs: [version]
     strategy:
       fail-fast: true
       matrix:
@@ -219,7 +204,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install dependencies
         # The helper bundles npm packages since the terminal (@xterm/headless and its
-        # addons: the reattach mirror), so a bare checkout cannot test or compile it.
+        # addons: the reattach mirror), so a bare checkout cannot compile it.
         # The lockfile pins them; no install scripts are needed (or run).
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Compile

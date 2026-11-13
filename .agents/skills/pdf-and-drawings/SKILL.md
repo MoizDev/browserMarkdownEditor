@@ -69,10 +69,32 @@ as live tldraw shapes.
   viewport, `displaySpace()` undoes it when stamping, the thumbnails and link layer come from the
   same viewports. A view rotation would have been a second coordinate system that all of those, and
   the saved file, would have to be kept in step with.
-- `pdfRotation.ts` is pure quarter-turn arithmetic with no imports (tested in `test:app`);
-  `pdfRotate.ts` holds the pdf-lib half and is **dynamically imported only** (App's handler), or
-  ~400kB joins the main bundle. A page in the wild can carry 450, -90 or 89.9 — `asQuarter`
+- `pdfRotation.ts` is pure quarter-turn arithmetic with no imports; `pdfRotate.ts` holds the pdf-lib
+  half and is imported **only by `pdfBuild.worker.ts`** — App reaches it through
+  `pdfBuildClient.rotatePdfAsync` (dynamically imported; the client imports types only), so pdf-lib
+  stays out of the main bundle. A page in the wild can carry 450, -90 or 89.9 — `asQuarter`
   normalizes on the way in as well as out, because pdf-lib throws on a non-multiple of 90.
+- **It runs in the build worker, with pdf-lib's ticks OFF — and so does every pdf-lib load/save.**
+  By default `PDFDocument.load` stops on a `setTimeout(0)` every 100 objects and `save()` every 50,
+  so one rotation scheduled ~3 × objects / 100 zero-delay timers on the MAIN thread, each costing
+  whatever the browser decides: ≥4ms focused, ONE SECOND in a hidden or minimized window. Measured
+  on a 1,105-page / 7,032-object PDF: 176 timers, 1.3-1.5s click-to-rotated for ~0.3s of real
+  pdf-lib work; minimized, still unfinished after 10+ minutes; a ~10k-object textbook ≈ 5 minutes,
+  which is what users reported ("does nothing, then turns after 5 minutes"). The cost tracked
+  OBJECT COUNT, not bytes. In the worker with `LOAD_WITHOUT_TICKS` / `SAVE_WITHOUT_TICKS`
+  (`pdfBuild.ts`): 0 main-thread timers, ~340ms for that book, ~1.07s for a 220MB textbook (was
+  2.1s). The same options are on `buildAnnotatedPdf` and `buildNotebookPdf`, which paid the same
+  ticks on every save. Never call pdf-lib on the main thread, and pass both options to any new load
+  or save.
+- **The bytes are TRANSFERRED to the worker, not cloned** (`dispatch`'s transfer list): App read
+  them fresh for this one gesture and `readPdfRole` slices its own copy, so a 220MB document is not
+  copied to be turned. The annotate path still clones — its `original` lives in `pdfRenderCache`.
+- **A pending turn shows on the buttons** (`aria-busy` + `.is-busy`, the icon spins; still under
+  `prefers-reduced-motion` it only takes the accent colour). The state is `utils/pdfRotating.ts`,
+  an external store holding a per-path COUNT — App begins once a turn is accepted onto the chain and
+  ends in a `finally` on every exit, refusals and conflicts included. A count because turns queue:
+  two quick clicks are a half turn, and the buttons are never disabled. A store, not a prop: the
+  pane remounts on `diskRev` when the turn lands, and a prop would re-render the host.
 - **`App.rotatePdf` writes it like any other save**: `writeFileVersioned` against the tab's baseline
   (PDF baselines are hashed in the background — wait the seed out), queued on the same per-tab chain
   as `flushTab` so a rotation cannot interleave with an annotation save, then `setBaseline`,
@@ -109,7 +131,8 @@ discipline**, so a single new import undoes it silently:
 
 - `pdfRenderCache.ts` and `pdfFormat.ts` import no PDF libs at all (`pdfFormat` is pure strings).
 - `pdfLinks.ts` imports `pdfjs-dist` **for types only**.
-- The builder is dynamically `import()`ed only at the two write sites.
+- The builder's client (`pdfBuildClient`, types-only imports) is reached only by dynamic `import()`
+  at its write sites; pdf-lib itself (`pdfBuild.ts`, `pdfRotate.ts`) is imported only by the worker.
 - Reader (pdf.js) and writer (pdf-lib) **never import each other** — they share names via `pdfFormat`.
 - The writer runs in a **DOM-less Web Worker**, so `pdfBuild.ts` must never reach for the DOM.
 - `PdfPane` and `CanvasPane` are `React.lazy` in `EditorPane`, `PdfAnnotateCanvas` is `React.lazy` in
@@ -334,6 +357,8 @@ to the same version. By default tldraw fetches fonts, icons and translations fro
 measured, **37 off-origin requests to open one whiteboard**. A local-first app holding the vault's
 directory handle does not need a third party to be up in order to draw a line. `maxFontsToLoadBeforeRender: 0`
 too — tldraw waits for every font before it paints anything, and ink needs no font.
+`@tldraw/assets` stays in `optimizeDeps.exclude` (`vite.config.ts`): pre-bundled, its `?url` imports
+all come out `undefined` and every canvas throws on open under `npm run dev` — never in a build.
 
 **`colorScheme` is frozen at mount.** It is in `<Tldraw>`'s editor-creation dependency list
 (@tldraw/editor 5.2.4, `TldrawEditor.mjs:279`), so changing it DESTROYS the editor and builds a new

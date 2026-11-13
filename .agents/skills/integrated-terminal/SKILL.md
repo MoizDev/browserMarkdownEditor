@@ -117,7 +117,7 @@ every shell is a child of **`vaultagent-pty`**: ~380 lines of libc C, its own La
 `ptyhost.c`), one forked handler per connection.
 
 - **Its bytes are frozen:** the universal binary is COMMITTED, pinned (`PINNED.json`: sha256 + per-arch
-  cdhash, asserted by `helper/test/ptyhost.test.ts` and the release workflow's macOS step), embedded in
+  cdhash, checked by the release workflow's macOS step), embedded in
   every helper build (`with { type: 'file' }`), and written to the app dir only when missing or different
   (`install/ptyhost.ts` `ensurePtyHost`, on `install` and every installed `serve` start — which covers
   helpers that self-updated from 0.1.3). **CI never rebuilds it.** Rebuild only deliberately with

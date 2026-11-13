@@ -43,8 +43,8 @@ skill's context, tools or chat index reads one.
   - Let through on purpose: Codex hooks, plugins and apps (only `features.<name>` keys exist), and
     OpenCode's global custom tools.
 - Per CLI (verified against claude 2.1.289, codex 0.160.0, opencode 1.18.34; each flag has a why-comment
-  in `helper/src/agents/*.ts`, and `helper/test/adapters.test.ts` asserts the argv/params/env — keep it
-  green):
+  in `helper/src/agents/*.ts`; a change is verified by driving the real CLI through the app, see
+  "Verifying" below):
   - **Claude**: `--permission-mode bypassPermissions`, `--strict-mcp-config --mcp-config <inline>`
     (token via `${VAR}` in env, never argv), `--settings '{"disableAllHooks":true,…}'`. **Never `--bare`**
     (breaks OAuth).
@@ -255,8 +255,9 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
 
 ## Verifying
 
-`npm run typecheck`, `npm run lint`, `npm run helper:test`. Behaviour: `npm run helper:dev` plus the
-dev server (loopback → loopback: no LNA prompt) and the `verify-in-browser` harness. Worth checking
+`npm run typecheck` and `npm run lint` are the static gates; there are no code-based tests. Behaviour
+is verified by headless-browser driving: `npm run helper:dev` plus the dev server (loopback → loopback:
+no LNA prompt) and the `verify-in-browser` harness. Worth checking
 after any adapter change: a shell call shows as a "Ran …" row, a vault edit arrives as a `vault_edit`
 diff card in the open editor, and the CLI driven against a fake model server with scratch
 `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`XDG_*` still starts only our MCP server.

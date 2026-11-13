@@ -18,6 +18,7 @@ import { collectFiles } from './utils/tree';
 import { nameTaken } from './utils/entryNames';
 import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
+import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
 import { getFileTimes, recordFileWritten, resetFileTimes, stampFileTimes } from './utils/fileTimes';
 import { clearBaselines, dropBaseline, getBaseline, setBaseline } from './utils/docBaselines';
 import { sameStat, type DiskVersion } from './utils/diskVersion';
@@ -2062,15 +2063,19 @@ export default function App() {
           notifyRef.current('This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.');
           return;
         }
-        const { rotatePdfPages } = await import('./utils/pdfRotate');
-        const rotated = await rotatePdfPages(bytes, delta, pageIndex);
+        // In the build worker, not here: pdf-lib pauses on a zero-delay timer
+        // every 50-100 objects, and a hidden window runs those once a second —
+        // a 1,105-page book took 1.3s focused and never finished minimized.
+        // `bytes` is transferred (detached) — readPdfRole is done with it.
+        const { rotatePdfAsync } = await import('./utils/pdfBuildClient');
+        const rotated = await rotatePdfAsync(bytes, delta, pageIndex);
 
         // Same baseline resolution as flushTab's write: a PDF's is hashed in
         // the background at open, so wait the seed out rather than write blind.
         const seed = pdfSeedForRef.current(id);
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? seeded ?? null;
-        const result = await writeFileVersionedRef.current(handle, rotated.bytes, expected);
+        const result = await writeFileVersionedRef.current(handle, rotated, expected);
         if (result.status !== 'written') {
           setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return;
@@ -2093,6 +2098,9 @@ export default function App() {
       }
     };
 
+    // The buttons say a turn is pending from here until it settles, every way
+    // it can (a refusal and a conflict included) — utils/pdfRotating.ts.
+    beginPdfRotation(path);
     const chains = flushChainsRef.current;
     const chained = (chains.get(id) ?? Promise.resolve()).then(run);
     chains.set(id, chained);
@@ -2100,6 +2108,7 @@ export default function App() {
       await chained;
     } finally {
       if (chains.get(id) === chained) chains.delete(id);
+      endPdfRotation(path);
     }
   }, [readFileBytes, setDiskState]);
 

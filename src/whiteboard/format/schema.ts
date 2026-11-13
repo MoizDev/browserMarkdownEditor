@@ -1,3 +1,5 @@
+import { NODE_DEFAULTS } from '../model/defaults';
+
 // FMT-1; native-format §§3,5,6,10. These are file types, not the live model.
 export const NATIVE_VERSION = [1, 0] as const;
 export const FORMAT_LIMITS = Object.freeze({
@@ -161,18 +163,8 @@ export type StoredRun = readonly [string, JsonObject?, ...JsonValue[]];
 export type StoredBlock = readonly [string, number, string, readonly StoredRun[], number?, ...JsonValue[]];
 export interface StoredRichText extends FutureFields { readonly b: readonly StoredBlock[]; }
 
-// W-D3 supplies bounded raw lexemes. W-D2 must splice unknown values, not stringify them.
-// A pdf host's pdf object is opaque even though its field name is known (R-W5).
-export interface RawFieldSlice {
-    readonly key: string;
-    readonly value: string;
-    readonly parentPath?: readonly (string | number)[]; // absent = root; nested unknown fields/tuple tails also survive
-}
-export interface RecordSource {
-    readonly line: string;
-    readonly unknownFields: readonly RawFieldSlice[];
-    readonly opaqueFields?: readonly RawFieldSlice[];
-}
+// R-W17/19/20: the reader brands raw lexemes into the model's ExtBag/PreservedBlock.
+// There is no by-id source registry or dotted-path sidecar beside the document.
 export type ValidatedRecord =
     | { readonly category: 'pen'; readonly record: PenRecord; }
     | { readonly category: 'view'; readonly record: ViewRecord; }
@@ -213,20 +205,12 @@ export const NODE_PROPERTY_ORDER = {
     clip: ['w', 'h', 'media', 'time', 'playing', 'autoplay', 'alt'],
     linkcard: ['w', 'h', 'url', 'preview'], embed: ['w', 'h', 'url'], opaque: ['raw'],
 } as const;
-// R-W13: transitional file-only list. W-D3 MUST derive this from model/defaults.ts instead;
-// required = a schema property with no default entry. Do not add a second table of default values.
-const REQUIRED_NODE_PROPERTIES = {
-    stroke: ['tool', 'pts', 'widthModel', 'geomVersion', 'fairTol', 'width'],
-    figure: ['shape', 'w', 'h', 'growY', 'color', 'labelColor', 'fill', 'dash', 'size', 'font', 'align', 'valign', 'label', 'width', 'flipX', 'flipY', 'url'],
-    text: ['text', 'color', 'size', 'font', 'align', 'w', 'scale'],
-    sticky: ['text', 'size', 'font', 'align', 'valign', 'growY', 'fit', 'scale', 'url'],
-    connector: ['route', 'start', 'end', 'bend', 'color', 'labelColor', 'fill', 'dash', 'size', 'font', 'label', 'width'],
-    polyline: ['points', 'spline', 'color', 'dash', 'size', 'width'],
-    frame: ['w', 'h', 'name', 'color'], group: [],
-    picture: ['w', 'h', 'media', 'crop', 'flipX', 'flipY', 'alt', 'inverted', 'playing', 'url'],
-    clip: ['w', 'h', 'media', 'time', 'playing', 'autoplay', 'alt'],
-    linkcard: ['w', 'h', 'url', 'preview'], embed: ['w', 'h', 'url'], opaque: ['raw'],
-} as const;
+// R-W13: the file's field list minus the model's one default table determines required fields.
+const REQUIRED_NODE_PROPERTIES = new Map(
+    Object.entries(NODE_PROPERTY_ORDER).map(([kind, fields]) => [kind,
+        fields.filter(field => !Object.prototype.hasOwnProperty.call(NODE_DEFAULTS[kind as keyof typeof NODE_DEFAULTS], field)),
+    ] as const),
+);
 const RECORD_KEYS = {
     pen: ['type', 'tool', 'color', 'width', 'next'],
     view: ['type', 'sheet', 'x', 'y', 'zoom', 'grid', 'focusMode', 'toolLock', 'transparent', 'debugMode'],
@@ -444,7 +428,7 @@ function node(o: Record<string, unknown>, context: RecordContext): ValidatedReco
     const kind = o.kind as string;
     if (!has(NODE_PROPERTY_ORDER, kind)) return { category: 'node', record: o as unknown as NodeRecordBase, unknownKind: true };
     const properties: readonly string[] = NODE_PROPERTY_ORDER[kind as keyof typeof NODE_PROPERTY_ORDER];
-    requireFields(o, REQUIRED_NODE_PROPERTIES[kind as keyof typeof REQUIRED_NODE_PROPERTIES], kind);
+    requireFields(o, REQUIRED_NODE_PROPERTIES.get(kind)!, kind);
     strings(o, ['color', 'labelColor', 'fill', 'dash', 'size', 'font', 'align', 'valign']
         .filter(key => properties.includes(key) && !(kind === 'frame' && key === 'color')));
     if (kind === 'stroke' || kind === 'figure' || kind === 'connector' || kind === 'polyline') number(o.width, 'width', 0.05, 500, true);

@@ -72,7 +72,7 @@ try {
         assert.equal(result.graph.paint.edges.length, cases.filter(row => row[2]).length, 'wrong graph edge count');
     }
     await phase('cold');
-    await saveText(page, 'E01_https.md', files['E01_https.md'] + '\nSaved through the editor.\n');
+    report.saveWitness = await saveText(page, 'E01_https.md', files['E01_https.md'] + '\nSaved through the editor.\n');
     await page.keyboard.press('Meta+e');
     await phase('saved');
     await reload(page);

@@ -20,8 +20,11 @@ It preserves the real https anchor, then reads backlinks by opening each exact
 local target path through the tree. The expected source identities are compared,
 not just total links. A screenshot and observed filled circles/edge segments
 assert that no URL-derived unresolved node exists. The same checks run cold,
-after an in-app Cmd+S (disk completion is awaited with bounded native reads), and
-a true reload. The fixture has real local targets, so deleting all extraction
+after an in-app Cmd+S, and a true reload. Its disk witness first waits for a
+specified count of completed successful closes at that path (seed/outside closes
+also count), times out as a harness fault, then reads once. Only NotReadableError
+has bounded retries; NotFoundError is never retried. This mirrors V-01a's pending
+readWitness API rather than polling bytes while a writer might still be open. The fixture has real local targets, so deleting all extraction
 cannot falsely pass. Targets are unique basenames; duplicate policy is D08.
 
 The graph applies `localMarkdownTarget` before discarding any provenance. It uses
@@ -69,9 +72,21 @@ zero backlinks; following the actual painted edge opened z/Note.md / LAST NOTE.
 The candidate assertion failed `FAIL D08-target graph z/Note.md != a/Note.md`.
 Evidence: `W/scratch/c-e/C-11-D08-before/{report.json,cold.png,stdout.txt}`.
 
-The shared resolver and App seam are described in the lane hand-off once wired.
-A source-side old-click-versus-shared-resolver difference must be reported
-honestly: the old click already uses canonical first-match semantics.
+`getNoteResolver(fileTree)` owns an ordered basename→paths index per canonical
+immutable tree identity. Graph resolution and the App callback must read that same
+revision; a save or presentation sort does not rebuild it. `resolve` returns a
+path; `resolveNode` returns the tree's actual file node for opening. Graph keeps
+its existing baseName/collectMarkdownFiles exports as re-exports of this pure
+module, avoiding a dependency cycle.
+
+The old App click already uses first-match semantics, so ordinary fixtures alone
+cannot prove that the callback uses the shared rule. `d08-last-wins.patch` changes
+ONLY the resolver to last-wins. The gate's `--resolver-probe=last` arm then requires
+both the real click and graph to use z/Note.md. Without the App seam it fails
+`FAIL click-graph-agree click a/Note.md != graph z/Note.md`; with the seam it must
+pass the whole flow. The SAME patch under the NORMAL invocation remains a mutant:
+both consumers agree on z, but the first-match requirement must fail D08-target.
+This probes coupling without changing product policy or shipping the patch.
 
 ## Commands and current evidence status
 
@@ -98,7 +113,14 @@ the normal production configuration. Typecheck/lint passed through L; logs
 `W/scratch/c-e/C-11-{typecheck,lint}.txt`. Earlier queue-only cancellations during
 the timing window are not gate results.
 
-D08 candidate and last-wins mutant are still pending. Do not treat an interrupted
-run, patch failure, timeout, wrong URL or other setup failure as a mutant kill;
-match its specific reason after clean code passes. Save-path timing sign-off
+D08 graph-side normal candidate PASS: `W/scratch/c-e/C-11-D08-graph-after`.
+D07 regression after graph/resolver integration also PASS (`C-11-D07-after-resolver`).
+The last-wins probe without the App seam failed its named click-graph-agree
+assertion, validated by an exit+reason wrapper (`C-11-D08-probe-without-seam`).
+Completed-close witness revision PASS on both gates: `C-11-D07-close-witness`
+and `C-11-D08-close-witness` record successful close count 2 (including the seed),
+then one successful native read, attempts=1. App seam's passing probe and normal
+last-wins mutant runs are still pending. Do not treat an interrupted run, patch failure, timeout,
+wrong URL or other setup failure as a mutant kill; match its specific reason
+following a clean pass. Save-path timing sign-off
 remains pending with the benchmark owner, not claimed by these functional runs.

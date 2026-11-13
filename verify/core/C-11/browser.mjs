@@ -29,6 +29,26 @@ async function openVault(browser, files) {
         const getDir = FileSystemDirectoryHandle.prototype.getDirectoryHandle;
         FileSystemDirectoryHandle.prototype.getDirectoryHandle = async function (...a) { return grant(await getDir.apply(this, a)); };
         window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('C11Links', { create: true });
+        window.__completedCloses = Object.create(null);
+        const createWritable = FileSystemFileHandle.prototype.createWritable;
+        FileSystemFileHandle.prototype.createWritable = async function (...a) {
+            const handle = this;
+            const writable = await createWritable.apply(this, a);
+            const close = writable.close.bind(writable);
+            writable.close = async (...b) => {
+                const result = await close(...b);
+                try {
+                    const vault = await (await navigator.storage.getDirectory()).getDirectoryHandle('C11Links');
+                    const parts = await vault.resolve(handle);
+                    if (parts) {
+                        const path = parts.join('/');
+                        window.__completedCloses[path] = (window.__completedCloses[path] ?? 0) + 1;
+                    }
+                } catch { /* A moved handle cannot identify a path; the witness times out. */ }
+                return result;
+            };
+            return writable;
+        };
         const proto = CanvasRenderingContext2D.prototype;
         const clear = proto.clearRect, move = proto.moveTo, line = proto.lineTo, arc = proto.arc, fill = proto.fill;
         const state = new WeakMap();
@@ -120,19 +140,45 @@ export async function saveText(page, path, text) {
     await page.locator('.cm-content').click();
     await page.keyboard.press('Meta+a');
     await page.keyboard.insertText(text);
+    const completed = await page.evaluate(path => window.__completedCloses[path] ?? 0, path);
     await page.keyboard.press('Meta+s');
-    const deadline = Date.now() + 10000;
+    const witness = await readWitness(page, {
+        name: 'in-app save', path,
+        afterCompletedCloses: { path, count: completed + 1, timeoutMs: 10000, intervalMs: 50 },
+    });
+    assert.equal(witness.text, text, `saved bytes differ at ${path}`);
+    return witness;
+}
+
+// Mirrors V-01a readWitness: fence on successful closes (including seed and
+// outside writes), then ONE read, retrying only transient NotReadableError.
+export async function readWitness(page, { name, path, report, afterCompletedCloses }) {
+    const { path: closePath, count, timeoutMs, intervalMs } = afterCompletedCloses;
+    const deadline = Date.now() + timeoutMs;
+    let observed = 0;
     while (Date.now() < deadline) {
-        const actual = await page.evaluate(async path => {
-            const parts = path.split('/');
-            let dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('C11Links');
-            for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part);
-            return (await (await (await dir.getFileHandle(parts.at(-1))).getFile()).text());
-        }, path);
-        if (actual === text) return;
-        await page.waitForTimeout(50);
+        observed = await page.evaluate(path => window.__completedCloses[path] ?? 0, closePath);
+        if (observed >= count) break;
+        await page.waitForTimeout(intervalMs);
     }
-    throw new Error(`in-app save never reached ${path}`);
+    if (observed < count) throw new Error(`HARNESS-FAULT completed-close timeout ${name}: ${closePath} ${observed}<${count}`);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        const result = await page.evaluate(async path => {
+            try {
+                const parts = path.split('/');
+                let dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('C11Links');
+                for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part);
+                return { text: await (await (await dir.getFileHandle(parts.at(-1))).getFile()).text() };
+            } catch (error) { return { error: { name: error.name, message: error.message } }; }
+        }, path);
+        if (!result.error) {
+            const witness = { name, path, afterCompletedCloses, observedCompletedCloses: observed, attempts: attempt, text: result.text };
+            if (report) (report.witnesses ??= []).push(witness);
+            return witness;
+        }
+        if (result.error.name !== 'NotReadableError' || attempt === 3) throw new Error(`HARNESS-FAULT readWitness ${path}: ${result.error.name}: ${result.error.message}`);
+        await page.waitForTimeout(intervalMs);
+    }
 }
 
 export async function reload(page) {

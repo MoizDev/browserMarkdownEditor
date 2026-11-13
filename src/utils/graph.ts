@@ -11,10 +11,10 @@ import { decodeDocumentText } from './diskVersion';
  * Image embeds (![[file.png]]) are intentionally ignored.
  */
 
-import { collectFiles } from './tree';
 import { mapPool } from './pool';
-import { isMarkdownFile, noteDisplayName } from './fileTypes';
 import { localMarkdownTarget } from './linkClassify';
+import { baseName, getNoteResolver } from './noteResolver';
+export { baseName, collectMarkdownFiles } from './noteResolver';
 import type {
     FileTreeNode,
     FileTreeFileNode,
@@ -23,12 +23,6 @@ import type {
     GraphAdjacency,
     GraphData,
 } from '../types';
-
-/** Strip directory + .md extension to get a note's display name. */
-export function baseName(pathOrName: string): string {
-    const seg = String(pathOrName).split('/').pop() || '';
-    return noteDisplayName(seg);
-}
 
 /**
  * Extract all outgoing link targets from a markdown document.
@@ -55,11 +49,6 @@ export function extractLinks(text: string): string[] {
     }
 
     return targets;
-}
-
-/** Flatten the file tree into a list of markdown file nodes. */
-export function collectMarkdownFiles(fileTree: FileTreeNode[]): FileTreeFileNode[] {
-    return collectFiles(fileTree).filter(f => isMarkdownFile(f.name));
 }
 
 /* ── Extracted-link cache ──
@@ -151,13 +140,8 @@ async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<st
  *   outlinks:  { [id]: [targetId, ...] }
  */
 export async function buildGraph(fileTree: FileTreeNode[], revalidate = true): Promise<GraphData> {
-    const files = collectMarkdownFiles(fileTree);
-
-    // Index note name -> path for link resolution (case-insensitive).
-    const index = new Map<string, string>();
-    for (const f of files) {
-        index.set(baseName(f.name).toLowerCase(), f.path);
-    }
+    const resolver = getNoteResolver(fileTree);
+    const files = resolver.files;
 
     const nodesMap = new Map<string, GraphNode>();
     for (const f of files) {
@@ -198,7 +182,7 @@ export async function buildGraph(fileTree: FileTreeNode[], revalidate = true): P
             const key = baseName(raw).toLowerCase();
             if (!key) continue;
 
-            let targetPath = index.get(key);
+            let targetPath = resolver.resolve(raw);
             if (!targetPath) {
                 // Unresolved link — create a faint placeholder node (like Obsidian).
                 targetPath = `unresolved:${key}`;

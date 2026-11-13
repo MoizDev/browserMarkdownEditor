@@ -113,7 +113,7 @@ function extension(value: unknown): boolean {
 function controls(value: string): boolean {
     for (let i = 0; i < value.length; i++) {
         const c = value.charCodeAt(i);
-        if (c < 32 || c === 127) return true;
+        if (c < 32 || (c >= 127 && c <= 159)) return true; // Unicode C0, DEL and C1 controls.
     }
     return false;
 }

@@ -105,6 +105,27 @@ export interface RenderConstants {
     readonly cpuGrantMinBytes: 33554432;
     readonly cpuGrantPerVisiblePaneBytes: 8388608;
     readonly cpuGrantPerVisiblePixelBytes: 8;
+    /** Coarsened navigator.deviceMemory classes, not inferred installed RAM (design §6.2:607). */
+    readonly deviceMemoryLowGiB: 4;
+    readonly deviceMemoryMiddleGiB: 8;
+    readonly deviceMemoryHighGiB: 16;
+    /** Weighted sharing and minimum progress, never an exemption from grants (§6.3:640–641). */
+    readonly focusedPaneWeight: 2;
+    readonly unfocusedPaneWeight: 1;
+    readonly minPaneTileCredits: 2;
+    readonly liveVectorScratchBytes: 2097152;
+    /** Decoded CPU/bridge storage, distinct from the 12-byte surface reserve (§6.1:592,597). */
+    readonly decodedRgbaBytesPerPixel: 4;
+    readonly memorySoftPressureRatio: 0.9;
+    readonly memoryTrimTargetRatio: 0.8;
+    /** Hysteresis from §6.3:643 and §6.4:653; lower q remains allowed if 0.5 cannot fit. */
+    readonly qualityReductionFactor: 0.8;
+    readonly minInteractiveQualityScale: 0.5;
+    readonly memoryRecoveryRatio: 0.6;
+    readonly memoryRecoveryDelayMs: 5000;
+    /** Trouble signals, not a claim that driver allocation sizes can be measured (§6.4:655). */
+    readonly slowGpuSampleCount: 120;
+    readonly stalledFenceMs: 250;
     readonly surfaceReserveBytesPerPixel: 12;
     readonly surfaceMaxGpuGrantFraction: 0.4;
     /** Across ALL panes: min(4 ms, 0.45 * frame interval), not one budget per pane. */

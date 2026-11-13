@@ -1,6 +1,6 @@
 import type { RenderConstants } from './types';
 
-/** Fixed rendering policy from rendering.md §4:115–132. MiB are binary; these are not measurements.
+/** Fixed policy from rendering.md §4:115–132 and rendering-design.md §6. MiB are binary, not measurements.
  * Keep runtime values out of the type modules, and freeze nested policy records as well as the root.
  */
 export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
@@ -41,6 +41,23 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     cpuGrantMinBytes: 33554432,
     cpuGrantPerVisiblePaneBytes: 8388608,
     cpuGrantPerVisiblePixelBytes: 8,
+    // Governor policy from rendering-design.md §6.1–6.4; no thresholds are inferred from hardware.
+    deviceMemoryLowGiB: 4,
+    deviceMemoryMiddleGiB: 8,
+    deviceMemoryHighGiB: 16,
+    focusedPaneWeight: 2,
+    unfocusedPaneWeight: 1,
+    minPaneTileCredits: 2,
+    liveVectorScratchBytes: 2097152,
+    decodedRgbaBytesPerPixel: 4,
+    memorySoftPressureRatio: 0.9,
+    memoryTrimTargetRatio: 0.8,
+    qualityReductionFactor: 0.8,
+    minInteractiveQualityScale: 0.5,
+    memoryRecoveryRatio: 0.6,
+    memoryRecoveryDelayMs: 5000,
+    slowGpuSampleCount: 120,
+    stalledFenceMs: 250,
     surfaceReserveBytesPerPixel: 12,
     surfaceMaxGpuGrantFraction: 0.4,
     frameTargetMaxMs: 4,

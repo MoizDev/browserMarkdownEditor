@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 import { loadIdentityToolbox } from '../lib/identityToolbox.mjs';
 import { pdfFixtureManifest, readPdfFixture } from '../lib/fixtures.mjs';
+import { analysisVersion, summarizeTrace, summarizeCosts } from '../lib/textCostTrace.mjs';
 
 const options = {};
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -44,7 +45,7 @@ const server = createServer(async (request, response) => {
     } catch { response.writeHead(404).end(); }
 });
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, 'localhost', resolve); });
-const report = { driver, phase, advisory: phase === 'advisory', acceptance: 'NOT EVALUATED: v-c must admit calibrated sessions under the timing-window bound; no open-path 5% claim', toolbox: toolboxIdentity, builds: { fixed: fixedIdentity, omitted: omitIdentity }, sessionsPerArmPerFixture: sessions, sessions: [], summary: [] };
+const report = { driver, analysisVersion, phase, advisory: phase === 'advisory', acceptance: 'NOT EVALUATED: v-c must admit calibrated sessions under the timing-window bound; no open-path 5% claim', toolbox: toolboxIdentity, builds: { fixed: fixedIdentity, omitted: omitIdentity }, sessionsPerArmPerFixture: sessions, sessions: [], summary: [] };
 let browser;
 const environment = () => {
     const vm = execFileSync('vm_stat', { encoding: 'utf8' });
@@ -140,14 +141,7 @@ try {
         await binding.stop(); await context.close();
         await writeFile(resolve(out, 'result.json'), JSON.stringify(report, null, 2) + '\n');
     }
-    for (const fixture of fixtures) {
-        const totals = arm => report.sessions.filter(row => row.arm === arm && row.fixture.id === fixture.id).map(row => ({ populatedMs: row.tracePhases.reduce((n, p) => n + p.populatedMs, 0), scriptingMs: row.tracePhases.reduce((n, p) => n + p.scriptingMs, 0), built: row.tracePhases.reduce((n, p) => n + p.built, 0), longTasks: row.tracePhases.reduce((n, p) => n + p.longTasks.length, 0) }));
-        const fixed = totals('fixed'), omitted = totals('omitted');
-        const median = values => { const sorted = [...values].sort((a, b) => a - b); return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2; };
-        const summarize = values => Object.fromEntries(['populatedMs', 'scriptingMs', 'built', 'longTasks'].map(key => [key, median(values.map(row => row[key]))]));
-        const a = summarize(fixed), b = summarize(omitted);
-        report.summary.push({ fixture: fixture.id, fixed: a, omitted: b, scriptingDeltaMs: a.scriptingMs - b.scriptingMs, estimatedDeltaPerBuiltLayerMs: (a.scriptingMs - b.scriptingMs) / a.built, populatedDeltaMs: a.populatedMs - b.populatedMs, interpretation: 'Advisory difference of total phase scripting, not an isolated helper timer or confidence/no-regression result' });
-    }
+    report.summary = summarizeCosts(report);
 } catch (error) {
     report.executionError = error.message; throw error;
 } finally {
@@ -156,17 +150,3 @@ try {
     await writeFile(resolve(out, 'result.json'), JSON.stringify(report, null, 2) + '\n');
 }
 console.log(JSON.stringify(report.summary, null, 2));
-
-function summarizeTrace(events, phase) {
-    const marker = suffix => events.find(event => event.name === 'TimeStamp' && event.args?.data?.message === `P11b:${phase.name}:${suffix}`);
-    const first = marker('first'), populated = marker('populated'), settled = marker('settled');
-    if (!first || !populated || !settled || !phase.built) throw new Error(`Missing observed trace phase: ${phase.name}`);
-    const main = events.filter(event => event.pid === first.pid && event.tid === first.tid && event.ph === 'X' && event.dur > 0 && event.ts < settled.ts && event.ts + event.dur > first.ts);
-    const script = main.filter(event => /^(FunctionCall|EvaluateScript|RunMicrotasks|V8\.RunMicrotasks|v8\.execute|V8\.Execute)$/.test(event.name));
-    if (!script.length) throw new Error('No main-thread scripting slices observed');
-    const intervals = script.map(event => [Math.max(first.ts, event.ts), Math.min(settled.ts, event.ts + event.dur)]).sort((a, b) => a[0] - b[0]);
-    let scriptingUs = 0, end = -Infinity;
-    for (const [a, b] of intervals) { scriptingUs += Math.max(0, b - Math.max(a, end)); end = Math.max(end, b); }
-    const longTasks = main.filter(event => /RunTask$/.test(event.name) && event.dur >= 50_000).map(event => ({ startUs: event.ts, durationMs: event.dur / 1000 }));
-    return { name: phase.name, built: phase.built, populatedMs: (populated.ts - first.ts) / 1000, settledMs: (settled.ts - first.ts) / 1000, scriptingMs: scriptingUs / 1000, scriptingPerLayerMs: scriptingUs / (1000 * phase.built), longTasks, source: 'Union of trace scripting intervals on the timestamp marker thread; no nested-duration double counting' };
-}

@@ -83,6 +83,7 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, i
     const [message, setMessage] = useState(''), [finding, setFinding] = useState(false);
     const findAbort = useRef<AbortController | null>(null), resumeFind = useRef(false);
     const findingRef = useRef(finding); findingRef.current = finding;
+    const lastFindQuery = useRef('');
     const navigationEpoch = useRef(0);
     const expectedDigest = useRef(expectedPageDigest); expectedDigest.current = expectedPageDigest;
     const reportLocation = (value: PdfTextAnchor, cause: LocationCause) => onLocation(value, cause, models.current.get(value.physicalPageIndex)?.page?.digest);
@@ -262,8 +263,19 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, i
     }, [isFocused]);
     const find = useCallback(async (resume = false) => {
         if (!isVisible) return;
-        findAbort.current?.abort(); const cancel = new AbortController(); findAbort.current = cancel; setFinding(true); if (!resume) setSearch(undefined);
-        try { for await (const batch of controller.find(query, cancel.signal)) if (!cancel.signal.aborted) setSearch(batch); }
+        const keepResults = resume && lastFindQuery.current === query; lastFindQuery.current = query;
+        findAbort.current?.abort(); const cancel = new AbortController(); findAbort.current = cancel; setFinding(true); if (!keepResults) setSearch(undefined);
+        try {
+            for await (const batch of controller.find(query, cancel.signal)) if (!cancel.signal.aborted) setSearch(previous => {
+                if (!keepResults || batch.done || !previous) return batch;
+                // A resumed scan revisits cached keys before its old frontier.
+                // Do not flash those already-known hits away on early batches.
+                const hits = new Map([...previous.hits, ...batch.hits].map(hit => [`${hit.anchor.physicalPageIndex}:${hit.anchor.offsetUTF16}`, hit]));
+                return { ...batch, hits: [...hits.values()].sort((a, b) => a.anchor.physicalPageIndex - b.anchor.physicalPageIndex || a.anchor.offsetUTF16 - b.anchor.offsetUTF16),
+                    pagesDone: Math.max(previous.pagesDone, batch.pagesDone), textlessPages: Math.max(previous.textlessPages, batch.textlessPages),
+                    unavailablePages: [...new Set([...previous.unavailablePages, ...batch.unavailablePages])] };
+            });
+        }
         catch (error) { if (!cancel.signal.aborted) setMessage(String(error)); }
         finally { if (findAbort.current === cancel) setFinding(false); }
     }, [controller, query, isVisible]);

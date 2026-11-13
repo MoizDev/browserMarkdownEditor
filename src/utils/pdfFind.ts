@@ -55,7 +55,7 @@ type ProjectionChunk = { key: string; offsets: number[] };
 /** One producer serves synchronous reveal maps and sliced background indexing.
  * A page can contain a million units; projection must yield as well as matching. */
 function* projectionChunks(page: PdfFindPageText): Generator<ProjectionChunk> {
-    let key = '', offsets: number[] = [], breaks = 0, space = false;
+    let key = '', offsets: number[] = [], breaks = 0, space = false, visited = 0;
     const emit = (text: string, source: number) => {
         key += text;
         for (let n = 0; n < text.length; n++) offsets.push(source);
@@ -69,7 +69,13 @@ function* projectionChunks(page: PdfFindPageText): Generator<ProjectionChunk> {
         else {
             let end = i, lineEnd = false;
             if (char === '-' || char === '\u2010' || char === '\u2011' || char === '\u00ad') {
-                while (end < page.text.length && isSpace(page.text[end])) { if (page.text[end] === '\n' || page.text[end] === '\r') lineEnd = true; end++; }
+                while (end < page.text.length && isSpace(page.text[end])) {
+                    if (page.text[end] === '\n' || page.text[end] === '\r') lineEnd = true;
+                    end++;
+                    // A long whitespace tail (or dropped-mark page below) can
+                    // emit no key units. Bound source work, not just output.
+                    if (++visited >= 4096) { yield { key, offsets }; key = ''; offsets = []; visited = 0; }
+                }
             }
             if (lineEnd) { emit(LINE_HYPHEN, start); i = end; space = false; }
             else if (char !== '\u00ad') {
@@ -79,7 +85,7 @@ function* projectionChunks(page: PdfFindPageText): Generator<ProjectionChunk> {
                 }
             }
         }
-        if (offsets.length >= 4096) { yield { key, offsets }; key = ''; offsets = []; }
+        if (++visited >= 4096 || offsets.length >= 4096) { yield { key, offsets }; key = ''; offsets = []; visited = 0; }
     }
     yield { key, offsets };
 }

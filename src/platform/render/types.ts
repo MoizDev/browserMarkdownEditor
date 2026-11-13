@@ -88,6 +88,28 @@ export interface RenderConstants {
     readonly tileGutterTexels: 1;
     /** Half-octave moving levels; the settled scale remains exact. PDFium bleed is not a gutter. */
     readonly movingTileLevelsPerOctave: 2;
+    /** Motion-level hysteresis, not a current-pixel validity exception (design §5.2:500). */
+    readonly motionLevelKeepMinDivisor: 1.15;
+    readonly motionLevelKeepMaxFactor: 1.6;
+    readonly versionBridgeDurationMs: 2000;
+    /** Bounded nearby low coverage; extremely narrow pages use regions (§5.4:523–525). */
+    readonly lowPreviewScaleDivisor: 4;
+    readonly lowPreviewMaxAspectRatio: 16;
+    readonly lowPreviewAheadViewports: 2;
+    readonly lowPreviewBehindViewports: 1;
+    readonly maxPagePreviewsPerPane: 12;
+    /** Stable demand ordering, bounded travel horizon and motion coalescing (§5.7:571–575). */
+    readonly demandAgePromotionMs: 250;
+    readonly velocityWindowMs: 100;
+    readonly prefetchHorizonSeconds: 0.2;
+    readonly prefetchMinViewports: 0.25;
+    readonly prefetchMaxViewports: 1;
+    readonly prefetchBehindViewports: 0.25;
+    readonly pinchDemandIntervalMs: 50;
+    readonly settledDemandDelayMs: 100;
+    /** Watchdog target; heavy fixtures may have an explicit host policy (§5.7:577). */
+    readonly tileWatchdogMs: 2000;
+    readonly tileRetryCount: 1;
     readonly memoryCeilings: Readonly<{
         /** navigator.deviceMemory <= 4 GiB or unknown. */
         low: Readonly<{ gpuBytes: 134217728; cpuRasterBytes: 67108864 }>;

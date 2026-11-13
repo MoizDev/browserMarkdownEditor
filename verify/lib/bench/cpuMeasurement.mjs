@@ -26,11 +26,11 @@ export async function collectAgentRoots() {
     }));
     return roots.sort((a, b) => a.pid - b.pid);
 }
-function runtimeClass(comm) {
+export function runtimeClass(comm) {
     const name = basename(comm);
     if (/(?:Chrome|Chromium)/i.test(name)) return 'other-browser';
     if (/qemu|colima|lima|docker|Virtualization|socket_vmnet/i.test(name)) return 'vm';
-    if (/^(?:node|bun|deno|vite|tsc|eslint|esbuild|rollup|npm|npx)(?:\s|$)/i.test(name)) return 'other-runtime/build/server';
+    if (/^(?:node|bun|deno|vite|tsc|eslint|esbuild|rollup|npm|npx|make|cmake|ninja|clang\+\+|clang|gcc|g\+\+|cc|cargo|rustc|python[\d.]*)(?:\s|$)/i.test(name)) return 'other-runtime/build/server';
     if (/mds|mdworker|contextstored|fseventsd/i.test(name)) return 'system-indexing/daemon';
     return null;
 }
@@ -69,22 +69,24 @@ export async function sampleCPU(agentRoots, previousBench = new Map()) {
     return { at: new Date().toISOString(), monotonicMs: clock(), beforeMonotonicMs, beforeHostBusyMs,
         load: os.loadavg(), cpuCount: cpus.length,
         hostBusyMs: cpus.reduce((sum, cpu) => sum + cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.irq, 0),
-        top: [...processes].sort((a, b) => b.pcpu - a.pcpu).slice(0, 25),
+        top: [...processes].sort((a, b) => b.pcpu - a.pcpu).slice(0, 25), agentRootPids: agentRoots.map(a => a.pid),
         bench: processes.filter(p => p.role === 'bench'), raw: stdout };
 }
-export async function startCPUMeasurement(agentRoots) {
+export async function startCPUMeasurement(agentRoots, inspect = null) {
     const first = await sampleCPU(agentRoots);
     const samples = [first];
+    const environmentSamples = inspect ? [await inspect(first)] : [];
     const known = new Map(first.bench.map(p => [p.pid, p]));
     const maxima = new Map(first.bench.map(p => [p.pid, { startMs: p.cpuMs, maxMs: p.cpuMs, resolutionMs: 20 }]));
     let stopped = false, timer, pending = Promise.resolve(), samplingError;
-    const observe = sample => {
+    const observe = async sample => {
         samples.push(sample);
         for (const proc of sample.bench) {
             known.set(proc.pid, proc);
             const entry = maxima.get(proc.pid) ?? { startMs: 0, maxMs: 0, resolutionMs: 10 };
             entry.maxMs = Math.max(entry.maxMs, proc.cpuMs); maxima.set(proc.pid, entry);
         }
+        if (inspect) environmentSamples.push(await inspect(sample));
     };
     const tick = () => {
         pending = sampleCPU(agentRoots, known).then(observe).catch(error => { samplingError = error.message; }).finally(() => {
@@ -94,7 +96,7 @@ export async function startCPUMeasurement(agentRoots) {
     timer = setTimeout(tick, 1000);
     return { async stop(measurement) {
         stopped = true; clearTimeout(timer); await pending;
-        observe(await sampleCPU(agentRoots, known));
+        await observe(await sampleCPU(agentRoots, known));
         // CDP sampled these BEFORE the adapter closed its fresh Chrome. Recover
         // renderer/GPU CPU that ps can miss at exit; unseen work stays outside.
         for (const memory of [measurement?.memoryBefore, measurement?.memoryAfter]) {
@@ -109,7 +111,7 @@ export async function startCPUMeasurement(agentRoots) {
         const last = samples.at(-1), elapsedMs = last.monotonicMs - first.beforeMonotonicMs;
         const benchMsLower = [...maxima.values()].reduce((sum, p) => sum + Math.max(0, p.maxMs - p.startMs - p.resolutionMs), 0);
         const hostBusyMs = Math.max(0, last.hostBusyMs - first.beforeHostBusyMs);
-        return { samples, samplingError, elapsedMs, hostBusyMs, benchMsLower,
+        return { samples, environmentSamples, samplingError, elapsedMs, hostBusyMs, benchMsLower,
             benchCpuByPid: Object.fromEntries(maxima),
             outsideBenchCores: Math.max(0, hostBusyMs - benchMsLower) / elapsedMs,
             outsideBenchPercent: Math.max(0, hostBusyMs - benchMsLower) / elapsedMs * 100,

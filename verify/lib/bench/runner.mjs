@@ -5,6 +5,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { acquireBenchLock, scratch } from './lock.mjs';
 import { machineIdentity, machineSnapshot, sessionValidity } from './machine.mjs';
 import { sessionSchedule, summarize } from './stats.mjs';
+import { collectAgentRoots, startCPUMeasurement } from './cpuMeasurement.mjs';
+import { inspectProcessOwnership } from './environment.mjs';
+import { windowCalibration } from './windowCalibration.mjs';
 
 const json = value => JSON.stringify(value, (_key, x) => typeof x === 'number' && !Number.isFinite(x) ? String(x) : x, 2);
 const hash = value => createHash('sha256').update(json(value)).digest('hex');
@@ -62,6 +65,7 @@ function reportMarkdown(report) {
         + `\n## Gate contract\n\n${['witness', 'identity', 'mutant', 'falsePass'].map(k => `- ${k}: ${report.contract[k]}`).join('\n')}\n`
         + `\n## Losses / not covered\n\n${report.contract.losses.map(x => `- ${x}`).join('\n')}\n`
         + `\n## Invalid sessions (never used for accepted inference; exploratory fits are development only)\n\n${report.sessions.filter(x => !x.validity?.valid).map(x => `- ${x.id} (${x.arm}): ${x.validity?.causes.join('; ') ?? x.error}`).join('\n') || 'None.'}\n`
+        + `\n## Invalid-session top CPU consumers\n\n${report.sessions.filter(x => !x.validity?.valid).map(x => `- ${x.id}, start load ${x.before?.load?.[0]}: ${(x.before?.environment?.topConsumers ?? []).slice(0, 5).map(p => `${p.pid} ${p.comm} ${p.pcpu}% (${p.role})`).join('; ')}`).join('\n') || 'None.'}\n`
         + `\n## Session values\n\n| Session | Arm | Metric | Valid | Cause |\n|---|---|---:|---|---|\n`
         + report.sessions.map(s => `| ${s.id} | ${s.arm} | ${s.measurement?.values.join(', ') ?? '—'} | ${s.validity?.valid ?? false} | ${(s.validity?.causes ?? [s.error]).filter(Boolean).join('; ').replaceAll('|', '/')} |`).join('\n')
         + `\n\nAll raw data, machine readings, script, inference history, captures and traces are linked in report.json. No discarded attempt is omitted.\n`
@@ -84,14 +88,14 @@ export async function runBenchmark(config, adapterFactory) {
     // vr-lead ruling: one fixed-size confirmation, decided before its first new
     // session, analyzed once after pooling. Its size equals the first final count.
     const plannedLooks = schedule.length + 1;
-    const policy = { memoryFloorBytes: 6 * 1024 ** 3, maxLoad: 2, maxInvalidPerSlot: 3, ...config.machinePolicy };
+    const policy = { memoryFloorBytes: 6 * 1024 ** 3, maxLoad: 3, maxInvalidPerSlot: 3, ...config.machinePolicy };
     if (!Number.isFinite(policy.memoryFloorBytes) || !Number.isFinite(policy.maxLoad)
-        || policy.memoryFloorBytes < 6 * 1024 ** 3 || policy.maxLoad <= 0 || policy.maxLoad > 2
+        || policy.memoryFloorBytes < 6 * 1024 ** 3 || policy.maxLoad <= 0 || policy.maxLoad > 3
         || !Number.isInteger(policy.maxInvalidPerSlot) || policy.maxInvalidPerSlot < 1 || policy.maxInvalidPerSlot > 3) {
         await lock.release();
-        throw new Error('Invalid machine policy: finite floor >=6GiB, load in (0,2], retries in [1,3] required');
+        throw new Error('Invalid machine policy: finite floor >=6GiB, start load in (0,3], retries in [1,3] required');
     }
-    let adapter, previous, history = [], historyKey;
+    let adapter, previous, windowCheck, history = [], historyKey;
     const ledgerPath = join(gateRoot, 'history.json');
     const report = { schema: 1, id, gate: config.gate, mode: config.mode, temperature: config.temperature,
         status: 'running', started: new Date().toISOString(), metric: config.metric, policy, schedule, plannedLooks,
@@ -106,10 +110,12 @@ export async function runBenchmark(config, adapterFactory) {
         await mkdir(dir, { recursive: true });
         await persist(); // even a fatal browser/Node crash leaves a visible incomplete attempt
         report.machine = await machineIdentity();
-        const scriptFiles = [...new Set([...(config.scriptFiles ?? []), ...['runner.mjs', 'stats.mjs', 'machine.mjs', 'lock.mjs']
+        const scriptFiles = [...new Set([...(config.scriptFiles ?? []), ...['runner.mjs', 'stats.mjs', 'machine.mjs', 'lock.mjs', 'cpuMeasurement.mjs', 'environment.mjs', 'windowCalibration.mjs']
             .map(name => fileURLToPath(new URL(name, import.meta.url)))])];
         report.sources = await Promise.all(scriptFiles.map(async path => ({ path, source: await readFile(path, 'utf8') })));
         report.inputScriptHash = hash({ input: config.inputScript, sources: report.sources });
+        report.agentRoots = await collectAgentRoots();
+        const machineOptions = { agentRoots: report.agentRoots, grantPid: lock.holder.grant.grant.pid };
         adapter = await adapterFactory(config, dir);
         report.identities = adapter.identities;
         report.driverVersion = adapter.driverVersion;
@@ -130,6 +136,7 @@ export async function runBenchmark(config, adapterFactory) {
         configuration({ ...config, metric: analysisMetric });
         if (report.purpose === 'noise' && analysisMetric.rule !== 'no-regression') throw new Error('Noise phase must use no-regression');
         report.analysisMetric = analysisMetric;
+        if (config.mode === 'accepted') windowCheck = await windowCalibration(lock, config, adapter.identities, join(dir, 'report.json'));
         // Noise is a mandatory prerequisite for a comparison, never inferred from
         // the changed-arm run's spread. It must match this metric, fixture and cache policy.
         if (config.mode === 'accepted' && report.purpose === 'gate') {
@@ -174,24 +181,30 @@ export async function runBenchmark(config, adapterFactory) {
                     await lock.assertHeld();
                     const sessionId = String(report.sessions.length + 1).padStart(3, '0');
                     const artifacts = join(dir, sessionId); await mkdir(artifacts);
-                    const record = { id: sessionId, arm: chosen, retry, artifacts, before: await machineSnapshot() };
+                    const record = { id: sessionId, arm: chosen, retry, artifacts, before: await machineSnapshot(machineOptions) };
                     report.sessions.push(record);
                     const preflight = sessionValidity(record.before, record.before, policy);
                     try {
                         if (config.mode === 'accepted' && !preflight.valid) record.validity = preflight;
                         else {
-                            record.measurement = await adapter.measure({ arm: chosen, artifacts, temperature: config.temperature });
-                            await validateMeasurement(record.measurement, adapter.expectedBrowserVersion);
-                            record.after = await machineSnapshot();
-                            record.validity = sessionValidity(record.before, record.after, policy);
+                            const cpu = await startCPUMeasurement(report.agentRoots, sample => inspectProcessOwnership(sample, machineOptions.grantPid));
+                            try {
+                                record.measurement = await adapter.measure({ arm: chosen, artifacts, temperature: config.temperature });
+                                await validateMeasurement(record.measurement, adapter.expectedBrowserVersion);
+                            } finally {
+                                record.cpu = await cpu.stop(record.measurement);
+                                record.after = await machineSnapshot(machineOptions);
+                            }
+                            record.validity = sessionValidity(record.before, record.after, policy, record.cpu);
                             await lock.assertHeld();
                             if (config.mode === 'exploratory') record.exploratory = 'EXPLORATORY, MACHINE SHARED; invalid machine readings may be used only for development, never a verdict';
                             if (record.validity.valid || config.mode === 'exploratory') {
                                 accepted[chosen].push({ values: record.measurement.values }); valid = true;
+                                await windowCheck?.observe(accepted);
                             }
                         }
                     } catch (error) {
-                        record.after ??= await machineSnapshot(); record.error = error.stack;
+                        record.after ??= await machineSnapshot(machineOptions); record.error = error.stack;
                         if (!error.invalidCause) throw error; // app/identity/witness failure is NOT invalidity
                         record.validity = { valid: false, causes: [error.invalidCause] };
                     }
@@ -220,6 +233,7 @@ export async function runBenchmark(config, adapterFactory) {
             await persist();
             if (config.mode === 'exploratory' || result.precise || previous) break;
         }
+        windowCheck?.assertValid();
         await adapter.recheck();
         for (const source of report.sources) {
             if (await readFile(source.path, 'utf8') !== source.source) throw new Error(`Run script changed during measurement: ${source.path}`);
@@ -238,6 +252,7 @@ export async function runBenchmark(config, adapterFactory) {
         catch (error) { report.status = 'fail'; report.error = `${report.error ?? ''}\nAdapter cleanup failed: ${error.stack}`; }
         finally {
             try {
+                if (windowCheck) report.windowCalibration = { path: windowCheck.path, record: windowCheck.record ?? 'opening block incomplete' };
                 report.finished = new Date().toISOString();
                 await mkdir(dir, { recursive: true }); await persist();
                 if (historyKey) {

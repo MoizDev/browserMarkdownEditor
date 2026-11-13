@@ -109,12 +109,26 @@ and matching token, serializes reclaimers and logs time/PID/token/cause in
 `scratch/v-c/reports/lock-recoveries.jsonl`. A live PID/mismatched token is never removed.
 Every session checks ownership/window before and after.
 
-`machine.mjs` records raw vm_stat, pmset power/thermal, load, hardware, OS and display. Free memory
-is `(free + inactive + purgeable) * page size`, floor 6 GiB. Load limit is 2 (one-minute average),
-AC required; any swap-in, missing required reading or reported throttling invalidates a session.
-Page-ins are recorded separately: normal file page-ins are NOT swap-ins. At most three immediate
-invalid attempts per slot, then the run is invalid and must be rescheduled. Lanes may tighten,
-not loosen, these machine limits. A window closing/expiring is a harness stop, never a valid run.
+`machine.mjs` implements the evidence-based `timing-window-bound.md` §4 amendment: no run-owned
+build/typecheck/lint/server/other Chrome/VM beside the bench PID tree; VM down; free memory >=6GiB;
+zero swap-ins; **start** load1 <=3.0 (measured shed maximum2.15 +0.85 daemon-burst margin); AC,
+lid open (ioreg), no thermal throttling. Raw vm_stat/pmset, load and top CPU consumers are recorded
+before/after. Process ownership is checked during the session too, from authoritative grants,
+executable/CWD/run-root argv match. Argv itself is never retained. Agent roots come from hc; another
+runtime never inherits agent status. Unknown runtime ownership is invalid, not silently ignored.
+There is NO aggregate-CPU or per-process CPU-percentage cutoff. Page-ins are not swap-ins.
+At most three immediate invalid attempts per slot, then reschedule; never average an invalidity.
+Lanes may tighten, not loosen, these limits. Closing/expiring the window is a harness stop.
+
+A window also requires its **opening10+10 ABBA cold V-04 control block**. The observed, fixed-n
+relative HL95 half-width must be <=0.09048038882908842, the actual10/arm floor prefix in
+`scratch/measure/floor-3-calibration.json`. Only that canonical prebuilt control can establish the
+opening proof; its first20 valid sessions also feed its ordinary noise run (no double counting).
+Proofs are stored under `scratch/v-c/reports/window-calibrations/`, keyed by dated window identity.
+An opening block noisier than the floor invalidates the WHOLE window; later gates refuse it.
+This is window validity, not gate precision: the gate still needs half-width <=5%/3 at <=40/arm,
+with the unchanged estimators and correction. Above-bound sessions and top consumers remain in
+JSON/Markdown, never averaged. The mutant still needs its10% +/-3pp measured witness.
 
 Reports live at `scratch/v-c/reports/<gate>/<timestamp-id>/report.{json,md}`. JSON retains raw
 session samples, all invalid attempts, script source, identities, machine readings, discarded

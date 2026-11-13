@@ -9,7 +9,7 @@ if (!armA || !armB || !['exploratory', 'accepted'].includes(mode)) {
     throw new Error('Usage: node verify/bench/open-vault.mjs <dist-A> <dist-B> [exploratory|accepted] [cold|warm] [noise-report.json|-] [confirm-report.json]');
 }
 const result = await runBenchmark({
-    gate: 'open-vault', mode, temperature, methodCheck: true,
+    gate: 'open-vault', mode, temperature, methodCheck: true, openingControl: true,
     noiseReport: noiseReport && noiseReport !== '-' ? resolve(noiseReport) : null,
     confirmReport: confirmReport ? resolve(confirmReport) : null,
     scriptFiles: [fileURLToPath(import.meta.url), fileURLToPath(new URL('../lib/bench/browser.mjs', import.meta.url))],

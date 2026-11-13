@@ -366,6 +366,17 @@ export class SampleStore implements SampleStoreReader {
         record.owners++;
         return lease;
     }
+    readEncoded(ref: SampleRef): Readonly<{ pts: string; header: EncodedSampleHeader; }> | null {
+        const record = this.record(ref);
+        if (record.encoded === null) return null;
+        // R-W34: native truth belongs to the immutable record, not an ExtBag/by-id copy. Borrowing
+        // this payload needs the same caller-held SampleLease as read(); no samples are decoded.
+        return Object.freeze({
+            pts: record.encoded, header: Object.freeze({
+                count: record.count, k: record.k, hasPressure: record.hasPressure, runCount: record.runCount,
+            })
+        });
+    }
     evictDecoded(ref: SampleRef): boolean {
         const record = this.record(ref);
         if (record.encoded === null || record.chunks === null) return false;

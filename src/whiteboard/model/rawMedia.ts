@@ -5,7 +5,7 @@ import type { ConnectorNode, FigureNode, NodeKind, OpaqueNode, StickyNode, TextN
 import type { RichText } from '../text/richText';
 
 const PREFIX = 'sha256:';
-const HASH_LENGTH = 71;
+const HASH_LENGTH = 64;
 
 function hex(code: number): number {
     if (code >= 48 && code <= 57) return code - 48;
@@ -14,9 +14,17 @@ function hex(code: number): number {
     throw new RangeError('Invalid Unicode escape in preserved JSON');
 }
 
-// R-W25: lexical dependency discovery, never a parser for the unknown value.
-// Decode at most a 71-character candidate, not an arbitrarily large string token.
-// Keys count too: a future record may use a media hash as a dictionary key.
+function visitHash(hash: string, seen: Set<MediaId> | undefined, visit: (id: MediaId) => void): Set<MediaId> {
+    const id = (PREFIX + hash) as MediaId;
+    if (!seen) seen = new Set();
+    if (!seen.has(id)) { seen.add(id); visit(id); }
+    return seen;
+}
+
+// R-W25/R-W37: lexical discovery, not a parser for unknown data. A maximal run
+// of 64 lowercase hex characters anywhere in a string/key also covers filenames,
+// URLs and suffixed ids. A false positive keeps data; a false negative can trash it.
+// Decode at most a 64-character candidate, never an arbitrarily large string token.
 export function scanRawMedia(raw: RawJson, visit: (id: MediaId) => void): void {
     let seen: Set<MediaId> | undefined;
     let i = 0;
@@ -24,7 +32,6 @@ export function scanRawMedia(raw: RawJson, visit: (id: MediaId) => void): void {
         if (raw.charCodeAt(i++) !== 34) continue;
         let candidate = '';
         let length = 0;
-        let matches = true;
         let closed = false;
         while (i < raw.length) {
             let code = raw.charCodeAt(i++);
@@ -48,21 +55,18 @@ export function scanRawMedia(raw: RawJson, visit: (id: MediaId) => void): void {
                     default: throw new RangeError('Invalid escape in preserved JSON');
                 }
             } else if (code < 32) throw new RangeError('Unescaped control character in preserved JSON');
-            if (matches) {
-                const expected = length < PREFIX.length ? code === PREFIX.charCodeAt(length)
-                    : length < HASH_LENGTH && ((code >= 48 && code <= 57) || (code >= 97 && code <= 102));
-                if (expected) candidate += String.fromCharCode(code);
-                else { matches = false; candidate = ''; }
+            if ((code >= 48 && code <= 57) || (code >= 97 && code <= 102)) {
+                if (length < HASH_LENGTH) candidate += String.fromCharCode(code);
+                else candidate = ''; // Longer runs are not a 64-character hash; bound retained text.
+                length++;
+            } else {
+                if (length === HASH_LENGTH) seen = visitHash(candidate, seen, visit);
+                candidate = '';
+                length = 0;
             }
-            length++;
         }
         if (!closed) throw new RangeError('Unterminated string in preserved JSON');
-        if (!matches || length !== HASH_LENGTH) continue;
-        const id = candidate as MediaId;
-        if (!seen) seen = new Set();
-        if (seen.has(id)) continue;
-        seen.add(id);
-        visit(id);
+        if (length === HASH_LENGTH) seen = visitHash(candidate, seen, visit);
     }
 }
 

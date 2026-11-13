@@ -84,9 +84,12 @@ cannot prove that the callback uses the shared rule. `d08-last-wins.patch` chang
 ONLY the resolver to last-wins. The gate's `--resolver-probe=last` arm then requires
 both the real click and graph to use z/Note.md. Without the App seam it fails
 `FAIL click-graph-agree click a/Note.md != graph z/Note.md`; with the seam it must
-pass the whole flow. The SAME patch under the NORMAL invocation remains a mutant:
-both consumers agree on z, but the first-match requirement must fail D08-target.
-This probes coupling without changing product policy or shipping the patch.
+pass the whole flow. The separate `d08-graph-last-wins.patch` restores the original
+last-wins index ONLY inside graph construction; App still uses the shared first
+match. Its NORMAL invocation must fail D08-target. The graph's expected policy is
+checked before agreement, so this graph-only fault has that stable reason; the
+coupled-last probe still expects z and then checks consumer agreement. Neither
+patch is shipped product code.
 
 ## Commands and current evidence status
 
@@ -128,8 +131,22 @@ The last-wins probe without the App seam failed its named click-graph-agree
 assertion, validated by an exit+reason wrapper (`C-11-D08-probe-without-seam`).
 Completed-close witness revision PASS on both gates: `C-11-D07-close-witness`
 and `C-11-D08-close-witness` record successful close count 2 (including the seed),
-then one successful native read, attempts=1. App seam's passing probe and normal
-last-wins mutant runs are still pending. Do not treat an interrupted run, patch failure, timeout,
-wrong URL or other setup failure as a mutant kill; match its specific reason
-following a clean pass. Save-path timing sign-off
-remains pending with the benchmark owner, not claimed by these functional runs.
+then one successful native read, attempts=1.
+
+Final App seam product source: `7280df0726e219497b93e6091558ab4854cc45cf`,
+`impl/seam/C-11`, clean worktree `W/wt/c-a-seam`. Normal production build plus
+independently installed source archives with each patch all built through L,
+using scratch `W/scratch/c-e/c11-seam{,-coupled-last,-graph-last}.config.mjs`.
+Normal seam D07 (39-note punctuation-expanded) and D08 both PASS; coupled-last
+`--resolver-probe=last` PASS through the complete D08 flow, both click and graph
+choosing z. Graph-only last-wins mutant fails exact `FAIL D08-target graph
+z/Note.md != a/Note.md`, Node exit1; wrapper verified exit and prefix before
+counting the kill. Reports are `W/scratch/c-e/C-11-seam-{normal-D07,normal-D08,
+coupled-last-probe,graph-last-mutant}/report.json`, with screenshots and stdout.
+The compiled seam source stayed clean at that exact head throughout. c-a's seam
+install/typecheck/lint PASS are in `W/scratch/c-a/C-11-static.log`; corrected driver
+lint also PASS. All previews and browsers stopped after their runs.
+
+Do not treat an interrupted run, patch failure, timeout, wrong URL or other setup
+failure as a mutant kill; match its specific reason following a clean pass.
+Save-path timing sign-off remains pending with its owner, not claimed here.

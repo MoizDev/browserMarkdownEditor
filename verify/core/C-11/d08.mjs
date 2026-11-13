@@ -57,8 +57,8 @@ try {
         result.clickText = result.variants[0].text;
         result.backlinks = await backlinks(page);
         result.graphTarget = await followDrawnSourceEdge(name);
-        if (result.variants.some(variant => variant.path !== result.graphTarget.path)) throw new Error(`FAIL click-graph-agree click ${result.clickPath} != graph ${result.graphTarget.path}`);
         if (result.graphTarget.path !== expectedPath) throw new Error(`FAIL D08-target graph ${result.graphTarget.path} != ${expectedPath}`);
+        if (result.variants.some(variant => variant.path !== result.graphTarget.path)) throw new Error(`FAIL click-graph-agree click ${result.clickPath} != graph ${result.graphTarget.path}`);
         assert.deepEqual(result.variants.map(variant => variant.path), Array(count).fill(expectedPath), 'a wikilink variant opened another duplicate');
         assert(result.clickText.includes(marker), 'duplicate identity marker is missing');
         assert.deepEqual(result.backlinks, { count: 1, sources: ['source.md'] }, 'clicked duplicate lacks its unique source backlink');

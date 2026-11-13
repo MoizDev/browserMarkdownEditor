@@ -1,8 +1,10 @@
 import { RENDER_CONSTANTS } from './constants';
 import type { RenderToken } from './types';
+import type { ByteLease } from './gfx/api';
+import type { MemoryAllocator } from './memoryGovernor';
 import type {
     BrokerGpuOwner, ContextDisposeReason, CpuFallbackReason, GpuGrant, GpuRequestResult,
-    SurfaceCallbacks, SurfaceLease, SurfaceRegistration, SurfaceSnapshot, SurfaceStamp,
+    SurfaceBrokerConfiguration, SurfaceCallbacks, SurfaceLease, SurfaceRegistration, SurfaceSnapshot, SurfaceStamp,
     SurfaceState, SurfaceView,
 } from './surfaceBroker.types';
 
@@ -19,6 +21,7 @@ interface SessionCircuit {
 }
 
 interface Reservation {
+    contextLease: ByteLease | null;
     canvas: HTMLCanvasElement;
     context: WebGL2RenderingContext | null;
     owner: BrokerGpuOwner | null;
@@ -48,7 +51,7 @@ interface SurfaceEntry {
     checkedGeneration: number | null;
     reservation: Reservation | null;
     pending: Promise<GpuRequestResult> | null;
-    failed: boolean;
+    failed: CpuFallbackReason | null;
     waiting: boolean;
     lease: SurfaceLease;
 }
@@ -81,6 +84,14 @@ class SurfaceBroker {
     private windowVisible = true;
     private terminalContextActive = false;
     private notificationQueued = false;
+    private contextAllocator: MemoryAllocator | null = null;
+
+    configure({ contextAllocator }: SurfaceBrokerConfiguration): void {
+        if (this.contextAllocator && this.contextAllocator !== contextAllocator) {
+            throw new Error('The surface broker already has its app-wide allocator');
+        }
+        this.contextAllocator = contextAllocator;
+    }
 
     register(registration: SurfaceRegistration): SurfaceLease {
         validateView(registration.view);
@@ -110,7 +121,7 @@ class SurfaceBroker {
             state: circuit.pinned ? 'cpu-pinned' : 'dormant',
             hiddenAt: registration.view.visible ? null : performance.now(),
             generation: circuit.generation, checkedGeneration: null, reservation: null,
-            pending: null, failed: false, waiting: false,
+            pending: null, failed: null, waiting: false,
             lease: {
                 get stamp() { return stampOf(entry); },
                 updateView: view => this.updateView(entry, view),
@@ -119,7 +130,7 @@ class SurfaceBroker {
                 markPresented: (stamp, generation) => this.markPresented(entry, stamp, generation),
                 retry: () => {
                     if (!this.current(entry) || entry.circuit.pinned || entry.reservation) return;
-                    entry.failed = false;
+                    entry.failed = null;
                     entry.waiting = drawable(entry);
                     this.notifyAvailable();
                 },
@@ -175,7 +186,7 @@ class SurfaceBroker {
     /** Pressure/freeze teardown is explicit; browser visibility alone never calls this. */
     releaseContextsForPressure(): void {
         for (const entry of this.surfaces.values()) {
-            entry.failed = true;
+            entry.failed = 'pressure';
             entry.waiting = false;
             if (!entry.reservation) continue;
             this.abandon(entry, 'pressure');
@@ -235,18 +246,19 @@ class SurfaceBroker {
                 this.notifyAvailable();
             }
         } else if (!wasDrawable && drawable(entry)) {
-            entry.failed = false;
+            entry.failed = null;
             entry.waiting = !entry.circuit.pinned;
             this.notifyAvailable();
         }
     }
 
     private requestGpu(entry: SurfaceEntry, canvas: HTMLCanvasElement, stamp: SurfaceStamp): Promise<GpuRequestResult> {
+        if (!this.contextAllocator) throw new Error('Configure the surface broker before requesting a context');
         if (!this.matches(entry, stamp)) return Promise.resolve({ kind: 'stale' });
         if (!drawable(entry) || !this.windowVisible) return Promise.resolve({ kind: 'ineligible' });
         if (entry.circuit.pinned) return Promise.resolve(this.fallback(entry, 'cpu-pinned'));
         if (entry.pending) return entry.pending;
-        if (entry.failed) return Promise.resolve({ kind: 'cpu', reason: 'creation-failed' });
+        if (entry.failed) return Promise.resolve({ kind: 'cpu', reason: entry.failed });
         const kept = entry.reservation;
         if (kept?.lost || kept?.context?.isContextLost()) {
             return Promise.resolve(this.fallback(entry, 'context-lost'));
@@ -275,14 +287,34 @@ class SurfaceBroker {
         if (this.usedCanvases.has(canvas)) {
             throw new Error('A fresh GPU attempt requires a fresh canvas');
         }
+        const contextLease = this.contextAllocator.reserve(RENDER_CONSTANTS.keptContextReserveBytes);
+        if (!contextLease) {
+            if (!this.matches(entry, stamp)) return Promise.resolve({ kind: 'stale' });
+            if (!drawable(entry) || !this.windowVisible) return Promise.resolve({ kind: 'ineligible' });
+            if (entry.pending || entry.reservation || entry.circuit.pinned) return this.requestGpu(entry, canvas, stamp);
+            entry.failed = 'out-of-budget';
+            return Promise.resolve(this.fallback(entry, 'out-of-budget'));
+        }
         const reservation: Reservation = {
-            canvas, context: null, owner: null, grant: null, controller: new AbortController(),
+            contextLease, canvas, context: null, owner: null, grant: null, controller: new AbortController(),
             generation: ++entry.circuit.generation, intentional: false, lost: false, restored: false,
             foregroundMs: 0, foregroundSince: null, timer: null,
             onLost: event => this.contextLost(entry, reservation, event),
             onRestored: () => this.restore(entry, reservation),
         };
-        // Reserve and install loss listeners BEFORE getContext: it can fail or reenter synchronously.
+        // Budget eviction may synchronously close this view or admit a duplicate request (§6.1:603).
+        if (!this.matches(entry, stamp) || !drawable(entry) || !this.windowVisible || entry.circuit.pinned ||
+            entry.pending || entry.reservation) {
+            this.returnContextReserve(reservation);
+            return this.requestGpu(entry, canvas, stamp);
+        }
+        const visibleAfterAllocation = [...this.surfaces.values()].filter(other =>
+            other !== entry && drawable(other) && other.reservation !== null).length;
+        if (this.contextBudget.platform >= PLATFORM_CONTEXT_CEILING || visibleAfterAllocation >= RENDER_CONSTANTS.maxVisiblePaneContexts) {
+            this.returnContextReserve(reservation);
+            return Promise.resolve(this.waitForCapacity(entry));
+        }
+        // Both reservations and loss listeners precede getContext (§3.3:360–364).
         entry.reservation = reservation;
         entry.generation = reservation.generation;
         entry.state = 'requesting';
@@ -324,7 +356,7 @@ class SurfaceBroker {
             } catch {
                 if (!valid()) return { kind: 'stale' };
                 this.abandon(entry, 'creation-failed');
-                entry.failed = true;
+                entry.failed = 'creation-failed';
                 return this.fallback(entry, 'creation-failed');
             }
             if (!valid() || !drawable(entry)) {
@@ -450,7 +482,7 @@ class SurfaceBroker {
     private restoreTimedOut(entry: SurfaceEntry, reservation: Reservation): void {
         if (!this.current(entry) || entry.reservation !== reservation || !reservation.lost) return;
         this.abandon(entry, 'restore-timeout');
-        entry.failed = true;
+        entry.failed = 'restore-timeout';
         if (drawable(entry)) this.fallback(entry, 'restore-timeout');
     }
 
@@ -474,10 +506,22 @@ class SurfaceBroker {
             try { owner?.releaseGpu(reason === 'pressure' ? 'pressure' : reason === 'context-lost' ? 'context-lost' : 'hidden'); }
             finally { owner?.dispose(reason); }
         } finally {
-            zeroCanvas(reservation.canvas);
-            if (reservation.context) destroyContext(reservation.context);
-            this.notifyAvailable();
+            try {
+                zeroCanvas(reservation.canvas);
+                if (reservation.context) destroyContext(reservation.context);
+            } finally {
+                try { this.returnContextReserve(reservation); }
+                finally { this.notifyAvailable(); }
+            }
         }
+    }
+
+    private returnContextReserve(reservation: Reservation): void {
+        const lease = reservation.contextLease;
+        if (!lease) return;
+        reservation.contextLease = null;
+        // Only permanent rollback/abandon returns this; owner.dispose(context-lost) cannot (§3.3:360).
+        this.contextAllocator!.release(lease);
     }
 
     private disposeEntry(entry: SurfaceEntry): void {

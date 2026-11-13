@@ -206,7 +206,7 @@ export class MemoryGovernor {
         if (!registration.id || this.caches.has(registration.id) ||
             (registration.kind === 'mirror' && registration.pool !== 'cpu') ||
             (['program', 'context', 'surface'].includes(registration.kind) && registration.pool !== 'gpu') ||
-            (registration.pool === 'gpu' && !registration.paneId)) {
+            (registration.pool === 'gpu' && registration.kind !== 'context' && !registration.paneId)) {
             throw new MemoryAdmissionError('invalid-input');
         }
         const cache: CacheRecord = {
@@ -401,14 +401,15 @@ export class MemoryGovernor {
         const { pool, kind, paneId } = cache.registration;
         // Existing leases are grandfathered only for accounting, never for new admission.
         if (this.charged[pool] > this.target[pool] || this.charged[pool] + bytes > this.target[pool]) return false;
-        const pane = this.panes.find(item => item.paneId === paneId);
-        const grant = paneId === undefined ? undefined : this.grants.get(paneId);
-        if (pool === 'gpu' && (cache.activity.hiddenAt !== null || !pane?.visible || !pane.requestedPixels ||
-            (pane.cpuPinned && kind !== 'surface'))) return false;
+        // The broker's one app-wide allocator owns all reservations, including lost ones (§3.3:360).
         if (kind === 'context') {
             const held = this.kindBytes('context');
             return held + bytes <= (POLICY.maxAppContexts - POLICY.reservedTerminalContexts) * POLICY.keptContextReserveBytes;
         }
+        const pane = this.panes.find(item => item.paneId === paneId);
+        const grant = paneId === undefined ? undefined : this.grants.get(paneId);
+        if (pool === 'gpu' && (cache.activity.hiddenAt !== null || !pane?.visible || !pane.requestedPixels ||
+            (pane.cpuPinned && kind !== 'surface'))) return false;
         if (kind === 'mirror' && cache.activity.hiddenAt !== null &&
             this.hiddenMirrorBytes() + bytes > this.hiddenMirrorLimit()) return false;
         if (paneId === undefined || kind === 'program') return true;
@@ -475,7 +476,7 @@ export class MemoryGovernor {
         const candidates = [...this.caches.values()].filter(cache => cache.registration.pool === pool &&
             cache.registration.class !== 'critical' && cache.bytes > 0 &&
             (cache.registration.class !== 'hidden-mirror' || cache.activity.hiddenAt !== null) &&
-            (cache.registration.kind !== 'context' || cache.activity.hiddenAt !== null))
+            (cache.registration.kind !== 'context' || cache.registration.paneId === undefined || cache.activity.hiddenAt !== null))
             .sort((a, b) => order.indexOf(a.registration.class) - order.indexOf(b.registration.class) ||
                 (a.registration.class === 'hidden-mirror' ? (a.activity.hiddenAt ?? Infinity) - (b.activity.hiddenAt ?? Infinity) : 0) ||
                 a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||

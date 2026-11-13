@@ -7,6 +7,9 @@ import { compareOrder } from './orderKey';
 
 // DM-2: only change/apply may import this module. These helpers assume validated
 // ops and maintain indexes; they do not validate, normalize, record or notify.
+// R-W23: CH-1 uses fileFields.ts to drop superseded native-token ext.raw entries
+// inside its transaction, capturing the old ext for inverse/rollback. These value-only helpers
+// must not silently discard preservation metadata outside that atomic capture.
 type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
     'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage'> & {
     nodes: Map<NodeId, Node>;
@@ -148,7 +151,7 @@ export function setNodeFieldForApply(board: BoardDoc, op: NodeSetOp): PropValue 
 
 export function insertSheetForApply(board: BoardDoc, record: Sheet): Sheet {
     const doc = forApply(board);
-    const sheet = { id: record.id, name: record.name, order: record.order };
+    const sheet = { id: record.id, name: record.name, order: record.order, ext: record.ext };
     doc.sheets.set(sheet.id, sheet);
     doc.sheetOrder.splice(lowerBound(doc.sheetOrder, sheet), 0, sheet);
     return sheet;
@@ -191,13 +194,13 @@ export function setBoardFieldForApply(board: BoardDoc, op: BoardOp): BoardValue 
         case 'host.paper': {
             if (doc.host.kind !== 'notebook') throw new Error('Apply expected notebook paper');
             const previous = doc.host.paper;
-            doc.host = { kind: 'notebook', paper: op.value };
+            doc.host = { kind: 'notebook', paper: op.value, ext: doc.host.ext };
             return previous;
         }
         case 'host.pdf': {
             if (doc.host.kind !== 'pdf-ink') throw new Error('Apply expected PDF bookkeeping');
             const previous = doc.host.pdf;
-            doc.host = { kind: 'pdf-ink', pdf: op.value, pages: doc.host.pages };
+            doc.host = { kind: 'pdf-ink', pdf: op.value, pages: doc.host.pages, ext: doc.host.ext };
             return previous;
         }
         case 'ui.tool': {

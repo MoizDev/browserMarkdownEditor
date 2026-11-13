@@ -259,7 +259,7 @@ async function arm(browser, name, url, manifest) {
             assert(Math.hypot(centre.x - projected.x, centre.y - projected.y) <= 1, `painted node differs from reported positions: ${JSON.stringify({ centre, projected })}`);
             data.hook = { first: first.steps, later: later.steps, settled: settled.steps, publications: settled.publications, ring: settled.positions.ring.length, centre, projected };
         } else {
-            assert.equal(await page.evaluate(() => window.__perf), undefined, `${name} exposes __perf`);
+            if (await page.evaluate(() => window.__perf !== undefined)) fail(name === 'dev' ? 'D-hook' : 'P-hook', `${name} exposes __perf`);
             // Production has no step surface. Observe the platform draw arguments
             // stop changing, rather than assuming a fixed duration means settled.
             let stable = false;
@@ -305,8 +305,9 @@ async function arm(browser, name, url, manifest) {
     } catch (error) {
         // An anchor leak must keep its own reason even when runtime exposure
         // would also fail. A setup/identity error is never a mutant kill.
-        if (!error.reason) await scan();
-        if (benchmark && error.code === 'ERR_ASSERTION') fail('hand-count', error.message);
+        if (!error.reason || ['P-hook', 'D-hook'].includes(error.reason)) await scan();
+        if (error.code === 'ERR_ASSERTION') fail(benchmark ? 'hand-count' : name === 'dev' ? 'D-render' : 'P-render', error.message);
+        if (error.name === 'TimeoutError') fail(`${name === 'benchmark' ? 'B' : name === 'dev' ? 'D' : 'P'}-flow`, error.message);
         throw error;
     } finally {
         await context.close();
@@ -337,16 +338,21 @@ try {
     await arm(browser, 'benchmark', args['bench-url'], benchmark);
     await arm(browser, 'dev', args['dev-url'], null);
     const b = report.arms.benchmark, p = report.arms.production;
-    assert.deepEqual(b.paint, p.paint, 'benchmark hook perturbs the drawn positions');
-    for (const key of ['initialDom', 'initialDisk', 'finalDom', 'finalDisk']) assert.deepEqual(b[key], p[key], `benchmark changes ${key}`);
-    assert.deepEqual(await readFile(path.join(out, 'benchmark-settled.png')), await readFile(path.join(out, 'production-settled.png')), 'settled canvas screenshots differ');
+    try {
+        assert.deepEqual(b.paint, p.paint, 'benchmark hook perturbs the drawn positions');
+        for (const key of ['initialDom', 'initialDisk', 'finalDom', 'finalDisk']) assert.deepEqual(b[key], p[key], `benchmark changes ${key}`);
+        assert.deepEqual(await readFile(path.join(out, 'benchmark-settled.png')), await readFile(path.join(out, 'production-settled.png')), 'settled canvas screenshots differ');
+    } catch (error) {
+        if (error.code === 'ERR_ASSERTION') fail('PB-parity', error.message);
+        throw error;
+    }
     report.result = 'PASS';
     console.log('PASS C-15d P/B/D');
 } catch (error) {
     report.result = 'FAIL'; report.error = error.stack;
     report.reason = error.reason ?? 'setup';
     console.log(error.reason ? error.message.split('\n')[0] : `FAIL setup ${error.message.split('\n')[0]}`);
-    process.exitCode = ['P-anchor', 'hand-count'].includes(error.reason) ? 1 : 2;
+    process.exitCode = error.reason && !['setup', 'identity'].includes(error.reason) ? 1 : 2;
 } finally {
     await browser?.close();
     await writeFile(path.join(out, 'report.json'), JSON.stringify(report, null, 2) + '\n');

@@ -115,9 +115,11 @@ when exit 1 accompanies its exact stable reason line:
 - `unguarded.patch`: `FAIL P-anchor ...` (shipping hook code).
 - `frame-count.patch`: `FAIL hand-count ...` (idle RAFs counted as physics steps).
 
-A missing URL, wrong browser/driver, hash/commit mismatch, patch or build failure,
-timeout or other setup failure exits 2 and is INVALID, never a mutant kill. The
-mutant runner must match the reason prefix, not just nonzero exit status.
+A missing URL, wrong browser/driver, hash/commit mismatch, patch/build failure or
+other setup/identity failure exits 2 and is INVALID. Product failures exit 1 with
+named reasons: P-anchor, P-hook, D-hook, B-control, hand-count, P-render/D-render,
+P/B/D-flow (UI timeouts), or PB-parity. A mutant runner counts only its expected
+reason prefix, never another regression or merely a nonzero exit status.
 
 ## Earlier evidence, superseded method
 

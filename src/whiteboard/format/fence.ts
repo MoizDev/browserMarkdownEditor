@@ -1,9 +1,10 @@
 // Native-format §3.6, F-10. Fact source: formats/corpus/received/failure-results.json
 // (newer-schema/newer-sequences refuse; empty-object/malformed did not protect content).
 // Data only: no package constructs or validates this stub, and no user content belongs in it.
-export const COMPATIBILITY_FENCE = 'compat-1' as const;
+export const COMPATIBILITY_FENCE = 'compat-1: compatibility fence, holds no content, so that builds of this app from before the guard release refuse to edit this file' as const;
 export const FENCE_SCHEMA_VERSION = 999;
-const STUB = '{"document":{"schema":{"schemaVersion":999},"store":{}},"fence":"compat-1"}';
+// R-W15 spells out the inert purpose; both containers use this same major-1 label.
+const STUB = '{"document":{"schema":{"schemaVersion":999},"store":{}},"fence":' + JSON.stringify(COMPATIBILITY_FENCE) + '}';
 
 export interface FenceDocument { readonly schema: { readonly schemaVersion: 999; }; readonly store: Record<string, never>; }
 export function fenceDocument(): FenceDocument {

@@ -1,0 +1,11 @@
+{
+  "_why": "Every functional and timing run uses this one browser, launched by path (verification.md §6.2): installed Chrome updates itself mid-run, and Playwright's bundled Chromium crashes reading a stored folder handle (verify-in-browser, step 7). This build survived that read on reload 3 of 3.",
+  "product": "Chrome for Testing",
+  "version": "157.0.8103.39",
+  "platform": "mac-arm64",
+  "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.39/mac-arm64/chrome-mac-arm64.zip",
+  "sha256": "2a2a41957ca5417d1caf800f3bf946ef79101ca8220f0845bbd359eeda7a6d32",
+  "bytes": 196563761,
+  "executable": "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+  "driver": "playwright@1.63.0"
+}

@@ -20,7 +20,11 @@ function onImport(context: Rule.RuleContext, report: (node: Rule.Node, source: s
     ImportDeclaration: (n) => check(n, n.source.value),
     ExportAllDeclaration: (n) => check(n, n.source.value),
     ExportNamedDeclaration: (n) => { if (n.source) check(n, n.source.value) },
-    ImportExpression: (n) => { if (n.source.type === 'Literal') check(n, n.source.value) },
+    ImportExpression: (n) => {
+      if (n.source.type === 'Literal') check(n, n.source.value)
+      // a template with no substitutions is a literal by another name (r-gates on I-0)
+      else if (n.source.type === 'TemplateLiteral' && n.source.expressions.length === 0) check(n, n.source.quasis[0].value.cooked)
+    },
     CallExpression: (n) => {
       if (n.callee.type === 'Identifier' && n.callee.name === 'require' && n.arguments[0]?.type === 'Literal') check(n, n.arguments[0].value)
     },
@@ -197,6 +201,13 @@ const fsAccess: Rule.RuleModule = {
     const file = rel(context.filename)
     if (under(file, 'src/context') || baseline.has(file)) return {}
     return {
+      // the picker is also a global: a bare `showDirectoryPicker()` (r-gates on I-0)
+      Identifier(n) {
+        const parent = (n as Node).parent as Node
+        if (FS_NAMES.has(n.name) && parent.type === 'CallExpression' && parent.callee === n) {
+          context.report({ node: n, message: `File System Access call \`${n.name}\` outside src/context/ (AGENTS.md: the four layers). Go through useFileSystem().` })
+        }
+      },
       MemberExpression(n) {
         const prop = n.property
         const name = !n.computed && prop.type === 'Identifier' ? prop.name : prop.type === 'Literal' && typeof prop.value === 'string' ? prop.value : null

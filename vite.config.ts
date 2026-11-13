@@ -9,6 +9,15 @@ const regenerateFrame = () => execFileSync(process.execPath, ['src/epub/build-fr
 
 export default defineConfig({
   plugins: [react(), {
+    // The benchmark-build constant (verification.md §2.1, contracts C9): true only
+    // in `vite build --mode benchmark`, so every measurement hook sits behind
+    // `if (__BME_BENCH__)` and the production build drops it. A plugin hook, not a
+    // function config, because scratch configs spread this object.
+    name: 'benchmark-build-constant',
+    config(_config, { mode }) {
+      return { define: { __BME_BENCH__: JSON.stringify(mode === 'benchmark') } }
+    },
+  }, {
     name: 'contained-epub-frame',
     // Runs for both dev and build, even when generated files already exist.
     // The frame is imported as raw text only from the lazy EPUB chunk, so base

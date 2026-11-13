@@ -4,9 +4,12 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
+import { bmePlugin } from './eslint.rules.ts'
 
 export default defineConfig([
-  globalIgnores(['dist', 'helper/dist']),
+  // `planning/` is git-ignored and exists only in the main checkout: its evidence
+  // scripts are records of the planning run, not code of this repository.
+  globalIgnores(['dist', 'helper/dist', 'planning']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -95,6 +98,84 @@ export default defineConfig([
     files: ['src/context/**/*.tsx'],
     rules: {
       'react-refresh/only-export-components': 'off',
+    },
+  },
+  {
+    // Browser-run scripts and the run toolbox (verify-in-browser): plain Node
+    // modules whose init-script and page.evaluate closures run in the page, so
+    // both sets of globals are real here.
+    files: ['verify/**/*.{js,mjs}'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: { ...globals.node, ...globals.browser },
+    },
+  },
+  {
+    // The repo's own rules (eslint.rules.ts). Each was added with the error it
+    // gives on a deliberately violating line, recorded in its commit.
+    files: ['**/*.{ts,tsx,js,mjs,cjs,jsx}'],
+    ignores: ['src/epub/vendor/**'],
+    plugins: { bme: bmePlugin },
+    rules: {
+      // G-INV-04. The owner's ban on code-based tests, everywhere.
+      'bme/no-tests': 'error',
+    },
+  },
+  {
+    files: ['src/**/*.{ts,tsx}', 'shared/**/*.ts'],
+    plugins: { bme: bmePlugin },
+    rules: {
+      // G-INV-06's engine zones (contracts C6.3) and I-0's dark zone: the new
+      // engines import no React and no app layer, the whiteboard nothing of
+      // tldraw's (independence protocol), and nothing outside the three engine
+      // folders imports them until the package that wires a switch adds its
+      // importer to `darkExcept` here.
+      'bme/import-zones': ['error', [
+        {
+          files: ['src/platform/render', 'src/whiteboard', 'src/pdf'],
+          dark: true,
+          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf'],
+          message: 'The new engines stay dark until their switch is wired',
+        },
+        {
+          files: ['src/platform', 'src/whiteboard', 'src/pdf'],
+          noLocal: ['src/context', 'src/editor', 'src/components', 'src/App.tsx', 'src/main.tsx'],
+          noPackage: ['react', 'react-dom'],
+          message: 'Engines are React-free and reach the app through plain callbacks (contracts C6.3)',
+        },
+        {
+          files: ['src/platform'],
+          noLocal: ['src/utils', 'src/types', 'src/whiteboard', 'src/pdf', 'src/epub'],
+          message: 'src/platform imports nothing app-specific (contracts C6.3)',
+        },
+        {
+          files: ['src/whiteboard', 'src/pdf', 'src/platform'],
+          noPackage: ['tldraw', '@tldraw', 'perfect-freehand'],
+          message: 'No tldraw material in the new engines (independence protocol)',
+        },
+      ]],
+      // G-INV-22. Baseline (contracts R1-18): the two note-text sinks AGENTS.md
+      // names, the constant icon strings of three editor widgets, and the EPUB
+      // frame's srcdoc. Core turns the icon sinks into DOM builders; then they go.
+      'bme/html-sinks': ['error', [
+        { file: 'src/editor/tableWidget.ts', names: ['innerHTML'], rhs: 'any' },
+        { file: 'src/editor/mermaidWidget.ts', names: ['innerHTML'], rhs: 'any' },
+        { file: 'src/editor/headingFold.ts', names: ['innerHTML'], rhs: 'constant' },
+        { file: 'src/editor/imageWidget.ts', names: ['innerHTML'], rhs: 'constant' },
+        { file: 'src/editor/copyCodeWidget.ts', names: ['innerHTML'], rhs: 'constant' },
+        { file: 'src/epub/bridge.ts', names: ['srcdoc'], rhs: 'constant', identifiers: ['frameHTML'] },
+      ]],
+      // G-INV-FS. Baseline: the files that call the File System Access API
+      // outside src/context/ today (invariants §1 item 2). It may only shrink.
+      'bme/fs-access': ['error', [
+        'src/App.tsx',
+        'src/utils/agentHost.ts',
+        'src/utils/entryNames.ts',
+        'src/utils/recentVaults.ts',
+        'src/utils/vaultAgentStore.ts',
+      ]],
     },
   },
 ])

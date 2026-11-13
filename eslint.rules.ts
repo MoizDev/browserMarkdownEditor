@@ -24,6 +24,17 @@ function onImport(context: Rule.RuleContext, report: (node: Rule.Node, source: s
     CallExpression: (n) => {
       if (n.callee.type === 'Identifier' && n.callee.name === 'require' && n.arguments[0]?.type === 'Literal') check(n, n.arguments[0].value)
     },
+    // Type positions count too: `import('tldraw').TLShape` and `import x = require('tldraw')`
+    // pull no runtime code, but they are still another package's material in the
+    // engine (found by the auditor on I-0: a type import passed every zone).
+    TSImportType: (n: unknown) => {
+      const arg = (n as { argument?: { type: string; literal?: { value?: unknown } } }).argument
+      if (arg?.type === 'TSLiteralType') check(n as Rule.Node, arg.literal?.value)
+    },
+    TSExternalModuleReference: (n: unknown) => {
+      const e = (n as { expression?: { type: string; value?: unknown } }).expression
+      if (e?.type === 'Literal') check(n as Rule.Node, e.value)
+    },
   }
 }
 

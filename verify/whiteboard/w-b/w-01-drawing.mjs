@@ -31,7 +31,7 @@ page.on('response', response => {
   report.network.push({ url: response.url(), status: response.status() });
 });
 page.on('pageerror', error => report.pageErrors.push(error.message));
-await page.addInitScript(({ theme }) => {
+const instrument = ({ theme, vaultName }) => {
   localStorage.setItem('theme', theme);
   const grant = h => {
     h.queryPermission = async () => 'granted';
@@ -42,14 +42,15 @@ await page.addInitScript(({ theme }) => {
   FileSystemDirectoryHandle.prototype.getDirectoryHandle = async function (...args) {
     return grant(await getDir.apply(this, args));
   };
-  window.showDirectoryPicker = async () => grant(await (await navigator.storage.getDirectory()).getDirectoryHandle('W01-vault', { create: true }));
+  window.showDirectoryPicker = async () => grant(await (await navigator.storage.getDirectory()).getDirectoryHandle(vaultName, { create: true }));
   window.__w01Writes = [];
   const writable = FileSystemFileHandle.prototype.createWritable;
   FileSystemFileHandle.prototype.createWritable = async function (...args) {
     window.__w01Writes.push(this.name);
     return writable.apply(this, args);
   };
-}, { theme: values.theme });
+};
+await page.addInitScript(instrument, { theme: values.theme, vaultName: 'W01-vault' });
 
 const check = async (name, action) => {
   try { report.checks[name] = await action() ?? true; }
@@ -90,6 +91,7 @@ try {
   await check('drawing-icon', async () => {
     const icon = await board.locator('.tree-item-icon > svg').innerHTML();
     const legacyIcon = await page.locator('.tree-item').filter({ hasText: /^old\.tldraw$/ }).locator('.tree-item-icon > svg').innerHTML();
+    report.legacyDrawingIcon = legacyIcon;
     assert.equal(icon, legacyIcon, 'Native and legacy drawing icons differ');
     return { sameAsLegacy: true, svg: icon };
   });
@@ -142,13 +144,67 @@ try {
     assert.equal(await page.locator('.search-file-group').count(), 0);
   });
   await page.screenshot({ path: resolve(out, 'search.png') });
+  // A separate context has no legacy file, stored session or HTTP cache from
+  // the control vault. Native files must not warm a renderer they cannot open.
+  await check('native-only-prefetch', async () => {
+    const nativeContext = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: Number(values.dpr) });
+    const nativePage = await nativeContext.newPage();
+    const requests = [];
+    const entryResponses = [];
+    report.nativeOnlyNetwork = requests;
+    nativePage.on('request', request => requests.push(request.url()));
+    nativePage.on('response', response => {
+      if (new URL(response.url()).pathname === `/${report.identity?.mainFile}`) entryResponses.push(response);
+    });
+    nativePage.on('pageerror', error => report.pageErrors.push(error.message));
+    await nativePage.addInitScript(instrument, { theme: values.theme, vaultName: 'W01-native-only' });
+    try {
+      await nativePage.goto(values.url);
+      await nativePage.evaluate(async native => {
+        const vault = await (await navigator.storage.getDirectory()).getDirectoryHandle('W01-native-only', { create: true });
+        for (const [name, text] of [['board.drawing', native], ['note.md', '# Native-only vault\n']]) {
+          const writable = await (await vault.getFileHandle(name, { create: true })).createWritable();
+          await writable.write(text);
+          await writable.close();
+        }
+      }, native);
+      await nativePage.getByRole('button', { name: 'Open Vault', exact: true }).click();
+      await nativePage.locator('.tree-item').filter({ hasText: /^board\.drawing$/ }).click();
+      await nativePage.locator('.editor-slot').waitFor();
+      const files = await nativePage.evaluate(async () => {
+        const vault = await (await navigator.storage.getDirectory()).getDirectoryHandle('W01-native-only');
+        const names = [];
+        for await (const name of vault.keys()) names.push(name);
+        return names.sort();
+      });
+      assert.deepEqual(files, ['board.drawing', 'note.md'], 'Native-only arm gained a legacy drawing');
+      // App's idle prefetch has a 4s deadline. Wait beyond it, then observe two
+      // real idle callbacks: a fast empty network snapshot is not evidence.
+      await nativePage.waitForTimeout(4500);
+      const idlePasses = await nativePage.evaluate(async () => {
+        let passes = 0;
+        for (let i = 0; i < 2; i++) await new Promise(resolve => requestIdleCallback(() => { passes++; resolve(); }, { timeout: 4000 }));
+        return passes;
+      });
+      assert.equal(idlePasses, 2, 'Native-only idle witness did not run');
+      assert.equal(entryResponses.length, 1, 'Native-only page did not fetch the identified entry');
+      assert.equal(createHash('sha256').update(await entryResponses[0].body()).digest('hex'), report.identity.mainSha256);
+      const drawingChunks = requests.filter(url => /\/assets\/DrawingPane-[^/]+\.js$/.test(url));
+      assert.deepEqual(drawingChunks, [], 'A native-only vault prefetched the legacy DrawingPane chunk');
+      return { files, idlePasses, observedForMs: 4500, drawingChunks };
+    } finally {
+      await nativeContext.close();
+    }
+  });
   await page.getByRole('button', { name: 'Files', exact: true }).click();
   await page.locator('.tree-item').filter({ hasText: /^old\.tldraw$/ }).click();
   await check('legacy-control', async () => {
     await page.locator('.tl-container').waitFor({ timeout: 15000 });
     await page.locator('.tl-shape').first().waitFor({ timeout: 15000 });
     assert.equal(await page.locator('.cm-editor').count(), 0);
-    return { mounted: true, shapes: await page.locator('.tl-shape').count() };
+    const drawingChunks = report.network.filter(({ url }) => /\/assets\/DrawingPane-[^/]+\.js$/.test(url));
+    assert.ok(drawingChunks.length > 0, 'Legacy control did not fetch its DrawingPane chunk');
+    return { mounted: true, shapes: await page.locator('.tl-shape').count(), drawingChunks };
   });
   await page.screenshot({ path: resolve(out, 'legacy.png') });
   await page.getByRole('button', { name: 'Trash', exact: true }).click();
@@ -159,7 +215,7 @@ try {
     await nativeRow.waitFor();
     const icon = await nativeRow.locator('.tree-item-icon > svg').innerHTML();
     assert.equal(icon, await legacyRow.locator('.tree-item-icon > svg').innerHTML());
-    assert.equal(icon, report.checks['drawing-icon'].svg, 'Trash must use the drawing type icon, not the text icon');
+    assert.equal(icon, report.legacyDrawingIcon, 'Trash must use the drawing type icon, not the text icon');
   });
   await page.screenshot({ path: resolve(out, 'trash.png') });
   await check('no-page-errors', () => assert.deepEqual(report.pageErrors, []));

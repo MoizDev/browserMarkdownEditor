@@ -11,13 +11,14 @@ S=$W/scratch/w-b/candidate
 node verify/whiteboard/w-b/w-01-build.mjs --scratch "$S" # takes the build lock itself
 $L serve -- ./node_modules/.bin/vite preview --config "$S/vite.config.mjs" --port 6520 --strictPort
 # In another terminal, after the preview is ready:
-$L run -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6520/ --out "$S/results"
+$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6520/ --out "$S/results"
 ```
 
 Repeat the last command with `--theme light --dpr 2` (all four light/dark × DPR 1/2 combinations
 are meaningful). Stop preview after each use. The driver is the worktree's pinned Playwright 1.63.0;
 the browser is Chrome for Testing 157.0.8103.39, not bundled Chromium or auto-updating Chrome.
-The run opens one named OPFS vault; it does not deserialize stored handles or require an IDB shim.
+The run opens a named OPFS vault in each of two isolated contexts (weight 2); it does not deserialize
+stored handles or require an IDB shim.
 
 ## Witness, identity, false pass and loss
 
@@ -26,7 +27,9 @@ The run opens one named OPFS vault; it does not deserialize stored handles or re
   the legacy file mounts tldraw with four actual rendered shapes, not merely a loading container.
   Twenty keyboard attempts and twenty pointer strokes are followed by the save debounce, a write
   counter and a full native-byte comparison. The tree's *type* icon (not its action icons) is compared
-  with the legacy drawing's icon.
+  with the legacy drawing's icon. An isolated context holds only `board.drawing` and `note.md`:
+  it observes beyond App's 4-second prefetch deadline and witnesses two real idle callbacks before
+  asserting no `DrawingPane` request. The legacy control must fetch that chunk and render shapes.
 - **Identity:** the build script records the source commit and source-diff SHA-256 in a scratch-only
   build receipt. After Vite has written its final chunks it hashes the actual entry file. The run
   fetches this receipt and checks the SHA-256 of the main chunk returned in the browser's network
@@ -35,7 +38,9 @@ The run opens one named OPFS vault; it does not deserialize stored handles or re
 - **False pass:** checking only an empty result panel could mean search never ran; the positive
   note-content arm prevents that. Checking the last SVG in a row would compare Trash buttons,
   not type icons; the selector explicitly scopes to `.tree-item-icon`. A zero-write counter alone
-  could miss an instrumentation mistake; byte equality is independently checked.
+  could miss an instrumentation mistake; byte equality is independently checked. The native-only
+  network arm has its own context/cache and exact file-list assertion; it neither inherits a warmed
+  module from the legacy control nor declares success before idle prefetch could have run.
 - **Loss:** this samples one valid native envelope, one corpus drawing, one note and ordinary
   pointer/keyboard input. It does not prove every suffix/case, hostile file, concurrent rename or
   physical stylus. Agent arms remain **pending-V02** until the real-bridge helper stand-in exists;
@@ -47,7 +52,7 @@ The run opens one named OPFS vault; it does not deserialize stored handles or re
 M=$W/scratch/w-b/mutant
 node verify/whiteboard/w-b/w-01-build.mjs --scratch "$M" --mutant
 $L serve -- ./node_modules/.bin/vite preview --config "$M/vite.config.mjs" --port 6521 --strictPort
-$L run -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6521/ --out "$M/results"
+$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6521/ --out "$M/results"
 ```
 
 The build script copies the app and its dependencies into scratch (no shared `node_modules`),
@@ -56,6 +61,12 @@ patched app with the same production config. A stale patch stops before the buil
 must exit nonzero, specifically failing `unsupported-editor` and `search-exclusion`; it collects both
 failures rather than aborting on the first. Identity and the positive search/legacy witnesses must
 still pass. This mutant proves the central predicate actually protects the open and search paths.
+
+For the prefetch arm, use a separate scratch directory and `--prefetch-mutant` instead of `--mutant`.
+That exact-source patch changes only App's legacy-only prefetch predicate back to `isCanvasFile`.
+The same production browser run must fail `native-only-prefetch`, while the legacy network/control
+and the other safety arms still pass. A changed anchor fails before building. This is also the
+bug reproduced on the original W-01 production build before the prefetch correction.
 
 ## Fixture origins
 

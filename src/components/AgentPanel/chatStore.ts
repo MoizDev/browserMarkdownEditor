@@ -269,6 +269,7 @@ class ChatStore {
     private runUserNode: { key: string; nodeId: string } | null = null;
     /** Captured when the current run started (host.toolHost.vaultToken()). */
     private runVaultToken: object | null = null;
+    private runAbort: AbortController | null = null;
     private runImageHash: string | null = null;
     /** Tool calls run one at a time, in arrival order. OpenCode and Codex issue
      *  calls in parallel, and two edits racing through the stale check both
@@ -729,6 +730,7 @@ class ChatStore {
         this.setTeaching(key, mode === 'teach');
 
         this.runVaultToken = host.toolHost.vaultToken();
+        this.runAbort = new AbortController();
         this.runImageHash = null;
         this.releaseRun = agentBridge.retain();
         this.set({ run: { runId, chatId: existing?.id ?? DRAFT_KEY, phase: 'preparing', startedAt: Date.now() } });
@@ -864,6 +866,7 @@ class ChatStore {
     async stop(): Promise<void> {
         const run = this.state.run;
         if (!run) return;
+        this.runAbort?.abort();
         if (run.phase === 'preparing') {
             // Nothing reached the helper yet: just stop here.
             this.finishRun(run.chatId);
@@ -896,6 +899,8 @@ class ChatStore {
 
     /** Close whatever is still streaming, and free the run slot. */
     private finishRun(key: string): void {
+        this.runAbort?.abort();
+        this.runAbort = null;
         this.updateItems(key, items => items.map(item => {
             if (item.kind === 'assistant' && item.streaming) return { ...item, streaming: false };
             if (item.kind === 'reasoning' && item.streaming) return { ...item, streaming: false, endedAt: item.endedAt ?? Date.now() };
@@ -1073,12 +1078,15 @@ class ChatStore {
         let result: ToolResult;
         let change: AgentChange | undefined;
         try {
-            const execution = await executeTool(call.name, call.args, host.toolHost, { vaultToken: this.runVaultToken });
+            const execution = await executeTool(call.name, call.args, host.toolHost, { vaultToken: this.runVaultToken, signal: this.runAbort?.signal });
             result = execution.result;
             change = execution.change;
         } catch (e) {
             result = { content: [{ type: 'text', text: `The editor failed to run ${call.name}: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
         }
+        // Stop waits for run.done: while that same run is still stopping, the helper may be
+        // awaiting this tool's honest cancelled/partial result. Only a closed/replaced run is stale.
+        if (this.state.run?.runId !== call.runId) return;
         reply(result);
         const output = resultText(result);
         this.updateItems(key, items => items.map(item =>

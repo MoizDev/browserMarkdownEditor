@@ -77,7 +77,9 @@ export interface WorkerClient {
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     cancelAll(match: (op: string, args: unknown) => boolean): void;
     on(event: string, handler: (data: unknown) => void): () => void;
-    recycle(reason: string): Promise<void>;
+    // A lazy recycle with no queued callers terminates now but waits for the next request to spawn.
+    // Both forms retain crash/poison history; a failed client still requires an explicit reset.
+    recycle(reason: string, options?: { lazy?: boolean }): Promise<void>;
     reset(): void;
     dispose(): void;
     readonly state: ClientState;

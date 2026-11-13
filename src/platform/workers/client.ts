@@ -516,19 +516,28 @@ class Client implements WorkerClient {
         this.spawn();
     };
 
-    recycle = (reason: string): Promise<void> => {
+    recycle = (reason: string, options: { lazy?: boolean } = {}): Promise<void> => {
         if (this.state === 'disposed') return Promise.reject(this.error('Cancelled', 'Worker disposed'));
         if (this.state === 'failed') return Promise.reject(this.failure);
-        if (this.recyclePromise) return this.recyclePromise;
+        if (this.recyclePromise && !options.lazy) return this.recyclePromise;
         this.state = 'recycling';
         // Cancel posted work rather than drain forever on WASM; unposted calls survive.
         const posted = [...(this.connection?.sent.values() ?? [])];
         this.disconnect();
         for (const job of posted) this.cancel(job, 'Cancelled', `Worker recycled: ${reason}`);
         this.retainQueued();
-        const promise = new Promise<void>((resolve, reject) => this.readyWaiters.push({ resolve, reject }));
+        if (options.lazy && !this.pending.size) {
+            this.state = 'idle';
+            this.syncClock();
+            const error = this.error('Cancelled', 'Worker restart deferred');
+            for (const waiter of this.readyWaiters.splice(0)) waiter.reject(error);
+            this.recyclePromise = undefined;
+            return Promise.resolve();
+        }
+        const promise = this.recyclePromise ?? new Promise<void>((resolve, reject) => this.readyWaiters.push({ resolve, reject }));
         this.recyclePromise = promise;
-        void promise.then(() => { this.recyclePromise = undefined; }, () => { this.recyclePromise = undefined; });
+        const clear = () => { if (this.recyclePromise === promise) this.recyclePromise = undefined; };
+        void promise.then(clear, clear);
         this.spawn();
         return promise;
     };

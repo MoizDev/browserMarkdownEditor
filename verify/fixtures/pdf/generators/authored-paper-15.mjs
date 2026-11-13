@@ -93,7 +93,17 @@ export async function emit(outDir, name, id, result, expected, seed) {
     const file = `${name}.pdf`, bytes = result.bytes;
     const record = { id, file, sha256: sha256(bytes), bytes: bytes.length, pages: result.expectedPages.length, seed,
         licence: 'NOASSERTION', proposedLicence: 'CC0-1.0', generatorVersion: 1, writerVersion: 'independent raw PDF serializer v1',
-        expected: { ...expected, correctSelectAllText: result.expectedPages.map(page => page.lines.map(line => line.text).join('\n')).join('\n\n'), pageModels: result.expectedPages } };
+        expected: { ...expected, correctSelectAllText: result.expectedPages.map(page => {
+            const rows = [];
+            for (const [index, line] of page.lines.entries()) {
+                const previous = page.lines[index - 1];
+                // The split-font word is two authored text operations, not two
+                // lines. This oracle comes only from their authored coordinates.
+                if (previous && Number.isFinite(line.y) && line.y === previous.y && Math.abs(line.x - previous.x - previous.text.length * previous.size * 0.6) < 0.001) rows[rows.length - 1] += line.text;
+                else rows.push(line.text);
+            }
+            return rows.join('\n');
+        }).join('\n\n'), pageModels: result.expectedPages } };
     const output = fixtureWriter(outDir);
     await output(file, bytes);
     await output(`${name}.expected.json`, jsonBytes(record));

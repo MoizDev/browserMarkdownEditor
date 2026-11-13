@@ -16,7 +16,7 @@
       "id": "GEN-23-oracle", "file": "authored-paper-15.expected.json", "tier": 1,
       "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Independent authored layout and string inputs, not app extraction output.",
       "purpose": "Correct copy/find/anchor oracle and page-point gesture landmarks.", "gates": ["P-00a", "D7", "TXT-G1", "TXT-G7"],
-      "sha256": "7feb781f683e4d6b03f94f96e00926ee786f64b95afb28f3a334a888878033fd", "bytes": 177881,
+      "sha256": "241f54c001c395a8f33915d43fa1588be53ee25dcd42a0e30e7a4da35bcc55e5", "bytes": 177851,
       "generator": "verify/fixtures/pdf/generators/authored-paper-15.mjs", "version": 1, "seed": 1346651697, "args": []
     },
     {

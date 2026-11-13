@@ -3,14 +3,23 @@
 import { chromium } from 'playwright'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../../../', import.meta.url))
 const base = process.argv[2]
 const output = process.argv[3]
-const expectedCommit = process.argv[4]
-if (!base || !output || !expectedCommit) throw new Error('Usage: scan-production.mjs <preview-url> <scratch-output-dir> <expected-build-commit>')
+const identityPath = process.argv[4]
+if (process.argv.length !== 5 || !base || !output || !identityPath) throw new Error('Usage: scan-production.mjs <preview-url> <scratch-output-dir> <build-served-identity.json>')
+const url = new URL(base)
+if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.protocol !== 'http:') throw new Error('A loopback preview URL is required')
+const distance = relative(root, output)
+if (!isAbsolute(output) || (!distance.startsWith(`..${sep}`) && distance !== '..' && !isAbsolute(distance))) throw new Error('Output must be outside the repository')
+const expected = JSON.parse(await readFile(identityPath, 'utf8'))
+if (!/^[a-f0-9]{40}$/.test(expected.buildCommit) || !expected.files?.['index.html']) throw new Error('Missing expected build identity')
+for (const file of Object.values(expected.files)) {
+  if (!/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0) throw new Error('Invalid expected artifact hash/length')
+}
 const pin = JSON.parse(await readFile(resolve(root, 'verify/browser-pin.json'), 'utf8'))
 const manifest = JSON.parse(await readFile(resolve(root, 'src/pdf/engine/dev/manifest.json'), 'utf8'))
 const driver = JSON.parse(await readFile(resolve(root, 'node_modules/playwright/package.json'), 'utf8'))
@@ -48,7 +57,10 @@ try {
     if (!response.ok) throw new Error('Missing served build inventory')
     return response.json()
   })
-  if (inventory.buildCommit !== expectedCommit || !Array.isArray(inventory.files) || !inventory.files.includes('index.html')) throw new Error('Build identity/inventory mismatch')
+  if (inventory.buildCommit !== expected.buildCommit || JSON.stringify(inventory.sourceMutation) !== JSON.stringify(expected.sourceMutation)
+    || !Array.isArray(inventory.files) || !inventory.files.includes('index.html')) throw new Error('Build identity/inventory mismatch')
+  const required = [...inventory.files, '__p1_bundle_inventory.json'].sort()
+  if (JSON.stringify(required) !== JSON.stringify(Object.keys(expected.files).sort())) throw new Error('Expected artifact list differs from the served inventory')
   await page.evaluate(async files => {
     for (const name of files) {
       if (name.startsWith('/') || name.split('/').includes('..')) throw new Error('Unsafe build inventory path')
@@ -58,11 +70,16 @@ try {
     }
   }, inventory.files)
   await Promise.all(pending)
-  if (inventory.files.some(name => !received.some(item => new URL(item.url).pathname === new URL(name, base).pathname))) throw new Error('A build file was not observed on the network')
+  for (const name of required) {
+    const responses = received.filter(item => new URL(item.url).pathname === new URL(name, base).pathname)
+    const wanted = expected.files[name]
+    if (!responses.length || responses.some(item => item.status !== 200 || item.sha256 !== wanted.sha256 || item.bytes !== wanted.bytes)) throw new Error(`Missing or wrong served artifact bytes: ${name}`)
+  }
   const violations = received.filter(item => forbiddenHashes.has(item.sha256) || item.devBuildId || item.developmentQualification)
   const report = {
     gate: 'BLD-DEV-G1', status: violations.length ? 'failed' : 'passed', browser: browser.version(), driver: driver.version,
     buildCommit: inventory.buildCommit, sourceMutation: inventory.sourceMutation ?? null,
+    expectedIdentitySha256: createHash('sha256').update(await readFile(identityPath)).digest('hex'),
     witness: { welcomePainted: true, fetchedBuildFiles: inventory.files.length, networkResponses: received.length },
     violations, network: received,
     falsePass: 'Only opening the welcome screen misses unvisited lazy chunks and unreferenced emitted assets; every output-graph entry is fetched.',

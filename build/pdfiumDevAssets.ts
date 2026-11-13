@@ -7,11 +7,13 @@ export function developmentPdfiumAssets(): Plugin {
   let assets: { name: string; bytes: Buffer; type: string }[] = []
   return {
     name: 'development-pdfium-assets',
-    configResolved(config) {
-      // Config objects may be reused in-process. A prior dev resolution cannot
-      // leave assets queued for a later production build or production preview.
+    // Vite exposes isPreview on ConfigEnv, not ResolvedConfig. Filtering the
+    // plugin here also excludes every hook when a config object is reused.
+    apply(_config, env) {
+      return !env.isPreview && (env.command === 'serve' || env.mode === 'benchmark')
+    },
+    configResolved() {
       assets = []
-      if (config.isPreview || (config.command !== 'serve' && config.mode !== 'benchmark')) return
       const scratch = process.env.BME_DEV_ENGINE_DIR
       if (!scratch) return
       const manifest = JSON.parse(readFileSync(new URL('../src/pdf/engine/dev/manifest.json', import.meta.url), 'utf8')) as {

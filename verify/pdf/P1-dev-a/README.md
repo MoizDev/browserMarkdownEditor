@@ -83,6 +83,9 @@ These commands must take the machine's build/run/serve grants. Run from a clean,
 committed lane; choose fresh scratch directories. `build-scan-app.mjs` archives
 that exact commit into scratch, gives it its **own** `npm ci`, adds only a served
 Rollup output inventory to the scratch config, and builds with production mode.
+Its final output graph (including HTML) and copied public source assets also
+produce `served-identity.json` outside the app: exact SHA/length per file, source
+commit, and mutant identity. This expectation is not read back from `dist`.
 
 ```sh
 BME_DEV_ENGINE_DIR=/absolute/scratch/engine bme-lock build -- node \
@@ -96,7 +99,8 @@ For each arm, use that scratch app's `vite preview --config <printed-config>
 
 ```sh
 bme-lock run -- node verify/pdf/P1-dev-a/scan-production.mjs \
-  http://localhost:<seat-port>/ /absolute/scratch/scan <exact-build-commit>
+  http://localhost:<seat-port>/ /absolute/scratch/scan \
+  /absolute/scratch/p1-clean/served-identity.json
 ```
 
 Clean must exit 0. Mutant must exit 1 **with a recorded contamination violation**,
@@ -105,8 +109,11 @@ not from a browser crash/identity/setup error. Stop preview after each arm.
 - **Witness:** the real app welcome screen paints; the browser fetches every
   output-graph file, including unvisited lazy chunks and unreferenced emitted
   assets. The scan reads response bodies from its network log, never `dist`.
-- **Identity:** served inventory's commit, pinned Chrome/Playwright, every fetched
-  file's SHA/length/URL, and source-mutation SHA in the mutant inventory.
+- **Identity:** independently recorded build-output expectations, served inventory's
+  commit, pinned Chrome/Playwright, every fetched file's SHA/length/URL (including
+  `.mjs`/`.wasm`), and source-mutation SHA. Every required response is awaited and
+  compared with its expected bytes; a missing/wrong body fails closed. Use the
+  mutant's own `served-identity.json` for the mutant arm.
 - **Mutant:** in the scratch source only, force on all three loader dev guards and
   the asset plugin's production guard. Since the engine zone is still dark before
   P3, a scratch-only importer makes the forced loader reachable. Every source

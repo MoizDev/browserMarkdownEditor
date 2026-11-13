@@ -4,7 +4,7 @@
 import { chromium } from 'playwright'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 
@@ -12,7 +12,11 @@ const root = fileURLToPath(new URL('../../../', import.meta.url))
 const base = process.argv[2]
 const output = process.argv[3]
 const evidence = process.argv[4]
-if (!base || !output || !evidence) throw new Error('Usage: load-engine.mjs <dev-url> <scratch-output-dir> <evidence-export-list>')
+if (process.argv.length !== 5 || !base || !output || !evidence) throw new Error('Usage: load-engine.mjs <dev-url> <scratch-output-dir> <evidence-export-list>')
+const url = new URL(base)
+if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.protocol !== 'http:') throw new Error('A loopback development URL is required')
+const distance = relative(root, output)
+if (!isAbsolute(output) || (!distance.startsWith(`..${sep}`) && distance !== '..' && !isAbsolute(distance))) throw new Error('Output must be outside the repository')
 const pin = JSON.parse(await readFile(resolve(root, 'verify/browser-pin.json'), 'utf8'))
 const manifest = JSON.parse(await readFile(resolve(root, 'src/pdf/engine/dev/manifest.json'), 'utf8'))
 const driver = JSON.parse(await readFile(resolve(root, 'node_modules/playwright/package.json'), 'utf8'))
@@ -140,7 +144,18 @@ try {
     document.body.append(frame)
     await loaded
     frame.contentWindow.postMessage({ runtimeSource, workerBody, glueSource, wasmBytes, pdfBytes: new Uint8Array(pdfBytes).buffer }, '*', [wasmBytes])
-    return { assets, roles: await done }
+    const roles = await done
+    if (roles.map(role => role.role).sort().join(',') !== 'render,writer') throw new Error('Each required worker role must execute exactly once')
+    const painted = roles.map(role => {
+      const canvas = document.querySelector(`canvas[data-role="${role.role}"]`)
+      if (!canvas?.checkVisibility()) throw new Error('Native bitmap canvas is not visible')
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data
+      let inkPixels = 0
+      for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 240 || pixels[i + 1] < 240 || pixels[i + 2] < 240) inkPixels++
+      if (inkPixels !== role.inkPixels) throw new Error('Live canvas pixels differ from the native bitmap')
+      return { role: role.role, inkPixels }
+    })
+    return { assets, roles, painted }
   }, { pdfBytes })
   for (const role of result.roles) {
     if (role.buildId !== manifest.buildId || role.pageCount !== 1 || role.inkPixels < 3200) throw new Error(`Missing native/paint witness: ${JSON.stringify(role)}`)

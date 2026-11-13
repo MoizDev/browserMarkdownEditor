@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: CC0-1.0
+// Entirely authored; proposed licence CC0-1.0 awaits the owner's approval.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { documentBuilder, emit, parseArgs, seededRandom } from './authored-paper-15.mjs';
@@ -31,12 +31,13 @@ export function textbook(pages, seed) {
         doc.page({ lines, image: n % 11 === 0, uniqueResources: n % 17 === 0,
             art: n % 7 === 0 ? 'q /GS1 gs 0.1 0.6 0.3 rg 330 90 150 40 re f Q\nq 0.2 0.3 0.8 RG 1 w 320 100 m 380 155 l 460 110 l S Q' : '' });
     }
-    return { result: doc.finish(), expected: { description: 'Unique authored full-scale book. Seeded unique numeric lines; single/two columns, repeated/distinct image and font resources, math and transparent vector figures.',
+    const result = doc.finish();
+    return { result, expected: { description: 'Unique authored full-scale book. Seeded unique numeric lines; single/two columns, repeated/distinct image and font resources, math and transparent vector figures.',
         queries: [...sentinelPages.map(page => ({ query: `NEVER-BUILT-TARGET-${String(page).padStart(4, '0')}`, pages: [page], count: 1, neverBuiltOnOpen: true })),
             { query: quote, pages: sentinelPages, count: sentinelPages.length },
             { query: 'interoperability', pages: sentinelPages, count: sentinelPages.length, construction: ['inter-', 'operability'] }],
         gestures: { title: { page: 1, from: [42, 44], to: [42 + 'Chapter 01 - Authored systems'.length * 9, 44], correct: 'Chapter 01 - Authored systems' },
-            twoLine: { page: 1, from: [42, 142], to: [42 + 64 * 5.4, 157], correctFromSource: 'pageModels[0].lines at y=146 and y=161' },
+            twoLine: { page: 1, from: [42, 142], to: [42 + 64 * 5.4, 157], correct: result.expectedPages[0].lines.filter(line => line.y === 146 || line.y === 161).map(line => line.text).join('\n') },
             crossPage: { from: { page: 1, point: [42, 748] }, to: { page: 2, point: [42 + 'Chapter 01 - Authored systems'.length * 9, 44] }, correct: 'Textbook footer 0001.\nChapter 01 - Authored systems' } },
         anchor: { page: 450, quote: 'The midpoint anchor is independent.', point: [42, 605] },
         correctSelectAll: { scope: 'All physical pages, only PDF content', source: 'pageModels.lines[].text in authored content order' } } };

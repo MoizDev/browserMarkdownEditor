@@ -4,68 +4,68 @@
   "fixtures": [
     {
       "id": "GEN-23", "file": "authored-paper-15.pdf", "tier": 1,
-      "licence": "CC0-1.0", "sourceNotice": "Entirely authored synthetic text, geometry and artwork; standard PDF Courier font names, no external font program or document content.",
+      "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Entirely authored synthetic text, geometry and artwork; standard PDF Courier font names, no external font program or document content.",
       "purpose": "Paper-role step-zero copy/find/geometry/ink and lifecycle baseline.",
       "gates": ["P-00a", "D1", "D3", "D4", "D7", "TXT-G1", "TXT-G7"],
-      "sha256": "9628b4211a0b4bd6dd6f20edf208603e3b5baeb130f28e656a4d3e92d36b7cdb", "bytes": 19843,
+      "sha256": "5fc279b7b414caacd45acf2c480cf161d53ff86008517037a198315d88eabadd", "bytes": 19849,
       "generator": "verify/fixtures/pdf/generators/authored-paper-15.mjs", "version": 1, "seed": 1346651697, "args": [], "pages": 15,
       "expected": "authored-paper-15.expected.json", "validity": "valid",
       "features": ["two columns", "title margin", "two-line abstract", "line-end hyphen", "font-split word", "rotated label", "math/vector/transparency", "image", "link"]
     },
     {
       "id": "GEN-23-oracle", "file": "authored-paper-15.expected.json", "tier": 1,
-      "licence": "CC0-1.0", "sourceNotice": "Independent authored layout and string inputs, not app extraction output.",
+      "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Independent authored layout and string inputs, not app extraction output.",
       "purpose": "Correct copy/find/anchor oracle and page-point gesture landmarks.", "gates": ["P-00a", "D7", "TXT-G1", "TXT-G7"],
-      "sha256": "64f139f8c06069e715869d6275b76138952aa13e78d64187776daa24627923a7", "bytes": 177845,
+      "sha256": "7feb781f683e4d6b03f94f96e00926ee786f64b95afb28f3a334a888878033fd", "bytes": 177881,
       "generator": "verify/fixtures/pdf/generators/authored-paper-15.mjs", "version": 1, "seed": 1346651697, "args": []
     },
     {
       "id": "GEN-18-876", "file": "unique-textbook-876.pdf", "tier": 1,
-      "licence": "CC0-1.0", "sourceNotice": "Authored chapters, numeric samples, math and diagrams; no textbook content or external assets.",
+      "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Authored chapters, numeric samples, math and diagrams; no textbook content or external assets.",
       "purpose": "Exact 876-page textbook role with unique never-built p3/p450/p700/final targets and repeated/hyphenated quote.",
       "gates": ["P-00a", "D1", "D3", "D4", "D7", "TXT-G7"],
-      "sha256": "9a2b907d25424b37455a62ec65998551ad316ad48ece16a54e12fa87b5447c75", "bytes": 886695,
+      "sha256": "a636924dd8010fd8b3271e42f0212baac915eb6976c547948add6fae9755dc86", "bytes": 886701,
       "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs", "version": 1, "seed": 1346651697, "args": ["--pages", "876"], "pages": 876,
       "expected": "unique-textbook-876.expected.json", "validity": "valid",
       "features": ["unique seeded text", "single/two columns", "repeated/distinct image and font resources", "transparent vectors", "half-page anchor"]
     },
     {
       "id": "GEN-18-876-oracle", "file": "unique-textbook-876.expected.json", "tier": 1,
-      "licence": "CC0-1.0", "sourceNotice": "Independent generator inputs, not extracted PDF text.",
+      "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Independent generator inputs, not extracted PDF text.",
       "purpose": "Full authored string/page/query/geometry oracle for the 876-page role.", "gates": ["P-00a", "D7", "TXT-G7"],
-      "sha256": "4668bae9994c5667af795df9d4fbad8248806c134bcbfd3453a4b20f88cc8b2d", "bytes": 7751972,
+      "sha256": "15924a812da9c63fcdf30477a7ea900728cec1a9c0857c427cc420c47acf87e4", "bytes": 7752074,
       "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs", "version": 1, "seed": 1346651697, "args": ["--pages", "876"]
     },
     {
       "id": "GEN-18-1000", "file": "unique-textbook-1000.pdf", "tier": 1,
-      "licence": "CC0-1.0", "sourceNotice": "Authored chapters, numeric samples, math and diagrams; no textbook content or external assets.",
+      "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Authored chapters, numeric samples, math and diagrams; no textbook content or external assets.",
       "purpose": "Additional 1000-page scalability role, not a replacement for the 876-page textbook baseline.",
       "gates": ["P-00a", "D7", "TXT-G7"],
-      "sha256": "87174aa9b734cf7f97e8c73c58258c4cd9024f9040320e9b232824aaded68846", "bytes": 1012120,
+      "sha256": "ecd7e551b19b22c19427c8930b8e50103e91af75031e9ab73484db4179093a18", "bytes": 1012126,
       "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs", "version": 1, "seed": 1346651697, "args": ["--pages", "1000"], "pages": 1000,
       "expected": "unique-textbook-1000.expected.json", "validity": "valid"
     },
     {
       "id": "GEN-18-1000-oracle", "file": "unique-textbook-1000.expected.json", "tier": 1,
-      "licence": "CC0-1.0", "sourceNotice": "Independent generator inputs, not extracted PDF text.",
+      "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Independent generator inputs, not extracted PDF text.",
       "purpose": "Full authored string/page/query/geometry oracle for the 1000-page additional role.", "gates": ["P-00a", "D7", "TXT-G7"],
-      "sha256": "b99b281ad112697393cc6cb857f4b2269d88ee2f70928147e8fa4da2177dd00d", "bytes": 8847621,
+      "sha256": "904aba654d64a57991713044bf07fb697851aa384f50215903db589686929e11", "bytes": 8847723,
       "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs", "version": 1, "seed": 1346651697, "args": ["--pages", "1000"]
     },
     {
       "id": "GEN-21", "file": "repeated-quotes-anchors.pdf", "tier": 1,
-      "licence": "CC0-1.0", "sourceNotice": "Authored quote/context strings and layout; no external content or font program.",
+      "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Authored quote/context strings and layout; no external content or font program.",
       "purpose": "Repeated quote ambiguity, contextual anchors, English-/to, empty anchor and distant revised quote.",
       "gates": ["P-00a", "TXT-G1", "TXT-G7"],
-      "sha256": "c749b2316674ba824c633a9e0830fe9304ea446101e3031f8d86bee44908c7e9", "bytes": 2383,
+      "sha256": "f96b1895a0d89b35de8f81d140c19c27042dbd156c8f1d58e45972185923b381", "bytes": 2389,
       "generator": "verify/fixtures/pdf/generators/repeated-quotes-anchors.mjs", "version": 1, "seed": 1346651697, "args": [], "pages": 2,
       "expected": "repeated-quotes-anchors.expected.json", "validity": "valid"
     },
     {
       "id": "GEN-21-oracle", "file": "repeated-quotes-anchors.expected.json", "tier": 1,
-      "licence": "CC0-1.0", "sourceNotice": "Independent authored strings/landmarks and prospective schema-2 input variants.",
+      "licence": "NOASSERTION", "proposedLicence": "CC0-1.0", "sourceNotice": "Independent authored strings/landmarks and prospective schema-2 input variants.",
       "purpose": "Correct quote/context/copy and page geometry oracle.", "gates": ["P-00a", "TXT-G1", "TXT-G7"],
-      "sha256": "ff7eb500501f76fb31f716362d3917d9245908dae0ec4add380f4a36b5453ff7", "bytes": 6381,
+      "sha256": "3754f3dae8589f651a839a3a5388f98fd10acac099f2458f1cecb373867ab001", "bytes": 6417,
       "generator": "verify/fixtures/pdf/generators/repeated-quotes-anchors.mjs", "version": 1, "seed": 1346651697, "args": []
     }
   ]

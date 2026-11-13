@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: CC0-1.0
+// Entirely authored; proposed licence CC0-1.0 awaits the owner's approval.
 // Entirely authored fixture content. No external document, font program or app code.
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -73,7 +73,7 @@ export function documentBuilder(title, identity) {
     function finish() {
         objects[0] = Buffer.from('<< /Type /Catalog /Pages 2 0 R >>');
         objects[1] = Buffer.from(`<< /Type /Pages /Count ${pageIds.length} /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] >>`);
-        const info = add(`<< /Title ${literal(title)} /Author (Authored CC0 fixture) /Creator (deterministic authored fixture v1) /Producer (independent raw PDF serializer v1) /CreationDate (D:20000101000000Z) /ModDate (D:20000101000000Z) >>`);
+        const info = add(`<< /Title ${literal(title)} /Author (Authored synthetic fixture) /Creator (deterministic authored fixture v1) /Producer (independent raw PDF serializer v1) /CreationDate (D:20000101000000Z) /ModDate (D:20000101000000Z) >>`);
         const chunks = [Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n', 'latin1')], offsets = [0];
         let length = chunks[0].length;
         for (const [index, object] of objects.entries()) {
@@ -92,7 +92,7 @@ export function documentBuilder(title, identity) {
 export async function emit(outDir, name, id, result, expected, seed) {
     const file = `${name}.pdf`, bytes = result.bytes;
     const record = { id, file, sha256: sha256(bytes), bytes: bytes.length, pages: result.expectedPages.length, seed,
-        licence: 'CC0-1.0', generatorVersion: 1, writerVersion: 'independent raw PDF serializer v1',
+        licence: 'NOASSERTION', proposedLicence: 'CC0-1.0', generatorVersion: 1, writerVersion: 'independent raw PDF serializer v1',
         expected: { ...expected, correctSelectAllText: result.expectedPages.map(page => page.lines.map(line => line.text).join('\n')).join('\n\n'), pageModels: result.expectedPages } };
     const output = fixtureWriter(outDir);
     await output(file, bytes);

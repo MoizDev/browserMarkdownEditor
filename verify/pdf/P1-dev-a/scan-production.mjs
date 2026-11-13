@@ -95,7 +95,7 @@ try {
     witness: { welcomePainted: true, fetchedBuildFiles: inventory.files.length, networkResponses: received.length },
     violations, network: received,
     falsePass: 'Only opening the welcome screen misses unvisited lazy chunks and unreferenced emitted assets; every output-graph entry is fetched.',
-    loss: 'Finite served build inventory; does not prove production initialization refusal (BLD-DEV-G2) or artifact provenance.',
+    loss: 'Finite served build inventory; route.fetch interception changes HTTP caching (decoded bodies are fulfilled unchanged). Does not prove production initialization refusal (BLD-DEV-G2) or artifact provenance.',
   }
   await page.screenshot({ path: resolve(output, 'production.png') })
   await writeFile(resolve(output, 'G1.json'), JSON.stringify(report, null, 2) + '\n')

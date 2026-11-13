@@ -124,8 +124,11 @@ not from a browser crash/identity/setup error. Stop preview after each arm.
   importer and the received contaminated bytes are required.
 - **Loss:** the scratch importer proves the supply-stage scanner, not DCE through
   P3's future importer. Repeat with that real importer when wired. The inventory
-  covers this build graph, not arbitrary server filesystem contents; no init-
-  refusal/provenance claim is made.
+  covers this build graph, not arbitrary server filesystem contents. Interim
+  `route.fetch` interception captures raw APIResponse bytes (CDP text-body reads
+  re-encoded CSS on the pinned Chrome); decoded bodies are fulfilled unchanged,
+  but interception changes HTTP caching. Replace with the shared identity toolbox
+  when its raw-body handling is ready. No init-refusal/provenance claim is made.
 
 ## BLD-DEV-G2: not yet runnable
 

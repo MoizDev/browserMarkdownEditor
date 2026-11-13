@@ -3,7 +3,7 @@ import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -12,7 +12,7 @@ const { values } = parseArgs({ options: {
   mutant: { type: 'boolean', default: false },
   'prefetch-mutant': { type: 'boolean', default: false },
 } });
-const worktree = fileURLToPath(new URL('../../..', import.meta.url));
+const worktree = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 const lock = '/Users/adham/Developer/bme-impl/scratch/bin/bme-lock';
 const run = (program, args, options = {}) => new Promise((done, reject) => {
   const child = spawn(program, args, { stdio: 'inherit', ...options });
@@ -46,7 +46,7 @@ if (mutant) {
   // copy-on-write optimization where supported, never a node_modules symlink.
   await cp(worktree, root, {
     recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true,
-    filter: path => !['.git', 'dist'].includes(path.slice(worktree.length + 1).split('/')[0]),
+    filter: path => !['.git', 'dist'].includes(relative(worktree, path).split('/')[0]),
   });
   const patchPath = resolve(worktree, patchFile);
   execFileSync('git', ['apply', '--check', patchPath], { cwd: root, stdio: 'inherit' });

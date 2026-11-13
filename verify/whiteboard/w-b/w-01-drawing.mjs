@@ -21,7 +21,7 @@ const { values } = parseArgs({ options: {
 } });
 const out = resolve(values.out);
 await mkdir(out, { recursive: true });
-const worktree = fileURLToPath(new URL('../../..', import.meta.url));
+const worktree = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const report = { gate: 'W-01', theme: values.theme, dpr: Number(values.dpr), agent: 'NOT COVERED (pending-V02)', checks: {}, failures: [], pageErrors: [], network: [] };
 const old = await readFile(new URL('./fixtures/old.tldraw', import.meta.url), 'utf8');

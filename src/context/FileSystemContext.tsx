@@ -756,7 +756,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     // lags a render, and the stale-walk guards below compare against it in the
     // very tick a switch commits.
     const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
+    const vaultActivationRef = useRef(0);
+    const getVaultActivation = useCallback(() => vaultActivationRef.current, []);
     const commitRoot = useCallback((handle: FileSystemDirectoryHandle | null) => {
+        // A→B→A is not the original activation, even if a handle is reused.
+        if (rootHandleRef.current !== handle) vaultActivationRef.current++;
         rootHandleRef.current = handle;
         setRootHandle(handle);
     }, []);
@@ -1515,24 +1519,33 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * as recovering the other — and restoreAsset undoes it automatically when
      * the reference comes back.
      */
-    const retireAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
-        if (!isAssetName(fileName)) return false;
+    const retireAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => withMutation(async () => {
+        if (!isAssetName(fileName) || !guard()) return false;
+        const activation = vaultActivationRef.current;
         try {
             const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR);
             const source = await assetsDir.getFileHandle(fileName);   // throws => nothing to retire
             const file = await source.getFile();
+            if (!guard()) return false;
 
             // Under its own name, not a free one: a retired asset has to be
             // findable again by the name the note used. Two assets that share a
             // name in one folder are the same picture (the second write replaced
             // the first in .Assets), so the newest bytes winning is right.
             const graveyard = await retiredAssetsDir(dirHandle, true);
+            if (!guard()) return false;
             await copyFileInto(graveyard, fileName, file);
+            // A copy may finish after its proof detached. Keeping both copies
+            // is safe; removing the live one on that obsolete proof is not.
+            if (!guard()) return false;
             await assetsDir.removeEntry(fileName);
 
             // The url cache pins a blob per file version; this one can't be
             // served again until the asset comes back (which re-mints it).
             const key = `${joinVaultPath(await dirPath(dirHandle), ASSETS_DIR)}/${fileName}`;
+            // An authorized removal can finish after a switch. The new vault
+            // may already have put a different blob under this relative key.
+            if (vaultActivationRef.current !== activation) return true;
             const cached = assetUrlsRef.current.get(key);
             if (cached) {
                 URL.revokeObjectURL(cached.url);
@@ -2322,6 +2335,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
        reader types, re-rendered anyway. */
     const value: FileSystemContextValue = useMemo(() => ({
         rootHandle,
+        getVaultActivation,
         fileTree,
         isLoading,
         previousVault,
@@ -2371,6 +2385,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         liveDetection,
     }), [
         rootHandle,
+        getVaultActivation,
         fileTree,
         isLoading,
         previousVault,

@@ -76,17 +76,48 @@ async function command(args, cwd) {
     } finally { await task.stop(); }
 }
 
-async function hashTree(root) {
+async function devSourceSnapshot(root) {
+    const configNames = (await readdir(root)).filter(name => /(?:\.config\.[^.]+$|^tsconfig.*\.json$|^\.env(?:\.|$)|^\.babelrc(?:\.|$)|^\.postcssrc(?:\.|$))/.test(name));
+    const roots = [...new Set(['src', 'shared', 'public', 'config', 'configs', 'index.html', 'package.json', 'package-lock.json', 'eslint.rules.ts', ...configNames])].sort();
     const hash = createHash('sha256');
-    const visit = async (dir, prefix = '') => {
-        for (const entry of (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
-            const path = join(dir, entry.name), relative = `${prefix}${entry.name}`;
-            if (entry.isDirectory()) await visit(path, `${relative}/`);
-            else { hash.update(relative); hash.update('\0'); hash.update(await readFile(path)); hash.update('\0'); }
+    let files = 0;
+    const visit = async relative => {
+        const path = join(root, relative);
+        let stat;
+        try { stat = await lstat(path); }
+        catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+            hash.update(`${JSON.stringify({ path: relative, kind: 'missing' })}\n`);
+            return;
+        }
+        if (stat.isDirectory()) {
+            hash.update(`${JSON.stringify({ path: relative, kind: 'directory' })}\n`);
+            for (const name of (await readdir(path)).sort()) await visit(`${relative}/${name}`);
+        } else {
+            if (!stat.isFile()) throw new Error(`Cannot freeze non-regular dev source: ${relative}`);
+            const bytes = await readFile(path);
+            hash.update(`${JSON.stringify({ path: relative, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })}\n`);
+            files++;
         }
     };
-    await visit(root);
-    return hash.digest('hex');
+    for (const path of roots) await visit(path);
+    return { sha256: hash.digest('hex'), roots, files };
+}
+
+async function checkDevSource(prepared) {
+    const expected = { commit: prepared.identity.commit, sha256: prepared.identity.devSourceSnapshot?.sha256 };
+    const repository = prepared.identity.mutant?.sourceRoot ?? prepared.root;
+    const actual = { commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim(),
+        sha256: (await devSourceSnapshot(prepared.root)).sha256 };
+    const check = { checkedAt: new Date().toISOString(), expected, actual,
+        passed: !!expected.sha256 && expected.commit === actual.commit && expected.sha256 === actual.sha256 };
+    if (!check.passed) {
+        const error = new Error(`Prepared dev source drift: HEAD ${expected.commit} → ${actual.commit}; served roots ${expected.sha256 ?? 'missing snapshot'} → ${actual.sha256}; prepare again`);
+        error.name = 'HarnessFault';
+        error.details = { type: 'dev-source-drift', ...check };
+        throw error;
+    }
+    return check;
 }
 
 /** Preparation only: run under build, never run/bench (HOWTO §1, verification.md §2).
@@ -105,11 +136,18 @@ export async function prepareApp({ root = sourceRoot, scratch, mode = 'productio
     try { mutant = JSON.parse(await readFile(join(root, '.bme-mutant.json'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const repository = mutant?.sourceRoot ?? root;
     if (mode !== 'dev') await command(['build', '--', process.execPath, join(root, 'node_modules/vite/bin/vite.js'), 'build', '--config', config, '--mode', mode], root);
+    else {
+        // The dev plugin regenerates this served source at startup. Freeze its
+        // deterministic output now too, rather than omit ignored generated code.
+        await command(['build', '--', process.execPath, join(root, 'src/epub/build-frame.mjs')], root);
+    }
+    const devSource = mode === 'dev' ? await devSourceSnapshot(root) : undefined;
     const artifact = await buildIdentity({ worktree: repository, distDir: mode === 'dev' ? undefined : dist, patch: mutant });
     const identity = { ...artifact, mode, root, gitCommit: artifact.commit,
         sourceDiffSha256: createHash('sha256').update(execFileSync('git', ['diff', 'HEAD'], { cwd: repository })).digest('hex'),
         configSha256: createHash('sha256').update(await readFile(config)).digest('hex'), ...(mutant ? { mutant } : {}),
-        contentSha256: mode === 'dev' ? await hashTree(join(root, 'src')) : artifact.manifestSha256 };
+        ...(devSource ? { devSourceSnapshot: devSource } : {}),
+        contentSha256: devSource?.sha256 ?? artifact.manifestSha256 };
     const prepared = { root, scratch, mode, config, distDir: mode === 'dev' ? undefined : dist, identity, preparedAt: new Date().toISOString() };
     await writeFile(join(scratch, 'prepared.json'), `${JSON.stringify(prepared, null, 2)}\n`);
     return prepared;
@@ -126,6 +164,7 @@ export async function serveApp({ root = sourceRoot, scratch, port, mode = 'produ
     const prepared = build ? await prepareApp({ root, scratch, mode }) : JSON.parse(await readFile(join(scratch, 'prepared.json'), 'utf8'));
     if (prepared.root !== root || prepared.scratch !== scratch || prepared.mode !== mode) throw new Error('Prepared app identity/root/mode does not match the requested run; prepare it first');
     if (prepared.identity.configSha256 !== createHash('sha256').update(await readFile(prepared.config)).digest('hex')) throw new Error('Prepared Vite config changed after identity capture');
+    if (mode === 'dev') prepared.identity.devSourceCheck = await checkDevSource(prepared);
     const probe = createServer();
     await new Promise((resolve, reject) => { probe.once('error', reject); probe.listen(port, '127.0.0.1', resolve); });
     await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
@@ -147,14 +186,11 @@ export async function serveApp({ root = sourceRoot, scratch, port, mode = 'produ
     } catch (error) { await server.stop(); throw error; }
 }
 
-/** V-01a's anchored mutant; only scratch changes (verification.md VER-13).
- * @param {{root?: string, scratch: string}} options
- * @returns {Promise<string>} Scratch source root, with its exact patch manifest.
- */
-export async function withSaveSkipped({ root = sourceRoot, scratch }) {
+/** Mutants share one isolated source/dependency copy, never the live worktree. */
+async function copyForMutation({ root = sourceRoot, scratch }, name) {
     await preparationGrants();
     root = await realpath(root);
-    const target = join(scratch, `save-skipped-${Date.now()}`);
+    const target = join(scratch, `${name}-${Date.now()}`);
     await mkdir(target, { recursive: true });
     const files = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
     for (const file of files) {
@@ -168,6 +204,16 @@ export async function withSaveSkipped({ root = sourceRoot, scratch }) {
     // APFS clone: 3.4 s measured by the integrator, no shared mutable install.
     await command(['build', '--', '/bin/cp', '-c', '-R', ownModules, join(target, 'node_modules')], root);
     if (await realpath(join(target, 'node_modules')) === ownModules) throw new Error('Mutant dependencies must be an isolated clone');
+    return { root: target, sourceRoot: root };
+}
+
+/** V-01a's anchored mutant; only scratch changes (verification.md VER-13).
+ * @param {{root?: string, scratch: string}} options
+ * @returns {Promise<string>} Scratch source root, with its exact patch manifest.
+ */
+export async function withSaveSkipped(options) {
+    const copy = await copyForMutation(options, 'save-skipped');
+    const target = copy.root, root = copy.sourceRoot;
     const path = join(target, 'src/App.tsx');
     const before = 'const result = await writeFileVersionedRef.current(handle, data, expected);';
     const after = "const result = { status: 'written' as const, version: expected! };";
@@ -177,4 +223,17 @@ export async function withSaveSkipped({ root = sourceRoot, scratch }) {
     await writeFile(join(target, '.bme-mutant.json'), JSON.stringify({ name: 'save-skipped', sourceRoot: root, file: 'src/App.tsx', before, after,
         originalSha256: createHash('sha256').update(original).digest('hex') }));
     return target;
+}
+
+/** The source change is deliberately deferred until AFTER dev preparation.
+ * @param {{root?: string, scratch: string, file?: 'src/App.tsx'|'index.html'|'vite.config.ts'}} options
+ * @returns {Promise<string>} Scratch source root; the run applies its declared append.
+ */
+export async function withDevSourceDrift(options) {
+    const file = options.file ?? 'src/App.tsx';
+    if (!['src/App.tsx', 'index.html', 'vite.config.ts'].includes(file)) throw new Error('Dev drift control supports only src/App.tsx, index.html or vite.config.ts');
+    const copy = await copyForMutation(options, 'dev-source-drift');
+    await writeFile(join(copy.root, '.bme-mutant.json'), JSON.stringify({ name: 'dev-source-drift', sourceRoot: copy.sourceRoot,
+        file, append: file.endsWith('.html') ? '\n<!-- prepared source drift witness -->\n' : '\n// prepared source drift witness\n' }));
+    return copy.root;
 }

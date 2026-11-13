@@ -4,8 +4,9 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-const sourcePaths = ['src', 'shared', 'helper', 'public', 'index.html', 'package.json', 'package-lock.json',
-    'vite.config.ts', 'eslint.config.ts', 'eslint.rules.ts', ':(glob)*.config.*', ':(glob)tsconfig*.json'];
+const sourcePaths = ['src', 'shared', 'helper', 'public', 'config', 'configs', 'index.html', 'package.json', 'package-lock.json',
+    'vite.config.ts', 'eslint.config.ts', 'eslint.rules.ts', ':(glob)*.config.*', ':(glob)tsconfig*.json',
+    ':(glob).env*', ':(glob).babelrc*', ':(glob).postcssrc*'];
 
 /** Verification identity (verification.md:77–89, VER-06/10/13), not an app hook.
  * treeClean excludes run scripts/docs, but includes untracked source and configs.

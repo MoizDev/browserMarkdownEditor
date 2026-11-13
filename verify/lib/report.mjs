@@ -17,7 +17,7 @@ export async function createReport({ scratch, name, fixtures = {}, ...metadata }
             data.assertions.push({ label, expected, actual, passed });
             if (!passed) throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
         },
-        fail(error) { data.errors.push({ name: error?.name ?? 'Error', message: String(error?.message ?? error), stack: error?.stack }); },
+        fail(error) { data.errors.push({ name: error?.name ?? 'Error', message: String(error?.message ?? error), stack: error?.stack, details: error?.details }); },
         async finish() {
             data.finishedAt = new Date().toISOString();
             data.passed = data.errors.length === 0 && data.assertions.length > 0 && data.assertions.every(row => row.passed);

@@ -4,6 +4,13 @@
  */
 export async function installCounters(context, { vaultName = null } = {}) {
     await context.addInitScript(({ vaultName }) => {
+        // Context init scripts also enter opaque reader frames. V-01a counts
+        // only the main window; V-01b instruments other realms explicitly.
+        if (window !== window.top) return;
+        let storage;
+        try { storage = navigator.storage; } catch { return; }
+        if (typeof FileSystemHandle !== 'function' || typeof FileSystemDirectoryHandle !== 'function' ||
+            typeof FileSystemFileHandle !== 'function' || typeof storage?.getDirectory !== 'function') return;
         if (window.__bmeCounters) return;
         let records = [], sequence = 0;
         const paths = new WeakMap();
@@ -18,7 +25,6 @@ export async function installCounters(context, { vaultName = null } = {}) {
         };
         const pathOf = handle => paths.get(handle) ?? handle?.name ?? null;
         const childPath = (dir, name) => [pathOf(dir), name].filter(Boolean).join('/');
-        const storage = navigator.storage;
         const getRoot = storage.getDirectory.bind(storage);
         storage.getDirectory = async function () {
             const handle = await getRoot();

@@ -6,7 +6,8 @@ Stop servers between runs and for timing windows. JSDoc in each `.mjs` documents
 
 ## Runnable example: `verify/guards/toolbox-smoke.mjs`
 
-Three notes/image → Open Vault → A → Cmd/Ctrl+E → type → read autosave → B→A → forced restore.
+Three notes/image → Open Vault → A → Cmd/Ctrl+E → type → read autosave → B→A → forced restore;
+then an original EPUB fixture opens its real opaque frame with zero pageerrors.
 Expected through restore: **one A writable/close, zero removals/workers**. Controls cover reads,
 completed-close barriers, async-false waits, and UTF-8 CSS loaded as stylesheet **and fetch()**.
 Set `BME_SCRATCH`, `BME_PORT`, optionally `BME_ROOT`. Preparation and execution are separate:
@@ -20,7 +21,11 @@ export BME_MODE=production                     # repeat with dev for StrictMode
 ```
 
 **Never build under run/bench**: it deadlocks the pool. Preparation freezes dist + build identity
-in `prepared.json`; execution refuses missing/mismatched preparation. OPFS is **not real disk**.
+in `prepared.json`. Dev rechecks HEAD + src/index/shared/public/config content (generated EPUB too):
+`build.devSourceCheck` records expected/actual; drift is HarnessFault. Kept extra mutants are dev-only
+`--dev-drift-mutant` / `--head-drift-mutant`, plus `--init-mutant` (both phases; details in the skill).
+The latter hides subframe FSA constructors and removes guards, proving the pageerror oracle.
+OPFS is **not real disk**.
 
 ## Small API (all page operations take `page` first)
 
@@ -50,7 +55,9 @@ in `prepared.json`; execution refuses missing/mismatched preparation. OPFS is **
   geometry/screenshots. **reload:** installReload before page; forceReload checks vanished marker
   and explicit arm. pinned-chrome uses native IDB; idb-shim recursively packs handles in dev,
   **refuses production**, loses native cloning. Production fallback belongs to V-02.
-- **counters:** installCounters(context,{vaultName?}) before page; read/reset give window snapshots
+- **counters:** installCounters and installVault are main-window-only, safely skip missing FSA;
+  they never enter opaque EPUB/engine frames. installCounters(context,{vaultName?}) before page;
+  read/reset give window snapshots
   (reset returns old). Writes/completed closes/removal/iteration/getFile/workers/canvas IDs;
   vault-relative paths/opfsPath, start/completion times. Outside/readback **also count**. **No
   worker internals/blob bodies** (V-01b); no paused-target counters for timing. **requests:**

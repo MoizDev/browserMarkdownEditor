@@ -41,6 +41,12 @@ async function completedCloses(page, { name, path, count, timeoutMs = 10000, int
 export async function installVault(context, { name }) {
     if (!name || /[/\\]/.test(name)) throw new Error('The OPFS vault needs one nonempty folder name');
     await context.addInitScript(({ name }) => {
+        // The picker belongs to the host, never the opaque reader/engine realm.
+        if (window !== window.top) return;
+        let storage;
+        try { storage = navigator.storage; } catch { return; }
+        if (typeof FileSystemHandle !== 'function' || typeof FileSystemDirectoryHandle !== 'function' ||
+            typeof storage?.getDirectory !== 'function') return;
         const grant = handle => {
             handle.queryPermission = async () => 'granted';
             handle.requestPermission = async () => 'granted';

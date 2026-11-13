@@ -32,10 +32,15 @@ Each step below exists because skipping it produces a *working change that looks
    prepare under build first (`toolbox-smoke.mjs --prepare` / `prepareApp`), then serve the frozen
    dist/identity with `serveApp({build:false})` under run. Nested preparation fails loudly; it can
    deadlock the shared pool. Stop the server between runs. Never use Vite's default 5173 or the
-   developer's 5199. Lifecycle uses dev (StrictMode) and production; timing uses benchmark.
+   developer's 5199. Dev startup also compares current HEAD and served source/config content
+   with the prepared snapshot; mismatch is HarnessFault. Reports record `build.devSourceCheck`
+   expected/actual values. Re-prepare after source, config or HEAD changes. Lifecycle uses dev
+   (StrictMode) and production; timing uses benchmark.
 
 2. **Stub `window.showDirectoryPicker` with OPFS**, in an `addInitScript` *before* the page loads.
-   The native picker cannot open headless.
+   The native picker cannot open headless. Use the toolbox's main-window-only installVault and
+   installCounters: context init scripts also enter opaque frames, where probing missing FSA
+   globals can itself cause pageerror. Never grant permissions or install window counters there.
 
 3. **Patch `queryPermission` / `requestPermission` to return `'granted'`** — on the handle you
    return *and* on the result of `FileSystemDirectoryHandle.prototype.getDirectoryHandle`.
@@ -122,20 +127,23 @@ Each step below exists because skipping it produces a *working change that looks
 ## Sketch
 
 ```js
-await page.addInitScript(() => {
-  const grant = (h) => {
-    h.queryPermission = async () => 'granted'
-    h.requestPermission = async () => 'granted'
-    return h
-  }
-  const getDir = FileSystemDirectoryHandle.prototype.getDirectoryHandle
-  FileSystemDirectoryHandle.prototype.getDirectoryHandle = async function (...a) {
-    return grant(await getDir.apply(this, a))
-  }
-  window.showDirectoryPicker = async () => grant(await navigator.storage.getDirectory())
-})
-await page.goto(`http://localhost:${PORT}/`)   // seed OPFS only AFTER this line
+import { installVault, seedVault } from './verify/lib/vault.mjs';
+import { installCounters } from './verify/lib/counters.mjs';
+await installVault(context, { name: 'Fixture Vault' });
+await installCounters(context, { vaultName: 'Fixture Vault' });
+const page = await context.newPage();
+await page.goto(`http://127.0.0.1:${PORT}/`);
+await seedVault(page, { name: 'Fixture Vault', files: { 'A.md': '# Fixture\n' } });
 ```
+
+The smoke's note counter epoch ends before its separate EPUB control. That control opens a real
+book, asserts sandbox=allow-scripts, opaque origin, absent host counters, no pageerror and no write.
+Kept extra arms use the same --prepare/run pair: dev-only `--dev-drift-mutant` changes a scratch
+copy AFTER preparation (`BME_DEV_DRIFT_PATH=src/App.tsx|index.html|vite.config.ts`); dev-only
+`--head-drift-mutant` corrupts prepared HEAD metadata while source bytes stay unchanged (not a
+real Git history change); `--init-mutant` removes guards and hides FSA constructors ONLY in
+subframes, confirms that fault applied, and must fail the no-pageerror assertion. No scratch
+patch ever edits the worktree's source.
 
 ## Read the colour off the element the TEXT NODE hangs off
 

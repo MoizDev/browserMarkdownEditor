@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
-import { prepareApp, serveApp, withSaveSkipped } from '../lib/serve.mjs';
+import { prepareApp, serveApp, withSaveSkipped, withDevSourceDrift } from '../lib/serve.mjs';
 import { openBrowser } from '../lib/browser.mjs';
 import { installVault, seedVault, readWitness, waitForVault } from '../lib/vault.mjs';
 import { editMode, typeText, fontsReady } from '../lib/input.mjs';
@@ -10,15 +10,18 @@ import { installCounters, readCounters, resetCounters } from '../lib/counters.mj
 import { recordRequests } from '../lib/requests.mjs';
 import { createReport } from '../lib/report.mjs';
 import { buildIdentity, bindServedBodies } from '../lib/identity.mjs';
+import { opaqueFrameEpub } from '../lib/epubFixture.mjs';
 
 // One autosave of one inserted sentence; opening/reading/restoring never writes.
-// Markdown-only startup creates no workers. No trash or move is requested.
+// The note phase ends before the separate EPUB frame control starts workers.
+// No trash or move is requested in either phase.
 const expectedCounts = { createWritable: 1, close: 1, removeEntry: 0, workerStart: 0 };
 const sentence = 'The toolbox sentence survives autosave and a real reload.';
 const fixtures = {
     'A.md': '# Note A\n\nOriginal A.\n',
     'B.md': '# Note B\n\nOriginal B.\n',
     'C.md': '# Note C\n\n![[pixel.png]]\n',
+    'Opaque.epub': opaqueFrameEpub(),
     '.Assets/pixel.png': Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64'),
 };
 const options = {
@@ -30,14 +33,30 @@ const options = {
 const arm = process.env.BME_RELOAD_ARM ?? 'pinned-chrome';
 const mutant = process.argv.includes('--mutant');
 const bindingMutant = process.argv.includes('--binding-mutant');
-if (mutant && bindingMutant) throw new Error('Choose one mutant arm at a time');
+const initMutant = process.argv.includes('--init-mutant');
+const devDriftMutant = process.argv.includes('--dev-drift-mutant');
+const headDriftMutant = process.argv.includes('--head-drift-mutant');
+const flags = { mutant, bindingMutant, initMutant, devDriftMutant, headDriftMutant };
+if (Object.values(flags).filter(Boolean).length > 1) throw new Error('Choose one mutant arm at a time');
+const mutantName = mutant ? 'mutant' : bindingMutant ? 'binding-mutant' : initMutant ? 'init-mutant' : devDriftMutant ? 'dev-drift-mutant' : headDriftMutant ? 'head-drift-mutant' : '';
 if (process.argv.includes('--prepare')) {
     try {
         const requestedRoot = options.root;
+        if ((devDriftMutant || headDriftMutant) && options.mode !== 'dev') throw new Error('Dev source/HEAD drift controls require BME_MODE=dev');
         if (mutant) options.root = await withSaveSkipped(options);
+        if (devDriftMutant) options.root = await withDevSourceDrift({ ...options, file: process.env.BME_DEV_DRIFT_PATH });
         const prepared = await prepareApp(options);
         prepared.requestedRoot = requestedRoot;
-        prepared.flags = { mutant, bindingMutant };
+        prepared.flags = flags;
+        if (devDriftMutant) {
+            const patch = prepared.identity.mutant;
+            const path = resolve(prepared.root, patch.file);
+            await writeFile(path, Buffer.concat([await readFile(path), Buffer.from(patch.append)]));
+        }
+        if (headDriftMutant) {
+            prepared.headDriftMutant = { before: prepared.identity.commit, after: '0'.repeat(40), kind: 'stale prepared HEAD metadata; source bytes unchanged' };
+            prepared.identity.commit = prepared.headDriftMutant.after;
+        }
         if (bindingMutant) {
             if (!prepared.distDir) throw new Error('Binding mutant requires a production build');
             const html = await readFile(resolve(prepared.distDir, 'index.html'), 'utf8');
@@ -58,27 +77,41 @@ if (process.argv.includes('--prepare')) {
     } catch (error) { console.error(error); process.exitCode = 1; }
     process.exit(process.exitCode ?? 0);
 }
-const report = await createReport({ ...options, name: `toolbox-smoke-${options.mode}${mutant ? '-mutant' : bindingMutant ? '-binding-mutant' : ''}`, fixtures,
+const report = await createReport({ ...options, name: `toolbox-smoke-${options.mode}${mutantName ? `-${mutantName}` : ''}`, fixtures,
     gate: { witness: 'A.md and the restored editor contain the sentence',
         identity: 'build content hash, actual browser version, reload arm and document path',
-        mutant: bindingMutant ? 'served entry script gains a harmless comment; body binding must reject it' : 'flushTab versioned-write call replaced in a scratch copy only',
+        mutant: initMutant ? 'initializer guards removed and subframe FSA constructors hidden; pageerror must fail' : devDriftMutant ? 'served source changed after dev preparation; startup must refuse' : headDriftMutant ? 'prepared HEAD metadata made stale; startup must refuse' : bindingMutant ? 'served entry script gains a harmless comment; body binding must reject it' : 'flushTab versioned-write call replaced in a scratch copy only',
         falsePass: 'hash-only navigation mistaken for a reload; marker must disappear',
         loss: 'OPFS does not prove real-disk events (VER-11); window counters miss worker internals (V-01b)' },
-    expectedCounts,
+    expectedCounts, counterScope: 'note open/save/switch/restore; EPUB frame control has a separate counter epoch',
 });
 let app, session, requests, binding;
 const assert = async (...args) => { await binding.check(); report.assert(...args); };
 try {
     const prepared = JSON.parse(await readFile(resolve(options.scratch, 'prepared.json'), 'utf8'));
-    if (prepared.requestedRoot !== options.root || prepared.flags?.mutant !== mutant || prepared.flags?.bindingMutant !== bindingMutant) throw new Error('Prepared smoke flags/source do not match this run; run --prepare first');
+    if (prepared.requestedRoot !== options.root || Object.entries(flags).some(([key, value]) => !!prepared.flags?.[key] !== value)) throw new Error('Prepared smoke flags/source do not match this run; run --prepare first');
     report.data.preparation = { preparedAt: prepared.preparedAt, flags: prepared.flags };
     if (prepared.bindingMutant) report.data.bindingMutant = prepared.bindingMutant;
+    if (prepared.headDriftMutant) report.data.headDriftMutant = prepared.headDriftMutant;
     app = await serveApp({ ...options, root: prepared.root, build: false });
     report.data.build = app.identity;
     session = await openBrowser();
     report.data.browser = session.identity;
-    await installCounters(session.context, { vaultName: 'Toolbox Vault' });
-    await installVault(session.context, { name: 'Toolbox Vault' });
+    const initContext = initMutant ? {
+        async addInitScript(callback, arg) {
+            const source = callback.toString(), start = source.indexOf('if (window !== window.top) return;');
+            const marker = source.includes('if (window.__bmeCounters) return;') ? 'if (window.__bmeCounters) return;' : 'const grant = handle => {';
+            const end = source.indexOf(marker, start);
+            if (start < 0 || end < 0 || source.split('if (window !== window.top) return;').length !== 2) throw new Error('Unguarded-init mutant anchor changed (VER-13)');
+            const fault = "if (window !== window.top) for (const name of ['FileSystemHandle','FileSystemDirectoryHandle','FileSystemFileHandle']) Reflect.deleteProperty(globalThis, name);\n";
+            const patched = source.slice(0, start) + fault + 'const storage = navigator.storage;\n' + source.slice(end);
+            const receipts = report.data.initMutant ??= [];
+            receipts.push({ removed: 'main-window and FSA feature guards', frameFault: 'hide FSA constructors only in subframes', continuation: marker });
+            await session.context.addInitScript(new Function(`return (${patched})`)(), arg);
+        },
+    } : session.context;
+    await installCounters(initContext, { vaultName: 'Toolbox Vault' });
+    await installVault(initContext, { name: 'Toolbox Vault' });
     report.data.reload = await installReload(session.context, { arm, mode: options.mode });
     const page = await session.context.newPage();
     binding = await bindServedBodies(session.context, { identity: app.identity, origin: app.url,
@@ -197,6 +230,27 @@ try {
     await fontsReady(page);
     report.data.screenshot = resolve(options.scratch, 'reports', `${report.data.name}-${report.data.runId}.png`);
     await page.screenshot({ path: report.data.screenshot });
+    await resetCounters(page);
+    await page.locator('.tree-item').filter({ hasText: /^Opaque(?:\.epub)?$/ }).click();
+    const iframe = page.locator('iframe.epub-reader-frame');
+    await iframe.waitFor();
+    const frame = page.frameLocator('iframe.epub-reader-frame');
+    await frame.getByText('Opaque frame witness is visible.', { exact: true }).waitFor();
+    await assert('EPUB control uses the sandboxed reader', 'allow-scripts', await iframe.getAttribute('sandbox'));
+    await assert('EPUB control has an opaque origin', 'null', await frame.locator('body').evaluate(() => self.origin));
+    if (initMutant) await assert('subframe missing-FSA fault actually applied', ['undefined', 'undefined', 'undefined'],
+        await frame.locator('body').evaluate(() => [typeof FileSystemHandle, typeof FileSystemDirectoryHandle, typeof FileSystemFileHandle]));
+    await assert('host-only counters do not enter the opaque realm', false, await frame.locator('body').evaluate(() => '__bmeCounters' in window));
+    await assert('no page errors after opaque EPUB open', [], errors);
+    const epubCounters = await readCounters(page);
+    await assert('EPUB frame control never writes', 0, epubCounters.records.filter(record => record.op === 'createWritable').length);
+    await assert('EPUB frame control really starts its workers', true, epubCounters.records.some(record => record.op === 'workerStart'));
+    report.data.epubControl = { counterScope: 'after note-restore witness', counters: epubCounters,
+        loss: 'window-only instrumentation; frame and worker contents belong to V-01b',
+        screenshot: resolve(options.scratch, 'reports', `${report.data.name}-epub-${report.data.runId}.png`) };
+    await frame.locator('body').evaluate(async () => { await document.fonts.ready; });
+    await fontsReady(page);
+    await page.screenshot({ path: report.data.epubControl.screenshot });
 } catch (error) {
     report.fail(error);
 } finally {

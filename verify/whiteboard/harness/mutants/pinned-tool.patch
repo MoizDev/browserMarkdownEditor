@@ -1,0 +1,28 @@
+diff --git a/src/components/canvasPen.ts b/src/components/canvasPen.ts
+--- a/src/components/canvasPen.ts
++++ b/src/components/canvasPen.ts
+@@ -16,2 +16,3 @@
+ import { TightDrawShapeUtil } from './tightDrawShape';
+ import PenDevPanel from './PenDevPanel';
++import B39PinnedToolbar from './B39PinnedToolbar';
+@@ -77,3 +78,4 @@
+ export const CANVAS_COMPONENTS = {
++    Toolbar: B39PinnedToolbar,
+     StylePanel: CanvasStylePanel,
+     InFrontOfTheCanvas: import.meta.env.DEV ? PenDevPanel : undefined,
+diff --git a/src/components/B39PinnedToolbar.tsx b/src/components/B39PinnedToolbar.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/components/B39PinnedToolbar.tsx
+@@ -0,0 +1,11 @@
++import { DefaultToolbar, TldrawUiMenuItem, useTools } from 'tldraw';
++
++export default function B39PinnedToolbar() {
++    const tools = useTools();
++    return (
++        <DefaultToolbar>
++            <TldrawUiMenuItem {...tools.select} isSelected={true} />
++            <TldrawUiMenuItem {...tools.draw} isSelected={false} />
++        </DefaultToolbar>
++    );
++}

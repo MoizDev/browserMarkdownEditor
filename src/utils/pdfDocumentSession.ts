@@ -1,6 +1,5 @@
-import { getDocument } from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
-import { pdfWorker } from './pdfWorker';
+import { openClassicPdf } from './pdfClassicOpen';
 
 export interface PdfPageLease { page: PDFPageProxy; release(): void }
 export interface PdfDocumentSession {
@@ -15,9 +14,12 @@ const aborted = () => new DOMException('PDF operation cancelled', 'AbortError');
 /** The retained pane owns disposal; changing surfaces releases consumers, never
  * the document. In particular, an old surface cannot destroy a new one's proxy. */
 export function createPdfDocumentSession(bytes: Uint8Array, generation: number): PdfDocumentSession {
-    const task = getDocument({ data: bytes.slice(), worker: pdfWorker() });
-    // A pane can be closed before its first consumer awaits the loading task.
-    void task.promise.catch(() => {});
+    const opening = new AbortController();
+    let taskReady = false;
+    const task = openClassicPdf({ bytes, purpose: 'viewer', signal: opening.signal }).then(task => { taskReady = true; return task; });
+    const document = task.then(task => task.promise);
+    // A pane can be closed before its first consumer awaits worker startup.
+    void document.catch(() => {});
     let closing = false;
     let leases = 0;
     let finish: (() => void) | undefined;
@@ -38,9 +40,9 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
         async acquire() {
             const release = hold();
             try {
-                const document = await task.promise;
+                const doc = await document;
                 if (closing) throw aborted();
-                return { document, release };
+                return { document: doc, release };
             } catch (error) { release(); throw error; }
         },
         async acquirePage(index0, _consumer, signal) {
@@ -48,7 +50,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
             const releaseDocument = hold();
             let entry: { promise: Promise<PDFPageProxy>; users: number } | undefined;
             try {
-                const doc = await task.promise;
+                const doc = await document;
                 if (closing || signal?.aborted) throw aborted();
                 if (!Number.isInteger(index0) || index0 < 0 || index0 >= doc.numPages) throw new RangeError('PDF page is outside this document');
                 entry = pages.get(index0);
@@ -86,9 +88,13 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
         dispose() {
             if (disposal) return disposal;
             closing = true;
+            // Startup has no lease yet; once loaded, retain the original
+            // document/page lease ordering rather than destroying mid-render.
+            if (!taskReady) opening.abort();
             disposal = (async () => {
                 if (leases) await new Promise<void>(resolve => { finish = resolve; });
-                await task.destroy();
+                const loaded = await task.catch(() => undefined);
+                await loaded?.destroy();
                 pages.clear();
             })();
             return disposal;

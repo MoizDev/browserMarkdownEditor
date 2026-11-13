@@ -16,10 +16,10 @@ const aborted = () => new DOMException('PDF operation cancelled', 'AbortError');
 export function createPdfDocumentSession(bytes: Uint8Array, generation: number): PdfDocumentSession {
     const opening = new AbortController();
     let taskReady = false;
-    const task = openClassicPdf({ bytes, purpose: 'viewer', signal: opening.signal }).then(task => { taskReady = true; return task; });
-    const document = task.then(task => task.promise);
+    const loadingTask = openClassicPdf({ bytes, purpose: 'viewer', signal: opening.signal }).then(openedTask => { taskReady = true; return openedTask; });
+    const loadedDocument = loadingTask.then(openedTask => openedTask.promise);
     // A pane can be closed before its first consumer awaits worker startup.
-    void document.catch(() => {});
+    void loadedDocument.catch(() => {});
     let closing = false;
     let leases = 0;
     let finish: (() => void) | undefined;
@@ -40,7 +40,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
         async acquire() {
             const release = hold();
             try {
-                const doc = await document;
+                const doc = await loadedDocument;
                 if (closing) throw aborted();
                 return { document: doc, release };
             } catch (error) { release(); throw error; }
@@ -50,7 +50,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
             const releaseDocument = hold();
             let entry: { promise: Promise<PDFPageProxy>; users: number } | undefined;
             try {
-                const doc = await document;
+                const doc = await loadedDocument;
                 if (closing || signal?.aborted) throw aborted();
                 if (!Number.isInteger(index0) || index0 < 0 || index0 >= doc.numPages) throw new RangeError('PDF page is outside this document');
                 entry = pages.get(index0);
@@ -93,7 +93,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
             if (!taskReady) opening.abort();
             disposal = (async () => {
                 if (leases) await new Promise<void>(resolve => { finish = resolve; });
-                const loaded = await task.catch(() => undefined);
+                const loaded = await loadingTask.catch(() => undefined);
                 await loaded?.destroy();
                 pages.clear();
             })();

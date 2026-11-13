@@ -1,0 +1,203 @@
+// The repository's own lint rules: the static half of the invariants in
+// `AGENTS.md` that no stock rule can state. Each rule's error on a deliberately
+// violating line was recorded when it was added (the commit that added it says
+// which line), so a rule that silently matches nothing is caught at that point.
+//
+// They are plain ESLint rules over the syntax tree: the repo's lint has no type
+// information (eslint.config.ts), so they judge by names and paths, never types.
+import path from 'node:path'
+import type { Rule } from 'eslint'
+
+const ROOT = path.dirname(new URL(import.meta.url).pathname)
+const rel = (file: string) => path.relative(ROOT, file).split(path.sep).join('/')
+
+type Node = Rule.Node & Record<string, unknown>
+
+/** The source of every static import, re-export, dynamic import() and require(). */
+function onImport(context: Rule.RuleContext, report: (node: Rule.Node, source: string) => void): Rule.RuleListener {
+  const check = (node: Rule.Node, src: unknown) => { if (typeof src === 'string') report(node, src) }
+  return {
+    ImportDeclaration: (n) => check(n, n.source.value),
+    ExportAllDeclaration: (n) => check(n, n.source.value),
+    ExportNamedDeclaration: (n) => { if (n.source) check(n, n.source.value) },
+    ImportExpression: (n) => { if (n.source.type === 'Literal') check(n, n.source.value) },
+    CallExpression: (n) => {
+      if (n.callee.type === 'Identifier' && n.callee.name === 'require' && n.arguments[0]?.type === 'Literal') check(n, n.arguments[0].value)
+    },
+  }
+}
+
+/** A relative import resolved to a repo-relative path; a bare specifier as written. */
+function target(file: string, source: string): { local: string | null; bare: string | null } {
+  if (source.startsWith('.') || source.startsWith('/')) {
+    const abs = source.startsWith('/') ? source : path.resolve(path.dirname(file), source)
+    return { local: rel(abs.split('?')[0]), bare: null }
+  }
+  return { local: null, bare: source }
+}
+
+const under = (p: string, dir: string) => p === dir || p.startsWith(dir + '/') || p.startsWith(dir + '.')
+
+interface Zone {
+  /** files this zone applies to (repo-relative directory prefixes) */
+  files: string[]
+  /** files inside the zone may not import these local directories... */
+  noLocal?: string[]
+  /** ...nor these packages (exact name or `name/…`) */
+  noPackage?: string[]
+  /** files OUTSIDE `files` may not import into it (a dark zone) */
+  dark?: boolean
+  /** directories outside the zone that a dark zone still lets in */
+  darkExcept?: string[]
+  message: string
+}
+
+// G-INV-06's engine half and I-0's dark zone (contracts C6.3). The new engines
+// stay imported by nothing until the package that wires their switch adds its
+// importer to `darkExcept`, in a reviewed diff of eslint.config.ts.
+const importZones: Rule.RuleModule = {
+  meta: { type: 'problem', schema: [{ type: 'array' }] },
+  create(context) {
+    const zones = (context.options[0] ?? []) as Zone[]
+    const file = rel(context.filename)
+    return onImport(context, (node, source) => {
+      const t = target(context.filename, source)
+      for (const z of zones) {
+        const inside = z.files.some(d => under(file, d))
+        if (inside) {
+          if (t.local && z.noLocal?.some(d => under(t.local!, d))) context.report({ node, message: `${z.message} (imports ${t.local})` })
+          if (t.bare && z.noPackage?.some(p => t.bare === p || t.bare!.startsWith(p + '/'))) context.report({ node, message: `${z.message} (imports ${t.bare})` })
+        } else if (z.dark && t.local && z.files.some(d => under(t.local!, d)) && !z.darkExcept?.some(d => under(file, d))) {
+          context.report({ node, message: `${z.message} (${t.local} is imported by nothing until its switch is wired)` })
+        }
+      }
+    })
+  },
+}
+
+// G-INV-04: code-based tests are banned (AGENTS.md, "Checks"). A test file by
+// name, or an import of a test runner. A `test` script in package.json is
+// caught by review, not here.
+const RUNNERS = ['bun:test', 'node:test', 'vitest', 'jest', '@jest/globals', 'mocha', 'chai', 'ava', 'tap', 'uvu', 'jasmine', '@playwright/test', '@testing-library/react', '@testing-library/dom']
+const noTests: Rule.RuleModule = {
+  meta: { type: 'problem', schema: [] },
+  create(context) {
+    const file = rel(context.filename)
+    const listeners = onImport(context, (node, source) => {
+      if (RUNNERS.some(r => source === r || source.startsWith(r + '/'))) {
+        context.report({ node, message: `Code-based tests are banned (AGENTS.md): no test runner may be imported (${source}). Verify with a browser run driving the real app.` })
+      }
+    })
+    return {
+      ...listeners,
+      Program(node) {
+        if (/(^|\/)__tests__\/|\.(test|spec)\.[cm]?[jt]sx?$/.test(file)) {
+          context.report({ node, message: 'Code-based tests are banned (AGENTS.md): no *.test.* / *.spec.* file. Verify with a browser run driving the real app.' })
+        }
+      },
+    }
+  },
+}
+
+interface SinkAllow { file: string; names: string[]; rhs: 'any' | 'constant'; identifiers?: string[] }
+
+// G-INV-22: HTML-string sinks occur only where listed (AGENTS.md: two places
+// turn note text into innerHTML). Banned wherever the name appears; an
+// allow-list entry is by path and, unless it is one of the two note-text sinks,
+// requires a right-hand side that is a module constant built from literals.
+const SINK_PROPS = new Set(['innerHTML', 'outerHTML', 'srcdoc', 'insertAdjacentHTML', 'setHTMLUnsafe', 'createContextualFragment'])
+const htmlSinks: Rule.RuleModule = {
+  meta: { type: 'problem', schema: [{ type: 'array' }] },
+  create(context) {
+    const allow = (context.options[0] ?? []) as SinkAllow[]
+    const file = rel(context.filename)
+    const entry = (name: string) => allow.find(a => a.file === file && a.names.includes(name))
+
+    const isConstant = (n: Node | null | undefined, seen = new Set<string>()): boolean => {
+      if (!n) return false
+      if (n.type === 'Literal') return typeof (n as unknown as { value: unknown }).value === 'string'
+      if (n.type === 'TemplateLiteral') return (n.expressions as Node[]).every(e => isConstant(e, seen))
+      if (n.type === 'BinaryExpression' && n.operator === '+') return isConstant(n.left as Node, seen) && isConstant(n.right as Node, seen)
+      if (n.type === 'Identifier') {
+        const name = n.name as string
+        if (seen.has(name)) return false
+        seen.add(name)
+        let scope: ReturnType<typeof context.sourceCode.getScope> | null = context.sourceCode.getScope(n)
+        while (scope) {
+          const v = scope.set.get(name)
+          if (v) {
+            const def = v.defs[0]
+            return !!def && def.type === 'Variable' && (def.parent as { kind?: string }).kind === 'const' &&
+              isConstant((def.node as unknown as { init: Node }).init, seen)
+          }
+          scope = scope.upper
+        }
+      }
+      return false
+    }
+
+    const judge = (node: Rule.Node, name: string, rhs: Node | null) => {
+      const e = entry(name)
+      if (e && (e.rhs === 'any' || isConstant(rhs) || (rhs?.type === 'Identifier' && e.identifiers?.includes(rhs.name as string)))) return
+      context.report({ node, message: `HTML-string sink \`${name}\` outside its allow-list (AGENTS.md: exactly two places turn note text into innerHTML). Build DOM nodes, or set textContent.` })
+    }
+
+    return {
+      MemberExpression(n) {
+        const prop = n.property
+        const name = !n.computed && prop.type === 'Identifier' ? prop.name : prop.type === 'Literal' && typeof prop.value === 'string' ? prop.value : null
+        if (!name) return
+        const parent = (n as Node).parent as Node
+        if (name === 'write' || name === 'writeln') {
+          if (n.object.type === 'Identifier' && n.object.name === 'document') judge(n, `document.${name}`, null)
+          return
+        }
+        if (name === 'parseFromString') {
+          const call = parent.type === 'CallExpression' ? parent : null
+          const type = call ? (call.arguments as Node[])[1] : null
+          if (type?.type === 'Literal' && typeof type.value === 'string' && type.value !== 'text/html') return
+          judge(n, name, null)
+          return
+        }
+        if (!SINK_PROPS.has(name)) return
+        const rhs = parent.type === 'AssignmentExpression' && parent.left === n ? parent.right as Node
+          : parent.type === 'CallExpression' && parent.callee === n ? (parent.arguments as Node[]).at(-1) ?? null : null
+        judge(n, name, rhs)
+      },
+      JSXAttribute(n: unknown) {
+        const a = n as unknown as { name: { name: unknown } }
+        const name = typeof a.name.name === 'string' ? a.name.name : null
+        if (name === 'dangerouslySetInnerHTML' || name === 'srcDoc' || name === 'srcdoc') judge(n as Rule.Node, name, null)
+      },
+    }
+  },
+}
+
+// G-INV-FS: only src/context/ touches the File System Access API (AGENTS.md,
+// the four layers). Bans the method names only that API has. The baseline of
+// files that break the rule today is the rule's option in eslint.config.ts and
+// may only shrink. getFile and iteration are not banned by name (no type
+// information can tell a handle from a Map); the browser runs cover them.
+const FS_NAMES = new Set(['getFileHandle', 'getDirectoryHandle', 'createWritable', 'removeEntry', 'showDirectoryPicker', 'queryPermission', 'requestPermission', 'isSameEntry'])
+const fsAccess: Rule.RuleModule = {
+  meta: { type: 'problem', schema: [{ type: 'array' }] },
+  create(context) {
+    const baseline = new Set((context.options[0] ?? []) as string[])
+    const file = rel(context.filename)
+    if (under(file, 'src/context') || baseline.has(file)) return {}
+    return {
+      MemberExpression(n) {
+        const prop = n.property
+        const name = !n.computed && prop.type === 'Identifier' ? prop.name : prop.type === 'Literal' && typeof prop.value === 'string' ? prop.value : null
+        if (name && FS_NAMES.has(name)) {
+          context.report({ node: n, message: `File System Access call \`${name}\` outside src/context/ (AGENTS.md: the four layers). Go through useFileSystem().` })
+        }
+      },
+    }
+  },
+}
+
+export const bmePlugin = {
+  meta: { name: 'bme' },
+  rules: { 'import-zones': importZones, 'no-tests': noTests, 'html-sinks': htmlSinks, 'fs-access': fsAccess },
+}

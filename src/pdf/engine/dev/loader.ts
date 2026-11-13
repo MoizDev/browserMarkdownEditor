@@ -64,9 +64,9 @@ async function instantiate(options: DevPdfiumOptions, identity: typeof manifest)
     : options.role === 'writer' ? 3_758_096_384 : 0
   if (!roleLimit) throw new Error('Unknown PDFium worker role')
   if (!(options.compiledModule instanceof WebAssembly.Module)) throw new Error('Missing frame-compiled PDFium module')
-  // Measured in the real opaque blob worker: crypto.subtle is absent. Hash
-  // verification belongs to the trusted pool before it transfers either asset;
-  // the worker must not depend on a secure-context API its realm cannot expose.
+  // The opaque worker cannot rely on secure-context WebCrypto. Verification
+  // belongs to the trusted pool before it transfers either asset, not a second
+  // digest inside the worker (04-workers.md's trusted fetch boundary).
   scope.Module = {}
   const glueBytes = new TextEncoder().encode(options.glueSource)
   if (glueBytes.byteLength !== identity.files.glue.bytes) throw new Error('PDFium glue length mismatch')

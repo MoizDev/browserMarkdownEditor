@@ -52,30 +52,14 @@ shared config and includes `build` in TypeScript. Set
 `BME_DEV_ENGINE_DIR=/absolute/scratch/engine` only when supplying the local engine.
 The plugin does not read this variable/manifest/assets in production build mode.
 
-## Isolated development bootstrap witness
+## What this package proves
 
-Start the real app with the scratch Vite-config recipe and the dev-assets plugin
-(if I-3 has not merged yet, add it to the **scratch** config only). Then:
-
-```sh
-bme-lock run -w 2 -- node verify/pdf/P1-dev-a/load-engine.mjs \
-  http://localhost:<seat-port>/ /absolute/scratch/loader \
-  /absolute/planning/00-evidence/pdf/figma/ship/raw/exports-bblanchon-8152.txt
-```
-
-This is the explicitly isolated P1-dev-a bootstrap experiment, **not a P3 real-app
-gate**. It first witnesses the app welcome screen, then compiles the verified
-engine inside an opaque frame, clones the compiled module to classic blob
-workers in both roles, calls real `FPDF_InitLibrary`, opens a deterministic one-
-page PDF through `FPDF_LoadMemDocument`, checks `FPDF_GetPageCount`, and paints its
-native bitmap to a canvas. It requires ink, the exact evidence export list and
-build ID; white pixels alone cannot pass. Outputs include both role screenshots,
-fixture SHA, browser/driver/build identity, sizes and measured initial heap.
-
-**Lost:** real document gestures/host identity, callback ABI, role-boundary and
-multi-GiB memory runs, codecs/fonts, and security qualification. Re-prove native
-startup through the real tiled app when P3 exists. The dev run, not product code,
-contains the temporary one-page native calls.
+Supply evidence is the fetched archive's exact hash/length manifest and the
+production-byte gate below. **Rendering and initialization evidence starts at
+P3 through the real document pane.** No in-page module bootstrap, direct native
+API check, hidden diagnostic route, or isolated engine script is a permitted
+substitute, whether placed in the repository or in scratch. This package makes
+no rendering, callback ABI, memory-capacity or containment-security claim.
 
 ## BLD-DEV-G1: production network scan and forced-on mutant
 

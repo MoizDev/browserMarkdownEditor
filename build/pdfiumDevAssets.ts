@@ -8,8 +8,10 @@ export function developmentPdfiumAssets(): Plugin {
   return {
     name: 'development-pdfium-assets',
     configResolved(config) {
-      // Production does not even read the development manifest or scratch path.
-      if (config.command !== 'serve' && config.mode !== 'benchmark') return
+      // Config objects may be reused in-process. A prior dev resolution cannot
+      // leave assets queued for a later production build or production preview.
+      assets = []
+      if (config.isPreview || (config.command !== 'serve' && config.mode !== 'benchmark')) return
       const scratch = process.env.BME_DEV_ENGINE_DIR
       if (!scratch) return
       const manifest = JSON.parse(readFileSync(new URL('../src/pdf/engine/dev/manifest.json', import.meta.url), 'utf8')) as {

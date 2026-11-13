@@ -82,7 +82,11 @@ Each clean arm exits 0. Product assertions exit 1 with a named `FAIL` reason (`P
 exit 2 as `INVALID`; product failures are never classified as invalid setup. Results include asserted
 identities, response hashes/provenance, native calls, hook reports/events, file hashes, visible DOM,
 screenshots and any stable failure reason.
-The async filesystem wait awaits each native OPFS read; it never assumes a fixed completion delay.
+Existence/location conditions use bounded native probes and propagate every error except the
+NotFound result that defines absence. The asset.md BYTE witness instead waits for the next completed
+successful close count (seed closes included), then reads once, retrying only NotReadableError at most
+three times with 50ms yields. NotFoundError is never retried. Close-count timeout is an INVALID
+witness/harness fault (exit2), not a named mutant kill. Witness counts/retries are recorded.
 
 ## Mutants and invalid executions
 

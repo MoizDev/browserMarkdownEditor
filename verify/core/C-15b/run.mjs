@@ -98,6 +98,7 @@ async function openBrowser() {
     window.showDirectoryPicker = async () => grant(await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture', { create: true }));
     window.__removals = [];
     window.__copyWrites = [];
+    window.__completedCloses = Object.create(null);
     window.__vaultEvents = [];
     const dispatch = EventTarget.prototype.dispatchEvent;
     EventTarget.prototype.dispatchEvent = function (event) {
@@ -117,13 +118,18 @@ async function openBrowser() {
     };
     const writable = FileSystemFileHandle.prototype.createWritable;
     FileSystemFileHandle.prototype.createWritable = async function (...args) {
-        if (window.__countCopies) {
-            const report = window.__perf?.vault?.reports().at(-1) ?? null;
-            const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture');
-            const segments = await root.resolve(this);
-            window.__copyWrites.push({ path: segments?.join('/'), report });
-        }
-        return writable.apply(this, args);
+        const report = window.__perf?.vault?.reports().at(-1) ?? null;
+        const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture');
+        const relative = (await root.resolve(this))?.join('/');
+        if (window.__countCopies) window.__copyWrites.push({ path: relative, report });
+        const stream = await writable.apply(this, args);
+        const close = stream.close.bind(stream);
+        stream.close = async (...args) => {
+            const result = await close(...args);
+            if (relative !== undefined) window.__completedCloses[relative] = (window.__completedCloses[relative] ?? 0) + 1;
+            return result;
+        };
+        return stream;
     };
     });
 }
@@ -147,7 +153,10 @@ async function hasFile(name, exists = true) {
             for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part);
             await dir.getFileHandle(parts.at(-1));
             return exists;
-        } catch (error) { return !exists && error.name === 'NotFoundError'; }
+        } catch (error) {
+            if (error.name !== 'NotFoundError') throw error;
+            return !exists;
+        }
     };
     await waitFor(condition, { name, exists });
     assert.equal(await page.evaluate(condition, { name, exists }), true, `file condition did not settle: ${name} (${exists})`);
@@ -168,22 +177,43 @@ async function closeBin() {
     await page.locator('.trash-panel').getByRole('button', { name: 'Close', exact: true }).click();
     await page.locator('.trash-panel').waitFor({ state: 'detached' });
 }
+async function readAssetAfterClose(count) {
+    const deadline = Date.now() + 15000;
+    let completed = 0;
+    while (Date.now() < deadline) {
+        completed = await page.evaluate(() => window.__completedCloses['asset.md'] ?? 0);
+        if (completed >= count) break;
+        await page.waitForTimeout(25);
+    }
+    if (completed < count) throw Object.assign(new Error(`completed-close witness timed out: asset.md ${completed}<${count}`), { invalid: true });
+    // Read once AFTER a successful close. Only the browser's transient
+    // NotReadableError gets bounded retries; NotFoundError is never retried.
+    let retries = 0;
+    while (true) {
+        const read = await page.evaluate(async () => {
+            try {
+                const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture');
+                return { ok: true, text: await (await (await dir.getFileHandle('asset.md')).getFile()).text() };
+            } catch (error) { return { ok: false, name: error.name, message: error.message }; }
+        });
+        if (read.ok) {
+            (result.witnesses ??= []).push({ path: 'asset.md', afterCompletedCloses: count, completed, retries });
+            return read.text;
+        }
+        if (read.name !== 'NotReadableError' || retries === 3) throw new Error(`${read.name}: ${read.message}`);
+        retries++;
+        await page.waitForTimeout(50);
+    }
+}
 async function setAssetText(text) {
+    const afterCompletedCloses = await page.evaluate(() => (window.__completedCloses['asset.md'] ?? 0) + 1);
     const editor = page.locator('.cm-content').filter({ visible: true });
     assert.equal(await editor.getAttribute('contenteditable'), 'true', 'enter edit mode before typing');
     await editor.click();
     await page.keyboard.press('Meta+a');
     await page.keyboard.insertText(text);
     await page.keyboard.press('Meta+s');
-    await waitFor(async text => {
-        const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture');
-        return await (await (await dir.getFileHandle('asset.md')).getFile()).text() === text;
-    }, text);
-    const disk = await page.evaluate(async () => {
-        const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture');
-        return (await (await dir.getFileHandle('asset.md')).getFile()).text();
-    });
-    assert.equal(disk, text, 'edited text must reach disk');
+    assert.equal(await readAssetAfterClose(afterCompletedCloses), text, 'edited text must reach disk');
 }
 async function visibleSnapshot() {
     return page.evaluate(() => ({
@@ -405,13 +435,14 @@ try {
     if (handFailure) throw fail('hand-count', handFailure.replace(/\s+/g, ' '));
     result.ok = true;
 } catch (error) {
-    const reason = error.reason ?? (['flow', 'gate'].includes(phase) ? `${mode === 'production' ? 'P' : mode === 'benchmark' ? 'B' : 'D'}-render` : null);
-    result.reason = reason ?? `INVALID ${phase}`;
+    const invalidPhase = error.invalid ? 'witness' : phase;
+    const reason = error.invalid ? null : error.reason ?? (['flow', 'gate'].includes(phase) ? `${mode === 'production' ? 'P' : mode === 'benchmark' ? 'B' : 'D'}-render` : null);
+    result.reason = reason ?? `INVALID ${invalidPhase}`;
     result.error = error.stack;
     result.browserErrors = errors;
     result.responseErrors = responseErrors;
     result.exitCode = reason ? 1 : 2;
-    console.error(`${reason ? 'FAIL' : 'INVALID'} ${reason ?? phase} ${error.message.replace(/\s+/g, ' ')}`);
+    console.error(`${reason ? 'FAIL' : 'INVALID'} ${reason ?? invalidPhase} ${error.message.replace(/\s+/g, ' ')}`);
     process.exitCode = result.exitCode;
 } finally {
     if (resultPath) {

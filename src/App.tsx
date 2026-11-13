@@ -7,7 +7,8 @@ import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMe
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
-import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache, primeLinks } from './utils/graph';
+import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
+import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope } from './utils/storage';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
@@ -1667,13 +1668,12 @@ export default function App() {
     }
   }, [ask, createFile, notify, tell, writeFileBytes]);
 
-  // Flat index of markdown files for resolving wikilinks by note name. Read
-  // through a ref by openNoteByName below, which MUST stay stable: the editor
-  // bakes its wikilink handler into a document's EditorState, and that state
-  // outlives the pane that built it (see DocumentPane).
-  const mdFiles = useMemo(() => collectMarkdownFiles(fileTree), [fileTree]);
-  const mdFilesRef = useRef(mdFiles);
-  useEffect(() => { mdFilesRef.current = mdFiles; }, [mdFiles]);
+  // The graph and the click share one canonical resolver revision. Read it
+  // through an App-lifetime ref: the wikilink handler is baked into cached
+  // EditorStates, which outlive their panes (see DocumentPane).
+  const noteResolver = useMemo(() => getNoteResolver(fileTree), [fileTree]);
+  const noteResolverRef = useRef(noteResolver);
+  useEffect(() => { noteResolverRef.current = noteResolver; }, [noteResolver]);
 
   // A different vault may reuse paths — never resolve links from the old one's
   // cached extractions (mirrors FileExplorer clearing the search cache).
@@ -2411,13 +2411,12 @@ export default function App() {
   // rather than closed over. The editor bakes this into each document's
   // EditorState (DocumentPane's `mousedown` handler), outside any compartment,
   // and that state is cached and re-adopted by whichever pane shows the
-  // document next. Depending on `mdFiles` here froze the handler at whatever
+  // document next. Depending on `noteResolver` here would freeze the handler at whatever
   // the index held when the document's FIRST pane unmounted, so a wikilink to
   // any note created, renamed or moved after that silently did nothing.
   const openNoteByName = useCallback((name: string | null) => {
     if (!name) return;
-    const key = baseName(name).toLowerCase();
-    const match = mdFilesRef.current.find(f => baseName(f.name).toLowerCase() === key);
+    const match = noteResolverRef.current.resolveNode(name);
     if (match) {
       handleFileClick(match);
       setMainView('editor');

@@ -1,4 +1,5 @@
-// CC0-1.0. Authored PDF/CCITT data; no third-party document or font bytes.
+// Authored PDF/CCITT data; no third-party document or font bytes.
+// Proposed CC0-1.0; licence remains NOASSERTION pending the owner's choice.
 // This GEN-09 slice is deliberately NOT a replacement for the risky JPX/JBIG2
 // witnesses: reproducing their precise constructions needs a pinned encoder.
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -11,11 +12,11 @@ const out = resolve(args[1]);
 const seed = Number(args[3]);
 if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) throw new Error('Seed must be uint32');
 await mkdir(out, { recursive: true });
-const version = 1;
+const version = 2;
 const bytes = value => Buffer.from(value, 'latin1');
 const stream = (dict, data) => Buffer.concat([bytes(`<< ${dict} /Length ${data.length} >>\nstream\n`), data, bytes('\nendstream')]);
 function pdf(objects, fixtureId) {
-    objects = [...objects, '<< /CreationDate (D:20000101000000Z) /ModDate (D:20000101000000Z) /Creator (Authored codec fixtures) /Producer (codecs-minimal v1) >>'];
+    objects = [...objects, '<< /CreationDate (D:20000101000000Z) /ModDate (D:20000101000000Z) /Creator (Authored codec fixtures) /Producer (codecs-minimal v2) >>'];
     const id = createHash('sha256').update(`${fixtureId}:${version}:${seed}`).digest('hex').slice(0, 32);
     const parts = [bytes('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n')];
     const offsets = [0];
@@ -35,7 +36,7 @@ function imagePdf(filter, params, image, fixtureId) {
         '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
         '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 256 256] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>',
         stream('', bytes('q 224 0 0 224 16 16 cm /Im0 Do Q')),
-        stream(`/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /${filter} ${params}`, image),
+        stream(`/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /${filter} /Decode [1 0] ${params}`, image),
     ], fixtureId);
 }
 function bitBytes(bits) {
@@ -45,7 +46,7 @@ function bitBytes(bits) {
 const fixtures = [];
 async function emit(file, data, expected) {
     await writeFile(resolve(out, file), data, { flag: 'wx' });
-    const entry = { id: `GEN-09-${file.replace('.pdf', '')}`, file, sha256: createHash('sha256').update(data).digest('hex'), bytes: data.length, seed, version, pages: 1, licence: 'CC0-1.0', expected };
+    const entry = { id: `GEN-09-${file.replace('.pdf', '')}`, file, sha256: createHash('sha256').update(data).digest('hex'), bytes: data.length, seed, version, pages: 1, licence: 'NOASSERTION', proposedLicence: 'CC0-1.0', expected };
     fixtures.push(entry);
     console.log(JSON.stringify({ file, sha256: entry.sha256, bytes: entry.bytes }));
 }

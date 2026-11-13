@@ -50,6 +50,7 @@ export interface BoardDoc {
     readonly attachedTo: ReadonlyMap<NodeId, ReadonlySet<NodeId>>;
     readonly bySheet: ReadonlyMap<SheetId, ReadonlySet<NodeId>>;
     readonly byPage: ReadonlyMap<number, ReadonlySet<NodeId>>; // Paged root nodes only; all sheets.
+    readonly mediaRefs: ReadonlyMap<MediaId, ReadonlySet<NodeId>>;
     readonly ui: UiBlock;
     readonly view: ViewFlags;
     readonly host: HostBlock;
@@ -123,8 +124,9 @@ export function createBoardDoc(input: BoardDocInput): BoardDoc {
     const attachedTo = new Map<NodeId, Set<NodeId>>();
     const bySheet = new Map<SheetId, Set<NodeId>>();
     const byPage = new Map<number, Set<NodeId>>();
+    const mediaRefs = new Map<MediaId, Set<NodeId>>();
     const doc: BoardDoc = {
-        kind: input.kind, sheets, nodes, media, sheetOrder, children, attachedTo, bySheet, byPage,
+        kind: input.kind, sheets, nodes, media, sheetOrder, children, attachedTo, bySheet, byPage, mediaRefs,
         ui: input.ui, view: input.view, host: input.host, preserved: input.preserved, rev: 0,
     };
     for (const record of input.sheets) {
@@ -150,6 +152,11 @@ export function createBoardDoc(input: BoardDocInput): BoardDoc {
         if (node.kind === 'connector') {
             if (node.start.attach) addMember(attachedTo, node.start.attach.target, node.id);
             if (node.end.attach) addMember(attachedTo, node.end.attach.target, node.id);
+        }
+        if ((node.kind === 'picture' || node.kind === 'clip') && node.media) addMember(mediaRefs, node.media, node.id);
+        if (node.kind === 'linkcard' && node.preview) {
+            if (node.preview.image) addMember(mediaRefs, node.preview.image, node.id);
+            if (node.preview.favicon) addMember(mediaRefs, node.preview.favicon, node.id);
         }
     }
     for (const entry of input.media ?? []) media.set(entry.id, entry);

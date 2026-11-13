@@ -11,7 +11,7 @@ import { compareOrder } from './orderKey';
 // inside its transaction, capturing the old ext for inverse/rollback. These value-only helpers
 // must not silently discard preservation metadata outside that atomic capture.
 type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
-    'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage'> & {
+    'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage' | 'mediaRefs'> & {
     nodes: Map<NodeId, Node>;
     sheets: Map<SheetId, Sheet>;
     media: Map<MediaId, MediaEntry>;
@@ -20,6 +20,7 @@ type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
     attachedTo: Map<NodeId, Set<NodeId>>;
     bySheet: Map<SheetId, Set<NodeId>>;
     byPage: Map<number, Set<NodeId>>;
+    mediaRefs: Map<MediaId, Set<NodeId>>;
 };
 
 function forApply(doc: BoardDoc): MutableDoc {
@@ -74,6 +75,22 @@ function removeAttachments(doc: MutableDoc, node: ConnectorNode): void {
     if (node.end.attach) removeMember(doc.attachedTo, node.end.attach.target, node.id);
 }
 
+function addMediaRefs(doc: MutableDoc, node: Node): void {
+    if ((node.kind === 'picture' || node.kind === 'clip') && node.media) addMember(doc.mediaRefs, node.media, node.id);
+    if (node.kind === 'linkcard' && node.preview) {
+        if (node.preview.image) addMember(doc.mediaRefs, node.preview.image, node.id);
+        if (node.preview.favicon) addMember(doc.mediaRefs, node.preview.favicon, node.id);
+    }
+}
+
+function removeMediaRefs(doc: MutableDoc, node: Node): void {
+    if ((node.kind === 'picture' || node.kind === 'clip') && node.media) removeMember(doc.mediaRefs, node.media, node.id);
+    if (node.kind === 'linkcard' && node.preview) {
+        if (node.preview.image) removeMember(doc.mediaRefs, node.preview.image, node.id);
+        if (node.preview.favicon) removeMember(doc.mediaRefs, node.preview.favicon, node.id);
+    }
+}
+
 function moveSubtreeSheet(doc: MutableDoc, id: NodeId, before: SheetId | undefined, after: SheetId | undefined): void {
     if (before !== undefined) removeMember(doc.bySheet, before, id);
     if (after !== undefined) addMember(doc.bySheet, after, id);
@@ -90,6 +107,7 @@ export function insertNodeForApply(board: BoardDoc, record: NodeRecord): Node {
     if (sheet !== undefined) addMember(doc.bySheet, sheet, node.id);
     if (doc.kind !== 'whiteboard' && isSheetParent(doc, node.parent)) addMember(doc.byPage, node.page, node.id);
     if (node.kind === 'connector') addAttachments(doc, node);
+    addMediaRefs(doc, node);
     return node;
 }
 
@@ -102,6 +120,7 @@ export function removeNodeForApply(board: BoardDoc, id: NodeId): NodeRecord {
     if (sheet !== undefined) removeMember(doc.bySheet, sheet, id);
     if (doc.kind !== 'whiteboard' && isSheetParent(doc, node.parent)) removeMember(doc.byPage, node.page, id);
     if (node.kind === 'connector') removeAttachments(doc, node);
+    removeMediaRefs(doc, node);
     // Inbound attachments stay indexed until normalization detaches their ends.
     // Deleting this entry now would hide the connectors the apply path must visit.
     doc.nodes.delete(id);
@@ -142,6 +161,12 @@ export function setNodeFieldForApply(board: BoardDoc, op: NodeSetOp): PropValue 
             if (node.kind === 'connector') removeAttachments(doc, node);
             Reflect.set(node, op.key, op.value);
             if (node.kind === 'connector') addAttachments(doc, node);
+            break;
+        case 'media':
+        case 'preview':
+            removeMediaRefs(doc, node);
+            Reflect.set(node, op.key, op.value);
+            addMediaRefs(doc, node);
             break;
         default:
             Reflect.set(node, op.key, op.value);

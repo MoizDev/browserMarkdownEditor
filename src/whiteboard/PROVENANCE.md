@@ -21,6 +21,7 @@ third-party code included (normally "none") · date.
 | `model/json.ts` | lane w-c | M-3 | document-model §9.3 | Design only | none | 2026-11-13 |
 | `model/media.ts` | lane w-c | M-9 | document-model §8 | Design only | none | 2026-11-13 |
 | `model/nodes.ts` | lane w-c | M-3, M-6/7/8/10 | document-model §3; ink §4; ruling R-W8 | Design and lead ruling only | none | 2026-11-13 |
+| `model/defaults.ts` | lane w-c | M-3/7, R-W13 | document-model §§3.1–3.2 | Design and lead ruling only; explicit defaults, no inferred values | none | 2026-11-13 |
 | `model/samples.ts` | lane w-c | M-10, V-10 | ink §2.1; document-model §10.2 | Design and interface agreement with lane w-e only | none | 2026-11-13 |
 | `model/doc.ts` | lane w-c | M-1/3/6, C2.2 | document-model §§1/6/9.3; ruling R-W5 | Design; contracts C2.2 v4.5; app-owned paper.ts type; no tldraw source | none | 2026-11-13 |
 | `change/ops.ts` | lane w-c | H-1/2/3, M-11 | change-and-history §2; ruling R-W5 | Design; app-owned paper.ts type; no tldraw source | none | 2026-11-13 |

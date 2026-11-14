@@ -20,6 +20,8 @@ import { mapPool } from '../utils/pool';
 import { bindPdfTextLayerSelection } from '../utils/pdfTextLayerSelection';
 import { remeasurePdfTextLayer } from '../utils/pdfTextLayerRemeasure';
 import { RotateCcw, RotateCw } from './icons';
+import { isClassicPdfCancellation, recordClassicRenderFailure } from '../utils/pdfClassicHealth';
+import PdfRenderNotice from './PdfRenderNotice';
 import { pageRenderRegion, satisfies, type PageRect, type RenderTarget } from '../utils/pdfRenderTarget';
 import PdfFindBar from './PdfFindBar';
 import type { PdfFindBarHandle, PdfFindStart } from './PdfFindBar';
@@ -79,6 +81,8 @@ function awaitFind<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  */
 
 interface PdfViewerProps {
+    onRetry?: () => void;
+    retryDisabled?: boolean;
     reader?: PdfTextReader;
     findMemory: PdfFindMemory;
     onNotify?(message: string): void;
@@ -159,11 +163,6 @@ function cancelPageRender(st: PageState): RenderTask | undefined {
     return task;
 }
 
-/** D2 supplies the visible session-health channel; keep one reporting seam. */
-function reportClassicPageRenderFailure(error: unknown, index: number): void {
-    console.error(`Could not render PDF page ${index + 1}:`, error);
-}
-
 /** Vertical padding above the first / below the last page, px. */
 const PAD_V = 20;
 /** Gap between pages, px. */
@@ -218,7 +217,7 @@ const canvasDpr = () => Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
 async function pageText(session: PdfDocumentSession, pageNumber: number): Promise<string> {
     const lease = await session.acquirePage(pageNumber - 1, 'agent');
     try {
-        const content = await lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        const content = await session.health.guard(lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true }));
         return projectPdfPageV1(content.items, pdfPageGeometry(lease.page)).text;
     } finally { lease.release(); }
 }
@@ -283,8 +282,10 @@ interface PinchGesture {
     timer: number | null;
 }
 
-function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult }: PdfViewerProps,
+function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult, onRetry, retryDisabled = false }: PdfViewerProps,
     forwarded: React.ForwardedRef<PdfViewerHandle>) {
+    const renderDiagnostics = useSyncExternalStore(session.health.subscribe, session.health.getSnapshot);
+    const pageRenderIssues = useMemo(() => new Map(renderDiagnostics.filter(issue => issue.incomplete && issue.pageIndex !== undefined).map(issue => [issue.pageIndex!, issue])), [renderDiagnostics]);
     const [nativeNotice, setNativeNotice] = useState('');
     const nativePages = useRef(new Map<number, PdfNativeEmphasisResult>());
     const showNativeNotice = useCallback((index: number) => {
@@ -304,6 +305,15 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     const [saved] = useState(() => readPdfViewPos(filePath));
     const [zoom, setZoom] = useState<number>(() => clampZoom(saved?.zoom ?? 1));
     const [docState, setDocState] = useState<DocState | null>(null);
+    const failedThumbnailPages = useMemo(() => {
+        const failed = new Set<number>();
+        for (const issue of renderDiagnostics) {
+            if (!issue.incomplete) continue;
+            if (issue.pageIndex !== undefined) failed.add(issue.pageIndex);
+            else for (let i = 0; i < (docState?.dims.length ?? 0); i++) failed.add(i);
+        }
+        return failed;
+    }, [renderDiagnostics, docState]);
     const [error, setError] = useState<string | null>(null);
     const [containerWidth, setContainerWidth] = useState(0);
     /** Read by the ResizeObserver, which is created once and must not close over
@@ -701,7 +711,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 st.textDivs = layer.textDivs;
                 textLayersRef.current.add(layer);
                 try {
-                    await layer.render();
+                    await session.health.guard(layer.render());
                     if (docGenRef.current !== gen || textElsRef.current[i] !== container) return;
                     remeasurePdfTextLayer(layer, viewport);
                     st.textBreaks = pdfFindBreaks(container); st.textReady = true;
@@ -712,13 +722,13 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             } catch (err) {
                 // Teardown mid-build (tab closed, document reloaded) cancels
                 // the stream — that's shutdown, not a failure.
-                if ((err as Error)?.name !== 'AbortException') {
+                if (!isClassicPdfCancellation(err)) {
                     console.error(`Could not build the text layer for PDF page ${i + 1}:`, err);
                 }
             }
         })();
         return st.textPromise;
-    }, [getState, getPage, paintFindPage, paintFindCurrent]);
+    }, [getState, getPage, paintFindPage, paintFindCurrent, session]);
 
     const waitFindLayout = useCallback((signal: AbortSignal, gen: number) => new Promise<void>((resolve, reject) => {
         const cleanup = () => { layoutWaiters.current.delete(wake); signal.removeEventListener('abort', wake); };
@@ -797,21 +807,22 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         const doc = docStateRef.current?.doc;
         if (!doc) throw new Error('The document is not open');
         const lease = await session.acquirePage(index, 'thumbnail');
+        const canvas = document.createElement('canvas');
         try {
             const page = lease.page;
             const viewport = page.getViewport({ scale });
-            const canvas = document.createElement('canvas');
             canvas.width = Math.max(1, Math.ceil(viewport.width));
             canvas.height = Math.max(1, Math.ceil(viewport.height));
             const ctx = canvas.getContext('2d');
             if (!ctx) throw new Error('No 2D canvas context for a thumbnail');
-            await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+            await session.health.guard(page.render({ canvas, canvasContext: ctx, viewport }).promise);
+            session.health.assertComplete(index);
             const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.8));
             canvas.width = 0;
             canvas.height = 0;
             if (!blob) throw new Error('Could not encode a thumbnail');
             return URL.createObjectURL(blob);
-        } finally { lease.release(); }
+        } finally { canvas.width = canvas.height = 0; lease.release(); }
     }, [session]);
 
     /** 0-based pages at least partly inside the scroll box, from the layout —
@@ -870,13 +881,16 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         async capture(maxSide) {
             const el = scrollRef.current, L = layoutRef.current;
             if (!el || !L) return null;
+            const visible = visiblePageIndices();
+            if (!visible.length) return null;
             const gen = docGenRef.current, dpr = canvasDpr(), preference = emphasisRef.current;
             const top = el.scrollTop, left = el.scrollLeft;
             // Resume/zoom stand-ins may stay on screen, but are not current
             // pixels for a tool. A later request can capture the finished view.
-            for (const i of visiblePageIndices()) {
+            for (const i of visible) {
+                session.health.assertComplete(i);
                 const next: RenderTarget = { emphasis: preference, scale: L.scale, dpr, ...pageRegion(L, el, i, dpr) };
-                if (!satisfies(pageStatesRef.current.get(i)?.rendered, next)) return null;
+                if (!canvasElsRef.current[i]?.width || !satisfies(pageStatesRef.current.get(i)?.rendered, next)) return null;
             }
             const view = el.getBoundingClientRect();
             if (!(view.width > 0 && view.height > 0) || !(maxSide > 0)) return null;
@@ -922,6 +936,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             const png = await new Promise<Blob | null>(resolve => out.toBlob(resolve, 'image/png'));
             out.width = 0;
             out.height = 0;
+            for (const i of visible) session.health.assertComplete(i);
             return docGenRef.current === gen && layoutRef.current === L && canvasDpr() === dpr
                 && emphasisRef.current === preference && el.scrollTop === top && el.scrollLeft === left ? png : null;
         },
@@ -953,11 +968,13 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 canvas.height = Math.max(1, Math.ceil(viewport.height));
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return null;
-                await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+                await session.health.guard(page.render({ canvas, canvasContext: ctx, viewport }).promise);
+                session.health.assertComplete(pageNumber - 1);
                 const output = canvas;
                 const png = await new Promise<Blob | null>(resolve => output.toBlob(resolve, 'image/png'));
                 canvas.width = 0;
                 canvas.height = 0;
+                session.health.assertComplete(pageNumber - 1);
                 return docGenRef.current === gen && docStateRef.current === ds ? png : null;
             } finally {
                 if (canvas) { canvas.width = 0; canvas.height = 0; }
@@ -1000,7 +1017,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             }
             const lease = await session.acquire();
             try {
-                const dest = await resolveDestination(lease.document, target.dest, getPage);
+                const dest = await session.health.guard(resolveDestination(lease.document, target.dest, getPage));
                 if (dest) scrollToPage(dest.pageIndex, dest.offset);
             } finally { lease.release(); }
         } catch (err) {
@@ -1057,15 +1074,15 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         const gen = docGenRef.current;
         st.linksPromise = (async () => {
             try {
-                const links = await readPageLinks(await getPage(i));
+                const links = await session.health.guard(readPageLinks(await getPage(i)));
                 if (docGenRef.current !== gen || linkElsRef.current[i] !== container) return;
                 for (const link of links) container.append(createLinkElement(link));
             } catch (err) {
-                console.error(`Could not read the links on PDF page ${i + 1}:`, err);
+                if (!isClassicPdfCancellation(err)) console.error(`Could not read the links on PDF page ${i + 1}:`, err);
             }
         })();
         return st.linksPromise;
-    }, [getState, getPage, createLinkElement]);
+    }, [getState, getPage, createLinkElement, session]);
 
     /** Render one page's canvas, chasing `st.want` until the bitmap answers it
      *  (a zoom or a scroll mid-render cancels the task and the loop goes again
@@ -1101,18 +1118,18 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     work.height = ch;
                     const ctx = work.getContext('2d');
                     if (!ctx) throw new Error('Could not allocate a PDF render context');
-                    emphasis = await bindPdfNativeEmphasis(page, ctx, target.emphasis);
+                    emphasis = await session.health.guard(bindPdfNativeEmphasis(page, ctx, target.emphasis));
                     if (!current()) continue;
                     const task = page.render({ operationsFilter: emphasis.operationsFilter,
                         canvas: work, canvasContext: ctx, viewport: vp, transform });
                     ownedTask = st.renderTask = task;
-                    await task.promise;
+                    await session.health.guard(task.promise);
                     if (st.renderTask === task) st.renderTask = undefined;
                     if (!current()) continue;
-                    await emphasis.verify({ viewport: vp, transform }, probe => {
+                    await session.health.guard(emphasis.verify({ viewport: vp, transform }, probe => {
                         ownedTask = st.renderTask = probe;
                         if (!current()) cancelPageRender(st);
-                    }, current, !!rect);
+                    }, current, !!rect));
                     if (!current()) continue;
                     const display = canvas.getContext('2d');
                     if (!display) throw new Error('Could not allocate a PDF display context');
@@ -1126,10 +1143,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     nativePages.current.set(i, { ...emphasis.result });
                     if (shownPageRef.current === i) showNativeNotice(i);
                 } catch (err) {
-                    const cancelled = err instanceof pdfjs.RenderingCancelledException || (err instanceof DOMException && err.name === 'AbortError');
-                    if (!cancelled && current()) {
+                    if (!isClassicPdfCancellation(err) && current()) {
                         st.failed = true;
-                        reportClassicPageRenderFailure(err, i);
+                        recordClassicRenderFailure(session.health, err, i);
                     }
                 } finally {
                     emphasis?.dispose();
@@ -1149,9 +1165,10 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 st.rendered = undefined;
             }
         }
-    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice]);
+    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice, session]);
 
     const ensurePage = useCallback((i: number) => {
+        if (session.health.getSnapshot().some(issue => issue.incomplete && issue.pageIndex === i)) return;
         const L = layoutRef.current;
         const el = scrollRef.current;
         if (!L || !el || !visibleRef.current) return;
@@ -1178,7 +1195,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             return;
         }
         st.loopPromise = renderLoop(i, st);
-    }, [getState, renderLoop, ensureText, ensureLinks]);
+    }, [getState, renderLoop, ensureText, ensureLinks, session]);
 
     const evictPage = useCallback((i: number) => {
         const st = pageStatesRef.current.get(i);
@@ -1730,13 +1747,16 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             {/* Above the text layer, or its links could never be clicked; see
                 .pdf-selecting. */}
             <div className="pdf-link-layer" ref={pageRef('link', i)} />
+            {pageRenderIssues.has(i) && <PdfRenderNotice
+                issue={pageRenderIssues.get(i)!} page
+                onRetry={onRetry} retryDisabled={retryDisabled} />}
         </div>
-    )) : null), [layout, docState, pageRef]);
+    )) : null), [layout, docState, pageRef, pageRenderIssues, onRetry, retryDisabled]);
 
     if (error) {
         return (
             <div className="pdf-viewer" ref={rootRef}>
-                <div className="pdf-pane-message">Could not display this PDF: {error}</div>
+                <div className="pdf-pane-message">PDF rendering is unavailable.</div>
             </div>
         );
     }
@@ -1765,6 +1785,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     ref={thumbsRef}
                     sizes={thumbSizes}
                     renderThumbnail={renderThumbnail}
+                    failedPages={failedThumbnailPages}
                     onSelect={scrollToPage}
                     initialPage={thumbsStart}
                 />

@@ -12,6 +12,9 @@ export async function pdfAgentPages(document: PdfPoolDocument, requestedPages: r
         const reply = await document.text(page - 1, 'text', { priority: 0, signal });
         if (signal.aborted || document.closed) throw abort();
         if (reply.docKey !== key || reply.page !== page - 1 || reply.schema !== 2) throw new Error('The PDF text worker returned a stale page.');
+        // The reporter returns strings without quality metadata. Refuse a
+        // partial page rather than presenting warned extraction as complete.
+        if (reply.quality === 'partial') throw new Error(`PDF page ${page} has extraction warnings: ${reply.reasons.join(' ') || 'Text may be incomplete.'}`);
         pages.push({ page, text: reply.text });
     }
     return pages;

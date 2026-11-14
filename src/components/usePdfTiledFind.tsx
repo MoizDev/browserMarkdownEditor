@@ -29,6 +29,11 @@ export interface PdfTiledFindOptions {
     selectedText(): string;
     readingPosition(): PdfFindStart;
     reveal(page: number, box: Readonly<Rect>): void;
+    /** Record search navigation, then animate to the approximate glyph over
+     * 150ms (instant for reduced motion). Return that navigation revision. */
+    beginReveal?(page: number, box: Readonly<Rect>): number;
+    /** After animation, correct only when revision is unchanged and glyph is outside view. */
+    correctReveal?(page: number, box: Readonly<Rect>, revision: number): void;
     closeFind(hit?: PdfFindHit): void;
     notify(message: string): void;
 }
@@ -57,6 +62,14 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
         const highlights = new PdfTiledFindHighlights(geometry, {
             pageRect: page => live.current.stack.rects[page],
             reveal: (page, box) => live.current.reveal(page, box),
+            approximate: async (hit, signal) => {
+                const page = await reader.getPage(hit.page, signal, 0);
+                const interval = page.intervals.find(item => !item.syntheticLF && item.to > hit.from && item.from < hit.to);
+                return interval ? { x: interval.transform[4] ?? 0, y: (interval.transform[5] ?? 0) - interval.height,
+                    width: interval.width, height: interval.height } : null;
+            },
+            beginReveal: (page, box) => live.current.beginReveal && live.current.correctReveal ? live.current.beginReveal(page, box) : null,
+            correctReveal: (page, box, revision) => live.current.correctReveal?.(page, box, revision),
             publish: rects => layer.setRects(rects),
             error: error => live.current.notify(error instanceof Error ? error.message : 'PDF text highlights are unavailable.'),
         });

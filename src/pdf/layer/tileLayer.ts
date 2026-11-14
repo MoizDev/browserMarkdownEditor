@@ -39,7 +39,7 @@ interface Entry {
 
 function contentFamily(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): string {
     const { vaultEpoch, documentId, session } = input.token;
-    return JSON.stringify([vaultEpoch, documentId, session, input.variant, input.geometryDigest]);
+    return JSON.stringify([vaultEpoch, documentId, session, input.source, input.variant, input.geometryDigest]);
 }
 
 function rect(request: PdfTileRequest): Rect {
@@ -314,10 +314,10 @@ export class PdfTileLayer implements Layer {
         const right = Math.min(bounds.x + bounds.width, viewport.x + viewport.width);
         const bottom = Math.min(bounds.y + bounds.height, viewport.y + viewport.height);
         const scale = entry.request.scale.scale, edges = entry.request.tile.edges;
-        const sx = Math.max(0, Math.floor(1 + (left - edges.left) * scale));
-        const sy = Math.max(0, Math.floor(1 + (top - edges.top) * scale));
-        const ex = Math.min(bitmap.width, Math.ceil(1 + (right - edges.left) * scale));
-        const ey = Math.min(bitmap.height, Math.ceil(1 + (bottom - edges.top) * scale));
+        const sx = Math.max(0, Math.floor(1 + (left - edges.left) * scale) - 1);
+        const sy = Math.max(0, Math.floor(1 + (top - edges.top) * scale) - 1);
+        const ex = Math.min(bitmap.width, Math.ceil(1 + (right - edges.left) * scale) + 1);
+        const ey = Math.min(bitmap.height, Math.ceil(1 + (bottom - edges.top) * scale) + 1);
         const width = ex - sx, height = ey - sy;
         if (width <= 0 || height <= 0) { this.mirrorJob = null; return; }
         const lease = this.host.allocator.cpu.reserve(width * height * 4);

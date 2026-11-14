@@ -9,8 +9,9 @@ export async function assembleDisplayPdf(input: DisplayPdfInput, context: Worker
     if (!input || input.schema !== 1) throw new Error('Unsupported display-list schema');
     if (input.notebookSource) {
         const path = input.notebookSource.path;
-        if (typeof path !== 'string' || !path || path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..') || path.includes('\\')) {
-            throw new Error('Notebook source must be a vault-root-relative path');
+        if (typeof path !== 'string' || !path || path.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(path) || /[\\\u0000-\u001f]/.test(path) ||
+            !path.toLowerCase().endsWith('.notebook') || path.split('/').some(part => !part || part === '.' || part === '..' || ['.Assets', '.Garbage', '.VaultAgent', '.appearance.json'].includes(part))) {
+            throw new Error('Notebook source must be a vault-root-relative notebook path');
         }
     }
     const { bytes: generated } = await emitDocument(input.pages, context);

@@ -25,6 +25,8 @@ export interface PreparedPaint2d {
     readonly frame: PaintFrame;
     /** Canonical source whose pin and presentation acknowledgement own a derived frame. */
     readonly sourceFrame?: PaintFrame;
+    /** A derived stand-in can be complete without carrying full requested detail. */
+    readonly sharp?: boolean;
     readonly resources: PaintResources2d;
 }
 

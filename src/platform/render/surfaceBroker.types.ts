@@ -1,5 +1,6 @@
 import type { GpuReleaseReason, RenderToken } from './types';
 import type { GfxLimits } from './gfx/api';
+import type { MemoryAllocator } from './memoryGovernor';
 
 export type { GpuReleaseReason } from './types';
 
@@ -23,7 +24,7 @@ export interface SurfaceView {
 
 export type ContextDisposeReason = 'disposed' | 'revoked' | 'context-lost' |
     'creation-failed' | 'stale' | 'cpu-pinned' | 'restore-timeout' | 'pressure';
-export type CpuFallbackReason = 'capacity' | 'creation-failed' | 'context-lost' |
+export type CpuFallbackReason = 'capacity' | 'out-of-budget' | 'creation-failed' | 'context-lost' |
     'cpu-pinned' | 'restore-timeout' | 'pressure';
 
 export interface SurfaceResizeResult {
@@ -90,6 +91,11 @@ export interface SurfaceCallbacks {
     onSlotAvailable(): void;
     /** Stable App-owned status-line callback; once per session, including across view remounts. */
     onPinned(): void;
+}
+
+export interface SurfaceBrokerConfiguration {
+    /** App-wide native-context reserve allocator, bound once at platform startup (never import). */
+    readonly contextAllocator: MemoryAllocator;
 }
 
 export interface SurfaceRegistration extends SurfaceStamp {

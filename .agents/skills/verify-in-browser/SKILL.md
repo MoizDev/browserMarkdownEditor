@@ -10,20 +10,37 @@ description: How to actually verify a change in this repo — there is no test s
 included, is verified by Playwright driving the running app in headless Chromium. A change is not
 verified because it typechecks.
 
-**Playwright is not a repo dependency.** Nothing in `package.json` pulls it and there is no
-`node_modules/playwright`; it resolves out of the npx cache
-(`~/.npm/_npx/*/node_modules/playwright`), and the harness hard-filters that cache on **1.63**.
-`channel: 'chrome'` (step 7) additionally needs Google Chrome installed, or the launch fails outright.
+**The driver is pinned:** import `chromium` from the repo's **playwright@1.63.0** dev dependency,
+never the npx cache. **The browser is pinned separately** in `verify/browser-pin.json`: Chrome for
+Testing **157.0.8103.39**, launched with `executablePath`, never `channel: 'chrome'` or the bundled
+Chromium. Its installed path is the scratch browser root + pin.version + pin.executable (see the
+run's `scratch/HOWTO.md`). `verify/lib/` supplies the shared run toolbox; start with its README.
+Every report records the actual driver/browser version, build identity, fixture hashes and reload arm.
+Use `verify/lib/identity.mjs`'s shared `buildIdentity` and `bindServedBodies`: attach before goto,
+await binding before every assertion and finish. Functional `raw-route` binds APIResponse raw bytes
+then fulfils unchanged (HTTP cache disabled, recorded); timed `node-refetch` never intercepts, using
+server bytes plus the browser URL list, not proof of the cached browser body. Same-origin JS/CSS/wasm
+is fail-closed against emitted files; foreign requests are logged, never blocked by default.
 
 ## The harness, step by step
 
 Each step below exists because skipping it produces a *working change that looks broken*.
 
-1. **Run the dev server on a port of your own:** `npm run dev -- --port <PORT> --strictPort`.
-   Not Vite's default 5173, and not 5199 — the developer may already be on either.
+1. **Use your assigned port, `--strictPort`, and scratch-only Vite cache/output.** Read the run's
+   `scratch/HOWTO.md`: installs/builds use `bme-lock build`, static gates `static`, servers `serve`,
+   browsers `run`. Start slow commands in `hc run --bg`. **Never build while holding run/bench**:
+   prepare under build first (`toolbox-smoke.mjs --prepare` / `prepareApp`), then serve the frozen
+   dist/identity with `serveApp({build:false})` under run. Nested preparation fails loudly; it can
+   deadlock the shared pool. Stop the server between runs. Never use Vite's default 5173 or the
+   developer's 5199. Dev startup also compares current HEAD and served source/config content
+   with the prepared snapshot; mismatch is HarnessFault. Reports record `build.devSourceCheck`
+   expected/actual values. Re-prepare after source, config or HEAD changes. Lifecycle uses dev
+   (StrictMode) and production; timing uses benchmark.
 
 2. **Stub `window.showDirectoryPicker` with OPFS**, in an `addInitScript` *before* the page loads.
-   The native picker cannot open headless.
+   The native picker cannot open headless. Use the toolbox's main-window-only installVault and
+   installCounters: context init scripts also enter opaque frames, where probing missing FSA
+   globals can itself cause pageerror. Never grant permissions or install window counters there.
 
 3. **Patch `queryPermission` / `requestPermission` to return `'granted'`** — on the handle you
    return *and* on the result of `FileSystemDirectoryHandle.prototype.getDirectoryHandle`.
@@ -47,27 +64,16 @@ Each step below exists because skipping it produces a *working change that looks
    picker with a NAMED OPFS subfolder, not the OPFS root: the root's `name` is `''`, so the switcher
    shows no name and Trash (keyed on it) is disabled. Tooltips are `.tooltip` (≈400ms hover delay).
 
-7. **A reload with a vault open CRASHES Playwright's BUNDLED Chromium** (both `chromium` and
-   `chrome-headless-shell`, 153.0.8010.12 under Playwright 1.63): reading the OPFS handle back out of
-   IndexedDB kills the renderer *and* the browser with no crash log. The trigger is narrower than
-   "a reload": it is any READ of a stored handle, so the **second** vault you open dies inside
-   `rememberVault`'s `isSameEntry` sweep over the list (the first is fine — `readList` returns `[]`,
-   so nothing is deserialized). It tracks the **browser build**, not headedness and not the app:
-   on identical app code the *installed Chrome* channel survives it, headless.
+7. **Stored OPFS handle reads crashed the bundled Chromium 153.0.8010.12 and installed Chrome
+   153.0.8010.53**, on reload and second-vault opens. This was browser-build-dependent, not an app
+   regression; installed Chrome also updates itself, invalidating comparisons across runs.
 
-   So, two ways to test reload / restore-on-load / two vaults — say which you took:
-   - **`chromium.launch({ headless: true, channel: 'chrome' })`, no shim.** Still headless, but the
-     installed Google Chrome instead of the bundled build, so the real structured-clone path is the
-     one under test (`indexedDB.databases()` → `keyval-store`, no `__h_idb:` keys). Measured: Chrome
-     151.0.7922.138 survived **14 of 14** reloads that deserialize the stored handle, across 4
-     sessions (dev server and `vite preview`), plus both second-vault opens — while the bundled 153
-     died on the first such reload in both controls. Prefer this. It is not permanent, though: the
-     surviving build is whichever Chrome is installed, and the crashing one is the *newer* of the
-     two, so a Chrome update can inherit the bug — if this arm starts dying too, fall back to the
-     shim rather than reading it as an app regression. **That has now happened on this machine:**
-     installed Chrome updated to 153.0.8010.53 and dies on the same reload, so until a Chrome build
-     survives again the shim below is the arm that works.
-   - **`page.route`-intercept the `idb-keyval` module** with a localStorage shim storing
+   Two explicit reload / restore / two-vault arms — always record which you took:
+   - **Pinned Chrome for Testing by `executablePath`, no shim.** Use the version and executable in
+     `verify/browser-pin.json`. The integrator measured 157.0.8103.39 surviving **3 of 3** stored-
+     handle reload runs. This exercises native structured cloning (`keyval-store` in
+     `indexedDB.databases()`, no `__h_idb:` keys). A crash is a harness fault, not an app failure.
+   - **Dev fallback: route-intercept the `idb-keyval` module** with a localStorage shim storing
      `{__handle: name}`, re-resolved from the OPFS root — **pack/unpack recursively**, because
      `recent-vaults` is an array of objects each holding a handle, not a bare handle. Works on the
      bundled build, but the real structured-clone path then goes unexercised. (Deleting the
@@ -101,6 +107,13 @@ Each step below exists because skipping it produces a *working change that looks
     with one on `FileSystemDirectoryHandle.prototype.entries` plus a MutationObserver on `.tree-item`s.
     Real-disk FSEvents (records, `.crswap` handling) differ from OPFS and cannot be driven headless —
     the native picker is the wall; say so rather than claim them.
+    Use `verify/lib/vault.mjs`'s `readWitness` for bounded NotReadableError-only retries (every
+    retry is reported; exhaustion is a harness fault). **Never retry NotFoundError**: it may be a
+    real deletion. For swap races, readWitness's `afterCompletedCloses:{path,count}` first waits
+    on completed successful counter closes; reset after seeding, pass the expected absolute count.
+    Its bounded wait reports the observed count and fails as HarnessFault. For async conditions use
+    `waitForVault`, **never `page.waitForFunction(async ...)`**: a returned Promise can appear
+    truthy before the native read completes. The helper records its last value and hard deadline.
 
 11. **The terminal needs the real helper:** `npm run helper:dev` (a source run: dev origins allowed,
     the in-process PTY backend, never the installed macOS PTY host) beside the dev server — loopback to
@@ -114,20 +127,23 @@ Each step below exists because skipping it produces a *working change that looks
 ## Sketch
 
 ```js
-await page.addInitScript(() => {
-  const grant = (h) => {
-    h.queryPermission = async () => 'granted'
-    h.requestPermission = async () => 'granted'
-    return h
-  }
-  const getDir = FileSystemDirectoryHandle.prototype.getDirectoryHandle
-  FileSystemDirectoryHandle.prototype.getDirectoryHandle = async function (...a) {
-    return grant(await getDir.apply(this, a))
-  }
-  window.showDirectoryPicker = async () => grant(await navigator.storage.getDirectory())
-})
-await page.goto(`http://localhost:${PORT}/`)   // seed OPFS only AFTER this line
+import { installVault, seedVault } from './verify/lib/vault.mjs';
+import { installCounters } from './verify/lib/counters.mjs';
+await installVault(context, { name: 'Fixture Vault' });
+await installCounters(context, { vaultName: 'Fixture Vault' });
+const page = await context.newPage();
+await page.goto(`http://127.0.0.1:${PORT}/`);
+await seedVault(page, { name: 'Fixture Vault', files: { 'A.md': '# Fixture\n' } });
 ```
+
+The smoke's note counter epoch ends before its separate EPUB control. That control opens a real
+book, asserts sandbox=allow-scripts, opaque origin, absent host counters, no pageerror and no write.
+Kept extra arms use the same --prepare/run pair: dev-only `--dev-drift-mutant` changes a scratch
+copy AFTER preparation (`BME_DEV_DRIFT_PATH=src/App.tsx|index.html|vite.config.ts`); dev-only
+`--head-drift-mutant` corrupts prepared HEAD metadata while source bytes stay unchanged (not a
+real Git history change); `--init-mutant` removes guards and hides FSA constructors ONLY in
+subframes, confirms that fault applied, and must fail the no-pageerror assertion. No scratch
+patch ever edits the worktree's source.
 
 ## Read the colour off the element the TEXT NODE hangs off
 

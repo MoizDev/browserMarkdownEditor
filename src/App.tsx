@@ -2226,6 +2226,36 @@ export default function App() {
     await flushTab(path, true, content);
   }, [flushTab]);
 
+  const preparePdfPrint = useCallback(async (path: string) => {
+    const tab = tabsRef.current.find(t => t.file.path === path);
+    const root = rootHandleRef.current;
+    if (!tab || !root || tab.representation.loadedKind !== 'pdf' || !tab.file.handle) throw new Error('This PDF is no longer open.');
+    const { id } = tab, generation = tab.representation.generation, handle = tab.file.handle;
+    const current = () => {
+      const now = tabsRef.current.find(t => t.id === id);
+      return rootHandleRef.current === root && activeTabPathRef.current === path && now?.file.path === path &&
+        now.file.handle === handle && now.representation.generation === generation && !diskStateRef.current.get(id);
+    };
+    if (!current()) throw new Error('Return to this PDF and resolve any disk conflict before printing.');
+    await getView(path)?.flushPending?.();
+    await flushChainsRef.current.get(id);
+    if (!current()) throw new Error('The document changed while preparing to print.');
+    const content = contentOf(path);
+    const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || latestContentRef.current.has(path);
+    if (needsSave) {
+      const outcome = await flushTab(path, true, content);
+      if (outcome !== 'written') throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
+    }
+    if (!current() || contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The document changed while preparing to print.');
+    const baseline = getBaseline(id) ?? await pdfSeedForRef.current(id);
+    const disk = await readBytesVersioned(handle as FileSystemFileHandle);
+    if (!current() || !baseline || disk.version.hash !== baseline.hash || getBaseline(id)?.hash !== baseline.hash ||
+        contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
+    const valid = () => current() && getBaseline(id)?.hash === disk.version.hash && contentOf(path) === content &&
+      !getView(path)?.hasPendingEdits?.() && !flushingRef.current.has(id);
+    return { bytes: disk.bytes, valid };
+  }, [contentOf, flushTab, readBytesVersioned]);
+
   /**
    * Turn a PDF's pages a quarter at a time, and write it.
    *
@@ -5058,6 +5088,7 @@ export default function App() {
             onDiskAction={handleDiskAction}
             onAnnotationPreflight={onAnnotationPreflight}
             onFlushNow={flushTabNow}
+            onPreparePdfPrint={preparePdfPrint}
             onRotatePdf={rotatePdf}
             onRetryRead={retryUnreadTab}
             onOpenNotebookSource={handleOpenNotebookSource}

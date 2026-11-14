@@ -7,6 +7,7 @@ import type { PngCapture } from '../export/capturePng';
 import type { BoardSession } from '../session/BoardSession';
 import type { SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
+import { EMPTY_RICH_TEXT, type RichText } from '../text/richText';
 import type { DrawingViewInfo, NotebookViewInfo, PdfViewInfo } from '../../utils/viewRegistry';
 import { acquireNativeBoard } from './nativeAcquisition';
 import type { AgentApplyResult } from '../agent/transaction';
@@ -15,6 +16,28 @@ import type { JobAuthority, JobOptions } from '../security/admission';
 function yieldAgentWork(): Promise<void> {
     const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
     return scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0));
+}
+
+async function boundedSummary(node: Node, geometry: AgentGeometry, page: number | undefined, guard: () => void): Promise<ShapeSummary> {
+    const text: RichText | null = node.kind === 'text' || node.kind === 'sticky' ? node.text
+        : node.kind === 'figure' || node.kind === 'connector' ? node.label : null;
+    if (!text) return summarizeAgentNode(node, geometry, page);
+    const pieces: string[] = [];
+    let length = 0, work = 0;
+    for (let b = 0; b < text.blocks.length && length < 2001; b++) {
+        if (b) { pieces.push('\n'); length++; }
+        for (const run of text.blocks[b].runs) {
+            if ((++work & 255) === 0) { guard(); await yieldAgentWork(); guard(); }
+            if (length >= 2001) break;
+            const part = run.text.slice(0, 2001 - length);
+            if (part) { pieces.push(part); length += part.length; }
+        }
+    }
+    const lean = node.kind === 'text' || node.kind === 'sticky' ? { ...node, text: EMPTY_RICH_TEXT }
+        : node.kind === 'figure' || node.kind === 'connector' ? { ...node, label: EMPTY_RICH_TEXT } : node;
+    const summary = summarizeAgentNode(lean, geometry, page), plain = pieces.join('');
+    summary.text = plain.length > 2000 ? `${plain.slice(0, 2000)}…` : plain;
+    return summary;
 }
 
 async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometry: AgentGeometry, query: ShapeQuery,
@@ -44,7 +67,7 @@ async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometr
             if (page !== undefined && nodePage !== page) continue;
             if (include && !include(node, nodePage)) continue;
             if (total >= offset && shapes.length < limit && !exhausted) {
-                const summary = summarizeAgentNode(node, geometry, nodePage), size = JSON.stringify(summary).length + 1;
+                const summary = await boundedSummary(node, geometry, nodePage, guard), size = JSON.stringify(summary).length + 1;
                 if (chars + size > 58_500) exhausted = true;
                 else {
                     if (labelled && !started) { sections.push({ offset: total, name: sheet.name, index: doc.sheetOrder.indexOf(sheet) }); started = true; }

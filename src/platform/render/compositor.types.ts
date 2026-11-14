@@ -1,6 +1,6 @@
 import type { Rect, Rgba, ViewState } from '../types';
 import type { PagePresentation } from './camera';
-import type { Backend, GfxDevice, GpuPass, RectI, Samples, TextureHandle, UniformSlice } from './gfx/api';
+import type { Backend, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
 import type { MemoryAllocator, MemoryGovernor } from './memoryGovernor';
 import type { BorrowedMirror, MirrorView } from './mirrorSet';
 import type { Pane2DPresenter } from './paneLifecycle';
@@ -56,12 +56,15 @@ export interface TexturedQuadOptions {
 /** Peak simultaneous inventory, declared during Layer.prepare. Masks share the target pool;
  * any multiply declaration adds one backdrop target. No declaration allocates or renews a budget.
  */
+export type IsolationPaintOptions = Readonly<Pick<CompositorIsolation, 'opacity' | 'blend'>>;
+
 export interface IsolationReservation {
     readonly depth: number;
     readonly maskDepth: number;
     readonly bounds: Readonly<RectI>;
     readonly stencil?: boolean;
     readonly samples?: Samples;
+    readonly format?: TextureFormat;
     readonly multiply?: boolean;
     /** Peak externally acquired prepass targets, in addition to internal group/mask depth. */
     readonly targets?: {
@@ -69,6 +72,7 @@ export interface IsolationReservation {
         readonly bounds: Readonly<RectI>;
         readonly stencil?: boolean;
         readonly samples?: Samples;
+        readonly format?: TextureFormat;
     };
 }
 
@@ -83,6 +87,7 @@ export interface LayerHost {
     wakeAt(deadlineMs: number | null): void;
     readonly allocator: LayerAllocators;
     reserveIsolation(reservation: IsolationReservation): void;
+    paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
     paintWorld(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void;
     paintPage(ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void): void;
     /** DrawGpu-only packing into the active encoder's fenced ring, never a layer-owned ring. */
@@ -96,6 +101,7 @@ export interface CompositorResources {
     readonly owner: object;
     readonly device: GfxDevice | null;
     reserveIsolation(reservation: IsolationReservation): void;
+    paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
     /** Throws outside active GPU encoding; never returns a fictitious slice. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;

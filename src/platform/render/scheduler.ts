@@ -2,6 +2,8 @@ import type { Viewport, ViewState } from '../types';
 import { cameraAtAnchor, surfaceToWorld } from './camera';
 import type { CameraAnchor, CameraController, Point } from './camera';
 import { RENDER_CONSTANTS } from './constants';
+import { DamageAccumulator } from './damage';
+import type { DamageRecord } from './damage';
 import type { SurfaceCommit, SurfaceMetricsCommitter } from './surfaceMetrics';
 import type { FrameBudget, FrameToken, Layer } from './types';
 
@@ -24,6 +26,7 @@ export interface ScheduledFrame {
     readonly view: ViewState;
     readonly layers: readonly ScheduledLayerSnapshot[];
     readonly reasons: readonly string[];
+    readonly damage: DamageRecord;
 }
 
 /** The revision actually drawn, not merely prepared (contracts.md C4.3:538–542). */
@@ -75,7 +78,7 @@ export interface ScheduledPane {
 
 /** Bound to one registration, so stale async arrivals/cleanup cannot target a replacement view. */
 export interface ScheduledPaneLease {
-    invalidate(reason: string): void;
+    invalidate(reason: string, damage?: DamageRecord): void;
     setFocused(focused: boolean): void;
     /** Monotonic performance.now/rAF milliseconds; null cancels only this layer's pending deadline. */
     wakeAt(layer: Layer, deadlineMs: number | null): void;
@@ -210,9 +213,13 @@ interface PaneEntry {
     optionalBytes: number;
     motion: Motion | null;
     binding: FrameToken | null;
+    damage: DamageAccumulator;
+    fullDamage: boolean;
+    presented: { token: FrameToken; epoch: number; geometry: number } | null;
 }
 
-interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget }
+interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean }
+interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
 interface ScheduledPoll { callback: () => void; earliestFrame: number }
 interface UploadMeter {
@@ -308,12 +315,13 @@ export class FrameScheduler {
         const entry: PaneEntry = {
             pane, layers: Object.freeze([...pane.layers]), reasons: new Set(['show']), wakes: new Map(), focused: pane.focused,
             inputPriority: false, renderable: false, dormantNotified: false, optionalBytes: 0, motion: null, binding: null,
+            damage: new DamageAccumulator(), fullDamage: true, presented: null,
         };
         this.panes.set(pane.paneId, entry);
         if (this.running && this.suspended) this.call(entry, () => pane.suspend('window-hidden'));
         this.ensureFrame();
         return Object.freeze({
-            invalidate: (reason: string) => { if (this.live(entry)) this.invalidate(pane.paneId, reason); },
+            invalidate: (reason: string, damage?: DamageRecord) => { if (this.live(entry)) this.invalidate(pane.paneId, reason, damage); },
             setFocused: (focused: boolean) => { if (this.live(entry)) { entry.focused = focused; this.mark(entry, 'focus'); } },
             wakeAt: (layer: Layer, deadlineMs: number | null) => this.wakeAt(entry, layer, deadlineMs),
             startFling: (samples: readonly TouchPanSample[]) => this.startFling(entry, samples),
@@ -324,11 +332,13 @@ export class FrameScheduler {
     }
 
     /** Async producers should use their bound lease, so old arrivals cannot wake a replacement view. */
-    invalidate(paneId: string, reason: string): void {
+    invalidate(paneId: string, reason: string, damage?: DamageRecord): void {
         const entry = this.panes.get(paneId);
         if (!entry) return;
         if (reason === 'input') { this.cancelMotion(entry); entry.inputPriority = true; }
-        this.mark(entry, reason);
+        if (damage) this.mergeDamage(entry.damage, damage);
+        else entry.fullDamage = true;
+        this.mark(entry, reason, true);
     }
 
     /** Session-owned expiry shares the wakeAt timer and survives pane unregister/window hiding.
@@ -392,10 +402,18 @@ export class FrameScheduler {
 
     private live(entry: PaneEntry): boolean { return this.panes.get(entry.pane.paneId) === entry; }
 
-    private mark(entry: PaneEntry, reason: string): void {
+    private mark(entry: PaneEntry, reason: string, preserveDamage = false): void {
         if (!this.live(entry)) return;
+        if (!preserveDamage) entry.fullDamage = true;
         entry.reasons.add(reason);
         this.ensureFrame();
+    }
+
+    private mergeDamage(target: DamageAccumulator, damage: DamageRecord): void {
+        const tags = { reasonBits: damage.reasonBits, cameraEpoch: damage.cameraEpoch, contentRevision: damage.contentRevision };
+        if (damage.full) target.markFull(tags);
+        else if (!damage.worldBounds.length) target.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
+        else for (const bounds of damage.worldBounds) target.mark(bounds, tags);
     }
 
     private unregister(entry: PaneEntry): void {
@@ -463,6 +481,7 @@ export class FrameScheduler {
         const frameId = ++this.frameId;
         const started = performance.now();
         const encodings: Array<{ work: FrameWork; encoding: ScheduledEncoding; done: boolean }> = [];
+        const batches: DamageBatch[] = [];
         let prepareOvershootMs = 0;
         let targetMs = 0;
         try {
@@ -472,9 +491,17 @@ export class FrameScheduler {
             if (gap > frameGapMs) {
                 for (const entry of this.panes.values()) {
                     if (entry.motion?.kind === 'fling' && timestamp - entry.motion.lastTime > frameGapMs) this.cancelMotion(entry);
-                    entry.reasons.add('frame-gap'); // Validate geometry, never tear down a healthy context (§7.4:723).
+                    entry.reasons.add('frame-gap'); entry.fullDamage = true; // Validate geometry, never tear down a healthy context (§7.4:723).
                 }
             }
+            // Detach every pane before callbacks: cross-pane invalidations during this frame
+            // belong to the next frame, regardless of which candidate is visited first.
+            const pending = [...this.panes.values()].map(entry => {
+                const batch: DamageBatch = { entry, damage: entry.damage, full: entry.fullDamage, submitted: false };
+                const reasons = Object.freeze([...entry.reasons]);
+                batches.push(batch); entry.damage = new DamageAccumulator(); entry.fullDamage = false; entry.reasons.clear();
+                return { entry, batch, reasons };
+            });
             targetMs = Math.min(RENDER_CONSTANTS.frameTargetMaxMs, RENDER_CONSTANTS.frameTargetIntervalFraction * this.intervalMs);
             const allowance = this.options.uploadAllowance(this.intervalMs);
             if (!Number.isSafeInteger(allowance) || allowance < 0) throw new RangeError('Upload allowance must be nonnegative safe bytes');
@@ -484,13 +511,11 @@ export class FrameScheduler {
             };
             this.meter = meter;
             // 1–2: consume reported geometry/lifecycle first, then input and time-integrated cameras.
-            const candidates = [...this.panes.values()].filter(entry => entry.reasons.size || entry.motion ||
+            const candidates = pending.filter(({ entry, reasons }) => reasons.length || entry.motion ||
                 (entry.renderable && this.call(entry, () => entry.layers.some(layer => layer.needsFrame()))));
-            const ready: Array<{ entry: PaneEntry; reasons: readonly string[] }> = [];
-            for (const entry of candidates) {
+            const ready: Array<{ entry: PaneEntry; reasons: readonly string[]; batch: DamageBatch }> = [];
+            for (const { entry, batch, reasons } of candidates) {
                 this.call(entry, () => {
-                    const reasons = Object.freeze([...entry.reasons]);
-                    entry.reasons.clear();
                     // Discard stale document/view work BEFORE a callback can resize a surface.
                     if (!this.token(entry)) { entry.renderable = false; this.cancelMotion(entry); return; }
                     // Capture the CURRENT gesture anchor before a target commit can replace
@@ -515,7 +540,7 @@ export class FrameScheduler {
                         return;
                     }
                     entry.dormantNotified = false;
-                    ready.push({ entry, reasons });
+                    ready.push({ entry, reasons, batch });
                 });
             }
             // All geometry precedes all input; all cameras advance/freeze before any scene snapshot.
@@ -526,8 +551,8 @@ export class FrameScheduler {
                     entry.pane.camera.setMoving(entry.motion !== null || entry.pane.isInteracting());
                 });
             }
-            const frozen: Array<{ entry: PaneEntry; reasons: readonly string[]; token: FrameToken; view: ViewState }> = [];
-            for (const { entry, reasons } of ready) {
+            const frozen: Array<{ entry: PaneEntry; reasons: readonly string[]; batch: DamageBatch; geometry: number; token: FrameToken; view: ViewState }> = [];
+            for (const { entry, reasons, batch } of ready) {
                 this.call(entry, () => {
                     const token = this.token(entry);
                     const metrics = entry.pane.metrics.current;
@@ -535,19 +560,26 @@ export class FrameScheduler {
                         entry.renderable = false;
                         return;
                     }
-                    frozen.push({ entry, reasons, token, view: entry.pane.camera.beginFrame(frameId) });
+                    frozen.push({ entry, reasons, batch, geometry: metrics.tags.geometryGeneration, token, view: entry.pane.camera.beginFrame(frameId) });
                 });
             }
             const work: FrameWork[] = [];
-            for (const { entry, reasons, token, view } of frozen) {
+            for (const { entry, reasons, batch, geometry, token, view } of frozen) {
                 this.call(entry, () => {
                     // 3: freeze authoritative scene/live input before retiring any previously wet revision.
                     entry.pane.snapshotScene(view);
                     const layers = Object.freeze(entry.layers.map(layer => Object.freeze({
                         layer, sceneRevision: entry.pane.sceneRevision(layer), critical: entry.pane.isCritical(layer, view),
                     })));
-                    const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons });
-                    work.push({ entry, frame, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false });
+                    const revision = JSON.stringify(layers.map(item => item.sceneRevision));
+                    const tags = { reasonBits: 0, contentRevision: revision.length <= 4096 ? revision : '', cameraEpoch: view.epoch };
+                    const previous = entry.presented;
+                    if (batch.full || !batch.damage.freeze() || revision.length > 4096 || !previous ||
+                        !sameToken(token, previous.token) || previous.epoch !== view.epoch || previous.geometry !== geometry) batch.damage.markFull(tags);
+                    else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
+                    const damage = batch.damage.freeze()!;
+                    const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false });
                     entry.inputPriority = false;
                 });
             }
@@ -565,7 +597,7 @@ export class FrameScheduler {
                 () => item.frame.layers.some(meta => item.entry.pane.isCritical(meta.layer, item.frame.view))) === true);
             for (const item of criticalOrder) {
                 prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, null, prepareDeadline, true, meter, criticalPending));
-                if (!item.platformPrepared && this.valid(item.entry, item.frame.token)) this.mark(item.entry, 'preparation-deferred');
+                if (!item.platformPrepared && this.valid(item.entry, item.frame.token)) this.mark(item.entry, 'preparation-deferred', true);
             }
             for (const item of criticalOrder) {
                 if (!item.platformPrepared) continue;
@@ -601,7 +633,7 @@ export class FrameScheduler {
                     if (encoding) encodings.push({ work: item, encoding, done: false });
                     else if (item.entry.layers.some(layer => layer.needsFrame())) {
                         // An external wait must wake the pane on arrival; polling it here spins rAF.
-                        this.mark(item.entry, 'presentation-deferred');
+                        this.mark(item.entry, 'presentation-deferred', true);
                     }
                 });
             }
@@ -611,8 +643,10 @@ export class FrameScheduler {
                     if (!this.valid(item.work.entry, item.work.frame.token)) return;
                     const submission = item.encoding.submit();
                     item.done = true;
-                    if (!submission) { this.mark(item.work.entry, 'presentation-deferred'); return; }
+                    if (!submission) { this.mark(item.work.entry, 'presentation-deferred', true); return; }
                     if (!this.valid(item.work.entry, item.work.frame.token)) return;
+                    item.work.batch.submitted = true; item.work.batch.damage.consume();
+                    item.work.entry.presented = { token: item.work.frame.token, epoch: item.work.frame.view.epoch, geometry: item.work.geometry };
                     const drawn = Object.freeze(submission.drawn.filter(revision => revision.layer.onFramePresented !== undefined)
                         .map(revision => Object.freeze({ layer: revision.layer, sceneRevision: revision.sceneRevision })));
                     // Preserve a class-backed completion predicate's receiver; object spread would drop
@@ -634,6 +668,11 @@ export class FrameScheduler {
             this.options.onError(null, error);
         } finally {
             for (const item of encodings) if (!item.done) this.discard(item.work.entry, item.encoding);
+            for (const batch of batches) if (!batch.submitted && this.live(batch.entry)) {
+                const damage = batch.damage.freeze();
+                if (damage) this.mergeDamage(batch.entry.damage, damage);
+                batch.entry.fullDamage ||= batch.full;
+            }
             const meter = this.meter;
             this.meter = null;
             this.inFrame = false;
@@ -674,7 +713,7 @@ export class FrameScheduler {
             };
             const upload = { remainingBytes: availableBytes(), deadline: meter.deadline };
             const budget: FrameBudget = {
-                frameId: item.frame.frameId, token: item.frame.token, cameraEpoch: item.frame.view.epoch,
+                frameId: item.frame.frameId, token: item.frame.token, cameraEpoch: item.frame.view.epoch, damage: item.frame.damage,
                 prepareDeadline: deadline, upload, shouldYield,
                 claimUpload: bytes => {
                     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Upload claim must be nonnegative safe bytes');
@@ -788,7 +827,7 @@ export class FrameScheduler {
         for (const item of this.sessionDeadlines) earliest = Math.min(earliest, item.deadline);
         if (this.running && !this.suspended) for (const entry of this.panes.values()) {
             for (const [layer, deadline] of entry.wakes) {
-                if (deadline <= now) { entry.wakes.delete(layer); entry.reasons.add('deadline'); }
+                if (deadline <= now) { entry.wakes.delete(layer); entry.reasons.add('deadline'); entry.fullDamage = true; }
                 else earliest = Math.min(earliest, deadline);
             }
         }
@@ -926,7 +965,7 @@ export class FrameScheduler {
         this.retainedReleased = false;
         this.lastTimestamp = null;
         this.options.windowVisibility(true, persisted);
-        for (const entry of this.panes.values()) { entry.wakes.clear(); entry.reasons.add('resume-geometry'); }
+        for (const entry of this.panes.values()) { entry.wakes.clear(); entry.reasons.add('resume-geometry'); entry.fullDamage = true; }
         this.refreshWakeTimer();
         this.ensureFrame();
     }

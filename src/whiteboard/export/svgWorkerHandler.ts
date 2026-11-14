@@ -32,7 +32,12 @@ export async function svgChunk(args: unknown, context: WorkerContext): Promise<n
   if (!entry || !Array.isArray(items) || items.length > 64) throw new Error('Invalid SVG chunk')
   try {
     touch(id, entry)
-    for (const item of items) { context.signal.throwIfAborted(); entry.writer.append(item); await context.slice() }
+    let count = 0
+    for (const item of items) {
+      context.signal.throwIfAborted()
+      entry.writer.append(item)
+      if (++count % 16 === 0) await context.slice()
+    }
     touch(id, entry)
     return null
   } catch (error) { drop(id); throw error }

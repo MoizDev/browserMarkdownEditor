@@ -11,8 +11,12 @@ export interface RecoveryEntry {
     revision: number;
     updatedAt: number;
     payload: unknown;
+    /** Self-contained file bytes/text: mismatched or missing baselines can only be saved aside. */
+    copy: string | Uint8Array | Blob;
     /** Vault-relative media references travel with a folder move. */
     mediaRefs: string[];
+    /** Set once a newer window's journal for this path has been observed. */
+    copyOnly?: boolean;
 }
 
 let database: Promise<IDBDatabase> | undefined;
@@ -64,7 +68,7 @@ export async function writeRecoveryEntry(entry: RecoveryEntry, refused: () => vo
     const request = store.get([entry.vaultId, entry.journalId]);
     request.onsuccess = () => {
         const old = request.result as RecoveryEntry | undefined;
-        if (!old || old.revision <= entry.revision) store.put(entry);
+        if (!old || old.revision <= entry.revision) store.put(old?.copyOnly ? { ...entry, copyOnly: true } : entry);
     };
     await finished;
     requestDurability(refused);
@@ -92,6 +96,23 @@ export async function listRecovery(vaultId: string): Promise<RecoveryEntry[]> {
     const request = tx.objectStore('entries').index('vault').getAll(vaultId);
     await finished;
     return request.result as RecoveryEntry[];
+}
+
+/** Mark older windows before an offer can be discarded, so they cannot become in-place offers later. */
+export async function markRecoveryCopies(vaultId: string, ids: readonly string[]): Promise<void> {
+    if (!ids.length) return;
+    const db = await open();
+    const tx = db.transaction('entries', 'readwrite');
+    const finished = done(tx);
+    const store = tx.objectStore('entries');
+    for (const id of ids) {
+        const request = store.get([vaultId, id]);
+        request.onsuccess = () => {
+            const entry = request.result as RecoveryEntry | undefined;
+            if (entry && !entry.copyOnly) store.put({ ...entry, copyOnly: true });
+        };
+    }
+    await finished;
 }
 
 /** Explicit discard; never used to make room or to resolve a path collision. */

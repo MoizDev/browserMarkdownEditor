@@ -45,6 +45,8 @@ import { canWrite, modeExtensions } from '../editor/readingMode';
 import { keyboardAfterSearchClose, noteSearchKeymap, rebuildSearchPanelForMode, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
 import { tabIntoText } from '../editor/tabIntoText';
 import { docString } from '../editor/docCache';
+import { wordCountField } from '../editor/wordCount';
+import { publishWordCounts } from '../utils/wordCountStore';
 import { externalReload, reloadSpec } from '../editor/externalReload';
 import { registerView, type LineCol, type MarkdownViewInfo, type TextChange } from '../utils/viewRegistry';
 import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
@@ -945,8 +947,11 @@ function DocumentPane({
             scrollAnchorTracking,
             ...(isCode ? [] : [markdownFormatExtension]),
             revealHighlightField,
+            ...(isCode ? [] : [wordCountField]),
             EditorView.updateListener.of((update) => {
                 if (update.docChanged) {
+                    const words = update.state.field(wordCountField, false);
+                    if (words !== undefined) publishWordCounts(path, { words, chars: update.state.doc.length });
                     // A reload from disk is the file's own text, not an edit:
                     // marked dirty, it would be saved straight back over the
                     // file it came from (editor/externalReload.ts).

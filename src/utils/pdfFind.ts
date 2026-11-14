@@ -24,7 +24,13 @@ export const TOKEN_BREAK = '\uE000', LINE_HYPHEN = '\uE001';
 const DOCUMENT_BYTES = 32 * 1024 * 1024, APP_BYTES = 64 * 1024 * 1024, HIT_LIMIT = 10_000;
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const abort = () => new DOMException('PDF find cancelled', 'AbortError');
-const yieldTask = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+const taskScheduler = (globalThis as typeof globalThis & { scheduler?: { postTask(callback: () => void, options: { priority: 'background' }): Promise<void> } }).scheduler;
+const yielding = new MessageChannel();
+const yieldQueue: Array<() => void> = [];
+yielding.port1.onmessage = () => { yieldQueue.shift()?.(); };
+const yieldTask = (): Promise<void> => taskScheduler
+    ? taskScheduler.postTask(() => {}, { priority: 'background' })
+    : new Promise<void>(resolve => { yieldQueue.push(resolve); yielding.port2.postMessage(0); });
 const isSpace = (c: string) => c.trim().length === 0;
 const isBreak = (c: string) => c === TOKEN_BREAK || c === LINE_HYPHEN;
 function droppedMark(code: number): boolean {
@@ -97,7 +103,7 @@ export function project(page: PdfFindPageText): { key: string; map: Uint32Array 
     return { key: keys.join(''), map: Uint32Array.from(offsets) };
 }
 
-type IndexedPage = { bytes: Uint8Array; canonical: Uint8Array; tokenBreaks: Uint32Array; runs: Uint32Array; length: number; canonicalLength: number;
+type IndexedPage = { bytes: Uint8Array; canonical: string; tokenBreaks: Uint32Array; runs: Uint32Array; length: number; canonicalLength: number;
     quality: PdfFindPageText['quality']; failed: boolean; cost: number };
 type DocumentCache = { pages: Map<number, IndexedPage>; bytes: number };
 // In insertion order: evict a whole document, not an arbitrary set of its pages.
@@ -121,9 +127,9 @@ async function indexPage(page: PdfFindPageText, signal: AbortSignal): Promise<In
         if (performance.now() >= deadline) { await yieldTask(); deadline = performance.now() + 4; }
     }
     const bytes = encoder.encode(keys.join('')), compact = Uint32Array.from(runs);
-    const canonical = encoder.encode(page.text), tokenBreaks = Uint32Array.from(page.tokenBreaks);
+    const canonical = page.text, tokenBreaks = Uint32Array.from(page.tokenBreaks);
     return { bytes, canonical, tokenBreaks, runs: compact, length: position, canonicalLength: page.text.length,
-        quality: page.quality, failed: false, cost: bytes.byteLength + canonical.byteLength + tokenBreaks.byteLength + compact.byteLength + 64 };
+        quality: page.quality, failed: false, cost: bytes.byteLength + canonical.length * 2 + tokenBreaks.byteLength + compact.byteLength + 64 };
 }
 function canonicalAt(page: IndexedPage, position: number): number {
     if (position >= page.length) return page.canonicalLength;
@@ -210,12 +216,12 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
         try { page = await indexPage(await source.page(index, signal), signal); }
         catch (error) {
             if (signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error;
-            page = { bytes: new Uint8Array(), canonical: new Uint8Array(), tokenBreaks: new Uint32Array(), runs: new Uint32Array(), length: 0, canonicalLength: 0, quality: 'none', failed: true, cost: 64 };
+            page = { bytes: new Uint8Array(), canonical: '', tokenBreaks: new Uint32Array(), runs: new Uint32Array(), length: 0, canonicalLength: 0, quality: 'none', failed: true, cost: 64 };
         }
         if (signal.aborted) throw abort();
         const shared = cache.pages.get(index);
         if (shared) { touch(cache); return shared; }
-        if (cache.bytes + page.cost <= maxBytes) {
+        if (!page.failed && cache.bytes + page.cost <= maxBytes) {
             touch(cache);
             while (appBytes + page.cost > APP_BYTES) {
                 const victim = [...documents.keys()].find(document => document !== cache);
@@ -232,7 +238,7 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
             const signal = AbortSignal.any([externalSignal, lifetime.signal]);
             const page = await getPage(index, signal);
             if (page.failed) throw new Error(`Could not read physical page ${index + 1}`);
-            return { text: decoder.decode(page.canonical), tokenBreaks: Array.from(page.tokenBreaks), quality: page.quality };
+            return { text: page.canonical, tokenBreaks: Array.from(page.tokenBreaks), quality: page.quality };
         },
         clearIndex() { clearCache(cache); },
         async *search(query, startPage, externalSignal) {

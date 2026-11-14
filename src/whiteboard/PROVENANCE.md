@@ -219,7 +219,9 @@ third-party code included (normally "none") · date.
 | `input/tool.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
 | `input/router.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7,9 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
 | `input/gesture.ts` | lane w-f | F-TOOL-002/003/004 | input §7; toolbar §§2–4 | Tool and input behavioural specifications; no tldraw source | none | 2026-11-13 |
-| `input/pointer.ts` | lane w-f | F-INPUT-001/005/008; R-19 | input §3 | Input architecture; browser Pointer Events APIs; no tldraw source | none | 2026-11-13 |
+| `input/pointer.ts` | lane w-f | F-INPUT-001/005/008; R-19 | input §§3–4 | Input architecture; browser Pointer Events APIs; no tldraw source | none | 2026-11-13 |
+| `input/prediction.ts` | lane w-f | F-INPUT-001; R-19 | input §4 | Input architecture; browser Pointer Events and Ink APIs; no tldraw source | none | 2026-11-13 |
+| `input/frame.ts` | lane w-f | F-INPUT-001; R-19 | input §4 | Input architecture and shared scheduler contract; no tldraw source | none | 2026-11-13 |
 
 ## Pages and paged hosts (lane w-l)
 

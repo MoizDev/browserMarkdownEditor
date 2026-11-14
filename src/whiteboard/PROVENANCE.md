@@ -43,6 +43,7 @@ third-party code included (normally "none") · date.
 | `agent/shapes.ts` | w-p | F-AGENT-001, WB-D11, WB-D12, C8 | integration §9 | Agent specification, C8, public model interfaces; authoritative geometry supplied by shared projection; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/transaction.ts` | w-p | F-AGENT-002/003/004/005/012/013, C8 | integration §9; change and history §3 | Agent specification and model/apply public interfaces; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/validate.ts` | w-p | F-AGENT-002/012/013/015, C8 | integration §9 | Agent specification and public model style vocabulary; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/create.ts` | w-p | F-AGENT-002/012/013, C8 | integration §9, document-model §§3–4 | Agent spec and public model/change/page APIs; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/errors.ts` | w-p | F-AGENT-012/013, C8 | integration §9 | Agent specification; no tldraw or old canvas source | none | 2026-11-13 |
 
 ## Formats, importer, save and agent adapter (lane w-d)
@@ -67,6 +68,7 @@ third-party code included (normally "none") · date.
 | `format/recordChanges.ts` | w-d | CH-3, F-7 | native-format §11; change-and-history §5 | Model Applied/TouchedSet and encoder public seams, changed-record UTF-8 plus incremental record revision digest; no tldraw source/package | none | 2026-11-13 |
 | `session/saveScheduler.ts` | w-d | CH-3, H-4/7 | change-and-history §5 | Session-owned 150ms debounce, gesture/composition hold, serialized pinned 500ms journal capture; no tldraw source/package | none | 2026-11-13 |
 | `session/contentSource.ts` | w-d | CH-3, C7.5 | change-and-history §5; contracts C7 | Synchronous immutable revision-pinned BuildJob interface; PDF host composes pinned lists/bytes without an independent write; no tldraw source/package | none | 2026-11-13 |
+| `security/limits.ts` | w-d | SEC-W1, SEC-8 | security §3 | Independently implemented inclusive encoded-byte/pixel limits and checked aggregate arithmetic, before allocation/decoding; no tldraw source/package | none | 2026-11-13 |
 
 ## Ink, scene, rendering and the viewer host (lane w-e)
 
@@ -96,12 +98,39 @@ third-party code included (normally "none") · date.
 | `render/reference/paint2d.ts` | lane v-b | C2.4, C4.3; R-20; F-INK-005/006/007 | rendering §§2–5,10–13; ink §6 | Those greenfield plans; w-e's public paint stream/material/colour contract; Canvas 2D API for clips, paths, images and compositing; no tldraw source | none | 2026-11-13 |
 | `render/reference/coverage2d.ts` | lane v-b | C2.4, C4.3; F-INK-005/006/007; E-INK-7/8 | rendering §§2–5,10–13; ink §6.1 | Those greenfield plans; platform PathCommand and w-e's canonical InkCoverage/InkOutlineJob public interfaces; bounded work for ink, clips and ordinary paths, unpublished-path lifetime and double-precision origin rebasing from the design; native Path2D command methods; no tldraw source | none | 2026-11-13 |
 
+## Importer and conversion (lane w-o)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `import/segments.ts` | w-o | IMP-2, E-IMP-15 | import §3; current-format §2.3 | Documented legacy point layout and corpus facts; no old canvas or tldraw source | none | 2026-11-13 |
+| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping and recorded PDF layout contract | none | 2026-11-13 |
+| `import/report.ts` | w-o | IMP-5 | import §§1,6 | Import report and notice contract | none | 2026-11-13 |
+| `import/records/envelope.ts` | w-o | IMP-1, E-IMP-1/2 | import §§2,6; current-format §§1–3 | Observed envelopes and schema counters | none | 2026-11-13 |
+| `import/records/storeFields.ts` | w-o | IMP-1, E-IMP-4 | import §6; document-model §9.2 | JSON format and duplicate-record preservation requirement | none | 2026-11-13 |
+| `import/records/common.ts` | w-o | IMP-1, IMP-3 | import §§2–3; current-format §2 | Observed shape and backdrop layout | none | 2026-11-13 |
+| `import/records/sheets.ts` | w-o | IMP-1 | import §3; current-format §2 | Observed page and metadata fields | none | 2026-11-13 |
+| `import/records/stroke.ts` | w-o | IMP-1/2, E-IMP-15 | import §3; geometry §3.2 | Observed segment/style fields and documented width table; public sample model | none | 2026-11-13 |
+| `import/records/basic.ts` | w-o | IMP-1 | import §3; current-format §2 | Documented group, frame, embed and line records | none | 2026-11-13 |
+| `import/records/bindings.ts` | w-o | IMP-1, E-IMP-5 | import §§3,6 | Documented connector bindings and dangling-target rule | none | 2026-11-13 |
+| `import/records/fields.ts` | w-o | IMP-1, E-IMP-3 | import §§2–3,6 | Observed properties and unknown-field refusal | none | 2026-11-13 |
+| `import/records/labelled.ts` | w-o | IMP-1 | import §3; geometry §3.2 | Documented figure, text, note and connector fields; rich reader injected | none | 2026-11-13 |
+| `import/records/media.ts` | w-o | IMP-1, E-IMP-6 | import §3; security §4 | Inline asset format and w-q SEC-W4 admission seam | none | 2026-11-13 |
+| `import/records/pictures.ts` | w-o | IMP-1 | import §3; current-format §2 | Observed picture, video and bookmark fields | none | 2026-11-13 |
+| `import/records/view.ts` | w-o | IMP-1 | import §3; current-format §§2,6 | Documented session, camera and UI fields | none | 2026-11-13 |
+| `import/scale.ts` | w-o | IMP-3, E-IMP-9 | import §3.1; contracts C2.3 | Uniform page-local transformation of public model records | none | 2026-11-13 |
+| `import/repair.ts` | w-o | IMP-1, E-IMP-4/5 | document-model §9.2; import §6 | Load-only parent, group, id, order and attachment repair rules | none | 2026-11-13 |
+| `import/sheets.ts` | w-o | IMP-1, E-IMP-4 | document-model §§4,9.2 | Sheet naming and key model | none | 2026-11-13 |
+| `import/admit.ts` | w-o | IMP-1, IMP-5 | document-model §§9–10; import §§1,6 | Public model validation and apply controller | none | 2026-11-13 |
+| `import/records/read.ts` | w-o | IMP-1/3/5 | import §§1–3,6 | Documented record families, report and host admission contracts | none | 2026-11-13 |
+| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6 | In-memory source retention, ordered draft and model admission | none | 2026-11-13 |
+
 ## Export and whiteboard host (lane w-k)
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `export/png.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7; clipboard §2.4 | Export design; PNG chunk layout, sRGB and pHYs; browser CompressionStream; independent CRC arithmetic and per-row PNG filter choice; no tldraw source | none | 2026-11-13 |
 | `export/tiles.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7 | Export design; bounded bands and a renderer-supplied RGBA tile; no tldraw source | none | 2026-11-13 |
+| `export/rasterTile.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; shared reference painter and capture-pinned resources, per-tile world projection; no tldraw source | none | 2026-11-13 |
 
 ## Text (lane w-n)
 
@@ -130,6 +159,9 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `geom/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Generic box and affine helpers moved with w-e's agreement from scene/bounds.ts; no tldraw source | none | 2026-11-13 |
 | `scene/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Re-export generic helpers from geom/bounds.ts to retain the scene API | none | 2026-11-13 |
+| `geom/numeric.ts` | lane w-g | GE-1 | geometry §2.1–2.2 | Design; IEEE 754 binary64; independent dyadic arithmetic | none | 2026-11-13 |
+| `geom/predicates.ts` | lane w-g | GE-1 | geometry §2.2 | Design; interval-filtered exact dyadic predicates | none | 2026-11-13 |
+| `geom/affine.ts` | lane w-g | GE-1 | geometry §2.3 | Design; shared affine helpers and singular value identity | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 
@@ -166,6 +198,7 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `input/tool.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
 | `input/router.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7,9 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
+| `input/gesture.ts` | lane w-f | F-TOOL-002/003/004 | input §7; toolbar §§2–4 | Tool and input behavioural specifications; no tldraw source | none | 2026-11-13 |
 
 ## Pages and paged hosts (lane w-l)
 

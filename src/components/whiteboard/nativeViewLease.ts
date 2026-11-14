@@ -1,6 +1,7 @@
 import type { PlatformLayerDefinition, PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
+import type { RenderToken } from '../../platform/render/types';
 import { createPlatformCapturer } from '../../platform/render/captureRuntime';
 import type { CompositorCaptureOptions } from '../../platform/render/compositor.types';
 import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
@@ -27,6 +28,9 @@ export interface NativePdfBackdrop {
     readonly pages: readonly { readonly width: number; readonly height: number }[];
     captureSnapshot(request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot;
     assertCaptureCurrent(): void;
+    /** Source-bound fields are supplied by the PDF owner; a changed source revokes this backdrop. */
+    readonly sourceToken?: RenderToken;
+    isCurrentSource?(): boolean;
     setVisible(visible: boolean, focused: boolean): void;
     notePresentation?(): void;
     dispose(): void;
@@ -46,6 +50,9 @@ export interface NativeViewLease extends BoardViewLease<object> {
     captureRegion(rect: Rect, maxSide: number, signal: AbortSignal): Promise<ImageBitmap>;
     captureBlob(rect: Rect, maxSide: number, signal: AbortSignal): Promise<Blob>;
     changed(): void;
+    /** An outer source owner can fence input while its real view is covered or rebinding. */
+    setInputPermitted(permitted: boolean): void;
+    canMutateView(): boolean;
     refreshAuthority(): void;
     replaceBackdrop(backdrop: NativePdfBackdrop): void;
 }
@@ -66,6 +73,8 @@ export function createNativeViewLease(options: {
         readonly clipboard: NativeClipboardService;
         readonly ui: NativeEditingToolOptions['ui'];
         readonly commands: NativeEditingToolOptions['commands'];
+        /** Actual per-view services, not the document-wide promotion, authorize input. */
+        canMutate(): boolean;
         onAttachment(attached: boolean): void;
     };
     onError(error: unknown): void;
@@ -85,6 +94,7 @@ export function createNativeViewLease(options: {
         session: identity.session, bytesGeneration: identity.bytesGeneration });
     const viewLease = ++serial, listeners = new Set<() => void>();
     let parameters = { ...options.parameters }, disposed = false, platformPane: PlatformPane | null = null;
+    let inputPermitted = true;
     let backdrop = options.pdfBackdrop;
     let surface: HTMLElement | null = null;
     const current = () => !disposed && host.isCurrent(identity);
@@ -140,13 +150,14 @@ export function createNativeViewLease(options: {
         camera, viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
             candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
         visible: () => parameters.visible, focused: () => parameters.focused, paged: board.doc.kind !== 'whiteboard',
-        host, identity, clipboard: edit.clipboard, bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true),
+        host, identity, clipboard: edit.clipboard, bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
+            () => parameters.mode === 'edit' && edit.canMutate()),
         toolOptions: { runtime, engine: viewer, images, camera, token,
             inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
             view: () => { if (!presentedView) throw new Error('The board has not presented its input mapping'); return presentedView; },
             viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
                 candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
-            editable: () => parameters.mode === 'edit' && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
+            editable: () => parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
             interaction: { invalidate, cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
             ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
@@ -257,9 +268,13 @@ export function createNativeViewLease(options: {
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
                 if (presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
-                if (presentation && parameters.visible && current() && presentation.token.documentId === token.documentId &&
-                    presentation.token.session === token.session && presentation.token.vaultEpoch === token.vaultEpoch &&
-                    presentation.token.bytesGeneration === token.bytesGeneration) backdrop?.notePresentation?.();
+                const source = backdrop?.sourceToken;
+                if (presentation && presentation.complete && presentation.sharp && !presentation.staleVersion && parameters.visible && current() &&
+                    presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
+                    presentation.token.vaultEpoch === token.vaultEpoch && presentation.token.bytesGeneration === token.bytesGeneration &&
+                    (!source || (!!backdrop?.isCurrentSource?.() && presentation.token.documentId === source.documentId &&
+                        presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
+                        presentation.token.bytesGeneration === source.bytesGeneration))) backdrop?.notePresentation?.();
             }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.
@@ -277,9 +292,20 @@ export function createNativeViewLease(options: {
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
+    const sourceCurrent = () => {
+        if (!backdrop?.sourceToken) return true;
+        try { return backdrop.isCurrentSource?.() === true; }
+        catch (error) { options.onError(error); return false; }
+    };
+    const updateInput = () => {
+        navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
+    };
     const lease: NativeViewLease = {
         runtime, engine: viewer, camera, editing, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
-        refreshAuthority() { if (!disposed) { viewer.setView(viewParameters()); invalidate(); } },
+        setInputPermitted(permitted) { if (!disposed) { inputPermitted = permitted; updateInput(); } },
+        canMutateView() { return !disposed && !!editing && !!edit && inputPermitted && sourceCurrent() && parameters.visible && !!platformPane &&
+            current() && edit.canMutate() && !board.isReadOnly && host.canWrite(identity); },
+        refreshAuthority() { if (!disposed) { updateInput(); viewer.setView(viewParameters()); invalidate(); } },
         captureRegion: (rect, maxSide, signal) => captureRegion(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         captureBlob: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         replaceBackdrop(next) {
@@ -316,12 +342,12 @@ export function createNativeViewLease(options: {
                 parameters = { ...parameters, ...next };
                 backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
                 viewer.setView(viewParameters());
-                navigation.setInputEnabled(next.visible && !!platformPane);
+                updateInput();
             },
             attachPlatform(next) {
                 if (!next) navigation.cancelViewWork('platform-detach');
                 platformPane = next;
-                navigation.setInputEnabled(parameters.visible && !!next);
+                updateInput();
                 if (next) next.invalidate('native-attachment');
             },
             attachInput(interaction, overlay) {

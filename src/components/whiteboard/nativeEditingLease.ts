@@ -69,7 +69,8 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                     current: () => options.current(options.token), visible: options.visible,
                     schedule: callback => input.schedule(callback), reveal: id => { if (id) options.engine.focusNode(id); },
                     contextMenu: event => binding!.openMenu(event), error: options.onError });
-                importer = createNativeImportAdapter(binding, options.runtime, () => options.current(options.token) && options.host.canWrite(options.identity), options.onError);
+                importer = createNativeImportAdapter(binding, options.runtime, () => options.current(options.token) &&
+                    options.toolOptions.editable() && options.host.canWrite(options.identity), options.onError);
                 const keyboardNavigation = createBoardKeyboardNavigation({ runtime: options.runtime, camera: options.camera,
                     viewport: options.viewport, paged: options.paged, current: () => options.current(options.token) && options.visible(),
                     editable: options.toolOptions.editable, nudge: (direction, coarse) => tools?.actualsubcontrollers.select.nudge(direction, coarse) ?? false,
@@ -82,7 +83,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                                 const editor = tools?.actualsubcontrollers.text, selected = editor?.clipboardSelection(), link = editor?.linkContext();
                                 const context = editor?.clipboardContext();
                                 const reason = 'Select text first.', disabled = !selected,
-                                    readOnly = options.runtime.session.isReadOnly || !options.host.canWrite(options.identity);
+                                    readOnly = options.runtime.session.isReadOnly || !options.toolOptions.editable() || !options.host.canWrite(options.identity);
                                 const stillCurrent = () => {
                                     const now = editor?.clipboardContext();
                                     return !!context && !!now && options.current(options.token) && now.node === context.node && now.revision === context.revision
@@ -137,7 +138,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                     sampleToSurface: input.sampleToSurface, clientToSurface: input.clientToSurface });
                 textClipboard = createNativeTextClipboard({ surface, editor: tools.actualsubcontrollers.text,
                     runtime: options.runtime, host: options.host, identity: options.identity, clipboard: options.clipboard,
-                    binding, onError: options.onError });
+                    binding, canWriteView: options.toolOptions.editable, onError: options.onError });
                 return tools.services;
             } catch (error) { disposeTools(); throw error; }
         },

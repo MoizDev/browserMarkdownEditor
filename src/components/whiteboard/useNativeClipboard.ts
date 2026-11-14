@@ -24,6 +24,7 @@ import { downloadBoardExport } from './exportDelivery';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
 
+
 const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly label: string }[] = [
     { preset: 'original', label: 'Original' }, { preset: 'square', label: 'Square' }, { preset: 'circle', label: 'Circle' },
     { preset: 'landscape', label: 'Landscape 4:3' }, { preset: 'portrait', label: 'Portrait 3:4' }, { preset: 'wide', label: 'Wide 16:9' },
@@ -199,6 +200,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             let detached = false;
             const canWriteView = () => !detached && current() && !!writable?.() && host.canWrite(identity);
             let pointer: { x: number; y: number } | null = null;
+            // A print belongs to this view: detaching the view (pane hide, close, vault switch) cancels it.
             const surfacePoint = (x: number, y: number) => {
                 const bounds = surface.getBoundingClientRect(), viewport = lease.camera.viewport;
                 if (bounds.width <= 0 || bounds.height <= 0) throw new Error('Board surface is unavailable');
@@ -230,6 +232,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'c') {
                     event.preventDefault(); event.stopPropagation(); void commands.copyAsPng(); return;
                 }
+
                 if (canWriteView()) {
                     if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'd') {
                         event.preventDefault(); event.stopPropagation(); void commands.duplicate(); return;

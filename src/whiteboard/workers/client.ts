@@ -39,14 +39,8 @@ export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
             if (!validBoardIdentity(identity)) throw new TypeError('Invalid board worker identity');
             const pinned = Object.freeze({ session: identity.session, epoch: identity.epoch, revision: identity.revision });
             if (!isCurrent(pinned)) throw new DOMException('Board job is stale', 'AbortError');
-            let result: unknown;
-            try {
-                result = await host.request(op, { identity: pinned, payload } satisfies BoardWorkerEnvelope<unknown>,
-                    { ...options, deadlineMs: options.deadlineMs ?? defaultDeadline(kind) });
-            } catch (error) {
-                if (error instanceof Error && error.name === 'Deadline') void host.recycle('board job deadline', { lazy: true }).catch(() => {});
-                throw error;
-            }
+            const result: unknown = await host.request(op, { identity: pinned, payload } satisfies BoardWorkerEnvelope<unknown>,
+                { ...options, deadlineMs: options.deadlineMs ?? defaultDeadline(kind), terminateOnDeadline: true });
             if (!boardEnvelope(result) || !matchingIdentity(pinned, result.identity)) {
                 closeWorkerResult(result);
                 throw new TypeError('Invalid board worker reply identity');

@@ -1,6 +1,6 @@
 import { isTextGraphemeBoundary, blockTextLength } from '../model/textOffsets';
 import { projectionLength as indexedLength, projectionPosition, projectionText } from './projection';
-import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
+import { normalizePlainInsertion } from './plainText';
 import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
 import { trackBlock } from './carriers';
@@ -28,11 +28,7 @@ export function plain(value: RichText): string {
     return projectionText(value);
 }
 export function fromPlain(value: string): RichText {
-    if (value.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
-    const normalized = value.replace(/\r\n?/g, '\n');
-    if (normalized.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
-    const lines = normalized.split('\n');
-    if (lines.length > MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds limits');
+    const lines = normalizePlainInsertion(value).split('\n');
     return { blocks: lines.map(text => ({ kind: 'p', level: 0, dir: 'auto', runs: [{ text, marks: {} }] })) };
 }
 export function marksAt(value: RichText, offset: number): Marks {
@@ -73,11 +69,7 @@ export function insertionFragment(value: RichText, from: number, inserted: strin
     check(value, from);
     const { block } = position(value, from);
     const marks = storedMarks ?? marksAt(value, from);
-    if (inserted.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
-    const normalized = inserted.replace(/\r\n?/g, '\n');
-    if (normalized.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
-    const lines = normalized.split('\n');
-    if (lines.length > MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds limits');
+    const lines = normalizePlainInsertion(inserted).split('\n');
     return { blocks: lines.map((text, index) => ({ ...(index === 0 ? insertionBlock(block) : continuation(block)), runs: [{ text, marks }] })) };
 }
 function mapMarks(value: RichText, from: number, to: number, map: (marks: Marks) => Marks): RichFragment {

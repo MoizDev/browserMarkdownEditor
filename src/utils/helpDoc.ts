@@ -382,9 +382,10 @@ file starts at the width you were last using, since that is usually the one you
 want again.
 
 ### Drawings
-A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endless
-sheet in every direction, for diagrams and thinking rather than for a page you
-intend to hand in.
+A **drawing** is a canvas with no pages at all — an endless sheet in every
+direction, for diagrams and thinking rather than for a page you intend to hand
+in. New drawings use \`.drawing\` when the new whiteboard engine is selected;
+otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you

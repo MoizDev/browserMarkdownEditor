@@ -33,7 +33,7 @@ import { IndexSessionGuard } from './utils/indexSessionGuard';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
-import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
+import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNativeDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -3721,15 +3721,20 @@ export default function App() {
     setSaveStatus('');
   }, []);
 
+  const createInFlightRef = useRef(false);
   const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath = '') => {
     if (isEpubFile(name) || isPdfFile(name)) { void tell({title:'Import an existing document',body:'EPUB and PDF documents must be imported as original binary files.',confirmLabel:'OK'}); return; }
-    const where = parentPath || parentHandle?.name || 'this folder';
+    if (!parentHandle || !rootHandleRef.current || createInFlightRef.current) return;
+    createInFlightRef.current = true;
+    const where = parentPath || parentHandle.name || 'this folder';
+    const root = rootHandleRef.current;
     try {
       // Nothing here overwrites a file by accident — the rule the rest of the
       // app keeps with freeEntryName, kept here with a refusal instead,
       // because the user named this file and silently getting "note (1).md"
-      // is not what they asked for either.
-      if (parentHandle && await nameTaken(parentHandle, name)) {
+      // is not what they asked for either. Native drawings use the unique-name
+      // creation path below instead.
+      if (!isNativeDrawingFile(name) && await nameTaken(parentHandle, name)) {
         await tell({
           title: 'That name is taken',
           confirmLabel: 'OK',
@@ -3740,16 +3745,28 @@ export default function App() {
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path: joinVaultPath(parentPath, name), caller: 'create' }); } catch { /* Measurement must not interrupt a write. */ }
       }
-      const newFileHandle = await createFile(parentHandle!, name);
-      // Auto-open the newly created file straight into edit mode. Build the path
-      // to match buildFileTree's convention (vault-root-relative, no vault-name
-      // prefix) so the tab dedups / highlights / restores correctly.
+      // An empty native drawing is the format's defined new-board state. Use
+      // the import path's freeEntryName (files AND folders) rather than the
+      // truncating createFile primitive, and carry its actual name forward.
+      let createdName = name;
+      let newFileHandle: FileSystemFileHandle | null;
+      if (isNativeDrawingFile(name)) {
+        const created = await importFiles([new File([], name)], parentHandle);
+        if (!created.length || !root) throw new Error('Could not create the drawing.');
+        createdName = created[0];
+        ({ handle: newFileHandle } = await resolveVaultFile(root, joinVaultPath(parentPath, createdName)));
+      } else {
+        newFileHandle = await createFile(parentHandle, name);
+      }
+      // A vault switch during creation must not open the old folder's file in
+      // the new workspace, even if the path exists in both.
+      if (root !== rootHandleRef.current) return;
       if (newFileHandle) {
-        const newPath = joinVaultPath(parentPath, name);
+        const newPath = joinVaultPath(parentPath, createdName);
         const newNode: FileTreeFileNode = {
-          name,
+          name: createdName,
           handle: newFileHandle,
-          parentHandle: parentHandle!,
+          parentHandle,
           kind: 'file',
           path: newPath,
         };
@@ -3765,8 +3782,10 @@ export default function App() {
         confirmLabel: 'OK',
         body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
       });
+    } finally {
+      createInFlightRef.current = false;
     }
-  }, [createFile, handleFileClick, tell, nameTaken]);
+  }, [createFile, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
 
   /**
    * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab

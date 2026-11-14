@@ -1,5 +1,6 @@
 import { createClippedFilledPolygonJob } from './clippedFilledPolygonJob';
 import { createClippedFilledSweepJob } from './clippedFilledSweepJob';
+import { createClippedCompoundFillJob } from './clippedCompoundFillJob';
 import type { PointClipContour } from './clippedPointPathJob';
 import type { PathOp } from './path';
 import type { RegionQuery } from './types';
@@ -16,7 +17,7 @@ export function createClippedVectorRegionJob(descriptor: VectorNarrowDescriptor,
     const containment = query.kind === 'polygon' && query.containment;
     let partIndex = 0, pathIndex = 0, fillDone = false, seen = false, cancelled = false, finished: ClippedVectorRegionResult | undefined;
     let uncertain: { reason: string; part: VectorNarrowDescriptor['parts'][number]['part'] } | undefined;
-    let active: ReturnType<typeof createClippedFilledPolygonJob> | ReturnType<typeof createClippedFilledSweepJob> | undefined;
+    let active: ReturnType<typeof createClippedFilledPolygonJob> | ReturnType<typeof createClippedFilledSweepJob> | ReturnType<typeof createClippedCompoundFillJob> | undefined;
     const finish = (value: ClippedVectorRegionResult): ClippedVectorRegionResult => { finished = Object.freeze(value); return finished; };
     const start = (path: readonly PathOp[], fill: boolean, strokeRadiusLocal: number, maxCommands: number) => query.kind === 'polygon'
         ? createClippedFilledPolygonJob(path, query, { frames, fill, strokeRadiusLocal, maxCommands })
@@ -33,9 +34,12 @@ export function createClippedVectorRegionJob(descriptor: VectorNarrowDescriptor,
                         : finish({ status: 'empty' }) : finish({ status: 'miss' });
                 }
                 const part = descriptor.parts[partIndex], fills = part.options.interiorPaths ?? [];
-                if (fills.length > 1) return finish({ status: 'uncertain', reason: 'Compound clipped fills require a winding partition', part: part.part });
                 if (!active) {
-                    if (!fillDone && fills.length) { fillDone = true; active = start(fills[0], true, 0, part.options.maxSegments); }
+                    if (!fillDone && fills.length) {
+                        fillDone = true;
+                        active = fills.length > 1 ? createClippedCompoundFillJob(fills, query, frames, { maxCommands: part.options.maxSegments })
+                            : start(fills[0], true, 0, part.options.maxSegments);
+                    }
                     else if (pathIndex < part.paths.length) active = start(part.paths[pathIndex++], false, part.options.strokeRadiusLocal, part.options.maxSegments);
                     else { partIndex++; pathIndex = 0; fillDone = false; continue; }
                 }

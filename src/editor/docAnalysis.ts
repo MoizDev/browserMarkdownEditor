@@ -5,33 +5,14 @@ import type { Tree } from '@lezer/common';
 import { scanAllLines, updateLineScans } from './analysisLines';
 import type { LineScans } from './analysisLines';
 import { acceptedMath, filterInlineMath, pairMathTokens, updateBlockPairs } from './analysisMath';
-import type { BlockPair, InlineMath } from './analysisMath';
+import type { BlockPair } from './analysisMath';
 import { mergeAnalysisRanges, treeDelta } from './analysisTree';
 import { scanObjects, updateObjects } from './analysisObjects';
-import type { ObjectScans } from './analysisObjects';
 import { codeRangesForTree } from '../utils/mathRegions';
-import type { MathRegion } from '../utils/mathRegions';
 import type { CharRange } from '../utils/rangeSearch';
 
-export interface AnalysisDelta {
-    forRev: number;
-    changed: CharRange[];
-    treeChanged: CharRange[];
-}
-
-export interface DocAnalysis {
-    rev: number;
-    treeLength: number;
-    tree: Tree;
-    codeRanges: CharRange[];
-    mathRegions: MathRegion[];
-    mathEnds: number[];
-    lines: LineScans;
-    blockPairs: BlockPair[];
-    inlineRaw: InlineMath[];
-    objects: ObjectScans;
-    delta: AnalysisDelta | null;
-}
+import type { AnalysisDelta, DocAnalysis } from './docAnalysisTypes';
+export type { AnalysisDelta, DocAnalysis } from './docAnalysisTypes';
 
 function makeAnalysis(state: EditorState, tree: Tree, rev: number, codeRanges: CharRange[],
     lines: LineScans, blockPairs: BlockPair[], delta: AnalysisDelta | null,

@@ -5,8 +5,7 @@ import type { RawJson } from '../model/json';
 import type { MediaId } from '../model/media';
 import { scanRawMedia, visitExtRaw, visitHostRaw, visitNodeRaw, visitPreservedRaw } from '../model/rawMedia';
 import type { SavedView } from '../format/encode';
-import type { BoardDocInput, BoardKind, HostBlock, Sheet } from '../model/doc';
-import type { Node } from '../model/nodes';
+import type { BoardDocInput, HostBlock } from '../model/doc';
 import type { SampleStore } from '../ink/samples';
 import type { SampleLease } from '../model/samples';
 import { basicLegacyGeometry } from './basicGeometry';
@@ -25,9 +24,7 @@ export interface LegacyImportOptions<T> extends Omit<LegacyRecordOptions, 'prepa
     readonly pageSource?: PageSource;
     readonly textLayout: LegacyTextLayout;
     readonly geometry: LegacyGeometry;
-    readonly repair: (nodes: readonly Node[], sheets: readonly Sheet[], kind: BoardKind,
-        root: RootMapper, report: ReportBuilder) => readonly Node[];
-    readonly admit: (input: BoardDocInput, samples: SampleStore) => T;
+    readonly admit: (input: BoardDocInput, samples: SampleStore, root: RootMapper, report: ReportBuilder) => Promise<T>;
     readonly releaseAdmitted: (value: T) => void;
 }
 export interface LegacyImportResult<T> {
@@ -81,7 +78,7 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
             const sheets = repairLegacySheets(draft.sheets, report);
             const root: RootMapper = node => node.page >= 0
                 ? { page: node.page, x: node.x, y: node.y } : options.repairRoot(node);
-            const nodes = options.repair(draft.nodes, sheets, options.kind, root, report);
+            const nodes = draft.nodes;
             const view = readLegacyView(draft.envelope.session);
             savedView = view.camera;
             let host = options.host;
@@ -110,9 +107,10 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
             for (const sheet of sheets) visitExtRaw(sheet.ext, collect);
             for (const node of nodes) visitNodeRaw(node, collect);
             for (const item of media) visitExtRaw(item.entry.ext, raw => collect(raw, item.entry.id));
-            board = options.admit({ kind: options.kind, sheets, nodes,
+            board = await options.admit({ kind: options.kind, sheets, nodes,
                 media: media.map(item => item.entry), ui, view: view.flags,
-                host, preserved, preservedMediaRefs }, options.samples);
+                host, preserved, preservedMediaRefs }, options.samples, root, report);
+            options.assertCurrent();
         } catch (error) { report.refuse(null, error instanceof Error ? error.message : 'Import could not be admitted'); }
     }
     try { options.assertCurrent(); }

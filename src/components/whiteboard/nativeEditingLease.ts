@@ -9,6 +9,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import { createEmbedPresentationPort } from '../../platform/render/embedPresentation';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import { createNativeEmbedController, type NativeEmbedController } from '../../whiteboard/host/nativeEmbeds';
+import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../../whiteboard/host/embedPresentationFacts';
 import type { NativeClipboardBinding, NativeClipboardService } from './useNativeClipboard';
 import { createNativeImportAdapter } from './nativeImportAdapter';
 import { createNativeTextClipboard } from './nativeTextClipboard';
@@ -23,7 +24,11 @@ const spelling: BoardToolServicesOptions['spelling'] = {
     },
 };
 
-export interface NativeEmbedInfrastructure { readonly port: EmbedPresentationPort; readonly controller: NativeEmbedController }
+export interface NativeEmbedInfrastructure {
+    readonly port: EmbedPresentationPort;
+    readonly controller: NativeEmbedController;
+    readonly producer: NativeEmbedPresentationProducer;
+}
 
 export type NativeEditingToolOptions = Omit<BoardToolServicesOptions, 'surface' | 'overlay' | 'inputFrames' | 'mappings' | 'sampleToSurface' | 'clientToSurface' | 'imports' | 'spelling' | 'ui'> & {
     readonly ui: Omit<BoardToolServicesOptions['ui'], 'text' | 'keyboardNavigation'> & {
@@ -57,14 +62,16 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         textClipboard = null; tools = null; binding = null; importer = null; accessible = null; embed = null;
         if (previousEmbed) {
             options.onEmbedInfrastructure(null);
+            previousEmbed.producer.dispose();
             options.engine.connectEmbeds(null);
-            void previousEmbed.controller.dispose().catch(options.onError);
+            void previousEmbed.controller.dispose().finally(() => previousEmbed.port.dispose()).catch(options.onError);
         }
         try { text?.dispose(); } finally { try { old?.dispose(); } finally {
             try { media?.dispose(); } finally { try { a11y?.dispose(); } finally { clip?.detach(); } }
         } }
     };
     const input = createBoardInputHost({ ...options, mode: 'edit',
+        presented: (...args) => embed?.producer.presented(...args),
         a11y: {
             toolState(snapshot) { accessible?.a11y.toolState(snapshot); },
             bindKeyboardCursor(activate) {
@@ -82,7 +89,11 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                     const controller = createNativeEmbedController({ runtime: options.runtime, token: options.token, presentation: port,
                         manifest: options.host.embeds.manifest, containment: options.host.embeds.create, environment: { appOrigin: location.origin },
                         current: () => options.current(options.token), visible: options.visible, onError: options.onError });
-                    embed = { port, controller }; options.engine.connectEmbeds(port); options.onEmbedInfrastructure(embed);
+                    const producer = createNativeEmbedPresentationProducer({ port, images: options.toolOptions.images,
+                        memory: options.clipboard.memory, onError: options.onError });
+                    embed = { port, controller, producer };
+                    options.engine.connectEmbeds(port);
+                    options.onEmbedInfrastructure(embed);
                 } catch (error) { void port.dispose().catch(options.onError); throw error; }
                 accessible = createBoardAccessibilityDom({ runtime: options.runtime, engine: options.engine, surface, overlay,
                     current: () => options.current(options.token), visible: options.visible,
@@ -172,6 +183,10 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     });
     return {
         ...input,
+        onPresentation(presentation: Parameters<typeof input.onPresentation>[0]) {
+            input.onPresentation(presentation);
+            embed?.producer.onPresentation(presentation);
+        },
         getTools: () => tools,
         getBinding: () => binding,
         getClipboard: () => textClipboard,

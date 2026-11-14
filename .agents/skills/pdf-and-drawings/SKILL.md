@@ -591,6 +591,9 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
 canvases. Split across two files because `react-refresh/only-export-components` is relaxed for
 `src/context/**` only, so a component and a helper cannot share a file.
 
+- **Shared user preferences are app-owned** (`utils/boardPreferences.ts`, registered/mirrored as
+  `bme.whiteboard.preferences`); `boardLegacyUser.ts` bridges the public current-user signal for all
+  three legacy panes. Paper projects the scheme to light without writing that projection back.
 - **The pen is PER FILE, and per open editor.** `penStyle` keys on the live `Editor` in a WeakMap,
   not one app-wide value, because a split shows two canvases at once and each answers to its own
   file. `canvasPen`'s `CanvasUiState` (`toolId` + `stylesForNextShape` + `penScale`) is the one shape

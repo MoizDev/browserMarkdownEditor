@@ -2,7 +2,7 @@
 // arbitrary Filespec metadata or AF associations. No imported-PDF parser is ours.
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFObjectCopier, PDFRawStream } from 'pdf-lib';
 import type { PDFObject } from 'pdf-lib';
-import { attachmentText, boundedAttachmentBytes, inventoryAttachments } from '../../utils/pdfAttachmentTree';
+import { boundedAttachmentBytes, inventoryAttachments } from '../../utils/pdfAttachmentTree';
 import type { AttachmentEntry } from '../../utils/pdfAttachmentTree';
 import { inspectPdfRole } from '../../utils/pdfAttachmentInventory';
 import { Sha256 } from '../../utils/sha256';
@@ -32,14 +32,7 @@ function bytesOf(spec: PDFDict): Uint8Array {
     return boundedAttachmentBytes(stream, LIMIT);
 }
 function declaredMarker(entry: AttachmentEntry): string | undefined {
-    const desc = entry.description.startsWith('local-vault-pdf/') ? entry.description.split('\n', 1)[0] : undefined;
-    const ef = entry.spec.lookup(key('EF'));
-    const stream = ef instanceof PDFDict ? ef.lookup(key('F')) ?? ef.lookup(key('UF')) : undefined;
-    const params = stream instanceof PDFRawStream ? stream.dict.lookup(key('Params')) : undefined;
-    const raw = params instanceof PDFDict ? params.lookup(key('LocalVaultMarker')) : undefined;
-    const param = attachmentText(raw);
-    if (raw !== undefined && param === undefined || desc && param !== undefined && desc !== param) throw new Error('Conflicting attachment marker');
-    return desc ?? param;
+    return entry.description.startsWith('local-vault-pdf/') ? entry.description.split('\n', 1)[0] : undefined;
 }
 function ownedBoardEntry(entry: AttachmentEntry, format: string): boolean {
     if (entry.keys.length !== 1) return false;

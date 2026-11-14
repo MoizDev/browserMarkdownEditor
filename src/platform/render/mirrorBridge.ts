@@ -1,5 +1,6 @@
 import { RENDER_CONSTANTS } from './constants';
 import type { BorrowedMirror, MirrorSet, MirrorView } from './mirrorSet';
+import { getPlatformRuntime } from './platformRuntime';
 import { renderTokenKey } from './tiles/geometry';
 import type { RenderToken } from './types';
 
@@ -35,18 +36,20 @@ export function createMirrorVersionBridge<T extends object>(options: MirrorVersi
     const targetKey = renderTokenKey(to);
     const deadline = performance.now() + RENDER_CONSTANTS.versionBridgeDurationMs;
     let released = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelDeadline = (): void => {};
     const release = (): void => {
         if (released) return;
         released = true;
-        if (timer !== null) clearTimeout(timer);
-        timer = null;
+        cancelDeadline();
         borrowed.release();
     };
-    timer = setTimeout(() => {
-        if (released) return;
-        try { release(); } finally { options.onExpired(); }
-    }, RENDER_CONSTANTS.versionBridgeDurationMs);
+    try {
+        cancelDeadline = getPlatformRuntime().scheduler.scheduleDeadline(deadline, () => {
+            if (released) return;
+            try { release(); } finally { options.onExpired(); }
+        });
+        if (released) cancelDeadline();
+    } catch (error) { release(); throw error; }
     return {
         read(view) {
             if (released) return null;

@@ -64,7 +64,7 @@ export interface ExtOp {
 }
 export type Op = ContentOp | ExtOp;
 
-export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host';
+export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host' | 'revert';
 export interface Transaction {
     readonly ops: readonly Op[];
     readonly origin: TransactionOrigin;
@@ -82,6 +82,8 @@ export interface AppliedLease { release(): void }
 export interface Applied {
     readonly forward: readonly Op[];
     readonly inverse: readonly Op[];
+    /** Index-aligned inverse groups; concatenating them in reverse yields inverse. */
+    readonly inverseGroups: readonly (readonly Op[])[];
     readonly touched: TouchedSet;
     readonly dirtying: boolean;
     readonly recorded: boolean;
@@ -92,14 +94,15 @@ export interface Applied {
     release(): void;
 }
 
+export interface OpSink { push(op: Op): void }
 // H-3: a builder's savepoints are private to that builder and expire on commit/abort.
-export interface TxBuilder {
+export interface TxBuilder extends OpSink {
     savepoint(): number;
     rollbackTo(savepoint: number): void;
-    push(op: Op): void;
     commit(): Applied;
     abort(): void;
 }
+export type CommandBuilder = Omit<TxBuilder, 'commit'>;
 
 // change-and-history.md §2.2, H-4/H-6: the one policy table. Scene masks describe
 // derived work; they do not grant another writer or put any derived data in undo.

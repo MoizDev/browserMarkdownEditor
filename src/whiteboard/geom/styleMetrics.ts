@@ -13,6 +13,9 @@ export interface StyleGeometryMetrics {
     fromPen(kind: OutlineKind, penWidth: number): number;
     legacyEquivalent(kind: OutlineKind, size: Size, actualWidth: number): number;
     openArrow(actualWidth: number): Readonly<{ length: number; halfSpan: number }>;
+    dash(actualWidth: number): Readonly<{ lengths: readonly [number, number]; dotSpacing: number; status: 'provisional' }>;
+    stickyCornerRadius(scale: number): Readonly<{ value: number; status: 'provisional' }>;
+    frameBorderWidth(): Readonly<{ value: number; status: 'provisional' }>;
     bendThreshold(size: Size, actualWidth: number): CalibratedLength;
     attachedGap(size: Size, actualWidth: number, head: Arrowhead): CalibratedLength;
 }
@@ -35,20 +38,37 @@ function nonnegative(value: number): number {
     return value;
 }
 
+function finiteResult(value: number): number {
+    if (!Number.isFinite(value)) throw new RangeError('Geometry metric overflows');
+    return value;
+}
+
 export const styleGeometryMetrics: StyleGeometryMetrics = Object.freeze({
     version: 1 as const,
     actualWidth(kind: OutlineKind, size: Size, legacyScale: number): number {
-        return BASE[kind][size] * nonnegative(legacyScale);
+        return finiteResult(BASE[kind][size] * nonnegative(legacyScale));
     },
     fromPen(kind: OutlineKind, penWidth: number): number {
-        return BASE[kind].s * nonnegative(penWidth) / 3;
+        return finiteResult(BASE[kind].s / 3 * nonnegative(penWidth));
     },
     legacyEquivalent(kind: OutlineKind, size: Size, actualWidth: number): number {
         return nonnegative(actualWidth) / BASE[kind][size];
     },
     openArrow(actualWidth: number): Readonly<{ length: number; halfSpan: number }> {
         const width = nonnegative(actualWidth);
-        return { length: 3 * Math.sqrt(3) * width / 2, halfSpan: 3 * width / 2 };
+        return { length: finiteResult(3 * Math.sqrt(3) / 2 * width), halfSpan: finiteResult(1.5 * width) };
+    },
+    dash(actualWidth: number): Readonly<{ lengths: readonly [number, number]; dotSpacing: number; status: 'provisional' }> {
+        // geometry §3.1 leaves spacing calibration open; one table keeps paint and picks coherent.
+        const width = nonnegative(actualWidth);
+        if (width === 0) throw new RangeError('Dash width must be positive');
+        return { lengths: [finiteResult(4 * width), finiteResult(3 * width)], dotSpacing: finiteResult(2 * width), status: 'provisional' };
+    },
+    stickyCornerRadius(scale: number): Readonly<{ value: number; status: 'provisional' }> {
+        return { value: finiteResult(4 * nonnegative(scale)), status: 'provisional' };
+    },
+    frameBorderWidth(): Readonly<{ value: number; status: 'provisional' }> {
+        return { value: 1, status: 'provisional' };
     },
     bendThreshold(size: Size, actualWidth: number): CalibratedLength {
         nonnegative(actualWidth);

@@ -1,9 +1,27 @@
+import { parseJson } from '../../whiteboard/format/jsonRead';
+import type { JsonSpan } from '../../whiteboard/format/jsonRead';
+
 const MAX_LINE_BYTES = 64 * 1024 * 1024;
+
+function sameJson(a: JsonSpan, b: JsonSpan): boolean {
+    if (a.kind !== b.kind) return false;
+    if (a.kind === 'object') {
+        const left = a.fieldMap(), right = b.fieldMap();
+        return left.size === right.size && [...left].every(([key, value]) => {
+            const other = right.get(key); return !!other && sameJson(value, other);
+        });
+    }
+    if (a.kind === 'array') {
+        const left = [...a.items()], right = [...b.items()];
+        return left.length === right.length && left.every((value, index) => sameJson(value, right[index]));
+    }
+    return Object.is(a.value(), b.value());
+}
 
 /** Read only the native envelope and its ordered host record; drawing records
  * remain opaque to the PDF stream. This binds the board to the PDF-owned id. */
 export async function validateBoardWriteIdentity(blob: Blob, format: string, writeId: string,
-    cooperate: () => Promise<void>): Promise<void> {
+    cooperate: () => Promise<void>, expectedHostLine?: string): Promise<void> {
     const reader = blob.stream().getReader(), decoder = new TextDecoder('utf-8', { fatal: true });
     let parts: Uint8Array[] = [], size = 0, first = true, found = false;
     const accept = (line: string): boolean => {
@@ -22,7 +40,10 @@ export async function validateBoardWriteIdentity(blob: Blob, format: string, wri
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid native board record');
         const record = value as { type?: unknown; pdf?: unknown };
         if (record.type !== 'host') return false;
-        if (found || !record.pdf || typeof record.pdf !== 'object' || (record.pdf as { writeId?: unknown }).writeId !== writeId) throw new Error('Board write identity does not match the PDF');
+        if (found || !record.pdf || typeof record.pdf !== 'object' || (record.pdf as { writeId?: unknown }).writeId !== writeId ||
+            (expectedHostLine !== undefined && !sameJson(parseJson(text.endsWith(',') ? text.slice(0, -1) : text), parseJson(expectedHostLine)))) {
+            throw new Error('Board host identity does not match the PDF');
+        }
         found = true;
         return true;
     };
@@ -54,4 +75,11 @@ export async function validateBoardWriteIdentity(blob: Blob, format: string, wri
         }
         throw new Error('Native board has no PDF host identity');
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
+/** Bind the ordered host record to the complete final host, not just its id. */
+export async function validateConvertedBoardHostIdentity(blob: Blob, format: string, writeId: string, encodedHost: string,
+    cooperate: () => Promise<void>): Promise<void> {
+    if (!encodedHost || encodedHost.length > MAX_LINE_BYTES) throw new Error('Invalid converted PDF host');
+    await validateBoardWriteIdentity(blob, format, writeId, cooperate, encodedHost);
 }

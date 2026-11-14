@@ -1,4 +1,5 @@
 import type { WriterSource } from './protocol';
+import { newPdfWorkerId } from './workerIds';
 
 const STAGE_IDLE_MS = 30_000;
 const HASH = /^[0-9a-f]{64}$/;
@@ -26,7 +27,8 @@ export class WriterStageStore<T extends OwnedWriterStage> {
         if (this.closed || this.entries.size >= 16 || !stage.session || !Number.isSafeInteger(stage.revision) || stage.revision < 0 ||
             !HASH.test(stage.sourceFingerprint) || !stage.geometryEngine.id || !stage.geometryEngine.build ||
             !Number.isSafeInteger(stage.geometryEngine.generation) || stage.geometryEngine.generation < 0) throw new Error('Invalid PDF writer stage');
-        const id = crypto.randomUUID();
+        const id = newPdfWorkerId();
+        if (this.entries.has(id)) throw new Error('Duplicate PDF writer stage id');
         const timer = setTimeout(() => { void this.discard(id).catch(() => {}); }, STAGE_IDLE_MS);
         this.entries.set(id, { ...stage, geometryEngine: { ...stage.geometryEngine }, deadline: Date.now() + STAGE_IDLE_MS, timer });
         return id;

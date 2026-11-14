@@ -8,6 +8,7 @@ import type { WriterSource } from '../writing/protocol';
 import { typedPdfWriter } from '../writing/writerClient';
 import { getSharedPdfPool } from './startup';
 import { createPdfInkBackdrop } from './inkBackdrop';
+import { createPdfInkPreviewHost } from './inkPreviewHost';
 import type { PdfLegacyInkAcquisition, PdfLegacyInkAcquisitionOptions, PdfLegacyConversionReady, PdfLegacyPrepareOptions } from './legacyInkAcquisition.types';
 
 const prepared = new WeakSet<PdfLegacyConversionReady>();
@@ -75,7 +76,8 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
         original = openedOriginal; guard();
         if (original.source !== 'original' || original.docKey !== pdfDocKey({ ...token, source: 'original' })) throw new Error('Invalid original PDF lease');
         const originalInspection = await original.request('doc.inspectInk', {}, { priority: 0, signal: lifetime }); guard();
-        if (originalInspection.kind !== 'plain' || originalInspection.outerFingerprint !== pristineHash || originalInspection.pristineFingerprint !== pristineHash) {
+        if (originalInspection.kind !== 'plain' || originalInspection.writeSafety?.kind !== 'safe' ||
+            originalInspection.outerFingerprint !== pristineHash || originalInspection.pristineFingerprint !== pristineHash) {
             return await refused('The retained pristine PDF does not match the inspected source.');
         }
         const originalPolicy = policy(original); if (originalPolicy) return await refused(originalPolicy);
@@ -129,7 +131,8 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
             return ready;
         };
         return { kind: 'conversion-required', snapshot: inspected.snapshot, pages: frozenPages, writeMark: mark, writeSafety,
-            legacyOriginalSha256: outerHash, prepare, isCurrent: current, release };
+            legacyOriginalSha256: outerHash, createPreviewHost: () => createPdfInkPreviewHost({ pristineFingerprint: source.pristineFingerprint,
+                geometryEngine: source.geometryEngine, pages: frozenPages, isCurrent: current }), prepare, isCurrent: current, release };
     } catch {
         const wasCurrent = current(); await release(); if (!wasCurrent || !callerCurrent()) throw stale();
         return { kind: 'read-only', reason: 'The legacy PDF source could not be safely acquired.', release };

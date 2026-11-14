@@ -1,6 +1,8 @@
 import type { RenderToken } from '../../platform/render/types';
 import type { PageGeometry } from '../../platform/types';
-import type { PdfEditableInkSource, PdfInkAcquisition } from '../../pdf/session/inkAcquisition.types';
+import type { PdfInkAcquisition } from '../../pdf/session/inkAcquisition.types';
+import type { PdfRuntimeInkSource } from '../../pdf/session/legacyInkAcquisition.types';
+import { isConvertedPdfInkSource } from '../../pdf/session/convertedInkBrand';
 
 export interface PdfInkSourceOwnerOptions {
     /** Checks the App document/session owner and target byte generation, not pane visibility. */
@@ -9,7 +11,7 @@ export interface PdfInkSourceOwnerOptions {
 }
 
 export interface PdfInkSourceLease {
-    readonly source: PdfEditableInkSource;
+    readonly source: PdfRuntimeInkSource;
     release(): void;
 }
 
@@ -24,13 +26,14 @@ function sameGeometry(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>): boo
 }
 
 /** Takes ownership only of accepted sources. A rejected replacement stays with its caller. */
-export function createPdfInkSourceOwner(initial: PdfInkAcquisition, options: PdfInkSourceOwnerOptions) {
-    type Entry = { source: PdfEditableInkSource; refs: number };
-    const seen = new WeakSet<PdfEditableInkSource>();
+export function createPdfInkSourceOwner(initial: PdfRuntimeInkSource, options: PdfInkSourceOwnerOptions) {
+    type Entry = { source: PdfRuntimeInkSource; refs: number };
+    const seen = new WeakSet<PdfRuntimeInkSource>();
     const failures: unknown[] = [];
     let tail: Promise<void> = Promise.resolve(), disposed = false;
-    const valid = (source: PdfInkAcquisition): source is PdfEditableInkSource =>
-        source.kind !== 'read-only' && source.isCurrent() && options.currentOwner(source.source.token);
+    const valid = (source: PdfRuntimeInkSource | PdfInkAcquisition): source is PdfRuntimeInkSource =>
+        source.kind !== 'read-only' && (source.kind !== 'legacy-converted' || isConvertedPdfInkSource(source))
+        && source.isCurrent() && options.currentOwner(source.source.token);
     if (!valid(initial)) throw new Error('PDF ink source is not owned and current');
     const identity = { ...initial.source.token };
     let current: Entry | undefined = { source: initial, refs: 1 };

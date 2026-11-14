@@ -13,6 +13,8 @@ export interface ContainedFrameOptions {
     readonly ariaLabel?: string;
     readonly hidden?: boolean;
     readonly credentialless?: boolean;
+    /** A fixed first-party profile may deny additional features; never document attributes. */
+    readonly permissionPolicy?: string;
 }
 
 export interface ContainedFrame {
@@ -29,7 +31,7 @@ export function createContainedFrame(options: ContainedFrameOptions): ContainedF
     let closed = false, mounted = false, loaded = false;
     frame.setAttribute('sandbox', 'allow-scripts');
     frame.referrerPolicy = 'no-referrer';
-    frame.setAttribute('allow', "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; fullscreen 'none'; accelerometer 'none'; gyroscope 'none'; magnetometer 'none'");
+    frame.setAttribute('allow', options.permissionPolicy ?? "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; fullscreen 'none'; accelerometer 'none'; gyroscope 'none'; magnetometer 'none'");
     if (options.className) frame.className = options.className;
     if (options.ariaLabel) frame.setAttribute('aria-label', options.ariaLabel);
     if (options.hidden) { frame.setAttribute('aria-hidden', 'true'); frame.tabIndex = -1; }

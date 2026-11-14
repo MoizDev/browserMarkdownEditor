@@ -19,7 +19,15 @@ export class PaintBoundsJob {
     private hiY = -Infinity;
     private done = false;
     private value: Rect | null = null;
-    constructor(private readonly item: PaintItem) {}
+    constructor(private readonly item: PaintItem) {
+        const bounds = item.allocationBounds;
+        if (bounds) {
+            if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width < 0 || bounds.height < 0) {
+                throw new RangeError('Invalid canonical paint allocation envelope');
+            }
+            this.value = bounds; this.done = true;
+        }
+    }
     get result(): Rect | null { return this.value; }
     private point(x: number, y: number): void {
         if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Nonfinite realised paint bounds');

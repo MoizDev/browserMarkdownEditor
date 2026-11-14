@@ -277,6 +277,7 @@ third-party code included (normally "none") · date.
 | `geom/resizePlacement.types.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected local centre and page-aware placement service contract | none | 2026-11-13 |
 | `geom/resizePlacement.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected bounds-centre mapping through shared parent/page pose | none | 2026-11-13 |
 | `geom/rotationPlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.3 | Design; immutable rotation snapshot and page-aware placement contracts | none | 2026-11-13 |
+| `geom/transformCommands.types.ts` | lane w-g | GE-4 | geometry §6.7 | Design; shared resize, rotation and per-kind reflection command services | none | 2026-11-13 |
 | `geom/rotationPlacement.types.ts` | lane w-g | GE-4 | geometry §6.3 | Design; local-centre and page-aware rotation placement service contract | none | 2026-11-13 |
 | `geom/rotationPlacement.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.3 | Design; selection-centre rotation mapped through shared parent/page pose | none | 2026-11-13 |
 | `geom/rotationPlan.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.1–6.3 | Design; angle unwrapping, selection-centre rotation and one-transaction placement | none | 2026-11-13 |

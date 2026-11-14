@@ -5,5 +5,6 @@ import { decodePoints, encodePoints, inspectPoints } from './pointHandlers';
 import { nativeLoad } from './nativeLoad';
 import { parseNative } from './nativeParseHandler';
 import { legacyScan } from './legacyScan';
+import { clipboardDecode } from './clipboardDecode';
 
-serve({ protocol: 1, buildId: 'whiteboard-parse-1', handlers: boardHandlers({ layout, inspectPoints, decodePoints, encodePoints, nativeLoad, parseNative, legacyScan }) });
+serve({ protocol: 1, buildId: 'whiteboard-parse-1', handlers: boardHandlers({ layout, inspectPoints, decodePoints, encodePoints, nativeLoad, parseNative, legacyScan, clipboardDecode }) });

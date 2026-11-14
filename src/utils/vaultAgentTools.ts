@@ -733,6 +733,19 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             ctx.ensureLive();
             return pngResult(blob, `${path}, page ${target} of ${count}${annotation}:`, `page ${target}`);
         }
+        // A closed native ink board is pictured from its admitted source; every other PDF keeps the routes below.
+        if (!view && ctx.host.nativePdfPicture) {
+            const picture = await ctx.host.nativePdfPicture(path, max, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } });
+            ctx.ensureLive();
+            if (picture) {
+                const count = picture.pageCount;
+                const pages = `${count} PDF page${count === 1 ? '' : 's'}`;
+                const note = page !== undefined ? ' (an ink board is pictured whole, not by page)' : '';
+                return pngResult(picture.png, `${path}, the whole sheet of its ${pages}${note}:`, `"${path}"`);
+            }
+        }
         const bytes = await ctx.host.readBytes(path);
         if (!bytes) throw new ToolError(`"${path}" could not be read.`);
         const target = page ?? 1;
@@ -1036,7 +1049,8 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
             revision: a.revision as number | undefined };
         const view = getView(path);
         let result = view?.canvas?.shapePage?.(query);
-        if (!result && !isPdfFile(path) && ctx.host.canvasShapePage) {
+        // A PDF with no mounted view reads its admitted native board from the closed source, never by mounting it.
+        if (!result && (!isPdfFile(path) || !view?.canvas) && ctx.host.canvasShapePage) {
             result = (await ctx.host.canvasShapePage(path, query, { signal: ctx.signal, isCurrent: () => {
                 try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
             } })) ?? undefined;
@@ -1055,8 +1069,18 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
         return ok([...head, '', ...lines].join('\n'));
     }
     if (isPdfFile(baseName(path))) {
-        // A PDF's annotations live inside the PDF; only its annotate view
-        // reads them out, so this one does open it (beside the user).
+        // A closed PDF's admitted native ink board is read from its source; no view is mounted for it.
+        if (!getView(path)?.canvas && ctx.host.canvasShapePage) {
+            const native = await ctx.host.canvasShapePage(path, { page }, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } });
+            ctx.ensureLive();
+            if (native) {
+                const head = [`path: ${path}`, `revision: ${native.revision}`, `total: ${native.total}`, COORDS_PAGED];
+                return ok([...head, '', ...pagedShapeLines(native, 0, MAX_TOOL_TEXT_CHARS - 1500).lines].join('\n'));
+            }
+        }
+        // An ordinary PDF's annotations are read only through its annotate view, which this does open (beside the user).
         const view = await liveCanvas(ctx, path);
         const result = view.canvas.shapePage?.({ page });
         const shapes = result?.shapes ?? view.canvas.shapes(page), total = result?.total ?? shapes.length;

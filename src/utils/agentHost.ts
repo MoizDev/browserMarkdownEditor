@@ -217,6 +217,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const toolHost: VaultToolHost = {
         vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchToken : null; },
         searchAgent: (config, signal) => getDeps().searchAgent(config, signal),
+        get canvasShapePage() { return getDeps().canvasShapePage; },
 
         getFileTree: () => getDeps().fileTree,
 

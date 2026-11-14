@@ -151,9 +151,30 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
     const otherAccel = mac ? event.ctrlKey : event.metaKey
     if (otherAccel) return
     const key = event.key.length === 1 ? event.key.toLowerCase() : event.key
+    const modifiers: Modifiers = { shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel }
+    const cursor = actions.cursor
+    if (cursor?.active && accel && !event.altKey && !event.shiftKey && key === 'z' && cursor.undo()) { event.preventDefault(); event.stopPropagation(); return }
+    if (cursor?.active && !accel && !event.altKey) {
+      const moves: Record<string, readonly [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
+      const delta = moves[event.key]
+      if (delta) { cursor.move(delta[0], delta[1], event.shiftKey, modifiers); event.preventDefault(); event.stopPropagation(); return }
+      if (event.key === 'Enter' && !event.repeat && cursor.enter(modifiers)) { event.preventDefault(); event.stopPropagation(); return }
+      if (event.key === 'Escape' && cursor.escape()) { event.preventDefault(); event.stopPropagation(); return }
+    }
     if (event.key === 'Escape') {
       if (actions.run('escape', event)) { event.preventDefault(); event.stopPropagation() }
       return
+    }
+    const navigation = actions.navigation?.()
+    if (navigation && !accel && !event.altKey && !cursor?.active) {
+      const scrollKey = event.key === ' ' ? (event.shiftKey ? 'ShiftSpace' : 'Space') : event.key
+      if (navigation.paged && !actions.gestureActive?.() && (scrollKey === 'PageUp' || scrollKey === 'PageDown' || scrollKey === 'Home' || scrollKey === 'End' || scrollKey === 'Space' || scrollKey === 'ShiftSpace')) {
+        if (navigation.scroll(scrollKey)) { event.preventDefault(); event.stopPropagation(); return }
+      }
+      if (/^Arrow(Left|Right|Up|Down)$/.test(event.key) && actions.shortcutsEnabled?.() !== false) {
+        const handled = navigation.hasSelection && actions.enabled() ? navigation.nudge(event.key, event.shiftKey) : navigation.pan(event.key, event.shiftKey)
+        if (handled) { event.preventDefault(); event.stopPropagation(); return }
+      }
     }
     if (actions.shortcutsEnabled?.() !== false && !accel && !event.altKey && (event.key === ' ' || key === 'z')) {
       if (!event.repeat && actions.run(event.key === ' ' ? 'pan.hold' : 'zoom.hold', event)) { event.preventDefault(); event.stopPropagation() }

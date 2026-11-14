@@ -9,6 +9,8 @@ export interface ResizeTargetSnapshot {
     readonly cornersWorld: readonly Vec2[];
     /** Relevant world rotations, including group descendants actually resized. */
     readonly relevantRotations: readonly number[];
+    /** True when a recursively resized descendant requires uniform scale. */
+    readonly forceAspect?: boolean;
     readonly worldRotation: number;
 }
 export interface ResizePlanServices {

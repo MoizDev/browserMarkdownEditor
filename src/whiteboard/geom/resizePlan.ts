@@ -13,6 +13,7 @@ export class ResizePlan {
     readonly startBox: OrientedBox;
     private readonly snapshots: readonly ResizeTargetSnapshot[];
     private readonly mixed: boolean;
+    private readonly forceAspect: boolean;
     private cancelled = false;
     constructor(nodes: readonly Readonly<Node>[], private readonly down: Vec2, private readonly handle: ResizeHandle,
         private readonly services: ResizePlanServices, private readonly scopeOverride?: 'single' | 'multi') {
@@ -25,6 +26,9 @@ export class ResizePlan {
         const rotations = this.snapshots.flatMap(target => target.relevantRotations.length ? target.relevantRotations : [target.worldRotation]);
         const common = commonResizeRotation(rotations);
         this.mixed = common === null;
+        // Default, calibration cut by owner: one aspect-locked participant locks the whole selection.
+        this.forceAspect = this.mixed || this.snapshots.some(target => target.forceAspect || target.node.kind === 'clip'
+            || target.node.kind === 'sticky' || (target.node.kind === 'text' && !!handle.x && !!handle.y));
         const rotation = common ?? 0, c = Math.cos(rotation), s = Math.sin(rotation);
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const target of this.snapshots) {
@@ -65,7 +69,7 @@ export class ResizePlan {
     }
     preview(pointer: Vec2, modifiers: ResizeModifiers, zeroSignX: -1 | 1 = 1, zeroSignY: -1 | 1 = 1): SelectionResizePreview {
         this.check();
-        const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.mixed), ops: Op[] = [];
+        const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.forceAspect), ops: Op[] = [];
         for (const { snapshot, centre, factors } of this.targets(frame, zeroSignX, zeroSignY)) {
             const patch = resizeKind(snapshot.node, factors, this.services.kinds);
             for (const op of patch) ops.push(op);
@@ -76,7 +80,7 @@ export class ResizePlan {
     async previewAsync(pointer: Vec2, modifiers: ResizeModifiers, signal: AbortSignal,
         zeroSignX: -1 | 1 = 1, zeroSignY: -1 | 1 = 1): Promise<SelectionResizePreview> {
         this.check(signal);
-        const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.mixed), ops: Op[] = [];
+        const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.forceAspect), ops: Op[] = [];
         for (const { snapshot, centre, factors } of this.targets(frame, zeroSignX, zeroSignY)) {
             const patch = this.services.resizeKindAsync
                 ? await this.services.resizeKindAsync(snapshot.node, factors, signal) : resizeKind(snapshot.node, factors, this.services.kinds);

@@ -4,14 +4,13 @@ import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputServices } from '../input/attach';
+import { createInkContinuation } from '../input/continueInk';
 import type { MappingHistory } from '../input/pointer';
 import type { InputToken, RealSample } from '../input/tool';
 import { SampleStore } from '../ink/samples';
 import { boardPageStack } from '../model/pages';
 import type { UiBlock } from '../model/styles';
 
-// Sequence is shared by every view of a session, not reset when a pane remounts.
-const sequences = new WeakMap<object, number>();
 export interface BoardInkServicesOptions {
     readonly runtime: BoardRuntime;
     readonly samples: SampleStore;
@@ -27,10 +26,13 @@ export interface BoardInkServicesOptions {
 }
 
 /** Concrete authoring services; sessionInkTool owns the one atomic transaction. */
-export function createBoardInkServices(options: BoardInkServicesOptions): Pick<BoardInputServices, 'ink'> {
+export function createBoardInkServices(options: BoardInkServicesOptions): Pick<BoardInputServices, 'ink' | 'continueInk'> {
     const { runtime, samples, camera } = options, session = runtime.session;
     if (session.samples !== samples) throw new TypeError('Ink requires the session-owned sample store');
     return {
+        continueInk: createInkContinuation({ session, samples, tools: runtime.tools, current: () => options.current(options.token),
+            sheet: () => runtime.selection.getSnapshot().sheet, selection: () => runtime.selection.getSnapshot(),
+            declaredMaxScale: () => Math.max(8, camera.camera.z * 8) }),
         ink(tool: 'pen' | 'highlighter', first: RealSample) {
             if (!options.current(options.token) || session.isReadOnly) throw new Error('Ink view is no longer editable');
             if (![first.x, first.y, camera.camera.z, camera.viewport.dpr].every(Number.isFinite)
@@ -50,11 +52,8 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
             const declaredMaxScale = Math.max(8, camera.camera.z * 8);
             return {
                 sheet, page, color, width, captureDeviceScale, declaredMaxScale,
-                nextSequence() {
-                    const next = (sequences.get(session) ?? 0) + 1;
-                    if (!Number.isSafeInteger(next)) throw new RangeError('Ink gesture sequence exhausted');
-                    sequences.set(session, next); return next;
-                },
+                rememberStroke: id => runtime.tools.rememberStroke(id),
+                nextSequence: () => runtime.tools.nextInkSequence(),
                 admit: builder => samples.commit(builder),
                 retainWet: ref => samples.retain(ref),
                 invalidate: options.invalidate,

@@ -1,4 +1,4 @@
-import { CameraController, cameraForPagedPosition, freeConstraint, pagedConstraint, pagedPosition } from '../../platform/render/camera';
+import { CameraController, cameraForPagedPosition, fitWidthZ, freeConstraint, pagedConstraint, pagedPosition } from '../../platform/render/camera';
 import type { CameraAnchor, ViewportInsets, ZoomLimits } from '../../platform/render/camera';
 import type { Viewport } from '../../platform/types';
 import { flushCanvasViewPositions, readCanvasViewPos, readNativeDrawingViewPos, writeCanvasViewPos, writeNativeDrawingViewPos } from '../../utils/canvasViewState';
@@ -83,7 +83,10 @@ export function createBoardViewCamera(options: {
         try {
             const next = boardPageStack(doc.host);
             if (!next || next === stack) return;
-            const position = pending ?? (stack ? pagedPosition(camera.camera, camera.viewport, stack, insets) ?? undefined : undefined);
+            let position = pending ?? (stack ? pagedPosition(camera.camera, camera.viewport, stack, insets) ?? undefined : undefined);
+            const fit = fitWidthZ(camera.viewport, next, insets);
+            // Paper changes preserve absolute zoom; a dormant initial restore keeps its saved relative zoom.
+            if (!pending && position && fit) position = { ...position, zoom: camera.camera.z / fit };
             stack = next;
             camera.setConstraint(pagedConstraint(next, limits, insets));
             pending = position;

@@ -1,6 +1,5 @@
-import type { DisplayPdfWriter } from '../export/capturePdf'
-import { exportNotebookPdf } from './notebookExport'
-import type { NotebookExportSnapshot } from './notebookExport'
+import { streamNotebookPdf } from './notebookExport'
+import type { NotebookExportSnapshot, NotebookPdfStreamWriter } from './notebookExport'
 
 /** Pin one revision synchronously. isCurrent must remain callable after release, so the
  * App can recheck the source owner at the later user-clicked print/write handoff. */
@@ -12,7 +11,7 @@ export interface NotebookCommandCapture {
 }
 export interface NotebookCommandHost {
   capture(): NotebookCommandCapture
-  readonly writer: DisplayPdfWriter
+  readonly writer: NotebookPdfStreamWriter
   /** App owns target approval, exact backup and versioned write; never truncate first. */
   commit(bytes: Uint8Array, sourcePath: string, isCurrent: () => boolean): Promise<boolean>
   /** Host offers a one-use user-clicked Blob handoff; it must call valid at the click. */
@@ -40,7 +39,7 @@ export function createNotebookCommands(host: NotebookCommandHost): NotebookComma
       controller.signal.throwIfAborted()
       capture = host.capture()
       if (!capture.isCurrent()) return false
-      const bytes = await exportNotebookPdf(capture.snapshot, capture.sourcePath, host.writer, controller.signal)
+      const bytes = await streamNotebookPdf(capture.snapshot, capture.sourcePath, host.writer, controller.signal)
       controller.signal.throwIfAborted()
       if (!capture.isCurrent()) return false
       if (print) {

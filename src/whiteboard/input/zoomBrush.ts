@@ -1,4 +1,4 @@
-import type { GestureOwner, Modifiers, RealSample, Tool } from './tool'
+import { sampleSurface, type GestureOwner, type Modifiers, type RealSample, type Tool } from './tool'
 
 export interface ZoomPoint { readonly x: number; readonly y: number }
 export interface ZoomBox extends ZoomPoint { readonly width: number; readonly height: number }
@@ -19,12 +19,12 @@ class ZoomBrushGesture implements GestureOwner {
   private ended = false
   constructor(sample: RealSample, modifiers: Modifiers, private readonly context: ZoomBrushContext) {
     this.pointerIds = new Set([sample.pointerId])
-    this.start = context.toSurface(sample); this.point = this.start; this.alt = modifiers.alt
+    this.start = sampleSurface(sample, context.toSurface); this.point = this.start; this.alt = modifiers.alt
   }
   update(samples: readonly RealSample[], modifiers: Modifiers): void {
     if (this.ended) return
     this.alt = modifiers.alt
-    for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) this.point = this.context.toSurface(sample)
+    for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) this.point = sampleSurface(sample, this.context.toSurface)
     this.context.preview(this.box())
   }
   finish(): void {

@@ -86,6 +86,8 @@ export class LiveInk implements GestureOwner {
   private dirty = true
   private dry: DryInkIdentity | null = null
   private snapshot: CurvePublication | null = null
+  // Translucent prediction is withheld until its two-band composition is certified.
+  get allowsPrediction(): boolean { return this.context.presentation.tool === 'pen' }
 
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
     this.pointerIds = new Set([first.pointerId])
@@ -117,7 +119,7 @@ export class LiveInk implements GestureOwner {
   suspend(): void { this.publish(null) }
 
   publishPrediction(points: readonly PredictedPoint[]): void {
-    if (this.ended || !this.last) return
+    if (this.ended || !this.last || !this.allowsPrediction) return
     if (!points.length) { this.publish(null); return }
     const last = this.last
     const local = points.map(point => this.context.toLocal({ ...last, x: point.x, y: point.y, time: point.time }))
@@ -141,7 +143,11 @@ export class LiveInk implements GestureOwner {
         catch (error) { this.dry.release?.(); throw error }
       }
       this.context.invalidate()
-    } catch (error) { this.context.error(error) }
+    } catch (error) {
+      // A failed seal has no dry revision that can ever acknowledge its wet prefix.
+      if (!this.dry) { this.handover.clear(this.context.identity); this.context.invalidate() }
+      this.context.error(error)
+    }
   }
 
   cancel(): void { this.finish('os-cancel') }

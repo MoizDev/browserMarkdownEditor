@@ -11,7 +11,7 @@ export interface BoardLoadAdmission {
     /** Must run inside the authority's current content job. Original opened bytes
      * are an owned Blob, never a disk File that can change across these awaits. */
     prepare(projection: LoadProjection, baseline: Blob, context: JobContext): Promise<AdmittedLoadToken>;
-    take(token: AdmittedLoadToken, job: ContentJob): RehydratedLoad;
+    take(token: AdmittedLoadToken, context: JobContext): RehydratedLoad;
     discard(token: AdmittedLoadToken): void;
     dispose(): void;
 }
@@ -36,30 +36,37 @@ export function createBoardLoadAdmission(authority: JobAuthority, ports: {
     };
     return {
         async prepare(projection, baseline, context) {
-            if (disposed || !authority.isCurrent(context.job)) throw new DOMException('Board load is no longer current', 'AbortError');
-            context.assertCurrent();
-            const cooperate = async () => { context.assertCurrent(); await ports.cooperate?.(); context.assertCurrent(); };
+            if (disposed) throw new DOMException('Board load is no longer current', 'AbortError');
+            authority.assertContext(context);
+            const cooperate = async () => {
+                authority.assertContext(context);
+                await (ports.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                authority.assertContext(context);
+            };
             const load = await rehydrateLoad(projection, ports.admit, ports.samples, cooperate, context.signal);
+            let registered: AdmittedLoadToken | undefined;
             try {
                 await validateLoadSources(load.sources, load.removedSources, load.unmapped, baseline, cooperate, context.signal);
-                context.assertCurrent();
+                authority.assertContext(context);
                 if (disposed) throw new DOMException('Board load admission is disposed', 'AbortError');
                 const token = Object.freeze({ kind: 'admitted-board-load' }) as AdmittedLoadToken;
                 const abort = () => discard(token);
                 owned.set(token, { job: context.job, load, signal: context.signal, abort });
+                registered = token;
                 context.signal.addEventListener('abort', abort, { once: true });
-                context.assertCurrent();
+                authority.assertContext(context);
                 return token;
-            } catch (error) { load.release(); throw error; }
-        },
-        take(token, job) {
-            const entry = owned.get(token);
-            if (!entry || disposed || !authority.isCurrent(job) || entry.signal.aborted
-                || entry.job.session !== job.session || entry.job.vaultEpoch !== job.vaultEpoch
-                || entry.job.generation !== job.generation || entry.job.request !== job.request) {
-                discard(token);
-                throw new TypeError('Unvalidated, stale or already-consumed board load');
+            } catch (error) {
+                if (registered) discard(registered); else load.release();
+                throw error;
             }
+        },
+        take(token, context) {
+            const entry = owned.get(token);
+            try {
+                authority.assertContext(context);
+                if (!entry || disposed || entry.job !== context.job || entry.signal.aborted) throw new TypeError('Unvalidated, stale or already-consumed board load');
+            } catch (error) { discard(token); throw error; }
             owned.delete(token);
             entry.signal.removeEventListener('abort', entry.abort);
             return entry.load;

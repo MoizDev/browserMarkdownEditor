@@ -7,7 +7,8 @@ import type { OpenPdfInkWriter, PinnedPdfInkSnapshot } from './pdfInkAssemblyTyp
 
 function sameGeometry(a: PageGeometry, b: PageGeometry): boolean {
     return a.index === b.index && a.width === b.width && a.height === b.height && a.rotate === b.rotate
-        && a.userUnit === b.userUnit && a.toUserSpace.every((value, i) => value === b.toUserSpace[i]);
+        && a.userUnit === b.userUnit && a.toUserSpace.length === 6 && b.toUserSpace.length === 6
+        && a.toUserSpace.every((value, i) => Number.isFinite(value) && value === b.toUserSpace[i]);
 }
 
 /** Stage every physical page from pristine bytes, preserving the outer attachment inventory.

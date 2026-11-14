@@ -221,6 +221,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     retainMedia: id => store.retain(id, 'journal'),
                 }, append: (capture, source) => host.appendJournal(identity, source, capture),
                 isCurrent: () => isLiveOwner(owner) && host.isCurrent(identity),
+                assertDiskBaseline: async recoverySignal => { await host.acquireBytes(identity, recoverySignal); },
                 prepareMedia: (payload, recoverySignal, current) =>
                     restoreRecoveredMediaFromHost(payload, host, identity, store, recoverySignal, current),
                 onError: options.onError });

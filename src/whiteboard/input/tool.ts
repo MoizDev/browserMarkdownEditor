@@ -12,6 +12,9 @@ export interface RealSample {
   readonly source: 'pen' | 'touch' | 'mouse' | 'keyboard'
   readonly x: number
   readonly y: number
+  /** Surface coordinates from the same presented mapping as x/y, never persisted. */
+  readonly surfaceX?: number
+  readonly surfaceY?: number
   readonly pressure: number
   readonly pressureKnown: boolean
   readonly time: number
@@ -19,6 +22,13 @@ export interface RealSample {
   readonly tiltX: number
   readonly tiltY: number
   readonly twist: number
+}
+
+/** Physical samples carry their original surface mapping; keyboard samples use the current camera. */
+export function sampleSurface(sample: RealSample, keyboard: (sample: RealSample) => { readonly x: number; readonly y: number }): { readonly x: number; readonly y: number } {
+  if (sample.source === 'keyboard') return keyboard(sample)
+  if (!Number.isFinite(sample.surfaceX) || !Number.isFinite(sample.surfaceY)) throw new Error('Physical sample has no presented surface mapping')
+  return { x: sample.surfaceX!, y: sample.surfaceY! }
 }
 
 export interface Modifiers {

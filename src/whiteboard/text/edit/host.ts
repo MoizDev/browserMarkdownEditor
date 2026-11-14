@@ -225,6 +225,7 @@ export class EditHost {
     }
 
     get textOffsetBase(): number { return this.window.start; }
+    get isComposing(): boolean { return this.composing; }
 
     updateBounds(control: DOMRect, selection: DOMRect): void {
         this.context?.updateControlBounds(control);
@@ -239,6 +240,8 @@ export class EditHost {
             this.pending = null;
             this.compositionBase = null;
             this.callbacks.composition(null);
+            // Restore the input window as well as the canvas after a cancelled IME edit.
+            this.sync();
             return;
         }
         this.endComposition();

@@ -82,19 +82,24 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
             }
             publish({ source: snapshot.source, status: 'rebinding' });
             const job = tail.then(async () => {
-                if (!matches(target, attempt)) return;
+                const current = () => {
+                    if (matches(target, attempt)) return true;
+                    if (attempt === serial && !disposed) throw stale();
+                    return false;
+                };
+                if (!current()) return;
                 const controller = new AbortController(); pending = controller;
                 let acquired: PdfInkAcquisition | undefined;
                 try {
                     const outer = await host.acquireBytes(target, controller.signal);
-                    if (!matches(target, attempt)) return;
+                    if (!current()) return;
                     acquired = await options.rebind({ outer, token: tokenOf(target), signal: controller.signal,
                         isCurrent: liveOwner }, { pristineFingerprint: context.source.pristineFingerprint, writeId: context.writeId });
-                    if (!matches(target, attempt)) return;
+                    if (!current()) return;
                     if (acquired.kind === 'read-only') {
                         const reason = acquired.reason;
                         await release(acquired); acquired = undefined;
-                        if (!matches(target, attempt)) return;
+                        if (!current()) return;
                         publish({ source: snapshot.source, status: 'read-only', reason });
                         options.onReadOnly(reason);
                         return;

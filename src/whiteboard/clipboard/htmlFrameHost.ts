@@ -6,6 +6,7 @@ import { checkContentUrl } from '../security/urlPolicy';
 import { SECURITY_LIMITS } from '../security/limits';
 import type { RichFragment } from '../text/richText';
 import { matchingIdentity, validBoardIdentity, type BoardJobIdentity } from '../workers/protocol';
+import { boardWorker } from '../workers/client';
 import type { HtmlClipboardMarkers } from './classify';
 
 // Provenance: opaque clipboard profile, bounded transport and shared-memory
@@ -20,6 +21,7 @@ export interface ClipboardHtmlFrameOptions {
 export interface ClipboardHtmlProjection {
     readonly rich: RichFragment;
     readonly dataImages: readonly Readonly<{ blob: Blob; alt: string; order: number; textOffset: number }>[];
+    readonly refusedImages: readonly Readonly<{ name: string; reason: string }>[];
     /** Keeps decoded bytes accounted until the caller has retained or discarded them. */
     release(): void;
 }
@@ -27,6 +29,7 @@ export interface ClipboardHtmlFrameHost {
     markers(html: string, signal: AbortSignal): Promise<HtmlClipboardMarkers>;
     richHTML(html: string, signal: AbortSignal): Promise<RichFragment>;
     projectHTML(html: string, signal: AbortSignal): Promise<ClipboardHtmlProjection>;
+    metadata(html: string, signal: AbortSignal): Promise<Readonly<{ title: string; description: string }>>;
 }
 function markers(value: unknown, limit: number): HtmlClipboardMarkers {
     if (!value || typeof value !== 'object') throw new Error('Invalid clipboard marker response');
@@ -54,7 +57,8 @@ function rich(value: unknown): RichFragment {
 export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions): ClipboardHtmlFrameHost {
     if (!validBoardIdentity(options.identity)) throw new TypeError('Invalid clipboard job identity');
     const identity = Object.freeze({ ...options.identity });
-    const request = async (html: string, mode: 'markers' | 'rich', signal: AbortSignal): Promise<{ value: unknown; release(): void }> => {
+    const request = async (html: string, mode: 'markers' | 'rich' | 'metadata', signal: AbortSignal): Promise<{ value: unknown; release(): void }> => {
+        signal = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
         signal.throwIfAborted();
         if (typeof html !== 'string' || html.length > LIMIT) throw new RangeError('Clipboard HTML is too large');
         if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
@@ -80,6 +84,15 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
         try {
             const blob = new Blob([html], { type: 'text/html' });
             if (blob.size > LIMIT) throw new RangeError('Clipboard HTML is too large');
+            const worker = boardWorker('parse'); let preflight: unknown;
+            try {
+                preflight = await worker.request('clipboardDecode', { htmlPreflight: blob }, identity,
+                    { priority: 0, cpu: 'governed', deadlineMs: 5000, signal }, options.isCurrent);
+            } catch (error) {
+                if (signal.aborted) await worker.recycle('HTML preflight cancelled').catch(() => undefined);
+                throw error;
+            }
+            check(); if (preflight !== true) throw new Error('Invalid HTML preflight response');
             const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
             frame = createContainedFrame({ html: clipboardHtmlFrame, init: { v: 1, token, identity }, signal, hidden: true,
                 onFailure: reason => fail(new Error(`Clipboard HTML frame failed: ${reason}`)),
@@ -96,8 +109,7 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
                 },
             });
             signal.addEventListener('abort', abort, { once: true });
-            timer = setTimeout(() => fail(new DOMException('Clipboard HTML frame timed out', 'TimeoutError')),
-                Math.min(120_000, 30_000 + Math.ceil(blob.size / (1024 * 1024)) * 1000));
+            timer = setTimeout(() => fail(new DOMException('Clipboard HTML frame timed out', 'TimeoutError')), 5000);
             const ready = wait('ready');
             frame.frame.style.cssText = 'position:fixed;width:0;height:0;border:0;visibility:hidden;pointer-events:none';
             try { frame.mount(document.body); } catch (error) { fail(error); }
@@ -126,9 +138,10 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
             signal.throwIfAborted();
             if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
             const value = result.value;
-            if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'dataImages,rich') throw new Error('Invalid clipboard HTML response');
-            const reply = value as { rich: unknown; dataImages: unknown }, text = rich(reply.rich);
-            if (!Array.isArray(reply.dataImages) || reply.dataImages.length > SECURITY_LIMITS.mediaBatch) throw new Error('Invalid clipboard image response');
+            if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'dataImages,refusedImages,rich') throw new Error('Invalid clipboard HTML response');
+            const reply = value as { rich: unknown; dataImages: unknown; refusedImages: unknown }, text = rich(reply.rich);
+            if (!Array.isArray(reply.dataImages) || !Array.isArray(reply.refusedImages)
+                || reply.dataImages.length + reply.refusedImages.length > SECURITY_LIMITS.mediaBatch) throw new Error('Invalid clipboard image response');
             const maxOffset = text.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), text.blocks.length - 1);
             let total = 0, previous = 0;
             const dataImages = reply.dataImages.map((item: unknown, index: number) => {
@@ -143,16 +156,40 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
                 previous = image.textOffset; total += image.blob.size;
                 return Object.freeze({ blob: new Blob([image.blob], { type: image.blob.type }), alt: image.alt, order: index, textOffset: image.textOffset });
             });
-            return { rich: text, dataImages: Object.freeze(dataImages), release: result.release };
+            const refusedImages = reply.refusedImages.map((item: unknown) => {
+                if (!item || typeof item !== 'object' || Object.keys(item).sort().join(',') !== 'name,reason') throw new TypeError('Invalid refused clipboard image');
+                const value = item as { name?: unknown; reason?: unknown };
+                if (typeof value.name !== 'string' || value.name.length > 10_000 || typeof value.reason !== 'string' || value.reason.length > 500) throw new TypeError('Invalid refused clipboard image');
+                return Object.freeze({ name: value.name, reason: value.reason });
+            });
+            return { rich: text, dataImages: Object.freeze(dataImages), refusedImages: Object.freeze(refusedImages), release: result.release };
         } catch (error) { result.release(); throw error; }
     };
     return {
         async markers(html, signal) { const result = await request(html, 'markers', signal);
-            try { signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
-                return markers(result.value, html.length); } finally { result.release(); } },
+            try {
+                signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
+                const value = markers(result.value, html.length), bytes = 2 * ((value.privatePayload?.length ?? 0) + (value.legacyPayload?.length ?? 0));
+                if (!bytes) { result.release(); return value; }
+                const retained = options.memory.reserve(bytes + 4096);
+                if (!retained) throw new Error('Insufficient memory for clipboard markers');
+                result.release(); let held = true;
+                return { ...value, release() { if (held) { held = false; options.memory.release(retained); } } };
+            } catch (error) { result.release(); throw error; } },
         projectHTML,
+        async metadata(html, signal) {
+            const result = await request(html, 'metadata', signal);
+            try {
+                signal.throwIfAborted();
+                if (!options.isCurrent(identity)) throw new DOMException('Preview became stale', 'AbortError');
+                const value = result.value as { title?: unknown; description?: unknown } | null;
+                if (!value || Object.keys(value).sort().join(',') !== 'description,title' || typeof value.title !== 'string' || value.title.length > 500
+                    || typeof value.description !== 'string' || value.description.length > 2000) throw new TypeError('Invalid preview metadata');
+                return Object.freeze({ title: value.title, description: value.description });
+            } finally { result.release(); }
+        },
         async richHTML(html, signal) { const result = await projectHTML(html, signal);
-            try { if (result.dataImages.length) throw new Error('Clipboard HTML contains images; use projectHTML'); return result.rich; }
+            try { if (result.dataImages.length || result.refusedImages.length) throw new Error('Clipboard HTML contains images; use projectHTML'); return result.rich; }
             finally { result.release(); } },
     };
 }

@@ -35,10 +35,10 @@ export interface ClipboardPlacement {
     readonly preserveSourcePosition: boolean;
 }
 export type ClipboardClassification =
-    | { readonly kind: 'private'; readonly encoded: string }
+    | { readonly kind: 'private'; readonly encoded: string; readonly release?: () => void }
     | { readonly kind: 'private-png'; readonly blob: Blob }
     | { readonly kind: 'files'; readonly files: readonly ClipboardFile[] }
-    | { readonly kind: 'legacy'; readonly envelope: string }
+    | { readonly kind: 'legacy'; readonly envelope: string; readonly release?: () => void }
     | { readonly kind: 'excalidraw'; readonly text: string }
     | { readonly kind: 'native-records'; readonly text: string }
     | { readonly kind: 'svg'; readonly text: string }

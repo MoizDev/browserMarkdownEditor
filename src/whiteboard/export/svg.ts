@@ -21,9 +21,10 @@ function pathLength(commands: readonly PathCommand[]): number {
 function matrix(value: Affine): string { return `matrix(${value.map(number).join(' ')})` }
 function rgb(value: Rgba): string { return `rgb(${value.slice(0, 3).map(channel => number(channel * 255)).join(' ')})` }
 function bytes64(bytes: Uint8Array): string {
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  return btoa(binary)
+  const chunks: string[] = []
+  // A multiple of three keeps intermediate chunks unpadded and bounds each binary string.
+  for (let i = 0; i < bytes.length; i += 32766) chunks.push(btoa(String.fromCharCode(...bytes.subarray(i, i + 32766))))
+  return chunks.join('')
 }
 function rect(value: Rect): string {
   return `x="${number(value.x)}" y="${number(value.y)}" width="${number(value.width)}" height="${number(value.height)}"`

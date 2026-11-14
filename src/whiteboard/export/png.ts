@@ -1,3 +1,5 @@
+import type { Rect } from '../../platform/types'
+
 // F-EXPORT-002/006: rows arrive at export resolution, independent of display DPR.
 export class ExportTooLarge extends Error {
   constructor(readonly suggestedScale: number) {
@@ -140,4 +142,48 @@ export async function encodePng(
   parts.push(end); partBytes += end.byteLength; report()
   return new Blob(parts, { type: 'image/png' })
   } finally { reporting = false; options.ownedBytes?.(0) }
+}
+
+/** Replace density without decoding pixels; all retained chunks are zero-copy Blob slices. */
+export async function splicePngDensity(blob: Blob, worldRect: Readonly<Rect>, signal: AbortSignal): Promise<Blob> {
+  signal.throwIfAborted()
+  if (!(blob instanceof Blob) || ![worldRect.x, worldRect.y, worldRect.width, worldRect.height].every(Number.isFinite)
+      || worldRect.width <= 0 || worldRect.height <= 0 || blob.size < 45) throw new RangeError('Invalid PNG density source')
+  const signature = new Uint8Array(await blob.slice(0, 8).arrayBuffer())
+  signal.throwIfAborted()
+  if (!signature.every((value, index) => value === [137, 80, 78, 71, 13, 10, 26, 10][index])) throw new TypeError('Invalid PNG signature')
+  const header = new Uint8Array(await blob.slice(8, 33).arrayBuffer())
+  signal.throwIfAborted()
+  const headView = new DataView(header.buffer)
+  if (headView.getUint32(0) !== 13 || String.fromCharCode(...header.subarray(4, 8)) !== 'IHDR') throw new TypeError('Invalid PNG header')
+  const width = headView.getUint32(8), height = headView.getUint32(12)
+  if (!width || !height) throw new RangeError('Invalid PNG dimensions')
+  // Rounded output dimensions can differ by a fraction of a pixel: geometric-mean fit preserves area at one square density.
+  const pixelsPerWorldUnit = Math.sqrt((width / worldRect.width) * (height / worldRect.height))
+  const pixelsPerMetre = Math.round(pixelsPerWorldUnit * 72 / 0.0254)
+  if (!Number.isSafeInteger(pixelsPerMetre) || pixelsPerMetre < 1 || pixelsPerMetre > 0xffffffff) throw new RangeError('Invalid PNG density')
+  const phys = new Uint8Array(9), physView = new DataView(phys.buffer)
+  physView.setUint32(0, pixelsPerMetre); physView.setUint32(4, pixelsPerMetre); phys[8] = 1
+  const parts: BlobPart[] = [blob.slice(0, 33), chunk('pHYs', phys)]
+  let offset = 33, chunks = 1, sawData = false, ended = false
+  while (offset < blob.size) {
+    signal.throwIfAborted()
+    if (++chunks > 1_000_000 || blob.size - offset < 12) throw new TypeError('Invalid PNG chunk sequence')
+    const bytes = new Uint8Array(await blob.slice(offset, offset + 8).arrayBuffer())
+    signal.throwIfAborted()
+    const length = new DataView(bytes.buffer).getUint32(0), type = String.fromCharCode(...bytes.subarray(4, 8))
+    const end = offset + 12 + length
+    if (length > 0x7fffffff || end > blob.size || !/^[A-Za-z]{4}$/.test(type) || type === 'IHDR') throw new TypeError('Invalid PNG chunk')
+    if (type === 'IDAT') sawData = true
+    if (type === 'IEND') {
+      if (length !== 0 || !sawData || end !== blob.size) throw new TypeError('Invalid PNG end')
+      ended = true
+    }
+    if (type !== 'pHYs') parts.push(blob.slice(offset, end))
+    offset = end
+    if (ended) break
+  }
+  if (!ended) throw new TypeError('PNG is incomplete')
+  signal.throwIfAborted()
+  return new Blob(parts, { type: 'image/png' })
 }

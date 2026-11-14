@@ -123,6 +123,10 @@ export function* richTextRawValues(text: RichText | null): Iterable<RawJson | nu
     for (let b = 0; b < text.blocks.length; b++) {
         const block = text.blocks[b];
         if (block.tail !== undefined) yield block.tail;
+        for (const carrier of block.carriers ?? []) {
+            yield carrier.tail;
+            if ((++count & 255) === 0) yield null;
+        }
         for (let r = 0; r < block.runs.length; r++) {
             const run = block.runs[r];
             if (run.tail !== undefined) yield run.tail;

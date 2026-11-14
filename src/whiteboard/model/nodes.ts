@@ -1,5 +1,5 @@
 import type { NodeId, ParentId } from './ids';
-import type { ExtBag, JsonValue } from './json';
+import type { ExtBag, RawJson } from './json';
 import type { MediaId } from './media';
 import type { OrderKey } from './orderKey';
 import type { SampleRef } from './samples';
@@ -199,7 +199,7 @@ export interface EmbedNode extends NodeBase {
 export interface OpaqueNode extends NodeBase {
     readonly kind: 'opaque';
     readonly locked: true;
-    readonly raw: JsonValue;
+    readonly raw: RawJson;
 }
 
 export type Node = StrokeNode | FigureNode | TextNode | StickyNode | ConnectorNode | PolylineNode

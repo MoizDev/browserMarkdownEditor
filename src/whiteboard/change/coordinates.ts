@@ -2,7 +2,7 @@ import { pageAt, type PageStack } from '../../platform/render/pageStack';
 import { boardPageStack, pageOrigin as modelPageOrigin } from '../model/pages';
 import { isSheetParent, type BoardDoc } from '../model/doc';
 import type { ParentId } from '../model/ids';
-import type { ConnectorNode, Node, Point } from '../model/nodes';
+import type { ConnectorNode, Node, Point, PolylineNode } from '../model/nodes';
 import { ApplyFailed, refuseChange } from './errors';
 
 // Geometry queries must read the STAGED values, not cache solely by doc.rev:
@@ -10,6 +10,8 @@ import { ApplyFailed, refuseChange } from './errors';
 // semantic queries too; neither requires tessellation, a view, or painted pixels.
 export interface ChangeGeometry {
     resolvedTip(doc: BoardDoc, connector: ConnectorNode, terminal: 'start' | 'end'): Point; // World, last painted tip including clipping/gap.
+    /** Optional so that previews and shims need not carry it; apply capture requires it and refuses without it. */
+    resolvedPolylineTip?(doc: BoardDoc, polyline: PolylineNode, terminal: 'start' | 'end'): Point; // World, resolved tip of a bound or free polyline end.
     worldBoundsCenter(doc: BoardDoc, node: Node): Point; // Unclipped geometric world bounds.
 }
 export interface WorldPose extends Point { readonly rotation: number }

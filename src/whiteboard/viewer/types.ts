@@ -1,10 +1,13 @@
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
+import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import type { CompositorAppearance } from '../../platform/render/compositor.types';
 import type { PageStack } from '../../platform/render/pageStack';
 import type { RenderToken } from '../../platform/render/types';
 import type { SheetId } from '../model/ids';
 import type { PaintImageProvider } from '../render/resources';
 import type { PaintFrame } from '../render/paintStream';
+import type { ViewerPaintPresentation } from '../render/paintPresentation';
+export type { ViewerPaintPresentation } from '../render/paintPresentation';
 import type { PaintPalette } from '../render/colour';
 import type { SceneSpatial } from '../scene/types';
 import type { BoardSession } from '../session/BoardSession';
@@ -52,7 +55,7 @@ export interface ViewerInteractionPorts {
     captureText?(): TextSelectionSnapshot | undefined;
     restoreText?(snapshot: TextSelectionSnapshot): void;
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
-    presented?(revision: number, token: RenderToken, frame?: PaintFrame): void;
+    presented?(revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation): void;
     liveNodeIds?(): ReadonlySet<string>;
 }
 export interface ViewerEngine {
@@ -66,6 +69,7 @@ export interface ViewerEngine {
     focusNode(id: string): void;
     cancelReveal(): void;
     bindInteractions(ports: ViewerInteractionPorts): () => void;
+    connectEmbeds(port: EmbedPresentationPort | null): void;
     readyPaintFrame(): PaintFrame | null;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,

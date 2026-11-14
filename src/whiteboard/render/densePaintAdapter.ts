@@ -38,9 +38,14 @@ export class DenseTileJob {
     private phase: 'start' | 'bounds' | 'estimate' | 'item' | 'complete' | 'empty' | 'cancelled' = 'start';
     private blocked = false;
     private resultValue: DenseTileBitmap | null = null;
+    private readonly end: number;
     constructor(private readonly resources: PaintLayerResources, private readonly host: LayerHost,
         private readonly report: (error: unknown) => void, private readonly source: PaintFrame,
-        private readonly items: readonly PaintItem[], private readonly rect: Readonly<Rect>, private readonly scale: number) {
+        private readonly items: readonly PaintItem[], private readonly rect: Readonly<Rect>, private readonly scale: number,
+        range?: Readonly<{ first: number; end: number }>) {
+        this.index = range?.first ?? 0; this.end = range?.end ?? items.length;
+        if (!Number.isSafeInteger(this.index) || !Number.isSafeInteger(this.end) || this.index < 0
+            || this.end < this.index || this.end > items.length) throw new RangeError('Invalid dense paint interval');
         if (!Number.isFinite(scale) || scale <= 0 || ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)
             || rect.width <= 0 || rect.height <= 0) throw new RangeError('Invalid dense tile geometry');
     }
@@ -111,7 +116,7 @@ export class DenseTileJob {
                     this.ctx.setTransform(this.scale, 0, 0, this.scale, 2 - this.rect.x * this.scale, 2 - this.rect.y * this.scale);
                     this.phase = 'bounds';
                 } else if (this.phase === 'bounds') {
-                    if (this.index === this.items.length) {
+                    if (this.index === this.end) {
                         if (!this.painted) {
                             this.releaseScratch();
                             if (this.bitmapLease) { this.host.allocator.cpu.release(this.bitmapLease); this.bitmapLease = null; }

@@ -260,7 +260,7 @@ With more than one pane open, it searches the pane you last clicked in. While yo
 A note scrolls on past its last line by about half the height of its pane, so the end of what you are reading or writing can sit in the middle of the screen instead of against the bottom edge. A note shorter than that doesn't scroll at all. In Edit Mode, clicking in that space puts the cursor at the end of the note.
 
 ### Auto-Save
-You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
+You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`. If you reload or close the window while a change is still waiting to be saved, the browser asks whether you want to leave, in its own words; choose to stay and the save finishes as usual. Switching away from the window also saves straight away, as far as the browser lets it: that is a best effort, not a guarantee against a crash.
 
 ### When Files Change Outside the App
 Your notes are ordinary files, so other programs can change them too — a \`git pull\` in the terminal, a formatter, a sync service like iCloud or Dropbox, another editor, or this app open in a second browser tab. The editor notices, and never saves over a change it has not seen:
@@ -609,6 +609,8 @@ An address written *inside* a label — \`[read this https://example.com now](ht
 ### Wiki Links
 \`[[Note Name]]\` links to another note in the vault by its name, and \`[[Note Name|what to call it]]\` shows different text. Type \`[[\` and the editor offers the notes you have. Clicking one **opens that note in a new tab inside the app** — it never leaves the browser page you are on. This works in both modes.
 
+**Neural Brain** and **Linked mentions** follow these note links only: a web link creates no relationship between notes, even when its address ends in \`.md\`. When two notes share a name, a note link chooses the first of them in the vault's own order, whatever order the sidebar is sorted in.
+
 ### Lists
 Unordered Lists:
 - Item 1
@@ -734,6 +736,8 @@ It can also look things up on the web.
 
 ### What the agent can change
 It can read and search every file in the vault, edit notes, create notes and folders, rename and move things, and delete them — to the Trash, never for good. On drawings, notebooks and PDFs it can add text, sticky notes, shapes, arrows and freehand strokes, and move, restyle or remove shapes. Every change happens straight away and shows in the chat as a card (with the lines it changed); the card's **Open** takes you to the file. A change made in a note you have open appears in it live, and \`Cmd + Z\` undoes it like your own typing. A drawing, notebook or PDF it works on opens **beside** what you are doing, without taking you away from it.
+
+Its searches use JavaScript regular-expression syntax. A slow pattern never freezes the editor: after five seconds the search answers anyway, keeps the matches it had found, and says plainly that the result is incomplete.
 
 **It has the same access to your computer as in your terminal.** It can run programs and read and change files anywhere your account can, and it does so without asking first, because nobody could answer a permission prompt in the panel. It is told to make every change to the vault through this app, which is what puts its edits in your editor live and lets \`Cmd + Z\` undo them.
 

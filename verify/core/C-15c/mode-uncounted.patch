@@ -1,0 +1,12 @@
+diff --git a/src/editor/editorPerf.ts b/src/editor/editorPerf.ts
+--- a/src/editor/editorPerf.ts
++++ b/src/editor/editorPerf.ts
+@@ -65,7 +65,7 @@ export function measureEditorRender<T>(state: EditorState, create: boolean, render:
+         latestState = state;
+         const reason = create ? (nextCreateIsMode ? 'mode' : 'create') : 'coverage';
+         if (create) nextCreateIsMode = false;
+-        editor.fullRenders[reason]++;
++        if (reason !== 'mode') editor.fullRenders[reason]++;
+         editor.windows++;
+         editor.windowChars += state.doc.length;
+         publish();

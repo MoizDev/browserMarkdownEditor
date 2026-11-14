@@ -268,7 +268,7 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
     }, [filePath, ui]);
 
     return (
-        <div className="drawing-pane">
+        <div className="drawing-pane" data-legacy-board="">
             <Tldraw
                 snapshot={snapshot}
                 onMount={handleMount}

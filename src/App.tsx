@@ -75,6 +75,7 @@ import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/
 // (~1.3MB) into the main bundle, which a markdown-only session never needs.
 // The builder itself is import()ed at the two points that actually write a PDF.
 import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
+import { canRebuildAnnotatedPdf, canRotatePdfRole, pdfRoleNotice } from './utils/pdfRole';
 import { clearViews, getView, moveView } from './utils/viewRegistry';
 import type { AgentHostDeps } from './utils/agentHost';
 import './index.css';
@@ -1903,7 +1904,7 @@ export default function App() {
     // change — which is also every PDF only ever read. Read synchronously: a
     // close drops it right after calling this.
     const pdfData = isPdf ? getPdfRenderData(path) : undefined;
-    if (isPdf && !pdfData) return 'skipped';
+    if (isPdf && (!pdfData || !canRebuildAnnotatedPdf(pdfData.original))) return 'skipped';
     // Captured now too: a vault switch clears every baseline right after its
     // flushes, and this write still has to be checked against this one.
     const baselineAtCall = getBaseline(id);
@@ -1934,7 +1935,7 @@ export default function App() {
     const embedsAfter = embedsBefore && assetEmbeds(snapshot);
     if (embedsAfter) assetRefsRef.current.set(path, embedsAfter);
 
-    const write = async (): Promise<'written' | 'changed' | 'deleted' | 'failed'> => {
+    const write = async (): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
       try {
         // Off the main thread: stamping overlays costs ~150ms per annotated
         // page (~4.2s at 30 pages), which would land as stutter under the pen.
@@ -1946,6 +1947,8 @@ export default function App() {
         const seed = pdfSeedsRef.current.get(id) ?? seedAtCall;
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? baselineAtCall ?? seeded ?? null;
+        // An awaited build/baseline must not resurrect a revoked role capability.
+        if (isPdf && !canRebuildAnnotatedPdf(pdfData!.original)) return 'skipped';
         if (__BME_BENCH__) {
           try { reportVault({ op: 'write', path, caller: 'flushTab' }); } catch { /* Measurement must not interrupt a write. */ }
         }
@@ -2127,8 +2130,10 @@ export default function App() {
         const bytes = await readFileBytes(handle);
         const { readPdfRole } = await import('./utils/pdfAnnotation');
         const role = await readPdfRole(bytes);
-        if (role.alreadyAnnotated) {
-          notifyRef.current('This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.');
+        if (!canRotatePdfRole(role)) {
+          notifyRef.current(role.kind === 'annotated'
+            ? 'This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.'
+            : `This PDF cannot be rotated safely. ${pdfRoleNotice(role) ?? 'Open its source notebook to change its pages.'}`);
           return;
         }
         // In the build worker, not here: pdf-lib pauses on a zero-delay timer

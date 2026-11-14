@@ -160,6 +160,8 @@ export interface DrawCommand {
     pipeline: PipelineHandle;
     bindings: Bindings;
     vertices: readonly BufferSlice[];
+    // v1 has no primitive-restart semantics: 0xFFFF (uint16) and 0xFFFFFFFF
+    // (uint32) are invalid indices. Use uint32 before addressing vertex 65535.
     index?: { slice: BufferSlice; format: 'uint16' | 'uint32' };
     first: number;
     count: number;

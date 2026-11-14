@@ -1,5 +1,6 @@
+import { styleGeometryMetrics } from '../../geom/styleMetrics';
 import type { Node, NodeBase, Point, ConnectorEnd } from '../../model/nodes';
-import { ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATCHES, V_ALIGNS, type Size } from '../../model/styles';
+import { ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATCHES, V_ALIGNS } from '../../model/styles';
 import type { RichText } from '../../text/richText';
 import { object } from './envelope';
 import type { LegacyShape } from './common';
@@ -27,8 +28,6 @@ function point(v: unknown, field: string): Point {
     return { x: num(p.x, `${field}.x`), y: num(p.y, `${field}.y`) };
 }
 function url(v: unknown): string | null { const s = str(v, 'URL'); return s || null; }
-const WIDTHS: Readonly<Record<Size, number>> = { s: 2, m: 3.5, l: 5, xl: 10 };
-
 // The caller supplies the rich reader once TX-2 is available; no plain-text flattening is allowed.
 export function readLabelledShape(shape: LegacyShape, base: NodeBase, rich: RichTextReader,
     ends?: { readonly start: ConnectorEnd; readonly end: ConnectorEnd }): Node | null {
@@ -42,7 +41,7 @@ export function readLabelledShape(shape: LegacyShape, base: NodeBase, rich: Rich
                 dash: pick(p.dash, DASHES.filter(d => d !== 'none'), 'dash'), size,
                 font: pick(p.font, FONTS, 'font'), align: pick(p.align, H_ALIGNS, 'alignment'),
                 valign: pick(p.verticalAlign, V_ALIGNS, 'vertical alignment'), label: rich(p.richText, shape.id),
-                width: WIDTHS[size] * scale, labelScale: scale, flipX: false, flipY: false, url: url(p.url) };
+                width: styleGeometryMetrics.actualWidth('figure', size, scale), labelScale: scale, flipX: false, flipY: false, url: url(p.url) };
         }
         case 'text': return { ...base, kind: 'text', text: rich(p.richText, shape.id),
             color: pick(p.color, SWATCHES, 'colour'), size: pick(p.size, SIZES, 'size'), font: pick(p.font, FONTS, 'font'),
@@ -64,7 +63,7 @@ export function readLabelledShape(shape: LegacyShape, base: NodeBase, rich: Rich
                 color: pick(p.color, SWATCHES, 'colour'), labelColor: pick(p.labelColor, SWATCHES, 'label colour'),
                 fill: pick(p.fill, FILLS, 'fill'), dash: pick(p.dash, DASHES.filter(d => d !== 'none'), 'dash'),
                 size, font: pick(p.font, FONTS, 'font'), label: rich(p.richText, shape.id),
-                labelAt: num(p.labelPosition, 'label position'), width: WIDTHS[size] * scale, labelScale: scale };
+                labelAt: num(p.labelPosition, 'label position'), width: styleGeometryMetrics.actualWidth('connector', size, scale), labelScale: scale };
         }
         default: return null;
     }

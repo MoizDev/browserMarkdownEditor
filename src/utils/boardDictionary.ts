@@ -2,7 +2,7 @@ import { readJSON, writeJSON } from './storage';
 
 const KEY = 'bme.whiteboard.userDictionary';
 const LIMIT = 10_000;
-const WORD = /^[\p{L}\p{M}'’\-]+$/u;
+const WORD = /^[\p{L}\p{M}'’-]+$/u;
 const listeners = new Set<() => void>();
 let snapshot: readonly string[] | null = null;
 let listening = false;

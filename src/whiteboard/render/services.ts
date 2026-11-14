@@ -9,6 +9,7 @@ import { resolveConnectorGeometry, resolveConnectorGeometryNow } from '../geom/r
 import type { AttachmentSurface, ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp } from '../geom/path';
 import type { InkCoverage } from '../ink/outline';
+import { CURVE_CHUNK_SPANS } from '../ink/curve';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import { createNode, type Node } from '../model/nodes';
@@ -25,7 +26,8 @@ import { DEFAULT_BOARD_PALETTES } from './palette';
 import type { PaintPalette } from './colour';
 import { retainPaintNodeResources } from './resourceLeases';
 import { localGeometrySignature, sameGeometrySignature } from './retainedKeys';
-import { prepareScenePaintSource, prepareScenePaintSourceNow } from './sceneSource';
+import { prepareScenePaintSource, prepareScenePaintSourceNow, type SceneResolveContext } from './sceneSource';
+import { chooseTileScale } from './tileHierarchy';
 import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry';
 import type { BoardFonts } from '../text/fonts';
 import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
@@ -37,6 +39,8 @@ interface Prepared {
     readonly vector?: BoardVectorGeometry;
     readonly ink?: readonly InkCoverage[];
     readonly connector?: ConnectorGeometry;
+    readonly inkPrecision?: string;
+    readonly inkLod?: boolean;
 }
 function matrix(doc: BoardDoc, id: NodeId): Affine {
     const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -129,10 +133,19 @@ export function createBoardRenderServices(options: {
         }
         return result;
     };
-    const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal): Promise<Prepared> => {
+    const inkPrecision = (context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>) => {
+        const raw = context?.deviceScale ?? options.deviceScale ?? 3;
+        const effective = raw * (context?.sensitive ? 2.5 : 1);
+        const scale = chooseTileScale(effective).scale;
+        const lod = !!context?.allowInkLod && context.deviceScale !== undefined && !context.sensitive;
+        return { scale, lod, key: `${scale}:${lod ? 'lod' : 'fine'}` };
+    };
+    const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
+        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Promise<Prepared> => {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
-        if (old && sameGeometrySignature(old.signature, before)) { cached.delete(node.id); cached.set(node.id, old); return old; }
+        const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
+        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) { cached.delete(node.id); cached.set(node.id, old); return old; }
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
         if (node.kind === 'group') throw new TypeError('Groups aggregate child geometry in Scene');
@@ -140,13 +153,13 @@ export function createBoardRenderServices(options: {
             const revision = doc.rev, sampleRef = node.samples;
             const identity = { session: workerSession, epoch: options.token.vaultEpoch, revision };
             const ink = await buildStrokeCoverage(node, options.samples, {
-                deviceScale: options.deviceScale ?? 3, cooperate: options.cooperate, signal,
+                deviceScale: precision!.scale, cooperate: options.cooperate, signal,
                 worker: (points, parameters, style, range, coverage) => prepareInkCoverageInWorker(
                     points, parameters, style, range, coverage, identity, signal, () => {
                         const current = doc.nodes.get(node.id);
                         return !disposed && !signal.aborted && doc.rev === revision && current?.kind === 'stroke'
                             && current.samples === sampleRef && sameGeometrySignature(signature(current, doc), before);
-                    }),
+                    }, precision!.lod ? { chunkCount: Math.max(1, Math.ceil((options.samples.count(sampleRef) - 1) / CURVE_CHUNK_SPANS)) } : undefined),
             });
             result = strokePrepared(key, ink);
         } else if (node.kind === 'connector') {
@@ -186,7 +199,8 @@ export function createBoardRenderServices(options: {
             result = { key, vector, bounds: { ink: bounds.ink, hit: bounds.hit } };
         }
         check(signal);
-        const prepared: Prepared = { ...result, signature: before };
+        const prepared: Prepared = { ...result, signature: before,
+            ...(precision ? { inkPrecision: precision.key, inkLod: precision.lod } : {}) };
         cached.delete(node.id); cached.set(node.id, prepared);
         // Retained source items own their geometry by reference after eviction.
         // The v1 default bounds idle local-geometry residency to 256 nodes.
@@ -196,15 +210,17 @@ export function createBoardRenderServices(options: {
     // A native copy event cannot await fonts, images, or a worker. These are the
     // canonical CPU producers at the current face epoch, not persisted b hints.
     // Mutation access below still separately requires fully loaded text faces.
-    const prepareNow = (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal): Prepared => {
+    const prepareNow = (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
+        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Prepared => {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
-        if (old && sameGeometrySignature(old.signature, before)) { cached.delete(node.id); cached.set(node.id, old); return old; }
+        const precision = node.kind === 'stroke' ? inkPrecision(context ? { ...context, allowInkLod: false } : undefined) : undefined;
+        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) { cached.delete(node.id); cached.set(node.id, old); return old; }
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
         if (node.kind === 'group' || node.kind === 'opaque') throw new TypeError('Copy geometry requires a supported non-container leaf');
         if (node.kind === 'stroke') {
-            result = strokePrepared(key, buildStrokeCoverageNow(node, options.samples, { deviceScale: options.deviceScale ?? 3, signal }));
+            result = strokePrepared(key, buildStrokeCoverageNow(node, options.samples, { deviceScale: precision!.scale, signal }));
         } else if (node.kind === 'connector') {
             const world = matrix(doc, node.id), inverseWorld = inverse(world, 1e12);
             if (!inverseWorld) throw new RangeError('Connector transform is not invertible');
@@ -233,7 +249,8 @@ export function createBoardRenderServices(options: {
             result = { key, vector, bounds: { ink: bounds.ink, hit: bounds.hit } };
         }
         check(signal);
-        const prepared: Prepared = { ...result, signature: before };
+        const prepared: Prepared = { ...result, signature: before,
+            ...(precision ? { inkPrecision: precision.key, inkLod: false } : {}) };
         cached.delete(node.id); cached.set(node.id, prepared);
         while (cached.size > 256) cached.delete(cached.keys().next().value!);
         return prepared;
@@ -259,7 +276,7 @@ export function createBoardRenderServices(options: {
             intersectsPage: () => true,
             async resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
-                const geometry = await prepare(node, doc, itemSignal);
+                const geometry = await prepare(node, doc, itemSignal, context);
                 if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
                 if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
                 return paintVectorNode(node, geometry.vector!, context, palette, text.faces,
@@ -273,7 +290,7 @@ export function createBoardRenderServices(options: {
             ...(orderedIds ? { orderedIds } : {}), intersectsPage: () => true,
             resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
-                const geometry = prepareNow(node, doc, itemSignal);
+                const geometry = prepareNow(node, doc, itemSignal, context);
                 if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
                 if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
                 return paintVectorNodeNow(node, geometry.vector!, context, palette, text.faces,
@@ -291,10 +308,10 @@ export function createBoardRenderServices(options: {
     const preparedForChange = (doc: BoardDoc, node: Readonly<Node>) => {
         for (const scope of changeScopes) {
             const value = scope.get(node.id);
-            if (value && sameGeometrySignature(value.signature, signature(node, doc))) return value;
+            if (value && !value.inkLod && sameGeometrySignature(value.signature, signature(node, doc))) return value;
         }
         const value = cached.get(node.id);
-        return value && sameGeometrySignature(value.signature, signature(node, doc)) ? value : undefined;
+        return value && !value.inkLod && sameGeometrySignature(value.signature, signature(node, doc)) ? value : undefined;
     };
     const warmChangeGeometry = async (ids: Iterable<NodeId>, signal: AbortSignal, scope?: Map<NodeId, Prepared>, leases?: { release(): void }[],
         doc: BoardDoc = options.doc, current?: () => boolean) => {

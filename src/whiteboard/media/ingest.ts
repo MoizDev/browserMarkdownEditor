@@ -24,6 +24,8 @@ export interface MediaIngestHost {
     inspectMedia(blob: Blob, options: { signal: AbortSignal; identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean }): Promise<InspectedMedia>;
     storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
     rememberMedia(id: MediaId, blob: Blob): void;
+    /** Commit the active gesture before capturing the paste target. */
+    finishGesture(): void;
     isCurrent(): boolean;
     select(ids: readonly NodeId[]): void;
 }
@@ -81,18 +83,26 @@ function box(info: InspectedMedia): { w: number; h: number } {
 interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null }
 export interface MediaLocationWriter { setFile(id: MediaId, file: string | null): void }
 
+// W-c's accepted history-exempt file-location operation; narrowed until its
+// model-owned declaration lands. Failed admission leaves the stored bytes orphaned, never referenced.
+function setMediaFile(id: MediaId, file: string | null): Op {
+    return { t: 'media', op: 'set-file', id, file } as unknown as Op;
+}
+
 export class MediaIngestor {
     constructor(private readonly session: BoardSession, private readonly host: MediaIngestHost,
         private readonly jobs: JobAuthority, private readonly locations: MediaLocationWriter) {}
 
     ingest(sources: readonly MediaSource[], options: MediaIngestOptions): Promise<readonly NodeId[]> {
         if (!sources.length || sources.length > SECURITY_LIMITS.mediaBatch) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
+        this.host.finishGesture();
         const bytes = sources.reduce((sum, source) => sum + source.blob.size, 0);
         const deadlineMs = Math.max(30000, Math.ceil(bytes / (100 * 1024 * 1024)) * 30000);
         return this.jobs.run(context => this.run(sources, options, context), { signal: options.signal, deadlineMs });
     }
 
     replace(id: NodeId, source: MediaSource, options: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }): Promise<void> {
+        this.host.finishGesture();
         return this.jobs.run(context => this.runReplace(id, source, options, context), { signal: options.signal, deadlineMs: 30000 });
     }
 
@@ -128,6 +138,7 @@ export class MediaIngestor {
         if (!old) throw new Error('Original picture is missing');
         const ops: Op[] = [];
         if (!this.session.doc.media.has(info.id)) ops.push({ t: 'media', op: 'add', entry: { ...entry, file } });
+        else if (entry.file !== file) ops.push(setMediaFile(info.id, file));
         ops.push({ t: 'set', id, key: 'media', value: info.id });
         ops.push({ t: 'set', id, key: 'crop', value: replacementCrop(node.crop, old, info) });
         if (initial.media !== info.id && this.session.doc.mediaRefs.get(initial.media)?.size === 1
@@ -136,9 +147,15 @@ export class MediaIngestor {
         }
         this.host.rememberMedia(info.id, source.blob);
         current();
-        const applied = this.session.apply({ ops, origin: options.origin, label: 'Replace media' });
-        this.locations.setFile(info.id, file);
-        applied.release();
+        await this.session.enqueueAfterGesture(signal, () => {
+            current();
+            this.session.history.open('Replace media');
+            try {
+                const applied = this.session.apply({ ops, origin: options.origin, label: 'Replace media' });
+                this.locations.setFile(info.id, file);
+                applied.release();
+            } finally { this.session.history.close(); }
+        });
     }
 
     private async run(sources: readonly MediaSource[], options: MediaIngestOptions, context: JobContext): Promise<readonly NodeId[]> {
@@ -179,9 +196,16 @@ export class MediaIngestor {
             const ids: NodeId[] = [];
             const ops: Op[] = [];
             const added = new Set<MediaId>();
+            const files = new Map<MediaId, string | null>();
             for (let i = 0; i < staged.length; i++) {
-                const { info, entry, blob } = staged[i];
+                const { info, entry, blob, file } = staged[i];
                 const { w, h } = sizes[i];
+                if (files.has(info.id) && files.get(info.id) !== file) throw new Error('Media location changed during insertion');
+                if (!files.has(info.id)) {
+                    files.set(info.id, file);
+                    const existing = this.session.doc.media.get(info.id);
+                    if (existing && existing.file !== file) ops.push(setMediaFile(info.id, file));
+                }
                 if (!this.session.doc.media.has(info.id) && !added.has(info.id)) {
                     ops.push({ t: 'media', op: 'add', entry });
                     added.add(info.id);
@@ -197,11 +221,17 @@ export class MediaIngestor {
                 this.host.rememberMedia(info.id, blob);
             }
             current();
-            const applied = this.session.apply({ ops, origin: options.origin, label: 'Insert media' });
-            for (const item of staged) this.locations.setFile(item.info.id, item.file);
-            applied.release();
-            this.host.select(ids);
-            return ids;
+            return await this.session.enqueueAfterGesture(signal, () => {
+                current();
+                this.session.history.open('Insert media');
+                try {
+                    const applied = this.session.apply({ ops, origin: options.origin, label: 'Insert media' });
+                    for (const item of staged) this.locations.setFile(item.info.id, item.file);
+                    applied.release();
+                    this.host.select(ids);
+                    return ids;
+                } finally { this.session.history.close(); }
+            });
         }
     }
 }

@@ -1,7 +1,8 @@
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { RenderToken } from '../../platform/render/types';
-import type { MediaId, MediaMime } from '../model/media';
+import { MEDIA_MIMES, type MediaId, type MediaMime } from '../model/media';
+import { checkMediaBytes } from '../security/limits';
 import type { PaintImageLease, PaintImageProvider } from '../render/resources';
 import { boardWorker } from '../workers/client';
 import { matchingIdentity, type BoardJobIdentity } from '../workers/protocol';
@@ -18,6 +19,7 @@ export interface MediaRasterSource {
 }
 export interface MediaResidencyHost {
     readonly memory: MemoryAllocator;
+    /** Local session bytes only, previously admitted and hash-verified; never fetch a URL. */
     source(id: MediaId, signal: AbortSignal): Promise<MediaRasterSource | null>;
     identity(token: RenderToken): BoardJobIdentity;
     isCurrent(token: RenderToken, identity: BoardJobIdentity): boolean;
@@ -184,6 +186,8 @@ export class MediaResidency implements PaintImageProvider {
         const source = await this.host.source(parseMediaTileKey(job.key).id, signal);
         if (!current()) throw new DOMException('Stale media request', 'AbortError');
         if (!source) throw new Error('Missing picture');
+        if (!MEDIA_MIMES.includes(source.mime) || !source.mime.startsWith('image/') || typeof source.animated !== 'boolean'
+            || !checkMediaBytes(source.blob.size, source.mime === 'image/svg+xml' ? 'svg' : 'raster').ok) throw new Error('Invalid picture source');
         const tile = parseMediaTileKey(job.key);
         const geometry = mediaRasterGeometry(tile, source.width, source.height);
         const outputBytes = 4 * geometry.width * geometry.height;

@@ -83,6 +83,7 @@ export class PictureAnimations {
 
     setVisible(visible: boolean, now: number): void {
         this.visible = visible;
+        if (!visible) for (const state of this.states.values()) { state.awaiting = true; state.due = null; }
         this.reselect(now);
     }
 

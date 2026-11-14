@@ -1,4 +1,5 @@
 import { createFillPointJob } from './fillPoint';
+import { createCubicBoundaryJob } from './cubicBoundaryJob';
 import { classifyCertifiedClipBox, createClippedPointPathJob, preparePointClip, type PointClipContour } from './clippedPointPathJob';
 import type { PointQuery } from './types';
 import type { VectorNarrowDescriptor, VectorNarrowResult } from './vectorNarrow';
@@ -14,6 +15,7 @@ export function createClippedVectorPointJob(descriptor: VectorNarrowDescriptor, 
     const pointerVisible = clips.every(clip => classifyCertifiedClipBox(box, clip) === 'inside');
     let index = 0, cancelled = false, finished: VectorNarrowResult | undefined, fillUncertain = false, fillStarted = false;
     let fill: ReturnType<typeof createFillPointJob> | undefined, stroke: ReturnType<typeof createClippedPointPathJob> | undefined;
+    let boundary: ReturnType<typeof createCubicBoundaryJob> | undefined, boundaryReason = '';
     const finish = (value: VectorNarrowResult): VectorNarrowResult => { finished = Object.freeze(value); return finished; };
     return {
         step(budget) {
@@ -23,6 +25,13 @@ export function createClippedVectorPointJob(descriptor: VectorNarrowDescriptor, 
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (index >= descriptor.parts.length) return finish({ status: 'miss' });
                 const part = descriptor.parts[index];
+                if (boundary) {
+                    const value = boundary.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (value.status === 'pending') continue;
+                    boundary.cancel(); boundary = undefined;
+                    return value.status === 'hit' ? finish({ status: 'hit', result: { hit: true, distanceCss: 0, part: part.part } })
+                        : finish({ status: 'uncertain', reason: boundaryReason, part: part.part });
+                }
                 if (!fillStarted) {
                     fillStarted = true;
                     if (pointerVisible && part.options.interiorPaths?.length) fill = createFillPointJob(part.options.interiorPaths, query.point, 'nonzero',
@@ -42,12 +51,19 @@ export function createClippedVectorPointJob(descriptor: VectorNarrowDescriptor, 
                 if (value.status === 'pending') continue;
                 stroke.cancel(); stroke = undefined;
                 if (value.status === 'hit') return finish({ status: 'hit', result: { hit: true, distanceCss: value.distanceCss, part: part.part } });
-                if (value.status === 'uncertain' || fillUncertain) return finish({ status: 'uncertain',
-                    reason: value.status === 'uncertain' ? value.reason : 'Clipped vector fill boundary cannot be certified', part: part.part });
+                if (value.status === 'uncertain' || fillUncertain) {
+                    boundaryReason = value.status === 'uncertain' ? value.reason : 'Clipped vector fill boundary cannot be certified';
+                    const candidates = [...(fillUncertain ? part.options.interiorPaths ?? [] : []), ...part.paths];
+                    if (pointerVisible && candidates.length) {
+                        boundary = createCubicBoundaryJob(candidates, query.point, query.localToSurface, { maxCommands: part.options.maxSegments });
+                        continue;
+                    }
+                    return finish({ status: 'uncertain', reason: boundaryReason, part: part.part });
+                }
                 index++; fillStarted = false; fillUncertain = false;
             }
             return PENDING;
         },
-        cancel() { cancelled = true; stroke?.cancel(); stroke = undefined; fill = undefined; },
+        cancel() { cancelled = true; stroke?.cancel(); boundary?.cancel(); stroke = undefined; boundary = undefined; fill = undefined; },
     };
 }

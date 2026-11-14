@@ -1,4 +1,5 @@
 import { createPointPathJob } from './pointPathJob';
+import { createCubicBoundaryJob } from './cubicBoundaryJob';
 import { createPolygonPathJob } from './polygonPathJob';
 import { createSweptPathJob } from './sweptPathJob';
 import type { PathOp } from './path';
@@ -30,7 +31,8 @@ export function createVectorPointJob(descriptor: VectorNarrowDescriptor, query: 
     step(budget: { readonly deadline: number; readonly maxWork: number }): VectorNarrowResult; cancel(): void;
 } {
     let index = 0, cancelled = false, finished: VectorNarrowResult | undefined;
-    let active: ReturnType<typeof createPointPathJob> | undefined;
+    let active: ReturnType<typeof createPointPathJob> | undefined, boundary: ReturnType<typeof createCubicBoundaryJob> | undefined;
+    let boundaryReason = '';
     const finish = (result: VectorNarrowResult): VectorNarrowResult => { finished = Object.freeze(result); return finished; };
     return {
         step(budget) {
@@ -40,17 +42,31 @@ export function createVectorPointJob(descriptor: VectorNarrowDescriptor, query: 
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (index >= descriptor.parts.length) return finish({ status: 'miss' });
                 const part = descriptor.parts[index];
+                if (boundary) {
+                    const value = boundary.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (value.status === 'pending') continue;
+                    boundary.cancel(); boundary = undefined;
+                    return value.status === 'hit' ? finish({ status: 'hit', result: { hit: true, distanceCss: 0, part: part.part } })
+                        : finish({ status: 'uncertain', reason: boundaryReason, part: part.part });
+                }
                 active ??= createPointPathJob(part.paths, query, part.options);
                 const state = active.step({ deadline: budget.deadline, maxWork: 1 });
                 if (state.status === 'pending') continue;
                 active.cancel(); active = undefined;
                 if (state.status === 'hit') return finish({ status: 'hit', result: { hit: true, distanceCss: state.distanceCss, part: part.part } });
-                if (state.status === 'uncertain') return finish({ status: 'uncertain', reason: state.reason, part: part.part });
+                if (state.status === 'uncertain') {
+                    if (part.options.interiorPaths?.length) {
+                        boundaryReason = state.reason;
+                        boundary = createCubicBoundaryJob(part.options.interiorPaths, query.point, query.localToSurface, { maxCommands: part.options.maxSegments });
+                        continue;
+                    }
+                    return finish({ status: 'uncertain', reason: state.reason, part: part.part });
+                }
                 index++;
             }
             return PENDING;
         },
-        cancel() { cancelled = true; active?.cancel(); active = undefined; },
+        cancel() { cancelled = true; active?.cancel(); boundary?.cancel(); active = undefined; boundary = undefined; },
     };
 }
 

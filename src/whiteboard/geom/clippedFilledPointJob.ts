@@ -1,4 +1,5 @@
 import { createFillPointJob } from './fillPoint';
+import { createCubicBoundaryJob } from './cubicBoundaryJob';
 import { classifyCertifiedClipBox, createClippedPointPathJob, preparePointClip,
     type ClippedPointResult, type PointClipContour } from './clippedPointPathJob';
 import type { PathOp } from './path';
@@ -24,6 +25,7 @@ export function createClippedFilledPointJob(path: readonly PathOp[], query: Poin
     const boundary = createClippedPointPathJob([path], query, { frames: options.frames, exclusions: [],
         strokeRadiusLocal: options.strokeRadiusLocal, marginCss: options.marginCss, maxCommands });
     let fillPending = !!fill, fillUncertain = false, cancelled = false, spent = 0, finished: ClippedPointResult | undefined;
+    let exactBoundary: ReturnType<typeof createCubicBoundaryJob> | undefined, boundaryReason = '';
     const finish = (value: ClippedPointResult): ClippedPointResult => { finished = Object.freeze(value); return finished; };
     return {
         step(budget) {
@@ -32,6 +34,12 @@ export function createClippedFilledPointJob(path: readonly PathOp[], query: Poin
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped filled point work limit exhausted' });
+                if (exactBoundary) {
+                    const value = exactBoundary.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (value.status === 'pending') continue;
+                    exactBoundary.cancel(); exactBoundary = undefined;
+                    return value.status === 'hit' ? finish({ status: 'hit', distanceCss: 0 }) : finish({ status: 'uncertain', reason: boundaryReason });
+                }
                 if (fillPending) {
                     const state = fill!.step({ deadline: budget.deadline, maxWork: 1 });
                     if (state.status === 'pending') continue;
@@ -42,11 +50,16 @@ export function createClippedFilledPointJob(path: readonly PathOp[], query: Poin
                 }
                 const state = boundary.step({ deadline: budget.deadline, maxWork: 1 });
                 if (state.status === 'pending') continue;
-                if (state.status === 'hit' || state.status === 'uncertain') return finish(state);
-                return finish(fillUncertain ? { status: 'uncertain', reason: 'Clipped fill boundary cannot be certified' } : { status: 'miss' });
+                if (state.status === 'hit') return finish(state);
+                if (state.status === 'uncertain' || fillUncertain) {
+                    boundaryReason = state.status === 'uncertain' ? state.reason : 'Clipped fill boundary cannot be certified';
+                    if (pointerVisible) { exactBoundary = createCubicBoundaryJob([path], query.point, query.localToSurface, { maxCommands }); continue; }
+                    return finish({ status: 'uncertain', reason: boundaryReason });
+                }
+                return finish({ status: 'miss' });
             }
             return PENDING;
         },
-        cancel() { cancelled = true; boundary.cancel(); },
+        cancel() { cancelled = true; boundary.cancel(); exactBoundary?.cancel(); exactBoundary = undefined; },
     };
 }

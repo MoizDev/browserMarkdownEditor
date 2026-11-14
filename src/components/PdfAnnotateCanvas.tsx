@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
+import { Component, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { Tldraw, getSnapshot, createTLStore, loadSnapshot, defaultShapeUtils, defaultBindingUtils, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
 import type { Editor, TLAssetId, TLAssetStore, TLEditorSnapshot, TLImageShape, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
 import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type PdfPageSource } from '../utils/pdfAnnotation';
@@ -199,6 +199,21 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
+function AnnotationLoadNotice() {
+    return <div className="canvas-readonly-notice" role="alert" onContextMenu={event => event.preventDefault()}><div className="canvas-readonly-card">
+        <h2>PDF annotations are read-only</h2>
+        <p>The existing annotations could not be loaded safely. Switch to View to read the PDF, or use a compatible version to recover them.</p>
+        <p className="canvas-readonly-preserved">The original file has not been changed. No edits will be saved.</p>
+    </div></div>;
+}
+
+class AnnotationLoadBoundary extends Component<{ original: Uint8Array; children: ReactNode }, { failed: boolean }> {
+    state = { failed: false };
+    static getDerivedStateFromError() { return { failed: true }; }
+    componentDidCatch() { revokePdfSource(this.props.original); }
+    render() { return this.state.failed ? <AnnotationLoadNotice /> : this.props.children; }
+}
+
 export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
     const sniff = useMemo(() => sniffCanvas(props.snapshot, 'pdf'), [props.snapshot]);
     const reason = canvasReadOnlyReason(sniff);
@@ -207,7 +222,26 @@ export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
         // guard: no editor, pending serializer or rebuild capability survives it.
         if (reason) revokePdfSource(props.original);
     }, [reason, props.original]);
-    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <LegacyPdfAnnotateCanvas {...props} />;
+    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <AnnotationLoadBoundary original={props.original}><CheckedPdfAnnotateCanvas {...props} /></AnnotationLoadBoundary>;
+}
+
+function CheckedPdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
+    // P-09 validates the envelope; only the library can validate every record
+    // and migration. Reject before an editor, listener or save cache exists.
+    const [loadable] = useState(() => {
+        try {
+            const parsed = parseSnapshot(props.snapshot);
+            if (parsed.snapshot) {
+                const store = createTLStore({ shapeUtils: defaultShapeUtils, bindingUtils: defaultBindingUtils });
+                loadSnapshot(store, parsed.snapshot);
+            }
+            return true;
+        } catch {
+            revokePdfSource(props.original);
+            return false;
+        }
+    });
+    return loadable ? <LegacyPdfAnnotateCanvas {...props} /> : <AnnotationLoadNotice />;
 }
 
 function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {

@@ -27,7 +27,10 @@ export async function readNativeCanvasShapePage(options: {
         // Classic is a separate representation, not a recovery path for failed native reads.
         if (!tab.representation.nativeCanvasKind && !isNativeDrawingFile(path)) return null;
         if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
-        const source = await deps.ensureNativeAgentRuntime(path, signal);
+        // Keep the existing agent readiness bound without imposing that timer
+        // on the immutable read after App has returned its actual session.
+        const readiness = AbortSignal.any([signal, AbortSignal.timeout(15_000)]);
+        const source = await deps.ensureNativeAgentRuntime(path, readiness);
         check();
         if (!source.isCurrent()) throw new DOMException('Canvas session changed', 'AbortError');
         return createNativeAgentReader({ runtime: source.runtime,

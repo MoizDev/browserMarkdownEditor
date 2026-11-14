@@ -23,6 +23,7 @@ import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { isSheetParent } from '../../whiteboard/model/doc';
 import type { MediaEntry, MediaId } from '../../whiteboard/model/media';
 import type { MediaSource } from '../../whiteboard/media/ingest';
+import type { StoreMedia } from '../../whiteboard/media/storage.types';
 import { readPrivatePngDensity } from '../../whiteboard/media/privatePng';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import type { BoardJobIdentity } from '../../whiteboard/workers/protocol';
@@ -42,7 +43,7 @@ export interface NativeClipboardControllerOptions {
     readonly finishGesture: () => void;
     readonly pinClipboard: () => ClipboardCachePin | null;
     readonly readMedia: (entry: MediaEntry, signal: AbortSignal) => Promise<Blob | null>;
-    readonly storeMedia: (entry: MediaEntry, blob: Blob, signal: AbortSignal) => Promise<string | null>;
+    readonly storeMedia: StoreMedia;
     readonly notice: (message: string) => void;
     readonly onError: (error: unknown) => void;
 }
@@ -242,6 +243,11 @@ export function createNativeClipboardController(options: NativeClipboardControll
     return {
         pasteEvent,
         readClipboard,
+        captureInsertionTarget() {
+            const captured = targetNow(), revision = doc.rev, selection = runtime.selection.getSnapshot();
+            return { ...captured, current: () => targetCurrent(captured.target) && doc.rev === revision
+                && runtime.selection.getSnapshot() === selection };
+        },
         capturePasteTarget,
         paste(intent: 'paste' | 'paste-inverted' | 'paste-plain' | 'paste-plain-inverted' = 'paste') {
             if (options.editingText()) return;

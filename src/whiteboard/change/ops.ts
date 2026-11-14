@@ -51,7 +51,8 @@ export type ContentOp =
     | { readonly t: 'sheet'; readonly op: 'set'; readonly id: SheetId; readonly key: 'name' | 'order'; readonly value: string }
     | BoardOp
     | { readonly t: 'media'; readonly op: 'add'; readonly entry: MediaEntry }
-    | { readonly t: 'media'; readonly op: 'drop'; readonly id: MediaId; readonly restoreMissing?: true };
+    | { readonly t: 'media'; readonly op: 'drop'; readonly id: MediaId; readonly restoreMissing?: true }
+    | { readonly t: 'media'; readonly op: 'set-file'; readonly id: MediaId; readonly file: string | null };
 
 // R-W26: inspectable inverse data, not a string-property escape for tools/readers.
 // Only apply constructs these when capturing an inverse; undo/redo replay them.
@@ -62,7 +63,10 @@ export interface ExtOp {
     readonly id?: string;
     readonly value: ExtBag | null;
 }
-export type Op = ContentOp | ExtOp;
+// Rollback-only inverse: file bookkeeping never enters history, including its
+// raw metadata. Keeping the restore in this op avoids an independently recorded ext op.
+type MediaFileRestore = Extract<ContentOp, { readonly t: 'media'; readonly op: 'set-file' }> & { readonly restoreExt: ExtBag | null };
+export type Op = ContentOp | ExtOp | MediaFileRestore;
 
 export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host';
 export interface Transaction {
@@ -129,6 +133,7 @@ const NONE: OpPolicy = { history: false, dirty: 'never', scene: SceneImpact.none
 const PAPER: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.pages | SceneImpact.bounds | SceneImpact.chrome };
 const SHEET: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.sheets | SceneImpact.chrome };
 const MEDIA: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.none };
+const MEDIA_FILE: OpPolicy = { history: false, dirty: 'always', scene: SceneImpact.none };
 const METADATA: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.none };
 const PEN_METADATA: OpPolicy = { history: false, dirty: 'except-pdf', scene: SceneImpact.none };
 const CREATE_DELETE: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.paint | SceneImpact.geometry
@@ -161,6 +166,7 @@ export function policyForOp(op: Op): OpPolicy {
     if (op.t === 'set') return NODE_OP_POLICIES[op.key];
     if (op.t === 'board') return BOARD_OP_POLICIES[op.key];
     if (op.t === 'ext') return EXT_OP_POLICIES[op.target];
+    if (op.t === 'media' && op.op === 'set-file') return MEDIA_FILE;
     return OP_POLICIES[op.t];
 }
 export function opDirties(policy: OpPolicy, kind: BoardKind): boolean {

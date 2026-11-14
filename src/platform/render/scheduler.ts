@@ -240,6 +240,7 @@ let schedulerStarted = false;
 export class FrameScheduler {
     private readonly panes = new Map<string, PaneEntry>();
     private readonly polls = new Set<ScheduledPoll>();
+    private readonly sessionDeadlines = new Set<{ deadline: number; callback: () => void }>();
     private acknowledgements: PendingAcknowledgement[] = [];
     private running = false;
     private suspended = false;
@@ -298,6 +299,7 @@ export class FrameScheduler {
             this.cancelMotion(entry);
             if (!this.suspended) this.call(entry, () => entry.pane.suspend('stopped'));
         }
+        this.refreshWakeTimer();
     }
 
     register(pane: ScheduledPane): ScheduledPaneLease {
@@ -326,6 +328,17 @@ export class FrameScheduler {
         if (!entry) return;
         if (reason === 'input') { this.cancelMotion(entry); entry.inputPriority = true; }
         this.mark(entry, reason);
+    }
+
+    /** Session-owned expiry shares the wakeAt timer and survives pane unregister/window hiding.
+     * Its callback releases retained resources; it never draws or requires a frame.
+     */
+    scheduleDeadline(deadline: number, callback: () => void): () => void {
+        if (!Number.isFinite(deadline) || deadline < 0) throw new RangeError('Invalid session deadline');
+        const item = { deadline, callback };
+        this.sessionDeadlines.add(item);
+        this.refreshWakeTimer();
+        return () => { this.sessionDeadlines.delete(item); this.refreshWakeTimer(); };
     }
 
     /** Persistent until cancelled; callbacks added during a frame are not run recursively in it. */
@@ -756,10 +769,14 @@ export class FrameScheduler {
 
     private refreshWakeTimer(): void {
         if (this.inFrame) return;
-        if (!this.running || this.suspended) { this.clearWakeTimer(); return; }
         const now = performance.now();
+        for (const item of [...this.sessionDeadlines]) {
+            if (item.deadline > now || !this.sessionDeadlines.delete(item)) continue;
+            try { item.callback(); } catch (error) { this.options.onError(null, error); }
+        }
         let earliest = Infinity;
-        for (const entry of this.panes.values()) {
+        for (const item of this.sessionDeadlines) earliest = Math.min(earliest, item.deadline);
+        if (this.running && !this.suspended) for (const entry of this.panes.values()) {
             for (const [layer, deadline] of entry.wakes) {
                 if (deadline <= now) { entry.wakes.delete(layer); entry.reasons.add('deadline'); }
                 else earliest = Math.min(earliest, deadline);
@@ -886,6 +903,7 @@ export class FrameScheduler {
             }
             this.options.windowVisibility(false, false);
         }
+        this.refreshWakeTimer();
         this.armHiddenTimer();
     }
 

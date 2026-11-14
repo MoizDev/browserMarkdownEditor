@@ -48,7 +48,6 @@ import { isGitName } from './vaultEntries';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from './entryStyle';
 import { VAULT_AGENT_DIR } from './vaultAgentStore';
 import { parentVaultPath } from './paths';
-import { matchAgentSearch } from './agentMatcher/client';
 import type { MatchAnswer } from './agentMatcher/types';
 
 export interface ToolExecution {
@@ -732,27 +731,16 @@ async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
     let textFileCount = 0;
     let answer: MatchAnswer;
     try {
-        answer = await matchAgentSearch({ query, regex: a.regex === true, caseSensitive: a.caseSensitive === true, maxResults }, async () => {
-            if (scope) {
-                const kind = await ctx.host.entryKind(scope);
-                if (!kind) throw new ToolError(`"${scope}" does not exist.`);
-            }
-            const inScope = (p: string) => !scope || p === scope || p.startsWith(`${scope}/`);
-            const allFiles = collectFiles(ctx.host.getFileTree());
-            const files = allFiles.filter(f => inScope(f.path));
-            const allTextFiles = allFiles.filter(f => isTextFile(f.name) && !isCanvasFile(f.name));
-            const textFiles = allTextFiles.filter(f => inScope(f.path));
-            const index = await ctx.host.searchTextIndex(allTextFiles, textFiles.map(f => f.path));
-            ctx.ensureLive();
-            textFileCount = textFiles.length;
-            const textPaths = new Set(textFiles.map(f => f.path));
-            return (function* () {
-                for (const file of files) yield {
-                    path: file.path, name: file.name,
-                    text: textPaths.has(file.path) ? ctx.host.openBuffer(file.path) ?? index.get(file.path) : undefined,
-                };
-            })();
-        }, { signal: ctx.signal, vaultToken: token, isCurrent: () => ctx.host.vaultToken() === token });
+        if (scope) {
+            const kind = await ctx.host.entryKind(scope);
+            if (!kind) throw new ToolError(`"${scope}" does not exist.`);
+        }
+        ctx.ensureLive();
+        const inScope = (p: string) => !scope || p === scope || p.startsWith(`${scope}/`);
+        textFileCount = collectFiles(ctx.host.getFileTree()).filter(f => inScope(f.path) && isTextFile(f.name) && !isCanvasFile(f.name)).length;
+        answer = await ctx.host.searchAgent({ query, regex: a.regex === true, caseSensitive: a.caseSensitive === true, scope, maxResults }, ctx.signal);
+        ctx.ensureLive();
+        if (ctx.host.vaultToken() !== token) throw new ToolError(SWITCHED);
     } catch (err) {
         if (err instanceof Error && err.name === 'SyntaxError') throw new ToolError(err.message);
         throw err;

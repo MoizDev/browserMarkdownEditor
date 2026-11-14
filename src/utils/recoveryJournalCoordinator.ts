@@ -9,12 +9,13 @@ import { groupRecovery } from './recoveryOffers';
 export function createRecoveryJournal(options: { refused(): void; failed(error: unknown): void }) {
     const pending = new Map<string, RecoveryEntry>();
     const acknowledged = new Map<string, number>();
+    const owned = new Set<string>();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let tail: Promise<void> = Promise.resolve();
     const key = (vaultId: string, journalId: string) => JSON.stringify([vaultId, journalId]);
     const enqueue = (job: () => Promise<void>): Promise<void> => {
         const run = tail.then(job);
-        tail = run.catch(options.failed);
+        tail = run.catch(error => { try { options.failed(error); } catch { /* A notice cannot poison the queue. */ } });
         return run;
     };
     const flush = (): Promise<void> => {
@@ -43,6 +44,7 @@ export function createRecoveryJournal(options: { refused(): void; failed(error: 
         /** Capture synchronously: an adapter may mutate its own arrays after returning. */
         record(entry: RecoveryEntry): void {
             const id = key(entry.vaultId, entry.journalId);
+            owned.add(id);
             if ((acknowledged.get(id) ?? -1) >= entry.revision) return;
             const previous = pending.get(id);
             if (previous && previous.revision > entry.revision) return;
@@ -65,17 +67,20 @@ export function createRecoveryJournal(options: { refused(): void; failed(error: 
         },
         async list(vaultId: string): Promise<RecoveryEntry[]> {
             await tail;
-            const entries = await listRecovery(vaultId);
+            const entries = (await listRecovery(vaultId)).filter(entry => !owned.has(key(entry.vaultId, entry.journalId)));
             const copies = [...groupRecovery(entries).values()].flatMap(group => group.copies);
             await enqueue(() => markRecoveryCopies(vaultId, copies.map(entry => entry.journalId)));
             const copyIds = new Set(copies.map(entry => entry.journalId));
             return entries.map(entry => copyIds.has(entry.journalId) ? { ...entry, copyOnly: true } : entry);
         },
-        discard(vaultId: string, journalId: string): Promise<void> {
+        discard(vaultId: string, journalId: string, revision?: number): Promise<void> {
             const id = key(vaultId, journalId);
-            pending.delete(id);
-            acknowledged.set(id, Number.MAX_SAFE_INTEGER);
-            return enqueue(() => discardRecovery(vaultId, journalId));
+            if ((pending.get(id)?.revision ?? -1) > (revision ?? Number.MAX_SAFE_INTEGER)) return Promise.reject(new Error('Newer recovered changes exist; refresh before discarding.'));
+            return enqueue(async () => {
+                await discardRecovery(vaultId, journalId, revision);
+                if ((pending.get(id)?.revision ?? -1) <= (revision ?? Number.MAX_SAFE_INTEGER)) pending.delete(id);
+                acknowledged.set(id, Math.max(acknowledged.get(id) ?? -1, revision ?? Number.MAX_SAFE_INTEGER));
+            });
         },
         forget(vaultId: string): Promise<void> {
             for (const [id, entry] of pending) if (entry.vaultId === vaultId) pending.delete(id);

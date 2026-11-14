@@ -10,8 +10,10 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
 
 ## The decoration field
 
-- It's a **StateField, not a ViewPlugin** — a StateField may `replace` ranges spanning line breaks,
-  which block math / images / tables / fenced code all need. Its value is
+- It's a **module-singleton StateField outside the compartment**, not a ViewPlugin: a StateField
+  may `replace` ranges spanning line breaks. Mode comes from `EditorView.editable`; the compartment
+  carries the per-pane `imageContextFacet` and keymaps. A context-only change replaces only image
+  widgets; an unchanged cached-state adoption needs no full render. Its value is
   `{deco, atoms, imageSelected, tables, tableSelected}`: the decorations to draw plus what the two
   object models need — the atomic ranges, which of the two kinds is the current selection, and where
   the rendered tables are, so the table entry keymap and the caret-adoption rule can find one beside
@@ -157,8 +159,8 @@ IntersectionObserver — a problem set is hundreds of formulae, and KaTeX is ~0.
   `\begin{equation|align|gather}` onto KaTeX-supported forms), `MermaidWidget` (async render but sync
   DOM → SVG cached by `theme+source`, bounded; a `MutationObserver` re-renders on theme flip),
   `TableWidget`, `ImageWidget` (async `getAssetUrl`; the only one that is interactive and updates in
-  place), `CopyCodeWidget`, `HorizontalRuleWidget` (whose `eq()` is unconditionally `true` — every
-  instance is interchangeable, which is only sound while the widget carries no varying state).
+  place), `CopyCodeWidget` (reads current fence text on click), and `HorizontalRuleWidget`.
+  Both latter widgets have unconditional `eq()` because neither carries varying state.
   `ignoreEvent()` returning **`false`** is what makes a widget clickable-into: `MathWidget`,
   `MermaidWidget` and `HorizontalRuleWidget` do; `CopyCodeWidget` returns `true` to keep its button's
   clicks; `TableWidget` deliberately keeps the default (see `markdown-tables`).

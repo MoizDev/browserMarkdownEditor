@@ -416,7 +416,7 @@ export class FrameScheduler {
     }
 
     idleForCapture(): boolean {
-        if (this.inFrame) return false;
+        if (!this.running || this.suspended || this.inFrame) return false;
         for (const entry of this.panes.values()) {
             if (!entry.renderable) continue;
             if (entry.inputPriority || entry.motion || entry.reasons.size) return false;

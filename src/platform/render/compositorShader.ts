@@ -11,7 +11,7 @@ const uniforms = `layout(std140) uniform GfxUniforms0 {
  * Float destinations retain motion phase; GL storage is bottom-left, API rectangles top-left (§2.5).
  */
 export const TEXTURED_QUAD_SHADER: ShaderModule = {
-    id: 'platform-textured-quad', revision: 1,
+    id: 'platform-textured-quad', revision: 2,
     glsl: {
         vertex: `#version 300 es
 precision highp float;
@@ -19,7 +19,8 @@ ${uniforms}
 out vec2 uv;
 void main() {
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
-    vec2 pixel = destination.xy + corner * destination.zw;
+    vec2 pixel = vec2(corner.x == 0.0 ? destination.x : destination.z,
+                      corner.y == 0.0 ? destination.y : destination.w);
     vec2 unit = (pixel - viewport.xy) / viewport.zw;
     gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
     vec2 texel = sourceRect.xy + corner * sourceRect.zw;

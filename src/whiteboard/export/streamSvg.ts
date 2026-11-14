@@ -3,9 +3,9 @@ import { boardWorker } from '../workers/client'
 import type { BoardJobIdentity } from '../workers/protocol'
 import { PaintStreamJob } from '../render/paintStream'
 import type { PaintItem, PaintNodeSource } from '../render/paintStream'
-import { paintItemDisplay } from './displayList'
+import { captureTextDisplay, paintItemDisplay } from './displayList'
 import type { ExportImage } from './displayList'
-import { createExportTextResolver } from './textResolver'
+import { openExportTextStream } from './textStreamLease'
 
 function transferBytes(item: PageDisplayItem): number {
   if (item.kind === 'group') return item.items.reduce((sum, child) => sum + transferBytes(child), 0)
@@ -37,7 +37,6 @@ export async function streamSvg(
   signal.throwIfAborted()
   const identity: BoardJobIdentity = { session: crypto.randomUUID(), epoch: source.token.vaultEpoch, revision: source.sceneRevision }
   const streamId = crypto.randomUUID(), client = boardWorker('export')
-  const text = createExportTextResolver(source, signal)
   const current = (candidate: BoardJobIdentity) => !signal.aborted && source.isCurrent()
     && candidate.session === identity.session && candidate.epoch === identity.epoch && candidate.revision === identity.revision
   const opts = { priority: 0 as const, signal }
@@ -55,8 +54,8 @@ export async function streamSvg(
         bytes += next; end++
       }
       const transfer: Transferable[] = []
-      const owned = items.slice(offset, end).map(item => transferable(item, transfer))
-      await client.request('svgChunk', { streamId, items: owned }, identity, { ...opts, transfer }, current)
+      const payload = items.slice(offset, end).map(item => transferable(item, transfer))
+      await client.request('svgChunk', { streamId, items: payload }, identity, { ...opts, transfer }, current)
       offset = end
     }
   }
@@ -76,7 +75,16 @@ export async function streamSvg(
       const items: PageDisplayItem[] = []
       for (const item of chunk) {
         signal.throwIfAborted()
-        items.push(await paintItemDisplay(item, scale, image, signal, text))
+        if (item.kind === 'text') {
+          await send(items)
+          items.length = 0
+          const frame = captureTextDisplay(item)
+          const lease = await openExportTextStream(source, item, scale, signal, true)
+          try {
+            await client.request('svgChunk', { streamId, text: { id: lease.id, owner: lease.owner, frame } }, identity, opts, current)
+            lease.complete()
+          } finally { lease.release() }
+        } else items.push(await paintItemDisplay(item, scale, image, signal))
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }
       chunk.length = 0

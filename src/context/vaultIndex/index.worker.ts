@@ -3,6 +3,7 @@ import type { WorkerContext } from '../../platform/workers/serve';
 import type { IndexFile, IndexSession } from '../../utils/vaultIndex/types';
 import { IndexEngine } from './engine';
 import { HandleReader } from './reader';
+import { PersistSession } from './persistSession';
 import { SearchResidency } from './searchResidency';
 import { searchSidebar, type SearchOverlay } from './workerSearch';
 import { matchAgentSearch } from '../../utils/agentMatcher/client';
@@ -29,9 +30,11 @@ function problem(context: WorkerContext, session: IndexSession, error: unknown):
     } else throw error;
 }
 serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
-    open(value, context) {
+    ready() { return null; },
+    async open(value, context) {
         const { session } = value as SessionArgs;
         engine?.close();
+        await engine?.persistence?.close();
         searchText?.dispose();
         reader = new HandleReader();
         pending = undefined;
@@ -43,17 +46,29 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
                 if (phase !== 'idle' && done !== 0 && now - lastStatus < 100) return;
                 lastStatus = now;
                 context.emit('status', { session, phase, done, total });
+            }, (changes, sweepComplete) => {
+                context.emit('fileTimes', { session, changes, sweepComplete });
+                if (sweepComplete) context.emit('searchChanged', { session });
             });
         const owner = engine;
-        searchText = new SearchResidency(reader, () => current(session) === owner, (path, mtime, size) => {
-            const persistent = owner as IndexEngine & { readPersistedText?: (path: string, mtime: number, size: number) => Promise<string | undefined> };
-            return persistent.readPersistedText?.(path, mtime, size) ?? Promise.resolve(undefined);
-        });
+        const persistence = new PersistSession(session.vaultId, (kind, detail) => context.emit('problem', { session, kind, detail }));
+        owner.persistence = persistence;
+        const records = await persistence.open();
+        if (current(session) !== owner) { await persistence.close(); return null; }
+        owner.store.hydrate(records);
+        owner.store.onChange = (path, record, text) => persistence.mark(path, record, text);
+        searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner,
+            (path, mtime, size) => owner.readPersistedText(path, mtime, size),
+            (path, mtime, size, text) => owner.persistSearchText(path, mtime, size, text));
         return null;
     },
-    close(value) {
+    async close(value) {
         const { session } = value as SessionArgs;
-        if (current(session)) { engine?.close(); searchText?.dispose(); searchText = undefined; engine = undefined; reader = undefined; pending = undefined; primes.clear(); overlays.clear(); overlayRevisions.clear(); }
+        if (current(session)) {
+            const active = engine;
+            active?.close(); searchText?.dispose(); searchText = undefined; engine = undefined; reader = undefined; pending = undefined; primes.clear(); overlays.clear(); overlayRevisions.clear();
+            await active?.persistence?.close();
+        }
         return null;
     },
     treeBegin(value) {
@@ -106,6 +121,11 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         if (rev !== undefined) { primes.set(path, { rev, mtime, size, text }); searchText?.prime(path, mtime, size, text); }
         return rev ?? null;
     },
+    primeText(value) {
+        const { session, path, mtime, size, text } = value as SessionArgs & { path: string; mtime: number; size: number; text: string };
+        if (current(session)) searchText?.prime(path, mtime, size, text);
+        return null;
+    },
     async primeCommit(value, context) {
         const { session, path, rev } = value as SessionArgs & { path: string; rev: number };
         const active = current(session);
@@ -139,27 +159,39 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         const inScope = (path: string) => !args.scope || path === args.scope || path.startsWith(`${args.scope}/`);
         const scoped = files.filter(file => inScope(file.path));
         const eligible = scoped.filter(file => isTextFile(file.path) && !isCanvasFile(file.path));
-        await resident.ensure(eligible.filter(file => !liveOverlays.has(file.path)).map(file => file.path), () => context.slice());
+        await resident.ensure(eligible.filter(file => !liveOverlays.has(file.path)).map(file => file.path), context);
         if (context.cancelled || current(args.session) !== active || active.store.treeGen !== treeGen) throw new DOMException('Index changed', 'AbortError');
         return matchAgentSearch({ query: args.query, regex: !!args.regex, caseSensitive: !!args.caseSensitive, maxResults: args.maxResults ?? 100 }, async () => scoped.map(file => ({
             path: file.path, name: file.path.slice(file.path.lastIndexOf('/') + 1),
             text: isTextFile(file.path) && !isCanvasFile(file.path) ? liveOverlays.get(file.path)?.text ?? resident.snapshot().get(file.path)?.text : undefined,
         })), { signal: context.signal, vaultToken: active, isCurrent: () => current(args.session) === active && active.store.treeGen === treeGen });
     },
+    rebuild(value) {
+        const { session } = value as SessionArgs;
+        const active = current(session);
+        if (active) {
+            active.store.rebuild();
+            searchText?.invalidate(active.store.files.map(file => file.path));
+        }
+        return null;
+    },
     fgio(value) {
-        const { session, active } = value as SessionArgs & { active: number };
-        current(session)?.foregroundIO(active);
+        const { session, active, revision } = value as SessionArgs & { active: number; revision: number };
+        current(session)?.foregroundIO(active, revision);
         return null;
     },
     async sweepBatch(value, context) {
-        const { session, start, treeGen } = value as SessionArgs & { start: number; treeGen: number };
+        const { session, start, treeGen, reason } = value as SessionArgs & { start: number; treeGen: number; reason: string };
+        if (current(session) && start === 0 && reason !== 'open') searchText?.revalidate();
         try { return await current(session)?.sweepBatch(start, treeGen, context) ?? null; }
         catch (error) { problem(context, session, error); return null; }
     },
     async invalidate(value, context) {
         const { session, paths } = value as SessionArgs & { paths: string[] };
-        if (current(session)) searchText?.invalidate(paths);
-        try { await current(session)?.invalidate(paths, context); } catch (error) { problem(context, session, error); }
+        const active = current(session);
+        if (active) searchText?.invalidate(paths);
+        try { await active?.invalidate(paths, context); } catch (error) { problem(context, session, error); }
+        if (active && current(session) === active) context.emit('searchChanged', { session });
         return null;
     },
 } });

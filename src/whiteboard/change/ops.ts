@@ -45,7 +45,7 @@ export type ContentOp =
     | { readonly t: 'create'; readonly node: NodeRecord }
     | { readonly t: 'delete'; readonly id: NodeId }
     | NodeSetOp
-    | { readonly t: 'splice'; readonly id: NodeId; readonly key: 'text' | 'label'; readonly from: number; readonly to: number; readonly insert: RichFragment; readonly wholeBlocks?: true }
+    | { readonly t: 'splice'; readonly id: NodeId; readonly key: 'text' | 'label'; readonly from: number; readonly to: number; readonly insert: RichFragment; readonly replaceBlocks?: true; readonly wholeBlocks?: true }
     | { readonly t: 'sheet'; readonly op: 'create'; readonly sheet: Sheet }
     | { readonly t: 'sheet'; readonly op: 'delete'; readonly id: SheetId }
     | { readonly t: 'sheet'; readonly op: 'set'; readonly id: SheetId; readonly key: 'name' | 'order'; readonly value: string }

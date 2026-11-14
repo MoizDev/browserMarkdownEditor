@@ -243,11 +243,12 @@ requires reading it.
 - Canvas **bitmaps are windowed**: only pages within `EVICT_BEYOND` (3) of the viewport hold one
   (~25-31MB each at Retina fit-width); scrolled-away canvases are freed and re-rendered on approach,
   and pages further than `CLEANUP_BEYOND` (12) release the viewer's page lease after text/link work
-  settles. `PdfDocumentSession` calls `page.cleanup()` only when the last consumer releases it, so a
-  thumbnail, Text view or agent read cannot lose a page it is still using — the canvas is only half
-  of what a page costs. That window
-  is deliberately much wider than the eviction one: re-rendering from a retained operator list is
-  cheap, re-parsing the page is a worker round-trip.
+  settles. Zero users makes a parsed page eligible for the shared bounded PDF cache, not immediate
+  cleanup; eviction never cleans under a thumbnail, Text, annotation or agent lease. The cache uses
+  conservative reservations, not claimed worker-heap measurements. A visible surface handoff keeps
+  the current page leased for at most five seconds; matching plain annotations reuse the reader's
+  session, while stamped/pristine bytes always use distinct sessions. Re-rendering from a retained
+  operator list avoids an expensive worker re-parse.
 - **The PDF's own links work** (`pdfLinks.ts` + the `.pdf-link-layer` per page). Hand-rolled over four
   stable public pdf.js calls (`getAnnotations`, `getDestination`, `getPageIndex`,
   `convertToViewportPoint`) rather than pdf.js's `AnnotationLayer`, which needs a `linkService` shim

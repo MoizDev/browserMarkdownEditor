@@ -15,6 +15,7 @@ export interface PdfInkAcquisitionOptions {
 
 export type PdfEditableInkSource = {
     source: WriterSource;
+    readonly writeSafety: { readonly kind: 'safe' };
     pages: readonly Readonly<PageGeometry>[];
     readMedia(name: string, signal?: AbortSignal): Promise<Blob>;
     openWriter(signal?: AbortSignal): Promise<TypedPdfWriter>;
@@ -26,6 +27,10 @@ export type PdfEditableInkSource = {
 export interface PdfReadOnlyInkSource {
     kind: 'read-only';
     reason: string;
+    /** Verified against the actual outer snapshot; never an editing capability. */
+    notebookSource?: { readonly path: string; readonly exportedAt?: number };
+    outerFingerprint?: string;
+    isCurrent?(): boolean;
     release(): Promise<void>;
 }
 

@@ -24,7 +24,7 @@ import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, PdfRebuildNotice } from '../types';
-import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity } from '../types/reading';
+import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
 import type { DiskVersion } from '../utils/diskVersion';
 import { registerReadingSurface } from '../utils/documentReading';
 import { flushPdfTextViewState } from '../utils/readerViewState';
@@ -33,15 +33,22 @@ import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionId
 import { choosePdfSessionRoute, readPdfSessionRoute, subscribePdfSessionRoute } from '../utils/pdfSessionRoute';
 import { assertPdfPrintAllowed, PDF_PRINT_UNKNOWN, tiledPdfCapabilities } from '../utils/pdfCapabilities';
 import { requestVaultSearch } from '../utils/searchRequest';
+import { pdfEngineAvailableInBuild } from '../utils/pdfEngineAvailability';
+import { routeEngines } from '../utils/engineRouting';
 import type { PdfTiledTextSurfaceProps } from './PdfTiledTextSurface.types';
+import type { PdfTiledPresentation } from './PdfTiledView';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import type { EmphasisAvailability } from '../types/reading';
+import './PdfPane.css';
 
 // tldraw + pdf.js rasterization are heavy and only needed once someone actually
 // annotates, so the canvas is a separate chunk. Viewing a PDF never loads it.
 const PdfAnnotateCanvas = lazy(() => import('./PdfAnnotateCanvas'));
 const PdfTiledSurface = lazy(() => import('./PdfTiledSurface'));
 const PdfTiledTextSurface = lazy(() => import('./PdfTiledTextSurface'));
+const NativePdfEntry = lazy(() => import('./whiteboard/NativePdfEntry'));
+const NATIVE_PDF_ZOOM = Object.freeze({ min: 0.4, max: 4 });
+const NATIVE_PDF_INSETS = Object.freeze({ left: 28, right: 28, top: 16, bottom: 0 });
 
 export interface PdfPaneProps {
     documentId: string;
@@ -52,6 +59,8 @@ export interface PdfPaneProps {
     reading?: PdfReadingBinding;
     nativeCanvasHost?: import('../types/nativeCanvas').NativeCanvasHost;
     file: ActiveFile;
+    theme: import('../types').Theme;
+    onToggleMode(path: string): void;
     /**
      * Whether this document is on screen. EditorPane keeps one pane MOUNTED per
      * open PDF tab and merely hides the ones that aren't, so switching tabs
@@ -90,9 +99,10 @@ export interface PdfPaneProps {
     /** Writes to disk immediately; used as the canvas hands over to the viewer. */
     onFlushNow: (path: string, content: string) => Promise<void>;
     onPreparePrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
+    onUnsignedPdfCopy?: (identity: ReaderIdentity, version: DiskVersion) => Promise<void>;
     /** This PDF is a notebook's export — open that notebook instead. Takes the
      *  PDF's own path too, so App can put its tab back into reading mode. */
-    onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void;
+    onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void | Promise<void>;
     /** Turn the pages a quarter and write the file (App.rotatePdf). Reading
      *  only: the annotate canvas draws against the pages as they are. */
     onRotate: (path: string, delta: number, pageIndex?: number) => void;
@@ -135,7 +145,7 @@ interface PdfSource {
  */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     const appSession = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(documentId), () => undefined);
@@ -264,6 +274,7 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         choosePdfSessionRoute(appSession, 'classic');
     }, [appSession, documentId, reading?.identity]);
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
+    const displayedVersionOwner = useRef<ReaderToken | undefined>(undefined);
     const [tiledVersion, setTiledVersion] = useState<DiskVersion>();
     const tiledCapabilities = useRef<{ source: NonNullable<PdfTiledTextSurfaceProps['source']>; capabilities: ReaderCapabilities } | null>(null);
     const tiledCapabilityAllowed = useRef(false);
@@ -275,12 +286,17 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         tiledCapabilities.current = { source, capabilities };
     }, [documentId]);
     const tiledNotify = useCallback((message: string) => binding.current?.onNotify(message), []);
+    const [unsignedPending, setUnsignedPending] = useState(false);
+    const unsignedInFlight = useRef(false), unsignedMounted = useRef(true);
+    useEffect(() => { unsignedMounted.current = true; return () => { unsignedMounted.current = false; }; }, []);
     const tiledReading = useMemo<PdfReadingBinding | undefined>(() => reading ? {
         ...reading,
         onReaderVersion(token, version) {
             const current = binding.current;
             if (current && token.vaultEpoch === current.identity.vaultEpoch && token.documentId === current.identity.documentId &&
-                token.byteGeneration === current.identity.byteGeneration) { displayedVersion.current = version; setTiledVersion(version); }
+                token.vaultId === current.identity.vaultId && token.byteGeneration === current.identity.byteGeneration) {
+                displayedVersion.current = version; displayedVersionOwner.current = token; setTiledVersion(version);
+            }
             current?.onReaderVersion(token, version);
         },
     } : undefined, [reading]);
@@ -306,14 +322,27 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     const source = loadedSource && loadedSource.entry === annotateEntry && loadedSource.handle === file.handle && loadedSource.path === file.path ? loadedSource.role : null;
     const foreignHeld = source?.kind === 'annotated' && source.writeMark.kind === 'foreign' &&
         (!source.generation || pdfRebuildApproval?.generation !== source.generation || !canRebuildAnnotatedPdf(source.original));
-    const editableSource = source && isEditablePdfRole(source) && !foreignHeld && canRebuildAnnotatedPdf(source.original) ? source : null;
+    const inspectedWriteRefused = !!(tiled && currentTiledSource && tiledPdfCapabilities(currentTiledSource.document.poolDocument.info).write === false);
+    const editableSource = source && !inspectedWriteRefused && isEditablePdfRole(source) && !foreignHeld && canRebuildAnnotatedPdf(source.original) ? source : null;
+    useLayoutEffect(() => {
+        if (!inspectedWriteRefused) return;
+        if (source) revokePdfRole(source);
+        // A remount can retain an export in the save cache without a loaded
+        // role in this view. Known unsafe disk bytes revoke that source too.
+        const parked = getPdfRenderData(file.path);
+        if (parked) revokePdfSource(parked.original);
+    }, [inspectedWriteRefused, source, file.path]);
     // The outer pages remain readable on refusal. DiskBar owns the choice;
     // don't put a competing action over the page.
     const foreignNotice = !foreignHeld ? undefined : source.writeMark.kind === 'foreign' && source.writeMark.reason === 'mismatch'
         ? 'This PDF was changed by another program after this app saved it. Annotate is read-only so rebuilding its pages does not discard those changes. You can still read the PDF.'
         : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
-    const roleNotice = source && pdfRoleNotice(source) || (!disk && !pdfRebuild ? foreignNotice : undefined);
-    const readOnly = mode === 'edit' && (!!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
+    const nativeCandidate = mode === 'edit' && !disk && (source?.kind === 'notebookExport' ||
+        source?.kind === 'newer' && source.attachments.includes('board.json')) &&
+        pdfEngineAvailableInBuild() && !!nativeCanvasHost && !!attachCanvasSession && !!reading;
+    const roleNotice = (source && !nativeCandidate && pdfRoleNotice(source)) || (!disk && !pdfRebuild ? foreignNotice : undefined)
+        || (inspectedWriteRefused ? 'This PDF’s inspected permissions require read-only annotation. The original has not been changed.' : undefined);
+    const readOnly = mode === 'edit' && (nativeCandidate || inspectedWriteRefused || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const annotationMode = mode === 'edit' && !readOnly;
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
     const sessionVersion = useRef<string | undefined>(undefined);
@@ -806,6 +835,37 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     const previewPainted = useCallback((page: number) => {
         if (rotationPreview?.page === page) discardRotationPreview();
     }, [rotationPreview, discardRotationPreview]);
+    const presentationOwner = useRef({ source: currentTiledSource, preview: rotationPreview, identity: reading?.identity,
+        appSession, documentId, path: file.path, tiled, isVisible, mode, textSurface });
+    presentationOwner.current = { source: currentTiledSource, preview: rotationPreview, identity: reading?.identity,
+        appSession, documentId, path: file.path, tiled, isVisible, mode, textSurface };
+    const tiledPresented = useCallback((report: PdfTiledPresentation) => {
+        const owner = presentationOwner.current, { source, preview, identity, appSession: app } = owner;
+        if (!owner.tiled || !owner.isVisible || owner.mode !== 'read' || owner.textSurface || !source || source !== currentTiledSource || !preview || !identity || !app ||
+            report.complete !== true || report.sharp !== true || report.staleVersion !== false || report.resultHash !== preview.resultHash ||
+            ![report.frameId, report.viewEpoch, report.token.viewLease, report.token.deviceGeneration].every(value => Number.isSafeInteger(value) && value >= 0) ||
+            !report.pages.includes(preview.page) || !source.session.isCurrent() || source.document.poolDocument.closed ||
+            source.session.source !== 'outer' || source.document.poolDocument.source !== 'outer' ||
+            getSessionIdentity(owner.documentId) !== app || identity.documentId !== owner.documentId || identity.path !== owner.path) return;
+        const token = source.session.token, poolToken = source.document.poolDocument.token, frame = report.token;
+        if (identity.vaultEpoch !== token.vaultEpoch ||
+            app.serial !== token.session || app.bytesGeneration !== token.bytesGeneration || token.documentId !== owner.documentId ||
+            frame.vaultEpoch !== token.vaultEpoch || frame.documentId !== token.documentId || frame.bytesGeneration !== token.bytesGeneration || frame.session !== token.session ||
+            poolToken.vaultEpoch !== token.vaultEpoch || poolToken.documentId !== token.documentId ||
+            poolToken.bytesGeneration !== token.bytesGeneration || poolToken.session !== token.session) return;
+        setRotationPreview(previous => {
+            const now = presentationOwner.current;
+            if (previous !== preview || now.source !== source || now.preview !== preview || !now.identity ||
+                now.identity.vaultId !== identity.vaultId || now.identity.vaultEpoch !== identity.vaultEpoch ||
+                now.identity.documentId !== identity.documentId || now.identity.byteGeneration !== identity.byteGeneration ||
+                now.identity.path !== identity.path || now.identity.diskRev !== identity.diskRev ||
+                now.identity.rawVersion?.hash !== identity.rawVersion?.hash || now.identity.rawVersion?.size !== identity.rawVersion?.size ||
+                now.identity.rawVersion?.lastModified !== identity.rawVersion?.lastModified || !now.tiled || !now.isVisible || now.mode !== 'read' || now.textSurface ||
+                getSessionIdentity(owner.documentId) !== app || !source.session.isCurrent() || source.document.poolDocument.closed) return previous;
+            clearPdfRotationPicture(owner.documentId, preview);
+            return undefined;
+        });
+    }, [currentTiledSource]);
     const showRotationPreview = !!rotationPreview && !fatalRenderIssue && !error && mode === 'read' && !textSurface;
 
     let body: ReactNode = null;
@@ -824,7 +884,7 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                no longer happens until you switch to annotate. Reading needs
                `viewBytes` and nothing else; that is the branch further down. */
             body = <div className="pdf-pane-message">Loading PDF…</div>;
-        } else if (mode === 'edit' && source?.kind === 'notebookExport') {
+        } else if (mode === 'edit' && source?.kind === 'notebookExport' && !nativeCandidate) {
             // A notebook's export. Annotating it would fork a third document
             // whose marks the notebook could neither see nor replace, so the
             // pane hands you back to the notebook instead of drawing anything.
@@ -839,6 +899,20 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                     </button>
                 </div>
             );
+        } else if (nativeCandidate && nativeCanvasHost && attachCanvasSession && reading) {
+            const nativeIdentity = nativeCanvasHost.identity(documentId);
+            body = nativeIdentity && nativeIdentity.kind === 'pdfInk' ? (
+                <Suspense fallback={<div className="pdf-pane-message">Preparing PDF annotations…</div>}>
+                    <NativePdfEntry file={file} documentId={documentId} identity={nativeIdentity} nativeCanvasHost={nativeCanvasHost}
+                        attachCanvasSession={attachCanvasSession} onNativeCanvasReady={onNativeCanvasReady}
+                        isVisible={isVisible} isFocused={isFocused} theme={theme} emergencyReadOnly={routeEngines('pdfInk').canvas.pdfInk.emergencyReadOnly}
+                        zoomLimits={NATIVE_PDF_ZOOM} insets={NATIVE_PDF_INSETS} zMax={100} deadlineMs={30_000}
+                        registerKeyboardTarget={reading.registerKeyboardTarget} onFocusPane={onFocusPane}
+                        emphasisEnabled={reading.emphasisEnabled} onNotice={reading.onNotify}
+                        onOpenNotebookSource={path => onOpenNotebookSource(file.path, path)}
+                        onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
+                </Suspense>
+            ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
         } else if (mode === 'edit' && editableSource && loadedSource?.session) {
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
@@ -898,7 +972,7 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                     <PdfTiledSurface reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
                         rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
-                        onSource={setTiledSource} onCapabilities={reportTiledCapabilities} notify={tiledNotify} openClassic={openClassic} />
+                        onSource={setTiledSource} onCapabilities={reportTiledCapabilities} onPresentation={tiledPresented} notify={tiledNotify} openClassic={openClassic} />
                 </Suspense>
             );
         } else if (!session) {
@@ -933,6 +1007,10 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         }
     }
 
+    const versionOwner = displayedVersionOwner.current, identityForVersion = reading?.identity;
+    const versionMatchesReader = !!versionOwner && !!identityForVersion && versionOwner.vaultId === identityForVersion.vaultId &&
+        versionOwner.vaultEpoch === identityForVersion.vaultEpoch && versionOwner.documentId === identityForVersion.documentId &&
+        versionOwner.byteGeneration === identityForVersion.byteGeneration;
     // One stable root for every state, so EditorPane can hide an off-screen pane
     // with CSS instead of unmounting it (which would forget the document).
     return (
@@ -960,6 +1038,27 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                 {printError && <> {printError}</>}
             </ConfirmDialog>}
             {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} path={file.path} onAction={onDiskAction} />}
+            {tiled && mode === 'read' && currentTiledSource?.session.isCurrent() &&
+                tiledPdfCapabilities(currentTiledSource.document.poolDocument.info).signed === true &&
+                <div className="pdf-signed-notice" role="status" onContextMenu={event => event.preventDefault()}>
+                    <span>This signed PDF remains read-only. Creating an unsigned copy leaves the original unchanged.</span>
+                    <button type="button" className="pdf-pane-action" disabled={unsignedPending || isDirty || flushing || !!disk || !tiledVersion ||
+                        displayedVersion.current !== tiledVersion || !versionMatchesReader || !file.parentHandle || !reading || !onUnsignedPdfCopy}
+                        onClick={() => {
+                            const identity = reading?.identity, version = tiledVersion, source = currentTiledSource;
+                            const current = binding.current?.identity;
+                            if (unsignedInFlight.current || !identity || !version || !onUnsignedPdfCopy || !source.session.isCurrent() ||
+                                isDirty || flushing || disk || !file.parentHandle || displayedVersion.current !== version || !versionMatchesReader || !current ||
+                                current.documentId !== identity.documentId || current.vaultId !== identity.vaultId || current.vaultEpoch !== identity.vaultEpoch ||
+                                current.byteGeneration !== identity.byteGeneration || current.path !== identity.path || current.diskRev !== identity.diskRev) return;
+                            unsignedInFlight.current = true; setUnsignedPending(true);
+                            void (async () => {
+                                try { await onUnsignedPdfCopy(identity, version); }
+                                catch (error) { tiledNotify(error instanceof Error ? error.message : 'Could not create an unsigned copy.'); }
+                                finally { unsignedInFlight.current = false; if (unsignedMounted.current) setUnsignedPending(false); }
+                            })();
+                        }}>Create unsigned copy</button>
+                </div>}
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the viewer and lose the reading position. */}
             <div className="pdf-pane-body" inert={showRotationPreview}>

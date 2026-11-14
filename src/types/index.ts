@@ -544,6 +544,10 @@ export interface FileSystemContextValue {
    *  `vaultRoot`: the document's vault, when it may no longer be the open one
    *  (a vault switch). Resolves to the copy's path. */
   writeConflictCopy: (filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
+  /** A new, collision-free copy only; never grants a write to the source. */
+  writeDistinctCopy: (parent: FileSystemDirectoryHandle, parentPath: string, name: string, data: Blob, isCurrent: () => boolean) => Promise<{
+    path: string; name: string; handle: FileSystemFileHandle; version: DiskVersion;
+  }>;
   /** Re-create a file deleted outside the app (and any missing parent folders)
    *  only if nothing is at `filePath` now. */
   recreateFile: (filePath: string, data: string | Uint8Array | Blob) => Promise<

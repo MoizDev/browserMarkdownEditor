@@ -175,7 +175,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         return { result, release() {} };
     };
     const writerHandlers = Object.fromEntries((['writer.prepareSource', 'writer.emitInk', 'writer.stageAnnotated',
-        'writer.finishAnnotated', 'writer.buildNotebook', 'writer.verifyNotebookOutput', 'writer.prepareUnsignedCopy', 'writer.verifyUnsignedCopy', 'writer.rotate', 'writer.inspect', 'writer.release'] as const).map(op =>
+        'writer.finishAnnotated', 'writer.buildNotebook', 'writer.verifyNotebookOutput', 'writer.prepareUnsignedCopy', 'writer.verifyUnsignedCopy', 'writer.rotate', 'writer.verifyRotation', 'writer.inspect', 'writer.release'] as const).map(op =>
         [op, serial((value, ctx) => {
             if (!writer || binding.engine.role !== 'writer') throw bad('EngineBroken', 'PDF writer is unavailable');
             return writer.handlers[op as keyof WriterOperations](value, ctx);

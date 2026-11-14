@@ -64,16 +64,18 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         released = true;
         controller.abort();
         options.signal?.removeEventListener('abort', onAbort);
+        // These are this inspection's independent pool.open leases. The pool
+        // keeps App's reader source alive until its separate last lease closes.
         releasePromise = Promise.allSettled([original?.close(), outer?.close()]).then(() => {});
         return releasePromise;
     };
     const onAbort = () => { void release(); };
     options.signal?.addEventListener('abort', onAbort, { once: true });
-    const readOnly = async (reason: string): Promise<PdfInkAcquisition> => {
+    const readOnly = async (reason: string, notebook?: { notebookSource: { path: string; exportedAt?: number }; outerFingerprint: string }): Promise<PdfInkAcquisition> => {
         guard();
         await release();
         if (!callerCurrent()) throw stale();
-        return { kind: 'read-only', reason, release };
+        return { kind: 'read-only', reason, ...(notebook ? { ...notebook, isCurrent: callerCurrent } : {}), release };
     };
     try {
         guard();
@@ -87,8 +89,16 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         if (outer.source !== 'outer' || outer.docKey !== pdfDocKey({ ...token, source: 'outer' })) throw new Error('Invalid outer PDF lease');
         const inspection: PdfInkInspection = await outer.request('doc.inspectInk', {}, { priority: 0, signal: lifetime });
         guard();
-        if (inspection.kind === 'read-only') return await readOnly(`PDF ink is read-only: ${inspection.reason}.`);
-        if ((inspection.kind !== 'plain' && inspection.kind !== 'native') || inspection.formatId !== NATIVE_FORMAT_ID ||
+        if (inspection.kind === 'read-only') {
+            if (inspection.reason === 'inspection-failed') return await readOnly(`PDF ink inspection failed (${inspection.phase}; ${inspection.errorClass}).`);
+            if (inspection.reason !== 'notebook-source') return await readOnly(inspection.reason === 'unsafe-policy'
+                ? 'The PDF write safety could not be established; annotation is read-only.' : `PDF ink is read-only: ${inspection.reason}.`);
+            const outerFingerprint = await chunkedBlobSha256(options.outer, guard);
+            guard();
+            if (outerFingerprint !== inspection.outerFingerprint) return await readOnly('The PDF source fingerprint does not match the inspected bytes.');
+            return await readOnly('This PDF was exported from a notebook.', { notebookSource: Object.freeze({ ...inspection.notebookSource }), outerFingerprint });
+        }
+        if ((inspection.kind !== 'plain' && inspection.kind !== 'native') || inspection.formatId !== NATIVE_FORMAT_ID || inspection.writeSafety?.kind !== 'safe' ||
             !memoryBlob(inspection.pristine) || !HASH.test(inspection.outerFingerprint) || !HASH.test(inspection.pristineFingerprint) ||
             (inspection.kind === 'plain' && (inspection.board !== null || inspection.media.length !== 0)) ||
             (inspection.kind === 'native' && (!memoryBlob(inspection.board) || !/^[0-9a-f]{32}$/.test(inspection.writeId)))) {
@@ -127,7 +137,10 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         // from the inspected pristine bytes, not merely from an equal-length snapshot.
         const originalInspection = await original.request('doc.inspectInk', {}, { priority: 0, signal: lifetime });
         guard();
-        if (originalInspection.kind !== 'plain' || originalInspection.outerFingerprint !== pristineHash ||
+        if (originalInspection.kind === 'read-only' && originalInspection.reason === 'inspection-failed') {
+            return await readOnly(`Pristine PDF ink inspection failed (${originalInspection.phase}; ${originalInspection.errorClass}).`);
+        }
+        if (originalInspection.kind !== 'plain' || originalInspection.writeSafety?.kind !== 'safe' || originalInspection.outerFingerprint !== pristineHash ||
             originalInspection.pristineFingerprint !== pristineHash) {
             return await readOnly('The retained pristine PDF does not match the inspected source.');
         }
@@ -151,7 +164,7 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         const retainedOuter = outer;
         return {
             ...(inspection.kind === 'native' ? { kind: 'native' as const, board: inspection.board, writeId: inspection.writeId } : { kind: 'plain' as const, board: null }),
-            source, pages: Object.freeze(pages), isCurrent: current, release,
+            source, writeSafety: Object.freeze({ ...inspection.writeSafety }), pages: Object.freeze(pages), isCurrent: current, release,
             async readMedia(name, signal) {
                 guard();
                 const expected = media.get(name);

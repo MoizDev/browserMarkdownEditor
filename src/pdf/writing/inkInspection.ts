@@ -3,12 +3,15 @@ import { boundedAttachmentBytes, inventoryAttachments } from '../../utils/pdfAtt
 import type { AttachmentEntry } from '../../utils/pdfAttachmentTree';
 import { NOTEBOOK_SOURCE_ATTACHMENT } from '../../utils/pdfFormat';
 import { checkPdfWriteMark } from '../../utils/pdfWriteMark';
+import { inspectPdfDocumentWriteSafety } from '../../utils/pdfWriteSafety';
 import { Sha256 } from '../../utils/sha256';
 import { NATIVE_FORMAT_ID } from '../../whiteboard/format/identity';
 import { fenceBytes, isCompatibilityFenceBytes } from '../../whiteboard/format/fence';
 import { attachmentMarker } from './attachments';
 import { validateBoardWriteIdentity } from './boardIdentity';
-import type { PdfInkInspection, PdfInkInspectionFailure, PdfInkMediaDescriptor } from './inkInspection.types';
+import { readPdfNotebookPointer } from './notebookInspection';
+import type { PdfInkInspection, PdfInkInspectionErrorClass, PdfInkInspectionFailure, PdfInkInspectionPhase, PdfInkMediaDescriptor } from './inkInspection.types';
+import { newPdfWorkerId } from './workerIds';
 
 const LIMIT = 0x7fffffff, BOARD_LIMIT = 32 * 1024 * 1024, MAX_INSPECTIONS = 16;
 const key = PDFName.of;
@@ -18,6 +21,13 @@ interface Retained { document: PDFDocument; bytes: Uint8Array; media: Map<string
 class Refusal extends Error { constructor(readonly reason: PdfInkInspectionFailure) { super(reason); } }
 class Interrupted extends Error { constructor(readonly cause: unknown) { super('Inspection interrupted'); } }
 const refuse = (reason: PdfInkInspectionFailure): never => { throw new Refusal(reason); };
+function errorClass(error: unknown): PdfInkInspectionErrorClass {
+    if (error instanceof TypeError) return 'type-error';
+    if (error instanceof RangeError) return 'range-error';
+    if (error instanceof DOMException) return 'dom-error';
+    if (error instanceof Error) return 'error';
+    return 'other';
+}
 
 function attachment(entry: AttachmentEntry, limit: number): Uint8Array {
     const ef = entry.spec.lookup(key('EF'));
@@ -97,16 +107,30 @@ export class PdfInkInspector {
         if (this.retained.size + this.pending >= MAX_INSPECTIONS) return { kind: 'read-only', reason: 'resource-limit' };
         this.pending++;
         const step = async () => { try { await cooperate(); } catch (error) { throw new Interrupted(error); } if (this.closed) throw new Interrupted(new DOMException('PDF inspection closed', 'AbortError')); };
+        let phase: PdfInkInspectionPhase = 'source-read';
         try {
             await step();
             const bytes = new Uint8Array(await outer.arrayBuffer());
             await step();
             const outerFingerprint = await hash(bytes, step);
             let document: PDFDocument;
-            try { document = await PDFDocument.load(bytes, { parseSpeed: Infinity, updateMetadata: false }); }
+            phase = 'outer-parse';
+            try { document = await PDFDocument.load(bytes, { parseSpeed: Infinity, updateMetadata: false, throwOnInvalidObject: true }); }
             catch (error) { return { kind: 'read-only', reason: error instanceof Error && /encrypt/i.test(error.message) ? 'encrypted' : 'unreadable' }; }
             await step();
+            phase = 'outer-policy';
+            const writeSafety = inspectPdfDocumentWriteSafety(document);
+            if (writeSafety.kind !== 'safe') return refuse(writeSafety.kind === 'unknown' ? 'unsafe-policy' : writeSafety.kind);
+            await step();
+            phase = 'inventory';
             const entries = inventory(document), owned = [...entries].filter(([name, entry]) => isAuthority(name, entry));
+            if (entries.has(NOTEBOOK_SOURCE_ATTACHMENT)) {
+                if (owned.length !== 1 || owned[0][0] !== NOTEBOOK_SOURCE_ATTACHMENT) return refuse('ambiguous');
+                phase = 'notebook-pointer';
+                const notebookSource = readPdfNotebookPointer(document);
+                await step();
+                return { kind: 'read-only', reason: 'notebook-source', outerFingerprint, notebookSource };
+            }
             let pristine = outer, pristineFingerprint = outerFingerprint, board: Blob | null = null, writeId: string | undefined;
             const media = new Map<string, AttachmentEntry>(), descriptors: PdfInkMediaDescriptor[] = [];
             if (owned.length) {
@@ -120,14 +144,22 @@ export class PdfInkInspector {
                     if (match) { media.set(name, entry); descriptors.push({ name, size: null, sha256: match[1] }); }
                 }
                 for (const name of roles.keys()) if (!entries.has(name)) return refuse('missing-attachment');
+                phase = 'pristine-parse';
                 const originalBytes = attachment(entries.get('original.pdf')!, LIMIT);
                 if (!originalBytes.length) return refuse('unreadable');
                 await step();
                 pristineFingerprint = await hash(originalBytes, step);
                 pristine = new Blob([new Uint8Array(originalBytes)], { type: 'application/pdf' });
-                const nested = await PDFDocument.load(originalBytes, { parseSpeed: Infinity, updateMetadata: false });
+                let nested: PDFDocument;
+                try { nested = await PDFDocument.load(originalBytes, { parseSpeed: Infinity, updateMetadata: false, throwOnInvalidObject: true }); }
+                catch { return refuse('unreadable'); }
+                await step();
+                phase = 'pristine-policy';
+                const pristineSafety = inspectPdfDocumentWriteSafety(nested);
+                if (pristineSafety.kind !== 'safe') return refuse(pristineSafety.kind === 'unknown' ? 'unsafe-policy' : pristineSafety.kind);
                 await step();
                 if ([...inventory(nested)].some(([name, entry]) => isAuthority(name, entry))) return refuse('nested-source');
+                phase = 'board-read';
                 const boardBytes = attachment(entries.get('board.json')!, BOARD_LIMIT);
                 if (!boardBytes.length) return refuse('unreadable');
                 board = new Blob([new Uint8Array(boardBytes)], { type: 'application/json' });
@@ -135,6 +167,7 @@ export class PdfInkInspector {
                 if (!isCompatibilityFenceBytes(fence)) return refuse('unsupported-format');
                 attachment(entries.get('.vault-write-mark')!, BOARD_LIMIT);
                 await step();
+                phase = 'board-identity';
                 const mark = await checkPdfWriteMark(bytes);
                 await step();
                 if (mark.kind !== 'verified' || !mark.writeId) return refuse('invalid-write-mark');
@@ -143,13 +176,15 @@ export class PdfInkInspector {
                 catch (error) { if (error instanceof Interrupted) throw error; return refuse('unsupported-format'); }
             }
             await step();
-            const id = crypto.randomUUID();
+            phase = 'inspection-id';
+            const id = newPdfWorkerId();
             this.retained.set(id, { document, bytes, media });
-            if (!board) return { kind: 'plain', id, outerFingerprint, pristine, pristineFingerprint, board: null, media: [], formatId: NATIVE_FORMAT_ID };
-            return { kind: 'native', id, outerFingerprint, pristine, pristineFingerprint, board, writeId: writeId!, media: descriptors, formatId: NATIVE_FORMAT_ID };
+            if (!board) return { kind: 'plain', id, outerFingerprint, pristine, pristineFingerprint, board: null, media: [], formatId: NATIVE_FORMAT_ID, writeSafety };
+            return { kind: 'native', id, outerFingerprint, pristine, pristineFingerprint, board, writeId: writeId!, media: descriptors, formatId: NATIVE_FORMAT_ID, writeSafety };
         } catch (error) {
             if (error instanceof Interrupted) throw error.cause;
-            return { kind: 'read-only', reason: error instanceof Refusal ? error.reason : 'unreadable' };
+            if (error instanceof Refusal) return { kind: 'read-only', reason: error.reason };
+            return { kind: 'read-only', reason: 'inspection-failed', phase, errorClass: errorClass(error) };
         } finally { this.pending--; }
     }
     async readMedia(id: string, name: string, cooperate: () => Promise<void>): Promise<Blob> {

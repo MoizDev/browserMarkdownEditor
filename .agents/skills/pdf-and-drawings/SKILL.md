@@ -23,6 +23,13 @@ Do not enable NativePdfPane merely because its acquisition API exists: its actua
 - PDF owns HOST metadata (`session/inkHost.ts`). Allocate one save write ID before frozen serialization;
   pin without mutating live undo/dirty state, preserve opaque HOST ext, and rebind only after verified
   versioned IO to an authoritative forward generation with the same pristine source.
+- **Classic and native edit authority requires actual write safety of BOTH outer and pristine.**
+  `utils/pdfWriteSafety.ts` runs only in the mature-parser worker; signatures/ByteRange/certification,
+  encryption or unknown policy refuse in-place writes. A raw attachment role, foreign-mark approval,
+  native signature count zero or a read-only banner cannot mint this proof. Classic capability gates,
+  canvas admission/export, independent worker builds and App's final post-await disk/closing checks
+  all enforce it. Unsigned copies must remove proven obsolete OUTER signature objects and independently
+  pass the same whole-graph safety check; their exact signed raw attachment stays untouched.
 - Writers are isolated, serial, role-sealed and never replay failed writes. Rebuild from pristine plus
   current ink and preserved attachments; worker proofs never grant disk authority. Complete orphan
   recovery uses `whiteboard/host/pdfInkAssembly.ts`, not JSON disguised as PDF or pristine alone.
@@ -60,7 +67,8 @@ as live tldraw shapes.
   attachment name tree; never the classic renderer), never from one attachment's presence:
   `utils/pdfRole.ts` returns one of six tags. `plain` (no attachments of ours: the file's own bytes
   are the pristine original) and `annotated` (the supported legacy pair, `original.pdf` + a valid
-  `tldraw-snapshot.json`) are the only EDITABLE roles; `notebookExport`, `unreadable`, `ambiguous`
+  `tldraw-snapshot.json`) are the only potentially EDITABLE roles, additionally requiring actual outer
+  and pristine `writeSafety.kind === 'safe'`; `notebookExport`, `unreadable`, `ambiguous`
   and `newer` open Annotate read-only with `pdfRoleNotice`'s text in the outer view. A role-passing
   snapshot is loaded into an isolated legacy store before mounting; a library rejection or render
   error revokes its exact source and replaces the editor with a read-only notice. An `original.pdf`

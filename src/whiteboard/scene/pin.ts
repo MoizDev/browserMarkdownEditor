@@ -72,6 +72,8 @@ export function createSceneSnapshot(options: {
             if (released || !records.get(id)) return null;
             return options.bounds?.get(id) ?? { revision, quality: BoundsQuality.Pending, ink: null, selectable: null };
         },
+        readNodeNow(id) { check(); return records.get(id); },
+        metadataNow() { check(); return metadata; },
         async readDocument(signal) {
             check(); signal?.throwIfAborted();
             const doc = await waitFor(document(), signal);
@@ -88,7 +90,7 @@ export function createSceneSnapshot(options: {
                 const source = await options.prepare(doc, pinnedRequest, controller.signal);
                 check();
                 if (!source || source.sceneRevision !== revision || !sameToken(source.token, token)) throw new TypeError('Paint source does not match scene snapshot');
-                return { token, sceneRevision: revision, nodeCount: source.nodeCount,
+                return { token, sceneRevision: revision, sensitiveNodes: source.sensitiveNodes, nodeCount: source.nodeCount,
                     readNode: (index: number) => source.readNode(index), isCurrent: () => !released && !controller.signal.aborted } satisfies PaintNodeSource;
             })();
             return waitFor(work, signal);

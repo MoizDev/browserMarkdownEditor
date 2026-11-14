@@ -16,6 +16,7 @@ export function createNativeAcquisitionOptions<S extends BoardSessionPort>(
         bytesGeneration: identity.bytesGeneration,
         kind: identity.kind,
         prepare, attachCanvasSession, onNativeCanvasReady, onError, emergencyReadOnlyReason,
+        acceptConvertedSource: (source, digest) => host.acceptConvertedSource(identity, source, digest),
         existing() {
             if (!host.isCurrent(identity)) return undefined;
             const candidate = host.session(identity.documentId);

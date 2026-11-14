@@ -6,6 +6,7 @@ export type SharedBoardWorker = 'parse' | 'geometry' | 'decode' | 'export';
 export interface BoardWorkerClient {
     request<T>(op: string, payload: unknown, identity: BoardJobIdentity, options: RequestOptions,
         isCurrent: (identity: BoardJobIdentity) => boolean): Promise<T>;
+    whenRetired(request: Promise<unknown>): Promise<void>;
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     on(event: string, handler: (payload: unknown, identity: BoardJobIdentity) => void): () => void;
     cancelSession(session: string, epoch: number): void;
@@ -34,7 +35,7 @@ export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
         events: ['pngPull', 'fontEpoch', 'memory'], eventLimit: 65_536, absoluteMs: 600_000,
         disposeResult: (_op, result) => closeWorkerResult(result),
     });
-    const requests = new WeakMap<Promise<unknown>, Promise<unknown>>();
+    const requests = new WeakMap<Promise<unknown>, { pending?: Promise<unknown>; retired: Promise<void> }>();
     const client: BoardWorkerClient = {
         request<T>(op: string, payload: unknown, identity: BoardJobIdentity, options: RequestOptions,
             isCurrent: (identity: BoardJobIdentity) => boolean): Promise<T> {
@@ -55,11 +56,16 @@ export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
                 } catch (error) { closeWorkerResult(result); throw error; }
                 return result.payload as T;
             })();
-            if (pending) requests.set(output, pending);
+            if (pending) {
+                const entry = { pending: pending as Promise<unknown> | undefined, retired: host.whenRetired(pending) };
+                requests.set(output, entry);
+                void output.then(() => { entry.pending = undefined; }, () => { entry.pending = undefined; });
+            }
             return output;
         },
+        whenRetired(request) { return requests.get(request)?.retired ?? Promise.resolve(); },
         reprioritise(request, priority) {
-            const pending = requests.get(request);
+            const pending = requests.get(request)?.pending;
             if (pending) host.reprioritise(pending, priority);
         },
         on(event, handler) {

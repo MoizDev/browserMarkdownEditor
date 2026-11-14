@@ -1,4 +1,5 @@
 import type { Op, TransactionOrigin } from '../change/ops';
+import { normalizedRotation } from '../change/coordinates';
 import type { ParentId, NodeId } from '../model/ids';
 import { newNodeId } from '../model/ids';
 import { isSafeMediaFile, type MediaEntry, type MediaId, type MediaMime } from '../model/media';
@@ -41,6 +42,8 @@ export interface MediaPlacement {
     readonly page: number;
     readonly x: number;
     readonly y: number;
+    /** Parent-relative angle; the row and each media node share this orientation. */
+    readonly rotation?: number;
 }
 export interface MediaIngestOptions {
     readonly origin: TransactionOrigin;
@@ -76,12 +79,12 @@ function checkResult(info: InspectedMedia): void {
     }
 }
 
-function box(info: InspectedMedia): { w: number; h: number } {
-    const scale = Math.min(1, 5000 / Math.max(info.width, info.height));
+function box(info: InspectedMedia, density?: number): { w: number; h: number } {
+    const scale = density === undefined ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1 / density;
     return { w: info.width * scale, h: info.height * scale };
 }
 
-interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null }
+interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null; readonly density?: number }
 export interface MediaLocationWriter { setFile(id: MediaId, file: string | null): void }
 
 function setMediaFile(id: MediaId, file: string | null): Op {
@@ -110,6 +113,22 @@ export class MediaIngestor {
         const bytes = sources.reduce((sum, source) => sum + source.blob.size, 0);
         const deadlineMs = Math.max(30000, Math.ceil(bytes / (100 * 1024 * 1024)) * 30000);
         return this.jobs.run(context => this.run(sources, options, context), { signal: options.signal, deadlineMs });
+    }
+
+    /** The caller already owns this session's serial job; enqueueing again would deadlock. */
+    ingestInJob(sources: readonly MediaSource[], options: MediaIngestOptions, context: JobContext): Promise<readonly NodeId[]> {
+        this.jobs.assertContext(context);
+        if (options.signal && options.signal !== context.signal) throw new TypeError('In-job media must use its owning context signal');
+        if (!sources.length || sources.length > SECURITY_LIMITS.mediaBatch) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
+        this.host.finishGesture();
+        return this.run(sources, { ...options, signal: context.signal }, context);
+    }
+
+    replaceInJob(id: NodeId, source: MediaSource, options: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }, context: JobContext): Promise<void> {
+        this.jobs.assertContext(context);
+        if (options.signal && options.signal !== context.signal) throw new TypeError('In-job media must use its owning context signal');
+        this.host.finishGesture();
+        return this.runReplace(id, source, { ...options, signal: context.signal }, context);
     }
 
     replace(id: NodeId, source: MediaSource, options: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }): Promise<void> {
@@ -184,10 +203,12 @@ export class MediaIngestor {
                 current();
                 try {
                     if (source.name.length > 10000) throw new RangeError('Media name is too long');
+                    if (source.pixelsPerWorldUnit !== undefined && (!Number.isFinite(source.pixelsPerWorldUnit) || source.pixelsPerWorldUnit <= 0)) throw new RangeError('Invalid media density');
                     if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
                     const info = await this.host.inspectMedia(source.blob, { signal, identity, isCurrent });
                     current();
                     checkResult(info);
+                    if (source.pixelsPerWorldUnit !== undefined && info.mime !== 'image/png') throw new TypeError('Density requires a PNG');
                     if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
                     const old = this.session.doc.media.get(info.id);
                     const entry: MediaEntry = old ?? {
@@ -197,7 +218,7 @@ export class MediaIngestor {
                     const file = await this.host.storeMedia(entry, source.blob, signal);
                     current();
                     if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
-                    staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file });
+                    staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file, density: source.pixelsPerWorldUnit });
                 } catch (error) {
                     current();
                     refused.push({ name: source.name, reason: error instanceof Error ? error.message : 'Media could not be read' });
@@ -206,10 +227,11 @@ export class MediaIngestor {
             current();
             if (refused.length) this.host.noticeRefused(refused);
             if (!staged.length) return [];
-            const { parent, page, x, y } = options.placement;
-            if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Invalid placement');
-            const sizes = staged.map(item => box(item.info));
-            let left = x - sizes.reduce((sum, size) => sum + size.w, 0) / 2;
+            const { parent, page, x, y } = options.placement, angle = options.placement.rotation ?? 0;
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(angle)) throw new RangeError('Invalid placement');
+            const rotation = normalizedRotation(angle), c = Math.cos(rotation), s = Math.sin(rotation);
+            const sizes = staged.map(item => box(item.info, item.density));
+            let left = -sizes.reduce((sum, size) => sum + size.w, 0) / 2;
             const siblings = this.session.doc.children.get(parent) ?? [];
             const orders = keysBetween(siblings.at(-1)?.order ?? null, null, staged.length);
             const ids: NodeId[] = [];
@@ -231,7 +253,8 @@ export class MediaIngestor {
                 }
                 const id = newNodeId({ nodes: { has: candidate => this.session.doc.nodes.has(candidate) || ids.includes(candidate) }, sheets: this.session.doc.sheets });
                 ids.push(id);
-                const common = { id, parent, order: orders[i], page, x: left, y: y - h / 2, ext: null, w, h, media: info.id, alt: '' };
+                const common = { id, parent, order: orders[i], page, x: x + c * left + s * h / 2,
+                    y: y + s * left - c * h / 2, rotation, ext: null, w, h, media: info.id, alt: '' };
                 const node = info.mime.startsWith('video/')
                     ? createClip({ ...common, time: 0, playing: true, autoplay: true })
                     : createPicture({ ...common, crop: null, flipX: false, flipY: false, inverted: false, playing: true, url: null });

@@ -1,5 +1,5 @@
 import type { prepareOwnedPdfInk } from '../../pdf/session/ownedInkAcquisition';
-import type { createPdfInkHost, pinPdfInkHostForSave, rebindPdfInkSource, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
+import type { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, rebindPdfInkSource, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { SourceOwner } from '../../utils/documentBuffers';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
@@ -7,8 +7,10 @@ import { mediaExtension } from '../media/ingest';
 import { MEDIA_MIMES, type MediaId } from '../model/media';
 import { createPdfInkRebind, type PdfInkRebindSnapshot } from './pdfInkRebind';
 import { prepareNativePdfRuntime } from './prepareNativePdfRuntime';
+import type { PdfInkSourceLease } from './pdfInkSourceOwner';
 
 export interface PdfInkSourceState {
+    retainSource(): PdfInkSourceLease;
     getSnapshot(): PdfInkRebindSnapshot;
     subscribe(listener: () => void): () => void;
     readMedia(id: MediaId, signal: AbortSignal): Promise<Blob>;
@@ -23,6 +25,7 @@ export interface PreparePdfInkSessionOptions {
     readonly prepareOwned: typeof prepareOwnedPdfInk;
     readonly createHost: typeof createPdfInkHost;
     readonly validateLoadedHost: typeof validateLoadedPdfInkHost;
+    readonly readLegacyDigest: typeof readPdfInkLegacyDigest;
     readonly pinHost: typeof pinPdfInkHostForSave;
     readonly rebind: typeof rebindPdfInkSource;
     currentReadOnly(): string | null;
@@ -52,14 +55,19 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
     const acquisition = await options.prepareOwned({ outer, token, isCurrent: current }, signal);
     if (acquisition.kind === 'read-only') {
         if (signal.aborted || !current()) { await acquisition.dispose(); throw stale(); }
-        return { kind: 'read-only' as const, reason: acquisition.reason, dispose: () => acquisition.dispose() };
+        return { kind: 'read-only' as const, reason: acquisition.reason,
+            ...(acquisition.notebookSource && acquisition.outerFingerprint && acquisition.isCurrent ? {
+                notebookSource: acquisition.notebookSource, outerFingerprint: acquisition.outerFingerprint,
+                isCurrent: () => !signal.aborted && current() && acquisition.isCurrent!(),
+            } : {}),
+            dispose: () => acquisition.dispose() };
     }
     let accepted;
     try { signal.throwIfAborted(); if (!current()) throw stale(); accepted = acquisition.take(); }
     catch (error) { await acquisition.dispose(); throw error; }
     let controller: ReturnType<typeof createPdfInkRebind> | undefined;
     const prepared = await prepareNativePdfRuntime({ host, identity, accepted, signal, deadlineMs: options.deadlineMs, zMax: options.zMax,
-        createHost: options.createHost, validateLoadedHost: options.validateLoadedHost, pinHost: options.pinHost,
+        createHost: options.createHost, validateLoadedHost: options.validateLoadedHost, readLegacyDigest: options.readLegacyDigest, pinHost: options.pinHost,
         currentReadOnly: () => {
             const state = controller?.getSnapshot();
             return state && (state.status === 'read-only' || state.status === 'failed')
@@ -74,11 +82,11 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
         if (!current()) throw stale();
         controller = createPdfInkRebind({ host, documentId, admittedIdentity: identity, initialSource: accepted,
             sources: prepared.sources, rebind: options.rebind, onError: options.onError, onReadOnly: options.onReadOnly });
-    } catch (error) { prepared.dispose(); await prepared.sources.drain(); throw error; }
+    } catch (error) { await prepared.dispose(); throw error; }
     const rebind = controller;
     let transferred = false, stagingDisposed = false;
     return {
-        kind: 'ready' as const,
+        kind: 'ready' as const, legacyOriginalSha256: prepared.legacyOriginalSha256,
         take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null) {
             if (transferred || stagingDisposed || !current() || owner.documentId !== documentId || owner.session !== identity.session || !isLiveOwner(owner)) throw stale();
             const slot = getSessionIdentity(documentId);
@@ -87,6 +95,10 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
             transferred = true;
             let closed = false, closing: Promise<void> | undefined;
             const facade: PdfInkSourceState = {
+                retainSource() {
+                    if (closed || !current() || !isLiveOwner(owner)) throw stale();
+                    return prepared.sources.retain();
+                },
                 getSnapshot: rebind.getSnapshot, subscribe: rebind.subscribe,
                 async readMedia(id, mediaSignal) {
                     mediaSignal.throwIfAborted();
@@ -121,7 +133,7 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
             if (transferred || stagingDisposed) return;
             stagingDisposed = true;
             rebind.dispose();
-            prepared.dispose();
+            await prepared.dispose();
             await rebind.drain();
         },
     };

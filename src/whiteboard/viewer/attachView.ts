@@ -72,6 +72,7 @@ export const attachView: AttachView = options => {
             && a.session === b.session ? preview.nodeIds : null;
     };
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
+        liveNodeIds: () => interaction?.liveNodeIds?.(),
         beforePrepare(current, budget) {
             runtime.flushFrame(budget.frameId);
             if (runtime.scene && !runtime.scene.ready) runtime.scene.step(8, budget.prepareDeadline);
@@ -125,7 +126,11 @@ export const attachView: AttachView = options => {
         const current = lastView;
         const world: Rect | undefined = current ? { x: current.camera.x, y: current.camera.y,
             width: current.viewport.width / current.camera.z, height: current.viewport.height / current.camera.z } : undefined;
-        void pin.paintSource({ sheetId: selectedSheet, theme: view.theme, ...(world ? { world } : {}) }, controller.signal).then(source => {
+        const sensitiveNodes = new Set(runtime.selection.getSnapshot().selected);
+        for (const id of interaction?.liveNodeIds?.() ?? []) sensitiveNodes.add(id as NodeId);
+        const deviceScale = current ? current.camera.z * current.viewport.dpr : undefined;
+        void pin.paintSource({ sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
+            ...(world ? { world } : {}), ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) }, controller.signal).then(source => {
             if (disposed || !view.visible || controller.signal.aborted || sequence !== request) { pin.release(); return; }
             frames.request({ source, release: () => pin.release() });
             paintJob = null; publish();

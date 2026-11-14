@@ -9,6 +9,8 @@ import type { LegacyWorldBounds } from './pages';
 export interface LegacyGeometry {
     // World-space bounds from the same geometry providers that render this node.
     worldBounds(node: Readonly<Node>, transform: Affine): Box | undefined;
+    /** Certified world-space approximation budget of the supplied bounds. */
+    worldBoundsError?(node: Readonly<Node>, transform: Affine): number;
 }
 export interface LegacyTextLayout {
     readonly engine: TextLayoutEngine;
@@ -67,7 +69,16 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
             seen.add(current.node);
             const transform = matrix(current.node, current.parent);
             let part: Box | undefined;
-            if (current.node.kind === 'text') part = transformed(textBoxes.get(current.node)!, transform);
+            if (current.node.kind !== 'group') {
+                part = geometry.worldBounds(current.node, transform);
+                if (part) {
+                    const error = geometry.worldBoundsError?.(current.node, transform) ?? 0;
+                    if (!Number.isFinite(error) || error < 0) throw new Error(`Invalid geometry error for ${current.node.id}`);
+                    errorWorld = Math.max(errorWorld, error);
+                }
+            }
+            if (part) { /* The prepared provider is authoritative for this node. */ }
+            else if (current.node.kind === 'text') part = transformed(textBoxes.get(current.node)!, transform);
             else if (current.node.kind === 'sticky') part = transformed([0, 0, 200 * current.node.scale,
                 (200 + current.node.growY) * current.node.scale], transform);
             else if (current.node.kind === 'figure') {
@@ -79,7 +90,7 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
             } else if (current.node.kind === 'frame' || current.node.kind === 'picture' || current.node.kind === 'clip'
                 || current.node.kind === 'linkcard' || current.node.kind === 'embed') {
                 part = transformed([0, 0, current.node.w, current.node.h], transform);
-            } else if (current.node.kind !== 'group') part = geometry.worldBounds(current.node, transform);
+            }
             if (part) {
                 if (!validBox(part)) throw new Error(`Invalid geometry for ${current.node.id}`);
                 box = union(box, part);

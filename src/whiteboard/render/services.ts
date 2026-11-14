@@ -4,11 +4,15 @@ import { worldPose } from '../change/coordinates';
 import { ApplyFailed } from '../change/errors';
 import { createBoardChangeGeometry } from '../geom/changeGeometry';
 import { compose, inverse } from '../geom/affine';
+import { transformBox } from '../geom/bounds';
+import { nextUp } from '../geom/numeric';
+import type { PaintNode } from './paintStream';
 import { geometrySceneBounds, transformedPathBounds } from '../geom/providers';
-import { resolveConnectorGeometry } from '../geom/resolveConnector';
+import { resolveConnectorGeometry, resolveConnectorGeometryNow } from '../geom/resolveConnector';
 import type { AttachmentSurface, ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp } from '../geom/path';
 import type { InkCoverage } from '../ink/outline';
+import { CURVE_CHUNK_SPANS } from '../ink/curve';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import { createNode, type Node } from '../model/nodes';
@@ -18,13 +22,14 @@ import { localBounds, BoundsQuality, type BoundsProvider, type Box, type LocalGe
 import type { ScenePaintRequest } from '../scene/types';
 import { paintConnector } from './connectorPaint';
 import { conservativeConnectorBounds } from './conservativeConnector';
-import { buildStrokeCoverage } from './inkGeometry';
-import { paintStrokeNode, paintVectorNode } from './nodePaint';
+import { buildStrokeCoverage, buildStrokeCoverageNow } from './inkGeometry';
+import { paintStrokeNode, paintVectorNode, paintVectorNodeNow } from './nodePaint';
 import { DEFAULT_BOARD_PALETTES } from './palette';
 import type { PaintPalette } from './colour';
 import { retainPaintNodeResources } from './resourceLeases';
 import { localGeometrySignature, sameGeometrySignature } from './retainedKeys';
-import { prepareScenePaintSource } from './sceneSource';
+import { prepareScenePaintSource, prepareScenePaintSourceNow, type SceneResolveContext } from './sceneSource';
+import { chooseTileScale } from './tileHierarchy';
 import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry';
 import type { BoardFonts } from '../text/fonts';
 import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
@@ -36,6 +41,20 @@ interface Prepared {
     readonly vector?: BoardVectorGeometry;
     readonly ink?: readonly InkCoverage[];
     readonly connector?: ConnectorGeometry;
+    readonly inkPrecision?: string;
+    readonly inkLod?: boolean;
+}
+const allocationScratch = new Float64Array(4);
+function withAllocation(paint: PaintNode, geometry: Prepared, context: SceneResolveContext): PaintNode {
+    const ink = geometry.bounds.ink;
+    if (!ink) return paint;
+    // Rewalking every realised command for every dense tile left a 1000-polyline view blank.
+    // The canonical prepared ink envelope already covers all this node's contributions.
+    transformBox(allocationScratch, 0, ink, 0, context.world);
+    const [x, y, right, bottom] = allocationScratch;
+    const bounds = { x, y, width: nextUp(right - x), height: nextUp(bottom - y) };
+    if (Object.values(bounds).some(value => !Number.isFinite(value)) || bounds.width < 0 || bounds.height < 0) return paint;
+    return { ...paint, allocationBounds: Object.freeze(bounds) };
 }
 function matrix(doc: BoardDoc, id: NodeId): Affine {
     const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -59,6 +78,29 @@ function union(a: Box | null, b: Box): Box {
     return a ? [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] : b;
 }
 
+function strokePrepared(key: string, ink: readonly InkCoverage[]): Omit<Prepared, 'signature'> {
+    let bounds: Box | null = null;
+    for (const chunk of ink) bounds = union(bounds, [chunk.boundsLocal.x, chunk.boundsLocal.y,
+        chunk.boundsLocal.x + chunk.boundsLocal.w, chunk.boundsLocal.y + chunk.boundsLocal.h]);
+    return { key, ink, bounds: { ink: bounds ?? [0, 0, 0, 0] } };
+}
+function connectorPrepared(key: string, node: Readonly<Node> & { kind: 'connector' }, geometry: ConnectorGeometry,
+    inverseWorld: Affine): Omit<Prepared, 'signature'> {
+    let local: Box | null = null;
+    for (const path of [geometry.body, ...geometry.heads]) {
+        const bounds = transformedPathBounds(path, inverseWorld); if (bounds) local = union(local, rectBox(bounds));
+    }
+    if (geometry.label) {
+        const b = geometry.label.paint.ink, m = compose(inverseWorld, geometry.label.localToWorld);
+        const path: PathOp[] = [{ op: 'M', p: { x: b.x, y: b.y } }, { op: 'L', p: { x: b.x + b.width, y: b.y } },
+            { op: 'L', p: { x: b.x + b.width, y: b.y + b.height } }, { op: 'L', p: { x: b.x, y: b.y + b.height } }, { op: 'Z' }];
+        const box = transformedPathBounds(path, m); if (box) local = union(local, rectBox(box));
+    }
+    local ??= [node.start.x, node.start.y, node.start.x, node.start.y];
+    const half = node.width / 2;
+    return { key, connector: geometry, bounds: { ink: [local[0] - half, local[1] - half, local[2] + half, local[3] + half] } };
+}
+
 /** One session service resolves the same local geometry for Scene, paint and
  * export. Pinned read-side documents are passed explicitly after every await. */
 export function createBoardRenderServices(options: {
@@ -68,10 +110,16 @@ export function createBoardRenderServices(options: {
     readonly token: RenderToken;
     readonly palettes?: Readonly<{ light: PaintPalette; dark: PaintPalette }>;
     readonly deviceScale?: number;
+    /** Main-window transport only; worker-hosted admission reuses its own cooperative canonical job. */
+    readonly coverageWorker?: boolean;
     readonly fonts?: BoardFonts;
     cooperate?(): Promise<void>;
 }) {
     const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
+    // An opaque service incarnation binds the full owner token without putting an arbitrarily
+    // long document id into the worker protocol's 128-character session field.
+    const workerSession = `render/${options.token.session}/${options.token.bytesGeneration}/${crypto.randomUUID()}`;
+    const coverageWorker = typeof window !== 'undefined' && options.coverageWorker !== false;
     const textIds = new Set<NodeId>();
     const changeScopes = new Set<ReadonlyMap<NodeId, Prepared>>();
     let serial = 0, disposed = false, ownerReleased = false, holders = 1;
@@ -102,19 +150,37 @@ export function createBoardRenderServices(options: {
         }
         return result;
     };
-    const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal): Promise<Prepared> => {
+    const inkPrecision = (context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>) => {
+        const raw = context?.deviceScale ?? options.deviceScale ?? 3;
+        const effective = raw * (context?.sensitive ? 2.5 : 1);
+        const scale = chooseTileScale(effective).scale;
+        const lod = !!context?.allowInkLod && context.deviceScale !== undefined && !context.sensitive;
+        return { scale, lod, key: `${scale}:${lod ? 'lod' : 'fine'}` };
+    };
+    const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
+        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Promise<Prepared> => {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
-        if (old && sameGeometrySignature(old.signature, before)) { cached.delete(node.id); cached.set(node.id, old); return old; }
+        const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
+        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) { cached.delete(node.id); cached.set(node.id, old); return old; }
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
         if (node.kind === 'group') throw new TypeError('Groups aggregate child geometry in Scene');
         if (node.kind === 'stroke') {
-            const ink = await buildStrokeCoverage(node, options.samples, { deviceScale: options.deviceScale ?? 3, cooperate: options.cooperate, signal });
-            let bounds: Box | null = null;
-            for (const chunk of ink) bounds = union(bounds, [chunk.boundsLocal.x, chunk.boundsLocal.y,
-                chunk.boundsLocal.x + chunk.boundsLocal.w, chunk.boundsLocal.y + chunk.boundsLocal.h]);
-            result = { key, ink, bounds: { ink: bounds ?? [0, 0, 0, 0] } };
+            const revision = doc.rev, sampleRef = node.samples;
+            const identity = { session: workerSession, epoch: options.token.vaultEpoch, revision };
+            const ink = await buildStrokeCoverage(node, options.samples, {
+                deviceScale: precision!.scale, cooperate: options.cooperate, signal,
+                worker: coverageWorker ? async (points, parameters, style, range, coverage) => {
+                    const { prepareInkCoverageInWorker } = await import('../workers/inkCoverageClient');
+                    return prepareInkCoverageInWorker(points, parameters, style, range, coverage, identity, signal, () => {
+                        const current = doc.nodes.get(node.id);
+                        return !disposed && !signal.aborted && doc.rev === revision && current?.kind === 'stroke'
+                            && current.samples === sampleRef && sameGeometrySignature(signature(current, doc), before);
+                    }, precision!.lod ? { chunkCount: Math.max(1, Math.ceil((options.samples.count(sampleRef) - 1) / CURVE_CHUNK_SPANS)) } : undefined);
+                } : undefined,
+            });
+            result = strokePrepared(key, ink);
         } else if (node.kind === 'connector') {
             // Capture every dependency before awaiting fonts/geometry. An export
             // pin never follows a later target move in the live document.
@@ -143,20 +209,7 @@ export function createBoardRenderServices(options: {
                 } : undefined,
             });
             if (resolved.status !== 'ready') throw new Error(resolved.status === 'unroutable' ? resolved.reason : `Connector ${node.id} geometry is pending: ${resolved.reason}`);
-            const geometry = resolved.geometry;
-            let local: Box | null = null;
-            for (const path of [geometry.body, ...geometry.heads]) {
-                const bounds = transformedPathBounds(path, inverseWorld); if (bounds) local = union(local, rectBox(bounds));
-            }
-            if (geometry.label) {
-                const bounds = geometry.label.paint.ink, labelMatrix = compose(inverseWorld, geometry.label.localToWorld);
-                const path: PathOp[] = [{ op: 'M', p: { x: bounds.x, y: bounds.y } }, { op: 'L', p: { x: bounds.x + bounds.width, y: bounds.y } },
-                    { op: 'L', p: { x: bounds.x + bounds.width, y: bounds.y + bounds.height } }, { op: 'L', p: { x: bounds.x, y: bounds.y + bounds.height } }, { op: 'Z' }];
-                const box = transformedPathBounds(path, labelMatrix); if (box) local = union(local, rectBox(box));
-            }
-            local ??= [node.start.x, node.start.y, node.start.x, node.start.y];
-            const half = node.width / 2;
-            result = { key, connector: geometry, bounds: { ink: [local[0] - half, local[1] - half, local[2] + half, local[3] + half] } };
+            result = connectorPrepared(key, node, resolved.geometry, inverseWorld);
         } else {
             const vector = node.kind === 'opaque' ? await prepareOpaqueGeometry(node, signal, options.cooperate)
                 : await prepareBoardVectorGeometry(node, { text, revision: key, zoom: 1, signal, cooperate: options.cooperate });
@@ -165,10 +218,59 @@ export function createBoardRenderServices(options: {
             result = { key, vector, bounds: { ink: bounds.ink, hit: bounds.hit } };
         }
         check(signal);
-        const prepared: Prepared = { ...result, signature: before };
+        const prepared: Prepared = { ...result, signature: before,
+            ...(precision ? { inkPrecision: precision.key, inkLod: precision.lod } : {}) };
         cached.delete(node.id); cached.set(node.id, prepared);
         // Retained source items own their geometry by reference after eviction.
         // The v1 default bounds idle local-geometry residency to 256 nodes.
+        while (cached.size > 256) cached.delete(cached.keys().next().value!);
+        return prepared;
+    };
+    // A native copy event cannot await fonts, images, or a worker. These are the
+    // canonical CPU producers at the current face epoch, not persisted b hints.
+    // Mutation access below still separately requires fully loaded text faces.
+    const prepareNow = (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
+        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Prepared => {
+        check(signal);
+        const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
+        const precision = node.kind === 'stroke' ? inkPrecision(context ? { ...context, allowInkLod: false } : undefined) : undefined;
+        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) { cached.delete(node.id); cached.set(node.id, old); return old; }
+        const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
+        let result: Omit<Prepared, 'signature'>;
+        if (node.kind === 'group' || node.kind === 'opaque') throw new TypeError('Copy geometry requires a supported non-container leaf');
+        if (node.kind === 'stroke') {
+            result = strokePrepared(key, buildStrokeCoverageNow(node, options.samples, { deviceScale: precision!.scale, signal }));
+        } else if (node.kind === 'connector') {
+            const world = matrix(doc, node.id), inverseWorld = inverse(world, 1e12);
+            if (!inverseWorld) throw new RangeError('Connector transform is not invertible');
+            const surfaces = new Map<NodeId, AttachmentSurface>();
+            for (const end of [node.start, node.end]) if (end.attach && !surfaces.has(end.attach.target)) {
+                const target = doc.nodes.get(end.attach.target);
+                if (!target) throw new Error(`Connector ${node.id} has a missing target`);
+                const surface = prepareNow(target, doc, signal).vector?.attachments;
+                if (!surface) throw new Error(`Connector ${node.id} target ${target.id} has no supported attachment surface`);
+                surfaces.set(target.id, { target: target.id, outline: surface.outline, logicalBox: surface.logicalBox,
+                    localToWorld: matrix(doc, target.id), clips: frameClips(doc, target), revision: doc.rev });
+            }
+            const resolved = resolveConnectorGeometryNow({ key, node, localToWorld: world,
+                resolveTarget: id => surfaces.get(id), label: null, toleranceWorld: .01, maxPieces: 65_536 }, {
+                label: node.label ? (anchor, length) => {
+                    const label = text.prepareNow(node, { revision: key, connectorLength: length, anchor });
+                    return label ? { paint: label.paint, localToWorld: [1, 0, 0, 1, label.placement.x, label.placement.y] } : null;
+                } : undefined,
+            });
+            if (resolved.status !== 'ready') throw new Error(resolved.status === 'unroutable' ? resolved.reason : `Connector ${node.id} geometry is pending: ${resolved.reason}`);
+            result = connectorPrepared(key, node, resolved.geometry, inverseWorld);
+        } else {
+            const vector = prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
+            if (vector.text.length) textIds.add(node.id);
+            const bounds = geometrySceneBounds(vector);
+            result = { key, vector, bounds: { ink: bounds.ink, hit: bounds.hit } };
+        }
+        check(signal);
+        const prepared: Prepared = { ...result, signature: before,
+            ...(precision ? { inkPrecision: precision.key, inkLod: false } : {}) };
+        cached.delete(node.id); cached.set(node.id, prepared);
         while (cached.size > 256) cached.delete(cached.keys().next().value!);
         return prepared;
     };
@@ -193,11 +295,27 @@ export function createBoardRenderServices(options: {
             intersectsPage: () => true,
             async resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
-                const geometry = await prepare(node, doc, itemSignal);
-                if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
-                if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
-                return paintVectorNode(node, geometry.vector!, context, palette, text.faces,
-                    { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                const geometry = await prepare(node, doc, itemSignal, context);
+                const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
+                    : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
+                    : await paintVectorNode(node, geometry.vector!, context, palette, text.faces,
+                        { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                return withAllocation(paint, geometry, context);
+            },
+        }, signal);
+    };
+    const paintNow = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>) => {
+        const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
+        return prepareScenePaintSourceNow(doc, options.token, request, {
+            ...(orderedIds ? { orderedIds } : {}), intersectsPage: () => true,
+            resolve(node, context, itemSignal) {
+                if (node.kind === 'group') return { content: [] };
+                const geometry = prepareNow(node, doc, itemSignal, context);
+                const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
+                    : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
+                    : paintVectorNodeNow(node, geometry.vector!, context, palette, text.faces,
+                        { signal: itemSignal, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                return withAllocation(paint, geometry, context);
             },
         }, signal);
     };
@@ -211,10 +329,10 @@ export function createBoardRenderServices(options: {
     const preparedForChange = (doc: BoardDoc, node: Readonly<Node>) => {
         for (const scope of changeScopes) {
             const value = scope.get(node.id);
-            if (value && sameGeometrySignature(value.signature, signature(node, doc))) return value;
+            if (value && !value.inkLod && sameGeometrySignature(value.signature, signature(node, doc))) return value;
         }
         const value = cached.get(node.id);
-        return value && sameGeometrySignature(value.signature, signature(node, doc)) ? value : undefined;
+        return value && !value.inkLod && sameGeometrySignature(value.signature, signature(node, doc)) ? value : undefined;
     };
     const warmChangeGeometry = async (ids: Iterable<NodeId>, signal: AbortSignal, scope?: Map<NodeId, Prepared>, leases?: { release(): void }[],
         doc: BoardDoc = options.doc, current?: () => boolean) => {
@@ -349,6 +467,38 @@ export function createBoardRenderServices(options: {
             return { release() { if (held) { held = false; releaseHolder(); } } };
         },
         prepareForPick(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc) { return prepare(node, doc, signal); },
+        prepareForPickNow(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc) { return prepareNow(node, doc, signal); },
+        prepareOverlayNow(doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) {
+            check(signal); return paintNow(doc, request, signal, ids);
+        },
+        pinChangeGeometryNow(ids: Iterable<NodeId>, signal: AbortSignal, doc: BoardDoc = options.doc, current?: () => boolean): { release(): void } {
+            check(signal);
+            const revision = doc.rev, font = text.fonts.epoch, scope = new Map<NodeId, Prepared>();
+            const leases: { release(): void }[] = [], queue = [...ids], seen = new Set<NodeId>();
+            const stable = () => {
+                check(signal);
+                if (doc.rev !== revision || text.fonts.epoch !== font || current?.() === false) throw new DOMException('Copy geometry changed', 'AbortError');
+            };
+            try {
+                for (let at = 0; at < queue.length; at++) {
+                    stable(); const id = queue[at]; if (seen.has(id)) continue; seen.add(id);
+                    const node = doc.nodes.get(id); if (!node) continue;
+                    leases.push(retainPaintNodeResources(node, options.samples, options.media));
+                    for (const incident of doc.attachedTo.get(id) ?? []) queue.push(incident);
+                    if (node.kind === 'group' || node.kind === 'frame') for (const child of doc.children.get(id) ?? []) queue.push(child.id);
+                    if (node.kind === 'connector') for (const end of [node.start, node.end]) if (end.attach) queue.push(end.attach.target);
+                    if (node.kind !== 'group') scope.set(id, prepareNow(node, doc, signal));
+                }
+                stable();
+            } catch (error) { for (const lease of leases) lease.release(); throw error; }
+            changeScopes.add(scope); holders++;
+            let held = true;
+            return { release() {
+                if (!held) return;
+                held = false; changeScopes.delete(scope); scope.clear();
+                try { for (const lease of leases) lease.release(); } finally { releaseHolder(); }
+            } };
+        },
         /** Preflight actual font/ink inputs outside the synchronous writer.
          * Staged transforms still resolve through the doc passed by apply. */
         prepareChangeGeometry: (ids: Iterable<NodeId>, signal: AbortSignal) => warmChangeGeometry(ids, signal),

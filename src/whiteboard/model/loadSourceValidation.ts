@@ -18,8 +18,8 @@ function boundedString(value: unknown, max: number): value is string {
 function position(value: unknown, size: number): value is ReadPosition {
     if (!fields(value, ['ordinal', 'line', 'byteOffset', 'byteLength'])) return false;
     const { ordinal, line, byteOffset, byteLength } = value;
-    return typeof ordinal === 'number' && Number.isSafeInteger(ordinal) && ordinal >= 0
-        && typeof line === 'number' && Number.isSafeInteger(line) && line >= 1
+    return typeof ordinal === 'number' && Number.isSafeInteger(ordinal) && ordinal >= 0 && ordinal < FORMAT_LIMITS.records
+        && typeof line === 'number' && Number.isSafeInteger(line) && line >= 1 && line <= size + 1
         && typeof byteOffset === 'number' && Number.isSafeInteger(byteOffset) && byteOffset >= 0 && byteOffset <= size
         && typeof byteLength === 'number' && Number.isSafeInteger(byteLength) && byteLength >= 0
         && byteLength <= FORMAT_LIMITS.recordBytes && byteLength <= size - byteOffset;

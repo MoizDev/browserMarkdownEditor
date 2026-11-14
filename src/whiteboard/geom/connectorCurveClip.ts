@@ -2,6 +2,7 @@ import { exactAffinePoint } from './exactAffine';
 import { exactIntersection, exactLineBetween, exactLineThrough, exactPoint, exactSide, sameExactPoint, type ExactPoint } from './homogeneous';
 import { createFillPointJob } from './fillPoint';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
+import { createPolynomialRootsJob } from './polynomialRootsJob';
 import { dyadicRatioInterval } from './dyadicRatio';
 import { dyadic, dyadicMultiply, dyadicSubtract, type Dyadic } from './numeric';
 import type { Vec2 } from './path';
@@ -80,6 +81,13 @@ export function* curvedConnectorLineCrossings(start: Vec2, end: Vec2, length: nu
         if (!point) throw new RangeError('Connector boundary intersection is parallel');
         endpoint(point);
     };
+    const cubicPolynomial = (curve: ExactCurve): Dyadic[] => {
+        const controls = curve.map(point => sum(sum(dyadicMultiply(line.a, point.x), dyadicMultiply(line.b, point.y)), line.c));
+        const scaled = (value: Dyadic, factor: bigint): Dyadic => ({ n: value.n * factor, e: value.e });
+        return [controls[0], scaled(dyadicSubtract(controls[1], controls[0]), 3n),
+            scaled(sum(dyadicSubtract(controls[0], scaled(controls[1], 2n)), controls[2]), 3n),
+            sum(dyadicSubtract(scaled(controls[1], 3n), controls[0]), dyadicSubtract(controls[3], scaled(controls[2], 3n)))];
+    };
     const cubic = function* (points: ExactCurve, depth = 0, widthLimit = error): Generator<void, void> {
         const stack: CurveWork[] = [{ curve: points, depth }];
         while (stack.length) {
@@ -94,8 +102,35 @@ export function* curvedConnectorLineCrossings(start: Vec2, end: Vec2, length: nu
             for (const point of p) { const t = parameter(point, start, end); lo = Math.min(lo, t.lo); hi = Math.max(hi, t.hi); }
             if (!Number.isFinite(lo) || !Number.isFinite(hi)) throw new RangeError('Connector curve projection overflows');
             if (hi < 0 || lo > 1) { yield; continue; }
-            if (variations === 1 && lo > 0 && hi < 1 && (hi - lo) * length <= widthLimit) {
-                add({ lo, hi, curve: item.curve, depth: item.depth }); yield; continue;
+            if (lo > 0 && hi < 1 && (hi - lo) * length <= widthLimit) {
+                if (variations === 1) { add({ lo, hi, curve: item.curve, depth: item.depth }); yield; continue; }
+                const job = createPolynomialRootsJob(cubicPolynomial(item.curve), { maxDepth: 64 - item.depth,
+                    maxNodes: Math.min(262144, Math.max(1, maxPieces * 64)) });
+                try {
+                    for (;;) {
+                        const result = job.step({ deadline: performance.now() + 3, maxWork: 1 });
+                        if (result.status === 'pending') { yield; continue; }
+                        if (result.status === 'uncertain') throw new RangeError(result.reason);
+                        for (const cell of result.roots) {
+                            let part = item.curve;
+                            if (cell.point && cell.index === (1n << BigInt(cell.depth))) { endpoint(weighted(part[part.length - 1])); yield; continue; }
+                            for (let d = 0; d < cell.depth; d++) {
+                                const [left, right] = splitExactCurve(part), bit = (cell.index >> BigInt(cell.depth - d - 1)) & 1n;
+                                part = bit ? right : left; yield;
+                            }
+                            if (cell.point) endpoint(weighted(part[0]));
+                            else {
+                                let a = Infinity, b = -Infinity;
+                                for (const point of part) { const t = parameter(weighted(point), start, end); a = Math.min(a, t.lo); b = Math.max(b, t.hi); }
+                                if (!(a > 0 && b < 1) || (b - a) * length > widthLimit) throw new RangeError('Connector root enclosure exceeds its budget');
+                                add({ lo: a, hi: b, curve: part, depth: item.depth + cell.depth });
+                            }
+                            yield;
+                        }
+                        break;
+                    }
+                } finally { job.cancel(); }
+                continue;
             }
             if (item.depth >= 64 || nodes + stack.length + 2 > maxPieces * 64) throw new RangeError('Connector curve root cannot be isolated');
             const [left, right] = splitExactCurve(item.curve);

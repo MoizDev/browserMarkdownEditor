@@ -193,7 +193,7 @@ export class History implements HistoryController {
         const step = this.openStep, point = step?.marks.get(mark);
         if (!step || point === undefined) throw new Error('Expired history mark');
         const tail = step.receipts.slice(point.receipts);
-        if (tail.length && !this.revert(tail.map(item => item.applied).reverse())) return;
+        if (tail.length) this.revert(tail.map(item => item.applied).reverse());
         for (const item of tail) item.lease.release();
         step.receipts.splice(point.receipts);
         step.entries.splice(point.entries);
@@ -204,7 +204,7 @@ export class History implements HistoryController {
     cancel(): void {
         const step = this.openStep;
         if (!step) return;
-        if (step.receipts.length && !this.revert(step.receipts.map(item => item.applied).reverse())) return;
+        if (step.receipts.length) this.revert(step.receipts.map(item => item.applied).reverse());
         this.openStep = undefined;
         if (step.reopened) {
             for (const item of step.receipts) item.lease.release();
@@ -268,9 +268,9 @@ export class History implements HistoryController {
         const active = value.active !== null && selected.includes(value.active) ? value.active : selected[selected.length - 1] ?? null;
         return { sheet: value.sheet, focus, selected, active, ...(value.text && this.ports.nodeExists(value.text.node) ? { text: value.text } : {}) };
     }
-    private revert(receipts: readonly Applied[]): boolean {
-        try { const applied = this.ports.revert(receipts); applied.release(); return true; }
-        catch (error) { this.ports.reportFailure(error); return false; }
+    private revert(receipts: readonly Applied[]): void {
+        try { const applied = this.ports.revert(receipts); applied.release(); }
+        catch (error) { this.ports.reportFailure(error); throw error; }
     }
     private replayOps(ops: readonly Op[], origin: 'undo' | 'redo', label: string): boolean {
         try {

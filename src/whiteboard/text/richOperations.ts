@@ -74,7 +74,7 @@ export function toggleMark(value: RichText, from: number, to: number, mark: Rich
 }
 export function applyLink(value: RichText, from: number, to: number, url: string | null): RichFragment {
     if (url !== null) {
-        if (url.length > 2048 || [...url].some(char => { const code = char.codePointAt(0)!; return code <= 0x1f || code >= 0x7f && code <= 0x9f; })) throw new RangeError('Invalid link');
+        if (url.length > 2048 || /\p{Cc}/u.test(url)) throw new RangeError('Invalid link');
         let parsed: URL;
         try { parsed = new URL(url); } catch { throw new RangeError('Invalid link'); }
         if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new RangeError('Invalid link');

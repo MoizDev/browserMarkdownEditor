@@ -746,7 +746,8 @@ class Pool implements PdfPool {
                 const notebookInput = op === 'writer.buildNotebook' ? args as WriterOperations['writer.buildNotebook']['args'] : undefined;
                 const notebookSpec = notebookInput ? notebookOutputSpec(notebookInput) : undefined;
                 const notebookIdentity = notebookInput ? { ...notebookInput, notebookSource: { path: notebookSpec!.path }, pages: [...notebookInput.pages] } : undefined;
-                const verifyInput = op === 'writer.verifyNotebookOutput' ? args as WriterOperations['writer.verifyNotebookOutput']['args'] : undefined;
+                const verifyInput = op === 'writer.verifyNotebookOutput' ? args as WriterOperations['writer.verifyNotebookOutput']['args'] :
+                    op === 'writer.verifyUnsignedCopy' ? args as WriterOperations['writer.verifyUnsignedCopy']['args'] : undefined;
                 if (verifyInput && (!(verifyInput.bytes instanceof ArrayBuffer) || !verifyInput.bytes.byteLength)) throw new Error('Invalid notebook verification bytes');
                 const verifyLength = verifyInput?.bytes.byteLength;
                 const value = await client.request<unknown>(op, args, { ...requestOptions, signal, cpu: 'governed',
@@ -774,8 +775,8 @@ class Pool implements PdfPool {
                     const staged = stages.get(input.stageId); stages.delete(input.stageId);
                     if (!staged || staged.sourceFingerprint !== output.sourceFingerprint || staged.pageCount !== output.verification.pageCount || staged.revision !== output.revision ||
                         input.attachments.some(entry => entry.role === 'editable' && entry.format !== staged.formatId)) invalidPdfReply();
-                } else if (op === 'writer.verifyNotebookOutput') {
-                    if ((result as WriterOperations['writer.verifyNotebookOutput']['result']).bytes.byteLength !== verifyLength) invalidPdfReply();
+                } else if (op === 'writer.verifyNotebookOutput' || op === 'writer.verifyUnsignedCopy') {
+                    if ((result as WriterOperations['writer.verifyNotebookOutput']['result'] | WriterOperations['writer.verifyUnsignedCopy']['result']).bytes.byteLength !== verifyLength) invalidPdfReply();
                 } else if (op === 'writer.release') sources.delete((args as WriterOperations['writer.release']['args']).writerSession);
                 if (op === 'writer.finishAnnotated') await verifyPdfWriterOutput(op,
                     args as WriterOperations['writer.finishAnnotated']['args'], result as WriterOperations['writer.finishAnnotated']['result'], signal);

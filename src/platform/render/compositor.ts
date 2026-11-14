@@ -1,6 +1,6 @@
 import type { Rect, ViewState } from '../types';
 import type {
-    CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, PaneCompositor, PaneSurfaceHost,
+    CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
 } from './compositor.types';
 import { paintPageScope, paintWorldScope, projectPage } from './compositorProjection';
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
@@ -10,6 +10,7 @@ import type { PageStack } from './pageStack';
 import { ArenaError } from './resourceArena';
 import type { ScheduledEncoding, ScheduledFrame, ScheduledSubmission } from './scheduler';
 import type { ReadySurfaceMetrics, SurfaceCommitTarget } from './surfaceMetrics';
+import { allocateSurfaceGeneration } from './surfaceGeneration';
 import type { FrameBudget, FrameToken, GpuReleaseReason } from './types';
 
 export interface GpuCompositorOptions {
@@ -20,7 +21,6 @@ export interface GpuCompositorOptions {
     readonly invalidate: (reason: string) => void;
     readonly onError: (error: unknown) => void;
     readonly onDeferred?: () => void;
-    readonly releaseSurface?: () => void;
 }
 
 interface Snapshot {
@@ -32,8 +32,6 @@ interface Snapshot {
 }
 interface Prepared { readonly frameId: number; readonly token: FrameToken; readonly snapshot: Snapshot }
 interface DrawScope { readonly encoder: FrameEncoder; readonly view: ViewState; readonly passes: Set<GpuPass> }
-
-let nextSurfaceGeneration = 0;
 
 function sameToken(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
@@ -91,7 +89,7 @@ export class GpuCompositor implements PaneCompositor {
     readonly target: SurfaceCommitTarget;
     readonly resources: PaneCompositor['resources'];
     readonly #options: GpuCompositorOptions;
-    #surfaceGeneration = ++nextSurfaceGeneration;
+    #surfaceGeneration = allocateSurfaceGeneration();
     #host: PaneSurfaceHost | null = null;
     #layers: readonly CompositorLayer[] = [];
     #layout: Readonly<PageStack> | null = null;
@@ -122,9 +120,8 @@ export class GpuCompositor implements PaneCompositor {
         const compositor = this;
         this.resources = Object.freeze({ owner: this,
             get device() { return !compositor.#disposed && compositor.#available ? options.owner.resources : null; },
-            uniforms: (bytes: ArrayBufferView, budget: FrameBudget) => compositor.#active &&
-                compositor.#prepared?.frameId === budget.frameId && sameToken(compositor.#prepared.token, budget.token)
-                ? compositor.uniforms(bytes) : null });
+            uniforms: (bytes: ArrayBufferView) => compositor.uniforms(bytes),
+            drawTexturedQuad: compositor.drawTexturedQuad.bind(compositor) as PaneCompositor['resources']['drawTexturedQuad'] });
     }
 
     get surfaceGeneration(): number { return this.#surfaceGeneration; }
@@ -165,7 +162,14 @@ export class GpuCompositor implements PaneCompositor {
         }));
     }
 
-    setLayout(stack: Readonly<PageStack> | null): void { this.#check(); this.#layout = stack; }
+    setLayout(stack: Readonly<PageStack> | null): void {
+        this.#check();
+        if (!stack) { this.#layout = null; return; }
+        if (!Number.isFinite(stack.width) || !Number.isFinite(stack.height) || stack.width < 0 || stack.height < 0 ||
+            stack.rects.some(rect => !validRect(rect))) throw new ArenaError('invalid-input');
+        this.#layout = Object.freeze({ width: stack.width, height: stack.height,
+            rects: Object.freeze(stack.rects.map(rect => Object.freeze({ ...rect }))) as unknown as PageStack['rects'] });
+    }
 
     setAppearance(appearance: CompositorAppearance): void {
         this.#check();
@@ -181,7 +185,7 @@ export class GpuCompositor implements PaneCompositor {
             throw new ArenaError('invalid-input');
         }
         if (!this.#metrics || this.#metrics.backingWidth !== metrics.backingWidth || this.#metrics.backingHeight !== metrics.backingHeight) {
-            this.#surfaceGeneration = ++nextSurfaceGeneration;
+            this.#surfaceGeneration = allocateSurfaceGeneration();
             this.#report = null;
         }
         this.#metrics = metrics;
@@ -230,7 +234,13 @@ export class GpuCompositor implements PaneCompositor {
                     if (binding.group === 'document' && snapshot.appearance.inverted && !document) {
                         document = pass.beginGroup(bounds, { opacity: 1, blend: 'normal', colourEffect: 'page-invert' });
                     }
-                    const isolation = binding.isolation ? pass.beginGroup(bounds, { ...binding.isolation, colourEffect: 'none' }) : null;
+                    const effect = binding.isolation;
+                    const effectBounds = effect?.bounds?.(frame) ?? bounds;
+                    if (![effectBounds.x, effectBounds.y, effectBounds.width, effectBounds.height].every(value => Number.isSafeInteger(value) && value >= 0)) {
+                        throw new ArenaError('invalid-input');
+                    }
+                    const isolation = effect ? pass.beginGroup(effectBounds,
+                        { opacity: effect.opacity, blend: effect.blend, colourEffect: 'none' }) : null;
                     const scope = layerPass(pass);
                     drawScope.passes.add(scope.pass);
                     try { binding.layer.drawGpu(scope.pass, frame.view); }
@@ -244,19 +254,19 @@ export class GpuCompositor implements PaneCompositor {
             let done = false;
             const epoch = this.#epoch;
             return {
-                submit: (): ScheduledSubmission => {
+                submit: (): ScheduledSubmission | null => {
                     if (done || this.#disposed || epoch !== this.#epoch || !this.#drawable(snapshot, frame)) {
                         this.#options.owner.discardFrame(owned);
                         this.#encodings.delete(owned);
                         done = true;
-                        return { drawn: [] };
+                        return null;
                     }
                     try {
                         const submitted = owned.submit();
                         done = true;
                         this.#encodings.delete(owned);
                         this.#retryPending = false;
-                        this.#report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
+                        this.#report = Object.freeze({ frameId: frame.frameId, token: Object.freeze({ ...frame.token }), presented: true,
                             complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp),
                             qualityScale: snapshot.metrics!.qualityScale });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
@@ -305,14 +315,31 @@ export class GpuCompositor implements PaneCompositor {
         return this.#active.encoder.uniforms(bytes);
     }
 
-    drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Rect, destRect: Rect,
-        options: { opacity?: number; sampling?: 'nearest' | 'linear' } = {}): void {
+    drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuad(pass: GpuPass | CanvasRenderingContext2D, texture: TextureHandle | ImageBitmap,
+        sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void {
+        if ('drawImage' in pass) {
+            if (!validRect(sourceRect) || !validRect(destRect) || !Number.isFinite(options.opacity) || options.opacity < 0 || options.opacity > 1 ||
+                !['nearest', 'linear'].includes(options.sampling)) throw new ArenaError('invalid-input');
+            if (!sourceRect.width || !sourceRect.height || !destRect.width || !destRect.height || !options.opacity) return;
+            pass.save();
+            try {
+                pass.resetTransform();
+                pass.globalAlpha *= options.opacity;
+                pass.imageSmoothingEnabled = options.sampling === 'linear';
+                pass.drawImage(texture as ImageBitmap, sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+                    destRect.x, destRect.y, destRect.width, destRect.height);
+            } finally { pass.restore(); }
+            return;
+        }
+        const gpuTexture = texture as TextureHandle;
         const active = this.#active;
         if (!active || !active.passes.has(pass) || !this.#quad || !this.#linear || !this.#nearest) throw new ArenaError('invalid-input');
         const opacity = options.opacity ?? 1;
         if (!validRect(sourceRect) || !validRect(destRect) || !Number.isFinite(opacity) || opacity < 0 || opacity > 1 ||
             options.sampling !== undefined && !['nearest', 'linear'].includes(options.sampling)) throw new ArenaError('invalid-input');
-        const info = this.#options.owner.textureInfo(texture);
+        const info = this.#options.owner.textureInfo(gpuTexture);
         if (info.format !== 'rgba8' || sourceRect.x < info.usedRect.x || sourceRect.y < info.usedRect.y ||
             sourceRect.x + sourceRect.width > info.usedRect.x + info.usedRect.width ||
             sourceRect.y + sourceRect.height > info.usedRect.y + info.usedRect.height) throw new ArenaError('invalid-input');
@@ -325,7 +352,7 @@ export class GpuCompositor implements PaneCompositor {
             sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height, info.width, info.height, opacity, 0]);
         const slice = this.uniforms(this.#quadData);
         pass.draw({ pipeline: this.#quad, vertices: [], first: 0, count: 4, instances: 1, scissor,
-            bindings: { uniforms: [{ binding: 0, slice }], textures: [{ binding: 0, texture,
+            bindings: { uniforms: [{ binding: 0, slice }], textures: [{ binding: 0, texture: gpuTexture,
                 sampler: options.sampling === 'nearest' ? this.#nearest : this.#linear }] } });
     }
 
@@ -334,7 +361,6 @@ export class GpuCompositor implements PaneCompositor {
         this.#epoch++;
         this.#available = false;
         this.#retryPending = false;
-        this.#options.releaseSurface?.();
         for (const encoder of this.#encodings) this.#options.owner.discardFrame(encoder);
         this.#encodings.clear();
         this.#active = null; this.#prepared = null; this.#snapshot = null; this.#report = null; this.#metrics = null;
@@ -371,7 +397,10 @@ export class GpuCompositor implements PaneCompositor {
             this.#quad = handle;
             this.#options.invalidate('gpu-quad-ready');
         }).catch(error => { if (!this.#disposed && epoch === this.#epoch) this.#failure(error); })
-            .finally(() => { this.#compiling = null; });
+            .finally(() => {
+                this.#compiling = null;
+                if (!this.#disposed && epoch !== this.#epoch && this.#available) this.#options.invalidate('gpu-quad-retry');
+            });
     }
     #failure(error: unknown): void {
         if (error instanceof ArenaError && ['aborted', 'lost', 'out-of-budget'].includes(error.code)) {

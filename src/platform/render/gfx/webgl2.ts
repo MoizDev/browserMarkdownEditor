@@ -43,6 +43,8 @@ export interface Webgl2Services {
     recordUpload?(bytes: number, elapsedMs: number): void;
     /** Mandatory frame-ring batch: its final packed length is known only at submit. */
     recordUniformUpload?(bytes: number, elapsedMs: number): void;
+    /** Age of the oldest genuinely unsignalled fence; the host supplies input-health evidence. */
+    observeFenceAge?(oldestPendingMs: number): void;
     /** Called only when a failed encode schedules the next bounded ring capacity. */
     recordUniformGrowth?(previousBytes: number, nextBytes: number): void;
 }
@@ -247,7 +249,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #composition: PipelineHandle | null = null;
     #white: TextureHandle | null = null;
     readonly #fences = new Map<number, WebGLSync | null>();
+    readonly #fenceTimes = new Map<number, number>();
     #brokenFence = false;
+    #fenceAgeReported = false;
     #gl: WebGL2RenderingContext | null;
     #canvas: HTMLCanvasElement | null;
     #work = new AbortController();
@@ -608,9 +612,11 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             height > Math.min(this.limits.maxRenderTargetSize, this.limits.maxViewport[1], RENDER_CONSTANTS.maxSurfaceAxisPixels) ||
             byteSize(width, height) > RENDER_CONSTANTS.maxSurfacePixels) throw new ArenaError('invalid-input');
         const canvas = this.#canvas!;
-        canvas.width = width;
-        canvas.height = height;
-        this.#surfaceRevision++;
+        if (canvas.width !== width || canvas.height !== height) {
+            if (canvas.width !== width) canvas.width = width;
+            if (canvas.height !== height) canvas.height = height;
+            this.#surfaceRevision++;
+        }
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
         this.#healthy();
@@ -674,7 +680,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
                 () => this.#pipelines.clear(), () => this.#pollCancel?.(),
                 () => { this.#pollCancel = null; this.#white = null; this.#composition = null; },
-                () => this.#fences.clear(), () => this.#handles.clear(), () => this.#programs.clear(),
+                () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
                 () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(), () => this.#arena.abandon(),
             ]);
@@ -1358,6 +1364,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#healthy();
         const serial = ++this.#serial;
         this.#fences.set(serial, fence);
+        this.#fenceTimes.set(serial, performance.now());
         this.#arena.submit(encoding, serial);
         this.#pool.finish(encoding, serial);
         const frame = this.#frames.get(encoding);
@@ -1392,13 +1399,17 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (result !== gl.ALREADY_SIGNALED && result !== gl.CONDITION_SATISFIED) return false;
         this.#completedSerial = serial;
         for (const [id, sync] of this.#fences) {
-            if (id <= serial) { if (sync) gl.deleteSync(sync); this.#fences.delete(id); }
+            if (id <= serial) { if (sync) gl.deleteSync(sync); this.#fences.delete(id); this.#fenceTimes.delete(id); }
         }
         return true;
     }
     #collect(): void {
         if (this.#lost) return;
         this.#arena.collect();
+        if (!this.#fences.size && this.#fenceAgeReported) {
+            this.#fenceAgeReported = false;
+            this.#services.observeFenceAge?.(0);
+        }
         if (!this.#fences.size && this.#arena.memory().retiring === 0) {
             this.#pollCancel?.();
             this.#pollCancel = null;
@@ -1413,7 +1424,21 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             cancel?.();
             try {
                 const latest = this.#fences.size ? this.#serial : 0;
-                if (latest) this.#complete(latest);
+                if (latest && !this.#complete(latest)) {
+                    // A later fence can still be pending after older ones signal. Report only an
+                    // actually checked pending fence, and bound work within the scheduler's poll.
+                    for (let checked = 0; checked < 8; checked++) {
+                        const oldest = this.#fences.keys().next().value as number | undefined;
+                        if (oldest === undefined) break;
+                        if (this.#complete(oldest)) continue;
+                        const issued = this.#fenceTimes.get(oldest);
+                        if (issued !== undefined) {
+                            this.#fenceAgeReported = true;
+                            this.#services.observeFenceAge?.(Math.max(0, performance.now() - issued));
+                        }
+                        break;
+                    }
+                }
                 this.#collect();
             } catch (error) {
                 const failure = this.#failure(error);

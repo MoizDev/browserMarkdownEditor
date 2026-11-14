@@ -1,7 +1,6 @@
 import type { PageDisplayList } from '../../platform/types';
 import { paperPageSize, type NotebookPaper } from '../../utils/paper';
 import type { SheetId } from '../model/ids';
-import type { DisplayPdfWriter } from '../export/capturePdf';
 import { notebookPaperList } from './notebookPaper';
 import type { IncrementalPdfPage, IncrementalPdfWriter } from '../export/incrementalPdf';
 
@@ -82,31 +81,6 @@ export async function notebookThumbnailPage(snapshot: NotebookExportSnapshot, pa
     const { width, height } = paperPageSize(paper);
     const displayList = await contentOnPage(snapshot, [...snapshot.sheets], page, signal);
     return { width, height, paper: notebookPaperList(paper, page), displayList };
-}
-
-/** Build print-light, page-local output in physical-page and logical-sheet order. */
-export async function notebookExportPages(snapshot: NotebookExportSnapshot, signal: AbortSignal): Promise<NotebookExportPage[]> {
-    const paper = { ...snapshot.paper };
-    const sheets = [...snapshot.sheets];
-    const { width, height } = paperPageSize(paper);
-    const pages: NotebookExportPage[] = [];
-    // Every sheet of paper is identical; keep one immutable geometry shared by the pages.
-    const paperItems = notebookPaperList(paper, 0).items;
-    for (let page = 0; page < paper.pageCount; page++) {
-        signal.throwIfAborted();
-        const displayList = await contentOnPage(snapshot, sheets, page, signal);
-        pages.push({ width, height, paper: { page, items: paperItems }, displayList });
-    }
-    return pages;
-}
-
-/** The host dynamically supplies the PDF writer only for an explicit export. */
-export async function exportNotebookPdf(
-    snapshot: NotebookExportSnapshot, sourcePath: string, writer: DisplayPdfWriter, signal: AbortSignal,
-): Promise<Uint8Array> {
-    const pages = await notebookExportPages(snapshot, signal);
-    signal.throwIfAborted();
-    return writer({ schema: 1, pages, notebookSource: { path: sourcePath } }, { signal });
 }
 
 function isIncrementalWriter(writer: NotebookPdfStreamWriter | IncrementalPdfWriter): writer is IncrementalPdfWriter {

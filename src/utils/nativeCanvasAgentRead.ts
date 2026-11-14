@@ -12,6 +12,7 @@ import { acquireNativeBoard } from '../whiteboard/host/nativeAcquisition';
 import { createClosedBoardSource, type ClosedBoardSource } from '../whiteboard/host/closedBoardScene';
 import { prepareNativeExport } from '../whiteboard/host/nativeExport';
 import type { ClosedCanvasSourceLease } from './closedCanvasSource';
+import { getPdfInkSourceState } from '../whiteboard/host/preparePdfInkSession';
 
 /** Loaded only by an actual canvas tool request; source ownership stays in App. */
 export async function readNativeCanvasShapePage(options: {
@@ -42,9 +43,18 @@ export async function readNativeCanvasShapePage(options: {
         const source = await deps.ensureNativeAgentRuntime(path, readiness);
         check();
         if (!source.isCurrent()) throw new DOMException('Canvas session changed', 'AbortError');
+        // A PDF page capture pins the App-owned PDF source of this exact document, the same
+        // source the clipboard uses; a refusal here is explicit, never a blank backdrop.
+        const pdfInk = source.identity.kind === 'pdfInk', documentId = source.identity.documentId;
         return createNativeAgentReader({ runtime: source.runtime,
             // App's canonical pending-or-disk media reader: the export producer uses it for embedded pictures.
             readMedia: (entry, mediaSignal) => source.readMedia(entry, mediaSignal),
+            ...(pdfInk ? { retainPdfSource: () => {
+                const pdf = getPdfInkSourceState(documentId);
+                if (!pdf || !source.isCurrent()) throw new Error('The PDF ink source is unavailable');
+                if (pdf.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
+                return pdf.retainSource();
+            } } : {}),
             isCurrent: () => guard.isCurrent() && source.isCurrent(), notice: deps.notify,
             onError: error => console.error('Native canvas tool capture failed:', error),
         }).shapes({ ...options.query }, job);

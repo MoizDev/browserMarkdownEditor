@@ -45,16 +45,10 @@ function sequence(reader: SampleStoreReader, node: StrokeNode): SampleSequence {
     };
 }
 
-/** Chunks are one stroke's union, not independently composited alpha bands. */
-export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: {
-    deviceScale: number; cooperate?: () => Promise<void>; signal?: AbortSignal;
-}): Promise<readonly InkCoverage[]> {
+function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: {
+    deviceScale: number; signal?: AbortSignal;
+}): Generator<void, readonly InkCoverage[]> {
     const check = () => options.signal?.throwIfAborted();
-    const cooperate = async () => {
-        check();
-        await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
-        check();
-    };
     check();
     if (!Number.isFinite(options.deviceScale) || options.deviceScale <= 0 || node.geomVersion !== CURVE_VERSION) {
         throw new RangeError('Unsupported stroke geometry version or device scale');
@@ -69,11 +63,11 @@ export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStore
     const parameters = curveParameters(parameterScale, node.fairTol, 1);
     let started = performance.now(), work = 0;
     const due = () => ++work >= 256 || performance.now() - started >= 3;
-    const yieldWork = async () => { await cooperate(); work = 0; started = performance.now(); };
+    const reset = () => { work = 0; started = performance.now(); };
     const x0 = points.x(0), y0 = points.y(0);
     let dot = true, maxRadius = radiusAtSample(points, 0, width), slope = 0;
     for (let i = 1; i < points.count; i++) {
-        if (due()) await yieldWork();
+        if (due()) { yield; check(); reset(); }
         const x = points.x(i), y = points.y(i), radius = radiusAtSample(points, i, width);
         if (x !== x0 || y !== y0) dot = false;
         maxRadius = Math.max(maxRadius, radius);
@@ -92,7 +86,7 @@ export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStore
         for (let start = 0; start < total; start += CURVE_CHUNK_SPANS) {
             const geometry = materializeCurveRange(points, { firstSpan: start, spanCount: Math.min(CURVE_CHUNK_SPANS, total - start) }, parameters);
             for (let i = 0; i < geometry.spanCount; i++) {
-                if (due()) await yieldWork();
+                if (due()) { yield; check(); reset(); }
                 const c = geometry.cubics, offset = i * 8;
                 const chord = Math.hypot(c[offset + 6] - c[offset], c[offset + 7] - c[offset + 1]);
                 const lower = Math.max(0, chord * (1 - 16 * Number.EPSILON) - 16 * Number.MIN_VALUE);
@@ -112,7 +106,7 @@ export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStore
             do {
                 check();
                 status = job.step(1);
-                if (status === 'pending' && due()) await yieldWork();
+                if (status === 'pending' && due()) { yield; check(); reset(); }
             } while (status === 'pending');
             if (status !== 'complete') throw new DOMException('Ink geometry cancelled', 'AbortError');
             const coverage = job.result;
@@ -121,8 +115,38 @@ export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStore
             error = coverage.dashPhaseErrorWorld;
         } finally { job.cancel(); }
         first += count;
-        if (first < total) await yieldWork();
+        if (first < total) { yield; check(); reset(); }
     } while (first < total);
     check();
     return Object.freeze(chunks);
+}
+
+/** Chunks are one stroke's union, not independently composited alpha bands. */
+export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: {
+    deviceScale: number; cooperate?: () => Promise<void>; signal?: AbortSignal;
+}): Promise<readonly InkCoverage[]> {
+    const job = strokeCoverage(node, samples, options);
+    try {
+        for (;;) {
+            options.signal?.throwIfAborted();
+            const next = job.next();
+            if (next.done) return next.value;
+            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            options.signal?.throwIfAborted();
+        }
+    } finally { job.return(undefined as never); }
+}
+
+/** Synchronous capture uses precisely the same geometry and cancellation path. */
+export function buildStrokeCoverageNow(node: StrokeNode, samples: SampleStoreReader, options: {
+    deviceScale: number; signal?: AbortSignal;
+}): readonly InkCoverage[] {
+    const job = strokeCoverage(node, samples, options);
+    try {
+        for (;;) {
+            options.signal?.throwIfAborted();
+            const next = job.next();
+            if (next.done) return next.value;
+        }
+    } finally { job.return(undefined as never); }
 }

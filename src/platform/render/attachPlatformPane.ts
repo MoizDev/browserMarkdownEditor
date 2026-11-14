@@ -382,6 +382,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             gpu = null;
         }
         const now = performance.now();
+        candidate.setVisible(next, now);
         for (const cache of caches) for (const handle of [cache.cpu, cache.gpu]) {
             handle.updateActivity({ hiddenAt: next ? null : now, lastVisibleAt: now, lastUsedAt: now });
         }

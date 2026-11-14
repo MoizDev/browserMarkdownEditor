@@ -150,6 +150,13 @@ export class GpuPaneCandidate {
         if (this.current?.preparation.generation === generation) this.current.deferredReported = false;
     }
 
+    setVisible(visible: boolean, now: number): void {
+        const generation = this.current;
+        if (!generation || generation.disposed) return;
+        generation.services.setVisible(visible, now);
+        generation.backing.setVisible(visible, now);
+    }
+
     /** Called only by the broker after it has actually set the native canvas to zero. */
     zeroed(canvas: HTMLCanvasElement): void {
         const generation = this.current;

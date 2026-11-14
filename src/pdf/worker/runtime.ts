@@ -18,8 +18,10 @@ import type { EngineInitArgs, PageTileArgs, PageTextReply } from './protocol';
 import type { PdfWorkerBinding } from '../contained/protocol';
 import type { PdfWriterRuntime } from '../writing/nativeHandlers.types';
 import type { WriterOperations } from '../writing/protocol';
+import type { PdfInkInspector } from '../writing/inkInspection';
+import type { PdfInkInspection } from '../writing/inkInspection.types';
 
-type OpenDoc = { doc: BackendDoc; source: PdfBlobSource; raw: Map<number, RawPageText>; clone?: BackendDoc;
+type OpenDoc = { doc: BackendDoc; source: PdfBlobSource; sourceBlob: Blob; raw: Map<number, RawPageText>; clone?: BackendDoc;
     geometry: Map<number, string>; loaded: Map<number, number>; password?: string; needsReopen: boolean }; 
 const bad = (name: 'EngineBroken' | 'RangeError' | 'NotFoundError', message: string) => new PdfEngineError(name, message);
 const record = (value: unknown): Record<string, unknown> => {
@@ -32,6 +34,15 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
     let chain: Promise<unknown> = Promise.resolve();
     let closed = false;
     const docs = new Map<string, OpenDoc>();
+    let inspector: PdfInkInspector | undefined;
+    type CachedInspection = { result: Extract<PdfInkInspection, { kind: 'plain' | 'native' }>; bytes: number };
+    const inspections = new Map<string, CachedInspection>();
+    let inspectionBytes = 0;
+    const dropInspection = (key: string) => {
+        const entry = inspections.get(key);
+        if (!entry) return;
+        inspections.delete(key); inspectionBytes -= entry.bytes; inspector?.release(entry.result.id);
+    };
     const fonts = new Map<PdfFontId, Uint8Array>();
     let fontEpoch = 0;
     let geometryEventAt = -Infinity;
@@ -59,7 +70,11 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 } finally {
                     if (!closed && performance.now() - memoryEventAt >= 500) {
                         memoryEventAt = performance.now();
-                        try { context.emit('worker.memory', pdfWorkerOwnedMemory(backend?.heapBytes() ?? writer?.heapBytes() ?? 0, fonts.values(), docs.values())); }
+                        try {
+                            const memory = pdfWorkerOwnedMemory(backend?.heapBytes() ?? writer?.heapBytes() ?? 0, fonts.values(), docs.values());
+                            const metadata = inspector?.memoryBytes() ?? 0;
+                            context.emit('worker.memory', { ...memory, textBytes: memory.textBytes + metadata, ownedBytes: memory.ownedBytes + metadata });
+                        }
                         catch { /* A failed native instance cannot replace the operation's actual error with telemetry. */ }
                     }
                 }
@@ -126,6 +141,24 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         }
         return result;
     };
+    const ensureInspection = async (key: string, item: OpenDoc, ctx: WorkerContext): Promise<{
+        result: PdfInkInspection; release(): void;
+    }> => {
+        const check = () => { if (closed || ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError'); };
+        check();
+        const cached = inspections.get(key);
+        if (cached) { inspections.delete(key); inspections.set(key, cached); return { result: cached.result, release() {} }; }
+        inspector ??= new (await import('../writing/inkInspection')).PdfInkInspector();
+        check();
+        const result = await inspector.inspect(item.sourceBlob, () => ctx.slice());
+        try { check(); } catch (error) { if (result.kind !== 'read-only') inspector.release(result.id); throw error; }
+        if (result.kind === 'read-only') return { result, release() {} };
+        const bytes = item.sourceBlob.size * 2 + result.pristine.size + (result.board?.size ?? 0);
+        if (bytes > 64 * 1024 * 1024) return { result, release: () => inspector?.release(result.id) };
+        while (inspections.size >= 8 || inspectionBytes + bytes > 64 * 1024 * 1024) dropInspection(inspections.keys().next().value!);
+        inspections.set(key, { result, bytes }); inspectionBytes += bytes;
+        return { result, release() {} };
+    };
     const writerHandlers = Object.fromEntries((['writer.prepareSource', 'writer.emitInk', 'writer.stageAnnotated',
         'writer.finishAnnotated', 'writer.buildNotebook', 'writer.rotate', 'writer.inspect', 'writer.release'] as const).map(op =>
         [op, serial((value, ctx) => {
@@ -156,11 +189,11 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                     (args.password !== undefined && typeof args.password !== 'string')) throw bad('RangeError', 'Invalid PDF open');
                 parsePdfDocKey(args.docKey); const existing = docs.get(args.docKey); if (existing) return existing.doc.info();
                 const source = new PdfBlobSource(args.source);
-                try { const doc = backend.open(source, { password: args.password as string | undefined }); docs.set(args.docKey, { doc, source, raw: new Map(), geometry: new Map(), loaded: new Map(), password: args.password as string | undefined, needsReopen: false }); return doc.info(); }
+                try { const doc = backend.open(source, { password: args.password as string | undefined }); docs.set(args.docKey, { doc, source, sourceBlob: args.source, raw: new Map(), geometry: new Map(), loaded: new Map(), password: args.password as string | undefined, needsReopen: false }); return doc.info(); }
                 catch (error) { source.close(); throw error; }
             }),
             'doc.close': serial(value => { const args = record(value); if (typeof args.docKey !== 'string') throw bad('RangeError', 'Invalid PDF document key');
-                const item = docs.get(args.docKey); if (item) { docs.delete(args.docKey); item.clone?.close(); item.doc.close(); item.source.close(); } return {}; }),
+                const item = docs.get(args.docKey); if (item) { docs.delete(args.docKey); dropInspection(args.docKey); item.clone?.close(); item.doc.close(); item.source.close(); } return {}; }),
             'page.text': serial(async (value, ctx): Promise<PageTextReply> => {
                 const { args, key, item } = lookup(value), page = pageNumber(args.page, item), info = item.doc.info();
                 if (info.encrypted && (info.permissions === null || (info.permissions & 16) === 0)) throw new PdfEngineError('NotSupported', 'PDF text extraction is not permitted');
@@ -243,6 +276,34 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
             'page.imageRegions': serial(value => { const { args, item } = lookup(value); return item.doc.imageRegions(pageNumber(args.page, item)); }),
             'page.release': serial(value => { const { args, item } = lookup(value), page = pageNumber(args.page, item); item.raw.delete(page); item.loaded.delete(page); item.doc.releasePage(page); item.clone?.releasePage(page); return {}; }),
             'doc.outline': serial(value => { const { item } = lookup(value); return item.doc.outline({ maxDepth: 64, maxNodes: 20_000 }); }),
+            'doc.inspectNotebook': serial(async (value, ctx) => {
+                const { args, key, item } = lookup(value);
+                if (typeof args.expectedPath !== 'string' || args.expectedPath.length > 4096) throw bad('RangeError', 'Invalid notebook source path');
+                const { inspectPdfNotebook } = await import('../writing/notebookInspection');
+                const result = await inspectPdfNotebook(item.sourceBlob, args.expectedPath, () => ctx.slice());
+                if (closed || ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError');
+                return result;
+            }),
+            'doc.inspectInk': serial(async (value, ctx) => {
+                const { key, item } = lookup(value), inspection = await ensureInspection(key, item, ctx);
+                try { if (ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError'); return inspection.result; }
+                finally { inspection.release(); }
+            }),
+            'doc.inkMedia': serial(async (value, ctx) => {
+                const { args, key, item } = lookup(value);
+                if (typeof args.name !== 'string' || !/^board-media\/[0-9a-f]{64}\.[a-zA-Z0-9]{1,16}$/.test(args.name) ||
+                    typeof args.outerFingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(args.outerFingerprint)) throw bad('RangeError', 'Invalid PDF media request');
+                const inspection = await ensureInspection(key, item, ctx);
+                try {
+                    const result = inspection.result;
+                    if (result.kind !== 'native' || result.outerFingerprint !== args.outerFingerprint || !result.media.some(media => media.name === args.name)) {
+                        throw bad('NotFoundError', 'PDF media is unavailable');
+                    }
+                    const data = await inspector!.readMedia(result.id, args.name, () => ctx.slice());
+                    if (closed || ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF media cancelled', 'AbortError');
+                    return data;
+                } finally { inspection.release(); }
+            }),
             'doc.attachment': serial((value, ctx) => { const { args, item } = lookup(value); if (!Number.isSafeInteger(args.index) || !Number.isSafeInteger(args.maxBytes) || (args.maxBytes as number) < 0 || (args.maxBytes as number) > 0x7fffffff) throw bad('RangeError', 'Invalid attachment request'); const data = item.doc.attachment(args.index as number, args.maxBytes as number); const buffer = data.slice().buffer as ArrayBuffer; ctx.transfer(buffer); return buffer; }),
             'font.provide': serial((value) => {
                 const args = record(value);
@@ -254,5 +315,5 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
             }),
             'worker.stats': serial(() => ({ heapBytes: backend?.heapBytes() ?? writer?.heapBytes() ?? 0, docs: docs.size, pagesLoaded: [...docs.values()].reduce((sum, item) => sum + item.doc.residentPages() + (item.clone?.residentPages() ?? 0), 0), blockCacheBytes: [...docs.values()].reduce((sum, item) => sum + item.source.cachedBytes, 0) })),
         } });
-    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); fonts.clear(); backend?.close?.(); void writer?.close(); channel.port1.close(); channel.port2.close(); };
+    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); inspections.clear(); inspectionBytes = 0; inspector?.dispose(); fonts.clear(); backend?.close?.(); void writer?.close(); channel.port1.close(); channel.port2.close(); };
 }

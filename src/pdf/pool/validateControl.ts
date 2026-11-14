@@ -4,6 +4,8 @@ import { RENDER_ENGINE_LIMITS, WRITER_ENGINE_LIMITS } from '../engine/types';
 import type { BackendInfo } from '../engine/types';
 import type { EngineInitArgs, PdfResult, PdfWorkerStats } from '../worker/protocol';
 import { boolean, finite, integer, invalidPdfReply, record, text } from './validationCommon';
+import { validNotebookSourcePath } from '../writing/notebookPointer';
+export { validatePdfInkInspection, validatePdfInkMedia } from './validateInkInspection';
 
 const PDFIUM_VERSION = '6688c576fd851f4159c6fae39396da50939de110';
 const FEATURES: readonly BackendInfo['features'][number][] = ['forms', 'emphasis', 'structTree', 'outline', 'attachments', 'write'];
@@ -23,6 +25,12 @@ export function validatePdfEngineInit(value: unknown, expected: EngineInitArgs):
     const maxHeap = integer(expected.limits.maxHeapBytes, 1, roleLimit);
     return { engine: 'pdfium', version: PDFIUM_VERSION, artifactSha256: expected.artifactSha256, buildId: expected.buildId,
         features, initMs: finite(o.initMs, 0, 120_000), heapBytes: integer(o.heapBytes, 0, maxHeap) };
+}
+
+export function validatePdfNotebookInspection(value: unknown, expectedPath: string): PdfResult<'doc.inspectNotebook'> {
+    const o = record(value, ['path', 'pageCount']);
+    if (!validNotebookSourcePath(expectedPath) || o.path !== expectedPath) invalidPdfReply();
+    return { path: expectedPath, pageCount: integer(o.pageCount, 1, 100_000) };
 }
 
 export function validatePdfWorkerStats(value: unknown, role: 'render' | 'writer' = 'render'): PdfWorkerStats {

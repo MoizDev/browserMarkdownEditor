@@ -24,6 +24,11 @@ export interface SerializerChange {
     /** UTF-8 line without comma/newline, transferred to the worker. */
     readonly bytes: Uint8Array;
 }
+/** A snapshot-only replacement retains the existing record's revision and digest. */
+export interface SerializerRecordOverride {
+    readonly identity: RecordIdentity;
+    readonly bytes: Uint8Array;
+}
 export interface SerializerDelta {
     readonly revision: number;
     readonly previous: number;
@@ -36,6 +41,7 @@ export interface SerializerBuild {
     readonly expected: RecordIntegrity;
     /** Unknown footer field lexemes, as entries because worker envelopes forbid Map. */
     readonly endFields: readonly (readonly [string, string])[];
+    readonly overrides?: readonly SerializerRecordOverride[];
 }
 export interface SerializerProduct {
     readonly revision: number;

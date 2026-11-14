@@ -49,9 +49,9 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             }
         } finally { notifyingPending = false; }
     };
-    const checkpoints = new Map<number, SerializerCheckpoint>();
+    const checkpoints = new Map<number, { checkpoint: SerializerCheckpoint; context: unknown }>();
     const outstanding = new Set<Promise<unknown>>();
-    let cachedSource: { revision: number; source: ReturnType<typeof boardContentSource> } | undefined;
+    let cachedSource: { revision: number; source: ReturnType<typeof boardContentSource>; context: unknown } | undefined;
     const track = <T>(work: Promise<T>): Promise<T> => {
         outstanding.add(work); notifyPending();
         const settled = () => { outstanding.delete(work); notifyPending(); };
@@ -140,9 +140,10 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
     function capture(): ReturnType<typeof boardContentSource> {
         encodePending();
         if (cachedSource?.revision === contentRevision) return cachedSource.source;
-        const base = serializer.checkpoint(records.integrity(), doc.preserved.end);
+        const buildCapture = options.captureBuild?.(contentRevision);
+        const base = serializer.checkpoint(records.integrity(), doc.preserved.end, buildCapture?.overrides);
         if (base.revision !== contentRevision) throw new Error('Serializer and board revision differ');
-        const pinned = options.pinBuild(base, contentRevision);
+        const pinned = options.pinBuild(base, contentRevision, buildCapture?.context);
         if (pinned.revision !== contentRevision) throw new Error('Pinned board build revision differs');
         let built: Uint8Array | Blob | undefined;
         const wrapped: PinnedBoardBuild = { revision: pinned.revision, async build(signal) {
@@ -152,8 +153,8 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             return result;
         } };
         const source = boardContentSource(owner, wrapped);
-        checkpoints.set(contentRevision, base);
-        cachedSource = { revision: contentRevision, source };
+        checkpoints.set(contentRevision, { checkpoint: base, context: buildCapture?.context });
+        cachedSource = { revision: contentRevision, source, context: buildCapture?.context };
         return source;
     }
     function report(): void {
@@ -166,7 +167,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         flush: report,
         finishGesture: options.finishGesture,
         finishComposition: options.finishComposition,
-        captureJournal: () => journal.capture(capture()),
+        captureJournal: () => { const source = capture(); return journal.capture(source, cachedSource!.context); },
         journalError: options.onFailure,
     });
     const mediaReferenceSnapshot = () => {
@@ -211,18 +212,18 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed') {
             if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
             if (disposed || outcome !== 'written' || revision <= savedRevision || revision > contentRevision) return;
-            const checkpoint = checkpoints.get(revision);
-            if (!checkpoint?.product()) return;
+            const captured = checkpoints.get(revision);
+            if (!captured?.checkpoint.product()) return;
             savedRevision = revision;
-            journal.acknowledge(revision, checkpoint.baseline());
+            journal.acknowledge(revision, captured.checkpoint.baseline());
             scheduler.setJournalPending(savedRevision < contentRevision);
-            void track(checkpoint.written()).catch(reportPendingError);
+            void track(captured.checkpoint.written().then(() => options.afterWritten?.(revision, captured.context))).catch(reportPendingError);
             for (const key of checkpoints.keys()) if (key <= revision) checkpoints.delete(key);
             notifyPending();
         },
         async drain() { while (outstanding.size) await Promise.allSettled([...outstanding]); await journal.drain(); },
         onChange(listener: (source: ContentSource) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        journalDelta() { return journal.delta(); },
+        journalDelta() { capture(); return journal.delta(cachedSource!.context); },
         async recover(payload: unknown) {
             guard();
             const release = queue.beginGesture();
@@ -245,7 +246,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             disposed = true; notifyPending(); pendingListeners.clear();
             unsubscribeSelection(); channel.dispose(); queue.dispose(); scheduler.dispose(); history.dispose(); applyController.dispose();
             for (const lease of mediaLeases.values()) lease.release();
-            mediaLeases.clear(); journal.dispose(); serializer.dispose(); media.clear(); listeners.clear();
+            mediaLeases.clear(); checkpoints.clear(); cachedSource = undefined; journal.dispose(); serializer.dispose(); media.clear(); listeners.clear();
         },
     };
     return session as ComposedBoardSession;

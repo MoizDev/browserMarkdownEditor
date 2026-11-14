@@ -22,7 +22,7 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
             const value = existing?.();
             if (value) {
                 const identity = getSessionIdentity(documentId);
-                if (!identity || identity.bytesGeneration !== bytesGeneration || value.adapter.owner.documentId !== documentId
+                if (!identity || value.adapter.owner.documentId !== documentId
                     || value.adapter.owner.session !== identity.serial) throw new DOMException('Board session ended', 'AbortError');
                 setEntry({ documentId, vaultActivation, bytesGeneration, kind, value });
                 return () => { alive = false; abort.abort(); };

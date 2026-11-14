@@ -9,6 +9,8 @@ import type { PdfTextAnchorOptions, PdfTextAnchorResolution } from '../../utils/
  * cancellation and priority promotion across all its callers. */
 export interface PdfPoolTextSource {
     readonly generation: number;
+    /** Raw immutable docKey plus extraction schema, not a path. */
+    readonly cacheKey?: string;
     readonly pageCount: number;
     text(page: number, priority: 0 | 1 | 2 | 3, signal: AbortSignal): Promise<PdfFindPageText>;
     model(page: number, priority: 0 | 1 | 2 | 3, signal: AbortSignal): Promise<PdfTextPage>;
@@ -60,7 +62,7 @@ export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfT
             throw error;
         } finally { active--; }
     };
-    const findEngine = createPdfFindEngine({ pageCount: signal => pageCount(signal), page: (page, signal) => source.text(page, 1, signalFor(signal)) });
+    const findEngine = createPdfFindEngine({ cacheKey: source.cacheKey, pageCount: signal => pageCount(signal), page: (page, signal) => source.text(page, 1, signalFor(signal)) });
     const resolveAnchor = async (anchor: PdfTextAnchor, opts: PdfTextAnchorOptions): Promise<PdfTextAnchorResolution> => {
         const signal = signalFor(opts.signal);
         const count = await pageCount(signal);
@@ -99,6 +101,7 @@ export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfT
         setVisible(next) {
             if (next === visible) return;
             visible = next;
+            findEngine.setVisible(next);
             if (next) { visibility = new AbortController(); if (hiddenTimer !== undefined) clearTimeout(hiddenTimer); hiddenTimer = undefined; }
             else { visibility.abort(); hiddenTimer = setTimeout(() => { findEngine.clearIndex(); hiddenTimer = undefined; }, 60_000); }
         },

@@ -14,6 +14,7 @@ export function pdfPoolTextSource(document: PdfPoolDocument): PdfPoolTextSource 
     };
     return {
         generation: document.token.bytesGeneration,
+        cacheKey: `pdfium-page-v1:${docKey}`,
         pageCount: document.info.pageCount,
         async text(page, priority, signal) {
             const reply = await request(page, 'text', priority, signal);

@@ -57,7 +57,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const surfaceHost = new PaneBackendSwitch(createPaneSurfaceHost(host));
     const cpuMetrics = new SurfaceMetricsCommitter();
     const gpuMetrics = new SurfaceMetricsCommitter();
-    const camera = new CameraController(options.readCamera(), { width: 0, height: 0, dpr: 1 }, unconstrained);
+    const camera = options.camera ?? new CameraController(options.readCamera(), { width: 0, height: 0, dpr: 1 }, unconstrained);
     const caches: Array<{ cpu: MemoryCacheHandle; gpu: MemoryCacheHandle; layer: () => Layer | null }> = [];
     let cacheSerial = 0;
     let visible = false;

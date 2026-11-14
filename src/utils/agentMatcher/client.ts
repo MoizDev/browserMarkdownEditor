@@ -1,23 +1,43 @@
+import type { WorkerClient } from '../../platform/workers';
 import type { MatchAnswer, MatchBatch, MatchConfig, MatchFile, MatchProgress } from './types';
 
 const CHUNK_CHARS = 64 * 1024;
 const QUERY_MS = 5000;
 let active: AbortController | undefined;
+let owner: WorkerClient | undefined;
+let ownerEpoch = 0;
 let lastRunSignal: AbortSignal | undefined;
 const poisoned = new Set<string>();
 const vaultIds = new WeakMap<object, number>();
 let nextVaultId = 0;
+
+/** The owner is the vault, not the chat panel or any document pane. */
+export function releaseAgentMatcher(): void {
+    ++ownerEpoch;
+    const controller = active;
+    active = undefined;
+    controller?.abort();
+    owner?.dispose();
+    owner = undefined;
+    poisoned.clear();
+    lastRunSignal = undefined;
+}
 
 export async function matchAgentSearch(
     config: MatchConfig,
     readFiles: () => Promise<Iterable<MatchFile>>,
     options: { signal?: AbortSignal; vaultToken: object | null; isCurrent(): boolean },
 ): Promise<MatchAnswer> {
+    const epoch = ownerEpoch;
     const { createWorkerClient, WorkerHostError } = await import('../../platform/workers');
+    // A vault can close while the lazy chunk loads. Never resurrect its owner afterwards.
+    if (epoch !== ownerEpoch || options.signal?.aborted || !options.isCurrent()) {
+        return { out: [], count: 0, fileCount: 0, stopped: false, incomplete: true, reason: 'the search was cancelled' };
+    }
     active?.abort();
     const lifetime = active = new AbortController();
     const signal = options.signal ? AbortSignal.any([lifetime.signal, options.signal]) : lifetime.signal;
-    const client = createWorkerClient({
+    const client = owner = createWorkerClient({
         name: 'agent-matcher',
         protocol: 1,
         spawn: () => new Worker(new URL('./matcher.worker.ts', import.meta.url), { type: 'module' }),
@@ -48,6 +68,7 @@ export async function matchAgentSearch(
     let matching = false;
     let timedOut = false;
     let completed = false;
+    let workerCrashed = false;
     let requestKey: string | undefined;
     try {
         // Syntax validation runs in the worker too. A startup/hello stall has its own 2 s cap;
@@ -93,6 +114,7 @@ export async function matchAgentSearch(
     } catch (error) {
         if (error instanceof WorkerHostError) {
             if (error.name === 'SyntaxError') throw error;
+            workerCrashed = error.name === 'WorkerCrashed';
             answer.incomplete = true;
             if (error.poisoned && requestKey) poisoned.add(requestKey);
             answer.reason = timedOut || (matching && error.name === 'Deadline') ? 'the pattern took too long'
@@ -108,7 +130,9 @@ export async function matchAgentSearch(
         clearInterval(identity);
         signal.removeEventListener('abort', stop);
         if (active === lifetime) {
-            if (!completed) stop();
+            // A transport crash belongs to the host's recovery window. Recycling it here cancelled
+            // back-off (measured: the always-dying worker stopped at two starts, owner idle not failed).
+            if (!completed && !workerCrashed) stop();
             active = undefined;
         }
     }

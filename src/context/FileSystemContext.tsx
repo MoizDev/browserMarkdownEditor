@@ -1052,11 +1052,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      */
     const pickDirectory = useCallback(async (): Promise<VaultOpenResult> => {
         if (!window.showDirectoryPicker) {
-            alert(
-                "Your browser doesn't support the local File System Access API.\n\n" +
-                "This feature is currently only supported in Chromium-based browsers (Chrome, Edge, Opera) on desktop."
-            );
-            return 'error';
+            return {
+                status: 'error',
+                message: "Your browser doesn't support the local File System Access API.\n\n" +
+                    "This feature is currently only supported in Chromium-based browsers (Chrome, Edge, Opera) on desktop.",
+            };
         }
         // One picker at a time: browsing for a vault is a DOUBLE-click on the
         // sidebar's vault switcher, and with nothing in the recent list the first
@@ -1391,6 +1391,37 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         }
         return p;
     }, [rootHandle]);
+
+    // withMutation only holds observer batches; it does not stop two backups
+    // choosing the same free name. A rejected copy must not poison later ones.
+    const garbageCopyQueueRef = useRef<Promise<void>>(Promise.resolve());
+    const keepCopyInGarbage = useCallback((dir: FileSystemDirectoryHandle, name: string, bytes: Uint8Array): Promise<string> => {
+        const copy = garbageCopyQueueRef.current.then(() => withMutation(async () => {
+            let benchmarkHome: string | undefined;
+            if (__BME_BENCH__) {
+                try {
+                    benchmarkHome = await dirPath(dir);
+                    reportVault({ op: 'write', path: joinVaultPath(benchmarkHome, TRASH_DIR), caller: 'keepCopyInGarbage' });
+                } catch { /* instrumentation must never interrupt a file operation */ }
+            }
+            const garbage = await dir.getDirectoryHandle(TRASH_DIR, { create: true });
+            const copyName = await freeEntryName(garbage, name);
+            if (__BME_BENCH__) {
+                try {
+                    if (benchmarkHome !== undefined) reportVault({
+                        op: 'write', path: joinVaultPath(joinVaultPath(benchmarkHome, TRASH_DIR), copyName), caller: 'keepCopyInGarbage',
+                    });
+                } catch { /* instrumentation must never interrupt a file operation */ }
+            }
+            const handle = await garbage.getFileHandle(copyName, { create: true });
+            // The caller already captured and version-checked these exact bytes.
+            // Never reopen the source: it may have changed since that check.
+            await writeFileBytes(handle, bytes);
+            return copyName;
+        }));
+        garbageCopyQueueRef.current = copy.then(() => {}, () => {});
+        return copy;
+    }, [dirPath, withMutation, writeFileBytes]);
 
     const assetUrlFor = useCallback(async (key: string, fileHandle: FileSystemFileHandle) => {
         const file = await fileHandle.getFile();       // a stat + handle, not a read
@@ -2474,6 +2505,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         resolveFileHandle,
         subscribeVaultChanges,
         liveDetection,
+        keepCopyInGarbage,
     }), [
         rootHandle,
         fileTree,
@@ -2516,6 +2548,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         resolveFileHandle,
         subscribeVaultChanges,
         liveDetection,
+        keepCopyInGarbage,
     ]);
 
     return (

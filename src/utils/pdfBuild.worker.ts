@@ -11,9 +11,13 @@
 
 import { buildAnnotatedPdf, buildNotebookPdf } from './pdfBuild';
 import { rotatePdfPages } from './pdfRotate';
+import { inspectPdfRole } from './pdfAttachmentInventory';
+import type { PdfRole } from './pdfRole';
 import type { NotebookPaper } from './paper';
 import type { NotebookSource } from './pdfFormat';
 import type { PageOverlay } from './pdfOverlay';
+import { PdfBuildRefused } from './pdfBuildRefusal';
+import type { PdfBuildRefusal } from './pdfBuildRefusal';
 
 /** Stamping annotations back onto their source document. */
 export interface AnnotateBuildRequest {
@@ -45,16 +49,30 @@ export interface RotateRequest {
     pageIndex?: number;
 }
 
-export type PdfBuildRequest = AnnotateBuildRequest | NotebookBuildRequest | RotateRequest;
+export interface InspectRoleRequest {
+    kind: 'inspect-role';
+    id: number;
+    bytes: Uint8Array;
+    generation: string;
+}
+export type PdfBuildRequest = AnnotateBuildRequest | NotebookBuildRequest | RotateRequest | InspectRoleRequest;
 
 export type PdfBuildResponse =
-    | { id: number; bytes: Uint8Array; error?: undefined }
-    | { id: number; bytes?: undefined; error: string };
+    | { id: number; bytes: Uint8Array; role?: undefined; error?: undefined; refusal?: undefined }
+    | { id: number; role: PdfRole; bytes?: undefined; error?: undefined; refusal?: undefined }
+    | { id: number; refusal: PdfBuildRefusal; bytes?: undefined; role?: undefined; error?: undefined }
+    | { id: number; bytes?: undefined; role?: undefined; error: string; refusal?: undefined };
 
 self.onmessage = async (e: MessageEvent<PdfBuildRequest>) => {
     const request = e.data;
     const { id } = request;
     try {
+        if (request.kind === 'inspect-role') {
+            const role = await inspectPdfRole(request.bytes, request.generation);
+            const transfer = role.kind === 'plain' || role.kind === 'annotated' ? [role.original.buffer as ArrayBuffer] : [];
+            (self as unknown as Worker).postMessage({ id, role } satisfies PdfBuildResponse, transfer);
+            return;
+        }
         const bytes = request.kind === 'notebook'
             ? await buildNotebookPdf(request.paper, request.overlays, request.source)
             : request.kind === 'rotate'
@@ -64,6 +82,10 @@ self.onmessage = async (e: MessageEvent<PdfBuildRequest>) => {
         // bytes, and they can be megabytes.
         (self as unknown as Worker).postMessage({ id, bytes } satisfies PdfBuildResponse, [bytes.buffer as ArrayBuffer]);
     } catch (err) {
+        if (err instanceof PdfBuildRefused) {
+            (self as unknown as Worker).postMessage({ id, refusal: err.refusal } satisfies PdfBuildResponse);
+            return;
+        }
         (self as unknown as Worker).postMessage({
             id,
             error: err instanceof Error ? err.message : String(err),

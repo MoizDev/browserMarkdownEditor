@@ -1,5 +1,12 @@
-import type { PlatformPane, Rect } from '../platform/render';
 import type { PdfRotationPicture } from './pdfRotationPreview';
+
+interface PreviewRect { x: number; y: number; width: number; height: number }
+interface PreviewPane {
+    captureRegion(rect: PreviewRect, maxSide: number, options: {
+        layers: readonly string[]; theme: 'light'; inverted: false;
+        policy: 'allow-standin'; signal: AbortSignal;
+    }): Promise<ImageBitmap>;
+}
 
 export interface TiledRotationIdentity {
     readonly sourceHash: string;
@@ -9,8 +16,8 @@ export interface TiledRotationIdentity {
 /** A best-effort stand-in, not an authority for the disk turn. Bind the pixels
  * to both the source version and geometry before staging them in PdfPane. */
 export async function captureTiledRotationPreview(
-    pane: Pick<PlatformPane, 'captureRegion'>,
-    rect: Rect,
+    pane: PreviewPane,
+    rect: PreviewRect,
     page: number,
     delta: number,
     identity: TiledRotationIdentity,

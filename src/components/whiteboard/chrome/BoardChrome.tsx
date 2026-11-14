@@ -13,6 +13,7 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly toolsLabel: string;
     readonly moreLabel: string;
     readonly readOnly: boolean;
+    readonly focusMode?: boolean;
     readonly selectTool: (choice: ToolChoice) => void;
     readonly zoomControls: ZoomControlsProps;
     readonly penPanel?: ConnectedPenPanelProps;
@@ -20,8 +21,9 @@ export interface BoardChromeProps extends BoardHeaderProps {
 
 /** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ selectedTool, lastFigure, toolLabel, toolShortcut, toolsLabel, moreLabel,
-    readOnly, selectTool, zoomControls, penPanel, ...header }: BoardChromeProps) {
+    readOnly, focusMode, selectTool, zoomControls, penPanel, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
+    if (focusMode) return null;
     return <div className="board-chrome-overlay">
         <BoardHeader {...header} />
         {penPanel && <div className="board-chrome-pen"><ConnectedPenPanel {...penPanel} /></div>}

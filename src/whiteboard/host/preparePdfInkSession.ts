@@ -79,7 +79,7 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
         if (!current()) throw stale();
         controller = createPdfInkRebind({ host, documentId, admittedIdentity: identity, initialSource: accepted,
             sources: prepared.sources, rebind: options.rebind, onError: options.onError, onReadOnly: options.onReadOnly });
-    } catch (error) { prepared.dispose(); await prepared.sources.drain(); throw error; }
+    } catch (error) { await prepared.dispose(); throw error; }
     const rebind = controller;
     let transferred = false, stagingDisposed = false;
     return {
@@ -126,8 +126,7 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
             if (transferred || stagingDisposed) return;
             stagingDisposed = true;
             rebind.dispose();
-            prepared.dispose();
-            await rebind.drain();
+            try { await prepared.dispose(); } finally { await rebind.drain(); }
         },
     };
 }

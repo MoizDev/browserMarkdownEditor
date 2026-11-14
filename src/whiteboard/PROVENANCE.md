@@ -54,6 +54,7 @@ third-party code included (normally "none") · date.
 | `session/BoardSession.ts` | lane w-c | H-1/3/4/5, C7.0/2/5/6, D-10, R-19 | change-and-history §§2–4; integration §§2/9 | Design; source ownership/read-only/gesture contract and admitted pen/highlighter clearRedo history boundary; no tldraw source | none | 2026-11-13 |
 | `session/gestureQueue.ts` | lanes w-c/w-e | C7.2, WB-D17 | integration §§2/9 | Design/ruling; one session FIFO, idempotent gesture leases, cancellation and final owner/readiness/read-only checks; factory and viewer class delegate to the same queue | none | 2026-11-13 |
 | `text/rich.ts` | lane w-l | TX-2, R-W32 | text §4; change-and-history §2.1 | Design-only rich text interface, operations and import contract; no tldraw source | none | 2026-11-13 |
+| `text/importRich.ts` | lane w-l | TX-2, R-W25 | text §4.4 | ProseMirror data mapping from documented schema; unsupported JSON preserved inert, no tldraw source | none | 2026-11-13 |
 | `text/richOperations.ts` | lane w-l | TX-2 | text §4; change-and-history §2.1 | Design-only projection, mark/link edits, insertion, list/heading transforms and enter; no tldraw source | none | 2026-11-13 |
 | `model/textOffsets.ts` | lane w-l | TX-2, V-11 | text §4.3 | Grapheme boundary admission over immutable block projection; no tldraw source | none | 2026-11-13 |
 | `text/richText.ts` | lane w-c | M-3, V-11, H-2/3, R-W19/21/25 | text §4.1; change-and-history §2 | Design/rulings only; minimal immutable normalize/slice/splice, opaque carrier preservation and exact boundary-block inverse splices, not whole-value undo snapshots | none | 2026-11-13 |
@@ -172,6 +173,7 @@ third-party code included (normally "none") · date.
 | `import/basicGeometry.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; ink §3 | Public ink curve/sample interfaces, own cubic world bounds and w-h polylineWorldSemanticBounds; connectors delegated | none | 2026-11-13 |
 | `import/sampleWire.ts` | w-o | IMP-1/2, E-IMP-15, SEC-W1 | import §§1–3; native-format §4 | Public sample sequence and native point encoder; canonical C5 LoadSampleWire for host re-admission | none | 2026-11-13 |
 | `import/loadAdapterTypes.ts` | w-o | IMP-1, C5, SEC-W1 | import §1; document-model §9 | Public adapter contract for w-d's ordered C5 repair/projection port | none | 2026-11-13 |
+| `import/loadAdapter.ts` | w-o | IMP-1, C5, SEC-W1 | import §1; document-model §9 | Ordered draft to w-d C5 port, deterministic repair ids and native sample transfer | none | 2026-11-13 |
 | `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse, durable digest and collision-safe restore contracts | none | 2026-11-13 |
 | `import/conversionMetadata.ts` | w-o | IMP-6, E-IMP-16 | import §4; delivery M4 | Native header extension stores original-byte digest so restore survives rename/move | none | 2026-11-13 |
 
@@ -277,8 +279,9 @@ third-party code included (normally "none") · date.
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe, shared cubic length/splitting kernel, and continuous dash/dot phase; no tldraw source | none | 2026-11-13 |
 | `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; scale-aware boundary membership, node-local hatch clipping and reflected phase; no tldraw source | none | 2026-11-13 |
 | `geom/polylineTypes.ts` | lane w-h | F-LINE-001/003 | geometry §§1, 9 | Model and geometry type contracts; no tldraw source | none | 2026-11-13 |
-| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector body, arrowhead and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
+| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector body, arrowhead, incident-end and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
 | `geom/heads.ts` | lane w-h | F-CONN-001, WB-D20, E-GEO-5/25 | geometry §8.3 | Independent head recipes, shared width metric and certified arc conversion; no tldraw source | none | 2026-11-13 |
+| `geom/connectors.ts` | lane w-h | F-CONN-001, E-GEO-5/6 | geometry §8.2 | Signed-sagitta circle construction and shared certified arc conversion from design; no tldraw source | none | 2026-11-13 |
 | `geom/polylines.ts` | lane w-h | F-LINE-001/003/004 | geometry §9 | Independent chord-weighted Hermite recipe from design, ordered model handles; no tldraw source | none | 2026-11-13 |
 | `geom/providers.ts` | lane w-h | F-FIG-001, F-STICKY-001, F-FRAME-001, F-LINE-001/003/004, WB-D20/24, E-GEO-8/35 | geometry §§1, 3, 5, 9; text §6 | Figure, polyline and container geometry, font-epoch pending geometry, transformed contour bounds, text-owned layout, ink-owned resumable picking, node-local hatch, platform path conversion and scene bounds; no tldraw source | none | 2026-11-13 |
 

@@ -3,7 +3,7 @@ import { sliceRichText, type RichFragment } from '../richText';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
-import type { ToggleMark } from './format';
+import { linkUrl, type ToggleMark } from './format';
 import { EditHost, type EditSelection, type TextChange } from './host';
 import { handleEditKey } from './keys';
 import { TextPointerSelection, type TextPointer } from './pointer';
@@ -33,6 +33,7 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     autoScroll(x: number, y: number): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
+    openLink(url: string): void;
     isStandaloneText(): boolean;
     /** The creation step token for a text node created by this edit session. */
     readonly creationToken?: number;
@@ -83,6 +84,20 @@ export class TextEditSession {
             autoScroll: (x, y) => services.autoScroll(x, y),
             touchHandles: show => services.touchHandles(show),
             menu: (x, y) => services.menu(x, y),
+            followLink: (x, y) => {
+                const layout = services.layout();
+                const local = point(layout.clientToLocal, x, y);
+                for (const line of layout.caret.lines) for (const cluster of line.clusters) {
+                    const box = cluster.bounds;
+                    if (local.x < box.x || local.x > box.x + box.width || local.y < box.y || local.y > box.y + box.height) continue;
+                    const value = sliceRichText(services.readText(), cluster.src[0], cluster.src[1]).blocks[0]?.runs[0]?.marks.link;
+                    const url = value ? linkUrl(value) : null;
+                    if (!url) return false;
+                    services.openLink(url);
+                    return true;
+                }
+                return false;
+            },
         });
         this.host = new EditHost(container, label, {
             snapshot: () => ({ text: services.readText(), selection: this.selection }),

@@ -377,6 +377,7 @@
     "paper.deleteContents": "本頁包含{items}。",
     "paper.deleteConfirm": "刪除頁面",
     "paper.cancel": "取消",
-    "paper.keepProtected": "鎖定的內容將會保留。"
+    "paper.keepProtected": "鎖定的內容將會保留。",
+    "chrome.readOnly": "該板是唯讀的。"
   }
 }

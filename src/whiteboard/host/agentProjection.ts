@@ -189,9 +189,11 @@ export async function captureLiveAgentProjection(options: {
     readonly session: BoardSession;
     readonly authority: JobAuthority;
     readonly job: JobOptions;
+    readonly maxSide: number;
     isCurrent(): boolean;
     pin(): { readonly revision: number; readonly capture: PngCapture; release(): void };
 }): Promise<Blob> {
+    if (!Number.isSafeInteger(options.maxSide) || options.maxSide < 1 || options.maxSide > 1568) throw new RangeError('Invalid agent capture size');
     return options.authority.run(async context => {
         const guard = (revision: number) => {
             options.authority.assertContext(context);
@@ -203,6 +205,9 @@ export async function captureLiveAgentProjection(options: {
         try {
             guard(pin.revision);
             if (pin.capture.frame.sceneRevision !== pin.revision) throw new Error('Capture frame revision does not match the board');
+            const { world, scale } = pin.capture;
+            if (![world.width, world.height, scale].every(Number.isFinite) || world.width <= 0 || world.height <= 0 || scale <= 0
+                || Math.ceil(Math.max(world.width, world.height) * scale) > options.maxSide) throw new RangeError('Capture exceeds the agent image budget');
             const { capturePng } = await import('../export/capturePng');
             guard(pin.revision);
             const blob = await capturePng(pin.capture, context.signal);

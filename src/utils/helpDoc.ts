@@ -422,6 +422,8 @@ The **⋯ → Read extracted text** action is a separate, manual reading choice 
 
 **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically.
 
+In the tiled PDF reader, screen-reader landmarks name every physical page. Moving to a page landmark brings that page into view and loads its text and the neighboring pages; use **Read this PDF as text** at the start of the viewer for the whole-document accessible view.
+
 When switching PDF engines, saved Text passages are matched by their words and surrounding context; an approximate match is labelled. A position from a newer app restores only its page and surface, with a notice. Merely opening, resizing or hiding a PDF does not replace another engine's saved position: it is updated only after you navigate.
 
 **Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.

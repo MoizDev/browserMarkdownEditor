@@ -17,10 +17,18 @@ annotations drawn onto them (vector paths, see below) + two embedded attachments
 as live tldraw shapes.
 
 - **No `(annotated)` sibling, and no name test anywhere.** `readPdfRole` reads a PDF's role from its
-  attachments in ONE pdf.js open: an embedded `original.pdf` means it is already one of ours, and its
-  ABSENCE means the file's own bytes are the pristine original. That is the whole of the conversion —
-  the first save is what adds the attachments. Files made by the old spawn-a-sibling behaviour keep
-  working unchanged, because they were always identified by content.
+  CONTENT, in the existing build worker (`pdfBuild.worker.ts`, a union inventory of every attachment
+  name tree), never from one attachment's presence: `utils/pdfRole.ts` returns one of six tags.
+  `plain` (no attachments of ours: the file's own bytes are the pristine original) and `annotated`
+  (the supported legacy pair, `original.pdf` + a valid `tldraw-snapshot.json`) are the only EDITABLE
+  roles; `notebookExport`, `unreadable`, `ambiguous` and `newer` open Annotate read-only with
+  `pdfRoleNotice`'s text in the outer view. An `original.pdf` alone does NOT make a file ours. The
+  first save of a `plain` PDF is what adds the attachments. Only `plain` may be rotated
+  (`canRotatePdfRole`).
+- **Save authority is the exact source, not the path.** `authorizePdfRole` admits an editable role's
+  `original` bytes; `canRebuildAnnotatedPdf(original)` is checked in `flushTab` before the build AND
+  again after every await, directly before `writeFileVersioned`, so a revoked role cannot write.
+  A refused save returns `skipped` (the revision stays dirty); `failed` is only for IO that threw.
 - **The role read is lazy** (`needsSource`, set on first switch to edit and sticky): every PDF can be
   annotated now, so gating it on the filename is gone, and reading every PDF on open just to find out
   would be an N-MB allocation and a disk read for documents only ever read.

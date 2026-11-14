@@ -9,7 +9,7 @@ import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
 import { getNoteResolver } from './utils/noteResolver';
-import { setRecordScope } from './utils/storage';
+import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice } from './utils/storage';
 import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
@@ -369,7 +369,7 @@ export default function App() {
     linkedVault,
     recentVaults,
     currentVaultId,
-    pickDirectory,
+    pickDirectory: pickDirectoryFromFileSystem,
     openRecentVault,
     openFolderAsVault,
     openLinkedVault,
@@ -834,6 +834,17 @@ export default function App() {
     void tell({ title: 'Could not continue', confirmLabel: 'OK', body: message });
   }, [tell]);
 
+  // Context reports the failure; only App owns the notice, including before a
+  // vault is open. Keep the legacy string result for the welcome/menu callers.
+  const pickDirectory = useCallback(async () => {
+    const result = await pickDirectoryFromFileSystem();
+    if (typeof result === 'object') {
+      notify(result.message);
+      return 'error' as const;
+    }
+    return result;
+  }, [notify, pickDirectoryFromFileSystem]);
+
   // The same voice, given to the editor subsystem: a refused clipboard read
   // inside a table cell is the only thing that uses it today. ONE call, at the
   // top level, into a module-level setter — src/editor/ must not learn about
@@ -895,6 +906,15 @@ export default function App() {
     setSaveStatus(message);
     saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 5000);
   }, []);
+  useEffect(() => {
+    const showRestoreNotice = () => {
+      const notice = takeRestoreNotice();
+      if (notice) announce(notice);
+    };
+    const unsubscribe = subscribeRestoreNotice(showRestoreNotice);
+    showRestoreNotice();
+    return unsubscribe;
+  }, [announce]);
   // A binary host acquires in its passive effect. Publish the new tab first;
   // lazy dev imports hid this parent/child effect ordering race in production.
   useLayoutEffect(() => { tabsRef.current = tabs; }, [tabs]);
@@ -4621,6 +4641,24 @@ export default function App() {
     document.addEventListener('mouseup', onMouseUp);
   }, []);
 
+  // The welcome screen can report a refused open too; returning before the
+  // workspace's host used to hide the app notice on exactly that path.
+  const dialogHost = dialog && (
+    <ConfirmDialog
+      questionId={dialog.id ?? 0}
+      title={dialog.title}
+      confirmLabel={dialog.confirmLabel}
+      danger={dialog.danger}
+      input={dialog.input}
+      altLabel={dialog.altLabel}
+      onAlt={dialog.onAlt}
+      onConfirm={dialog.onConfirm}
+      onCancel={dialog.onCancel}
+    >
+      {dialog.body}
+    </ConfirmDialog>
+  );
+
   // Welcome screen
   if (!rootHandle && !isLoading) {
     return (
@@ -4669,6 +4707,7 @@ export default function App() {
             )}
           </div>
         </div>
+        {dialogHost}
       </div>
     );
   }
@@ -4870,21 +4909,7 @@ export default function App() {
       {/* Last, so it sits over the settings panel as well as the workspace —
           and outside the editor, because the questions it asks are the file
           tree's (which is visible in the graph view too). */}
-      {dialog && (
-        <ConfirmDialog
-          questionId={dialog.id ?? 0}
-          title={dialog.title}
-          confirmLabel={dialog.confirmLabel}
-          danger={dialog.danger}
-          input={dialog.input}
-          altLabel={dialog.altLabel}
-          onAlt={dialog.onAlt}
-          onConfirm={dialog.onConfirm}
-          onCancel={dialog.onCancel}
-        >
-          {dialog.body}
-        </ConfirmDialog>
-      )}
+      {dialogHost}
     </div>
   );
 }

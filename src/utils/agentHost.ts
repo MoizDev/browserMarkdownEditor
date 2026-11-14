@@ -68,7 +68,7 @@ export interface AgentHostDeps {
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
     nameTaken: import('../types').FileSystemContextValue['nameTaken'];
     /** App-owned immutable closed source; projection and format classification stay in the consumer. */
-    acquireClosedCanvasSource?: (path: string, handle: FileSystemFileHandle, kind: 'drawing' | 'notebook',
+    acquireClosedCanvasSource?: (path: string, handle: FileSystemFileHandle, kind: 'drawing' | 'notebook' | 'pdf-ink',
         guard: { readonly signal: AbortSignal; isCurrent(): boolean }) => Promise<import('./closedCanvasSource').ClosedCanvasSourceLease>;
     /** Resolve or acquire the open tab's one canonical runtime, without attaching a view. */
     ensureNativeAgentRuntime?: (path: string, signal: AbortSignal) => Promise<{
@@ -234,9 +234,9 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         async canvasShapePage(path, query, guard) {
             const deps = getDeps();
             if (deps.canvasShapePage) return deps.canvasShapePage(path, query, guard);
-            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path))) return null;
+            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path) && !isPdfFile(path))) return null;
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
-            const found = openTabAt(deps, path) ? undefined : await fileAt(deps.root, path);
+            const found =openTabAt(deps, path) ? undefined : await fileAt(deps.root, path);
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
             const { readNativeCanvasShapePage } = await import('./nativeCanvasAgentRead');

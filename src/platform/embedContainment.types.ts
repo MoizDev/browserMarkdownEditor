@@ -11,6 +11,7 @@ export interface EmbedContainmentOptions {
     /** Exact canonical registry-built URL. The platform binds this lease to this URL only. */
     readonly url: string;
     readonly manifest: EmbedFrameManifest;
+    /** The whole consent lease's lifetime; the platform owns its short handshake deadlines. */
     readonly signal?: AbortSignal;
     readonly className?: string;
     readonly ariaLabel?: string;

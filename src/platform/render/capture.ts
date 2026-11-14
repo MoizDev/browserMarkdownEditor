@@ -5,6 +5,7 @@ import type { MemoryAllocator } from './memoryGovernor';
 import type { Layer, RenderToken } from './types';
 import { CaptureError, captureAbort } from './captureError';
 import { CaptureQueue } from './captureQueue';
+import { captureIsolation2d } from './captureIsolation2d';
 
 export { CaptureError } from './captureError';
 export type { CaptureErrorCode } from './captureError';
@@ -264,6 +265,7 @@ export class PaneCapturer {
             canvas.width = width; canvas.height = height;
             const ctx = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
             if (!ctx) throw new CaptureError('render-failed');
+            captureIsolation2d(ctx, this.options.memory);
             for (const layer of layers) {
                 active.check();
                 ctx.save();

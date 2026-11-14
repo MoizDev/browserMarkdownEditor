@@ -961,6 +961,9 @@ export default function App() {
    *  there is nothing to decide. STABLE — it is handed to EditorPane and on to
    *  every memoized DocumentPane, which must not re-render per keystroke. */
   const notify = useCallback((message: string) => {
+    if (typeof message !== 'string' || !message.trim()) {
+      console.error('An app notice needs a nonempty message:', new Error('Invalid app notice').stack);
+    }
     void tell({ title: 'Could not continue', confirmLabel: 'OK', body: message });
   }, [tell]);
 

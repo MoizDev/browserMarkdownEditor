@@ -14,6 +14,7 @@ export interface PdfTextCopyHost {
     isCurrent(): boolean;
     fontEpoch(): number;
     notice(message: string): void;
+    status(message: string | null): void;
 }
 export interface PdfTextCopyBinding {
     copy(): Promise<void>;
@@ -49,7 +50,7 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
     const cancel = (silent = false) => {
         const hadPending = !!pending;
         ++localEpoch; pending?.abort(); pending = null;
-        host.notice(hadPending && !silent ? 'Copy cancelled' : '');
+        host.status(hadPending && !silent ? 'Copy cancelled' : null);
         return hadPending;
     };
     const initial = (selection: PdfSelection) => {
@@ -72,7 +73,7 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
         try {
             for (let page = state.first; page <= state.last; page++) {
                 if (!valid()) return;
-                host.notice(`Copying ${page - state.first + 1} of ${state.last - state.first + 1} pages…`);
+                host.status(`Copying ${page - state.first + 1} of ${state.last - state.first + 1} pages…`);
                 const text = state.pages.get(page) ?? await host.text(page, controller.signal);
                 if (!valid()) return;
                 const from = !selection.wholeDocument && page === state.first ? Math.max(0, Math.min(text.length, state.range.start.offset)) : 0;
@@ -98,10 +99,13 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
             const result = parts.join('');
             if (result.length > MAX_COPY_UTF16_UNITS) { host.notice(COPY_TOO_LARGE); return; }
             const copied = await writeLatest(format(result), ticket, valid);
-            if (valid() && copied !== undefined) host.notice(copied ? '' : CLIPBOARD_WRITE_BLOCKED);
+            if (valid() && copied !== undefined) {
+                if (copied) host.status(null);
+                else host.notice(CLIPBOARD_WRITE_BLOCKED);
+            }
         } catch (error) {
             if (valid()) host.notice(`Could not copy PDF text: ${error instanceof Error ? error.message : String(error)}`);
-        } finally { if (pending === controller) pending = null; }
+        } finally { if (pending === controller) { host.status(null); pending = null; } }
     };
     const copy = async (quote?: { filename: string; path: string }) => {
         const current = host.selection();

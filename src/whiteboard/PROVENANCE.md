@@ -198,6 +198,7 @@ third-party code included (normally "none") · date.
 | `text/layoutWorkerHandler.ts` | lane w-n | T-1, T-2, T-6 | text §§2–3, 7.2 | OffscreenCanvas, worker-local FontFaceSet and platform shared-worker protocol; w-d coordinated parse-worker integration | none | 2026-11-13 |
 | `text/layoutClient.ts` | lane w-n | T-1, T-2, T-4 | text §§2–3, 7.2; threading §§2–3 | Main/worker layout compatibility selection, worker-host interface, vault/session and node-revision stale reply rejection | none | 2026-11-13 |
 | `change/historyTypes.ts` | lane w-n | H-5, H-6, CH-2 | change-and-history §§3–4; text §5.7 | Published session, selection, media/sample lease and camera-controller reveal ports; w-architect's history rulings | none | 2026-11-13 |
+| `change/historyCoalesce.ts` | lane w-n | H-5, CH-2 | change-and-history §4.3 | Independent per-property coalescing, rich-splice block snapshots and dependency-safe transient-node cancellation | none | 2026-11-13 |
 | `text/fonts.ts` | lane w-n | T-6 | text §7 | FontFace API; lazy per-context registration and epoch, no tldraw source | none | 2026-11-13 |
 | `text/fontMetrics.json` | lane w-n | T-6 | text §7 | Generated directly from pinned upstream WOFF2 metrics tables | font metrics | 2026-11-13 |
 | `text/fontCoverage.json` | lane w-n | T-2, T-6 | text §§3, 7 | Unicode cmap intervals generated from pinned upstream WOFF2 faces | font coverage | 2026-11-13 |

@@ -180,12 +180,9 @@ export function createSceneSnapshot(options: {
                 const source = await options.prepare(doc, pinnedRequest, controller.signal, ordered(pinnedRequest));
                 check();
                 if (!source || source.sceneRevision !== revision || !sameToken(source.token, token)) throw new TypeError('Paint source does not match scene snapshot');
-                const extended = source as PaintNodeSource & { readonly sessionRasters?: unknown; readonly rasterVariant?: unknown; readonly sourceWorld?: unknown };
-                const world = pinnedRequest.world;
-                const sourceWorld = world && [world.x, world.y, world.width, world.height, world.x + world.width, world.y + world.height]
-                    .every(Number.isFinite) && world.width >= 0 && world.height >= 0 ? world : undefined;
+                const extended = source as PaintNodeSource & { readonly sessionRasters?: unknown; readonly rasterVariant?: unknown };
                 return { sourceDoc: doc, token, sceneRevision: revision, sensitiveNodes: source.sensitiveNodes, nodeCount: source.nodeCount,
-                    ...{ sessionRasters: extended.sessionRasters, rasterVariant: extended.rasterVariant, sourceWorld: extended.sourceWorld ?? sourceWorld },
+                    ...{ sessionRasters: extended.sessionRasters, rasterVariant: extended.rasterVariant, sourceWorld: pinnedRequest.world },
                     readNode: (index: number) => source.readNode(index), isCurrent: () => !released && !controller.signal.aborted } satisfies PaintNodeSource;
             })());
             return waitFor(work, signal);

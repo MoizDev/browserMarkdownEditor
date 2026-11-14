@@ -71,7 +71,7 @@ export interface AgentHostDeps {
     canvasShapePage?: VaultToolHost['canvasShapePage'];
     /** The App-lifetime, path-explicit readable buffer accessor. */
     contentOf(path: string): string | undefined;
-    snapshotOf(path: string): import('./documentBuffers').BufferSnapshot | undefined;
+    snapshotOf(path: string): import('./documentBuffers').PinnedBufferSnapshot | undefined;
     /** Everything a save does after its write, for a file written with no tab
      *  open: file time, asset reconcile, graph, search epoch. */
     afterWrite(file: ActiveFile, before: string, after: string, version?: import('./diskVersion').DiskStat): void;
@@ -441,6 +441,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (route.engine !== 'tldraw') throw new Error('The selected canvas engine does not yet support agent editing.');
             if (!pdf) {
                 const captured = open ? deps.snapshotOf(path) : undefined;
+                try {
                 if (open && captured && typeof captured.data !== 'string') return null;
                 let text = typeof captured?.data === 'string' ? captured.data : open ? deps.contentOf(path) : undefined;
                 if (open && text === undefined) return null;
@@ -454,6 +455,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 // Refused panes deliberately register no editor: do not spend
                 // the mount timeout waiting for one that must never exist.
                 if (reason) throw new Error(reason);
+                } finally { captured?.release(); }
             }
             const hasCanvas = (r: ViewReporter) => !!r.canvas;
             const now = getView(path);

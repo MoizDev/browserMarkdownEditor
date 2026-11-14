@@ -2659,8 +2659,9 @@ export default function App() {
     if (!tab.dirty && !pending && !force) return 'skipped';
     // A drain reports into the synchronous funnel before React commits its tab.
     let captured;
-    try { captured = documentBuffers.snapshotOf(path); }
+    try { captured = documentBuffers.retainSnapshotOf(path); }
     catch (error) { console.error('Could not capture document:', error); return 'failed'; }
+    try {
     if (!captured || (!nativeSource && typeof captured.data !== 'string')) {
       console.error('Could not capture document: its buffer is unavailable.');
       return 'failed';
@@ -2911,6 +2912,7 @@ export default function App() {
       if (pendingWritesRef.current.get(id) === pendingWrite) pendingWritesRef.current.delete(id);
       syncExitGuard();
     }
+    } finally { captured?.release(); }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
   }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, indexGraphRef, nativeCanvasHost, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
@@ -3268,14 +3270,15 @@ export default function App() {
       try {
         await drain(tab.id);
         const revision = documentBuffers.revisionForDocument(tab.id)?.revision;
-        const snapshot = documentBuffers.snapshotForDocument(tab.id)?.data;
+        const data = documentBuffers.snapshotForDocument(tab.id)?.data;
+        const refusal = typeof data === 'string' ? pdfSnapshotRefusal(data) : undefined;
         const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id);
         const outcome = await flushTab(path, !!needsSave, true, undefined, trashOwned);
         const now = tabsRef.current.find(t => t.id === tab.id);
         if (!now || now.file.path !== path || now.representation.generation !== tab.representation.generation) return false;
         if (outcome === 'failed' || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || getView(path)?.hasPendingEdits?.() ||
             outcome === 'skipped' && (now.dirty || documentBuffers.isDirty(now.id))) {
-          if (outcome === 'skipped' && (typeof snapshot !== 'string' || !pdfSnapshotRefusal(snapshot))) notifyRef.current('These annotations have not been saved. Keep this PDF open and resolve its notice before closing it.');
+          if (outcome === 'skipped' && !refusal) notifyRef.current('These annotations have not been saved. Keep this PDF open and resolve its notice before closing it.');
           return false;
         }
       } catch (error) { notifyRef.current(`Could not finish PDF annotations: ${describeReadError(error)}`); return false; }
@@ -5087,7 +5090,8 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) break;
           if (documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
-          const captured = documentBuffers.snapshotOf(from);
+          const captured = documentBuffers.retainSnapshotOf(from);
+          try {
           const textRevision = captured?.revision;
           const snapshot = captured?.data ?? contentOf(from);
           if (snapshot === undefined) throw Error('Pending source edits cannot be preserved. Keep this tab open.');
@@ -5110,6 +5114,7 @@ export default function App() {
           if (!latest) break;
           if (documentBuffers.revisionForDocument(doc.id)?.revision === textRevision && !getView(from)?.hasPendingEdits?.()
             && !documentSessions.get(doc.id)?.adapter.hasPendingEdits()) break;
+          } finally { captured?.release(); }
         }
         if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
         if (changedKind && documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
@@ -5666,13 +5671,13 @@ export default function App() {
       if (checkpoint && typeof checkpoint !== 'string' && sourceIsNewer(checkpoint, source)) {
         throw new Error('The current document revision could not be captured.');
       }
-      const snapshot = documentBuffers.snapshotForDocument(id);
+      const snapshot = documentBuffers.retainSnapshotForDocument(id);
       if (!snapshot) throw new Error('The document buffer is unavailable.');
       const sourceRevision = typeof source === 'string' ? undefined : source?.revision;
       const pdf = isPdf && typeof snapshot.data === 'string' ? getPdfRenderData(path) : undefined;
       const nativeOwned = !!session && session.kind !== 'markdown' && !!source && typeof source !== 'string'
         && source.owner.documentId === id && source.owner.session === session.serial;
-      return { revision: snapshot.revision, sourceRevision, session, nativeOwned, build: async (): Promise<string | Uint8Array | Blob | null> => {
+      return { revision: snapshot.revision, sourceRevision, session, nativeOwned, release: snapshot.release, build: async (): Promise<string | Uint8Array | Blob | null> => {
         let content = snapshot.data;
         if (typeof content === 'object' && !(content instanceof Uint8Array) && !(content instanceof Blob)) {
           content = await content.run(new AbortController().signal);
@@ -5683,6 +5688,7 @@ export default function App() {
         return buildAnnotatedPdfAsync(pdf.original, content, pdf.overlays);
       } };
     };
+    let capturedMine: ReturnType<typeof captureMine> | undefined;
     try {
       if (action === 'close') {
         if (hasUnsaved(tab) && !await ask({
@@ -5697,7 +5703,7 @@ export default function App() {
 
       if (action === 'save') {
         await drain(id);
-        const captured = captureMine();
+        const captured = capturedMine = captureMine();
         const dataRevision = captured.revision;
         const data = await captured.build();
         if (data === null) {
@@ -5751,7 +5757,7 @@ export default function App() {
 
       if (action === 'reload') {
         await drain(id);
-        const captured = captureMine();
+        const captured = capturedMine = captureMine();
         const keep = await captured.build();
         const read = isPdf
           ? { text: '', version: (await readBytesVersioned(handle)).version }
@@ -5815,6 +5821,7 @@ export default function App() {
       console.error('Could not resolve a document’s disk state:', path, action, err);
       void tell({ title: 'That did not work', confirmLabel: 'OK', body: <>Could not finish for <strong>{file.name}</strong>: {describeReadError(err)}</> });
     } finally {
+      capturedMine?.release();
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
@@ -5947,7 +5954,7 @@ export default function App() {
       createFolder,
       nameTaken,
       contentOf,
-      snapshotOf: documentBuffers.snapshotOf,
+      snapshotOf: documentBuffers.retainSnapshotOf,
       afterWrite: (file, before, after, version) => {
         // The tail of flushTab, for a file written with no tab to flush.
         notifySearchChanges();

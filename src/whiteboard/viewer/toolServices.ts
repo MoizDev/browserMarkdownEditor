@@ -18,6 +18,7 @@ import { textTool } from '../text/edit/tool';
 import { createBoardAttachmentResolver } from './attachments';
 import { boardCreationTool } from './creationTools';
 import { createBoardInkServices } from './inkServices';
+import type { KeyboardContextRequest } from './keyboardContext';
 import { createBoardPointQuery } from './pointQuery';
 import { createBoardPreview } from './preview';
 import { createBoardRegionQuery } from './regionQuery';
@@ -65,6 +66,8 @@ export interface BoardToolServicesOptions {
         keyboardCursorInitial?: BoardInputServices['keyboardCursorInitial'];
         keyboardCursorVisible?: BoardInputServices['keyboardCursorVisible'];
         clearLatches?(): void;
+        /** The host's one existing board context menu, opened at an actual keyboard anchor. Absent means no keyboard menu. */
+        openKeyboardContextMenu?(request: KeyboardContextRequest): void;
     };
     readonly commands: BoardInputServices['commands'];
     /** The App supplies real permission-aware import and clipboard backends. */
@@ -98,7 +101,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), inputFrames: options.inputFrames,
-        editSticky: async id => { await text.editText(id); }, onError: ui.error });
+        editSticky: async id => { await text.editText(id); }, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu });
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
         overlay: options.overlay, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac,
         spelling: options.spelling, ui: ui.text, onError: ui.error });
@@ -192,6 +195,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error, pointerChanged: ui.pointerChanged,
         hover: ui.hover, contextMenu: ui.contextMenu, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
+        keyboardContextMenu: select.keyboardContextMenu,
     };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId

@@ -65,8 +65,9 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     if (input.text !== null) {
         const text = input.text;
         if (text.trimStart().startsWith('{') || text.trimStart().startsWith('[')) {
-            let kind: 'excalidraw' | 'native-records' | null = null;
-            try { kind = await host.jsonKind(text, signal); } catch { signal.throwIfAborted(); }
+            // Syntax/unrecognized input is a null result. A worker budget,
+            // identity or transport failure must not silently become plain text.
+            const kind = await host.jsonKind(text, signal);
             signal.throwIfAborted();
             if (kind === 'excalidraw') return { kind, text };
             if (kind === 'native-records') return { kind, text };

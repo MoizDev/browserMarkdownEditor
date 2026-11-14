@@ -9,6 +9,7 @@ import { pdfClassicAssets } from './build/pdfClassicAssets'
 import { pdfContainedAssets } from './build/pdfContainedAssets'
 import { pdfFontAssets } from './build/pdfFontAssets'
 import { whiteboardSvgFrames } from './build/whiteboardSvgFrames.mjs'
+import { thirdPartyNotices } from './build/thirdPartyNotices'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const regenerateFrame = () => execFileSync(process.execPath, ['src/epub/build-frame.mjs'], { cwd: root, stdio: 'pipe' })
@@ -17,7 +18,7 @@ const buildId = randomUUID()
 export default defineConfig({
   // Index workers share split modules; Chromium-only module workers support ES chunks.
   worker: { format: 'es' },
-  plugins: [react(), pdfClassicAssets(), developmentPdfiumAssets(), pdfContainedAssets(), pdfFontAssets(), whiteboardSvgFrames(root), {
+  plugins: [react(), pdfClassicAssets(), developmentPdfiumAssets(), pdfContainedAssets(), pdfFontAssets(), whiteboardSvgFrames(root), thirdPartyNotices(root), {
     // The benchmark-build constant (verification.md §2.1, contracts C9): true only
     // in `vite build --mode benchmark` (a dev server in that mode stays false: the
     // benchmark build is the production build plus hooks, nothing else), so every
@@ -50,7 +51,7 @@ export default defineConfig({
     },
     generateBundle() {
       // License texts/source inventory travel with static deployments, too.
-      for (const name of ['THIRD_PARTY_NOTICES', 'src/epub/vendor/LICENSE', 'src/epub/vendor/PYTHON-LICENSE.txt', 'src/epub/vendor/THIRD_PARTY_NOTICES.txt', 'src/epub/vendor/source-lock.json', 'src/epub/reader-frame.integrity.json']) {
+      for (const name of ['src/epub/vendor/LICENSE', 'src/epub/vendor/PYTHON-LICENSE.txt', 'src/epub/vendor/THIRD_PARTY_NOTICES.txt', 'src/epub/vendor/source-lock.json', 'src/epub/reader-frame.integrity.json']) {
         this.emitFile({ type: 'asset', fileName: name, source: readFileSync(new URL(name, import.meta.url)) })
       }
     },

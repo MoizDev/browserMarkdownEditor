@@ -7,6 +7,7 @@ import type { NodeId } from '../model/ids';
 import type { MediaLease } from '../media/store';
 import type { TransactionOrigin } from '../change/ops';
 import type { BoardRuntime } from './runtime';
+import type { JobContext } from '../security/admission';
 
 // Provenance: session job authority, SEC-W4 inspection and atomic media-ingest
 // contracts; independent host wiring, no third-party source.
@@ -55,6 +56,22 @@ export function createBoardMediaIngestor(options: BoardMediaIngestOptions): Medi
             try { owned = sources.map(snapshot); } catch (error) { return Promise.reject(error); }
             inFlight++;
             try { return super.ingest(owned, { ...request, signal: signal(request.signal) }).finally(() => { inFlight--; release(); }); }
+            catch (error) { inFlight--; release(); throw error; }
+        }
+        override ingestInJob(sources: readonly MediaSource[], request: MediaIngestOptions, context: JobContext): Promise<readonly NodeId[]> {
+            if (disposed) return Promise.reject(new DOMException('Media view disposed', 'AbortError'));
+            let owned: MediaSource[];
+            try { owned = sources.map(snapshot); } catch (error) { return Promise.reject(error); }
+            inFlight++;
+            try { return super.ingestInJob(owned, request, context).finally(() => { inFlight--; release(); }); }
+            catch (error) { inFlight--; release(); throw error; }
+        }
+        override replaceInJob(id: NodeId, source: MediaSource, request: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }, context: JobContext): Promise<void> {
+            if (disposed) return Promise.reject(new DOMException('Media view disposed', 'AbortError'));
+            let owned: MediaSource;
+            try { owned = snapshot(source); } catch (error) { return Promise.reject(error); }
+            inFlight++;
+            try { return super.replaceInJob(id, owned, request, context).finally(() => { inFlight--; release(); }); }
             catch (error) { inFlight--; release(); throw error; }
         }
         override replace(id: NodeId, source: MediaSource, request: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }): Promise<void> {

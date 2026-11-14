@@ -207,6 +207,15 @@ export class InkCoverageJob {
             this.span = this.geometry.spanCount;
         }
     }
+    get byteLength(): number {
+        let bytes = this.geometry.cubics.byteLength + this.geometry.flags.byteLength + this.radii.byteLength
+            + this.segments.data.byteLength + this.discs.data.byteLength + this.centreline.data.byteLength
+            + (this.active?.byteLength ?? 0);
+        for (const map of this.maps) bytes += map.cubic.byteLength + map.pieces.byteLength;
+        if (this.resultValue) bytes += this.resultValue.segments.byteLength + this.resultValue.discs.byteLength
+            + this.resultValue.centreline.byteLength;
+        return bytes;
+    }
     get result(): InkCoverage {
         if (!this.resultValue) throw new Error('Ink coverage is not complete');
         return this.resultValue;

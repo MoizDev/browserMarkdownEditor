@@ -244,3 +244,4 @@ third-party code included (normally "none") · date.
 | `commands/pagesAndSheets.ts` | lane w-l | F-SHEET-002/003/004/005/006, F-NB-002/003/004/006/007/008, R-11, R-24 | document-model §6; change-and-history §2 | Specs and own model/apply interfaces; no tldraw source | none | 2026-11-13 |
 | `host/notebookPaper.ts` | lane w-l | F-NB-002/003/004/014, C2.4 | notebook §F-NB-004 | Specs, platform display-list contract and paper.ts; no tldraw source | none | 2026-11-13 |
 | `host/notebookExport.ts` | lane w-l | F-NB-014, F-SHEET-008, R-12, C2.4 | notebook §F-NB-014; sheets §F-SHEET-008 | Specs, platform display-list contract; no tldraw source | none | 2026-11-13 |
+| `host/pageDisplay.ts` | lane w-l | F-NB-014, F-SHEET-008, C2.4 | notebook §F-NB-014; contracts C2.4 | Specs, platform display list and paint-frame export; no tldraw source | none | 2026-11-13 |

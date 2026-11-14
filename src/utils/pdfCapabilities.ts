@@ -85,8 +85,10 @@ export function tiledPdfCapabilities(info: { encrypted: boolean; permissions: nu
     const signed = Number.isSafeInteger(info.signatureCount) && (info.signatureCount as number) >= 0
         ? (info.signatureCount as number) > 0 : 'unknown';
     const repairStatus = info.repairStatus ?? 'unknown';
+    // Public PDFium cannot report repairs. Unknown stays disclosed, not a blanket edit ban:
+    // the source-bound writer separately proves geometry and full attachment preservation.
     const write = info.encrypted || xfa === true || signed === true || repairStatus === 'repaired' ? false
-        : xfa === false && signed === false && repairStatus === 'clean' ? true : 'unknown';
+        : xfa === false && signed === false ? true : 'unknown';
     return { encrypted: info.encrypted, copy, print, printHighQuality, forms: info.hasForms, xfa,
         javascript: info.javascript === 'present' ? true : info.javascript === 'absent' ? false : 'unknown',
         formType, actions: info.actions ?? 'unknown', repairStatus, signed, render: true,

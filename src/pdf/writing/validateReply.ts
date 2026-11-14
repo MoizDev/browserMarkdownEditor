@@ -70,7 +70,7 @@ export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, 
             const input = args as WriterOperations['writer.prepareSource']['args'];
             const o = record(value, ['writerSession', 'sourceFingerprint', 'inspection']);
             const sourceFingerprint = fingerprint(o.sourceFingerprint); exact(sourceFingerprint, input.source.pristineFingerprint);
-            result = { writerSession: id(o.writerSession), sourceFingerprint, inspection: inspection(o.inspection) };
+            result = { writerSession: matching(o.writerSession, WRITE_ID), sourceFingerprint, inspection: inspection(o.inspection) };
             break;
         }
         case 'writer.inspect': result = inspection(value); break;

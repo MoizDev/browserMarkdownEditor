@@ -1,4 +1,5 @@
 import type { JournalCapture } from '../../utils/recoveryFunnel';
+import type { ContentSource } from '../../utils/documentBuffers';
 import type { SerializerPrime } from '../format/serializerProtocol';
 import type { SampleStore } from '../ink/samples';
 import type { BoardDoc } from '../model/doc';
@@ -14,7 +15,7 @@ export interface BoardJournalOptions {
     readonly doc: BoardDoc;
     readonly samples: SampleStore;
     readonly signal?: AbortSignal;
-    append(capture: JournalCapture): Promise<void>;
+    append(capture: JournalCapture, source: ContentSource): Promise<void>;
     projectMedia?: (entry: MediaEntry) => MediaEntry;
     onError(error: unknown): void;
     cooperate?: () => Promise<void>;
@@ -31,11 +32,11 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
     const releaseWhenIdle = () => {
         if (disposed && !inFlight && !replay && !captureReleased) { captureReleased = true; capture.dispose(); }
     };
-    const enqueue = (snapshot: JournalCapture, barrier: Promise<void> | undefined): Promise<void> => {
+    const enqueue = (snapshot: JournalCapture, source: ContentSource, barrier: Promise<void> | undefined): Promise<void> => {
         inFlight++;
         const task = tail.then(async () => {
             if (barrier) await barrier.catch(() => {});
-            await options.append(snapshot);
+            await options.append(snapshot, source);
         });
         tail = task.then(() => {}, error => { failure ??= error; report(error); });
         void tail.finally(() => { inFlight--; releaseWhenIdle(); });
@@ -48,13 +49,13 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
             // cumulative delta; only the transport waits until replay returns.
             capture.record(applied, revision);
         },
-        capture() {
+        capture(source) {
             if (disposed) throw new Error('Board journal disposed');
             const snapshot = capture.capture(), barrier = replay;
             let pending: Promise<void> | undefined;
             return () => {
                 if (!snapshot) return;
-                return pending ??= enqueue(snapshot, barrier);
+                return pending ??= enqueue(snapshot, source, barrier);
             };
         },
         delta() { return disposed ? undefined : capture.capture(); },

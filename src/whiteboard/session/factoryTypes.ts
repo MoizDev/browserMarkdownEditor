@@ -1,4 +1,4 @@
-import type { SourceOwner } from '../../utils/documentBuffers';
+import type { ContentSource, SourceOwner } from '../../utils/documentBuffers';
 import type { SessionAdapter } from '../../utils/documentSessions';
 import type { JournalCapture } from '../../utils/recoveryFunnel';
 import type { Applied, TouchedSet, Transaction } from '../change/ops';
@@ -22,7 +22,7 @@ import type { BoardSession } from './BoardSession';
  * until the returned append or drain, so pagehide captures a fixed revision without waiting. */
 export interface BoardJournalPort {
     record(applied: Applied, revision: number): void;
-    capture(): () => void | Promise<void>;
+    capture(source: ContentSource): () => void | Promise<void>;
     delta(): JournalCapture | undefined;
     recover(payload: unknown, apply: (transaction: Transaction) => Applied): void | Promise<void>;
     acknowledge(revision: number, baseline?: SerializerPrime): void;

@@ -20,6 +20,8 @@ export interface PlatformLayerDefinition {
         prefetchBytes: number;
     }>;
     critical(layer: Layer, view: ViewState): boolean;
+    /** Optional raster document denominator; compiled out with its benchmark-only provider. */
+    benchmarkDomain?(layer: Layer, frame: ScheduledFrame): readonly Readonly<Rect>[];
     coverage(layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage;
 }
 

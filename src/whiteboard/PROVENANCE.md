@@ -16,11 +16,11 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `chrome/penWidth.ts` | w-j | F-STYLE-006/008, R-2 | integration §6; geometry §3.2 | Style specification endpoints and w-h's public StyleGeometryMetrics; no tldraw or old canvas source | none | 2026-11-13 |
-| `chrome/penPanel.ts` | w-j | F-STYLE-001/002/003/006/008/009, WB-D25 | integration §6; rendering §5 | Renderer-owned PaintPalette and shared geometry metrics, sRGB luminance for contrasting indicator; no tldraw or old canvas source | none | 2026-11-13 |
+| `chrome/penPanel.ts` | w-j | F-STYLE-001/002/003/006/008/009, WB-D25 | integration §6; rendering §5 | Renderer-owned PaintPalette, authoritative active tool, shared geometry metrics and sRGB luminance for contrasting indicator; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/theme.ts` | w-j | F-THEME-001/002/003/006, R-26, WB-D28 | integration §6; rendering §5 | Theme specification and host scope ruling; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/preferences.ts` | w-j | F-PREF-002/003/005/006/008/012, WB-D30 | integration §§6–7 | Preference specification and public model view flags; session/view changes delegated to host persistence; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/viewFlags.ts` | w-j | F-PREF-002/003/005/012, WB-D30 | integration §§6–7; change-and-history §2 | Model's public session/apply and per-kind dirty policies, PDF browser-record callback and dirtying result; no tldraw or old canvas source | none | 2026-11-13 |
-| `chrome/styleCommands.ts` | w-j | F-STYLE-002/004/005/006/007/008/010/011, R-2/R-9/R-20 | integration §6; geometry §3.2; change-and-history §2 | Style specification, public model operations, explicit isolated history groups and shared StyleGeometryMetrics; no tldraw or old canvas source | none | 2026-11-13 |
+| `chrome/styleCommands.ts` | w-j | F-STYLE-002/004/005/006/007/008/010/011, R-2/R-9/R-20 | integration §6; geometry §3.2; change-and-history §2 | Style specification, authoritative active tool callback, public model operations, explicit isolated history groups and shared StyleGeometryMetrics; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/language.ts` | w-j | F-LANG-001/002/003/004/005 | integration §6.2 | Own English keys and ready locale manifest, Intl plural rules, input validation and latest-choice async ordering; no tldraw or old canvas source | none | 2026-11-13 |
 
 ## Model, changes, history and text (lane w-c)
@@ -159,8 +159,8 @@ third-party code included (normally "none") · date.
 | `import/repair.ts` | w-o | IMP-1, E-IMP-4/5 | document-model §9.2; import §6 | Load-only parent, group, id, order and attachment repair rules | none | 2026-11-13 |
 | `import/sheets.ts` | w-o | IMP-1, E-IMP-4 | document-model §§4,9.2 | Sheet naming and key model | none | 2026-11-13 |
 | `import/admit.ts` | w-o | IMP-1, IMP-5 | document-model §§9–10; import §§1,6 | Public model validation and apply controller | none | 2026-11-13 |
-| `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-4/7 | import §§1–3,6 | Documented record families; bounded media admission, inert retention and paper-aware duplicate/orphan page bounds | none | 2026-11-13 |
-| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6; current-format §4; security SEC-W1 | In-memory source/metadata retention and typed failures, shared paper normalization API (`utils/paper.ts` read), orphan page retention and injected repair/admission seam | none | 2026-11-13 |
+| `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-4/7 | import §§1–3,6 | Documented record families; media admission/orphan retention, inert records and paper-aware duplicate/orphan page bounds | none | 2026-11-13 |
+| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6; current-format §4; security SEC-W1 | Source/metadata retention, model raw-media indexing, shared paper normalization API (`utils/paper.ts` read), orphan pages and injected admission | none | 2026-11-13 |
 | `import/basicGeometry.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; ink §3 | Public ink curve/sample interfaces and own cubic world bounds; connectors delegated to their provider | none | 2026-11-13 |
 | `import/sampleWire.ts` | w-o | IMP-1/2, E-IMP-15, SEC-W1 | import §§1–3; native-format §4 | Public sample sequence and native point encoder; outgoing runs and pressure retained for host re-admission | none | 2026-11-13 |
 | `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse, durable digest and collision-safe restore contracts | none | 2026-11-13 |
@@ -216,6 +216,7 @@ third-party code included (normally "none") · date.
 | `text/layoutClient.ts` | lane w-n | T-1, T-2, T-4 | text §§2–3, 7.2; threading §§2–3 | Main/worker layout compatibility selection, worker-host interface, vault/session and node-revision stale reply rejection | none | 2026-11-13 |
 | `change/historyTypes.ts` | lane w-n | H-5, H-6, CH-2 | change-and-history §§3–4; text §5.7 | Published session, selection, media/sample lease and camera-controller reveal ports; w-architect's history rulings | none | 2026-11-13 |
 | `change/historyCoalesce.ts` | lane w-n | H-5, CH-2 | change-and-history §4.3 | Independent per-property coalescing, rich-splice block snapshots and dependency-safe transient-node cancellation | none | 2026-11-13 |
+| `change/history.ts` | lane w-n | H-5, H-6, CH-2 | change-and-history §§3–4; text §5.7 | Session-only inverse steps, exact receipt rollback, selection and reveal ports, media/sample retention, 256 MiB byte cap; w-architect's R-19/media rulings | none | 2026-11-13 |
 | `change/notices.ts` | lane w-n | H-4, CH-4 | change-and-history §§1, 3; C4.6 | r-a's platform scheduler integration guidance, one frame accumulator per session, hidden timer and reentrant delivery barrier | none | 2026-11-13 |
 | `change/apply.ts`, `change/ops.ts`, `model/validate.ts` (W-C6 additions) | lane w-n | H-2, H-3, H-5, CH-2 | change-and-history §§2–4; w-architect revert ruling | Index-aligned immutable inverse groups and private receipt-verified latest-commit revert; guarded replay origins | none | 2026-11-13 |
 | `text/fonts.ts` | lane w-n | T-6 | text §7 | FontFace API; lazy per-context registration and epoch, no tldraw source | none | 2026-11-13 |
@@ -239,6 +240,7 @@ third-party code included (normally "none") · date.
 | `geom/metrics.ts` | lane w-g | GE-1 | geometry §2.4 | Design; chord/control-polygon length enclosure, greatest-uncertainty heap and bounded prefix inversion | none | 2026-11-13 |
 | `geom/transforms.ts` | lane w-g | GE-4; F-XFORM-001/003/004/005/006/007/008/010/011 | geometry §6.2–6.4 | Design; oriented-frame resize, signed crossings, rotation and parent-local translation | none | 2026-11-13 |
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |
+| `geom/arrange.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7; arrange spec | Design; world bounds, equal edge gaps, stable shelf pack with max-capacity tree | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 | `ink/pick.ts` | lane w-g | GE-3 | geometry §5.2; ink §6.2 | Export existing w-e affine capsule-distance primitive for shared path picking | none | 2026-11-13 |

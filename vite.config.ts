@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { developmentPdfiumAssets } from './build/pdfiumDevAssets'
@@ -8,6 +9,7 @@ import { pdfClassicAssets } from './build/pdfClassicAssets'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const regenerateFrame = () => execFileSync(process.execPath, ['src/epub/build-frame.mjs'], { cwd: root, stdio: 'pipe' })
+const buildId = randomUUID()
 
 export default defineConfig({
   plugins: [react(), pdfClassicAssets(), developmentPdfiumAssets(), {
@@ -18,7 +20,10 @@ export default defineConfig({
     // drops it. A plugin hook, not a function config, because scratch configs spread this object.
     name: 'benchmark-build-constant',
     config(_config, { command, mode }) {
-      return { define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark') } }
+      return { define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark'), __BME_BUILD_ID__: JSON.stringify(buildId) } }
+    },
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ version: buildId }) })
     },
   }, {
     name: 'contained-epub-frame',

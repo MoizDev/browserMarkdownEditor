@@ -1,4 +1,6 @@
 import { runReaderHostCommand } from './utils/documentReading';
+import { watchForNewVersion } from './utils/versionPoll';
+import { anyPending } from './utils/unloadCoordinator';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface } from './utils/documentReading';
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
@@ -4020,6 +4022,18 @@ export default function App() {
     || !!getView(tab.file.path)?.hasPendingEdits?.()
   ), []);
 
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  useEffect(() => watchForNewVersion(() => setUpdateAvailable(true)), []);
+  const reloadUpdatedApp = useCallback(() => {
+    // Do not discard an in-flight save, a not-yet-committed text edit, or ink
+    // still held by a canvas serializer. Conflicts remain for the reader to fix.
+    if (latestContentRef.current.size || flushingRef.current.size || anyPending() || tabsRef.current.some(hasUnsaved)) {
+      notifyRef.current('Finish saving your changes and resolve any disk conflicts before reloading.');
+      return;
+    }
+    window.location.reload();
+  }, [hasUnsaved]);
+
   /**
    * Put the file's new contents into an open document that had nothing unsaved.
    *
@@ -4756,6 +4770,14 @@ export default function App() {
     </ConfirmDialog>
   );
 
+  const updateNotice = updateAvailable && (
+    <div className="app-update-notice" role="status">
+      <span>A new version is available.</span>
+      <button type="button" onClick={reloadUpdatedApp}>Reload</button>
+      <button type="button" aria-label="Dismiss update notice" onClick={() => setUpdateAvailable(false)}>×</button>
+    </div>
+  );
+
   // Welcome screen
   if (!rootHandle && !isLoading) {
     return (
@@ -4805,6 +4827,7 @@ export default function App() {
           </div>
         </div>
         {dialogHost}
+        {updateNotice}
       </div>
     );
   }
@@ -4815,6 +4838,7 @@ export default function App() {
         <div className="welcome-inner">
           <p className="welcome-subtitle">Loading vault...</p>
         </div>
+        {updateNotice}
       </div>
     );
   }
@@ -5007,6 +5031,7 @@ export default function App() {
           and outside the editor, because the questions it asks are the file
           tree's (which is visible in the graph view too). */}
       {dialogHost}
+      {updateNotice}
     </div>
   );
 }

@@ -205,19 +205,27 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
     };
     const inline = function* (source: readonly unknown[], kind: Block['kind'], level: number, dir: Block['dir'], start: number | undefined, depth: number): ImportSteps<void> {
         let runs: Run[] = [];
-        let first = true;
+        let first = true, endedCR = false;
         const flush = () => {
             push({ kind, level, dir, ...(first && start !== undefined ? { start } : {}), runs: runs.length ? runs : [{ text: '', marks: {} }] });
             runs = []; first = false;
         };
         const append = function* (value: string, styling: Marks): Generator<void, void> {
-            const parts = (yield* clean(value)).split('\n');
-            if (parts.length > 1 && styling.x !== undefined) fail('Cannot split an unsupported rich run safely');
-            for (let i = 0; i < parts.length; i++) {
-                if ((i & 255) === 255) yield;
-                if (parts[i] || parts.length === 1) runs.push({ text: parts[i], marks: styling });
-                if (i < parts.length - 1) flush();
+            // A legacy producer can split CRLF at a mark boundary. It is still
+            // one projected separator, even when empty carrier runs intervene.
+            if (endedCR && value.startsWith('\n')) { value = value.slice(1); endedCR = false; }
+            if (value.length) endedCR = value.endsWith('\r');
+            const normalized = yield* clean(value);
+            let lineStart = 0, next = normalized.indexOf('\n'), lines = 0;
+            if (next < 0) { runs.push({ text: normalized, marks: styling }); return; }
+            if (styling.x !== undefined) fail('Cannot split an unsupported rich run safely');
+            while (next >= 0) {
+                if (next > lineStart) runs.push({ text: normalized.slice(lineStart, next), marks: styling });
+                flush();
+                lineStart = next + 1; next = normalized.indexOf('\n', lineStart);
+                if ((++lines & 255) === 0) yield;
             }
+            if (lineStart < normalized.length) runs.push({ text: normalized.slice(lineStart), marks: styling });
         };
         for (const item of source) {
             account(depth);

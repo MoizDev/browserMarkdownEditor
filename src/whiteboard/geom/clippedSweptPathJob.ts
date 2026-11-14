@@ -1,5 +1,7 @@
 import { exactAffinePoint } from './exactAffine';
-import { exactPointIntervals } from './homogeneous';
+import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
+import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
+import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { add, interval, multiply, sqrtInterval } from './numeric';
 import { isUniformDistanceMatrix, splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { classifyCertifiedClipBox, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
@@ -10,7 +12,7 @@ import type { RegionQuery } from './types';
 
 export type ClippedSweepResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 type Sweep = Extract<RegionQuery, { kind: 'swept' }>;
-type Pair = Readonly<{ path: CertifiedCurve; sweep: CertifiedCurve }>;
+type Pair = Readonly<{ path: CertifiedCurve; sweep: CertifiedCurve; exactPath: ExactCurve; exactSweep: ExactCurve }>;
 const PENDING: ClippedSweepResult = Object.freeze({ status: 'pending' });
 
 /** Certified swept capsule versus a stroked path after frame and label clips. */
@@ -46,9 +48,22 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) throw new RangeError('Invalid clipped sweep point');
         return { x: interval(p.x), y: interval(p.y) };
     };
-    const mapped = (p: { readonly x: number; readonly y: number }): BoundsPoint => exactPointIntervals(exactAffinePoint(query.localToSurface, p));
     let pathIndex = 0, commandIndex = 0, sweepIndex = 0, start: BoundsPoint | undefined, previous: BoundsPoint | undefined, segment: CertifiedCurve | undefined;
-    const stack: Pair[] = [];
+    let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined, segmentExact: ExactCurve | undefined;
+    let certificate: ReturnType<typeof createCurveCapsuleCertificate> | undefined, certificatePhase: 'inner' | 'outer' = 'inner', deferred: Pair | undefined;
+    const low = Math.max(0, threshold.lo), high = Math.max(0, threshold.hi), stack: Pair[] = [];
+    const subdivide = (pair: Pair): boolean => {
+        if (pair.path.depth >= maxDepth && pair.sweep.depth >= maxDepth) { uncertain = true; return true; }
+        if (nodes + 2 > maxNodes) return false;
+        if (pair.path.depth <= pair.sweep.depth && pair.path.depth < maxDepth) {
+            const [left, right] = splitCertifiedCurve(pair.path), [exactLeft, exactRight] = splitExactCurve(pair.exactPath);
+            stack.push({ ...pair, path: right, exactPath: exactRight }, { ...pair, path: left, exactPath: exactLeft });
+        } else {
+            const [left, right] = splitCertifiedCurve(pair.sweep), [exactLeft, exactRight] = splitExactCurve(pair.exactSweep);
+            stack.push({ ...pair, sweep: right, exactSweep: exactRight }, { ...pair, sweep: left, exactSweep: exactLeft });
+        }
+        nodes += 2; return true;
+    };
     const finish = (value: ClippedSweepResult): ClippedSweepResult => { finished = Object.freeze(value); return finished; };
     return {
         step(budget) {
@@ -57,6 +72,19 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped sweep work limit exhausted' });
+                if (certificate) {
+                    const result = certificate.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    certificate.cancel(); certificate = undefined;
+                    if (certificatePhase === 'inner' && result.status === 'hit') return finish({ status: 'hit' });
+                    if (certificatePhase === 'inner' && result.status === 'miss' && low === high) { deferred = undefined; continue; }
+                    if (certificatePhase === 'inner' && result.status === 'miss') {
+                        certificatePhase = 'outer'; certificate = createCurveCapsuleCertificate(deferred!.exactPath, deferred!.exactSweep[0], deferred!.exactSweep[1], high); continue;
+                    }
+                    if (certificatePhase === 'outer' && result.status === 'miss') { deferred = undefined; continue; }
+                    if (!subdivide(deferred!)) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
+                    deferred = undefined; continue;
+                }
                 const pair = stack.pop();
                 if (pair) {
                     const lower = lowerCurvePairDistance(pair.path.points, pair.sweep.points);
@@ -70,14 +98,12 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
                         if (distance <= radius.lo && allowed(certifiedIntervalPointBox(sample))) return finish({ status: 'hit' });
                         if (distance <= query.radiusCss && allowed(certifiedIntervalPointBox(source))) return finish({ status: 'hit' });
                     }
-                    if (pair.path.depth >= maxDepth && pair.sweep.depth >= maxDepth) { uncertain = true; continue; }
-                    if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
-                    if (pair.path.depth <= pair.sweep.depth && pair.path.depth < maxDepth) {
-                        const [left, right] = splitCertifiedCurve(pair.path); stack.push({ path: right, sweep: pair.sweep }, { path: left, sweep: pair.sweep });
-                    } else {
-                        const [left, right] = splitCertifiedCurve(pair.sweep); stack.push({ path: pair.path, sweep: right }, { path: pair.path, sweep: left });
+                    if (allowed(bounds)) {
+                        deferred = pair; certificatePhase = 'inner';
+                        certificate = createCurveCapsuleCertificate(pair.exactPath, pair.exactSweep[0], pair.exactSweep[1], low); continue;
                     }
-                    nodes += 2; continue;
+                    if (!subdivide(pair)) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
+                    continue;
                 }
                 if (segment) {
                     const count = Math.max(1, query.points.length - 1);
@@ -85,24 +111,27 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
                         const first = query.points[sweepIndex], last = query.points[Math.min(sweepIndex + 1, query.points.length - 1)];
                         const a = point(first), b = point(last), depth = first.x === last.x && first.y === last.y ? maxDepth : 0;
                         sweepIndex++; if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
-                        stack.push({ path: segment, sweep: { points: [a, b], depth } }); continue;
+                        stack.push({ path: segment, sweep: { points: [a, b], depth }, exactPath: segmentExact!, exactSweep: [exactPoint(first), exactPoint(last)] }); continue;
                     }
-                    segment = undefined; sweepIndex = 0; continue;
+                    segment = undefined; segmentExact = undefined; sweepIndex = 0; continue;
                 }
                 if (pathIndex >= paths.length) return finish(uncertain
                     ? { status: 'uncertain', reason: 'Clipped sweep boundary cannot be certified' } : { status: 'miss' });
                 const path = paths[pathIndex];
-                if (commandIndex >= path.length) { pathIndex++; commandIndex = 0; start = previous = undefined; continue; }
+                if (commandIndex >= path.length) { pathIndex++; commandIndex = 0; start = previous = undefined; startExact = previousExact = undefined; continue; }
                 if (++commands > maxCommands) return finish({ status: 'uncertain', reason: 'Clipped sweep command limit exhausted' });
                 const op = path[commandIndex++];
-                if (op.op === 'M') { start = previous = mapped(op.p); continue; }
-                if (!start || !previous) throw new RangeError('Clipped sweep path must begin with M');
-                const end = op.op === 'Z' ? start : mapped(op.p);
-                segment = { points: op.op === 'C' ? [previous, mapped(op.c1), mapped(op.c2), end] : [previous, end], depth: 0 };
-                previous = end;
+                if (op.op === 'M') { startExact = previousExact = exactAffinePoint(query.localToSurface, op.p); start = previous = exactPointIntervals(startExact); continue; }
+                if (!start || !previous || !startExact || !previousExact) throw new RangeError('Clipped sweep path must begin with M');
+                const endExact = op.op === 'Z' ? startExact : exactAffinePoint(query.localToSurface, op.p), end = exactPointIntervals(endExact);
+                if (op.op === 'C') {
+                    const c1 = exactAffinePoint(query.localToSurface, op.c1), c2 = exactAffinePoint(query.localToSurface, op.c2);
+                    segmentExact = [previousExact, c1, c2, endExact]; segment = { points: [previous, exactPointIntervals(c1), exactPointIntervals(c2), end], depth: 0 };
+                } else { segmentExact = [previousExact, endExact]; segment = { points: [previous, end], depth: 0 }; }
+                previous = end; previousExact = endExact;
             }
             return PENDING;
         },
-        cancel() { cancelled = true; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); certificate = undefined; deferred = undefined; stack.length = 0; },
     };
 }

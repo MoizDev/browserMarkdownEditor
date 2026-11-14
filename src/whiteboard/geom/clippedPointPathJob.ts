@@ -1,10 +1,12 @@
 import type { Affine } from '../../platform/types';
 import { exactAffinePoint } from './exactAffine';
 import { exactLineBetween, exactPoint, exactPointIntervals, exactSide, type ExactLine, type ExactPoint } from './homogeneous';
+import { createCurveDiskCertificate } from './curveDiskCertificate';
+import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { add, interval, multiply, sqrtInterval, subtract } from './numeric';
 import { isUniformDistanceMatrix, lowerPointHullDistance, splitCertifiedCurve, upperPointIntervalDistance,
     type BoundsPoint, type CertifiedCurve } from './pointPathJob';
-import type { PathOp, Vec2 } from './path';
+import type { PathOp } from './path';
 import type { PointQuery } from './types';
 
 export interface PointClipContour { readonly outline: readonly PathOp[]; readonly localToSurface: Affine }
@@ -92,9 +94,16 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
     const invisible = (box: CertifiedClipBox) => frames.some(region => classifyCertifiedClipBox(box, region) === 'outside') || exclusions.some(region => classifyCertifiedClipBox(box, region) === 'inside');
     const queryBox: CertifiedClipBox = [query.point.x, query.point.y, query.point.x, query.point.y];
     const queryAllowed = allowed(queryBox);
-    const mapped = (point: Vec2): BoundsPoint => exactPointIntervals(exactAffinePoint(query.localToSurface, point));
-    let start: BoundsPoint | undefined, previous: BoundsPoint | undefined;
-    const stack: CertifiedCurve[] = [];
+    type Work = { readonly curve: CertifiedCurve; readonly exact: ExactCurve };
+    let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined;
+    let certificate: ReturnType<typeof createCurveDiskCertificate> | undefined, certificatePhase: 'inner' | 'outer' = 'inner', deferred: Work | undefined;
+    const centre = exactPoint(query.point), low = Math.max(0, threshold.lo), high = Math.max(0, threshold.hi), stack: Work[] = [];
+    const subdivide = (work: Work): boolean => {
+        if (work.curve.depth >= maxDepth) { uncertain = true; return true; }
+        if (nodes + 2 > maxNodes) return false;
+        const [left, right] = splitCertifiedCurve(work.curve), [exactLeft, exactRight] = splitExactCurve(work.exact);
+        nodes += 2; stack.push({ curve: right, exact: exactRight }, { curve: left, exact: exactLeft }); return true;
+    };
     const finish = (result: ClippedPointResult): ClippedPointResult => { finished = Object.freeze(result); return finished; };
     return {
         step(budget) {
@@ -103,9 +112,22 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped point work limit exhausted' });
-                const curve = stack.pop();
-                if (curve) {
-                    const lower = lowerPointHullDistance(query.point, curve.points);
+                if (certificate) {
+                    const result = certificate.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    certificate.cancel(); certificate = undefined;
+                    if (certificatePhase === 'inner' && result.status === 'hit') return finish({ status: 'hit', distanceCss: margin });
+                    if (certificatePhase === 'inner' && result.status === 'miss' && low === high) { deferred = undefined; continue; }
+                    if (certificatePhase === 'inner' && result.status === 'miss') {
+                        certificatePhase = 'outer'; certificate = createCurveDiskCertificate(deferred!.exact, centre, high); continue;
+                    }
+                    if (certificatePhase === 'outer' && result.status === 'miss') { deferred = undefined; continue; }
+                    if (!subdivide(deferred!)) return finish({ status: 'uncertain', reason: 'Clipped point node limit exhausted' });
+                    deferred = undefined; continue;
+                }
+                const item = stack.pop();
+                if (item) {
+                    const curve = item.curve, lower = lowerPointHullDistance(query.point, curve.points);
                     if (!Number.isFinite(lower)) return finish({ status: 'uncertain', reason: 'Clipped point distance overflows' });
                     if (lower > threshold.hi) continue;
                     const bounds = expandCertifiedClipBox(certifiedCurveBox(curve.points), Math.max(0, radius.hi));
@@ -115,25 +137,30 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
                         if (queryAllowed && distance <= radius.lo) return finish({ status: 'hit', distanceCss: 0 });
                         if (distance <= margin && allowed(certifiedIntervalPointBox(endpoint))) return finish({ status: 'hit', distanceCss: distance });
                     }
-                    if (curve.depth >= maxDepth) { uncertain = true; continue; }
-                    if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Clipped point node limit exhausted' });
-                    const [left, right] = splitCertifiedCurve(curve); nodes += 2; stack.push(right, left); continue;
+                    if (allowed(bounds)) {
+                        deferred = item; certificatePhase = 'inner'; certificate = createCurveDiskCertificate(item.exact, centre, low); continue;
+                    }
+                    if (!subdivide(item)) return finish({ status: 'uncertain', reason: 'Clipped point node limit exhausted' });
+                    continue;
                 }
                 if (pathIndex >= paths.length) return finish(uncertain
                     ? { status: 'uncertain', reason: 'Clipped point boundary cannot be certified' } : { status: 'miss' });
                 const path = paths[pathIndex];
-                if (commandIndex >= path.length) { pathIndex++; commandIndex = 0; start = previous = undefined; continue; }
+                if (commandIndex >= path.length) { pathIndex++; commandIndex = 0; start = previous = undefined; startExact = previousExact = undefined; continue; }
                 if (++commands > maxCommands) return finish({ status: 'uncertain', reason: 'Clipped point command limit exhausted' });
                 const op = path[commandIndex++];
-                if (op.op === 'M') { start = previous = mapped(op.p); continue; }
-                if (!start || !previous) throw new RangeError('Clipped point path must begin with M');
-                const end = op.op === 'Z' ? start : mapped(op.p);
+                if (op.op === 'M') { startExact = previousExact = exactAffinePoint(query.localToSurface, op.p); start = previous = exactPointIntervals(startExact); continue; }
+                if (!start || !previous || !startExact || !previousExact) throw new RangeError('Clipped point path must begin with M');
+                const endExact = op.op === 'Z' ? startExact : exactAffinePoint(query.localToSurface, op.p), end = exactPointIntervals(endExact);
                 if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Clipped point node limit exhausted' });
-                stack.push({ points: op.op === 'C' ? [previous, mapped(op.c1), mapped(op.c2), end] : [previous, end], depth: 0 });
-                previous = end;
+                if (op.op === 'C') {
+                    const c1 = exactAffinePoint(query.localToSurface, op.c1), c2 = exactAffinePoint(query.localToSurface, op.c2);
+                    stack.push({ curve: { points: [previous, exactPointIntervals(c1), exactPointIntervals(c2), end], depth: 0 }, exact: [previousExact, c1, c2, endExact] });
+                } else stack.push({ curve: { points: [previous, end], depth: 0 }, exact: [previousExact, endExact] });
+                previous = end; previousExact = endExact;
             }
             return PENDING;
         },
-        cancel() { cancelled = true; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); certificate = undefined; deferred = undefined; stack.length = 0; },
     };
 }

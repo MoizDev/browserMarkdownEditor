@@ -2,6 +2,7 @@ import { dyadic, dyadicMultiply, dyadicSubtract, type Dyadic } from './numeric';
 import { createPolynomialArithmetic } from './polynomial';
 import { bernsteinPower, createCurveDiskCertificate } from './curveDiskCertificate';
 import type { ExactCurvePoint } from './cubicRootCertificate';
+import { splitExactCurve } from './exactCurve';
 
 export type CurveCapsuleResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 type Curve = readonly [ExactCurvePoint, ExactCurvePoint] | readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint];
@@ -10,14 +11,9 @@ const PENDING: CurveCapsuleResult = Object.freeze({ status: 'pending' });
 const ZERO: Dyadic = Object.freeze({ n: 0n, e: 0 });
 function add(a: Dyadic, b: Dyadic): Dyadic { return dyadicSubtract(a, { n: -b.n, e: b.e }); }
 function compare(a: Dyadic, b: Dyadic): -1 | 0 | 1 { const value = dyadicSubtract(a, b).n; return value < 0n ? -1 : value > 0n ? 1 : 0; }
-function midpoint(a: Dyadic, b: Dyadic): Dyadic { const value = add(a, b); return { n: value.n, e: value.e - 1 }; }
-function middle(a: ExactCurvePoint, b: ExactCurvePoint): ExactCurvePoint { return { x: midpoint(a.x, b.x), y: midpoint(a.y, b.y) }; }
 function split(value: Work): readonly [Work, Work] {
-    const p = value.points, depth = value.depth + 1;
-    if (p.length === 2) { const m = middle(p[0], p[1]); return [{ points: [p[0], m], depth }, { points: [m, p[1]], depth }]; }
-    const a = middle(p[0], p[1]), b = middle(p[1], p[2]), c = middle(p[2], p[3]);
-    const d = middle(a, b), e = middle(b, c), m = middle(d, e);
-    return [{ points: [p[0], a, d, m], depth }, { points: [m, e, c, p[3]], depth }];
+    const [left, right] = splitExactCurve(value.points), depth = value.depth + 1;
+    return [{ points: left, depth }, { points: right, depth }];
 }
 
 /** Exact curve/closed-capsule intersection: end disks plus a certified finite

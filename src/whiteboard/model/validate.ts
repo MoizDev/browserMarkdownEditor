@@ -1,7 +1,7 @@
 import { normalizePaper, PAPER_SIZES, type NotebookPaper } from '../../utils/paper';
 import type { Op, TouchedSet, TransactionOrigin } from '../change/ops';
 import type { RichText } from '../text/richText';
-import { childrenOf, isSheetParent, sheetOf, type BoardDoc } from './doc';
+import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from './doc';
 import { isValidId, type NodeId, type ParentId, type SheetId } from './ids';
 import { MEDIA_MIMES, type MediaId } from './media';
 import type { Node, NodeKind } from './nodes';
@@ -376,7 +376,7 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 const length = scanText(text);
                 if (!integer(op.from, 0, length) || !integer(op.to, op.from, length)
                     || !isSurrogateBoundary(text, op.from) || !isSurrogateBoundary(text, op.to)) return refuse('V-11', opIndex, node.id, 'Splice offsets must be ordered UTF-16 boundaries within the text');
-                if (op.wholeBlocks !== undefined && (op.wholeBlocks !== true || (context.origin !== 'undo' && context.origin !== 'redo') || !isBlockRange(text, op.from, op.to))) return refuse('V-11', opIndex, node.id, 'Whole-block inverse must be block-aligned');
+                if (op.wholeBlocks !== undefined && (op.wholeBlocks !== true || (context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert') || !isBlockRange(text, op.from, op.to))) return refuse('V-11', opIndex, node.id, 'Whole-block inverse must be block-aligned');
                 if (!validRichText(op.insert) || length - (op.to - op.from) + scanText(op.insert) > MAX_TEXT_LENGTH
                     || spliceBlockCount(text, op.from, op.to, op.insert.blocks.length) > MAX_TEXT_BLOCKS) return refuse('V-11', opIndex, node.id, 'Splice fragment or resulting text/block count is invalid');
                 return OK;
@@ -403,7 +403,7 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 return refuse('schema', opIndex, null, 'Unknown sheet property');
             }
             case 'ext': {
-                if ((context.origin !== 'undo' && context.origin !== 'redo') || !closed(op, KEYS.ext) || !extension(op.value)) return refuse('schema', opIndex, nodeId, 'Invalid internal extension restore');
+                if ((context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert') || !closed(op, KEYS.ext) || !extension(op.value)) return refuse('schema', opIndex, nodeId, 'Invalid internal extension restore');
                 switch (op.target) {
                     case 'node': {
                         if (!id(op.id)) return refuse('V-1', opIndex, nodeId, 'Extension node id is invalid');
@@ -440,7 +440,7 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 if (op.op === 'drop' && closed(op, KEYS.mediaDrop) && typeof op.id === 'string' && MEDIA_HASH.test(op.id)) {
                     const media = op.id as MediaId;
                     if (!doc.media.has(media)) return refuse('V-9', opIndex, null, 'Media does not exist');
-                    if (op.restoreMissing !== undefined && (op.restoreMissing !== true || (context.origin !== 'undo' && context.origin !== 'redo'))) return refuse('schema', opIndex, null, 'Only an inverse can restore a missing media entry');
+                    if (op.restoreMissing !== undefined && (op.restoreMissing !== true || (context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert'))) return refuse('schema', opIndex, null, 'Only an inverse can restore a missing media entry');
                     if (doc.mediaRefs.get(media)?.size) return refuse('V-9', opIndex, null, 'Media is still referenced by live nodes');
                     return op.restoreMissing === true || !(doc.preservedMediaRefs.get(media) ?? 0)
                         ? OK : refuse('V-9', opIndex, null, 'Media is still referenced by preserved data');
@@ -455,14 +455,6 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
     }
 }
 
-function containsOpaque(doc: BoardDoc, id: NodeId, depth = 0): boolean {
-    const node = doc.nodes.get(id);
-    if (node?.kind === 'opaque') return true;
-    if (depth >= 64) return false;
-    const children = childrenOf(doc, id);
-    for (let i = 0; i < children.length; i++) if (containsOpaque(doc, children[i].id, depth + 1)) return true;
-    return false;
-}
 function finalNode(context: ValidationContext, node: Node, index: number): ValidationResult {
     const doc = context.doc;
     const parent = parentCheck(doc, node.parent, node.id, index);
@@ -472,7 +464,7 @@ function finalNode(context: ValidationContext, node: Node, index: number): Valid
         if (node.page !== -1) return refuse('V-7', index, node.id, 'Whiteboard/nested nodes must have page -1');
     } else if (!integer(node.page, 0)) return refuse('V-7', index, node.id, 'Paged root node requires a non-negative page index');
     // V-6's preserved-opaque exception follows document-model §9.3/RV-22.
-    if (node.kind === 'group' && childrenOf(doc, node.id).length < 2 && !containsOpaque(doc, node.id)) return refuse('V-6', index, node.id, 'Normalization must dissolve a group with fewer than two children');
+    if (node.kind === 'group' && childrenOf(doc, node.id).length < 2 && !hasOpaqueDescendant(doc, node.id)) return refuse('V-6', index, node.id, 'Normalization must dissolve a group with fewer than two children');
     // V-10 waits for paired samples/pressure writes, just as V-7 waits for
     // parent/page. A staged mismatch is allowed; an unencodable stroke is not.
     if (node.kind === 'stroke') {

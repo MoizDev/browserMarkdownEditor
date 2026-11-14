@@ -6079,10 +6079,15 @@ li[aria-selected] .cm-completionMatchedText {
 /* "This row opens something." Pushed to the right edge by the row's own flex,
    and faint because it is a hint about the row rather than part of its name. */
 .context-menu-item-arrow {
-  margin-left: auto;
+  margin-inline-start: auto;
   color: var(--text-faint);
   font-size: 11px;
   line-height: 1;
+}
+
+.context-menu[dir="rtl"] .context-menu-item,
+.context-menu-panel[dir="rtl"] .context-menu-item {
+  text-align: right;
 }
 
 /* The flyout beside the menu — the table size picker lives in one. Chrome only:

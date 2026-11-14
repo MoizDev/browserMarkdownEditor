@@ -14,7 +14,7 @@
 import type { AgentId, MirrorFile } from '../../shared/vaultAgentProtocol';
 import type { ChatTree } from '../utils/chatTree';
 import type { EditorMode, FileTreeNode, TabLayout, Theme } from './index';
-import type { TextChange, ViewReporter } from '../utils/viewRegistry';
+import type { CanvasShapePage, CanvasShapeQuery, TextChange, ViewReporter } from '../utils/viewRegistry';
 import type { AgentHostDeps } from '../utils/agentHost';
 
 /* ───────────────────────── the vault's chat index (.VaultAgent/chats.json) ───────────────────────── */
@@ -113,6 +113,9 @@ export interface VaultToolHost {
      *  missing, a folder, or unreadable. */
     readText(path: string): Promise<string | null>;
     readBytes(path: string): Promise<Uint8Array | null>;
+    /** Session-owned live read or C5-admitted closed read; null means not a new board. */
+    canvasShapePage?(path: string, query: CanvasShapeQuery,
+        guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasShapePage | null>;
     /**
      * Apply `changes` (offsets into `expected`) to a text file. Refused as
      * 'stale' unless the current text (readText) still equals `expected`. Lands
@@ -132,6 +135,8 @@ export interface VaultToolHost {
      *  beside the user's focused pane without taking focus when it is not on
      *  screen, switches a PDF to annotate, and waits for it to mount. */
     openCanvasForAgent(path: string): Promise<ViewReporter | null>;
+    /** Rechecked at commit as a reload may revoke a canvas's write authority. */
+    canvasWritable(path: string): boolean;
 }
 
 /* ───────────────────────── change cards ───────────────────────── */

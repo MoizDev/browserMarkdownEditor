@@ -37,17 +37,20 @@ function visitRun(head: string, length: number, ring: Uint8Array | undefined, po
 // ids. Long hex runs also contribute their first/last 64 characters (cafe<hash>
 // is still a dependency). A 64-byte ring avoids materializing long strings or
 // allocating a sliding substring per character; false positives keep data safe.
-export function scanRawMedia(raw: RawJson, visit: (id: MediaId) => void): void {
+function* scanRawMediaSteps(raw: RawJson, visit: (id: MediaId) => void): Generator<void, void> {
+    let nextYield = 4096;
     let seen: Set<MediaId> | undefined;
     let ring: Uint8Array | undefined;
     let i = 0;
     while (i < raw.length) {
+        if (i >= nextYield) { nextYield = i + 4096; yield; }
         if (raw.charCodeAt(i++) !== 34) continue;
         let candidate = '';
         let length = 0;
         let position = 0;
         let closed = false;
         while (i < raw.length) {
+            if (i >= nextYield) { nextYield = i + 4096; yield; }
             let code = raw.charCodeAt(i++);
             if (code === 34) { closed = true; break; }
             if (code === 92) {
@@ -92,23 +95,42 @@ export function scanRawMedia(raw: RawJson, visit: (id: MediaId) => void): void {
     }
 }
 
-export function visitExtRaw(ext: ExtBag | null, visit: (raw: RawJson) => void): void {
-    if (!ext) return;
-    for (const raw of ext.fields.values()) visit(raw);
-    for (const raw of ext.raw.values()) visit(raw);
+export function scanRawMedia(raw: RawJson, visit: (id: MediaId) => void): void {
+    const steps = scanRawMediaSteps(raw, visit);
+    while (!steps.next().done) { /* synchronous transaction visitor */ }
 }
-
-export function visitRichTextRaw(text: RichText | null, visit: (raw: RawJson) => void): void {
+export async function scanRawMediaIncremental(raw: RawJson, visit: (id: MediaId) => void, cooperate: () => Promise<void>): Promise<void> {
+    const steps = scanRawMediaSteps(raw, visit);
+    let started = performance.now();
+    for (;;) {
+        if (steps.next().done) return;
+        if (performance.now() - started >= 3) { await cooperate(); started = performance.now(); }
+    }
+}
+export function* extRawValues(ext: ExtBag | null): Iterable<RawJson> {
+    if (!ext) return;
+    yield* ext.fields.values();
+    yield* ext.raw.values();
+}
+export function visitExtRaw(ext: ExtBag | null, visit: (raw: RawJson) => void): void {
+    for (const raw of extRawValues(ext)) visit(raw);
+}
+export function* richTextRawValues(text: RichText | null): Iterable<RawJson | null> {
     if (!text) return;
+    let count = 0;
     for (let b = 0; b < text.blocks.length; b++) {
         const block = text.blocks[b];
-        if (block.tail !== undefined) visit(block.tail);
+        if (block.tail !== undefined) yield block.tail;
         for (let r = 0; r < block.runs.length; r++) {
             const run = block.runs[r];
-            if (run.tail !== undefined) visit(run.tail);
-            if (run.marks.x !== undefined) visit(run.marks.x);
+            if (run.tail !== undefined) yield run.tail;
+            if (run.marks.x !== undefined) yield run.marks.x;
+            if ((++count & 255) === 0) yield null;
         }
     }
+}
+export function visitRichTextRaw(text: RichText | null, visit: (raw: RawJson) => void): void {
+    for (const raw of richTextRawValues(text)) if (raw !== null) visit(raw);
 }
 
 // The reader can use this before sample admission: these are precisely the node
@@ -118,20 +140,27 @@ export type NodeRawCarrier = Pick<OpaqueNode, 'kind' | 'ext' | 'raw'>
     | Pick<FigureNode | ConnectorNode, 'kind' | 'ext' | 'label'>
     | { readonly kind: Exclude<NodeKind, 'opaque' | 'text' | 'sticky' | 'figure' | 'connector'>; readonly ext: ExtBag | null };
 
+export function* nodeRawValues(node: NodeRawCarrier): Iterable<RawJson | null> {
+    yield* extRawValues(node.ext);
+    if (node.kind === 'opaque') yield node.raw;
+    else if (node.kind === 'text' || node.kind === 'sticky') yield* richTextRawValues(node.text);
+    else if (node.kind === 'figure' || node.kind === 'connector') yield* richTextRawValues(node.label);
+}
 export function visitNodeRaw(node: NodeRawCarrier, visit: (raw: RawJson) => void): void {
-    visitExtRaw(node.ext, visit);
-    if (node.kind === 'opaque') visit(node.raw);
-    else if (node.kind === 'text' || node.kind === 'sticky') visitRichTextRaw(node.text, visit);
-    else if (node.kind === 'figure' || node.kind === 'connector') visitRichTextRaw(node.label, visit);
+    for (const raw of nodeRawValues(node)) if (raw !== null) visit(raw);
 }
-
+export function* hostRawValues(host: HostBlock): Iterable<RawJson> {
+    if (host.kind === 'pdf-ink') { yield host.pdf; yield* extRawValues(host.ext); }
+    else if (host.kind === 'notebook') yield* extRawValues(host.ext);
+}
 export function visitHostRaw(host: HostBlock, visit: (raw: RawJson) => void): void {
-    if (host.kind === 'pdf-ink') { visit(host.pdf); visitExtRaw(host.ext, visit); }
-    else if (host.kind === 'notebook') visitExtRaw(host.ext, visit);
+    for (const raw of hostRawValues(host)) visit(raw);
 }
-
+export function* preservedRawValues(preserved: PreservedBlock): Iterable<RawJson> {
+    yield* preserved.fields.values();
+    for (const record of preserved.records) yield record.raw;
+    yield* extRawValues(preserved.end);
+}
 export function visitPreservedRaw(preserved: PreservedBlock, visit: (raw: RawJson) => void): void {
-    for (const raw of preserved.fields.values()) visit(raw);
-    for (let i = 0; i < preserved.records.length; i++) visit(preserved.records[i].raw);
-    visitExtRaw(preserved.end, visit);
+    for (const raw of preservedRawValues(preserved)) visit(raw);
 }

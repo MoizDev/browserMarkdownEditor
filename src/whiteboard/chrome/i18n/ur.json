@@ -377,6 +377,7 @@
     "paper.deleteContents": "یہ صفحہ {items} پر مشتمل ہے۔",
     "paper.deleteConfirm": "صفحہ حذف کریں۔",
     "paper.cancel": "منسوخ کریں۔",
-    "paper.keepProtected": "مقفل مواد رکھا جائے گا۔"
+    "paper.keepProtected": "مقفل مواد رکھا جائے گا۔",
+    "chrome.readOnly": "یہ بورڈ صرف پڑھنے کے لیے ہے۔"
   }
 }

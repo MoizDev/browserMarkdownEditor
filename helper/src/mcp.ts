@@ -8,8 +8,9 @@
 // Transport concerns (Origin, Host, bearer token, body size) live in server.ts;
 // this module is the JSON-RPC layer only, so it can be tested without a socket.
 
-import type { ToolName, ToolResult } from '../../shared/vaultAgentProtocol.ts';
+import { CANVAS_PAGING_VERSION, compareVersions, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol.ts';
 import { VAULT_TOOLS } from '../../shared/vaultAgentTools.ts';
+import { HELPER_VERSION } from './buildInfo.ts';
 
 /** Newest first. We answer with the client's version when we know it. */
 export const MCP_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;
@@ -36,8 +37,13 @@ const ok = (id: JsonRpcId, result: unknown) => ({ jsonrpc: '2.0', id, result });
 export function toolList() {
     return VAULT_TOOLS.map(t => ({
         name: t.name,
-        description: t.description,
-        inputSchema: t.inputSchema,
+        description: t.name === 'canvas_shapes' && compareVersions(HELPER_VERSION, CANVAS_PAGING_VERSION) < 0
+            ? 'List the shapes on a .tldraw drawing, a .notebook, or a PDF\'s annotation layer: id, type, position and size, text, colour and style. On notebooks and PDFs coordinates are page-relative: x/y in page units from that page\'s top-left corner, with `page` saying which page.'
+            : t.description,
+        inputSchema: t.name === 'canvas_shapes' && compareVersions(HELPER_VERSION, CANVAS_PAGING_VERSION) < 0
+            ? { ...t.inputSchema, properties: { path: (t.inputSchema.properties as Record<string, unknown>).path,
+                page: (t.inputSchema.properties as Record<string, unknown>).page } }
+            : t.inputSchema,
         annotations: { readOnlyHint: !t.mutates },
         _meta: { 'anthropic/alwaysLoad': true },
     }));

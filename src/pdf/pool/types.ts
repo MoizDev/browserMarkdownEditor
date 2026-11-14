@@ -2,6 +2,7 @@ import type { PageGeometry } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import type { Priority, RequestOptions } from '../../platform/workers/envelope';
 import type { DocInfo, RawPdfLink, RawOutlineNode, PageComplexity } from '../engine/types';
+import type { WriterOperations } from '../writing/protocol';
 import type { PdfArgs, PdfResult, PdfEngineOp, PdfDocKey, PdfTextDetail, PageTextReply, PageTileArgs, PageTileResult,
     PageProbeArgs, PageProbeResult, PdfWorkerStats } from '../worker/protocol';
 
@@ -17,6 +18,7 @@ export interface PdfOpenOptions {
     signal?: AbortSignal;
 }
 export type PdfDocumentOp = Exclude<PdfEngineOp, 'engine.init' | 'doc.open' | 'doc.close' | 'font.provide' | 'worker.stats'>;
+export type WithoutDocKey<T> = T extends unknown ? Omit<T, 'docKey'> : never;
 
 /** A retained, source-explicit document lease. Closing it cannot cancel another
  * pane's lease or change PDF bytes. Session/token checks guard every publication. */
@@ -27,9 +29,9 @@ export interface PdfPoolDocument {
     readonly info: Readonly<DocInfo>;
     readonly closed: boolean;
     geometry(page: number): Readonly<PageGeometry>;
-    request<K extends PdfDocumentOp>(op: K, args: Omit<PdfArgs<K>, 'docKey'>, options: PdfRequestOptions): Promise<PdfResult<K>>;
+    request<K extends PdfDocumentOp>(op: K, args: WithoutDocKey<PdfArgs<K>>, options: PdfRequestOptions): Promise<PdfResult<K>>;
     text(page: number, detail: PdfTextDetail, options: PdfRequestOptions): Promise<PageTextReply>;
-    tile(args: Omit<PageTileArgs, 'docKey'>, options: PdfRequestOptions): Promise<PageTileResult>;
+    tile(args: WithoutDocKey<PageTileArgs>, options: PdfRequestOptions): Promise<PageTileResult>;
     links(page: number, options: PdfRequestOptions): Promise<RawPdfLink[]>;
     outline(options: PdfRequestOptions): Promise<RawOutlineNode[]>;
     complexity(page: number, options: PdfRequestOptions): Promise<PageComplexity>;
@@ -42,10 +44,9 @@ export interface PdfPoolDocument {
     close(): Promise<void>;
 }
 
-/** Dedicated engine instance. Its typed writer facade/operation map lives in
- * writing/protocol.ts; this host seam deliberately has C5's generic request shape. */
+/** Dedicated engine instance; the writer owns its single operation map. */
 export interface PdfWriterSession {
-    request<T>(op: string, args: unknown, options: PdfRequestOptions): Promise<T>;
+    request<K extends keyof WriterOperations>(op: K, args: WriterOperations[K]['args'], options: PdfRequestOptions): Promise<WriterOperations[K]['result']>;
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     close(): Promise<void>;
 }

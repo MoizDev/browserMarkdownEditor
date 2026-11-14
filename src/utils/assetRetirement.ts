@@ -63,8 +63,9 @@ export class RetirementBacklog<Job> {
         return jobs;
     }
     affected(path: string): string[] {
-        return [...this.folders.keys()].filter(folder => !folder || path === folder || path.startsWith(`${folder}/`));
+        return [...this.folders.keys()].filter(folder => !folder || !path || path === folder || path.startsWith(`${folder}/`) || folder.startsWith(`${path}/`));
     }
+    all(): string[] { return [...this.folders.keys()]; }
     reset(): void { this.folders.clear(); this.scheduled.clear(); }
 }
 

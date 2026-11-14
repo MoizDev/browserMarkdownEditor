@@ -364,7 +364,6 @@ export default function App() {
     linkedVault,
     recentVaults,
     currentVaultId,
-    handleIO,
     getVaultActivation,
     resolveVaultDir,
     resolveVaultFile,
@@ -1381,6 +1380,8 @@ export default function App() {
         if (await retireAsset(name, dir, proofCurrent)) {
           retired = true;
           names.delete(name);
+        } else {
+          block();
         }
       }
       if (!proofCurrent()) return abandon();
@@ -1429,6 +1430,21 @@ export default function App() {
       }
     });
   }, []);
+
+  // I4 can call this same entry point when a folder's index lists turn fresh.
+  const requeueAssetFolder = useCallback((folder: string) => {
+    const backlog = assetBacklogRef.current;
+    if (!backlog.schedule(folder)) return;
+    reconcileQueueRef.current = reconcileQueueRef.current.then(async () => {
+      for (const job of backlog.take(folder)) await reconcileAssetsRef.current(job);
+    });
+  }, []);
+  const requeueAssetsAffected = useCallback((path: string) => {
+    for (const folder of assetBacklogRef.current.affected(path)) requeueAssetFolder(folder);
+  }, [requeueAssetFolder]);
+  const requeueAllAssets = useCallback(() => {
+    for (const folder of assetBacklogRef.current.all()) requeueAssetFolder(folder);
+  }, [requeueAssetFolder]);
 
   const retryUnreadTabRef = useRef<(path: string) => Promise<boolean>>(async () => false);
 
@@ -2123,6 +2139,7 @@ export default function App() {
         // Queued rather than awaited: reconciling reads the note's neighbours,
         // and a save's "Saved" status (and the graph rebuild below) should not
         // wait on that — but two of them must not interleave either.
+        requeueAssetsAffected(path);
         if (assetJob) queueReconcile(assetJob);
         if (boardBaseline) queueReconcile({
           activation: activationAtCall,
@@ -2184,7 +2201,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [clearSaveTimer, contentOf, queueReconcile, setDiskState, keepClosingEdits, syncExitGuard]);
+  }, [clearSaveTimer, contentOf, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -3551,6 +3568,7 @@ export default function App() {
       const trashed = await moveToTrash(node);
       setSaveStatus('');
       if (!trashed) return false;
+      requeueAssetsAffected(node.path);
 
       // A trashed row's icon and colour go with it, and a folder's takes
       // everything inside it — otherwise the entry sits in the file forever, and
@@ -3575,7 +3593,7 @@ export default function App() {
       }
       return true;
     });
-  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor]);
+  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected]);
 
   const handleTrash = useCallback(async (node: FileTreeNode) => {
     // A folder copy runs for seconds, and its row stays on screen throughout —
@@ -3780,6 +3798,7 @@ export default function App() {
       }
 
       if (result.status === 'ok') {
+        requeueAssetsAffected(joinVaultPath(item.restorePath, result.name));
         // A numbered rename must never be silent — "Keep both" says there will
         // be a number, not what it is. Re-armed over any pending "Saved", the
         // way handleTrash re-arms it.
@@ -3793,7 +3812,7 @@ export default function App() {
     } finally {
       trashInFlightRef.current = false;
     }
-  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor]);
+  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected]);
 
   /** Erase one trashed item. One of the app's two points of no return. */
   const handleTrashDelete = useCallback(async (item: TrashItem) => {
@@ -4098,10 +4117,12 @@ export default function App() {
     const success = await renameFile(node, newName);
     if (!success) return false;
     const newPath = joinVaultPath(parentVaultPath(node.path), newName);
+    requeueAssetsAffected(node.path);
+    requeueAssetsAffected(newPath);
     retargetExpanded(node, newPath);
     await retargetTabs(node, newPath);
     return true;
-  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab]);
+  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab, requeueAssetsAffected]);
 
   // Wrap moveFile so a moved document's tab tracks its new path and handle —
   // including every document inside a moved FOLDER.
@@ -4109,11 +4130,13 @@ export default function App() {
     const success = await moveFile(sourceNode, targetDirHandle);
     if (success) {
       const newPath = joinVaultPath(targetPath, sourceNode.name);
+      requeueAssetsAffected(sourceNode.path);
+      requeueAssetsAffected(newPath);
       retargetExpanded(sourceNode, newPath);
       await retargetTabs(sourceNode, newPath);
     }
     return success;
-  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove]);
+  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove, requeueAssetsAffected]);
 
   // ── Changes made OUTSIDE the app ────────────────────────────────────────
   // A `git pull` in the terminal, a formatter, a sync client, another editor.
@@ -4393,6 +4416,9 @@ export default function App() {
 
   // Every batch of outside changes, after the context has patched the tree.
   useEffect(() => subscribeVaultChanges(batch => {
+    assetReferenceRevisionRef.current++;
+    if (batch.rescan) requeueAllAssets();
+    else for (const changed of [...batch.modified, ...batch.appeared, ...batch.disappeared, ...batch.moved.flatMap(m => [m.from, m.to])]) requeueAssetsAffected(changed);
     void checkOpenDocs(batch.rescan ? 'all' : new Set([
       ...batch.modified, ...batch.appeared, ...batch.disappeared,
       ...batch.moved.flatMap(m => [m.from, m.to]),
@@ -4423,7 +4449,7 @@ export default function App() {
         stampFileTimes(stamps);
       })();
     }
-  }), [subscribeVaultChanges, checkOpenDocs, resolveFileHandle, statFile]);
+  }), [subscribeVaultChanges, checkOpenDocs, resolveFileHandle, statFile, requeueAllAssets, requeueAssetsAffected]);
 
   // The belt to the observer's braces: coming back to the window re-checks
   // every open document (one stat each). Without an observer at all — an older
@@ -4659,6 +4685,9 @@ export default function App() {
       afterWrite: (file, before, after) => {
         // The tail of flushTab, for a file written with no tab to flush.
         recordFileWritten(file.path);
+        requeueAssetsAffected(file.path);
+        if (isCanvasFile(file.name)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
+          text: after, before: new Set(), after: new Set(), board: { before, after } });
         if (tracksAssets(file)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
           text: after, before: assetEmbeds(before), after: assetEmbeds(after) });
         rebuildGraphRef.current();
@@ -4924,7 +4953,7 @@ export default function App() {
               <button
                 className="welcome-btn"
                 style={{ margin: 0, background: 'var(--background-modifier-border)', color: 'var(--text-normal)' }}
-                onClick={restoreVault}
+                onClick={() => { void restoreVault().then(requeueAllAssets); }}
               >
                 Restore '{previousVault.name}'
               </button>

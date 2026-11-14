@@ -73,12 +73,24 @@ export interface ClosedShapeOptions extends ClosedBoardOptions {
 }
 
 export async function readClosedShapePage(source: ByteSource, options: ClosedShapeOptions): Promise<ShapePage | null> {
+    if (options.kind === 'pdf-ink') throw new Error('Open the PDF in annotation mode to read its shapes');
     const guard = () => {
         if (options.signal?.aborted || !options.isCurrent()) throw new Error('Board read cancelled or superseded');
     };
     guard();
     const read = await readClosedBoard(source, options);
-    if (read.format !== 'native') { guard(); return null; }
+    if (read.format !== 'native') {
+        guard();
+        if (read.format === 'other') return null;
+        const { page, offset, limit, revision } = options.query ?? {};
+        if (!Number.isSafeInteger(options.diskRevision) || options.diskRevision < 0
+            || (page !== undefined && (!Number.isSafeInteger(page) || page < 1))
+            || (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0))
+            || (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 200))
+            || (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0))) throw new RangeError('Invalid shape query');
+        return { shapes: [], total: 0, revision: options.diskRevision,
+            ...(revision !== undefined && revision !== options.diskRevision ? { revisionChanged: true as const } : {}) };
+    }
     try {
         guard();
         const projection = await options.project(read.board.doc, read.board.samples);

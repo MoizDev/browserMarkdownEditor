@@ -310,6 +310,8 @@ export class TextEditSession {
 
     externalChange(): void { this.typingHistory.close(); this.sync(); }
     getSelection(): EditSelection { return this.selection; }
+    /** Local boxes share the same caret index as selection and IME geometry. */
+    rangeRects(from: number, to: number): readonly Rect[] { return this.services.layout().caret.selection(from, to); }
     selectAll(): void { this.select({ anchor: 0, focus: this.services.plainText().length }); }
     restoreSelection(selection: EditSelection): void { this.select(selection); this.sync(); }
 

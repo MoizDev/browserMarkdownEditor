@@ -51,9 +51,12 @@ export async function fitBoardFrameToContent(options: FitFrameOptions): Promise<
             { t: 'set', id: frame.id, key: 'y', value: frame.y + sr * left + cr * top },
             { t: 'set', id: frame.id, key: 'w', value: width }, { t: 'set', id: frame.id, key: 'h', value: height },
         ];
+        const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+        let visited = 0;
         for (const child of children) {
             if (left) ops.push({ t: 'set', id: child.id, key: 'x', value: child.x - left });
             if (top) ops.push({ t: 'set', id: child.id, key: 'y', value: child.y - top });
+            if (++visited % 256 === 0) { await cooperate(); check(); }
         }
         const candidate = await projectBoardGeometrySets(doc, ops, { signal, current, cooperate: options.cooperate }); check();
         const staged = await acquireBoardGeometryScope(runtime, [frame.id], { doc: candidate, signal, current, cooperate: options.cooperate });
@@ -64,9 +67,17 @@ export async function fitBoardFrameToContent(options: FitFrameOptions): Promise<
             const placement = poseInParent(doc, frame, frame.parent, world, geometry);
             if (placement.page !== frame.page) ops.push({ t: 'set', id: frame.id, key: 'page', value: placement.page });
             ops.push({ t: 'set', id: frame.id, key: 'x', value: placement.x }, { t: 'set', id: frame.id, key: 'y', value: placement.y });
-            const finalDoc = await projectBoardGeometrySets(doc, ops, { signal, current, cooperate: options.cooperate }); check();
+            const seen = new Set<string>(), changed: NodeSetOp[] = [];
+            for (let i = ops.length - 1; i >= 0; i--) {
+                const op = ops[i], key = JSON.stringify([op.id, op.key]); if (seen.has(key)) continue;
+                seen.add(key); const original = doc.nodes.get(op.id); if (!original) throw new Error('Fitted frame content disappeared');
+                if (!Object.is(Reflect.get(original, op.key), op.value)) changed.push(op);
+                if (++visited % 256 === 0) { await cooperate(); check(); }
+            }
+            changed.reverse(); if (!changed.length) return;
+            const finalDoc = await projectBoardGeometrySets(doc, changed, { signal, current, cooperate: options.cooperate }); check();
             const final = await acquireBoardGeometryScope(runtime, [frame.id], { doc: finalDoc, signal, current, cooperate: options.cooperate });
-            try { check(); const applied = session.apply({ origin: 'tool', label: 'Fit frame to content', ops }); applied.release(); }
+            try { check(); const applied = session.apply({ origin: 'tool', label: 'Fit frame to content', ops: changed }); applied.release(); }
             finally { final.release(); }
         } finally { staged.release(); }
     } finally { scope.release(); }

@@ -56,6 +56,8 @@ export async function readClosedAgentProjection(options: {
     readonly job: JobOptions;
     readonly authority: JobAuthority;
     isCurrent(): boolean;
+    /** App compares the current disk stat and hash with the bytes it supplied. */
+    assertBaseline(signal: AbortSignal): Promise<void>;
     project(doc: BoardDoc, samples: SampleStore, signal: AbortSignal): Promise<{ readonly geometry: AgentGeometry; dispose(): void }>;
 }): Promise<ShapePage> {
     const { authority } = options;
@@ -65,6 +67,8 @@ export async function readClosedAgentProjection(options: {
             authority.assertContext(context);
             if (!options.isCurrent()) throw new DOMException('Board baseline changed', 'AbortError');
         };
+        guard();
+        await options.assertBaseline(context.signal);
         guard();
         const acquired = await acquireNativeBoard({ bytes: options.bytes, kind: options.kind, pdfPages: options.pdfPages,
             identity: { session: context.job.session, epoch: context.job.vaultEpoch, generation: context.job.generation },
@@ -76,6 +80,8 @@ export async function readClosedAgentProjection(options: {
             try {
                 guard();
                 const result = listAgentSheets(acquired.load.doc, projection.geometry, options.query, options.diskRevision);
+                guard();
+                await options.assertBaseline(context.signal);
                 guard();
                 return result;
             } finally { projection.dispose(); }

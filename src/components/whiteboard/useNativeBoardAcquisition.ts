@@ -50,10 +50,12 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                 }
                 if (prepared.conversionPending && !acceptConvertedSource) throw new Error('Legacy conversion has no source acceptance port');
                 let policy: { emergencyReadOnly: boolean } | null = null;
+                let holdConversion: ((reason: string) => void) | undefined;
                 const adapter = attachCanvasSession<HostedBoardAdapter<S>>(documentId, (owner, isLiveOwner) => {
                     requireOwner();
                     if (owner.session !== identity.serial || !isLiveOwner(owner)) throw new DOMException('Board session ended', 'AbortError');
                     let reason: string | null = emergencyReadOnlyReason;
+                    holdConversion = failure => { reason = failure; };
                     const owned = prepared!.take(owner, isLiveOwner, () => reason);
                     taken = true;
                     try {
@@ -74,9 +76,15 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                 if (!policy) throw new DOMException('Board session ended', 'AbortError');
                 if (policy.emergencyReadOnly && !adapter.board.isReadOnly) throw new Error('Board session did not enforce read-only policy');
                 if (taken && prepared.conversionPending && !policy.emergencyReadOnly && !adapter.board.isReadOnly) {
-                    const source = adapter.checkpoint();
-                    if (typeof source === 'string') throw new Error('Legacy conversion did not produce a deferred source');
-                    acceptConvertedSource!(source, prepared.legacyOriginalSha256!);
+                    try {
+                        const source = adapter.checkpoint();
+                        if (typeof source === 'string') throw new Error('Legacy conversion did not produce a deferred source');
+                        acceptConvertedSource!(source, prepared.legacyOriginalSha256!);
+                    } catch (cause) {
+                        const reason = 'The converted canvas could not be safely accepted. The original is unchanged; close the document tab and reopen it to retry.';
+                        holdConversion?.(reason);
+                        throw new Error(reason, { cause });
+                    }
                 }
                 if (alive) setEntry({ documentId, vaultActivation, bytesGeneration, kind,
                     value: { adapter, emergencyReadOnly: policy.emergencyReadOnly } });

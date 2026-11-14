@@ -378,6 +378,14 @@ function hasHostedNativeOwner(entry: SessionEntry | undefined, documentId: strin
     && owner.documentId === documentId && owner.session === entry.serial;
 }
 
+function hasWritableHostedNativeOwner(entry: SessionEntry | undefined, documentId: string): boolean {
+  if (!hasHostedNativeOwner(entry, documentId) || !entry || !('peek' in entry.adapter) || typeof entry.adapter.peek !== 'function') return false;
+  const hosted: unknown = entry.adapter.peek();
+  if (!hosted || typeof hosted !== 'object' || !('board' in hosted)) return false;
+  const board = hosted.board;
+  return !!board && typeof board === 'object' && 'isReadOnly' in board && board.isReadOnly === false;
+}
+
 interface PdfRebuildEntry {
   identity: ReaderIdentity;
   root: FileSystemDirectoryHandle;
@@ -2811,7 +2819,7 @@ export default function App() {
     const nativeAuthorized = nativeSource && policy && !policy.emergencyReadOnly && policy.session === bufferedSource.owner.session
       && policy.kind === (tab.representation.loadedKind === 'pdf' ? 'pdfInk' : tab.representation.loadedKind)
       && policy.activation === getVaultActivation() && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(tab.id) ?? 0)
-      && hasHostedNativeOwner(documentSessions.get(tab.id), tab.id) && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
+      && hasWritableHostedNativeOwner(documentSessions.get(tab.id), tab.id) && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
     if (nativeSource && !nativeAuthorized) return 'skipped';
     const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
     if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !((pending || documentBuffers.isDirty(tab.id)) && acceptedFlushable && tab.representation.status === 'ready'
@@ -2900,7 +2908,7 @@ export default function App() {
           ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
           : await buildCaptured();
         assertPdfWriteAuthority();
-        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall)) return 'failed';
+        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall || !hasWritableHostedNativeOwner(sessionAtCall, id))) return 'failed';
         if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return 'failed';
         if (!await keepClosingEdits(rootAtCall, path, file.name, data, isPdf ? pdfWriteAllowed : undefined)) return 'failed';
         return held === 'conflict' ? 'changed' : 'deleted';
@@ -2938,7 +2946,7 @@ export default function App() {
         const expected = getBaseline(id) ?? baselineAtCall ?? seeded ?? null;
         // An awaited build/baseline must not resurrect a revoked role capability.
         if (!pdfWriteAllowed() || isPdf && !closing && diskStateRef.current.has(id)) return 'skipped';
-        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall)) return 'skipped';
+        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall || !hasWritableHostedNativeOwner(sessionAtCall, id))) return 'skipped';
         if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return 'skipped';
         if (conversionDigest) {
           if (!expected) throw new Error('The conversion baseline is unavailable.');
@@ -2950,7 +2958,7 @@ export default function App() {
               await reconcileQueueRef.current;
               const stillCurrent = () => {
                 if (!nativeCanvasHost.isCurrent(conversionIdentity) || !pdfWriteAllowed() || rootHandleRef.current !== rootAtCall
-                  || documentSessions.get(id) !== sessionAtCall
+                  || documentSessions.get(id) !== sessionAtCall || !hasWritableHostedNativeOwner(sessionAtCall, id)
                   || !tabsRef.current.some(t => t.id === id && t.file.path === path && t.file.handle === handle)
                   || getBaseline(id)?.hash !== expected.hash || diskStateRef.current.has(id)
                   || documentBuffers.revisionForDocument(id)?.revision !== revision) return false;
@@ -2972,7 +2980,7 @@ export default function App() {
         // Conversion backup and the versioned write can both yield after a
         // permission revocation. A kept copy is a write too, not an escape hatch.
         assertPdfWriteAuthority();
-        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall)) return closing ? 'failed' : 'skipped';
+        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall || !hasWritableHostedNativeOwner(sessionAtCall, id))) return closing ? 'failed' : 'skipped';
         if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return closing ? 'failed' : 'skipped';
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {

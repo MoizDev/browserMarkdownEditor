@@ -2488,7 +2488,7 @@ export default function App() {
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
-    if (!flush) unsavedBoardContentRef.current.delete(path);
+    unsavedBoardContentRef.current.delete(path);
   }, [clearSaveTimer, syncExitGuard]);
 
   /**

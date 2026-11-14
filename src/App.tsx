@@ -104,7 +104,7 @@ import { authorizeKeptPdfRole, canRebuildAnnotatedPdf, canRotatePdfRole, pdfRole
 import type { PdfAnnotationPreflight } from './utils/pdfRole';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './utils/pdfBuildRefusal';
 import { clearViews, getView, moveView } from './utils/viewRegistry';
-import { anyPending, drain, drainAll, installDocumentSessions, subscribePending } from './utils/unloadCoordinator';
+import { anyPending, checkpointSessions, drain, drainAll, installDocumentSessions, subscribePending } from './utils/unloadCoordinator';
 import type { AgentHostDeps } from './utils/agentHost';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
@@ -1620,7 +1620,10 @@ export default function App() {
         return [tab.file.path, documentBuffers.contentForDocument(tab.id)] as const;
       }));
       const proofRevisions = new Map(proofTabs.map(tab => [tab.id, documentBuffers.revisionForDocument(tab.id)?.revision]));
-      const proofMedia = new Map(proofTabs.map(tab => [tab.id, documentSessions.get(tab.id)?.adapter.mediaReferences?.()]));
+      const proofMedia = new Map(proofTabs.map(tab => {
+        const adapter = documentSessions.get(tab.id)?.adapter;
+        return [tab.id, adapter?.mediaReferenceIssues?.()?.length ? undefined : adapter?.mediaReferences?.()] as const;
+      }));
       // Dirty-only save acknowledgements do not change a reference proof.
       // Opening/closing a tab or changing its readable buffer does.
       const proofCurrent = () => attached() && assetReferenceRevisionRef.current === revision
@@ -2869,7 +2872,16 @@ export default function App() {
     const unsubscribe = subscribePending(syncExitGuard);
     syncExitGuard();
     const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
-    const pagehide = () => { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); };
+    const pagehide = () => {
+      checkpointSessions((id, source) => {
+        const prior = documentBuffers.get(id)?.source;
+        if (source === prior || typeof source !== 'string' && prior && typeof prior !== 'string'
+          && source.owner.session === prior.owner.session && source.revision <= prior.revision) return;
+        sessionReportRef.current(id, source);
+      });
+      void recoveryEvent({ type: 'checkpoint' });
+      void checkpointAll();
+    };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', pagehide);
     return () => {

@@ -4628,6 +4628,7 @@ export default function App() {
       handleIO,
       ensureVaultId,
       root: rootHandle,
+      searchIndex,
       fileTree,
       tabs,
       layout,

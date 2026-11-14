@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Box, Tldraw, getSnapshot, react } from 'tldraw';
 import type { Editor, TLEditorSnapshot } from 'tldraw';
 import 'tldraw/tldraw.css';
@@ -14,6 +14,7 @@ import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import { captureRegion, createCanvasAgentOps, selectedAgentShapeIds, summarizeShapes, type CanvasPageModel } from './canvasAgentOps';
 
 interface DrawingPaneProps {
+    isVisible: boolean;
     /** OpenTab.id from the host; a rename must not change pending-work identity. */
     documentId?: string;
     /** The drawing's vault path. Every change is reported against it explicitly
@@ -72,7 +73,13 @@ export default function DrawingPane(props: DrawingPaneProps) {
     return canvasReadOnlyReason(sniff) ? <CanvasReadOnlyNotice sniff={sniff} /> : <LegacyDrawingPane {...props} />;
 }
 
-function LegacyDrawingPane({ documentId, filePath, content, onContentChange, theme }: DrawingPaneProps) {
+function LegacyDrawingPane({ documentId, filePath, content, onContentChange, theme, isVisible }: DrawingPaneProps) {
+    const visibilityRef = useRef(isVisible);
+    const setEditorVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
+    useLayoutEffect(() => {
+        visibilityRef.current = isVisible;
+        setEditorVisibilityRef.current?.(isVisible);
+    }, [isVisible]);
     const onContentChangeRef = useRef(onContentChange);
     useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
 
@@ -201,17 +208,19 @@ function LegacyDrawingPane({ documentId, filePath, content, onContentChange, the
         // listener, which fires on every pointer move while drawing. Memory on
         // every change (a property write), storage once the camera rests.
         let viewTimer: ReturnType<typeof setTimeout> | null = null;
-        let viewMounted = false;
-        const stopViewWatch = react('drawing view position', () => {
-            const { x, y, z } = editor.getCamera();
-            const pageId = editor.getCurrentPageId();
-            // The first run is the camera just restored (or the file's own):
-            // nothing moved, so nothing to write.
-            if (!viewMounted) { viewMounted = true; return; }
-            writeCanvasViewPos(filePath, { kind: 'drawing', pageId, x, y, z }, false);
-            if (viewTimer) clearTimeout(viewTimer);
-            viewTimer = setTimeout(() => { viewTimer = null; flushCanvasViewPositions(); }, VIEW_PERSIST_DEBOUNCE_MS);
-        });
+        let stopViewWatch: (() => void) | undefined;
+        const startViewWatch = () => {
+            if (stopViewWatch) return;
+            let first = true;
+            stopViewWatch = react('drawing view position', () => {
+                const { x, y, z } = editor.getCamera();
+                const pageId = editor.getCurrentPageId();
+                if (first) { first = false; return; }
+                writeCanvasViewPos(filePath, { kind: 'drawing', pageId, x, y, z }, false);
+                if (viewTimer) clearTimeout(viewTimer);
+                viewTimer = setTimeout(() => { viewTimer = null; flushCanvasViewPositions(); }, VIEW_PERSIST_DEBOUNCE_MS);
+            });
+        };
         // A reload or a closed window unmounts nothing, so the last pan would
         // die in the debounce without this.
         const onPageHide = () => {
@@ -279,12 +288,23 @@ function LegacyDrawingPane({ documentId, filePath, content, onContentChange, the
         // Pen WIDTH is not a tldraw style, so changing it touches no store and
         // the listener above never sees it. Without this the width was only
         // remembered if you happened to draw afterwards.
-        const unlistenPen = subscribePenScale(saveUiIfChanged);
+        const unlistenPen = subscribePenScale(() => { if (visibilityRef.current) saveUiIfChanged(); });
+
+        const setVisibility = (visible: boolean) => {
+            if (visible) { startViewWatch(); saveUiIfChanged(); return; }
+            stopViewWatch?.();
+            stopViewWatch = undefined;
+            if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; flushCanvasViewPositions(); }
+            flushPending();
+        };
+        setEditorVisibilityRef.current = setVisibility;
+        setVisibility(visibilityRef.current);
 
         return () => {
+            setEditorVisibilityRef.current = null;
             unregisterView();
             stopPending.forEach(stop => stop());
-            stopViewWatch();
+            stopViewWatch?.();
             window.removeEventListener('pagehide', onPageHide);
             // The memory record is current (the watch writes it on every
             // change); only the flush can still be pending.

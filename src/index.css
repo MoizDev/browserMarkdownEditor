@@ -909,7 +909,8 @@ body.is-resizing-terminal * {
   font-size: var(--nav-item-size);
   color: var(--text-muted);
   border-radius: 0;
-  transition: background 0.08s, color 0.08s;
+  /* Like tab titles, rows must change palette with their surrounding surface:
+     the old ink nearly disappears against the new theme during an 80ms fade. */
   user-select: none;
   position: relative;
 }
@@ -1561,7 +1562,8 @@ body.is-resizing-terminal * {
   -webkit-font-smoothing: auto;
   user-select: none;
   cursor: pointer;
-  transition: color 0.08s ease;
+  /* No colour fade: the theme's background changes immediately, so the old
+     dark-theme title colour otherwise spends 80ms almost white on white. */
 }
 
 /* Inactive tabs: a rounded hover pill (::before) and the divider at the right
@@ -2523,6 +2525,19 @@ body.is-resizing-panes * {
 
 .setting-control .settings-segmented {
   width: 190px;
+}
+
+.setting-control select {
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font: inherit;
+}
+
+.settings-body .settings-notices-link {
+  color: var(--text-accent);
 }
 
 .settings-footer {

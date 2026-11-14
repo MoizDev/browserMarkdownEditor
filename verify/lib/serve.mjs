@@ -114,16 +114,16 @@ async function checkDevSource(prepared) {
 
 /** Preparation only: run under build, never run/bench (HOWTO §1, verification.md §2).
  * Reuses an ancestor build grant rather than nesting another one.
- * @param {{root?: string, scratch: string, mode?: 'dev'|'production'|'benchmark'}} options
+ * @param {{root?: string, scratch: string, mode?: 'dev'|'production'|'benchmark', manifest?: boolean, sourcemap?: boolean}} options
  */
-export async function prepareApp({ root = sourceRoot, scratch, mode = 'production' }) {
+export async function prepareApp({ root = sourceRoot, scratch, mode = 'production', manifest = false, sourcemap = false }) {
     await preparationGrants();
     if (!scratch || !['dev', 'production', 'benchmark'].includes(mode)) throw new Error('Preparation needs scratch and a known build mode');
     root = resolve(root); scratch = resolve(scratch);
     if (scratch === root || scratch.startsWith(`${root}/`)) throw new Error('Vite scratch must be outside the source root');
     await mkdir(scratch, { recursive: true });
     const config = join(scratch, 'vite.config.mjs'), dist = join(scratch, 'dist');
-    await writeFile(config, `import original from ${JSON.stringify(join(root, 'vite.config.ts'))};\nexport default {...original,root:${JSON.stringify(root)},cacheDir:${JSON.stringify(join(scratch, 'vite-cache'))},optimizeDeps:{...original.optimizeDeps,exclude:[...(original.optimizeDeps?.exclude||[]),'@tldraw/assets/imports.vite']},build:{...original.build,outDir:${JSON.stringify(dist)},emptyOutDir:true}};\n`);
+    await writeFile(config, `import original from ${JSON.stringify(join(root, 'vite.config.ts'))};\nexport default {...original,root:${JSON.stringify(root)},cacheDir:${JSON.stringify(join(scratch, 'vite-cache'))},optimizeDeps:{...original.optimizeDeps,exclude:[...(original.optimizeDeps?.exclude||[]),'@tldraw/assets/imports.vite']},build:{...original.build,outDir:${JSON.stringify(dist)},emptyOutDir:true${manifest ? ',manifest:true' : ''}${sourcemap ? ",sourcemap:'hidden'" : ''}}};\n`);
     let mutant;
     try { mutant = JSON.parse(await readFile(join(root, '.bme-mutant.json'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const repository = mutant?.sourceRoot ?? root;

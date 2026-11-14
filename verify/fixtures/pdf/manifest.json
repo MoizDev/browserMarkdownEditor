@@ -107,6 +107,714 @@
       "pages": 24,
       "expected": "geometry.oracle.json",
       "canonicalManifest": "verify/fixtures/platform/manifest.json"
+    },
+    {
+      "id": "GEN-08",
+      "file": "rtl-cjk-unicode.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Entirely authored diagnostic TrueType outlines, text, mappings and layout. No copied, system or third-party font bytes; licence act awaits the owner.",
+      "purpose": "Arabic contextual forms, mixed Hebrew/LTR/digits, horizontal/vertical CJK, combining and ZWJ/emoji clusters, fi sequence/presentation mappings and paired nonembedded CID controls; RTL outline/tooltips.",
+      "gates": [
+        "P-00b",
+        "TXT-G1",
+        "TXT-G2",
+        "TXT-G3",
+        "TXT-G4",
+        "TXT-G6",
+        "F-LINK",
+        "F-OUTLINE",
+        "EMP-G"
+      ],
+      "sha256": "74c7441a53b5dd0fb552f692a9188a021dbbd34bc00e902325167ec2c47fb652",
+      "bytes": 13547,
+      "generator": "verify/fixtures/pdf/generators/rtl-cjk-unicode.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 12,
+      "validity": "valid",
+      "features": [
+        "authored-embedded-truetype",
+        "nonembedded-cid-pairs",
+        "arabic-contextual",
+        "hebrew-mixed",
+        "cjk-vertical",
+        "combining",
+        "zwj-emoji",
+        "ligature-sequence",
+        "ligature-presentation",
+        "rtl-outline-tooltips"
+      ],
+      "expected": "rtl-cjk-unicode.expected.json"
+    },
+    {
+      "id": "GEN-08-oracle",
+      "file": "rtl-cjk-unicode.expected.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored logical/source-visual strings, glyph mapping/geometry, per-page copy/find/caret and fallback-pair oracles; licence act awaits the owner.",
+      "purpose": "GEN-08 independent logical-string, mapping and geometry oracle plus baseline-compatible gestures.",
+      "gates": [
+        "P-00b",
+        "TXT-G1",
+        "TXT-G2",
+        "TXT-G3",
+        "TXT-G4",
+        "TXT-G6",
+        "F-LINK",
+        "F-OUTLINE",
+        "EMP-G"
+      ],
+      "sha256": "ce015bab6c7f4692fa888f9e3ff051199773b39b0ab603a5918abd87d7531a41",
+      "bytes": 34316,
+      "generator": "verify/fixtures/pdf/generators/rtl-cjk-unicode.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": []
+    },
+    {
+      "id": "GEN-09-ccitt-g4-eob-false",
+      "file": "ccitt-g4-eob-false.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Authored T.6 horizontal-mode image; no third-party bytes.",
+      "purpose": "CCITT G4 with explicit row count, no end-of-block marker, and DeviceGray polarity",
+      "gates": [
+        "D2-G1"
+      ],
+      "sha256": "40e5613a3fb3ca7c2d255d84908be3438086061a06748ca8993cc584642a26c0",
+      "bytes": 1064,
+      "generator": "verify/fixtures/pdf/generators/codecs-minimal.mjs",
+      "version": 2,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 1,
+      "validity": "valid",
+      "expected": {
+        "oracle": "codecs-minimal.oracle.json"
+      }
+    },
+    {
+      "id": "GEN-09-ccitt-g4-eob-true",
+      "file": "ccitt-g4-eob-true.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Authored T.6 horizontal-mode image; no third-party bytes.",
+      "purpose": "CCITT G4 with an end-of-block marker and DeviceGray polarity",
+      "gates": [
+        "D2-G1"
+      ],
+      "sha256": "4aae48ac4f6669d483ef9b4e188c6aac8cc9be0ae9c609f7b60fc0b61cdd3435",
+      "bytes": 1066,
+      "generator": "verify/fixtures/pdf/generators/codecs-minimal.mjs",
+      "version": 2,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 1,
+      "validity": "valid",
+      "expected": {
+        "oracle": "codecs-minimal.oracle.json"
+      }
+    },
+    {
+      "id": "GEN-09-cjk-nonembedded",
+      "file": "cjk-nonembedded.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Authored text and CMap; references but does not embed STSong-Light.",
+      "purpose": "Non-embedded CJK CID font with explicit ToUnicode",
+      "gates": [
+        "D2-G1"
+      ],
+      "sha256": "cd8000bcc095318460d85e0aab9be7a19918ddbf6e5b8cb468ca78482595eff5",
+      "bytes": 1730,
+      "generator": "verify/fixtures/pdf/generators/codecs-minimal.mjs",
+      "version": 2,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 1,
+      "validity": "valid",
+      "expected": {
+        "oracle": "codecs-minimal.oracle.json"
+      },
+      "knownFailures": [
+        "Independent CJK glyph-outline oracle not established; ink alone is not glyph fidelity."
+      ]
+    },
+    {
+      "id": "GEN-09-oracle",
+      "file": "codecs-minimal.oracle.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Authored geometry, string and mask landmarks; JPX/JBIG2 gaps stated explicitly.",
+      "purpose": "Independent input landmarks for the minimal codec corpus",
+      "gates": [
+        "D2-G1"
+      ],
+      "sha256": "0b00a1cd0929554fe6419ce04d9ace37c0cd19b324d0fac284fba4a8f2427388",
+      "bytes": 2477,
+      "generator": "verify/fixtures/pdf/generators/codecs-minimal.mjs",
+      "version": 2,
+      "seed": 1346651697,
+      "args": []
+    },
+    {
+      "id": "GEN-09-white",
+      "file": "white.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Authored blank page.",
+      "purpose": "Genuine white-page negative control for decode notices",
+      "gates": [
+        "D2-G1",
+        "D2-G2"
+      ],
+      "sha256": "8cee48e3cdf155fb3d9c2477fdce74ff304cd31832f5baa1c60c531032f4627d",
+      "bytes": 694,
+      "generator": "verify/fixtures/pdf/generators/codecs-minimal.mjs",
+      "version": 2,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 1,
+      "validity": "valid",
+      "expected": {
+        "oracle": "codecs-minimal.oracle.json"
+      }
+    },
+    {
+      "id": "GEN-11",
+      "file": "type3-tagged-text.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Entirely authored Type3 CharProcs, text and tagged/negative structure controls. No external document/font program; licence act awaits the owner.",
+      "purpose": "Unmapped Type3 versus same-CharProcs mapped control; nested Form text; offpage/clipped/invisible/covered text; MCIDs/StructTree/RoleMap for H1-H3, Figure alt, Code and ActualText; untagged/malformed/cyclic structure controls.",
+      "gates": [
+        "P-00b",
+        "TXT-G1",
+        "TXT-G2",
+        "TXT-G3",
+        "TXT-G6",
+        "TXT-50",
+        "EMP-G",
+        "ENG-G1"
+      ],
+      "sha256": "9c19a5a6d0bc698762e554d332974d3ed8f713ec528d5955ac07e0ae510362d6",
+      "bytes": 6973,
+      "generator": "verify/fixtures/pdf/generators/type3-tagged-text.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 6,
+      "validity": "repairable",
+      "features": [
+        "unmapped-type3",
+        "mapped-type3-control",
+        "nested-form",
+        "hidden-text",
+        "mcids",
+        "headings-h1-h3",
+        "figure-alt",
+        "code",
+        "heading-rolemap",
+        "actualtext-gap",
+        "untagged-control",
+        "malformed-structure-negative",
+        "cyclic-structure-negative"
+      ],
+      "expected": "type3-tagged-text.expected.json"
+    },
+    {
+      "id": "GEN-11-oracle",
+      "file": "type3-tagged-text.expected.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored raw/logical strings, Type3 replacement/partial requirement, visibility regions and positive/negative structure oracle; licence act awaits the owner.",
+      "purpose": "GEN-11 independent text/geometry/structure controls. ActualText is explicitly not substituted into canonical page text in this release.",
+      "gates": [
+        "P-00b",
+        "TXT-G1",
+        "TXT-G2",
+        "TXT-G3",
+        "TXT-G6",
+        "TXT-50",
+        "EMP-G",
+        "ENG-G1"
+      ],
+      "sha256": "1f2f9b858163ab9e195e46b6e8521d1d5d49c9f0823098ab4adaf2c733e32e2e",
+      "bytes": 13612,
+      "generator": "verify/fixtures/pdf/generators/type3-tagged-text.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": []
+    },
+    {
+      "id": "GEN-18-1000",
+      "file": "unique-textbook-1000.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Authored chapters, numeric samples, math and diagrams; no textbook content or external assets.",
+      "purpose": "Additional 1000-page scalability role, not a replacement for the 876-page textbook baseline.",
+      "gates": [
+        "P-00a",
+        "D7",
+        "TXT-G7"
+      ],
+      "sha256": "ecd7e551b19b22c19427c8930b8e50103e91af75031e9ab73484db4179093a18",
+      "bytes": 1012126,
+      "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [
+        "--pages",
+        "1000"
+      ],
+      "pages": 1000,
+      "expected": "unique-textbook-1000.expected.json",
+      "validity": "valid"
+    },
+    {
+      "id": "GEN-18-1000-oracle",
+      "file": "unique-textbook-1000.expected.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent generator inputs, not extracted PDF text.",
+      "purpose": "Full authored string/page/query/geometry oracle for the 1000-page additional role.",
+      "gates": [
+        "P-00a",
+        "D7",
+        "TXT-G7"
+      ],
+      "sha256": "d564535d209be21bab5c04f7356fb6a3328a2b49f912b1dc7e321fc441b8b384",
+      "bytes": 8847736,
+      "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [
+        "--pages",
+        "1000"
+      ]
+    },
+    {
+      "id": "GEN-18-876",
+      "file": "unique-textbook-876.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Authored chapters, numeric samples, math and diagrams; no textbook content or external assets.",
+      "purpose": "Exact 876-page textbook role with unique never-built p3/p450/p700/final targets and repeated/hyphenated quote.",
+      "gates": [
+        "P-00a",
+        "D1",
+        "D3",
+        "D4",
+        "D7",
+        "TXT-G7"
+      ],
+      "sha256": "a636924dd8010fd8b3271e42f0212baac915eb6976c547948add6fae9755dc86",
+      "bytes": 886701,
+      "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [
+        "--pages",
+        "876"
+      ],
+      "pages": 876,
+      "expected": "unique-textbook-876.expected.json",
+      "validity": "valid",
+      "features": [
+        "unique seeded text",
+        "single/two columns",
+        "repeated/distinct image and font resources",
+        "transparent vectors",
+        "half-page anchor"
+      ]
+    },
+    {
+      "id": "GEN-18-876-oracle",
+      "file": "unique-textbook-876.expected.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent generator inputs, not extracted PDF text.",
+      "purpose": "Full authored string/page/query/geometry oracle for the 876-page role.",
+      "gates": [
+        "P-00a",
+        "D7",
+        "TXT-G7"
+      ],
+      "sha256": "094b8b6669470ea262d368f453d499d3d740fd761da4dabc02d92ffdecca934b",
+      "bytes": 7752087,
+      "generator": "verify/fixtures/pdf/generators/unique-textbook.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [
+        "--pages",
+        "876"
+      ]
+    },
+    {
+      "id": "GEN-21",
+      "file": "repeated-quotes-anchors.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Authored quote/context strings and layout; no external content or font program.",
+      "purpose": "Repeated quote ambiguity, contextual anchors, English-/to, empty anchor and distant revised quote.",
+      "gates": [
+        "P-00a",
+        "TXT-G1",
+        "TXT-G7"
+      ],
+      "sha256": "f96b1895a0d89b35de8f81d140c19c27042dbd156c8f1d58e45972185923b381",
+      "bytes": 2389,
+      "generator": "verify/fixtures/pdf/generators/repeated-quotes-anchors.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 2,
+      "expected": "repeated-quotes-anchors.expected.json",
+      "validity": "valid"
+    },
+    {
+      "id": "GEN-21-oracle",
+      "file": "repeated-quotes-anchors.expected.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored strings/landmarks and prospective schema-2 input variants.",
+      "purpose": "Correct quote/context/copy and page geometry oracle.",
+      "gates": [
+        "P-00a",
+        "TXT-G1",
+        "TXT-G7"
+      ],
+      "sha256": "3754f3dae8589f651a839a3a5388f98fd10acac099f2458f1cecb373867ab001",
+      "bytes": 6417,
+      "generator": "verify/fixtures/pdf/generators/repeated-quotes-anchors.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": []
+    },
+    {
+      "id": "GEN-23",
+      "file": "authored-paper-15.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Entirely authored synthetic text, geometry and artwork; standard PDF Courier font names, no external font program or document content.",
+      "purpose": "Paper-role step-zero copy/find/geometry/ink and lifecycle baseline.",
+      "gates": [
+        "P-00a",
+        "D1",
+        "D3",
+        "D4",
+        "D7",
+        "TXT-G1",
+        "TXT-G7"
+      ],
+      "sha256": "5fc279b7b414caacd45acf2c480cf161d53ff86008517037a198315d88eabadd",
+      "bytes": 19849,
+      "generator": "verify/fixtures/pdf/generators/authored-paper-15.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 15,
+      "expected": "authored-paper-15.expected.json",
+      "validity": "valid",
+      "features": [
+        "two columns",
+        "title margin",
+        "two-line abstract",
+        "line-end hyphen",
+        "font-split word",
+        "rotated label",
+        "math/vector/transparency",
+        "image",
+        "link"
+      ]
+    },
+    {
+      "id": "GEN-23-oracle",
+      "file": "authored-paper-15.expected.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored layout and string inputs, not app extraction output.",
+      "purpose": "Correct copy/find/anchor oracle and page-point gesture landmarks.",
+      "gates": [
+        "P-00a",
+        "D7",
+        "TXT-G1",
+        "TXT-G7"
+      ],
+      "sha256": "241f54c001c395a8f33915d43fa1588be53ee25dcd42a0e30e7a4da35bcc55e5",
+      "bytes": 177851,
+      "generator": "verify/fixtures/pdf/generators/authored-paper-15.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": []
+    },
+    {
+      "id": "GEN-P07a-find-cap",
+      "file": "find-cap.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic repeated text; CC0-1.0 proposed, not approved for redistribution. No font files redistributed.",
+      "purpose": "10,005 authored occurrences on one page must stop at D7's 10,000-hit cap.",
+      "gates": [
+        "D7-R2",
+        "D7-6"
+      ],
+      "sha256": "ee988649a0bcddfa4bcf9d6a68b3b6a65fbed21244a09a3b05d47343f955aeb3",
+      "bytes": 23120,
+      "generator": "verify/fixtures/pdf/generators/find-corpus.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [
+        "--variant",
+        "cap"
+      ],
+      "pages": 1,
+      "expected": "find-cap.json",
+      "validity": "valid"
+    },
+    {
+      "id": "GEN-P07a-find-cap-oracle",
+      "file": "find-cap.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored count oracle; CC0-1.0 proposed, not approved for redistribution.",
+      "purpose": "Independently authored 10,005 source hits and 10,000 reported-hit cap.",
+      "gates": [
+        "D7-R2",
+        "D7-6"
+      ],
+      "sha256": "bca3247b39d7526acd4b82e7880afde69ff0d14faaeac385cdbd05dcfb8b66d3",
+      "bytes": 472,
+      "generator": "verify/fixtures/pdf/generators/find-corpus.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [
+        "--variant",
+        "cap"
+      ]
+    },
+    {
+      "id": "GEN-P07a-find-corpus",
+      "file": "find-corpus.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic text and PDF structure; CC0-1.0 proposed, not approved for redistribution. Standard Helvetica reference only; no font files redistributed.",
+      "purpose": "Canonical find shapes, one recovered textless stream, a 1 MiB-limited partial page, and a never-visited sentinel on page 60.",
+      "gates": [
+        "D7-R2",
+        "D7-R6",
+        "D7-1",
+        "D7-5",
+        "D7-17"
+      ],
+      "sha256": "ce75b4f185d112240102460b99eb443dda7622b19c2a0f50c0f3d8225f4b652d",
+      "bytes": 1220912,
+      "generator": "verify/fixtures/pdf/generators/find-corpus.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 60,
+      "expected": "find-corpus.json",
+      "validity": "repairable",
+      "knownFailures": [
+        "Page 5 intentionally has invalid Flate content and is recovered as textless, not a renderability golden.",
+        "pdf.js strips the page-12 soft hyphen before schema-1 canonical text; joining that absent character is not claimed."
+      ]
+    },
+    {
+      "id": "GEN-P07a-find-corpus-oracle",
+      "file": "find-corpus.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored fixture oracle; CC0-1.0 proposed, not approved for redistribution.",
+      "purpose": "Author-recorded queries, canonical ranges, page numbers and known acquisition losses for find-corpus.",
+      "gates": [
+        "D7-R2",
+        "D7-R6",
+        "D7-1",
+        "D7-5",
+        "D7-17"
+      ],
+      "sha256": "effc206e5ce80d1a650bf20a1167b4d4107edeac7ffb17a0479f84122e1914b4",
+      "bytes": 2702,
+      "generator": "verify/fixtures/pdf/generators/find-corpus.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": []
+    },
+    {
+      "id": "GEN-P07a-find-corrupt",
+      "file": "find-corpus-corrupt.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored negative PDF structure; CC0-1.0 proposed, not approved for redistribution. No font files redistributed.",
+      "purpose": "A real page-14 extraction rejection: the content xref expects one object number but the stream header declares 9999. Later pages must remain searchable.",
+      "gates": [
+        "D7-5"
+      ],
+      "sha256": "f208e13b46ea9d9ba90bf076c35135fd79651153934ee6b897e08b6f7ab8b6d6",
+      "bytes": 1220914,
+      "generator": "verify/fixtures/pdf/generators/find-corpus.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [
+        "--fault",
+        "content-xref"
+      ],
+      "pages": 60,
+      "expected": "find-corpus-corrupt.json",
+      "validity": "invalid",
+      "knownFailures": [
+        "Negative fixture, not a valid rendering golden.",
+        "Its page-14 content xref intentionally rejects extraction. All arms, including this one, require zero uncaught pageerrors after fixing the reader cancellation API misuse."
+      ]
+    },
+    {
+      "id": "GEN-P07a-find-corrupt-oracle",
+      "file": "find-corpus-corrupt.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored negative-fixture oracle; CC0-1.0 proposed, not approved for redistribution.",
+      "purpose": "Independent failed/textless/partial page identities and later-page query oracle.",
+      "gates": [
+        "D7-5"
+      ],
+      "sha256": "d20f005212b318f8f74358fab3dbe0046f02327c4b36f72f9db9834152e09b74",
+      "bytes": 2709,
+      "generator": "verify/fixtures/pdf/generators/find-corpus.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [
+        "--fault",
+        "content-xref"
+      ]
+    },
+    {
+      "id": "GEN-P11-dense40",
+      "file": "dense-40-selection.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Entirely authored text and geometry; no external artwork or fonts. Licence act awaits the owner.",
+      "purpose": "Eager-layer select-all copies exactly forty pages and no app chrome.",
+      "gates": [
+        "P-11/R3b"
+      ],
+      "sha256": "5807fa2c2b72e33f78d8f20ac9a855d3973010a7fb51fee45ccf24d8d9bd41de",
+      "bytes": 70056,
+      "generator": "verify/fixtures/pdf/generators/selection-page.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 40,
+      "validity": "valid",
+      "expected": "selection-geometry.json"
+    },
+    {
+      "id": "GEN-P11-oracle",
+      "file": "selection-geometry.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored coordinate and string oracle. Licence act awaits the owner.",
+      "purpose": "Fixture identities, page geometry, margin/native/multiline gesture points and expected copied strings.",
+      "gates": [
+        "P-11/R3a",
+        "P-11/R3b",
+        "P-11/R3c"
+      ],
+      "sha256": "516d781358d5098dc598757e1ef6b454ffa28655e82e1b074861694f1e0c40c8",
+      "bytes": 3798,
+      "generator": "verify/fixtures/pdf/generators/selection-page.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": []
+    },
+    {
+      "id": "GEN-P11-selection",
+      "file": "selection-page.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Entirely authored text and geometry; no external artwork or fonts. Licence act awaits the owner.",
+      "purpose": "Blank-margin anchoring and positioned line-break selection paint on a two-column page.",
+      "gates": [
+        "P-11/R3a",
+        "P-11/R3c"
+      ],
+      "sha256": "f3960c7cbb9881c25c4c36ae7ecb9d4dba0a07d9f413f88c44aed5cb78e32372",
+      "bytes": 2315,
+      "generator": "verify/fixtures/pdf/generators/selection-page.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 1,
+      "validity": "valid",
+      "expected": "selection-geometry.json"
+    },
+    {
+      "id": "GEN-P11b-first-font-30",
+      "file": "first-font-title.pdf",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Entirely authored text and layout; Base14 Courier reference, no font bytes. Licence act awaits the owner.",
+      "purpose": "First-font 30pt/DPR1 ascent-cache collision, paired with DPR2 as a noncollision control.",
+      "gates": [
+        "P-11b"
+      ],
+      "sha256": "167fe05651bbe2edc2f11599efeffae168335975f19645ed3b3ae1588ae70428",
+      "bytes": 1093,
+      "generator": "verify/fixtures/pdf/generators/first-font-title.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": [],
+      "pages": 1,
+      "validity": "valid",
+      "expected": "first-font-title.expected.json"
+    },
+    {
+      "id": "GEN-P11b-first-font-30-oracle",
+      "file": "first-font-title.expected.json",
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independent authored string/advance/point oracle; licence act awaits the owner.",
+      "purpose": "Exact logical title, 18pt per-character advances and real pointer endpoints for first-font control.",
+      "gates": [
+        "P-11b"
+      ],
+      "sha256": "038a1a8b97be2a047b299c8155b0ac40c2c7425f1b11b65ac393e7ddf0872b6d",
+      "bytes": 1439,
+      "generator": "verify/fixtures/pdf/generators/first-font-title.mjs",
+      "version": 1,
+      "seed": 1346651697,
+      "args": []
     }
   ]
 }

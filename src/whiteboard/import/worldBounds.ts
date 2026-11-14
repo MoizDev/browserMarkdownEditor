@@ -1,6 +1,5 @@
 import type { Affine } from '../../platform/types';
 import { multiplyAffine, transformBox, validBox, type Box } from '../geom/bounds';
-import { figureSemanticBounds } from '../geom/figures';
 import type { Node } from '../model/nodes';
 import type { ParentId, SheetId } from '../model/ids';
 import type { TextLayoutEngine, TextLayoutRequest } from '../text/paint';
@@ -70,11 +69,6 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
             if (current.node.kind === 'text') part = transformed(textBoxes.get(current.node)!, transform);
             else if (current.node.kind === 'sticky') part = transformed([0, 0, 200 * current.node.scale,
                 (200 + current.node.growY) * current.node.scale], transform);
-            else if (current.node.kind === 'figure') {
-                const r = figureSemanticBounds(current.node.shape, current.node.w, current.node.h + current.node.growY,
-                    current.node.flipX, current.node.flipY);
-                part = transformed([r.x, r.y, r.x + r.width, r.y + r.height], transform);
-            }
             else if (current.node.kind === 'frame' || current.node.kind === 'picture' || current.node.kind === 'clip'
                 || current.node.kind === 'linkcard' || current.node.kind === 'embed') {
                 part = transformed([0, 0, current.node.w, current.node.h], transform);

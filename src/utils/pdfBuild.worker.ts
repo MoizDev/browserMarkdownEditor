@@ -16,6 +16,8 @@ import type { PdfRole } from './pdfRole';
 import type { NotebookPaper } from './paper';
 import type { NotebookSource } from './pdfFormat';
 import type { PageOverlay } from './pdfOverlay';
+import { PdfBuildRefused } from './pdfBuildRefusal';
+import type { PdfBuildRefusal } from './pdfBuildRefusal';
 
 /** Stamping annotations back onto their source document. */
 export interface AnnotateBuildRequest {
@@ -56,9 +58,10 @@ export interface InspectRoleRequest {
 export type PdfBuildRequest = AnnotateBuildRequest | NotebookBuildRequest | RotateRequest | InspectRoleRequest;
 
 export type PdfBuildResponse =
-    | { id: number; bytes: Uint8Array; role?: undefined; error?: undefined }
-    | { id: number; role: PdfRole; bytes?: undefined; error?: undefined }
-    | { id: number; bytes?: undefined; role?: undefined; error: string };
+    | { id: number; bytes: Uint8Array; role?: undefined; error?: undefined; refusal?: undefined }
+    | { id: number; role: PdfRole; bytes?: undefined; error?: undefined; refusal?: undefined }
+    | { id: number; refusal: PdfBuildRefusal; bytes?: undefined; role?: undefined; error?: undefined }
+    | { id: number; bytes?: undefined; role?: undefined; error: string; refusal?: undefined };
 
 self.onmessage = async (e: MessageEvent<PdfBuildRequest>) => {
     const request = e.data;
@@ -79,6 +82,10 @@ self.onmessage = async (e: MessageEvent<PdfBuildRequest>) => {
         // bytes, and they can be megabytes.
         (self as unknown as Worker).postMessage({ id, bytes } satisfies PdfBuildResponse, [bytes.buffer as ArrayBuffer]);
     } catch (err) {
+        if (err instanceof PdfBuildRefused) {
+            (self as unknown as Worker).postMessage({ id, refusal: err.refusal } satisfies PdfBuildResponse);
+            return;
+        }
         (self as unknown as Worker).postMessage({
             id,
             error: err instanceof Error ? err.message : String(err),

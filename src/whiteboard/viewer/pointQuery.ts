@@ -158,7 +158,9 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (!resolved) throw cancelled();
                     const node = doc.nodes.get(resolved.id);
                     if (!node) throw cancelled();
-                    if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque')) continue;
+                    // Strokes and polylines have no defined attachment surface, even when selectable.
+                    if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque'
+                        || node.kind === 'stroke' || node.kind === 'polyline')) continue;
                     const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
                     if (!selected || node.kind === 'group') continue;
                     let parent = doc.nodes.get(node.parent as NodeId), clipped = false, clipUncertain = false;

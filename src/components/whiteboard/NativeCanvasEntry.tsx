@@ -7,14 +7,17 @@ import type { AttachCanvasSession } from '../../utils/canvasSessionBridge';
 import { pdfEngineAvailableInBuild } from '../../utils/pdfEngineAvailability';
 import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime';
 import { registerNativeNotebookExporter } from '../../whiteboard/host/registerNativeNotebookExporter';
+import { boardPageStack } from '../../whiteboard/model/pages';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
 import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
 import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
+import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import './NativeCanvasEntry.css';
 
 const VIEW_REASON = 'This native canvas is currently available in read-only mode.';
+const reportThumbnailError = (error: unknown) => { console.error('Notebook thumbnail unavailable:', error); };
 
 export interface NativeCanvasEntryProps {
     readonly file: ActiveFile;
@@ -56,11 +59,11 @@ function NativeViewer({ props, identity, board, onError }: {
         return () => { setLease(previous => previous === view ? null : previous); view.dispose(); };
     }, [board, identity, nativeCanvasHost, min, max, left, right, top, bottom, onError]);
     if (!lease) return <div role="status">Preparing canvas view…</div>;
-    return <AttachedViewer props={props} lease={lease} inverted={inverted} setInverted={setInverted} notice={notice} />;
+    return <AttachedViewer props={props} identity={identity} lease={lease} inverted={inverted} setInverted={setInverted} notice={notice} />;
 }
 
-function AttachedViewer({ props, lease, inverted, setInverted, notice }: {
-    props: NativeCanvasEntryProps; lease: NativeViewLease; inverted: boolean;
+function AttachedViewer({ props, identity, lease, inverted, setInverted, notice }: {
+    props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; lease: NativeViewLease; inverted: boolean;
     setInverted(value: boolean): void; notice: string | null;
 }) {
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
@@ -68,6 +71,14 @@ function AttachedViewer({ props, lease, inverted, setInverted, notice }: {
     const selection = lease.runtime.selection;
     const selected = useSyncExternalStore(selection.subscribe, selection.getSnapshot, selection.getSnapshot);
     const board = lease.runtime.session;
+    const subscribeRevision = useCallback((listener: () => void) => board.subscribe(listener), [board]);
+    const getRevision = useCallback(() => board.doc.rev, [board]);
+    const revision = useSyncExternalStore(subscribeRevision, getRevision, getRevision);
+    const current = useCallback(() => props.nativeCanvasHost.isCurrent(identity), [props.nativeCanvasHost, identity]);
+    const capturePng = useCallback((rect: Parameters<NativeViewLease['captureBlob']>[0], maxSide: number, signal: AbortSignal) =>
+        lease.captureBlob(rect, maxSide, signal), [lease]);
+    const jump = useCallback((page: number) => lease.jump(page), [lease]);
+    const stack = board.doc.kind === 'notebook' ? boardPageStack(board.doc.host) : undefined;
     const { onFocusPane, registerKeyboardTarget } = props;
     const path = props.file.path;
     const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);
@@ -91,6 +102,8 @@ function AttachedViewer({ props, lease, inverted, setInverted, notice }: {
             <span>{Math.round(navigation.zoom * 100)}%</span>
             <button type="button" onClick={() => lease.zoomBy(1.2)} aria-label="Zoom in">+</button>
             <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
+            {stack && <NativeNotebookThumbnails pages={stack.rects} revision={revision} page={navigation.page} isVisible={props.isVisible}
+                current={current} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={reportThumbnailError} />}
             {notice && <span role="status">{notice}</span>}
         </div>} />;
 }

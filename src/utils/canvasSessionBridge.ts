@@ -5,6 +5,7 @@ import type { DocumentSessionStore, SessionAdapter } from './documentSessions';
 export interface CanvasSessionBridge extends SessionAdapter {
     /** StrictMode and additional panes attach to the same engine session. */
     attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A): A;
+    dispose(): Promise<void>;
 }
 
 export type AttachCanvasSession = <A extends SessionAdapter>(
@@ -39,6 +40,8 @@ export function attachCanvasSession<A extends SessionAdapter>(
 export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => ContentSource): CanvasSessionBridge {
     let adapter: SessionAdapter | undefined;
     let unsubscribe: (() => void) | undefined;
+    let disposeAdapter: (() => void | Promise<void>) | undefined;
+    let releaseWork: Promise<void> | undefined;
     let disposed = false;
     const listeners = new Set<(source: ContentSource) => void>();
     const owned = (source: ContentSource): boolean => typeof source !== 'string'
@@ -55,13 +58,21 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
             if (adapter) return adapter as A;
             const next = create(owner);
             adapter = next;
+            const disposable = next as SessionAdapter & { dispose?: () => void | Promise<void> };
+            disposeAdapter = disposable.dispose?.bind(next);
             try {
                 const detach = next.onChange(emit);
                 // A synchronous first report can cause App to release the
                 // entry before onChange returns its cleanup.
                 if (disposed) { detach(); throw new Error('Canvas session was released during attachment'); }
                 unsubscribe = detach;
-            } catch (error) { adapter = undefined; throw error; }
+            } catch (error) {
+                adapter = undefined;
+                const dispose = disposeAdapter;
+                disposeAdapter = undefined;
+                if (dispose) void Promise.resolve().then(dispose).catch(() => {});
+                throw error;
+            }
             return next;
         },
         hasPendingEdits: () => adapter?.hasPendingEdits() ?? false,
@@ -73,6 +84,21 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
         },
         acknowledge(revision, outcome) { adapter?.acknowledge(revision, outcome); },
         async drain() { await adapter?.drain?.(); },
+        dispose() {
+            if (releaseWork) return releaseWork;
+            disposed = true;
+            const detach = unsubscribe;
+            const dispose = disposeAdapter;
+            unsubscribe = undefined;
+            disposeAdapter = undefined;
+            adapter = undefined;
+            let detachError: unknown;
+            try { detach?.(); } catch (error) { detachError = error; }
+            releaseWork = Promise.resolve().then(async () => {
+                try { await dispose?.(); } finally { if (detachError !== undefined) throw detachError; }
+            });
+            return releaseWork;
+        },
         journalDelta() { return adapter?.journalDelta?.(); },
         async recover(payload) {
             if (!adapter?.recover) throw new Error('Canvas session is not ready for recovery');

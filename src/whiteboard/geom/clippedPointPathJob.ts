@@ -5,6 +5,7 @@ import { createCurveDiskCertificate } from './curveDiskCertificate';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { add, interval, subtract } from './numeric';
 import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { strokeSeparatedFromPoint } from './strokeSupport';
 import { lowerPointHullDistance, splitCertifiedCurve, upperPointIntervalDistance,
     type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import type { PathOp } from './path';
@@ -125,7 +126,9 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
                 }
                 const item = stack.pop();
                 if (item) {
-                    const curve = item.curve, lower = lowerPointHullDistance(query.point, curve.points);
+                    const curve = item.curve;
+                    if (strokeSeparatedFromPoint(curve.points, query.point, query.localToSurface, options.strokeRadiusLocal, margin)) continue;
+                    const lower = lowerPointHullDistance(query.point, curve.points);
                     if (!Number.isFinite(lower)) return finish({ status: 'uncertain', reason: 'Clipped point distance overflows' });
                     if (lower > threshold.hi) continue;
                     const bounds = expandCertifiedClipBox(certifiedCurveBox(curve.points), Math.max(0, radius.hi));

@@ -6,6 +6,7 @@ import { createFillPointJob } from './fillPoint';
 import { add, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
 import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
 import { createExactInverseDistance } from './exactInverseDistance';
+import { strokeSeparatedFromPoint } from './strokeSupport';
 export { isUniformDistanceMatrix } from './strokeRadiusBounds';
 import type { PathOp, Vec2 } from './path';
 import type { PathPickOptions } from './pick';
@@ -123,6 +124,7 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
                 }
                 const curve = stack.pop();
                 if (curve) {
+                    if (strokeSeparatedFromPoint(curve.points, query.point, matrix, options.strokeRadiusLocal, margin)) continue;
                     const lower = lowerPointHullDistance(query.point, curve.points);
                     if (!Number.isFinite(lower)) return finish({ status: 'uncertain', reason: 'Point path distance overflows' });
                     if (lower > radius.hi) continue;

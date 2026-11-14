@@ -4,6 +4,7 @@ import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { add, interval } from './numeric';
 import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { strokeSeparatedFromHull } from './strokeSupport';
 import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { classifyCertifiedClipBox, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
     type CertifiedClipBox, type PointClipContour } from './clippedPointPathJob';
@@ -85,6 +86,7 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
                 }
                 const pair = stack.pop();
                 if (pair) {
+                    if (strokeSeparatedFromHull(pair.path.points, pair.sweep.points, query.localToSurface, options.strokeRadiusLocal, query.radiusCss)) continue;
                     const lower = lowerCurvePairDistance(pair.path.points, pair.sweep.points);
                     if (!Number.isFinite(lower)) return finish({ status: 'uncertain', reason: 'Clipped sweep distance overflows' });
                     if (lower > threshold.hi) continue;

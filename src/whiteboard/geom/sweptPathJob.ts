@@ -8,6 +8,7 @@ import { add, interval, multiply, sqrtInterval, subtract, type Interval } from '
 import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
 import { createExactInverseDistance } from './exactInverseDistance';
+import { strokeSeparatedFromHull } from './strokeSupport';
 import type { PathOp } from './path';
 import type { PathPickOptions } from './pick';
 import type { RegionQuery } from './types';
@@ -15,7 +16,7 @@ import type { RegionQuery } from './types';
 export type SweptPathResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 export interface SweptPathLimits { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly probeInterior?: boolean }
 type Sweep = Extract<RegionQuery, { kind: 'swept' }>;
-type Pair = Readonly<{ path: CertifiedCurve; sweep: CertifiedCurve; radius: Interval }>;
+type Pair = Readonly<{ path: CertifiedCurve; sweep: CertifiedCurve; radius: Interval; localRadius: number }>;
 const PENDING: SweptPathResult = Object.freeze({ status: 'pending' });
 function square(value: number): Interval { return multiply(interval(value), interval(value)); }
 export function upperIntervalPairDistance(a: BoundsPoint, b: BoundsPoint): number {
@@ -101,6 +102,7 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                 }
                 const pair = stack.pop();
                 if (pair) {
+                    if (strokeSeparatedFromHull(pair.path.points, pair.sweep.points, matrix, pair.localRadius, query.radiusCss)) continue;
                     const lower = lowerCurvePairDistance(pair.path.points, pair.sweep.points);
                     if (!Number.isFinite(lower)) return finish({ status: 'uncertain', reason: 'Swept path distance overflows' });
                     if (lower > pair.radius.hi) continue;
@@ -111,9 +113,9 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                     if (pair.path.depth >= maxDepth && pair.sweep.depth >= maxDepth) { curveUncertain = true; continue; }
                     if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Swept path node limit exhausted' });
                     if (pair.path.depth <= pair.sweep.depth && pair.path.depth < maxDepth) {
-                        const [left, right] = splitCertifiedCurve(pair.path); stack.push({ path: right, sweep: pair.sweep, radius: pair.radius }, { path: left, sweep: pair.sweep, radius: pair.radius });
+                        const [left, right] = splitCertifiedCurve(pair.path); stack.push({ ...pair, path: right }, { ...pair, path: left });
                     } else {
-                        const [left, right] = splitCertifiedCurve(pair.sweep); stack.push({ path: pair.path, sweep: right, radius: pair.radius }, { path: pair.path, sweep: left, radius: pair.radius });
+                        const [left, right] = splitCertifiedCurve(pair.sweep); stack.push({ ...pair, sweep: right }, { ...pair, sweep: left });
                     }
                     nodes += 2; continue;
                 }
@@ -124,7 +126,7 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                         const a = point(first), b = point(last), depth = first.x === last.x && first.y === last.y ? maxDepth : 0;
                         if (segmentExact && exactSegmentsIntersect(segmentExact[0], segmentExact[1], exactPoint(first), exactPoint(last))) return finish({ status: 'hit' });
                         sweepIndex++; if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Swept path node limit exhausted' });
-                        const pair: Pair = { path: segment, sweep: { points: [a, b], depth }, radius: segmentRadius };
+                        const pair: Pair = { path: segment, sweep: { points: [a, b], depth }, radius: segmentRadius, localRadius: segmentLocalRadius };
                         exactCurve = segmentCubic ?? segmentExact; exactSweep = [exactPoint(first), exactPoint(last)]; deferred = pair;
                         if (inverseDistance) {
                             capsulePhase = 'exact';

@@ -13,6 +13,7 @@ import { createPolygonPathJob } from '../geom/polygonPathJob';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import { createVectorRegionJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
+import { createClippedVectorRegionJob } from '../geom/clippedVectorRegionJob';
 import { orient2d } from '../geom/predicates';
 import { exactAffinePoint } from '../geom/exactAffine';
 import { exactIntersection, exactLineBetween, exactPoint, exactPointIntervals, exactSide, type ExactPoint } from '../geom/homogeneous';
@@ -147,7 +148,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         const frame = ancestor;
                         const fullyVisible = corners.every(p => p.x.lo > 0 && p.y.lo > 0 && p.x.hi < frame.w && p.y.hi < frame.h);
                         if (!fullyVisible) {
-                            if (node.kind === 'connector') partialFrame = true;
+                            if (node.kind === 'connector' || node.kind === 'figure') partialFrame = true;
                             else {
                                 if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
                                 const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },
@@ -198,7 +199,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     void vector.key;
                     const descriptor = vectorNarrowDescriptor(vector);
                     if (descriptor) {
-                        const job = createVectorRegionJob(descriptor, localQuery);
+                        const job = partialFrame ? createClippedVectorRegionJob(descriptor, localQuery, frameClips) : createVectorRegionJob(descriptor, localQuery);
                         try {
                             for (;;) {
                                 check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
@@ -207,7 +208,10 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                 hit = value.status === 'hit'; break;
                             }
                         } finally { job.cancel(); }
-                    } else hit = vector.region(localQuery).hit;
+                    } else {
+                        if (partialFrame) throw new BoardRegionUncertain('Clipped vector has no certified narrow descriptor');
+                        hit = vector.region(localQuery).hit;
+                    }
                 } else if (prepared.connector && node.kind === 'connector') {
                     const connector = prepared.connector, worldQuery = { ...localQuery, localToSurface: worldToCss } as RegionQuery;
                     const pathOptions = { strokeRadiusLocal: node.width / 2, marginCss: 0, errorCss: 0.01, maxSegments: 8192 };

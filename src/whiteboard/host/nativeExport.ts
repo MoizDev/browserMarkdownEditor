@@ -6,7 +6,7 @@ import type { Rect } from '../../platform/types';
 import { createExportImageResolver } from '../export/exportImage';
 import { createBoardCaptureSnapshot } from '../export/runtimeSnapshot';
 import { encodeTiledPngInWorker } from '../export/pngWorkerClient';
-import { checkPngSize, splicePngDensity } from '../export/png';
+import { checkPngSize, pngScaleLimit, splicePngDensity } from '../export/png';
 import type { BoardPrintSource } from '../export/print';
 import { streamIncrementalPdf } from '../export/incrementalPdf';
 import { createLazyIncrementalPdfWriter } from '../export/lazyPdfWriter';
@@ -243,7 +243,10 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             : scope.includeBackdrop || transparent ? undefined : DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background;
         const sheetName = meta.sheetOrder.length > 1 ? sheet.name : null;
         const longest = Math.max(scope.bounds.width, scope.bounds.height);
-        const naturalScale = route === 'copy' && longest * 2 > 8192 ? (8192 - 1e-9) / longest : 2;
+        // Two pixels per world unit, or the largest scale the PNG size limit accepts (copy has the tighter clipboard side):
+        // an oversize board exports smaller and says so, rather than failing the download.
+        const sizeLimit = pngScaleLimit(scope.bounds, route === 'copy');
+        const naturalScale = Math.min(2, sizeLimit);
         const pngScale = maxSide === undefined ? naturalScale : Math.min(naturalScale, (maxSide - 1e-9) / longest);
         const pdfLayers = pdfBackdrop?.layers.map(layer => layer.id) ?? [];
         const pdfCapturer = (includeBoard: boolean) => {
@@ -398,6 +401,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         if (signal.aborted) { release(); throw stale(); }
         const exportPng = (requestSignal: AbortSignal) => run(requestSignal, combined => {
             if (route === 'copy' && pngScale < 2) options.notice('The copied PNG was scaled down to fit the clipboard size limit.');
+            else if (route !== 'copy' && sizeLimit < 2 && pngScale < 2) options.notice('The PNG was scaled down to fit the image size limit.');
             return pdfBackdrop ? pdfPng(combined) : streamRasterPng(source, capturedImages, scope.bounds, pngScale, combined,
                 { background: background && colourCss(background), clipboard: route === 'copy' });
         });

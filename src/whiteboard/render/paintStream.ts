@@ -4,6 +4,7 @@ import type { InkCoverage } from '../ink/outline';
 import type { Blend } from './colour';
 import type { InkMaterial, PaintBand, PathMaterial, TextMaterial } from './material';
 import type { TextPaint, FaceTable } from '../text/paint';
+import type { BoardDoc } from '../model/doc';
 
 export type FillRule = 'nonzero' | 'evenodd';
 export interface PaintClip {
@@ -67,6 +68,8 @@ export interface PaintNode {
     readonly content: readonly PaintItem[];
 }
 export interface PaintNodeSource {
+    /** The actual immutable source document, never the session's newer live model. */
+    readonly sourceDoc?: BoardDoc;
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly sensitiveNodes?: ReadonlySet<string>;
@@ -75,6 +78,7 @@ export interface PaintNodeSource {
     isCurrent(): boolean;
 }
 export interface PaintFrame {
+    readonly sourceDoc?: BoardDoc;
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly inkNodeIds: ReadonlySet<string>;

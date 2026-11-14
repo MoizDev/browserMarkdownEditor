@@ -46,18 +46,27 @@ export async function prepareInkCoverageInWorker(samples: SampleSequence, parame
         pressure: pressureHandle ? new Float64Array(moved.buffer, pressureHandle.offset, count) : null,
         kinds: new Uint8Array(moved.buffer, kindsHandle.offset, count), indexOffset: first, totalCount: samples.count,
     }, parameters, style, range, options: plainOptions };
-    let reply: InkCoverageReply;
+    const client = boardWorker('geometry');
+    let request: Promise<unknown> | undefined, reply: InkCoverageReply, choice: 'fine' | 'coarse' | undefined;
     try {
         if (lod) {
-            const result = await boardWorker('geometry').request<{ coverage: InkCoverageReply; level: 'fine' | 'coarse' }>('ink.lod',
+            const pending = client.request<{ coverage: InkCoverageReply; level: 'fine' | 'coarse' }>('ink.lod',
                 { request: payload, chunkCount: lod.chunkCount }, identity, { priority: 1, signal, transfer: [moved.buffer] }, isCurrent);
+            request = pending;
+            const result = await pending;
             reply = result.coverage;
-            lod.onChoice?.(result.level);
+            choice = result.level;
         } else {
-            reply = await boardWorker('geometry').request<InkCoverageReply>('ink.coverage', payload, identity,
+            const pending = client.request<InkCoverageReply>('ink.coverage', payload, identity,
                 { priority: 1, signal, transfer: [moved.buffer] }, isCurrent);
+            request = pending;
+            reply = await pending;
         }
-    } finally { moved.release(); }
+    } finally {
+        try { if (request) await client.whenRetired(request); }
+        finally { moved.release(); }
+    }
+    if (choice) lod?.onChoice?.(choice);
     return Object.freeze({ ...reply, radiusAt(span: number, t: number): number {
         const { arcMaps: maps, radii } = reply;
         if (!Number.isInteger(span) || span < 0 || span >= maps.length || !Number.isFinite(t) || t < 0 || t > 1) {

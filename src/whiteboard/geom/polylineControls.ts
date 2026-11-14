@@ -28,6 +28,9 @@ export interface PolylineControlPreview {
     commit(): void;
     release(): void;
 }
+function samePoints(a: readonly Vec2[], b: readonly Vec2[]): boolean {
+    return a.length === b.length && a.every((point, index) => point.x === b[index].x && point.y === b[index].y);
+}
 
 /** Edit real polyline handles while retaining or explicitly detaching endpoint bindings. */
 export async function preparePolylineControl(options: PolylineControlOptions): Promise<PolylineControlPreview> {
@@ -44,6 +47,10 @@ export async function preparePolylineControl(options: PolylineControlOptions): P
     if (!Number.isSafeInteger(action.index) || action.index < (action.kind === 'insert' ? 1 : 0) || action.index > max
         || (action.kind === 'delete' && count <= 2) || (action.kind === 'insert' && count >= 5000)) throw new RangeError('Invalid polyline vertex index');
     if (action.kind !== 'delete' && ![action.point.x, action.point.y].every(Number.isFinite)) throw new RangeError('Invalid polyline point');
+    if (action.kind === 'delete' && ((action.index === 0 && node.startAttach) || (action.index === count - 1 && node.endAttach)))
+        throw new Error('Detach the bound endpoint before deleting it');
+    if (action.kind === 'insert' && action.index === count && node.endAttach)
+        throw new Error('Insert before the bound endpoint or detach it first');
     const targets = [node.startAttach?.target, node.endAttach?.target].filter((id): id is NodeId => !!id);
     const source = await acquireBoardGeometryScope(runtime, [node.id, ...targets], { signal, current, cooperate: options.cooperate });
     let final: BoardGeometryScope | undefined;
@@ -64,13 +71,27 @@ export async function preparePolylineControl(options: PolylineControlOptions): P
                         const geometry = await runtime.render.prepareForPick(target, signal, doc); check();
                         const box = geometry.vector?.attachments?.logicalBox; if (!box) throw new Error('Polyline target has no attachment surface');
                         const p = worldToLocal(doc, target, action.point);
-                        const coordinate = (value: number, origin: number, size: number) => size ? Math.max(0, Math.min(1, (value - origin) / size)) : 0.5;
+                        if (![p.x, p.y, box.x, box.y, box.width, box.height].every(Number.isFinite) || box.width < 0 || box.height < 0)
+                            throw new RangeError('Polyline target anchor geometry is invalid');
+                        const coordinate = (value: number, origin: number, size: number) => {
+                            if (!size) return 0.5; // default, calibration cut by owner
+                            const raw = (value - origin) / size;
+                            if (!Number.isFinite(raw)) throw new RangeError('Polyline attachment anchor overflows');
+                            return Math.max(0, Math.min(1, raw));
+                        };
                         attachment = { ...prior, precise: true, anchor: { x: coordinate(p.x, box.x, box.width), y: coordinate(p.y, box.y, box.height) } };
                     }
-                    ops.push({ t: 'set', id: node.id, key: field, value: attachment } as unknown as NodeSetOp);
+                    if (!attachment || !prior.precise || attachment.anchor.x !== prior.anchor.x || attachment.anchor.y !== prior.anchor.y)
+                        ops.push({ t: 'set', id: node.id, key: field, value: attachment } as unknown as NodeSetOp);
                 }
             }
         }
+        const noChange = () => {
+            const release = () => { if (!released) { released = true; source.release(); } };
+            return Object.freeze({ ops: Object.freeze([]) as readonly NodeSetOp[], doc, commit() { try { check(); } finally { release(); } }, release });
+        };
+        if (!ops.length && samePoints(points, node.points)) return noChange();
+        const pointsIndex = ops.length;
         ops.push({ t: 'set', id: node.id, key: 'points', value: points });
         const project = (changes: readonly NodeSetOp[]) => projectBoardGeometrySets(doc, changes, { signal, current, cooperate: options.cooperate });
         let candidate = await project(ops); check();
@@ -78,7 +99,11 @@ export async function preparePolylineControl(options: PolylineControlOptions): P
         if (!projected || projected.kind !== 'polyline') throw new Error('Polyline projection is unavailable');
         if (projected.startAttach || projected.endAttach) {
             const resolved = await resolvePolylineAttachments(projected, { runtime, doc: candidate, signal, current, cooperate: options.cooperate });
-            try { check(); ops.push({ t: 'set', id: node.id, key: 'points', value: resolved.points }); }
+            try {
+                check();
+                if (ops.length === 1 && samePoints(resolved.points, node.points)) return noChange();
+                ops[pointsIndex] = { t: 'set', id: node.id, key: 'points', value: resolved.points };
+            }
             finally { resolved.release(); }
             candidate = await project(ops); check();
         }

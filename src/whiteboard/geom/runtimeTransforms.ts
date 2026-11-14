@@ -1,4 +1,5 @@
-import { isLocked, selectedRoots } from '../change/commands';
+import { isLocked } from '../change/commands';
+import { selectedRootsAsync } from './selectedRootsAsync';
 import { pageOrigin, poseInParent, worldPose, type ChangeGeometry, type WorldPose } from '../change/coordinates';
 import type { NodeSetOp, Transaction } from '../change/ops';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
@@ -28,6 +29,7 @@ export interface BoardRotationPreview {
 }
 export interface BoardRotationPlan {
     preview(pointer: Vec2, shift: boolean, signal?: AbortSignal): Promise<BoardRotationPreview>;
+    previewAngle(delta: number, signal?: AbortSignal): Promise<BoardRotationPreview>;
     commit(preview: BoardRotationPreview): void;
     cancel(): void;
 }
@@ -72,7 +74,7 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
         if (!current()) throw new DOMException('Rotation plan became stale', 'AbortError');
     };
     check();
-    const chosen = selectedRoots(doc, options.ids);
+    const chosen = await selectedRootsAsync(doc, options.ids, { signal, current, cooperate: options.cooperate }); check();
     if (!chosen.length) throw new Error('Nothing selected for rotation');
     for (const node of chosen) {
         if (node.kind === 'opaque' || isLocked(doc, node) || hasOpaqueDescendant(doc, node.id)) throw new Error(`Node cannot be rotated: ${node.id}`);
@@ -83,9 +85,9 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
     let visited = 0;
     while (pending.length) {
         check(); const node = pending.pop()!;
+        if (++visited % 256 === 0) { await cooperate(); check(); }
         if (node.locked) { protectedRoots.push({ node, pose: worldPose(doc, node.id) }); continue; }
         if (node.kind === 'group' || node.kind === 'frame') for (const child of childrenOf(doc, node.id)) pending.push(child);
-        if (++visited % 256 === 0) { await cooperate(); check(); }
     }
     const protectedIds = new Set(protectedRoots.map(root => root.node.id));
     const base = await acquireBoardGeometryScope(runtime, roots.map(root => root.node.id), { signal, current, cooperate: options.cooperate });
@@ -98,13 +100,9 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
         closed = true; generation++;
         try { releaseLatest(); } finally { base.release(); }
     };
-    return {
-        async preview(pointer, shift, requestSignal) {
-            check(requestSignal);
-            if (![pointer.x, pointer.y].every(Number.isFinite) || (pointer.x === centre.x && pointer.y === centre.y)) throw new RangeError('Invalid rotation pointer');
-            const pointerAngle = Math.atan2(pointer.y - centre.y, pointer.x - centre.x);
-            angle = unwrapRotation(angle, lastPointer, pointerAngle); lastPointer = pointerAngle;
-            const resolved = snapRotation(orientation + angle, shift) - orientation, turn = ++generation;
+    const render = async (resolved: number, requestSignal?: AbortSignal): Promise<BoardRotationPreview> => {
+            check(requestSignal); if (!Number.isFinite(resolved)) throw new RangeError('Invalid rotation angle');
+            const turn = ++generation;
             const active = () => current() && turn === generation && !requestSignal?.aborted;
             const assert = () => { check(requestSignal); if (turn !== generation) throw new DOMException('Rotation preview superseded', 'AbortError'); };
             const desired = new Map<NodeId, WorldPose>(), initial: NodeSetOp[] = [];
@@ -115,9 +113,13 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
             const request = requestSignal ?? signal;
             let candidate = await projectBoardGeometrySets(doc, initial, { signal: request, current: active, cooperate: options.cooperate });
             assert();
+            let protectedCount = 0;
             for (const saved of protectedRoots) {
                 const node = candidate.nodes.get(saved.node.id); if (!node) throw new Error('Protected descendant disappeared');
                 initial.push(...provisional(candidate, { node, pose: saved.pose }, saved.pose));
+                if (++protectedCount % 256 === 0) { await cooperate(); assert(); }
+            }
+            if (protectedRoots.length) {
                 candidate = await projectBoardGeometrySets(doc, initial, { signal: request, current: active, cooperate: options.cooperate }); assert();
             }
             const staged = await acquireBoardGeometryScope(runtime, roots.map(root => root.node.id), { doc: candidate, signal: request, current: active, cooperate: options.cooperate });
@@ -147,7 +149,16 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
                     releaseLatest(); latest = { value, scope: finalScope, generation: turn, signal: requestSignal }; published = true; return value;
                 } finally { if (!published) finalScope.release(); }
             } finally { staged.release(); }
+    };
+    return {
+        preview(pointer, shift, requestSignal) {
+            check(requestSignal);
+            if (![pointer.x, pointer.y].every(Number.isFinite) || (pointer.x === centre.x && pointer.y === centre.y)) throw new RangeError('Invalid rotation pointer');
+            const pointerAngle = Math.atan2(pointer.y - centre.y, pointer.x - centre.x);
+            angle = unwrapRotation(angle, lastPointer, pointerAngle); lastPointer = pointerAngle;
+            return render(snapRotation(orientation + angle, shift) - orientation, requestSignal);
         },
+        previewAngle(delta, requestSignal) { return render(delta, requestSignal); },
         commit(value) {
             try {
                 check();

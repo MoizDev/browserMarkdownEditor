@@ -20,7 +20,8 @@ function bool(value: unknown, name: string): boolean {
     return value;
 }
 // The returned lease belongs to the importer until the host accepts or discards the draft.
-export function readStroke(shape: LegacyShape, base: NodeBase, samples: SampleStore): { node: StrokeNode; lease: SampleLease } {
+// `dropped` counts non-finite points removed by the segment decoder (repair notice, never silent).
+export function readStroke(shape: LegacyShape, base: NodeBase, samples: SampleStore): { node: StrokeNode; lease: SampleLease; dropped: number } {
     const p = shape.props, highlight = shape.type === 'highlight';
     if (shape.type !== 'draw' && !highlight) throw new Error('Not a stroke');
     const size = choice(p.size, SIZES, 'size'), color: Swatch = choice(p.color, SWATCHES, 'colour');
@@ -32,22 +33,24 @@ export function readStroke(shape: LegacyShape, base: NodeBase, samples: SampleSt
     const complete = bool(p.isComplete, 'completion flag');
     if (scale <= 0 || !Array.isArray(p.segments)) throw new Error('Invalid stroke segments or scale');
     const builder = new SampleBuilder({ pressure: pen, declaredMaxScale: 8, precision: 'float64' });
+    let dropped = 0;
     for (const value of p.segments) {
         const part = object(value);
         if (!part || (part.type !== 'free' && part.type !== 'straight') || typeof part.path !== 'string'
             || (part.dim !== undefined && part.dim !== 2 && part.dim !== 3)) throw new Error('Invalid stroke segment');
         const segment: LegacySegment = { type: part.type, path: part.path, dim: part.dim };
         if (pen && segment.dim === 2) throw new Error('Pen segment has no pressure channel');
-        const points = decodeLegacySegment(segment);
-        if (builder.count + points.length > 1_000_000) throw new Error('Stroke exceeds the point limit');
-        for (const point of points) {
+        const decoded = decodeLegacySegment(segment);
+        dropped += decoded.dropped;
+        if (builder.count + decoded.points.length > 1_000_000) throw new Error('Stroke exceeds the point limit');
+        for (const point of decoded.points) {
             builder.append(point.x, point.y, pen ? point.pressure : undefined, segment.type === 'straight' ? 'straight' : 'freehand');
         }
     }
     if (!builder.count) throw new Error('Empty stroke');
     const width = styleGeometryMetrics.actualWidth(highlight ? 'stroke:highlighter' : 'stroke:pen', size, scale);
     const lease = samples.commit(builder);
-    return { lease, node: { ...base, kind: 'stroke', tool: highlight ? 'highlighter' : 'pen', samples: lease.ref,
+    return { lease, dropped, node: { ...base, kind: 'stroke', tool: highlight ? 'highlighter' : 'pen', samples: lease.ref,
         pressure: pen ? 'real' : 'none', widthModel: dash === 'solid' || !pen
             ? { id: 'uniform' } : { id: 'pressure-linear-v1', rMin: 0, rMax: width / 2 },
         geomVersion: 1, fairTol: 0, closed, width, sx, sy, color, fill, dash, complete } };

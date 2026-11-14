@@ -1,42 +1,18 @@
 import type { Affine, Rect } from '../../platform/types';
 import type { ConnectorNode } from '../model/nodes';
 import type { Arrowhead } from '../model/styles';
-import { inverse, transformPoint } from './affine';
-import { ContourClipper, type ClipInterval } from './clip';
+import { transformPoint } from './affine';
 import { connectorBody } from './connectors';
 import { bodyCrossingSteps, bodyLength, pointAtLength, tangentAtLength, trimBodyPath } from './connectorPath';
 import type { AttachmentSurface, ConnectorBody, ConnectorGeometryRequest, ConnectorGeometryResult, ConnectorLabelPaint, ResolvedConnectorEnd } from './connectorTypes';
-import { routeElbow } from './elbow';
+import { routeElbowSteps } from './elbow';
+import { connectorSurfaceContains, connectorSurfaceIntervals } from './connectorContourProbe';
 import { connectorHeadScale, headGeometry } from './heads';
 import type { PathOp, Vec2 } from './path';
 import { transformedPathBounds } from './providers';
 import { styleGeometryMetrics } from './styleMetrics';
 
 const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
-function intersect(a: readonly ClipInterval[], b: readonly ClipInterval[]): ClipInterval[] {
-    const result: ClipInterval[] = [];
-    for (const left of a) for (const right of b) {
-        const from = Math.max(left.from, right.from), to = Math.min(left.to, right.to);
-        if (to > from) result.push({ from, to });
-    }
-    return result;
-}
-function probe(surface: AttachmentSurface, maxPieces: number) {
-    const contours = [{ outline: surface.outline, localToWorld: surface.localToWorld }, ...surface.clips].map(value => {
-        const worldToLocal = inverse(value.localToWorld, 1e12);
-        if (!worldToLocal) throw new RangeError('Attachment transform is not invertible');
-        return { contour: new ContourClipper([value.outline], maxPieces), worldToLocal };
-    });
-    return {
-        contains(point: Vec2) { return contours.every(value => value.contour.contains(transformPoint(value.worldToLocal, point))); },
-        clip(a: Vec2, b: Vec2) {
-            let result: ClipInterval[] = [{ from: 0, to: 1 }];
-            for (const value of contours) result = intersect(result,
-                value.contour.clip(transformPoint(value.worldToLocal, a), transformPoint(value.worldToLocal, b)));
-            return result;
-        },
-    };
-}
 function aim(node: ConnectorNode, terminal: 'start' | 'end', matrix: Affine, surface: AttachmentSurface | undefined): Vec2 {
     const end = node[terminal], a = end.attach;
     if (!a || !surface) return transformPoint(matrix, end);
@@ -64,7 +40,6 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
     const endTarget = node.end.attach ? request.resolveTarget(node.end.attach.target) : undefined;
     if ((node.start.attach && !startTarget) || (node.end.attach && !endTarget)) return { status: 'pending', reason: 'target' };
     const a = aim(node, 'start', request.localToWorld, startTarget), b = aim(node, 'end', request.localToWorld, endTarget);
-    const startProbe = startTarget ? probe(startTarget, maxPieces) : undefined, endProbe = endTarget ? probe(endTarget, maxPieces) : undefined;
     let route: readonly Vec2[] | undefined;
     if (node.route === 'elbow') {
         const gap = Math.max(12, node.width * 6);
@@ -77,28 +52,16 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
             const x = Math.min(...corners.map(p => p.x)) - gap, y = Math.min(...corners.map(p => p.y)) - gap;
             escape = union(escape, { x, y, width: Math.max(...corners.map(p => p.x)) + gap - x, height: Math.max(...corners.map(p => p.y)) + gap - y });
         }
-        const intervals = (points: readonly Vec2[], target: ReturnType<typeof probe>) => {
-            const parts: { from: number; to: number }[] = []; let offset = 0;
-            for (let i = 1; i < points.length; i++) {
-                const length = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
-                for (const span of target.clip(points[i - 1], points[i])) {
-                    const from = offset + span.from * length, to = offset + span.to * length, previous = parts[parts.length - 1];
-                    if (previous && from - previous.to <= error) previous.to = to; else parts.push({ from, to });
-                }
-                offset += length;
-            }
-            return { parts, length: offset };
-        };
-        const selected = routeElbow({ start: a, end: b, mid: node.elbowMid, escape,
-            validPort(points, terminal) {
-                const target = terminal === 'start' ? startProbe : endProbe, end = node[terminal];
+        const selected = yield* routeElbowSteps({ start: a, end: b, mid: node.elbowMid, escape,
+            *validPort(points, terminal) {
+                const target = terminal === 'start' ? startTarget : endTarget, end = node[terminal];
                 if (!target || end.attach?.exact) return true;
-                return target.contains(terminal === 'start' ? points[0] : points[points.length - 1]);
+                return yield* connectorSurfaceContains(target, terminal === 'start' ? points[0] : points[points.length - 1], maxPieces);
             },
-            crossesForbidden(points) {
-                for (const [target, terminal] of [[startProbe, 'start'], [endProbe, 'end']] as const) {
+            *crossesForbidden(points) {
+                for (const [target, terminal] of [[startTarget, 'start'], [endTarget, 'end']] as const) {
                     if (!target || node[terminal].attach?.exact) continue;
-                    const value = intervals(points, target);
+                    const value = yield* connectorSurfaceIntervals(target, points, error, maxPieces);
                     if (value.parts.length > 1) return true;
                     if (value.parts.length && (terminal === 'start' ? value.parts[0].from > error : value.length - value.parts[0].to > error)) return true;
                 }
@@ -131,16 +94,28 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
         }
         return result;
     };
-    let startBoundary = 0, endBoundary = total;
-    if (startTarget && !node.start.attach!.exact) startBoundary = (yield* crossings(startTarget)).find(hit => !hit.entering)?.distance ?? 0;
+    let startBoundary = 0, endBoundary = total, startConnected = false, endConnected = false;
+    if (startTarget && !node.start.attach!.exact) {
+        const values = yield* crossings(startTarget), first = values[0];
+        startConnected = yield* connectorSurfaceContains(startTarget, a, maxPieces);
+        // Only the component connected to the terminal may be removed.
+        if (first && !first.entering) { startBoundary = first.distance; startConnected = true; }
+        else if (!values.length && total > 0 && startConnected && (yield* connectorSurfaceContains(startTarget, point(total / 2), maxPieces))) {
+            startBoundary = total; startConnected = true;
+        }
+    }
     if (endTarget && !node.end.attach!.exact) {
-        const values = yield* crossings(endTarget);
-        for (let i = values.length - 1; i >= 0; i--) if (values[i].entering) { endBoundary = values[i].distance; break; }
+        const values = yield* crossings(endTarget), last = values[values.length - 1];
+        endConnected = yield* connectorSurfaceContains(endTarget, b, maxPieces);
+        if (last?.entering) { endBoundary = last.distance; endConnected = true; }
+        else if (!values.length && total > 0 && endConnected && (yield* connectorSurfaceContains(endTarget, point(total / 2), maxPieces))) {
+            endBoundary = 0; endConnected = true;
+        }
     }
     const span = Math.max(0, endBoundary - startBoundary);
     // v1 uses the recorded default rectangular gap, scaled only by actual width.
-    let startGap = startTarget && !node.start.attach!.exact ? 6 * node.width : 0;
-    let endGap = endTarget && !node.end.attach!.exact ? 6 * node.width : 0;
+    let startGap = startConnected ? 6 * node.width : 0;
+    let endGap = endConnected ? 6 * node.width : 0;
     const gapScale = startGap + endGap > span ? span / (startGap + endGap) : 1;
     startGap *= gapScale; endGap *= gapScale;
     const from = Math.min(total, startBoundary + startGap), to = Math.max(from, endBoundary - endGap);

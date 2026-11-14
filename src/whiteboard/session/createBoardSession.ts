@@ -51,8 +51,21 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
     };
     const checkpoints = new Map<number, { checkpoint: SerializerCheckpoint; context: unknown }>();
     const outstanding = new Set<Promise<unknown>>();
+    // Revoked at dispose: every build that can still read a pinned source observes this signal.
+    const lifetime = new AbortController();
     let cachedSource: { revision: number; handle: ReturnType<typeof boardContentSource>; context: unknown } | undefined;
     const retireSource = () => { const previous = cachedSource; cachedSource = undefined; previous?.handle.release(); };
+    // Each step waits for the work that may still read the one it releases. A journal drain may start a
+    // build, so the loop runs until nothing is outstanding. Nothing is claimed released before it is.
+    const retireSettled = async () => {
+        try {
+            do {
+                while (outstanding.size) await Promise.allSettled([...outstanding]);
+                await journal.drain();
+            } while (outstanding.size);
+            retireSource(); journal.dispose(); serializer.dispose(); media.clear();
+        } catch (error) { reportPendingError(error); }
+    };
     const track = <T>(work: Promise<T>): Promise<T> => {
         outstanding.add(work); notifyPending();
         const settled = () => { outstanding.delete(work); notifyPending(); };
@@ -139,6 +152,8 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         pending = emptyTouched(); pendingDirty = false;
     }
     function capture(): ReturnType<typeof boardContentSource>['source'] {
+        // A closed session must never pin a new build: retireSettled has already passed over the checkpoint map.
+        if (disposed) throw new DOMException('Board session ended', 'AbortError');
         encodePending();
         if (cachedSource?.revision === contentRevision) return cachedSource.handle.source;
         retireSource();
@@ -150,7 +165,8 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         let built: Uint8Array | Blob | undefined;
         const wrapped: PinnedBoardBuild = { revision: pinned.revision, async build(signal) {
             if (built) return built;
-            const result = await track(pinned.build(signal));
+            if (disposed) throw new DOMException('Board session ended', 'AbortError');
+            const result = await track(pinned.build(AbortSignal.any([signal, lifetime.signal])));
             built = result;
             return result;
         }, release: () => pinned.release?.() };
@@ -247,7 +263,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             } while (outstanding.size);
         },
         onChange(listener: (source: ContentSource) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        journalDelta() { capture(); return journal.delta(cachedSource!.context); },
+        journalDelta() { if (disposed) return undefined; capture(); return journal.delta(cachedSource!.context); },
         async recover(payload: unknown) {
             guard();
             if (pendingState() || doc.rev !== savedRevision) throw new ApplyFailed('recovery-conflict', 'Current board state changed; save the recovery as a copy or reload before applying it');
@@ -268,10 +284,14 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         hidden() { if (!disposed) scheduler.hidden(); },
         dispose() {
             if (disposed) return;
-            disposed = true; notifyPending(); pendingListeners.clear();
+            // Revoke first: new builds refuse, running builds abort. Physical sources are released only after
+            // every tracked build has actually settled, so no reader can outlive the bytes or media it holds.
+            disposed = true; lifetime.abort(new DOMException('Board session ended', 'AbortError'));
+            notifyPending(); pendingListeners.clear();
             unsubscribeSelection(); channel.dispose(); queue.dispose(); scheduler.dispose(); history.dispose(); applyController.dispose();
             for (const lease of mediaLeases.values()) lease.release();
-            mediaLeases.clear(); retireSource(); checkpoints.clear(); journal.dispose(); serializer.dispose(); media.clear(); listeners.clear();
+            mediaLeases.clear(); checkpoints.clear(); listeners.clear();
+            void retireSettled();
         },
     };
     return session as ComposedBoardSession;

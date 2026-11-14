@@ -60,7 +60,10 @@ export function usePdfPlatformPreview(
         };
     }, [active, serial, documentId, vaultEpoch, byteGeneration, root, source]);
 
-    useLayoutEffect(() => { previewRef.current?.setVisible(visible); }, [visible]);
+    useLayoutEffect(() => {
+        previewRef.current?.setVisible(visible);
+        if (visible) previewRef.current?.sync();
+    }, [visible]);
     useEffect(() => { previewRef.current?.setFocused(focused); }, [focused]);
     return useCallback(() => previewRef.current?.sync(), []);
 }

@@ -39,10 +39,15 @@ export async function applyNativeCanvasOperations(options: {
     } });
     // The genuine C2 facade is installed before lifting only the temporary viewer seal.
     // Immutable C5/D10/emergency seals and the App's disk baseline remain authoritative.
-    source.activateEditing();
-    check();
-    if (!source.isCurrent() || !source.canWrite()) throw new DOMException('Canvas edit authority changed', 'AbortError');
-    // The facade owns no separate store/resources. Its jobs belong to the runtime;
-    // retiring that shared authority here would break the document's next operation.
-    return mutation.apply(ops, { signal, deadlineMs: 30_000 });
+    try {
+        source.activateEditing();
+        check();
+        if (!source.isCurrent() || !source.canWrite()) throw new DOMException('Canvas edit authority changed', 'AbortError');
+        return await mutation.apply(ops, { signal, deadlineMs: 30_000 });
+    }
+    finally {
+        // Only this request's owned work retires; the canonical document/job
+        // authority must keep serving the next tool, view and autosave.
+        await mutation.retire();
+    }
 }

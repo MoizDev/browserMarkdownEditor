@@ -919,17 +919,14 @@ async function requireParentFolder(ctx: Ctx, path: string): Promise<void> {
 
 async function vaultCreate(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.writablePath(a.path);
-    if (isNativeDrawingFile(path)) throw new ToolError('This build cannot create native .drawing whiteboards. Create an empty .tldraw drawing instead.');
     const name = baseName(path);
     const content = normalizeNewlines(typeof a.content === 'string' ? a.content : '');
     if (isCanvasFile(name)) {
-        // An empty file IS a new drawing/notebook — the app's own "New drawing"
-        // and "New notebook" write nothing else (both panes open '' as a blank
-        // canvas; a notebook gets default paper). Agent-written JSON would be a
-        // snapshot no one validated, loaded straight into tldraw.
+        // The host creates a real empty native document when that route is
+        // selected; arbitrary agent-authored snapshots never become editor input.
         if (content.trim()) throw new ToolError(`create the ${isNotebookFile(name) ? 'notebook' : 'drawing'} empty (no content), then add to it with canvas_apply.`);
     } else if (isPdfFile(name) || (isImageFile(name) && !/\.svg$/i.test(name)) || !isTextFile(name)) {
-        throw new ToolError(`vault_create makes text files (notes are .md), empty drawings (.tldraw) and empty notebooks (.notebook); it cannot make "${name}".`);
+        throw new ToolError(`vault_create makes text files (notes are .md), empty drawings (.drawing or .tldraw) and empty notebooks (.notebook); it cannot make "${name}".`);
     }
     await requireParentFolder(ctx, path);
     ctx.ensureLive();

@@ -22,9 +22,11 @@ function role(ink: InkRef, marks: Marks): InkRef {
 
 /** A session owns one instance and its append-only face table. */
 export class BoardTextLayout implements TextLayoutEngine {
-    private readonly faces: Face[] = [];
-    private readonly faceIds = new Map<string, number>();
-    readonly faceTable: FaceTable = { faces: this.faces };
+    private faces: Face[] = [];
+    private faceIds = new Map<string, number>();
+    private currentFaceTable: FaceTable = { faces: this.faces };
+    private faceGeneration = 0;
+    get faceTable(): FaceTable { return this.currentFaceTable; }
     private readonly layouts = new Map<string, { paint: TextPaint; measurement: TextMeasurement; bytes: number }>();
     private layoutBytes = 0;
     private readonly textIds = new WeakMap<RichText, number>();
@@ -110,9 +112,14 @@ export class BoardTextLayout implements TextLayoutEngine {
         }
         let textId = this.textIds.get(request.text);
         if (textId === undefined) { textId = this.nextTextId++; this.textIds.set(request.text, textId); }
-        const key = sha256(new TextEncoder().encode(JSON.stringify([this.instanceId, request.revision, textId, request.style, request.width, request.fontEpoch, [...states].sort()])));
-        const old = this.layouts.get(key);
-        if (old) { this.layouts.delete(key); this.layouts.set(key, old); return old; }
+        const cacheKey = sha256(new TextEncoder().encode(JSON.stringify([this.instanceId, request.revision, textId, request.style, request.width, request.fontEpoch, [...states].sort()])));
+        const old = this.layouts.get(cacheKey);
+        if (old) { this.layouts.delete(cacheKey); this.layouts.set(cacheKey, old); return old; }
+        // Published paints retain their generation; never reuse an index from a retired table.
+        if (this.faces.length >= 4096) {
+            this.faces = []; this.faceIds = new Map(); this.currentFaceTable = { faces: this.faces }; this.faceGeneration++;
+        }
+        const key = `${cacheKey}:${this.faceGeneration}`;
         const style = request.style, pad = style.padding;
         const outerWidth = request.width === null ? null : Math.max(16, request.width);
         const available = outerWidth === null ? null : Math.max(0, outerWidth - pad.left - pad.right);
@@ -244,7 +251,7 @@ export class BoardTextLayout implements TextLayoutEngine {
             y += draft.height;
         }
         const ink = { x: left, y: top, width: right - left, height: bottom - top };
-        const paint: TextPaint = { key, fontEpoch: request.fontEpoch, box: { w: boxWidth, h: boxHeight }, ink, backgrounds, lines, decorations };
+        const paint: TextPaint = { key, fontEpoch: request.fontEpoch, faceTable: this.currentFaceTable, box: { w: boxWidth, h: boxHeight }, ink, backgrounds, lines, decorations };
         const measurement: TextMeasurement = { box: paint.box, ink, requiredHeight: naturalHeight, fontScale: appliedScale };
         const result = { paint, measurement };
         let bytes = 512 + lines.length * 160 + (backgrounds.length + decorations.length) * 96;
@@ -255,12 +262,16 @@ export class BoardTextLayout implements TextLayoutEngine {
                 const oldest = this.layouts.keys().next().value!, entry = this.layouts.get(oldest)!;
                 this.layouts.delete(oldest); this.layoutBytes -= entry.bytes;
             }
-            this.layouts.set(key, { ...result, bytes }); this.layoutBytes += bytes;
+            this.layouts.set(cacheKey, { ...result, bytes }); this.layoutBytes += bytes;
         }
         return result;
     }
+    product(request: TextLayoutRequest): { paint: TextPaint; measurement: TextMeasurement } { return this.build(request); }
     measure(request: TextLayoutRequest): TextMeasurement { return this.build(request).measurement; }
     layout(request: TextLayoutRequest): TextPaint { return this.build(request).paint; }
-    caretIndex(request: TextLayoutRequest, paint: TextPaint) { return makeCaretIndex(request, paint, this.faceTable, this.measurer, this.caretLines); }
+    caretIndex(request: TextLayoutRequest, paint: TextPaint) {
+        if (!paint.faceTable) throw new Error('Text paint has no owning face table');
+        return makeCaretIndex(request, paint, paint.faceTable, this.measurer, this.caretLines);
+    }
     releaseEditingCache(): void { this.caretLines.clear(); clearLongAsciiCaretIndex(this.measurer); }
 }

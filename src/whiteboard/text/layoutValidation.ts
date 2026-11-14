@@ -71,6 +71,7 @@ export function validLayoutRequest(value: unknown): value is TextLayoutRequest {
 export function validLayoutProduct(value: unknown, request: TextLayoutRequest): value is ValidLayoutProduct {
     if (!record(value) || !record(value.paint) || !record(value.measurement) || !Array.isArray(value.faces)) return false;
     const paint = value.paint, measurement = value.measurement, faces = value.faces;
+    if (!record(paint.faceTable) || paint.faceTable.faces !== faces) return false;
     if (faces.length > 100_000 || typeof paint.key !== 'string' || paint.key.length > 4 * MAX_TEXT_LENGTH
         || !index(paint.fontEpoch, Number.MAX_SAFE_INTEGER) || !box(paint.box) || !rect(paint.ink)
         || !box(measurement.box) || !rect(measurement.ink) || !nonnegative(measurement.requiredHeight)

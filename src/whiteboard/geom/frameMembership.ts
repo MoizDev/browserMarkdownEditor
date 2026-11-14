@@ -5,11 +5,12 @@ import type { BoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
 import { isSheetParent, sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId, ParentId } from '../model/ids';
-import type { FrameNode, Node } from '../model/nodes';
+import type { FrameNode } from '../model/nodes';
 import { keysBetween, needsRekey, type OrderKey } from '../model/orderKey';
 import { pointInTransformedFrame } from './frameContainment';
 import type { Vec2 } from './path';
 import { projectGeometryReparents, type GeometryReparent } from './reparentProjection';
+import { findFrameMembershipTargets, type FrameMembershipCentre } from './frameMembershipCandidates';
 
 export interface FrameMembershipOptions {
     readonly runtime: BoardRuntime;
@@ -28,14 +29,6 @@ function containsFrame(doc: BoardDoc, frame: Readonly<FrameNode>, point: Vec2): 
     const pose = worldPose(doc, frame.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
     return pointInTransformedFrame(point, { x: 0, y: 0, width: frame.w, height: frame.h }, [c, s, -s, c, pose.x, pose.y]);
 }
-function visibleAt(doc: BoardDoc, frame: Readonly<FrameNode>, point: Vec2): boolean {
-    let node: Readonly<Node> | undefined = frame;
-    for (let depth = 0; node && depth < 64; depth++) {
-        if (node.kind === 'frame' && !containsFrame(doc, node, point)) return false;
-        node = doc.nodes.get(node.parent as NodeId);
-    }
-    return !node;
-}
 function insideFocus(doc: BoardDoc, parent: ParentId, focus: ParentId): boolean {
     for (let depth = 0; depth <= 64; depth++) {
         if (parent === focus) return true;
@@ -45,16 +38,6 @@ function insideFocus(doc: BoardDoc, parent: ParentId, focus: ParentId): boolean 
     }
     throw new Error('Frame focus ancestry is too deep');
 }
-function inSelectedSubtree(doc: BoardDoc, id: NodeId, selected: ReadonlySet<NodeId>): boolean {
-    let node = doc.nodes.get(id);
-    for (let depth = 0; node && depth < 64; depth++) {
-        if (selected.has(node.id)) return true;
-        node = doc.nodes.get(node.parent as NodeId);
-    }
-    if (node) throw new Error('Frame membership ancestry is too deep');
-    return false;
-}
-
 /** Prepare centre-based frame entry/exit on the same staged translation and history transaction. */
 export async function projectFrameMembership(options: FrameMembershipOptions): Promise<FrameMembershipProjection> {
     const { runtime, doc, geometry, signal } = options, live = runtime.session.doc, revision = live.rev, owner = runtime.session.owner;
@@ -83,6 +66,7 @@ export async function projectFrameMembership(options: FrameMembershipOptions): P
     const changes: GeometryReparent[] = [], ops: NodeSetOp[] = [], lastOrder = new Map<ParentId, OrderKey | null>();
     let work = 0;
     const tick = async () => { if (++work % 256 === 0) { await cooperate(); check(); } };
+    const centres: FrameMembershipCentre[] = [];
     for (const id of options.roots) {
         check(); const node = doc.nodes.get(id);
         if (!node || node.kind === 'opaque' || isLocked(doc, node) || sheetOf(doc, id) !== selection.sheet) throw new Error('Frame membership root is unavailable');
@@ -97,27 +81,14 @@ export async function projectFrameMembership(options: FrameMembershipOptions): P
             parent = ancestor.parent;
         }
         if (!insideFocus(doc, parent, selection.focus)) throw new Error('Cannot move a selection outside its focused container');
-        // Enter the topmost eligible sibling frame. A moving subtree can never own itself.
-        const cursor = scene!.spatialCursor({ sheetId: selection.sheet, purpose: 'selectable', includeLocked: true,
-            request: { kind: 'point', x: point.x, y: point.y, maxDistance: 0 } });
-        let target: { readonly id: NodeId; readonly rank: number } | undefined;
-        try {
-            for (;;) {
-                check();
-                const status = cursor.resume({ maxVisits: 128, deadline: performance.now() + 3 }, ref => {
-                    const resolved = scene!.resolveSpatial(ref); if (!resolved) throw new DOMException('Frame membership candidate expired', 'AbortError');
-                    const candidate = doc.nodes.get(resolved.id);
-                    if (!candidate || candidate.kind !== 'frame' || candidate.parent !== parent || isLocked(doc, candidate)
-                        || inSelectedSubtree(doc, candidate.id, selected) || !visibleAt(doc, candidate, point)) return;
-                    if (!target || resolved.rank > target.rank || (resolved.rank === target.rank && resolved.id < target.id)) target = { id: resolved.id, rank: resolved.rank };
-                });
-                if (status === 'complete') break;
-                if (status !== 'pending') throw new DOMException('Frame membership traversal expired', 'AbortError');
-                await cooperate();
-            }
-        } finally { cursor.cancel(); }
-        check(); if (!scene.ready || scene.revision !== revision) throw new DOMException('Frame membership Scene changed', 'AbortError');
-        const destination: ParentId = target?.id ?? parent;
+        centres.push({ id, parent, point }); await tick();
+    }
+    const targets = await findFrameMembershipTargets({ runtime, scene, doc, sheet: selection.sheet, centres, selected, signal,
+        current: () => { try { check(); return true; } catch { return false; } }, cooperate });
+    check();
+    for (const { id, parent, point } of centres) {
+        const node = doc.nodes.get(id); if (!node) throw new DOMException('Frame membership root disappeared', 'AbortError');
+        const destination: ParentId = targets.get(id)?.id ?? parent;
         if (destination === node.parent) { await tick(); continue; }
         let last = lastOrder.get(destination);
         if (last === undefined) {

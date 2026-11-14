@@ -4,6 +4,7 @@ import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputServices } from '../input/attach';
+import { createInkContinuation } from '../input/continueInk';
 import type { MappingHistory } from '../input/pointer';
 import type { InputToken, RealSample } from '../input/tool';
 import { SampleStore } from '../ink/samples';
@@ -27,10 +28,12 @@ export interface BoardInkServicesOptions {
 }
 
 /** Concrete authoring services; sessionInkTool owns the one atomic transaction. */
-export function createBoardInkServices(options: BoardInkServicesOptions): Pick<BoardInputServices, 'ink'> {
+export function createBoardInkServices(options: BoardInkServicesOptions): Pick<BoardInputServices, 'ink' | 'continueInk'> {
     const { runtime, samples, camera } = options, session = runtime.session;
     if (session.samples !== samples) throw new TypeError('Ink requires the session-owned sample store');
     return {
+        continueInk: createInkContinuation({ session, samples, current: () => options.current(options.token),
+            sheet: () => runtime.selection.getSnapshot().sheet, declaredMaxScale: () => Math.max(8, camera.camera.z * 8) }),
         ink(tool: 'pen' | 'highlighter', first: RealSample) {
             if (!options.current(options.token) || session.isReadOnly) throw new Error('Ink view is no longer editable');
             if (![first.x, first.y, camera.camera.z, camera.viewport.dpr].every(Number.isFinite)

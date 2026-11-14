@@ -194,10 +194,16 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         const commit = services.continueInk?.(sample)
         if (commit) {
           const continuation: Tool<unknown> = { id: 'continue-ink', begin: () => {
-            let endpoint = sample
-            return { kind: 'node-edit', pointerIds: new Set([sample.pointerId]),
-              update: samples => { if (samples.length) endpoint = samples[samples.length - 1] },
-              finish: reason => { if (reason === 'up') commit(endpoint) }, cancel: () => {}, }
+            let endpoint = sample, ended = false
+            services.history.clearRedo()
+            return { kind: 'ink', pointerIds: new Set([sample.pointerId]),
+              update: samples => { for (const point of samples) if (point.pointerId === sample.pointerId) endpoint = point },
+              finish: reason => {
+                if (ended) return
+                ended = true
+                try { if (commit(endpoint) && reason === 'undo') services.history.undo() } catch (error) { services.error(error) }
+              },
+              cancel: () => { ended = true }, discard: () => { ended = true }, }
           } }
           return { tool: continuation, context: undefined }
         }

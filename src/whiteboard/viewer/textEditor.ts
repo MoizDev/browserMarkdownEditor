@@ -484,11 +484,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             return editor.applyLink(href, context.target ?? context.selection);
         },
         pasteText(fragment: RichText) { return manager.current?.editor.replaceSelection(fragment) ?? false; },
-        cutText(node: NodeId, revision: number, selection: EditSelection) {
-            const editor = manager.current?.editor, current = editor?.getSelection();
-            if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus) return false;
-            return editor.deleteSelection();
-        },
         prepareTextCut(node: NodeId, revision: number, selection: EditSelection) {
             const editor = manager.current?.editor, current = editor?.getSelection();
             if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus)

@@ -17,6 +17,10 @@ export interface ElbowRequest {
 }
 export type ElbowRoute = { readonly status: 'ready'; readonly points: readonly Vec2[]; readonly length: number }
     | { readonly status: 'unroutable' };
+export interface ElbowStepRequest extends Omit<ElbowRequest, 'validPort' | 'crossesForbidden'> {
+    validPort(points: readonly Vec2[], terminal: 'start' | 'end'): Generator<void, boolean>;
+    crossesForbidden(points: readonly Vec2[]): Generator<void, boolean>;
+}
 function finitePoint(p: Vec2): boolean { return !!p && Number.isFinite(p.x) && Number.isFinite(p.y); }
 function simplify(input: readonly Vec2[]): Vec2[] {
     const result: Vec2[] = [];
@@ -46,7 +50,7 @@ function directionMatches(direction: Vec2 | undefined, from: Vec2, toward: Vec2 
 }
 
 /** No least-bad fallback: terminal and target checks admit before any ranking. */
-export function routeElbow(request: ElbowRequest): ElbowRoute {
+export function* routeElbowSteps(request: ElbowStepRequest): Generator<void, ElbowRoute> {
     const { start, end, mid, escape } = request;
     if (!finitePoint(start) || !finitePoint(end) || !Number.isFinite(mid) || mid < 0 || mid > 1
         || !escape || ![escape.x, escape.y, escape.width, escape.height].every(Number.isFinite)
@@ -78,8 +82,8 @@ export function routeElbow(request: ElbowRequest): ElbowRoute {
     for (let id = 0; id < candidates.length; id++) {
         const points = simplify(candidates[id]);
         if (!points.every(finitePoint) || !directionMatches(request.startDirection, points[0], points[1])
-            || !directionMatches(request.endDirection, points[points.length - 1], points[points.length - 2])
-            || !request.validPort(points, 'start') || !request.validPort(points, 'end') || request.crossesForbidden(points)) continue;
+            || !directionMatches(request.endDirection, points[points.length - 1], points[points.length - 2])) continue;
+        if (!(yield* request.validPort(points, 'start')) || !(yield* request.validPort(points, 'end')) || (yield* request.crossesForbidden(points))) continue;
         let length = 0;
         for (let i = 1; i < points.length; i++) length += Math.abs(points[i].x - points[i - 1].x) + Math.abs(points[i].y - points[i - 1].y);
         if (!Number.isFinite(length)) continue;
@@ -90,4 +94,11 @@ export function routeElbow(request: ElbowRequest): ElbowRoute {
     }
     if (!best) return { status: 'unroutable' };
     return { status: 'ready', points: best.points, length: best.length };
+}
+
+export function routeElbow(request: ElbowRequest): ElbowRoute {
+    const steps = routeElbowSteps({ ...request,
+        *validPort(points, terminal) { return request.validPort(points, terminal); },
+        *crossesForbidden(points) { return request.crossesForbidden(points); } });
+    for (;;) { const next = steps.next(); if (next.done) return next.value; }
 }

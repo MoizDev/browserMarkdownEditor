@@ -1,6 +1,7 @@
 import { runReaderHostCommand } from './utils/documentReading';
 import { createDocumentBuffers, sourceIsNewer, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions, type SessionEntry } from './utils/documentSessions';
+import { createClosedCanvasVersions } from './utils/closedCanvasVersions';
 import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
 import type { AttachCanvasSession, CanvasSessionBridge } from './utils/canvasSessionBridge';
@@ -431,6 +432,7 @@ export default function App() {
     getVaultActivation,
     resolveVaultDir,
     resolveVaultFile,
+    verifyVaultFileIdentity,
     vaultDirExists,
     nameTaken,
     pickDirectory: pickDirectoryFromFileSystem,
@@ -6197,6 +6199,31 @@ export default function App() {
     };
   }, [getVaultActivation]);
 
+  const [closedCanvasVersions] = useState(() => createClosedCanvasVersions());
+  const closedCanvasReads = useRef(new Set<{ root: FileSystemDirectoryHandle; activation: number; path: string; controller: AbortController }>());
+  useLayoutEffect(() => {
+    for (const read of closedCanvasReads.current) {
+      if (read.root !== rootHandle || read.activation !== getVaultActivation() || tabs.some(tab => tab.file.path === read.path)) read.controller.abort();
+    }
+  }, [rootHandle, tabs, getVaultActivation]);
+  useEffect(() => () => { for (const read of closedCanvasReads.current) read.controller.abort(); }, []);
+  const acquireClosedAgentCanvas = useCallback<NonNullable<AgentHostDeps['acquireClosedCanvasSource']>>(async (path, handle, kind, guard) => {
+    const root = rootHandleRef.current, activation = getVaultActivation();
+    if (!root) throw new DOMException('Vault is closed', 'AbortError');
+    const read = { root, activation, path, controller: new AbortController() };
+    closedCanvasReads.current.add(read);
+    const signal = AbortSignal.any([guard.signal, read.controller.signal]);
+    const isCurrent = () => !signal.aborted && guard.isCurrent() && rootHandleRef.current === root
+      && getVaultActivation() === activation && !bufferPathIdsRef.current.has(path)
+      && !tabsRef.current.some(tab => tab.file.path === path);
+    try {
+      const { acquireClosedCanvasSource } = await import('./utils/closedCanvasSource');
+      const lease = await acquireClosedCanvasSource({ root, activation, path, handle, kind, signal, documentId: newTabId(),
+        sessions: documentSessions, versions: closedCanvasVersions, io: { handleIO, readFileSnapshot, statFile, verifyVaultFileIdentity }, isCurrent });
+      return { ...lease, async release() { try { await lease.release(); } finally { closedCanvasReads.current.delete(read); } } };
+    } catch (error) { closedCanvasReads.current.delete(read); throw error; }
+  }, [closedCanvasVersions, documentSessions, getVaultActivation, handleIO, readFileSnapshot, statFile, verifyVaultFileIdentity]);
+
   const agentDepsRef = useRef<AgentHostDeps | null>(null);
   useLayoutEffect(() => {
     const activation = rootHandle ? assetActivationsRef.current.get(rootHandle) ?? -1 : -1;
@@ -6215,6 +6242,7 @@ export default function App() {
       readFile,
       readFileBytes,
       closedPdfAgent: () => routeEngines().pdfViewer === 'tiled' ? closedPdfAccess : null,
+      acquireClosedCanvasSource: acquireClosedAgentCanvas,
       readFileVersioned,
       statFile,
       writeFileVersioned,

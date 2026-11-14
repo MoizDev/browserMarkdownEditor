@@ -252,8 +252,12 @@ function pointGeometry(element: Readonly<Record<string, unknown>>): { x: number;
         ? { x, y, rotation, opacity: element.opacity / 100 } : null;
 }
 function arrowhead(value: unknown): ConnectorNode['headStart'] | null {
-    if (value === null || value === undefined) return 'none';
-    if (value === 'arrow' || value === 'triangle' || value === 'diamond' || value === 'dot' || value === 'bar') return value;
+    if (value === null || value === undefined || value === 'none') return 'none';
+    if (value === 'arrow' || value === 'triangle' || value === 'diamond' || value === 'dot') return value;
+    if (value === 'bar') return 'pipe';
+    if (value === 'triangle_outline') return 'triangle';
+    if (value === 'diamond_outline') return 'diamond';
+    if (value === 'circle' || value === 'circle_outline') return 'dot';
     return null;
 }
 function visibleDash(element: Readonly<Record<string, unknown>>): Dash | null {

@@ -32,6 +32,8 @@ export async function* rasterTextFragment(fragment: PaintFragment, face: Face, b
     localToWorld: Affine, color: Rgba, pageScale: number, blend: 'normal' | 'multiply', fonts: BoardFonts, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
     context.signal.throwIfAborted();
     if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
+    // Canvas treats ASCII space and tab as blank glyphs; their backgrounds/decorations are separate items.
+    if (/^[ \t]*$/.test(fragment.text)) return;
     if (face.loaded && !await awaitOutlineResource(fonts.load(face.key), context.signal, 30_000, 'Export canvas font'))
         throw new Error('Export canvas font could not be loaded');
     context.signal.throwIfAborted();

@@ -174,7 +174,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const tilePixels = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2;
             const bandPixels = Math.min(requestedPixels, tilePixels);
             const isolated = layerSet.compositorLayers.filter(binding => binding.isolation).length;
-            const frameCopies = 2 + Number(!!options.session.mirrors) + isolated;
+            // CPU's retained back frame coexists with the staged GPU backing and its
+            // document-colour target until promotion. Inversion is not a free surface effect.
+            const frameCopies = 2 + Number(options.readAppearance().inverted) + Number(!!options.session.mirrors) + isolated;
             let mandatory = 0, prefetch = 0;
             for (const layer of layerSet.layers) {
                 // An unobserved/zero box has no drawable viewport. Asking a producer for an
@@ -301,6 +303,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const drawing = drawCompositor();
                         drawing?.setAppearance(options.readAppearance());
                         drawing?.snapshot(view);
+                        // Arrivals and colour-mode changes alter demand without a ResizeObserver
+                        // event. Refresh before preparation, not after an allocation was refused.
+                        runtime.refresh();
                     },
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,

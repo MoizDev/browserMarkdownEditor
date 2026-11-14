@@ -86,6 +86,7 @@ function CanvasPane({ file, documentId, isVisible, slotIndex, slotLeft, slotWidt
                     <Suspense fallback={<div className="drawing-pane drawing-pane-loading">{label}</div>}>
                         {isNotebook ? (
                             <NotebookPane
+                                isVisible={isVisible}
                                 documentId={documentId}
                                 filePath={file.path}
                                 content={content}
@@ -94,6 +95,7 @@ function CanvasPane({ file, documentId, isVisible, slotIndex, slotLeft, slotWidt
                             />
                         ) : (
                             <DrawingPane
+                                isVisible={isVisible}
                                 documentId={documentId}
                                 filePath={file.path}
                                 content={content}

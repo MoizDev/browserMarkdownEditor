@@ -1,4 +1,4 @@
-import type { Rect, Rgba, ViewState } from '../types';
+import type { Affine, Rect, Rgba, ViewState } from '../types';
 import type { PagePresentation } from './camera';
 import type { DamageRecord } from './damage';
 import type { Backend, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
@@ -97,6 +97,8 @@ export interface LayerHost {
     paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
     paintWorld(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void;
     paintPage(ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void): void;
+    /** CSS projection of the actual prepared draw, or null when it cannot be proven. */
+    paneTransform(view: ViewState, frameId: number): Affine | null;
     /** DrawGpu-only packing into the active encoder's fenced ring, never a layer-owned ring. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
@@ -181,6 +183,7 @@ export interface PaneCompositor {
     encode(frame: ScheduledFrame): ScheduledEncoding | null;
     coverage(frame: ScheduledFrame): CompositorCoverage;
     page(view: ViewState, index: number): CompositorPage | null;
+    paneTransform(view: ViewState, frameId: number): Affine | null;
     /** Draw2d starts at device identity; scopes install absolute shared transforms, never multiply twice. */
     paintWorld(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void;
     paintPage(ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void): void;

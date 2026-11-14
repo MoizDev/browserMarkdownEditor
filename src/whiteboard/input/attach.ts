@@ -316,7 +316,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopWet = view.wet.attach(handover)
   const stopFrame = view.wet.onInputFrame(() => {
     if (current() && router.activeOwner instanceof LiveInk) {
-      if (pendingPrediction) router.activeOwner.publishPrediction(pendingPrediction)
+      if (pendingPrediction && router.activeOwner.allowsPrediction) router.activeOwner.publishPrediction(pendingPrediction)
       else router.activeOwner.publish()
     }
     pendingPrediction = undefined

@@ -88,7 +88,9 @@ export class PointerAcquisition {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    for (const id of [...this.contacts.keys()]) this.end(id, 'capture-lost')
+    for (const id of [...this.contacts.keys()]) {
+      try { this.end(id, 'capture-lost') } catch (error) { try { this.sink.error?.(error, id) } catch { /* Continue detaching other contacts. */ } }
+    }
     this.root.removeEventListener('pointerdown', this.down)
     this.root.removeEventListener('pointermove', this.move)
     this.root.removeEventListener('pointerrawupdate', this.raw as EventListener)
@@ -176,8 +178,8 @@ export class PointerAcquisition {
   private end(id: number, reason: 'cancel' | 'capture-lost' | 'capture-failed'): void {
     if (!this.contacts.delete(id)) return
     this.predict(id, null)
-    this.sink.cancel(id, reason)
-    try { if (this.root.hasPointerCapture(id)) this.root.releasePointerCapture(id) } catch { /* Capture may have ended already. */ }
+    try { this.sink.cancel(id, reason) }
+    finally { try { if (this.root.hasPointerCapture(id)) this.root.releasePointerCapture(id) } catch { /* Capture may have ended already. */ } }
   }
   private cancel = (event: PointerEvent): void => { this.end(event.pointerId, 'cancel') }
   private got = (event: PointerEvent): void => { if (this.contacts.has(event.pointerId)) this.sink.captured?.(event.pointerId) }

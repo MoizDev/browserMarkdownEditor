@@ -9,6 +9,7 @@ export interface KeyServices {
     // Visual movement is supplied by the caret index built from the renderer's
     // TextPaint, not by a second text layout in the input layer.
     move(offset: number, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end' | 'word-left' | 'word-right'): number;
+    collapse(selection: EditSelection, direction: 'left' | 'right'): number;
     command(command: string): void;
     inList(): boolean;
     undoTransformation(): boolean;
@@ -78,7 +79,8 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
         : event.key === 'Home' ? 'line-start' : event.key === 'End' ? 'line-end' : null;
     if (!movement) return false;
     let next: number;
-    if ((mod && mac && (movement === 'up' || movement === 'down')) || (!mac && event.ctrlKey && (movement === 'line-start' || movement === 'line-end'))) next = movement === 'up' || movement === 'line-start' ? 0 : text.length;
+    if (!event.shiftKey && anchor !== focus && (movement === 'left' || movement === 'right')) next = services.collapse({ anchor, focus }, movement);
+    else if ((mod && mac && (movement === 'up' || movement === 'down')) || (!mac && event.ctrlKey && (movement === 'line-start' || movement === 'line-end'))) next = movement === 'up' || movement === 'line-start' ? 0 : text.length;
     else if (mod && mac && (movement === 'left' || movement === 'right')) next = services.move(focus, movement === 'left' ? 'line-start' : 'line-end');
     else if (word && (movement === 'left' || movement === 'right')) next = services.move(focus, movement === 'left' ? 'word-left' : 'word-right');
     else next = services.move(focus, movement);

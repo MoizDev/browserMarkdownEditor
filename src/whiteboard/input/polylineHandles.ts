@@ -37,7 +37,8 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
             result = await preparePolylineControl({ runtime: options.runtime, id: options.id,
                 action: { kind: 'move', index: options.index, point, detach }, signal: request.signal,
                 current: () => !cleaned && options.current() && turn === sequence, cooperate: options.cooperate });
-            if (cleaned || request.signal.aborted || turn !== sequence || !options.current()) { result.release(); return; }
+            if (cleaned || request.signal.aborted || turn !== sequence) return;
+            if (!options.current()) { cancel(); return; }
             if (commit) { result.commit(); result = undefined; cleanup(); }
             else { preview = result; result = undefined; options.show(preview.ops); }
         } catch (error) {

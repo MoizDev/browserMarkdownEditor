@@ -74,7 +74,9 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
                 ended = true; controller.abort(); cleanup();
             } else options.show(ops);
         } catch (error) {
-            if (active()) { try { options.error(error); } finally { cancel(); } }
+            if (!cleaned && !localRequest.signal.aborted && turn === generation) {
+                try { if (current()) options.error(error); } finally { cancel(); }
+            }
         } finally { try { final?.release(); } finally { preview?.release(); } }
     };
     void render(false);

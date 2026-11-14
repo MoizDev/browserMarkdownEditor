@@ -37,7 +37,8 @@ export function connectorControlGesture(first: RealSample, _modifiers: Modifiers
             result = await prepareConnectorControl({ runtime: options.runtime, id: options.id, control: options.control,
                 point, signal: request.signal, current: () => !cleaned && options.current() && turn === sequence,
                 cooperate: options.cooperate });
-            if (cleaned || request.signal.aborted || turn !== sequence || !options.current()) { result.release(); return; }
+            if (cleaned || request.signal.aborted || turn !== sequence) return;
+            if (!options.current()) { cancel(); return; }
             if (commit) { result.commit(); result = undefined; cleanup(); }
             else { preview = result; result = undefined; options.show(preview.ops); }
         } catch (error) {

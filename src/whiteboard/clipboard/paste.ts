@@ -80,7 +80,7 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
         check();
         const classification = await classifyClipboard(copied, intent, host.classifier, context.signal); check();
         const base = { runtime, target: captured, intent, current: host.current, receivingBoardId: host.receivingBoardId,
-            cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment, cooperate: host.cooperate };
+            cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment ?? { appOrigin: host.classifier.appOrigin }, cooperate: host.cooperate };
         if (classification.kind === 'private') return pastePrivateClipboardInJob({ ...base, memory: host.memory, encoded: classification.encoded,
             plain: copied.text ?? '', cache: host.cache, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
         if (classification.kind === 'text' || classification.kind === 'url') {

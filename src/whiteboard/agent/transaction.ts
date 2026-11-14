@@ -2,6 +2,7 @@ import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
 import { runAgentBatch } from '../change/agentBatch';
 import type { CommandBuilder } from '../change/ops';
 import type { NodeId } from '../model/ids';
+import type { SampleLease } from '../model/samples';
 import type { BoardSession } from '../session/BoardSession';
 import { AgentApplyCancelled, AgentApplyReadOnly, AgentOpRefused } from './errors';
 import { validateAgentOp } from './validate';
@@ -27,6 +28,8 @@ export interface AgentOpContext {
     readonly builder: CommandBuilder;
     /** Resolves only successful earlier creations, never the current/future op. */
     resolve(reference: string): NodeId;
+    /** The batch owns this lease until its commit or failure has been released; see applyAgentOperations. */
+    keep(lease: SampleLease): void;
 }
 export interface AgentApplyHost {
     readonly session: BoardSession;
@@ -62,33 +65,41 @@ export async function applyAgentOperations(host: AgentApplyHost, ops: readonly C
         if (signal.aborted || !host.isCurrent()) throw new AgentApplyCancelled();
         const reason = host.readOnlyReason();
         if (reason !== null || host.session.isReadOnly) throw new AgentApplyReadOnly(reason ?? 'Board is read-only');
-        const batch = runAgentBatch<CanvasOp, AgentOpResult>(host.session, ops, (op, context) => {
-            const validated = validateAgentOp(op);
-            const staged = host.stage(validated.op, { builder: context.builder,
-                resolve: reference => lookup(host.session, context.prior, reference) });
-            return { value: staged, notes: [...validated.notes, ...(staged.notes ?? [])] };
-        });
-        if (!batch.ok) throw batch.error;
+        // Staging admits sample payloads that the one commit must retain. Each lease is released here, after the
+        // commit (or the rollback), on every outcome, so a failed batch never leaves a deleted or orphaned sample.
+        const leases: SampleLease[] = [];
         try {
-            const result: AgentApplyResult = { created: [], updated: [], deleted: [], errors: [...batch.errors] };
-            for (const [number, staged] of batch.accepted) {
-                if (staged.created !== undefined) result.created.push(staged.created);
-                if (staged.updated) result.updated.push(...staged.updated);
-                if (staged.deleted) result.deleted.push(...staged.deleted);
-                for (const problem of staged.problems ?? []) result.errors.push(`op ${number}: ${problem}`);
-            }
-            const updatedShapes: ShapeSummary[] = [];
-            if (host.summarize) {
-                for (const id of new Set(result.updated)) {
-                    try {
-                        const shape = host.summarize(id as NodeId);
-                        if (shape) updatedShapes.push(shape);
-                    } catch {
-                        result.errors.push(`Could not read the final geometry of ${id}; the edit was applied.`);
+            const batch = runAgentBatch<CanvasOp, AgentOpResult>(host.session, ops, (op, context) => {
+                const validated = validateAgentOp(op);
+                const staged = host.stage(validated.op, { builder: context.builder,
+                    resolve: reference => lookup(host.session, context.prior, reference),
+                    keep: lease => { leases.push(lease); } });
+                return { value: staged, notes: [...validated.notes, ...(staged.notes ?? [])] };
+            });
+            if (!batch.ok) throw batch.error;
+            try {
+                const result: AgentApplyResult = { created: [], updated: [], deleted: [], errors: [...batch.errors] };
+                for (const [number, staged] of batch.accepted) {
+                    if (staged.created !== undefined) result.created.push(staged.created);
+                    if (staged.updated) result.updated.push(...staged.updated);
+                    if (staged.deleted) result.deleted.push(...staged.deleted);
+                    for (const problem of staged.problems ?? []) result.errors.push(`op ${number}: ${problem}`);
+                }
+                const updatedShapes: ShapeSummary[] = [];
+                if (host.summarize) {
+                    for (const id of new Set(result.updated)) {
+                        try {
+                            const shape = host.summarize(id as NodeId);
+                            if (shape) updatedShapes.push(shape);
+                        } catch {
+                            result.errors.push(`Could not read the final geometry of ${id}; the edit was applied.`);
+                        }
                     }
                 }
-            }
-            return { ...result, updatedShapes };
-        } finally { batch.applied.release(); }
+                return { ...result, updatedShapes };
+            } finally { batch.applied.release(); }
+        } finally {
+            for (const lease of leases) lease.release();
+        }
     });
 }

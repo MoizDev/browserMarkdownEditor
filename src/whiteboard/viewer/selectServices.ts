@@ -499,7 +499,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     const cameraCommands = createBoardCameraCommands({ runtime, camera: options.cameraController, surface: options.surface,
         current, changed: options.cameraChanged, error: report });
-    const backToContent = createBackToContent({ runtime, overlay: options.overlay, current,
+    const backToContent = createBackToContent({ runtime, overlay: options.overlay, surface: options.surface, current,
         activate: () => { cameraCommands.run('camera.backToContent'); }, error: report });
     const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
         registerPending, error: report, keptLocked: options.onKeptLocked });

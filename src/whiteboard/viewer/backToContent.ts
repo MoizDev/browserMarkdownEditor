@@ -4,6 +4,7 @@ import type { BoardRuntime } from '../host/runtime';
 export interface BackToContentOptions {
     readonly runtime: BoardRuntime;
     readonly overlay: HTMLElement;
+    readonly surface: HTMLElement;
     current(): boolean;
     activate(): void;
     error(error: unknown): void;
@@ -20,12 +21,23 @@ export function createBackToContent(options: BackToContentOptions) {
     const hide = () => { if (button) button.hidden = true; };
     const click = (event: MouseEvent) => { event.preventDefault(); event.stopPropagation(); if (current()) options.activate(); };
     const pointer = (event: PointerEvent) => { event.stopPropagation(); };
+    const contextMenu = (event: MouseEvent) => {
+        event.preventDefault(); event.stopPropagation();
+        if (!current()) return;
+        // The board surface owns the menu; the floating button must not expose a native one.
+        options.surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window,
+            clientX: event.clientX, clientY: event.clientY, button: 2, buttons: event.buttons,
+            altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey }));
+    };
+    const focus = () => { if (button) { button.style.outline = '2px solid #75b7ff'; button.style.outlineOffset = '2px'; } };
+    const blur = () => { if (button) { button.style.outline = ''; button.style.outlineOffset = ''; } };
     const show = () => {
         if (!button) {
             button = document.createElement('button'); button.type = 'button'; button.textContent = 'Back to content';
             button.setAttribute('aria-label', 'Back to content');
-            button.style.cssText = 'position:absolute;right:16px;bottom:16px;pointer-events:auto;z-index:5;';
+            button.style.cssText = 'position:absolute;right:16px;bottom:16px;pointer-events:auto;z-index:5;padding:7px 10px;border:1px solid var(--background-modifier-border);border-radius:6px;background:var(--background-primary);color:var(--text-normal);';
             button.addEventListener('pointerdown', pointer); button.addEventListener('click', click);
+            button.addEventListener('contextmenu', contextMenu); button.addEventListener('focus', focus); button.addEventListener('blur', blur);
             options.overlay.append(button);
         }
         button.hidden = false;
@@ -67,6 +79,10 @@ export function createBackToContent(options: BackToContentOptions) {
     };
     return { update, hide() { generation++; controller?.abort(); controller = undefined; key = ''; hide(); }, dispose() {
         if (disposed) return; disposed = true; generation++; controller?.abort(); controller = undefined;
-        if (button) { button.removeEventListener('pointerdown', pointer); button.removeEventListener('click', click); button.remove(); button = undefined; }
+        if (button) {
+            button.removeEventListener('pointerdown', pointer); button.removeEventListener('click', click);
+            button.removeEventListener('contextmenu', contextMenu); button.removeEventListener('focus', focus); button.removeEventListener('blur', blur);
+            button.remove(); button = undefined;
+        }
     } };
 }

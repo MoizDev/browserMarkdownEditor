@@ -38,7 +38,7 @@ resolves the vault itself.
   cannot be found at all ends at `~`, which is exactly the old behaviour.
 - **The browser side is `utils/terminalStart.ts`**, a one-function store App fills from the focused
   tab — not `viewRegistry`, not `agentContext`: the terminal stays independent of the agent. The vault
-  id comes from `vaultAgentStore.ensureVaultId`, the SAME minting the agent host uses (two mintings
+  id comes from `useFileSystem().ensureVaultId`, the SAME minting the agent host uses (two mintings
   would split one vault in two), and it is minted lazily — on the first terminal or the first time
   Settings is opened, never merely because a vault was opened.
 - **Only NEW shells follow the focus.** A running shell owns its cwd; `cd`-ing it under the user was

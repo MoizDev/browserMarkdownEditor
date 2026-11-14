@@ -20,7 +20,8 @@
 
 import { bindPdfNativeEmphasis } from './pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
-import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { version as pdfjsVersion, type PDFDocumentProxy } from 'pdfjs-dist';
+import type { PdfDisplayGeometry } from './pdfOverlay';
 import { openClassicPdf, loadClassicPdf, closeClassicPdf } from './pdfClassicOpen';
 import { createClassicPdfHealth, recordClassicRenderFailure, type ClassicPdfHealth } from './pdfClassicHealth';
 
@@ -76,11 +77,7 @@ export async function readPdfRole(bytes: Uint8Array, generation = ''): Promise<P
 
 export const readAnnotatedPdf = readPdfRole;
 
-export interface PdfPageSize {
-    /** Page size in PDF points — the coordinate space annotations live in. */
-    width: number;
-    height: number;
-}
+export type PdfPageSize = PdfDisplayGeometry;
 
 export interface PdfPageSource {
     /** Owned by this acquisition, never shared with a cancelled predecessor. */
@@ -124,8 +121,20 @@ export async function openPdfPages(original: Uint8Array, onRenderHealth?: (healt
         doc = await loadClassicPdf(task);
         for (let i = 1; i <= doc.numPages; i++) {
             const page = await diagnostics.guard(doc.getPage(i));
-            const { width, height } = page.getViewport({ scale: 1 });
-            sizes.push({ width, height });
+            const viewport = page.getViewport({ scale: 1 });
+            const [a, b, c, d, e, f] = viewport.transform;
+            const determinant = a * d - b * c;
+            if (![a, b, c, d, e, f, viewport.width, viewport.height, determinant].every(Number.isFinite) ||
+                determinant === 0 || viewport.width <= 0 || viewport.height <= 0) {
+                throw new Error(`Invalid display geometry for PDF page ${i}.`);
+            }
+            sizes.push({
+                width: viewport.width, height: viewport.height,
+                toUserSpace: [d / determinant, -b / determinant, -c / determinant, a / determinant,
+                    (c * f - d * e) / determinant, (b * e - a * f) / determinant],
+                rotation: page.rotate, userUnit: page.userUnit, pageIndex: i - 1,
+                sourceFingerprint: doc.fingerprints[0] ?? '', engine: `pdfjs/${pdfjsVersion}`,
+            });
         }
     } catch (error) {
         recordClassicRenderFailure(diagnostics, error);

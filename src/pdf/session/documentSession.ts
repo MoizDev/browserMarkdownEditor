@@ -40,14 +40,17 @@ export class PdfTiledDocumentSession {
     private closed = false;
 
     constructor(readonly token: RenderToken, readonly source: 'outer' | 'original',
-        private readonly file: Blob, private readonly pool: TiledDocumentPool,
-        private readonly isTokenCurrent: (token: RenderToken) => boolean) {}
+        private readonly acquireSnapshot: (signal: AbortSignal) => Promise<{ blob: Blob; dispose(): void }>,
+        private readonly pool: TiledDocumentPool, private readonly isTokenCurrent: (token: RenderToken) => boolean) {}
 
     open(): Promise<OpenTiledDocument> {
         if (this.closed || !this.isTokenCurrent(this.token)) return Promise.reject(new DOMException('PDF session closed', 'AbortError'));
         if (!this.opening) {
             this.opening = (async () => {
-                const blob = await stablePdfBlob(this.file, this.controller.signal);
+                const snapshot = await this.acquireSnapshot(this.controller.signal);
+                let blob: Blob;
+                try { blob = await stablePdfBlob(snapshot.blob, this.controller.signal); }
+                finally { snapshot.dispose(); }
                 const opened = await this.pool.open(blob, this.token, this.source, this.controller.signal);
                 if (this.closed || !this.isTokenCurrent(this.token)) {
                     await opened.close();

@@ -86,6 +86,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
             const service = documentClipboard(runtime, host, identity);
             const editing: NativeEditingViewOptions = { clipboard: service, canMutate: canMutateView,
                 onEmbedInfrastructure(value) {
+                    // The port arrives only with its producer and per-node Load service already attached.
                     embedControllerRef.current = value?.controller ?? null;
                     embedPortRef.current = value?.port ?? null;
                     if (live) setEmbedPort(value?.port ?? null);
@@ -152,7 +153,10 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
     const shortcutRef = useRef<(() => void) | null>(null);
     const [chromeReady, setChromeReady] = useState(false), [thumbnails, setThumbnails] = useState(false);
-    const [servicesEpoch, refreshServices] = useState(0);
+    const [stylesReady, setStylesReady] = useState(false), [shortcutsReady, setShortcutsReady] = useState(false);
+    // The lease this shell has promoted to editing. Editing is admitted per lease, never by the document alone.
+    const [promoted, setPromoted] = useState<NativeViewLease | null>(null);
+    const promotedNow = promoted === lease;
     const minimapRef = useRef(false), setMinimapRef = useRef<((value: boolean) => void) | null>(null);
     const minimapVisible = useCallback(() => minimapRef.current, []);
     const setMinimapVisible = useCallback((value: boolean) => { if (!setMinimapRef.current) throw new Error('Minimap view is not attached'); setMinimapRef.current(value); }, []);
@@ -193,14 +197,29 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };
     }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice]);
+    // Readiness is what was actually registered, not invented: each setter fires from the real registration.
     const registerShortcuts = useCallback((open: () => void) => {
-        shortcutRef.current = open; refreshServices(value => value + 1);
-        return () => { if (shortcutRef.current === open) shortcutRef.current = null; };
+        shortcutRef.current = open; setShortcutsReady(true);
+        return () => { if (shortcutRef.current === open) { shortcutRef.current = null; setShortcutsReady(false); } };
     }, []);
-    const onStyles = useCallback((value: Styles | null) => {
-        styleRef.current = value; refreshServices(epoch => epoch + 1);
-    }, [styleRef]);
+    const onStyles = useCallback((value: Styles | null) => { styleRef.current = value; setStylesReady(value !== null); }, [styleRef]);
     const handleChromeReady = useCallback((ready: boolean) => { onChromeReady(ready); setChromeReady(ready); }, [onChromeReady]);
+    // Synchronous promotion: runs once the real input, chrome, style controller, shortcuts, commands, context
+    // menu and embed port exist. The final canWrite is read only after activation, and it does not gate activation.
+    useEffect(() => {
+        if (promotedNow || !props.isVisible || signal.aborted || !current() || !attached || !chromeReady || !stylesReady || !shortcutsReady || !embedPort) return;
+        if (!commandRef.current || !contextMenuRef.current || !owned || !lease.editing?.isAttached() || !lease.editing.getTools() || !canMutateView()) return;
+        try {
+            if (!host.canWriteSource(identity)) return;
+            if (!adapter.activateEditing) throw new Error('The native session has no editing admission');
+            // The temporary seal is part of final canWrite, so it cannot gate its own removal.
+            adapter.activateEditing();
+            if (!host.canWrite(identity) || adapter.board.isReadOnly) throw new Error(adapter.board.readOnlyReason ?? 'The canvas source is not writable');
+            lease.refreshAuthority();
+            setPromoted(lease);
+        } catch (error) { report(error); }
+    }, [promotedNow, props.isVisible, signal, current, attached, chromeReady, stylesReady, shortcutsReady, embedPort, owned,
+        adapter, lease, commandRef, contextMenuRef, canMutateView, host, identity, report]);
     const toolStateFor = useCallback((id: string, figure?: string): CommandState => {
         if (adapter.board.isReadOnly || !canWrite()) return { enabled: false, reason: adapter.board.readOnlyReason ?? 'Board is read-only' };
         if (!runtime.tools.getRegistration(id) || (id === 'figure' && figure && !FIGURE_SHAPES.includes(figure as FigureShape))) return { enabled: false, reason: 'Tool is unavailable' };
@@ -211,33 +230,16 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const { commands } = owned;
         return <NativeChromeAttachment context={context} bind={bindMinimap}><NativeBoardChromeHost runtime={runtime} engine={lease.engine} lease={lease} language={language} preferences={clipboard.preferences}
             currentOwner={current} mac={mac} isVisible={props.isVisible}
-            readOnly={adapter.board.isReadOnly || !canWrite()} readOnlyReason={adapter.board.readOnlyReason ?? 'Board editing services are not ready'} reportError={report}
+            readOnly={!promotedNow || adapter.board.isReadOnly || !canWrite()} readOnlyReason={adapter.board.readOnlyReason ?? 'Board editing services are not ready'} reportError={report}
             toolStateFor={toolStateFor} commands={commands} actionShortcut={commands.actionShortcut} actionState={commands.actionState}
             runAction={commands.runAction} openMedia={() => { void commands.runAction('uploadMedia'); }} zoom={context.zoom}
             minimapVisible={context.minimapOpen} confirm={dialogs.confirm} canWrite={canWrite} registerShortcuts={registerShortcuts} onReady={handleChromeReady} onStyles={onStyles}
             notebook={runtime.session.doc.kind === 'notebook' ? { inverted, setInverted, thumbnailsOpen: thumbnails, setThumbnailsOpen: setThumbnails } : undefined} /></NativeChromeAttachment>;
-    }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap]);
-    useEffect(() => {
-        if (!props.isVisible || signal.aborted || !current() || !attached || !chromeReady || !owned || !embedPort
-            || !lease.editing?.isAttached() || !lease.editing.getTools() || !styleRef.current || !shortcutRef.current
-            || !commandRef.current || !contextMenuRef.current || !canMutateView()) return;
-        try {
-            if (!host.canWriteSource(identity)) return;
-            if (!adapter.activateEditing) throw new Error('The native session has no editing admission');
-            // The real view services exist before removing the temporary seal.
-            // Final canWrite includes that seal, so checking it first deadlocks admission.
-            const wasReadOnly = adapter.board.isReadOnly;
-            adapter.activateEditing();
-            if (!host.canWrite(identity) || adapter.board.isReadOnly) throw new Error(adapter.board.readOnlyReason ?? 'The canvas source is not writable');
-            lease.refreshAuthority();
-            if (wasReadOnly) refreshServices(epoch => epoch + 1);
-        } catch (error) { report(error); }
-    }, [props.isVisible, signal, current, attached, chromeReady, owned, embedPort, lease, styleRef, commandRef,
-        contextMenuRef, canMutateView, host, identity, adapter, servicesEpoch, report]);
+    }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap, promotedNow]);
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;
-    return <>{dialogs.dialogs}
+    return <>{dialogs.dialogs}{attached && chromeReady && !promotedNow && <span role="status">Preparing document editing services…</span>}
         {renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
-            editable: attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity),
+            editable: promotedNow && attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity),
             canMutate: lease.canMutateView })}</>;
 }
 

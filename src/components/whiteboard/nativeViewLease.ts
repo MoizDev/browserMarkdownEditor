@@ -1,4 +1,4 @@
-import type { PlatformLayerDefinition, PlatformPane } from '../../platform/render/attachPlatformPane.types';
+import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
@@ -146,6 +146,10 @@ export function createNativeViewLease(options: {
     if (!runtime || runtime.session !== board) throw new Error('Native viewer requires its acquired runtime');
     const boardRuntime = runtime;
     const sourceToken = board.doc.kind === 'pdf-ink' ? options.pdfBackdrop?.sourceToken : undefined;
+    if (board.doc.kind === 'pdf-ink' && options.parameters.mode === 'edit' &&
+        (!sourceToken || !options.pdfBackdrop?.isCurrentSource?.() || !host.canWriteSource(identity))) {
+        throw new Error('PDF editing requires its current acquired source and write policy');
+    }
     if (sourceToken && (sourceToken.documentId !== identity.documentId || sourceToken.session !== identity.session ||
         sourceToken.vaultEpoch !== identity.vaultActivation || !options.pdfBackdrop?.isCurrentSource?.() ||
         sourceToken.documentId !== runtime.paintToken.documentId || sourceToken.session !== runtime.paintToken.session ||
@@ -169,7 +173,22 @@ export function createNativeViewLease(options: {
         catch (error) { options.onError(error); return false; }
     }
     const current = () => !disposed && host.isCurrent(identity) && sourceCurrent();
-    const publish = () => { if (!disposed) for (const listener of [...listeners]) listener(); };
+    /** The one certificate that a presentation is complete, sharp and belongs to this live view, its platform
+     * frame and its PDF source. The backdrop and the embed presentation both act only on it, so neither can
+     * accept a frame the other refuses. */
+    const certifyPresentation = (presentation: PlatformPresentation): boolean => {
+        const source = backdrop?.sourceToken, actualFrame = platformPane?.currentFrameToken();
+        return !!actualFrame && presentation.token.deviceGeneration === actualFrame.deviceGeneration &&
+            presentation.token.viewLease === actualFrame.viewLease && actualFrame.documentId === token.documentId && actualFrame.session === token.session &&
+            actualFrame.vaultEpoch === token.vaultEpoch && actualFrame.bytesGeneration === token.bytesGeneration &&
+            presentation.complete && presentation.sharp && !presentation.staleVersion && parameters.visible && current() &&
+            presentation.token.viewLease === viewLease && presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
+            presentation.token.vaultEpoch === token.vaultEpoch && presentation.token.bytesGeneration === token.bytesGeneration &&
+            (!source || (!!backdrop?.isCurrentSource?.() && presentation.token.documentId === source.documentId &&
+                presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
+                presentation.token.bytesGeneration === source.bytesGeneration));
+    };
+    const publish =() => { if (!disposed) for (const listener of [...listeners]) listener(); };
     const invalidate = () => { platformPane?.invalidate('native-view'); publish(); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
         invalidate, onError: options.onError };
@@ -305,7 +324,7 @@ export function createNativeViewLease(options: {
         camera, viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
             candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
         visible: () => parameters.visible, focused: () => parameters.focused, paged: board.doc.kind !== 'whiteboard',
-        host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure,
+        host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure, certifyPresentation,
         bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
             () => parameters.mode === 'edit' && edit.canMutate()),
         toolOptions: { runtime, engine: viewer, images, camera, token,
@@ -425,16 +444,7 @@ export function createNativeViewLease(options: {
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
                 if (presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
-                const source = backdrop?.sourceToken, actualFrame = platformPane?.currentFrameToken();
-                if (presentation && actualFrame && presentation.token.deviceGeneration === actualFrame.deviceGeneration &&
-                    presentation.token.viewLease === actualFrame.viewLease && actualFrame.documentId === token.documentId && actualFrame.session === token.session &&
-                    actualFrame.vaultEpoch === token.vaultEpoch && actualFrame.bytesGeneration === token.bytesGeneration &&
-                    presentation.complete && presentation.sharp && !presentation.staleVersion && parameters.visible && current() &&
-                    presentation.token.viewLease === viewLease && presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
-                    presentation.token.vaultEpoch === token.vaultEpoch && presentation.token.bytesGeneration === token.bytesGeneration &&
-                    (!source || (!!backdrop?.isCurrentSource?.() && presentation.token.documentId === source.documentId &&
-                        presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
-                        presentation.token.bytesGeneration === source.bytesGeneration))) backdrop?.notePresentation?.();
+                if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
             }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.

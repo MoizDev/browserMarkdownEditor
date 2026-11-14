@@ -1534,7 +1534,7 @@ export default function App() {
       }
       const revision = assetReferenceRevisionRef.current;
       const proofTabs = tabsRef.current;
-      const proofContents = new Map(proofTabs.map(tab => [tab.file.path, canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? latestContentRef.current.get(tab.file.path) ?? tab.content : undefined]));
+      const proofContents = new Map(proofTabs.map(tab => [tab.file.path, canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? tab.content : undefined]));
       const proofRevisions = new Map(proofTabs.map(tab => [tab.id, documentBuffers.revisionForDocument(tab.id)?.revision]));
       const unsavedBoards = new Map(boards.map(board => [board.path, unsavedBoardContentRef.current.get(board.path)]));
       // Dirty-only save acknowledgements do not change a reference proof.
@@ -1546,7 +1546,7 @@ export default function App() {
           return tab.id === old.id && tab.file.path === old.file.path
             && tab.readError === old.readError && tab.representation === old.representation
             && documentBuffers.revisionForDocument(tab.id)?.revision === proofRevisions.get(tab.id)
-            && (canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? latestContentRef.current.get(tab.file.path) ?? tab.content : undefined) === proofContents.get(tab.file.path)
+            && (canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? tab.content : undefined) === proofContents.get(tab.file.path)
             && (!isCanvasFile(tab.file.name) || !getView(tab.file.path)?.hasPendingEdits?.());
         });
       let retired = false;
@@ -2308,19 +2308,6 @@ export default function App() {
     } finally { if (!trashOwned) trashInFlightRef.current = false; }
   }, [currentPdfOwner, setDiskState, setPdfRebuildNotice]);
 
-  /**
-   * The newest buffered text per path, ahead of tabsRef (which catches up only
-   * after a commit). What a conflict's resolution keeps as "mine" must include
-   * the edit a canvas pushed into the funnel a moment ago (flushPending).
-   * Entries leave once the committed tab holds the same text (effect below).
-   */
-  const latestContentRef = useRef(new Map<string, string>());
-  useEffect(() => {
-    for (const [path, content] of latestContentRef.current) {
-      const tab = tabs.find(t => t.file.path === path);
-      if (!tab || tab.content === content) latestContentRef.current.delete(path);
-    }
-  }, [tabs]);
   const contentOf = useCallback((path: string): string | undefined => {
     const text = documentBuffers.contentOf(path);
     if (text !== undefined) return text;
@@ -2331,8 +2318,11 @@ export default function App() {
     // Until every PDF caller migrates to snapshotOf, its legacy snapshot is
     // still needed by the annotate and print paths. Other unreadable kinds
     // must never be exposed as empty text.
-    if (tab.representation.loadedKind === 'pdf') return latestContentRef.current.get(path) ?? tab.content;
-    return buffer ? undefined : canReadTabText(tab) ? latestContentRef.current.get(path) ?? tab.content : undefined;
+    if (tab.representation.loadedKind === 'pdf') {
+      const data = documentBuffers.snapshotOf(path)?.data;
+      return typeof data === 'string' ? data : undefined;
+    }
+    return buffer ? undefined : canReadTabText(tab) ? tab.content : undefined;
   }, [documentBuffers]);
 
   /**
@@ -2715,7 +2705,6 @@ export default function App() {
     documentBuffers.open(target.id, target.content, canReadTabText(target));
     const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk);
     if (!buffer) return;
-    if (typeof content === 'string') latestContentRef.current.set(path, content);
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
     if (options?.fromDisk) {
@@ -2828,7 +2817,7 @@ export default function App() {
     await flushChainsRef.current.get(id);
     if (!current()) throw new Error('The document changed while preparing to print.');
     const content = contentOf(path);
-    const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || latestContentRef.current.has(path);
+    const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id);
     if (needsSave) {
       const outcome = await flushTab(path, true);
       if (outcome !== 'written') throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
@@ -2972,12 +2961,12 @@ export default function App() {
       try {
         await drain(tab.id);
         const content = contentOf(path);
-        const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || latestContentRef.current.has(path);
+        const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id);
         const outcome = await flushTab(path, !!needsSave, true, undefined, trashOwned);
         const now = tabsRef.current.find(t => t.id === tab.id);
         if (!now || now.file.path !== path || now.representation.generation !== tab.representation.generation) return false;
         if (outcome === 'failed' || contentOf(path) !== content || getView(path)?.hasPendingEdits?.() ||
-            outcome === 'skipped' && (now.dirty || latestContentRef.current.has(path))) {
+            outcome === 'skipped' && (now.dirty || documentBuffers.isDirty(now.id))) {
           if (outcome === 'skipped' && !pdfSnapshotRefusal(content ?? '')) notifyRef.current('These annotations have not been saved. Keep this PDF open and resolve its notice before closing it.');
           return false;
         }
@@ -2992,7 +2981,7 @@ export default function App() {
   // by the workspace reset before an asynchronous refusal can reach it.
   const canLeavePdfVault = useCallback(() => {
     const tab = tabsRef.current.find(t => t.representation.loadedKind === 'pdf' &&
-      (t.dirty || latestContentRef.current.has(t.file.path) || flushingRef.current.has(t.id) || getView(t.file.path)?.hasPendingEdits?.()));
+      (t.dirty || documentBuffers.isDirty(t.id) || flushingRef.current.has(t.id) || getView(t.file.path)?.hasPendingEdits?.()));
     if (!tab) return true;
     const refusal = pdfSnapshotRefusal(contentOf(tab.file.path) ?? '');
     notifyRef.current(refusal ? new PdfBuildRefused(refusal).message : 'Keep this vault open until its PDF annotations are saved. Resolve any notice first, or wait for the pending save.');
@@ -3025,7 +3014,6 @@ export default function App() {
       diskStateRef.current.delete(doc.id);
       pdfRebuildRef.current.delete(doc.id);
     }
-    latestContentRef.current.delete(path);
     const owner = indexGraphRef.current;
     if (owner) void owner.client.dropOverlay(path).catch(() => {});
     notifySearchChanges();
@@ -3332,9 +3320,9 @@ export default function App() {
       if (pendingPdfMode.current.has(tab.id)) return;
       pendingPdfMode.current.add(tab.id);
       void Promise.resolve(view.flushPending()).then(async () => {
-        const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || latestContentRef.current.has(path);
+        const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id);
         const outcome = await flushTab(path, !!needsSave);
-        if (outcome === 'failed' || outcome === 'skipped' && (tabsRef.current.find(t => t.id === tab.id)?.dirty || latestContentRef.current.has(path))) return;
+        if (outcome === 'failed' || outcome === 'skipped' && (tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id))) return;
         setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation && t.mode === tab.mode ? {...t,mode} : t));
       }).catch(error => notifyRef.current(`Could not finish saving PDF annotations: ${String(error)}`)).finally(() => pendingPdfMode.current.delete(tab.id));
       return;
@@ -3474,7 +3462,6 @@ export default function App() {
     pdfSeedSourcesRef.current.clear();
     diskStateRef.current.clear();
     pdfRebuildRef.current.clear();
-    latestContentRef.current.clear();
     // These paths index the vault being left.
     assetRefsRef.current.clear();
     boardBaselinesRef.current.clear();
@@ -4849,7 +4836,6 @@ export default function App() {
         // the old one would have no document to draw.
         setLayout(l => renamePath(l, from, dest));
         });
-        latestContentRef.current.delete(from);
         if (changedKind) {
           editorStates.delete(`${doc.id}|${from}`);
           clearPdfRenderData(from);
@@ -4955,18 +4941,19 @@ export default function App() {
   const hasUnsaved = useCallback((tab: OpenTab): boolean => {
     const revision = pendingRevisionsRef.current.get(tab.id);
     return tab.dirty
+      || documentSessions.hasPendingEdits(tab.id)
       || !!(revision && revision.revision > revision.saved)
       || saveTimersRef.current.has(tab.file.path)
       || flushingRef.current.has(tab.id)
       || !!getView(tab.file.path)?.hasPendingEdits?.();
-  }, []);
+  }, [documentSessions]);
 
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => watchForNewVersion(() => setUpdateAvailable(true)), []);
   const reloadUpdatedApp = useCallback(() => {
     // Do not discard an in-flight save, a not-yet-committed text edit, or ink
     // still held by a canvas serializer. Conflicts remain for the reader to fix.
-    if (latestContentRef.current.size || flushingRef.current.size || anyPending() || tabsRef.current.some(hasUnsaved)) {
+    if (flushingRef.current.size || anyPending() || tabsRef.current.some(hasUnsaved)) {
       notifyRef.current('Finish saving your changes and resolve any disk conflicts before reloading.');
       return;
     }
@@ -5008,7 +4995,6 @@ export default function App() {
         documentBuffers.setOwner(id, { documentId: id, session: next.serial });
         next.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(id, next.adapter), dispose => dispose());
       }
-      latestContentRef.current.set(path, text);
       setTabs(prev => prev.map(t => (t.id === id
         ? { ...t, content: text, dirty: false, disk: undefined, pdfRebuild: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) }
         : t)));

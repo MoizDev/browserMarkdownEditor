@@ -5,6 +5,7 @@ import type { IndexFile, IndexGraph, IndexSession } from '../../utils/vaultIndex
 import type { WorkerContext } from '../../platform/workers/serve';
 import type { IndexReader, IndexStat } from './reader';
 import { IndexStore } from './store';
+import type { PersistSession } from './persistSession';
 
 /** One session's mutable index. IO is injected so handle cloning and path
  * resolution do not leak into graph assembly or its revision rules. */
@@ -17,6 +18,10 @@ export class IndexEngine {
     private ioWaiters: (() => void)[] = [];
     private reportedTimes = new Map<string, number>();
     private changedTimes = new Map<string, [number, number]>();
+    persistence?: PersistSession;
+    readPersistedText(path: string, mtime: number, size: number): Promise<string | undefined> {
+        return this.persistence?.readText(path, mtime, size) ?? Promise.resolve(undefined);
+    }
     constructor(readonly session: IndexSession, private reader: IndexReader,
         private publish: (graph: IndexGraph) => void,
         private status: (phase: 'sweeping' | 'idle', done: number, total: number) => void,
@@ -41,7 +46,7 @@ export class IndexEngine {
         if (this.stopped || this.store.revision(path) !== rev) return;
         try {
             const facts = await noteFactsSliced(text, () => context.slice());
-            const result = !this.stopped && this.store.prime(path, rev, mtime, size, facts);
+            const result = !this.stopped && this.store.prime(path, rev, mtime, size, facts, text);
             if (result) this.store.releasePrime(path, rev);
             if (result === 'changed') await this.publishGraph(context);
         } finally { this.store.releasePrime(path, rev); }
@@ -124,7 +129,7 @@ export class IndexEngine {
                 try { text = decodeDocumentText(read.bytes).replace(/\r\n?/g, '\n'); }
                 catch { text = null; }
                 const facts = text === null ? null : await noteFactsSliced(text, () => context.slice());
-                if (!this.stopped && !context.cancelled) this.store.commitRead(read.file, read.rev, read.mtime, read.size, facts);
+                if (!this.stopped && !context.cancelled) this.store.commitRead(read.file, read.rev, read.mtime, read.size, facts, text ?? undefined);
                 await context.slice();
             }
         }

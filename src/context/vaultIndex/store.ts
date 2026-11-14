@@ -11,7 +11,11 @@ export class IndexStore {
     treeGen = -1;
     private byPath = new Map<string, IndexFile>();
     files: IndexFile[] = [];
+    onChange?: (path: string, record: FileRecord | null, text?: string) => void;
 
+    hydrate(records: FileRecord[]): void {
+        for (const record of records) if (!this.records.has(record.path)) this.records.set(record.path, record);
+    }
     revision(path: string): number { return this.revisions.get(path) ?? 0; }
     private bump(path: string): number {
         const rev = this.revision(path) + 1;
@@ -22,12 +26,13 @@ export class IndexStore {
         this.bump(path);
         this.primes.delete(path);
         this.records.delete(path);
+        this.onChange?.(path, null);
     }
     setTree(treeGen: number, files: IndexFile[]): boolean {
         if (treeGen <= this.treeGen) return false;
         this.treeGen = treeGen;
         const live = new Set(files.map(file => file.path));
-        for (const old of this.files) if (!live.has(old.path)) this.remove(old.path);
+        for (const path of this.records.keys()) if (!live.has(path)) this.remove(path);
         this.files = files;
         this.byPath = new Map(files.map(file => [file.path, file]));
         return true;
@@ -43,7 +48,11 @@ export class IndexStore {
             this.remove(from);
             this.remove(to);
             files.set(to, { path: to, kind });
-            if (record) this.records.set(to, { ...record, path: to, kind, rev: this.bump(to) });
+            if (record) {
+                const moved = { ...record, path: to, kind, rev: this.bump(to) };
+                this.records.set(to, moved);
+                this.onChange?.(to, moved, moved.text);
+            }
         }
         for (const file of added) {
             if (files.has(file.path)) this.remove(file.path);
@@ -64,19 +73,23 @@ export class IndexStore {
     releasePrime(path: string, rev: number): void {
         if (this.primes.get(path) === rev) this.primes.delete(path);
     }
-    prime(path: string, rev: number, mtime: number, size: number, facts: NoteFacts): 'changed' | 'unchanged' | false {
+    prime(path: string, rev: number, mtime: number, size: number, facts: NoteFacts, text?: string): 'changed' | 'unchanged' | false {
         const file = this.byPath.get(path);
         if (!file || this.revision(path) !== rev) return false;
         const previous = this.records.get(path)?.facts;
         const equal = (a: string[], b: string[]) => a.length === b.length && a.every((value, i) => value === b[i]);
         const changed = !previous || !equal(previous.wikilinks, facts.wikilinks) || !equal(previous.mdLinks, facts.mdLinks);
-        this.records.set(path, { ...file, rev, mtime, size, status: 'ready', facts });
+        const record: FileRecord = { ...file, rev, mtime, size, status: 'ready', facts };
+        this.records.set(path, record);
+        this.onChange?.(path, record, text);
         return changed ? 'changed' : 'unchanged';
     }
-    commitRead(file: IndexFile, startedRev: number, mtime: number, size: number, facts: NoteFacts | null): boolean {
+    commitRead(file: IndexFile, startedRev: number, mtime: number, size: number, facts: NoteFacts | null, text?: string): boolean {
         if (startedRev !== this.revision(file.path) || this.primes.has(file.path) || !this.byPath.has(file.path)) return false;
-        this.records.set(file.path, { ...file, rev: this.bump(file.path), mtime, size,
-            status: facts === null ? 'refused' : 'ready', facts: facts ?? emptyFacts() });
+        const record: FileRecord = { ...file, rev: this.bump(file.path), mtime, size,
+            status: facts === null ? 'refused' : 'ready', facts: facts ?? emptyFacts() };
+        this.records.set(file.path, record);
+        this.onChange?.(file.path, record, text);
         return true;
     }
 }

@@ -44,5 +44,7 @@ export interface TextEditBinding {
     readonly editor: TextEditSession;
     /** Re-read layout after a camera, font, view, or geometry change. */
     refresh(): void;
+    /** Typing on a selected node starts an ordinary typing burst, not a paste. */
+    insertText(text: string): void;
     close(commitComposition?: boolean): void;
 }

@@ -51,7 +51,7 @@ function plainText(text: RichText): string {
     return value.length > 2000 ? `${value.slice(0, 2000)}…` : value;
 }
 
-function summarize(node: Node, geometry: AgentGeometry, page: number | undefined): ShapeSummary {
+export function summarizeAgentNode(node: Node, geometry: AgentGeometry, page: number | undefined): ShapeSummary {
     const bounds = geometry.bounds(node);
     const type = node.kind === 'figure' ? 'geo' : node.kind === 'sticky' ? 'note'
         : node.kind === 'connector' ? 'arrow' : node.kind === 'polyline' ? 'line'
@@ -113,7 +113,7 @@ function listAcrossSheets(doc: BoardDoc, sheets: readonly Sheet[], geometry: Age
             const nodePage = doc.kind === 'whiteboard' ? undefined : geometry.page(node);
             if (page !== undefined && nodePage !== page) return;
             if (total >= offset && shapes.length < limit && !budgetExhausted) {
-                const summary = summarize(node, geometry, nodePage);
+                const summary = summarizeAgentNode(node, geometry, nodePage);
                 const size = JSON.stringify(summary).length + 1;
                 // Keep room for the envelope and tool text while never skipping an item.
                 if (chars + size > 58_500) budgetExhausted = true;

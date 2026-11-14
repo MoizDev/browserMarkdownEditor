@@ -32,18 +32,20 @@ export function copySelection(selection: PdfSelection, pageCount: number, pages:
     const first = selection.wholeDocument ? 0 : Math.max(0, Math.min(pageCount - 1, range.start.page));
     const last = selection.wholeDocument ? pageCount - 1 : Math.max(first, Math.min(pageCount - 1, range.end.page));
     const missing: number[] = [], chunks: string[] = [];
-    let units = 0;
+    let units = 0, previousEndsInLF = false;
     for (let page = first; page <= last; page++) {
         const text = pages.get(page);
         if (text === undefined) { missing.push(page); continue; }
         const from = !selection.wholeDocument && page === first ? Math.max(0, Math.min(text.length, range.start.offset)) : 0;
         const to = !selection.wholeDocument && page === last ? Math.max(from, Math.min(text.length, range.end.offset)) : text.length;
-        units += to - from + (page > first ? 1 : 0);
+        const part = text.slice(from, to), separator = page > first && !previousEndsInLF ? '\n' : '';
+        units += part.length + separator.length;
         if (units > MAX_COPY_UTF16_UNITS) return { kind: 'too-large', message: COPY_TOO_LARGE };
-        chunks.push(text.slice(from, to));
+        chunks.push(separator, part);
+        previousEndsInLF = part.endsWith('\n');
     }
     if (missing.length) return { kind: 'missing', pages: missing };
-    const text = normalizeForClipboard(chunks.join('\n'));
+    const text = normalizeForClipboard(chunks.join(''));
     return text.length > MAX_COPY_UTF16_UNITS ? { kind: 'too-large', message: COPY_TOO_LARGE } : { kind: 'ready', text };
 }
 /** Cached-only agent report; an uncached gap is explicit rather than silently
@@ -54,7 +56,7 @@ export function cachedSelectionText(selection: PdfSelection, pageCount: number, 
     const first = selection.wholeDocument ? 0 : Math.max(0, Math.min(pageCount - 1, range.start.page));
     const last = selection.wholeDocument ? pageCount - 1 : Math.max(first, Math.min(pageCount - 1, range.end.page));
     const parts: string[] = [];
-    let units = 0, incomplete = false;
+    let units = 0, incomplete = false, previousEndsInLF = false;
     const cap = Math.max(0, Math.trunc(limit));
     for (let page = first; page <= last; page++) {
         const value = pages.get(page);
@@ -62,7 +64,8 @@ export function cachedSelectionText(selection: PdfSelection, pageCount: number, 
         const from = !selection.wholeDocument && page === first ? Math.max(0, Math.min(value.length, range.start.offset)) : 0;
         const to = !selection.wholeDocument && page === last ? Math.max(from, Math.min(value.length, range.end.offset)) : value.length;
         const part = normalizeForClipboard(value.slice(from, to));
-        const sep = parts.length ? '\n' : '';
+        const sep = parts.length && !previousEndsInLF ? '\n' : '';
+        previousEndsInLF = part.endsWith('\n');
         const available = Math.max(0, cap - units - sep.length);
         parts.push(sep + part.slice(0, available));
         units += sep.length + Math.min(part.length, available);

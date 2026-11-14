@@ -15,19 +15,19 @@ function blockAt(text: RichText, offset: number): { block: Block; start: number;
     return null;
 }
 
-function transaction(id: NodeId, key: 'text' | 'label', from: number, to: number, insert: RichText, wholeBlocks = false): Transaction {
-    return { origin: 'tool', label: 'Format typed text', ops: [{ t: 'splice', id, key, from, to, insert, ...(wholeBlocks ? { wholeBlocks: true as const } : {}) }] };
+function transaction(id: NodeId, key: 'text' | 'label', from: number, to: number, insert: RichText, replaceBlocks = false): Transaction {
+    return { origin: 'tool', label: 'Format typed text', ops: [{ t: 'splice', id, key, from, to, insert, ...(replaceBlocks ? { replaceBlocks: true as const } : {}) }] };
 }
 
 // Each rule is returned as one splice so the history service can join it to the
 // current typing burst and retain its inverse for immediate Backspace.
-export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, caret: number): InputRuleResult | null {
+export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, caret: number, trigger: 'typing' | 'enter' = 'typing'): InputRuleResult | null {
     const found = blockAt(text, caret);
     if (!found) return null;
     const { block, start, value } = found;
     const before = value.slice(0, caret - start);
     const prefix = /^(#{1,6}|[-*+]|\d+\.) $/.exec(before);
-    if (prefix && block.kind === 'p') {
+    if (trigger === 'typing' && prefix && block.kind === 'p') {
         const token = prefix[1];
         const kind: Block['kind'] = token[0] === '#' ? `h${token.length}` as Block['kind'] : /\d/.test(token[0]) ? 'ol' : 'ul';
         const number = kind === 'ol' ? Number.parseInt(token, 10) : undefined;
@@ -42,6 +42,7 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
         [/`([^`\n]+)`$/, 'code', 1], [/~~([^~\n]+)~~$/, 's', 2], [/==([^=\n]+)==$/, 'hl', 2],
     ];
     for (const [pattern, mark, delimiter] of patterns) {
+        if (trigger !== 'typing') break;
         const match = pattern.exec(before);
         if (!match) continue;
         const from = start + match.index;
@@ -49,14 +50,18 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
         const replacement = { blocks: content.blocks.map(item => ({ ...item, runs: item.runs.map(run => ({ ...run, marks: { ...run.marks, [mark]: true } as Marks })) })) };
         return { transaction: transaction(id, key, from, caret, replacement), caret: from + match[1].length };
     }
-    const word = /(?:^|\s)((?:https?:\/\/|mailto:)[^\s]+|(?:[\p{L}\p{N}-]+\.)+[\p{L}]{2,}(?:\/[^\s]*)?) $/iu.exec(before);
+    const word = (trigger === 'typing'
+        ? /(?:^|\s)((?:(?:https?:\/\/|mailto:)[^\s]+|[\p{L}\p{N}._%+-]+@(?:[\p{L}\p{N}-]+\.)+[\p{L}]{2,}|(?:[\p{L}\p{N}-]+\.)+[\p{L}]{2,}(?:\/[^\s]*)?)[.,!?;:]*) $/iu
+        : /(?:^|\s)((?:(?:https?:\/\/|mailto:)[^\s]+|[\p{L}\p{N}._%+-]+@(?:[\p{L}\p{N}-]+\.)+[\p{L}]{2,}|(?:[\p{L}\p{N}-]+\.)+[\p{L}]{2,}(?:\/[^\s]*)?)[.,!?;:]*)$/iu).exec(before);
     if (word) {
-        const url = linkUrl(word[1]);
+        const raw = word[1].replace(/[.,!?;:]+$/u, '');
+        const url = linkUrl(raw.includes('@') && !raw.includes(':') ? `mailto:${raw}` : raw);
         if (!url) return null;
-        const from = caret - 1 - word[1].length;
-        const content = sliceRichText(text, from, caret - 1);
+        const end = caret - (trigger === 'typing' ? 1 : 0) - (word[1].length - raw.length);
+        const from = end - raw.length;
+        const content = sliceRichText(text, from, end);
         const replacement = { blocks: content.blocks.map(item => ({ ...item, runs: item.runs.map(run => ({ ...run, marks: { ...run.marks, link: url } })) })) };
-        return { transaction: transaction(id, key, from, caret - 1, replacement), caret };
+        return { transaction: transaction(id, key, from, end, replacement), caret };
     }
     return null;
 }

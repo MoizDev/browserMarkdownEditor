@@ -24,8 +24,7 @@ export function beginPdfVersionBridge(options: {
 }): PdfVersionBridge | null {
     const from = options.previous.lastView();
     if (!from || from.token.vaultEpoch !== options.target.vaultEpoch ||
-        from.token.documentId !== options.target.documentId || from.token.session !== options.target.session ||
-        from.sourceRole !== options.targetSource) return null;
+        from.token.documentId !== options.target.documentId || from.sourceRole !== options.targetSource) return null;
     const pixels = createMirrorVersionBridge({ mirrors: options.previous.mirrors, from,
         toToken: options.target, toSourceRole: options.targetSource, geometryDigest: from.geometryDigest,
         currentTarget: options.currentTarget, onExpired: options.onExpired });

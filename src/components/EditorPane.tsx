@@ -611,7 +611,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
         };
         focusWordCounts(countPath);
         const unsubscribe = subscribeWordCounts(write);
-        const text = countPath ? contentOf(countPath) ?? '' : '';
+        const text = countPath ? contentOf(countPath) ?? focusedTab?.content ?? '' : '';
         const trimmed = text.trim();
         write({ words: trimmed ? trimmed.split(/\s+/).length : 0, chars: text.length });
         return () => { unsubscribe(); focusWordCounts(null); };

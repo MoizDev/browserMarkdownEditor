@@ -37,6 +37,7 @@ export interface BoardHistory {
     readonly canRedo: boolean;
     undo(): void;
     redo(): void;
+    clearRedo(): void; // R-19: admitted pen/highlighter down, no step or content write.
     open(label: string): void;
     close(): void;
 }

@@ -43,6 +43,7 @@ export function boardHandlers(handlers: Readonly<Record<string, BoardWorkerHandl
                 emit: (event, payload, transfer) => context.emit(event, { identity, payload }, transfer),
             };
             const payload = await handler(args.payload, scoped);
+            context.signal.throwIfAborted();
             return { identity, payload } satisfies BoardWorkerEnvelope<unknown>;
         };
     }

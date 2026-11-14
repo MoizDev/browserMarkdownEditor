@@ -238,8 +238,8 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     void vector.key;
                     const descriptor = vectorNarrowDescriptor(vector);
                     if (descriptor) {
-                        if (decomposedContainment && !partialFrame && query.kind === 'polygon') {
-                            const job = createNonconvexContainmentJob(descriptor, { ...query, points, localToSurface });
+                        if (decomposedContainment && query.kind === 'polygon') {
+                            const job = createNonconvexContainmentJob(descriptor, { ...query, points, localToSurface }, { frames: partialFrame ? frameClips : [] });
                             try {
                                 for (;;) {
                                     check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });

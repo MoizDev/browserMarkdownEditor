@@ -1,8 +1,12 @@
 import { exactAffinePoint } from './exactAffine';
-import { exactPoint, type ExactPoint } from './homogeneous';
+import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
 import { createExactInverseDistance } from './exactInverseDistance';
 import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
 import { createFillPointJob } from './fillPoint';
+import { classifyCertifiedClipBox, certifiedCurveBox, expandCertifiedClipBox, preparePointClip, type PointClipContour } from './clippedPointPathJob';
+import { splitCertifiedCurve, type CertifiedCurve } from './pointPathJob';
+import { splitExactCurve } from './exactCurve';
+import { strokeRadiusBounds } from './strokeRadiusBounds';
 import type { ExactCurve } from './exactCurve';
 import type { PathOp, Vec2 } from './path';
 import type { RegionQuery } from './types';
@@ -16,12 +20,14 @@ const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
  * one boundary point is inside and its whole boundary misses the lasso edge.
  * Contacts and unsupported transforms stay uncertain, never guessed. */
 export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor, query: Extract<RegionQuery, { kind: 'polygon' }>, options: {
-    readonly maxCommands?: number; readonly maxEdges?: number; readonly maxWork?: number;
+    readonly frames?: readonly PointClipContour[]; readonly maxCommands?: number; readonly maxEdges?: number; readonly maxWork?: number; readonly maxNodes?: number; readonly maxDepth?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): NonconvexContainmentResult; cancel(): void } {
     const maxCommands = options.maxCommands ?? 65_536, maxEdges = options.maxEdges ?? 8192, maxWork = options.maxWork ?? 4000000;
+    const maxNodes = options.maxNodes ?? 262144, maxDepth = options.maxDepth ?? 64;
     if (!query.containment || query.points.length < 3 || query.points.length > maxEdges || !query.localToSurface.every(Number.isFinite)
         || !Number.isSafeInteger(maxCommands) || maxCommands < 1 || !Number.isSafeInteger(maxEdges) || maxEdges < 3
-        || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid nonconvex containment query');
+        || !Number.isSafeInteger(maxWork) || maxWork < 1 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
+        || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || (options.frames?.length ?? 0) > 64) throw new RangeError('Invalid nonconvex containment query');
     const calculate = function* (): Generator<void, NonconvexContainmentResult> {
         const polygon: PathOp[] = [], vertices: ExactPoint[] = [];
         for (const point of query.points) {
@@ -29,9 +35,9 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
             vertices.push(exactPoint(point)); polygon.push({ op: polygon.length ? 'L' : 'M', p: point }); yield;
         }
         polygon.push({ op: 'Z' });
-        const inverse = createExactInverseDistance(query.localToSurface);
-        let seen = false, commands = 0;
-        const segment = function* (curve: ExactCurve, radius: number): Generator<void, 'inside' | 'outside' | 'uncertain'> {
+        const inverse = createExactInverseDistance(query.localToSurface), frames = (options.frames ?? []).map(preparePointClip);
+        let seen = false, commands = 0, nodes = 0;
+        const exactSegment = function* (curve: ExactCurve, radius: number): Generator<void, 'inside' | 'outside' | 'uncertain'> {
             seen = true;
             const witness = { ...curve[0], w: { n: 1n, e: 0 } };
             const fill = createFillPointJob([polygon], { x: 0, y: 0 }, 'nonzero', { exactPoint: witness, localToWorld: IDENTITY,
@@ -62,12 +68,38 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
             }
             return 'inside';
         };
+        const segment = function* (curve: ExactCurve, radius: number, fillBoundary: boolean): Generator<void, 'inside' | 'outside' | 'uncertain'> {
+            if (!frames.length) return yield* exactSegment(curve, radius);
+            const scale = strokeRadiusBounds(query.localToSurface, radius);
+            if (!scale) return 'uncertain';
+            const points = curve.map(point => exactPointIntervals({ ...point, w: { n: 1n, e: 0 } })) as unknown as CertifiedCurve['points'];
+            const stack: { readonly curve: ExactCurve; readonly bounds: CertifiedCurve }[] = [{ curve, bounds: { points, depth: 0 } }];
+            if (++nodes > maxNodes) return 'uncertain';
+            while (stack.length) {
+                const item = stack.pop()!, box = expandCertifiedClipBox(certifiedCurveBox(item.bounds.points), Math.max(0, scale.hi));
+                let outside = false, overlap = false;
+                for (const frame of frames) {
+                    const relation = classifyCertifiedClipBox(box, frame);
+                    if (relation === 'outside') { outside = true; break; }
+                    if (relation === 'overlap') overlap = true;
+                }
+                if (outside) { if (fillBoundary) return 'uncertain'; yield; continue; }
+                if (!overlap) {
+                    const result = yield* exactSegment(item.curve, radius); if (result !== 'inside') return result;
+                    yield; continue;
+                }
+                if (fillBoundary || item.bounds.depth >= maxDepth || nodes + 2 > maxNodes) return 'uncertain';
+                const [left, right] = splitCertifiedCurve(item.bounds), [exactLeft, exactRight] = splitExactCurve(item.curve);
+                stack.push({ curve: exactRight, bounds: right }, { curve: exactLeft, bounds: left }); nodes += 2; yield;
+            }
+            return 'inside';
+        };
         const path = function* (ops: readonly PathOp[], radius: number, close: boolean): Generator<void, 'inside' | 'outside' | 'uncertain'> {
             if (!Number.isFinite(radius) || radius < 0) throw new RangeError('Invalid vector stroke radius');
             let start: ExactPoint | undefined, previous: ExactPoint | undefined;
             const finishSubpath = function* (): Generator<void, 'inside' | 'outside' | 'uncertain'> {
                 if (!close || !start || !previous) return 'inside';
-                return yield* segment([previous, start], radius);
+                return yield* segment([previous, start], radius, close);
             };
             for (const op of ops) {
                 if (++commands > maxCommands) return 'uncertain';
@@ -80,7 +112,7 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
                 const curve: ExactCurve = op.op === 'C'
                     ? [previous, exactAffinePoint(query.localToSurface, op.c1), exactAffinePoint(query.localToSurface, op.c2), end]
                     : [previous, end];
-                const state = yield* segment(curve, radius); if (state !== 'inside') return state;
+                const state = yield* segment(curve, radius, close); if (state !== 'inside') return state;
                 previous = end; yield;
             }
             return yield* finishSubpath();

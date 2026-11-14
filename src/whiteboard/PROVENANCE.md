@@ -241,6 +241,7 @@ third-party code included (normally "none") · date.
 | `geom/pick.ts` | lane w-g | GE-3; F-SEL-001/003/004 | geometry §5.1–5.4 | Design; shared ink affine-distance, exact line topology, w-h contour clipper and semantic-interior region geometry | none | 2026-11-13 |
 | `pick.ts` | lane w-g | GE-3; F-SEL-001/003/004/005/006 | geometry §§4–5 | Design; streamed w-e SpatialQuery candidates, revision stamps and resumable narrow phase, no second index | none | 2026-11-13 |
 | `selection.ts` | lane w-g | GE-3; F-SEL-002/005/006/007/010/011 | geometry §5.3; selection spec | Design; model child and sheet indexes; selection, history restore, locked reconciliation and keyboard/group navigation | none | 2026-11-13 |
+| `selectionNavigation.ts` | lane w-g | GE-3; F-SEL-010; WB-D33 | geometry §§4–5; input §8.4 | Design; w-e shared spatial strip cursor, caller-owned reveal and eligible-node geometry | none | 2026-11-13 |
 | `accessibility/selection.ts` | lane w-g | GE-3; INT-11 | integration §6.1; selection spec | Bounded viewport and selection mirror source with names, kinds, order and lock state; structural host contract | none | 2026-11-13 |
 | `commands/delete.ts` | lane w-g | GE-4; WB-D18; F-SEL-009; RV-22 | geometry §6.2; selection spec | Design; model indexed opaque guard and w-c's shared locked-descendant deletion command | none | 2026-11-13 |
 | `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool, shared swept queue and exception-safe pending-gesture lifetime | none | 2026-11-13 |
@@ -283,8 +284,8 @@ third-party code included (normally "none") · date.
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
-| `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design and Intl.Segmenter grapheme boundaries; no tldraw source | none | 2026-11-13 |
-| `text/edit/host.ts` | w-i | T-4, F-TEXT-006/016/018, WB-D15, E-TXT-2/10/12/15/21/22 | text §§5.1–5.3, 5.6, 5.10 | Design, browser EditContext and textarea APIs, grapheme-safe updates and IME formats, fallback selection, refused-input resync and app-menu forwarding | none | 2026-11-13 |
+| `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design, windowed rich projection and Intl.Segmenter grapheme boundaries; no tldraw source | none | 2026-11-13 |
+| `text/edit/host.ts` | w-i | T-4, F-TEXT-006/016/018, WB-D15, E-TXT-2/10/12/15/21/22 | text §§5.1–5.3, 5.6, 5.10 | Design, browser EditContext and textarea APIs, windowed projection, grapheme-safe updates and IME formats, fallback selection and app-menu forwarding | none | 2026-11-13 |
 | `text/edit/session.ts` | w-i | T-4, F-TEXT-003/006/011/015/016/018, WB-D15/16/26, E-TXT-1/2/4/5/10/12/15/21 | text §§5.1–5.7, 5.9–5.10; clipboard §3 | Design, TX-2/TX-3 and HistoryController public types; empty deletion, accelerator links, edge-scroll lifecycle, typing/cut/paste snapshots and IME chrome | none | 2026-11-13 |
 | `text/edit/controller.ts` | w-i | T-5, F-TEXT-011/012/015/016, WB-D26 | text §§4–5; change-and-history §4.3 | Design, public change operations and history-marked input transformations, explicit burst completion | none | 2026-11-13 |
 | `text/edit/typingHistory.ts` | w-i | F-TEXT-005/011/016, H-5 | text §§5.4/5.7; change-and-history §4.3 | Design and w-n HistoryController; time and adjacency burst boundaries, IME, rule savepoints and owned-step tokens | none | 2026-11-13 |

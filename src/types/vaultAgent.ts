@@ -90,6 +90,14 @@ export interface VaultDirEntry {
 export type HostFailure = 'taken' | 'missing' | 'no-parent' | 'invalid' | 'stale' | 'busy' | 'error';
 export type HostResult = { ok: true } | { ok: false; reason: HostFailure; message?: string };
 
+export interface ClosedPdfAgentPage { page: number; text: string; quality?: 'partial'; warnings?: readonly string[] }
+export interface ClosedPdfAgentAccess {
+    read(path: string, bytes: Uint8Array, first: number, maxPages: number, maxChars: number,
+        signal: AbortSignal): Promise<{ pageCount: number; pages: ClosedPdfAgentPage[] }>;
+    render(path: string, bytes: Uint8Array, page: number, maxSide: number,
+        signal: AbortSignal): Promise<{ pageCount: number; png: Blob | null }>;
+}
+
 /**
  * Every path is vault-relative and ALREADY normalized and validated by the
  * executor (vaultAgentTools.normalizeAgentPath): no leading '/', no '.', '..',
@@ -113,6 +121,8 @@ export interface VaultToolHost {
      *  missing, a folder, or unreadable. */
     readText(path: string): Promise<string | null>;
     readBytes(path: string): Promise<Uint8Array | null>;
+    /** App-owned tiled engine access, or null when the classic viewer is selected. */
+    closedPdfAgent?(): ClosedPdfAgentAccess | null;
     /** Session-owned live read or C5-admitted closed read; null means not a new board. */
     canvasShapePage?(path: string, query: CanvasShapeQuery,
         guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasShapePage | null>;

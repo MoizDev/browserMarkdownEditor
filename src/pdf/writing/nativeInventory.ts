@@ -7,8 +7,7 @@ export interface NativeAttachment {
     index: number;
     name: string;
     sha256: string;
-    bytes: Blob;
-    /** Only the public EmbeddedFile Params marker, never a guessed Filespec Desc. */
+    /** The app marker, if present in Filespec /Desc. */
     marker?: string;
 }
 
@@ -40,8 +39,8 @@ export async function inventoryNativeAttachments(document: WriterNativeDocument,
         if (!name || name.includes('\0')) throw new PdfEngineError('InvalidPdf', 'Invalid PDF attachment name');
         const arena = new WriterArena(runtime);
         try {
-            const key = arena.ascii('LocalVaultMarker');
-            const marker = readWide(document, 'FPDFAttachment_GetStringValue', attachment, [key], 514, true);
+            const description = readWide(document, 'FPDFAttachment_GetDescription', attachment, [], 2 * 1024 * 1024, true);
+            const marker = description.startsWith('local-vault-pdf/') ? description.split('\n', 1)[0] : '';
             const lengthPtr = arena.allocate(4);
             new DataView(runtime.HEAPU8.buffer).setUint32(lengthPtr, 0, true);
             if (!runtime.call('FPDFAttachment_GetFile', attachment, 0, 0, lengthPtr)) throw new PdfEngineError('InvalidPdf', 'Cannot read listed PDF attachment');
@@ -55,7 +54,7 @@ export async function inventoryNativeAttachments(document: WriterNativeDocument,
                 hash.update(bytes.subarray(offset, offset + 1024 * 1024));
                 await cooperate();
             }
-            result.push({ index: i, name, sha256: hash.digest(), bytes: new Blob([bytes]), ...(marker ? { marker } : {}) });
+            result.push({ index: i, name, sha256: hash.digest(), ...(marker ? { marker } : {}) });
         } finally { arena.dispose(); }
     }
     return result;

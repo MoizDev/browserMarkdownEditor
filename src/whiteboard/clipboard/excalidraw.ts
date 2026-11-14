@@ -153,8 +153,9 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
         if (element.isDeleted === true) continue;
         if (typeof sourceId !== 'string' || !ids.has(sourceId)) { skipped++; continue; }
         if (element.type !== 'rectangle' && element.type !== 'ellipse' && element.type !== 'diamond') continue;
-        const geometry = elementGeometry(element), stroke = colour(element.strokeColor);
+        const geometry = elementGeometry(element);
         const background = element.backgroundColor === 'transparent' ? null : colour(element.backgroundColor);
+        const stroke = element.strokeColor === 'transparent' ? background : colour(element.strokeColor);
         if (!geometry || !stroke || element.backgroundColor !== 'transparent' && !background || !finite(element.strokeWidth, 0.05, 500)) {
             skipped++; ids.delete(sourceId); continue;
         }

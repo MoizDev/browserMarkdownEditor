@@ -202,7 +202,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 surfaceHost.clearStaged();
             }
         },
-        notice: () => options.onNotice('memory-pressure'),
+        notice: (message: 'memory-pressure' | 'cpu-floor-denied') => options.onNotice(message),
         error: options.onError,
     };
     const removeRuntime = runtime.add(options.paneId, runtimePane);

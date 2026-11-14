@@ -1,4 +1,3 @@
-import sourceManifest from '../engine/dev/source-manifest.json';
 import { PdfEngineError } from '../engine/types';
 
 interface AssetPin { path: string; sha256: string; bytes: number }
@@ -22,7 +21,6 @@ export interface TrustedPdfAssets {
     glueSource: string;
     abi: unknown;
 }
-const manifest = sourceManifest as unknown as EngineManifest;
 const broken = () => new PdfEngineError('EngineBroken', 'PDF engine assets are unavailable or failed integrity validation');
 
 function pinUrl(base: URL, pin: AssetPin): string {
@@ -69,6 +67,12 @@ async function verifiedBytes(url: string, pin: AssetPin, signal?: AbortSignal): 
 export async function loadTrustedPdfAssets(signal?: AbortSignal): Promise<TrustedPdfAssets> {
     try {
         signal?.throwIfAborted();
+        let manifest: EngineManifest;
+        if (import.meta.env.DEV || __BME_BENCH__) {
+            manifest = (await import('../engine/dev/source-manifest.json')).default as unknown as EngineManifest;
+        } else {
+            throw new PdfEngineError('EngineBroken', 'A development PDF engine cannot run in a production build');
+        }
         if (manifest.schemaVersion !== 1 || manifest.factory.roleVersion !== 1 || manifest.factory.format !== 'es-module' ||
             !/^(?:dev-)?[a-f0-9]{64}$/.test(manifest.buildId) || !/^[a-f0-9]{64}$/.test(manifest.artifactSha256) ||
             manifest.artifactSha256 !== manifest.files.wasm.sha256) throw broken();

@@ -349,7 +349,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // selection-only rebuild — which is every arrow key and click in edit mode
     // — reuses them instead of re-flattening the document and re-scanning it.
     const analysis = analyzeDoc(state);
-    const { doc, codeRanges, mathRegions } = analysis;
+    const { codeRanges, mathRegions } = analysis;
     const intersectsMath = (a: number, b: number) => overlapsMath(analysis, a, b);
     // The same question asked of code, named for the same reason: four regex
     // passes below need it, and a hand-copied half-open comparison at each is
@@ -809,10 +809,9 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // Regions come from findMathRegions (computed above). Cursor outside →
     // rendered KaTeX widget; cursor inside → the raw source stays visible and
     // gets Obsidian-style LaTeX syntax highlighting in Fira Code.
-    let match: RegExpExecArray | null;
     for (const region of mathRegions) {
         if (editorMode !== 'read' && cursorInRange(state, region.from, region.to)) {
-            decorations.push(...latexSourceDecorations(doc.slice(region.from, region.to), region.from));
+            decorations.push(...latexSourceDecorations(state.sliceDoc(region.from, region.to), region.from));
             continue;
         }
         decorations.push(
@@ -825,12 +824,10 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // ($$, $$$$ — even) and stays plain while unbalanced ($, $$$ — odd), so
     // you can see whether the next keystroke lands inside math mode.
     if (editorMode !== 'read') {
-        const dollarRunRegex = /\$+/g;
-        while ((match = dollarRunRegex.exec(doc)) !== null) {
-            const from = match.index;
-            const to = from + match[0].length;
-            if (match[0].length % 2 !== 0) continue;
-            if (doc[from - 1] === '\\') continue; // \$ — literal dollar
+        for (const match of analysis.lines.dollars) {
+            const { from, to } = match;
+            if ((to - from) % 2 !== 0) continue;
+            if (state.sliceDoc(Math.max(0, from - 1), from) === '\\') continue; // \$ — literal dollar
             if (intersectsMath(from, to)) continue;
             if (intersectsCode(from, to)) continue;
             decorations.push(LATEX_DELIM.range(from, to));
@@ -839,10 +836,8 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
 
     // === HIGHLIGHTS (==text==) ===
     // Matches: ==highlighted text==
-    const highlightRegex = /(?<!=)==(?!=)(.+?)(?<!=)==(?!=)/g;
-    while ((match = highlightRegex.exec(doc)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
+    for (const match of analysis.lines.highlights) {
+        const { from, to } = match;
 
         if (intersectsMath(from, to)) continue;
         // The third regex pass that has to re-derive by hand what the parser
@@ -872,6 +867,8 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // imageWidget.ts). The single exception is a caret already strictly inside
     // — only reachable while typing the embed, which has to stay visible.
     const imageRegex = embedPattern();
+    const doc = analysis.doc;
+    let match: RegExpExecArray | null;
     const selection = state.selection.main;
     const editable = editorMode !== 'read';
     let imageSelected = false;
@@ -907,13 +904,11 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // === WIKILINKS (Obsidian Syntax) ===
     // Matches: [[Note]], [[Note|alias]], [[Note#heading]]
     // The leading (!?) lets us skip image embeds ![[file.png]] (handled above).
-    const wikiRegex = /(!?)\[\[([^\]\n]+?)\]\]/g;
-    while ((match = wikiRegex.exec(doc)) !== null) {
-        if (match[1] === '!') continue; // image embed, not a note link
+    for (const match of analysis.lines.wikilinks) {
+        if (match.groups[0] === '!') continue; // image embed, not a note link
 
-        const from = match.index;
-        const to = from + match[0].length;
-        const inner = match[2];
+        const { from, to } = match;
+        const inner = match.groups[1];
         const pipeIndex = inner.indexOf('|');
         const target = (pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner).split('#')[0].trim();
 
@@ -980,7 +975,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         tableSelected ||= selected;
         decorations.push(
             Decoration.replace({
-                widget: new TableWidget(doc.slice(span.from, span.to), editable, selected,
+                widget: new TableWidget(state.sliceDoc(span.from, span.to), editable, selected,
                     state.facet(readingEmphasisFacet)),
             }).range(span.from, span.to)
         );

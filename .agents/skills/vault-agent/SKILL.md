@@ -103,7 +103,7 @@ change reloads the note or raises a conflict bar (`tabs-and-panes` → "Outside 
 the reader exactly that interruption, which is why the prompt still forbids the agent's own tools on
 vault files. So text edits
 (`vault_edit`/`vault_write`, refused as stale unless the text still equals what the agent read) go live view → cached `EditorState`s + buffer → disk + `afterWrite`; create/mkdir refuse taken
-names (`entryNames.nameTaken`) and never truncate; move REFUSES a taken target; trash is
+names (`useFileSystem().nameTaken`) and never truncate; move REFUSES a taken target; trash is
 `App.performTrash` without the question; canvas ops land in the live tldraw editor (`pdf-and-drawings`),
 opening a closed canvas beside the user via `openInSidePane` without moving the focus.
 

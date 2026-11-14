@@ -4,6 +4,7 @@ import { isoHeader } from './isoHeaders';
 import { hashMedia } from './sha256';
 import { sniffMedia } from './sniff';
 import { webmHeader } from './webmHeader';
+import { preflightSvgText } from './svgXmlRuntime';
 
 interface DecoderTrack { readonly frameCount: number }
 interface DecoderInstance {
@@ -17,6 +18,15 @@ serve({
     protocol: 1,
     buildId: 'whiteboard-media-1',
     handlers: {
+        async svgPreflight(args, context) {
+            if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid SVG request');
+            const blob = (args as { blob: Blob }).blob;
+            if (blob.size > 5 * 1024 * 1024) throw new RangeError('SVG files must be at most 5 MiB');
+            const text = new TextDecoder('utf-8', { fatal: true }).decode(await blob.arrayBuffer());
+            preflightSvgText(text);
+            await context.slice();
+            return true;
+        },
         async hash(args, context) {
             if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid media request');
             const blob = (args as { blob: Blob }).blob;

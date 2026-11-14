@@ -63,8 +63,12 @@ stay out of vault search, graph and Markdown backlinks. Normal CLI/terminal poli
 
 Vite's `contained-epub-frame` plugin runs `node src/epub/build-frame.mjs` at
 `buildStart` in dev and build, and regenerates/reloads on contained source changes in dev.
-Generation removes previous outputs before bundling, rejects inline script terminators and
-hashes the exact inline script. Generated HTML/integrity are ignored, never checked-in fallbacks.
+Generation removes previous outputs before bundling. The neutral `platform/containedFrameBuild.mjs`
+bundles the fixed runtime, rejects inline script terminators and hashes the exact inline script;
+its source is included in the integrity inventory and the dev watcher. The reader's CSP and
+protocol remain EPUB-specific. `platform/containedFrame.ts` owns the opaque frame lifecycle and
+one-port handoff, while the reader still validates its own session, token and message envelopes.
+Generated HTML/integrity are ignored, never checked-in fallbacks.
 Preview serves the already-built dist; it does not rewrite a production artifact at startup.
 The lazy bridge imports HTML as raw text into srcdoc: no root-relative frame URL, remote runtime
 script or publisher resource URL depends on Vite base. Archive and hash worker URLs use Vite's

@@ -51,7 +51,7 @@ export class BenchmarkCanvas2D {
             const context = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
             if (!context || context.isContextLost()) throw new Error('Witness context unavailable');
             const witness: Witness = { canvas, context, lease, invalid: false };
-            const virtual = benchmarkDeviceContext(native, origin, imageCallback, context);
+            const virtual = benchmarkDeviceContext(native, origin, imageCallback, context, () => { witness.invalid = true; });
             this.shadows.set(native, witness);
             return virtual;
         } catch {

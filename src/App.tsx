@@ -5546,7 +5546,9 @@ export default function App() {
         {mainView === 'graph' ? (
           <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView
-            key={searchActivation}
+            key={`${searchActivation}:${sessionRootRef.current === rootHandle && sessionVaultIdRef.current === currentVaultId ? currentVaultId : ''}`}
+            vaultKey={sessionRootRef.current === rootHandle && sessionVaultIdRef.current === currentVaultId && currentVaultId
+              ? `vault:${currentVaultId}` : `activation:${searchActivation}`}
             indexing={graphFreshness?.activation !== searchActivation}
             updating={(graphFreshness?.activation === searchActivation && graphFreshness.stale) || indexProgress?.phase === 'sweeping'}
             nodes={graph.nodes}

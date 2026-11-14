@@ -51,6 +51,8 @@ function initialize(event: MessageEvent<unknown>): void {
         if (!frame.credentialless || !frame.hasAttribute('credentialless')) throw new Error('Credentialless frame unavailable');
         document.documentElement.style.height = '100%';
         document.body.style.height = '100%'; document.body.style.margin = '0';
+        // This first-party backing keeps a fully opaque live slot opaque even if the provider clears its own background.
+        document.body.style.backgroundColor = 'white';
         frame.style.width = '100%'; frame.style.height = '100%'; frame.style.border = '0'; frame.style.display = 'block';
         send('ready');
     } catch { stopped = true; send('unavailable'); }

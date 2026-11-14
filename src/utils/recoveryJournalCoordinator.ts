@@ -14,7 +14,7 @@ export function createRecoveryJournal(options: { refused(): void; failed(error: 
     const key = (vaultId: string, journalId: string) => JSON.stringify([vaultId, journalId]);
     const enqueue = (job: () => Promise<void>): Promise<void> => {
         const run = tail.then(job);
-        tail = run.catch(options.failed);
+        tail = run.catch(error => { try { options.failed(error); } catch { /* A notice cannot poison the queue. */ } });
         return run;
     };
     const flush = (): Promise<void> => {
@@ -71,11 +71,14 @@ export function createRecoveryJournal(options: { refused(): void; failed(error: 
             const copyIds = new Set(copies.map(entry => entry.journalId));
             return entries.map(entry => copyIds.has(entry.journalId) ? { ...entry, copyOnly: true } : entry);
         },
-        discard(vaultId: string, journalId: string): Promise<void> {
+        discard(vaultId: string, journalId: string, revision?: number): Promise<void> {
             const id = key(vaultId, journalId);
-            pending.delete(id);
-            acknowledged.set(id, Number.MAX_SAFE_INTEGER);
-            return enqueue(() => discardRecovery(vaultId, journalId));
+            if ((pending.get(id)?.revision ?? -1) > (revision ?? Number.MAX_SAFE_INTEGER)) return Promise.reject(new Error('Newer recovered changes exist; refresh before discarding.'));
+            return enqueue(async () => {
+                await discardRecovery(vaultId, journalId, revision);
+                if ((pending.get(id)?.revision ?? -1) <= (revision ?? Number.MAX_SAFE_INTEGER)) pending.delete(id);
+                acknowledged.set(id, Math.max(acknowledged.get(id) ?? -1, revision ?? Number.MAX_SAFE_INTEGER));
+            });
         },
         forget(vaultId: string): Promise<void> {
             for (const [id, entry] of pending) if (entry.vaultId === vaultId) pending.delete(id);

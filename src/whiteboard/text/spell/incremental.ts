@@ -44,9 +44,17 @@ async function changedRange(before: string, after: string, context: WorkerContex
         from--;
         if (++steps % COMPARISON_SLICE === 0) await context.slice();
     }
+    while (from > 0 && space(before[from - 1])) {
+        from--;
+        if (++steps % COMPARISON_SLICE === 0) await context.slice();
+    }
     // Both positions are at the start of the same suffix; advancing them together cannot
     // split a word on one side while retaining its old result on the other.
     while (oldTo < before.length && newTo < after.length && !space(before[oldTo])) {
+        oldTo++; newTo++;
+        if (++steps % COMPARISON_SLICE === 0) await context.slice();
+    }
+    while (oldTo < before.length && newTo < after.length && space(before[oldTo])) {
         oldTo++; newTo++;
         if (++steps % COMPARISON_SLICE === 0) await context.slice();
     }

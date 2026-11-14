@@ -34,6 +34,7 @@ import { choosePdfSessionRoute, readPdfSessionRoute, subscribePdfSessionRoute } 
 import { assertPdfPrintAllowed, PDF_PRINT_UNKNOWN, tiledPdfCapabilities } from '../utils/pdfCapabilities';
 import { requestVaultSearch } from '../utils/searchRequest';
 import type { PdfTiledTextSurfaceProps } from './PdfTiledTextSurface.types';
+import type { PdfTiledPresentation } from './PdfTiledView';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import type { EmphasisAvailability } from '../types/reading';
 
@@ -816,6 +817,37 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     const previewPainted = useCallback((page: number) => {
         if (rotationPreview?.page === page) discardRotationPreview();
     }, [rotationPreview, discardRotationPreview]);
+    const presentationOwner = useRef({ source: currentTiledSource, preview: rotationPreview, identity: reading?.identity,
+        appSession, documentId, path: file.path, tiled, isVisible, mode, textSurface });
+    presentationOwner.current = { source: currentTiledSource, preview: rotationPreview, identity: reading?.identity,
+        appSession, documentId, path: file.path, tiled, isVisible, mode, textSurface };
+    const tiledPresented = useCallback((report: PdfTiledPresentation) => {
+        const owner = presentationOwner.current, { source, preview, identity, appSession: app } = owner;
+        if (!owner.tiled || !owner.isVisible || owner.mode !== 'read' || owner.textSurface || !source || source !== currentTiledSource || !preview || !identity || !app ||
+            report.complete !== true || report.sharp !== true || report.staleVersion !== false || report.resultHash !== preview.resultHash ||
+            ![report.frameId, report.viewEpoch, report.token.viewLease, report.token.deviceGeneration].every(value => Number.isSafeInteger(value) && value >= 0) ||
+            !report.pages.includes(preview.page) || !source.session.isCurrent() || source.document.poolDocument.closed ||
+            source.session.source !== 'outer' || source.document.poolDocument.source !== 'outer' ||
+            getSessionIdentity(owner.documentId) !== app || identity.documentId !== owner.documentId || identity.path !== owner.path) return;
+        const token = source.session.token, poolToken = source.document.poolDocument.token, frame = report.token;
+        if (identity.vaultEpoch !== token.vaultEpoch ||
+            app.serial !== token.session || app.bytesGeneration !== token.bytesGeneration || token.documentId !== owner.documentId ||
+            frame.vaultEpoch !== token.vaultEpoch || frame.documentId !== token.documentId || frame.bytesGeneration !== token.bytesGeneration || frame.session !== token.session ||
+            poolToken.vaultEpoch !== token.vaultEpoch || poolToken.documentId !== token.documentId ||
+            poolToken.bytesGeneration !== token.bytesGeneration || poolToken.session !== token.session) return;
+        setRotationPreview(previous => {
+            const now = presentationOwner.current;
+            if (previous !== preview || now.source !== source || now.preview !== preview || !now.identity ||
+                now.identity.vaultId !== identity.vaultId || now.identity.vaultEpoch !== identity.vaultEpoch ||
+                now.identity.documentId !== identity.documentId || now.identity.byteGeneration !== identity.byteGeneration ||
+                now.identity.path !== identity.path || now.identity.diskRev !== identity.diskRev ||
+                now.identity.rawVersion?.hash !== identity.rawVersion?.hash || now.identity.rawVersion?.size !== identity.rawVersion?.size ||
+                now.identity.rawVersion?.lastModified !== identity.rawVersion?.lastModified || !now.tiled || !now.isVisible || now.mode !== 'read' || now.textSurface ||
+                getSessionIdentity(owner.documentId) !== app || !source.session.isCurrent() || source.document.poolDocument.closed) return previous;
+            clearPdfRotationPicture(owner.documentId, preview);
+            return undefined;
+        });
+    }, [currentTiledSource]);
     const showRotationPreview = !!rotationPreview && !fatalRenderIssue && !error && mode === 'read' && !textSurface;
 
     let body: ReactNode = null;
@@ -908,7 +940,7 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                     <PdfTiledSurface reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
                         rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
-                        onSource={setTiledSource} onCapabilities={reportTiledCapabilities} notify={tiledNotify} openClassic={openClassic} />
+                        onSource={setTiledSource} onCapabilities={reportTiledCapabilities} onPresentation={tiledPresented} notify={tiledNotify} openClassic={openClassic} />
                 </Suspense>
             );
         } else if (!session) {

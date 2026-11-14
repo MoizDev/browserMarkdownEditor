@@ -10,7 +10,8 @@ import type { SampleStoreReader } from './samples';
 import {
     ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATCHES, TOOLS, V_ALIGNS,
 } from './styles';
-import { isBlockRange, isSurrogateBoundary, scanText, spliceBlockCount } from './textOffsets';
+import { isBlockRange, isSurrogateBoundary, isTextGraphemeBoundary, scanText, spliceBlockCount } from './textOffsets';
+import { normalizeRichText } from '../text/richText';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from './textLimits';
 export { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from './textLimits';
 
@@ -60,7 +61,7 @@ const KEYS = {
     paper: ['size', 'orientation', 'ruling', 'spacing', 'margin', 'pageCount'],
     media: ['id', 'mime', 'bytes', 'w', 'h', 'duration', 'animated', 'name', 'file', 'ext'],
     create: ['t', 'node'], delete: ['t', 'id'], set: ['t', 'id', 'key', 'value'],
-    splice: ['t', 'id', 'key', 'from', 'to', 'insert', 'wholeBlocks'], sheetCreate: ['t', 'op', 'sheet'],
+    splice: ['t', 'id', 'key', 'from', 'to', 'insert', 'replaceBlocks', 'wholeBlocks'], sheetCreate: ['t', 'op', 'sheet'],
     sheet: ['id', 'name', 'order', 'ext'], recordDelete: ['t', 'op', 'id'],
     sheetSet: ['t', 'op', 'id', 'key', 'value'], board: ['t', 'key', 'value'], mediaAdd: ['t', 'op', 'entry'],
     ext: ['t', 'target', 'id', 'value'], mediaDrop: ['t', 'op', 'id', 'restoreMissing'],
@@ -375,9 +376,12 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 const text: RichText | null = Reflect.get(node, op.key);
                 const length = scanText(text);
                 if (!integer(op.from, 0, length) || !integer(op.to, op.from, length)
-                    || !isSurrogateBoundary(text, op.from) || !isSurrogateBoundary(text, op.to)) return refuse('V-11', opIndex, node.id, 'Splice offsets must be ordered UTF-16 boundaries within the text');
-                if (op.wholeBlocks !== undefined && (op.wholeBlocks !== true || (context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert') || !isBlockRange(text, op.from, op.to))) return refuse('V-11', opIndex, node.id, 'Whole-block inverse must be block-aligned');
-                if (!validRichText(op.insert) || length - (op.to - op.from) + scanText(op.insert) > MAX_TEXT_LENGTH
+                    || !isSurrogateBoundary(text, op.from) || !isSurrogateBoundary(text, op.to)
+                    || !isTextGraphemeBoundary(text, op.from) || !isTextGraphemeBoundary(text, op.to)) return refuse('V-11', opIndex, node.id, 'Splice offsets must be ordered grapheme boundaries within the text');
+                if (op.wholeBlocks !== undefined && (op.wholeBlocks !== true || op.replaceBlocks !== undefined || (context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert') || !isBlockRange(text, op.from, op.to))) return refuse('V-11', opIndex, node.id, 'Whole-block inverse must be block-aligned');
+                if (op.replaceBlocks !== undefined && (op.replaceBlocks !== true || !isBlockRange(text, op.from, op.to))) return refuse('V-11', opIndex, node.id, 'Block replacement must be block-aligned');
+                if (!validRichText(op.insert) || (op.replaceBlocks === true && normalizeRichText(op.insert) !== op.insert)
+                    || length - (op.to - op.from) + scanText(op.insert) > MAX_TEXT_LENGTH
                     || spliceBlockCount(text, op.from, op.to, op.insert.blocks.length) > MAX_TEXT_BLOCKS) return refuse('V-11', opIndex, node.id, 'Splice fragment or resulting text/block count is invalid');
                 return OK;
             }

@@ -53,7 +53,8 @@ third-party code included (normally "none") · date.
 | `change/rawChanges.ts` | lane w-c | H-2/3, M-3/9, R-W23/25/37/40 | document-model §9.3; change-and-history §2 | Design/rulings; diff RawJson carrier multiplicities, scan entering/leaving values, omit only owning media self-reference | none | 2026-11-13 |
 | `session/BoardSession.ts` | lane w-c | H-1/3/4, C7.0/2/5/6, D-10 | change-and-history §§2–4; integration §§2/9 | Design; source ownership, read-only safety and session-owned gesture queue public contract; no tldraw source | none | 2026-11-13 |
 | `session/gestureQueue.ts` | lanes w-c/w-e | C7.2, WB-D17 | integration §§2/9 | Design/ruling; one session FIFO, idempotent gesture leases, cancellation and final owner/readiness/read-only checks; factory and viewer class delegate to the same queue | none | 2026-11-13 |
-| `text/rich.ts` | lane w-l | TX-2, R-W32 | text §4; change-and-history §2.1 | Design-only public rich text operations, import contract and replace-blocks semantics; no tldraw source | none | 2026-11-13 |
+| `text/rich.ts` | lane w-l | TX-2, R-W32 | text §4; change-and-history §2.1 | Design-only rich text interface, import contract and replace-blocks semantics; no tldraw source | none | 2026-11-13 |
+| `model/textOffsets.ts` | lane w-l | TX-2, V-11 | text §4.3 | Grapheme boundary admission over immutable block projection; no tldraw source | none | 2026-11-13 |
 | `text/richText.ts` | lane w-c | M-3, V-11, H-2/3, R-W19/21/25 | text §4.1; change-and-history §2 | Design/rulings only; minimal immutable normalize/slice/splice, opaque carrier preservation and exact boundary-block inverse splices, not whole-value undo snapshots | none | 2026-11-13 |
 
 ## Agent adapter (lane w-p)
@@ -61,7 +62,7 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `agent/shapes.ts` | w-p | F-AGENT-001, WB-D11, WB-D12, C8 | integration §9 | Agent specification, public model and disk revision interfaces; authoritative geometry supplied by shared projection; no tldraw or old canvas source | none | 2026-11-13 |
-| `agent/transaction.ts` | w-p | F-AGENT-002/003/004/005/012/013, C8 | integration §9; change and history §3 | Agent specification and shared session queue/agent batch runner; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/transaction.ts` | w-p, w-j | F-AGENT-002/003/004/005/012/013, WB-D10, C8 | integration §9; change and history §3 | Agent specification, post-commit result projection and shared session queue/agent batch runner; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/validate.ts` | w-p | F-AGENT-002/012/013/015, C8 | integration §9 | Agent specification and public model style vocabulary; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/create.ts` | w-p | F-AGENT-002/012/013, C8 | integration §9, document-model §§3–4 | Agent spec and public model/change/page APIs; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/createInk.ts` | w-p | F-AGENT-002/003/013/015, C8 | integration §9, ink §2 | Agent spec, sample store and public geometry/model APIs; no tldraw or old canvas source | none | 2026-11-13 |
@@ -269,7 +270,7 @@ third-party code included (normally "none") · date.
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe, shared cubic length/splitting kernel, and continuous dash/dot phase; no tldraw source | none | 2026-11-13 |
 | `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; scale-aware boundary membership, node-local hatch clipping and reflected phase; no tldraw source | none | 2026-11-13 |
 | `geom/polylineTypes.ts` | lane w-h | F-LINE-001/003 | geometry §§1, 9 | Model and geometry type contracts; no tldraw source | none | 2026-11-13 |
-| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
+| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector, arrowhead and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
 | `geom/polylines.ts` | lane w-h | F-LINE-001/003/004 | geometry §9 | Independent chord-weighted Hermite recipe from design, ordered model handles; no tldraw source | none | 2026-11-13 |
 | `geom/providers.ts` | lane w-h | F-FIG-001, F-STICKY-001, F-FRAME-001, F-LINE-001/003/004, WB-D20/24, E-GEO-8/35 | geometry §§1, 3, 5, 9; text §6 | Figure, polyline and container geometry, font-epoch pending geometry, transformed contour bounds, text-owned layout, ink-owned resumable picking, node-local hatch, platform path conversion and scene bounds; no tldraw source | none | 2026-11-13 |
 
@@ -340,6 +341,9 @@ third-party code included (normally "none") · date.
 | `input/attach.ts` | lane w-f | F-INPUT-001/002/004/005; R-19 | input §§2–9 | Input architecture and public session, camera, tool and compositor seams; no tldraw source | none | 2026-11-13 |
 | `input/pointerRouter.ts` | lane w-f | F-INPUT-001/004/005 | input §§2–3,9 | Input architecture and public pointer/router interfaces; no tldraw source | none | 2026-11-13 |
 | `input/sweepQueue.ts` | lane w-f | F-INK-008; F-SEL-003 | geometry §§4,5.4; input §7 | Independent bounded, cancellable cursor orchestration; no tldraw source | none | 2026-11-13 |
+| `input/revealTypes.ts` | lane w-f | WB-D33; RV-56; E-INPUT-28 | input §8.4 | Public camera-reveal contracts; no tldraw source | none | 2026-11-13 |
+| `input/keyboardCursorTypes.ts` | lane w-f | F-A11Y-002 | input §8.3 | Public keyboard cursor contracts; no tldraw source | none | 2026-11-13 |
+| `input/scrollKeysTypes.ts` | lane w-f | F-A11Y-002 | input §8.3 | Public keyboard navigation contracts; no tldraw source | none | 2026-11-13 |
 | `input/navigation.ts` | lane w-f | F-INPUT-002/003/004/005; F-CAM-001/009 | input §§5–6 | Input design and public platform CameraController; no tldraw source | none | 2026-11-13 |
 
 ## Pages and paged hosts (lane w-l)

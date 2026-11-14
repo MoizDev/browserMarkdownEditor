@@ -243,7 +243,7 @@ function planOp(doc: BoardDoc, input: Op): OpPlan | undefined {
             const before = Reflect.get(node, input.key) as PropValue;
             if (input.t === 'splice') {
                 const text = richValue(node, input.key);
-                const result = spliceRichText(text ?? EMPTY_RICH_TEXT, input.from, input.to, input.insert, input.wholeBlocks === true);
+                const result = spliceRichText(text ?? EMPTY_RICH_TEXT, input.from, input.to, input.insert, input.wholeBlocks === true || input.replaceBlocks === true);
                 model = setValue(node.id, input.key, result.text);
                 forward = { ...input };
                 inverse = text === null ? [setValue(node.id, input.key, null)]

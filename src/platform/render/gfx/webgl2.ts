@@ -1203,15 +1203,16 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         let ticket: { commit(): void; cancel(): void; retireAfter?(completed: () => boolean): void } | null = null;
         try {
             gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
-            if (plan.domain.vector) {
-                gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]); gl.enable(gl.SCISSOR_TEST);
-                for (const rect of plan.domain.rects) {
-                    gl.scissor(rect.x, root.height - rect.y - rect.height, rect.width, rect.height);
-                    gl.clearBufferfv(gl.COLOR, 1, new Float32Array([3 / 255, 0, 0, 1]));
-                }
-                gl.disable(gl.SCISSOR_TEST); gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
-            }
+            // Optional scene qualification/reduction must never skip the product colour blit.
             try {
+                if (plan.domain.vector) {
+                    gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]); gl.enable(gl.SCISSOR_TEST);
+                    for (const rect of plan.domain.rects) {
+                        gl.scissor(rect.x, root.height - rect.y - rect.height, rect.width, rect.height);
+                        gl.clearBufferfv(gl.COLOR, 1, new Float32Array([3 / 255, 0, 0, 1]));
+                    }
+                    gl.disable(gl.SCISSOR_TEST); gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+                }
                 if (target.coverage && !plan.missing) {
                     for (const handle of this.#aux().programHandles) this.#pin(work.encoding, handle, 'pipeline');
                     ticket = this.#coverage?.enqueue(target.coverage.texture, root.width, root.height,

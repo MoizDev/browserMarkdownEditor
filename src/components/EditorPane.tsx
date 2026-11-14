@@ -14,6 +14,7 @@ import { dismissOnEscape } from '../utils/escapeDismiss';
 import { focusWordCounts, subscribeWordCounts, type WordCounts } from '../utils/wordCountStore';
 import { isPdfFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import type { DocumentBufferStore } from '../utils/documentBuffers';
+import type { NativeCanvasHost } from '../types/nativeCanvas';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
@@ -95,6 +96,7 @@ const CanvasPane = lazy(() => import('./CanvasPane'));
 interface EditorPaneProps {
     contentOf(path: string): string | undefined;
     documentBuffers: DocumentBufferStore;
+    nativeCanvasHost: NativeCanvasHost;
     /** E4's App-owned editor host; DocumentPane adoption is the next wiring step. */
     markdownSessions: import('../editor/markdownSession.types').MarkdownSessionHost;
     reading: ReaderIntegration;
@@ -310,7 +312,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, contentOf, documentBuffers, markdownSessions, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, contentOf, documentBuffers, nativeCanvasHost, markdownSessions, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -1146,6 +1148,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         <CanvasPane
                             file={tab.file}
                             documentId={tab.id}
+                            nativeCanvasHost={nativeCanvasHost}
                             representation={tab.representation}
                             isVisible={visible}
                             slotIndex={slot?.index ?? 0}

@@ -1,7 +1,7 @@
 import type { PointInspectionHeader } from '../format/points';
 import type { ReadIssue, ReadSourceRecord, UnmappedRecord } from '../format/readTypes';
 import type { SavedView } from '../format/encode';
-import type { BoardDocInput, BoardKind } from './doc';
+import type { BoardDoc, BoardDocInput, BoardKind } from './doc';
 import type { JsonObject } from './json';
 import type { NodeRecord } from './nodes';
 import type { SampleLease, SampleRef, SampleStoreReader } from './samples';
@@ -11,6 +11,8 @@ export interface LoadRepairDraft {
     readonly input: BoardDocInput;
     readonly sources: readonly ReadSourceRecord[];
     readonly unmapped: readonly UnmappedRecord[];
+    /** Original lines whose identity disappeared; never prime them as live records. */
+    readonly removedSources?: readonly ReadSourceRecord[];
     readonly savedView?: SavedView;
 }
 export interface LoadRepairOptions {
@@ -47,6 +49,7 @@ export interface LoadProjection {
     readonly preservedMediaRefs: readonly (readonly [string, number])[];
     readonly samples: readonly LoadSampleWire[];
     readonly sources: readonly ReadSourceRecord[];
+    readonly removedSources?: readonly ReadSourceRecord[];
     readonly unmapped: readonly UnmappedRecord[];
     readonly savedView?: SavedView;
 }
@@ -59,11 +62,16 @@ export interface LoadRepairResult {
 /** Main-side re-admission owns creator leases until the session has retained them or refuses. */
 export interface RehydratedLoad {
     readonly input: BoardDocInput;
+    readonly doc: BoardDoc;
+    readonly sources: readonly ReadSourceRecord[];
+    readonly removedSources: readonly ReadSourceRecord[];
+    readonly unmapped: readonly UnmappedRecord[];
+    readonly savedView?: SavedView;
     readonly leases: readonly SampleLease[];
     release(): void;
 }
 export interface LoadRepairPort {
     repair(draft: LoadRepairDraft, options: LoadRepairOptions): Promise<LoadRepairResult>;
     rehydrate(projection: LoadProjection, admit: (pts: string, header: PointInspectionHeader) => SampleLease,
-        cooperate?: () => Promise<void>): Promise<RehydratedLoad>;
+        samples: SampleStoreReader, cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<RehydratedLoad>;
 }

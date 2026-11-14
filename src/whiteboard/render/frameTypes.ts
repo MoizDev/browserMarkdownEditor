@@ -15,5 +15,7 @@ export interface PaintFrameAssembler extends PaintFrameSource {
     needsFrame(): boolean;
     /** Presentation uses the frame actually drawn, not the newest requested scene revision. */
     presented(frame: PaintFrame): void;
+    /** Called when the backend no longer holds this frame, including cancelled staging. */
+    retire(frame: PaintFrame): void;
     dispose(): void;
 }

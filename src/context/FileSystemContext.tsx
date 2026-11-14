@@ -667,9 +667,9 @@ function toBytes(data: string | Uint8Array): Uint8Array {
 
 /** Replace a file's bytes. Hands over the VIEW, not `.buffer` — see
  *  writeFileBytes for why. */
-async function writeAllBytes(handle: FileSystemFileHandle, bytes: Uint8Array): Promise<void> {
+async function writeAllBytes(handle: FileSystemFileHandle, bytes: Uint8Array | Blob): Promise<void> {
     const writable = await handle.createWritable();
-    await writable.write(bytes as Uint8Array<ArrayBuffer>);
+    await writable.write(bytes instanceof Blob ? bytes : bytes as Uint8Array<ArrayBuffer>);
     await writable.close();
 }
 
@@ -678,11 +678,13 @@ async function writeAllBytes(handle: FileSystemFileHandle, bytes: Uint8Array): P
  *  write that landed in between and call it ours), the stat is re-read from
  *  disk. A stat that cannot be re-read becomes lastModified 0, which equals no
  *  real stat and so makes the next check hash instead of trusting it. */
-async function versionAfterWrite(handle: FileSystemFileHandle, bytes: Uint8Array): Promise<DiskVersion> {
-    const hash = await hashBytes(bytes);
+async function versionAfterWrite(handle: FileSystemFileHandle, bytes: Uint8Array | Blob): Promise<DiskVersion> {
+    const hash = bytes instanceof Blob
+        ? bytes.size > 32 * 1024 * 1024 ? await fingerprintSnapshot(bytes) : await hashBytes(await bytes.arrayBuffer())
+        : await hashBytes(bytes);
     let stat: DiskStat | null = null;
     try { stat = await statOf(handle); } catch { /* fall through to the forced-recheck stat */ }
-    return { lastModified: stat?.lastModified ?? 0, size: stat?.size ?? bytes.byteLength, hash };
+    return { lastModified: stat?.lastModified ?? 0, size: stat?.size ?? (bytes instanceof Blob ? bytes.size : bytes.byteLength), hash };
 }
 
 /** `name` with " (conflict)" before its extension; a name with no extension
@@ -2399,22 +2401,14 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 }
             }
 
-            if (bytes instanceof Blob) {
-                const writable = await fileHandle.createWritable();
-                await writable.write(bytes);
-                await writable.close();
-            } else await writeAllBytes(fileHandle, bytes);
+            await writeAllBytes(fileHandle, bytes);
         } catch (err) {
             // Vanished between the stat and the swap (or mid-read): still not ours
             // to recreate.
             if (isGone(err)) return { status: 'deleted' };
             throw err;
         }
-        if (!(bytes instanceof Blob)) return { status: 'written', version: await versionAfterWrite(fileHandle, bytes) };
-        const hash = bytes.size > 32 * 1024 * 1024 ? await fingerprintSnapshot(bytes) : await hashBytes(await bytes.arrayBuffer());
-        let stat: DiskStat | null = null;
-        try { stat = await statOf(fileHandle); } catch { /* force the next check to hash */ }
-        return { status: 'written', version: { lastModified: stat?.lastModified ?? 0, size: stat?.size ?? bytes.size, hash } };
+        return { status: 'written', version: await versionAfterWrite(fileHandle, bytes) };
     }, []);
 
     const inspectExportTarget = useCallback(async (dir: FileSystemDirectoryHandle, name: string): Promise<DiskVersion | null> => {
@@ -2485,7 +2479,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * along with the file are made again: the copy holds edits that exist
      * nowhere else (measured: closing such a tab lost them).
      */
-    const writeConflictCopy = useCallback((filePath: string, data: string | Uint8Array, vaultRoot?: FileSystemDirectoryHandle | null) => withMutation(async () => {
+    const writeConflictCopy = useCallback((filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null) => withMutation(async () => {
         const root = vaultRoot ?? rootHandleRef.current;
         if (!root) throw new Error('No vault open');
         const parentPath = parentVaultPath(filePath);
@@ -2498,7 +2492,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             if (!(await entryExists(dir, copyName))) break;
         }
         const handle = await dir.getFileHandle(copyName, { create: true });
-        await writeAllBytes(handle, toBytes(data));
+        await writeAllBytes(handle, data instanceof Blob ? data : toBytes(data));
         // Only the tree on screen is patched: a copy left in the vault being
         // switched away from is found there the next time it is opened.
         if (root === rootHandleRef.current) await patchTreeDirs(root, [patchFrom ?? parentPath]);
@@ -2511,7 +2505,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * now. Whatever is there (the user, or a `git checkout`, got there first) is
      * `exists`, and the caller turns that into a conflict instead of a write.
      */
-    const recreateFile = useCallback((filePath: string, data: string | Uint8Array) => withMutation(async () => {
+    const recreateFile = useCallback((filePath: string, data: string | Uint8Array | Blob) => withMutation(async () => {
         const root = rootHandleRef.current;
         if (!root) throw new Error('No vault open');
         const parentPath = parentVaultPath(filePath);
@@ -2520,7 +2514,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         if (await entryExists(dir, fileName)) return { status: 'exists' as const };
 
         const handle = await dir.getFileHandle(fileName, { create: true });
-        const bytes = toBytes(data);
+        const bytes = data instanceof Blob ? data : toBytes(data);
         await writeAllBytes(handle, bytes);
         const version = await versionAfterWrite(handle, bytes);
         await patchTreeDirs(root, [patchFrom ?? parentPath]);

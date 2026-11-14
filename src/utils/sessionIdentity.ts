@@ -31,6 +31,11 @@ export function installSessionIdentity(next: DocumentSessionStore): () => void {
     };
 }
 
+/** Wait for previous owners' asynchronous backend teardown before reusing a key. */
+export function awaitSessionDisposals(documentId: string): Promise<void> {
+    return store?.settled(documentId) ?? Promise.resolve();
+}
+
 /** Stable snapshot identity until this document's session or bytes change. */
 export function getSessionIdentity(documentId: string): SessionIdentity | undefined {
     const entry = store?.get(documentId);

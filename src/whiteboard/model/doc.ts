@@ -76,7 +76,7 @@ const EMPTY_CHILDREN: readonly Node[] = Object.freeze([]);
 // RV-22 asks whether a subtree is opaque, not for a mutable index. Strict
 // descendant counts are private to model; zero entries are absent. A million-node
 // frame under a one-child group must not be walked just to answer this guard.
-type OpaqueIndexedDoc = BoardDoc & { readonly opaqueDescendants: ReadonlyMap<ParentId, number> };
+export type OpaqueIndexedDoc = BoardDoc & { readonly opaqueDescendants: ReadonlyMap<ParentId, number> };
 export function hasOpaqueDescendant(doc: BoardDoc, parent: ParentId): boolean {
     return ((doc as OpaqueIndexedDoc).opaqueDescendants.get(parent) ?? 0) > 0;
 }

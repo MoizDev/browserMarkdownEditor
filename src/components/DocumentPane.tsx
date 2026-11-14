@@ -57,6 +57,7 @@ import { useFileSystem } from '../context/FileSystemContext';
 import { ASSETS_DIR } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { readRecord, flushRecord, scopedKey, removeStoredValue } from '../utils/storage';
+import { subscribeDocumentViewRetarget } from '../utils/documentViewRetarget';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
@@ -212,6 +213,9 @@ function flushFolds(path: string): void {
     }
     foldDebounce.delete(path);
 }
+
+const unsubscribeViewRetarget = subscribeDocumentViewRetarget(from => { flushScroll(from); flushFolds(from); });
+if (import.meta.hot) import.meta.hot.dispose(unsubscribeViewRetarget);
 
 /** Debounced fold persistence for one document. */
 function rememberFolds(path: string, state: EditorState): void {

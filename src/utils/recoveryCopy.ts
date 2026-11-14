@@ -19,6 +19,10 @@ export async function materializeRecoveryCopy(entry: Pick<RecoveryEntry, 'kind' 
     const copy = entry.copy;
     if (typeof copy === 'string' || copy instanceof Uint8Array || copy instanceof Blob) return copy;
     if (!copy || copy.kind !== 'recipe') throw new Error('Invalid recovery copy');
+    if (entry.kind === 'drawing' || entry.kind === 'notebook' || entry.kind === 'pdf') {
+        await import('../whiteboard/host/recoveryCopy');
+        signal.throwIfAborted();
+    }
     const registration = serializers.get(entry.kind);
     if (!registration) throw new Error(`No recovery copy serializer registered for ${entry.kind}`);
     const result = await registration.serialize(copy.payload, signal);

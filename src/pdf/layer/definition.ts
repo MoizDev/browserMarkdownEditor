@@ -1,7 +1,7 @@
 import type { Layer, PlatformLayerDefinition, ViewState } from '../../platform/render';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 import { PdfTileLayer } from './tileLayer';
-import type { PdfTileProducer } from './tileLayer';
+import type { PdfLayerMirror, PdfTileProducer } from './tileLayer';
 
 /** The definition is stable for one view lease; the platform owns its layer's
  * final GPU release/dispose. The pane may cancel view work without closing the
@@ -11,13 +11,14 @@ export function pdfPageLayerDefinition(options: {
     demand(view: ViewState): Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>;
     isCurrent(): boolean;
     onError(error: unknown, request: PdfTileRequest): void;
+    mirror?: PdfLayerMirror;
 }): { definition: PlatformLayerDefinition; current(): PdfTileLayer | null } {
     let current: PdfTileLayer | null = null;
     const asTileLayer = (layer: Layer): PdfTileLayer => layer as PdfTileLayer;
     const definition: PlatformLayerDefinition = {
         id: 'pdf-page', group: 'document',
         create(host) {
-            const layer = new PdfTileLayer(host, options.producer, options.demand, options.isCurrent, options.onError);
+            const layer = new PdfTileLayer(host, options.producer, options.demand, options.isCurrent, options.onError, options.mirror);
             current = layer;
             return layer;
         },

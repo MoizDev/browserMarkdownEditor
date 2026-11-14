@@ -25,7 +25,8 @@ import { bindPdfTextLayerSelection } from '../utils/pdfTextLayerSelection';
 import { copyPdfDocumentText } from '../utils/pdfDocumentCopy';
 import { remeasurePdfTextLayer } from '../utils/pdfTextLayerRemeasure';
 import { RotateCcw, RotateCw } from './icons';
-import { isClassicPdfCancellation, recordClassicRenderFailure } from '../utils/pdfClassicHealth';
+import { isClassicPdfCancellation, pdfOpenFailure, recordClassicRenderFailure, classicPdfFailureIsFatal } from '../utils/pdfClassicHealth';
+import { Limiter } from '../utils/pool';
 import PdfRenderNotice from './PdfRenderNotice';
 import { pageRenderRegion, satisfies, type PageRect, type RenderTarget } from '../utils/pdfRenderTarget';
 import PdfFindBar from './PdfFindBar';
@@ -36,7 +37,7 @@ import { createPdfFindHighlights, pdfFindBreaks, pdfFindRange, pdfFindSpan } fro
 import type { PdfFindBoundary, PdfFindMemory, PdfFindTextLayer, PdfFindTextSpan } from '../utils/pdfFindHighlight';
 import type { TextContent } from 'pdfjs-dist/types/src/display/api';
 import { usePdfPlatformPreview } from './usePdfPlatformPreview';
-import type { PreviewSnapshot } from '../pdf/preview/contracts';
+import type { PreviewSnapshot } from '../utils/pdfPreviewTypes';
 
 export interface PdfViewerHandle { openFind(): void }
 const findKey = (hit: PdfFindHit) => `${hit.page}:${hit.from}:${hit.to}`;
@@ -126,6 +127,8 @@ interface DocState {
     doc: PDFDocumentProxy;
     /** Per-page size at scale 1, in PDF points. */
     dims: Array<{ w: number; h: number }>;
+    /** Placeholder geometry is replaced only as pages approach the viewport. */
+    estimated?: Set<number>;
     /** Monotonic load counter — keys the page DOM and guards stale async work. */
     gen: number;
 }
@@ -133,6 +136,7 @@ interface DocState {
 interface PageState {
     pagePromise?: Promise<PDFPageProxy>;
     pageLease?: Promise<PdfPageLease>;
+    geometryPending?: Promise<void>;
     renderTask?: RenderTask;
     renderAbort?: AbortController;
     /** What the bitmap in this page's canvas actually shows. */
@@ -341,6 +345,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
      *  a hidden pane keeps, so coming back shows pixels rather than painting
      *  them (see the hide effect). */
     const onScreenRef = useRef<{ first: number; last: number } | null>(null);
+    const geometryLimiter = useMemo(() => new Limiter(4), []);
 
     const rootRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -453,11 +458,25 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 documentLease = await session.acquire();
                 if (cancelled) { documentLease.release(); return; }
                 const doc = documentLease.document;
-                // Geometry is retained with the document across surface mounts;
-                // its first acquisition is bounded-concurrent in the session.
-                const dims = (await session.geometry()).map(({ width, height }) => ({ w: width, h: height }));
+                if (!Number.isSafeInteger(doc.numPages) || doc.numPages <= 0) {
+                    throw Object.assign(new Error('PDF has no readable pages'), { name: 'InvalidPdf' });
+                }
+                if (doc.numPages > 100_000) throw Object.assign(new Error('PDF page index exceeds the viewer budget'), { name: 'ResourceLimit' });
+                // Large files start with cheap estimates rather than opening ten
+                // thousand pages before the first pixel. Small mixed files keep
+                // their full widest-page fit; a broken page falls back to the
+                // same progressive route so the other pages remain usable.
+                let dims: DocState['dims'] | undefined;
+                if (doc.numPages <= 512) {
+                    try { dims = (await session.geometry()).map(({ width, height }) => ({ w: width, h: height })); }
+                    catch (error) {
+                        if (isClassicPdfCancellation(error) || session.health.getSnapshot().some(classicPdfFailureIsFatal)) throw error;
+                    }
+                }
                 if (cancelled) return;
-                const ds: DocState = { doc, dims, gen };
+                const estimated = dims ? undefined : new Set(Array.from({ length: doc.numPages }, (_, i) => i));
+                dims ??= Array.from({ length: doc.numPages }, () => ({ w: 612, h: 792 }));
+                const ds: DocState = { doc, dims, gen, estimated };
                 // Set the ref synchronously: the re-anchor layout effect (which
                 // kicks the first window pass) runs before passive effects would
                 // have mirrored it.
@@ -469,7 +488,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             } catch (err) {
                 if (!cancelled) {
                     console.error('Could not open PDF for viewing:', err);
-                    setError(err instanceof Error ? err.message : String(err));
+                    setError(pdfOpenFailure(err).message);
                 }
             }
         })();
@@ -537,7 +556,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     const layout = useMemo<Layout | null>(() => {
         if (!docState || containerWidth <= 0) return null;
         const avail = Math.max(120, containerWidth - SIDE_GUTTER * 2);
-        const maxW = Math.max(...docState.dims.map(d => d.w));
+        const maxW = docState.dims.reduce((max, dim) => Math.max(max, dim.w), 0);
         const scale = Math.min(8, Math.max(0.05, (avail / maxW) * zoom));
         const pages = docState.dims.map(d => ({ w: d.w * scale, h: d.h * scale }));
         const tops: number[] = [];
@@ -836,7 +855,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         let task: RenderTask | undefined;
         try {
             const page = lease.page;
-            const viewport = page.getViewport({ scale });
+            const base = page.getViewport({ scale: 1 });
+            if (![base.width, base.height, scale].every(Number.isFinite) || base.width <= 0 || base.height <= 0 || scale <= 0) throw new Error('Invalid thumbnail geometry');
+            const viewport = page.getViewport({ scale: Math.min(scale, 512 / Math.max(base.width, base.height)) });
             canvas.width = Math.max(1, Math.ceil(viewport.width));
             canvas.height = Math.max(1, Math.ceil(viewport.height));
             const ctx = canvas.getContext('2d');
@@ -995,7 +1016,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             let task: RenderTask | undefined;
             try {
                 const page = lease.page;
-                const viewport = page.getViewport({ scale: maxSide / Math.max(dims.w, dims.h) });
+                const actual = page.getViewport({ scale: 1 });
+                if (![actual.width, actual.height, maxSide].every(Number.isFinite) || actual.width <= 0 || actual.height <= 0) return null;
+                const viewport = page.getViewport({ scale: Math.min(maxSide, 4096) / Math.max(actual.width, actual.height) });
                 canvas = document.createElement('canvas');
                 canvas.width = Math.max(1, Math.ceil(viewport.width));
                 canvas.height = Math.max(1, Math.ceil(viewport.height));
@@ -1175,6 +1198,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     const vp = page.getViewport({ scale: target.scale });
                     const cw = Math.max(1, Math.floor((rect ? rect.w : vp.width) * dpr));
                     const ch = Math.max(1, Math.floor((rect ? rect.h : vp.height) * dpr));
+                    if (!Number.isSafeInteger(cw) || !Number.isSafeInteger(ch) || cw * ch > MAX_CANVAS_PIXELS) {
+                        throw Object.assign(new Error('PDF page allocation exceeds the render budget'), { name: 'ResourceLimit' });
+                    }
                     const transform = rect
                         ? [dpr, 0, 0, dpr, -rect.x * dpr, -rect.y * dpr]
                         : (dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined);
@@ -1263,6 +1289,29 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         if (!L || !el || !visibleRef.current) return;
         const st = getState(i);
         if (st.failed) return;
+        const document = docStateRef.current;
+        if (document?.estimated?.has(i)) {
+            if (!st.geometryPending) {
+                const gen = document.gen;
+                st.geometryPending = geometryLimiter.run(async () => {
+                    const visible = onScreenRef.current;
+                    if (!visibleRef.current || docGenRef.current !== gen || !visible || i < visible.first - RENDER_AHEAD || i > visible.last + RENDER_AHEAD) return;
+                    const page = await getPage(i);
+                    const viewport = page.getViewport({ scale: 1 });
+                    if (![viewport.width, viewport.height, viewport.width * viewport.height].every(Number.isFinite) || viewport.width <= 0 || viewport.height <= 0) throw Object.assign(new Error('Invalid PDF page geometry'), { name: 'PageError' });
+                    const current = docStateRef.current;
+                    if (!current || current.gen !== gen || !current.estimated?.has(i)) return;
+                    const dims = current.dims.slice(); dims[i] = { w: viewport.width, h: viewport.height };
+                    const estimated = new Set(current.estimated); estimated.delete(i);
+                    const next = { ...current, dims, estimated };
+                    docStateRef.current = next; setDocState(next);
+                }).catch(error => {
+                    if (docGenRef.current !== gen || isClassicPdfCancellation(error)) return;
+                    st.failed = true; recordClassicRenderFailure(session.health, error, i);
+                }).finally(() => { st.geometryPending = undefined; });
+            }
+            return;
+        }
         const dpr = canvasDpr();
         const next: RenderTarget = { emphasis: emphasisRef.current, scale: L.scale, dpr, ...pageRegion(L, el, i, dpr) };
         // Measured: every equivalent scroll ask replaced the identity, wasting
@@ -1284,7 +1333,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             return;
         }
         st.loopPromise = renderLoop(i, st);
-    }, [getState, renderLoop, ensureText, ensureLinks, session]);
+    }, [getState, getPage, geometryLimiter, renderLoop, ensureText, ensureLinks, session]);
 
     const evictPage = useCallback((i: number) => {
         const st = pageStatesRef.current.get(i);
@@ -1886,7 +1935,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     if (error) {
         return (
             <div className="pdf-viewer" ref={rootRef}>
-                <div className="pdf-pane-message">PDF rendering is unavailable.</div>
+                <div className="pdf-pane-message" role="alert">{error} {onRetry && <button type="button" className="pdf-pane-action" onClick={onRetry} disabled={retryDisabled}>Try again</button>}</div>
             </div>
         );
     }

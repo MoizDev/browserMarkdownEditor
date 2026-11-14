@@ -299,7 +299,7 @@ Right-clicking in a note, or anywhere in the file tree, opens the application's 
 - *Move to Trash* asks first and names where the item is going, exactly as the row's own trash button does.
 - A row you are in the middle of renaming keeps the browser's menu, because what you want there is its Paste.
 
-A **drawing** keeps tldraw's own menu and a **PDF** keeps the browser's, since both of those already have menus that fit what they are.
+A **drawing** keeps its canvas controls. PDFs use their in-app reader and annotation controls.
 
 ---
 
@@ -412,7 +412,9 @@ The **Word emphasis** button in a reading header, its **⋯** row, and **Setting
 It leaves the source, save state, undo history and copied text intact. PDF and EPUB emphasis paints eligible glyphs in the same document view, preserving original layout, artwork and reading position. Switching it Off restores the original paint. Image-only pages and unsupported text profiles remain unchanged and show why the control is inactive, while retaining your preference. Source editing and code/TeX keep their existing presentation. Notes, TXT and extensionless files keep their existing Markdown presentation and editor typography. Toggle with Enter/Space or a pointer; no new global shortcut is added. Reading preferences are stored in your browser, never in the vault.
 
 ### PDFs
-Use **Print…** in a PDF pane (or \`Cmd + P\` / \`Ctrl + P\` while the PDF has focus) to save pending annotations and open the saved PDF in a new browser tab. Print from the browser’s PDF viewer there. An encrypted PDF may ask for its password again. To print a notebook, export it to PDF first.
+PDFs open **inside the app** in their own pane. **Original PDF** shows the original page layout, **Read extracted text** is an optional text view, and **Annotate** lets you draw on eligible PDFs. Returning to Original after saving shows the actual saved pages with ink; Annotate rebuilds them from the embedded pristine source and editable marks, not from an already-stamped copy.
+
+Use **Print…** in a PDF pane (or \`Cmd + P\` / \`Ctrl + P\` while the PDF has focus), choose **Prepare PDF** to save pending annotations, then **Open PDF** to open the exact saved file in a new browser tab. Print from the browser’s PDF viewer there. A blocked pop-up or changed file is reported; resolve the notice or allow pop-ups and try again. An encrypted PDF may ask for its password again in that viewer. To print a notebook, export it to PDF first.
 
 The pane header’s **Word emphasis** toggle paints supported glyphs directly on the original PDF page, including while annotating. It keeps the same tab, page layout, camera, links and annotations; switching Off restores the original paint. It never opens extracted text or performs OCR. Image-only scans, hidden OCR, fully clipped or covered text, missing font mappings and unsupported painting routes stay original. The header reports availability for the current page. **Aa** does not replace the native PDF’s fonts or geometry.
 
@@ -426,7 +428,9 @@ When switching PDF engines, saved Text passages are matched by their words and s
 
 If the PDF reader's code cannot load, its column offers **Retry**. This retries
 the reader, not your files. If the browser retains the loading failure, reload
-the app to try again.
+the app to try again. A password-protected PDF may report that it needs a password;
+the current reader does not yet provide an unlock prompt or store passwords. Editing
+and rotation of encrypted PDFs are refused so the encrypted file is not rewritten.
 
 In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, including pages you have never opened. A short single-line selection pre-fills the bar; otherwise it keeps this pane's last query. Matching ignores case and accents, folds ligatures, and matches across line breaks, hyphenated line ends and PDF text-item boundaries. The count shows progress and stops at **10,000+** matches. Scans without selectable text are not OCR'd.
 - In the input, \`Enter\` / \`Shift + Enter\` move to the next / previous match. \`Cmd + G\` / \`Ctrl + G\` and their Shift forms do the same from the bar or PDF page. Next waits for an unfinished scan rather than wrapping early.
@@ -461,6 +465,8 @@ whose page is unknown appears above the document. Its thumbnail says
 **Thumbnail unavailable**, rather than pretending to be a blank page.
 **Try again** reopens the PDF; it does not repair or change the original file.
 In Annotate, switch to View to retry without disturbing your ink.
+
+**PDF limitations.** The current reader has page thumbnails but no outline/bookmark panel. Form fields and XFA are not interactive here; scripts and active PDF content do not run. Scanned pictures are not OCR'd. An unusual PDF using \`/UserUnit\` may display at a different relative size in another PDF engine; check its Original pages when comparing viewers.
 
 If rendering makes no progress for a while, **This PDF is taking longer than usual**
 lets you keep waiting or choose **Try again** to restart the renderer. Slow scans
@@ -517,7 +523,9 @@ saying it is read-only; drawing and saving change nothing in it. You can still
 read, select, copy and find in it, and open its Text. Choose **Retry** if an
 attachment could not be read; otherwise open it in a version of the app that wrote
 it, or recover the annotations first. Never delete attachments from your only copy
-just to make the note go away. Existing attachments are retained when you save;
+just to make the note go away. If one PDF page cannot be rendered, its notice offers
+Retry while the other pages remain available. Very long PDFs initially use estimated
+page sizes; those estimates adjust as you visit pages. Existing attachments are retained when you save;
 if different attachments have the same name, a notice gives the recovered names
 used to keep both. If attachment repair or its verification fails, nothing is written.
 
@@ -565,7 +573,7 @@ Nothing is lost by this:
 - And anything that was retired is still sitting in \`.Garbage\`: it is listed in the Trash bin like anything else, and putting it back returns it to \`.Assets\`, where your notes can show it again.
 
 ### Opening Media
-If you click on \`.pdf\`, \`.jpg\`, \`.jpeg\`, or \`.png\` files directly within the file tree, they will automatically open in a new browser tab for viewing rather than attempting to load as text.
+Click a \`.pdf\` in the file tree to open it in the app's PDF pane, not as text. Images such as \`.jpg\`, \`.jpeg\`, and \`.png\` open in a browser tab.
 
 ### The Trash System
 To prevent accidental permanent data loss, deleting a file does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Garbage\` folder located in the same directory as the file — deleting \`Maths/Calculus/notes.md\` puts it in \`Maths/Calculus/.Garbage\`, so a deletion stays next to the notes it came from. Deleting the same name twice keeps both copies (the second becomes \`notes (1).md\`).

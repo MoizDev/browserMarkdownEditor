@@ -156,6 +156,10 @@ export class PointerAcquisition {
       if (item.pointerId !== contact.id || !Number.isFinite(item.timeStamp) || item.timeStamp < previous) throw new Error('Unordered pointer batch')
       previous = item.timeStamp
       const key = tuple(item)
+      // Earlier timestamps are already rejected by the watermark; retain the full
+      // equal-time raw suffix so coarse browser clocks cannot reintroduce duplicates.
+      if (raw && item.timeStamp > contact.watermark) contact.rawSinceMove.clear()
+      if (raw && contact.rawSinceMove.has(key)) continue
       if (!raw) {
         const delivered = contact.rawSinceMove.get(key) ?? 0
         if (delivered) {

@@ -310,6 +310,10 @@ export class GpuCompositor implements PaneCompositor {
                     }
                     try {
                         const submitted = owned.submit();
+                        // Publish the canonical CSS extent with the completed framebuffer, not
+                        // during metrics preparation while the previous picture is still displayed.
+                        this.surface.style.width = `${snapshot.metrics!.viewport.width}px`;
+                        this.surface.style.height = `${snapshot.metrics!.viewport.height}px`;
                         done = true;
                         this.#encodings.delete(owned);
                         this.#retryPending = false;

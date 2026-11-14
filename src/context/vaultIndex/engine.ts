@@ -1,7 +1,8 @@
 import { decodeDocumentText } from '../../utils/diskVersion';
 import { assembleGraph } from '../../utils/vaultIndex/graph';
 import { noteFactsSliced } from '../../utils/vaultIndex/facts';
-import type { IndexFile, IndexGraph, IndexSession } from '../../utils/vaultIndex/types';
+import type { IndexFile, IndexGraph, IndexMediaSnapshot, IndexSession } from '../../utils/vaultIndex/types';
+import { BoardMediaIndex } from './media';
 import type { WorkerContext } from '../../platform/workers/serve';
 import type { IndexReader, IndexStat } from './reader';
 import { IndexStore } from './store';
@@ -20,6 +21,8 @@ export class IndexEngine {
     private reportedTimes = new Map<string, number>();
     private changedTimes = new Map<string, [number, number]>();
     persistence?: PersistSession;
+    readonly media: BoardMediaIndex;
+    private mediaAssets?: Map<string, readonly string[]>;
     readPersistedText(path: string, mtime: number, size: number): Promise<string | undefined> {
         return this.persistence?.readText(path, mtime, size) ?? Promise.resolve(undefined);
     }
@@ -29,10 +32,43 @@ export class IndexEngine {
     constructor(readonly session: IndexSession, private reader: IndexReader,
         private publish: (graph: IndexGraph) => void,
         private status: (phase: 'sweeping' | 'idle', done: number, total: number) => void,
-        private onTimes?: (changes: [string, number, number][], sweepComplete: boolean) => void) {}
+        private onTimes?: (changes: [string, number, number][], sweepComplete: boolean) => void,
+        private onMediaChanged?: () => void) {
+        // The context changes per sweep; media's reader is set for each reconcile below.
+        this.media = new BoardMediaIndex({ stat: file => {
+            const context = this.mediaContext;
+            if (!context) throw new DOMException('Media scan cancelled', 'AbortError');
+            return this.searchStat(file, context);
+        } });
+        this.media.subscribe(() => this.onMediaChanged?.());
+    }
+    private mediaContext?: WorkerContext;
+    private mediaRun = 0;
+    mediaSnapshot(folder: string): IndexMediaSnapshot { return this.media.snapshot(folder); }
+    setMediaAssets(entries: [string, string[]][]): void {
+        this.mediaAssets = new Map(entries.map(([folder, names]) => [folder, [...names]]));
+        this.media.invalidate([]);
+    }
+    async reconcileMedia(context: WorkerContext): Promise<void> {
+        if (this.stopped || context.cancelled || !this.mediaAssets) return;
+        const treeGen = this.store.treeGen, run = ++this.mediaRun;
+        this.mediaContext = context;
+        const abort = () => { if (this.mediaRun === run) this.media.invalidate([]); };
+        context.signal.addEventListener('abort', abort, { once: true });
+        try {
+            await this.media.reconcile(this.store.files, this.mediaAssets);
+            if (!this.stopped && !context.cancelled && this.mediaRun === run && this.store.treeGen === treeGen) {
+                this.persistence?.markMedia(this.media.dump());
+            }
+        } finally {
+            context.signal.removeEventListener('abort', abort);
+            if (this.mediaRun === run) this.mediaContext = undefined;
+        }
+    }
 
     close(): void {
         this.stopped = true;
+        this.media.dispose();
         this.ioWaiters.splice(0).forEach(wake => wake());
     }
     foregroundIO(active: number, revision: number): void {
@@ -90,6 +126,39 @@ export class IndexEngine {
             if (!await this.acquireIO(context)) throw new DOMException('Index request cancelled', 'AbortError');
             try { return await stat.bytes(); }
             finally { this.releaseIO(); }
+        }, stream: () => {
+            let input: ReadableStreamDefaultReader<Uint8Array> | undefined;
+            let held = false, finished = false;
+            const release = () => { if (held) { held = false; this.releaseIO(); } };
+            const abort = () => { if (input) void input.cancel(context.signal.reason).catch(() => {}).finally(release); };
+            return new ReadableStream<Uint8Array>({
+                pull: async controller => {
+                    try {
+                        if (finished) return;
+                        if (!input) {
+                            if (!await this.acquireIO(context)) throw new DOMException('Index request cancelled', 'AbortError');
+                            held = true;
+                            context.signal.throwIfAborted();
+                            input = stat.stream().getReader();
+                            context.signal.addEventListener('abort', abort, { once: true });
+                            context.signal.throwIfAborted();
+                        }
+                        const chunk = await input.read();
+                        context.signal.throwIfAborted();
+                        if (chunk.done) { finished = true; context.signal.removeEventListener('abort', abort); release(); controller.close(); }
+                        else controller.enqueue(chunk.value);
+                    } catch (error) {
+                        finished = true; context.signal.removeEventListener('abort', abort);
+                        try { await input?.cancel(error); } catch { /* Preserve the original error. */ }
+                        release(); controller.error(error);
+                    }
+                },
+                cancel: async reason => {
+                    finished = true;
+                    context.signal.removeEventListener('abort', abort);
+                    try { await input?.cancel(reason); } finally { release(); }
+                },
+            });
         } };
     }
     private async read(file: IndexFile, context: WorkerContext): Promise<{ file: IndexFile; rev: number; mtime: number; size: number; bytes: ArrayBuffer } | undefined> {
@@ -118,6 +187,7 @@ export class IndexEngine {
         } finally { if (held) this.releaseIO(); }
     }
     async invalidate(paths: readonly string[], context: WorkerContext): Promise<void> {
+        this.media.invalidate(paths);
         const wanted = new Set(paths);
         await this.runFiles(this.store.files.filter(file => wanted.has(file.path)), context);
         await this.publishGraph(context);
@@ -153,6 +223,7 @@ export class IndexEngine {
         if (this.store.treeGen !== currentGen) return { next: 0, treeGen: this.store.treeGen, done: false };
         const next = Math.min(start + 8, files.length);
         if (next === files.length) {
+            await this.reconcileMedia(context);
             await this.publishGraph(context);
             if (this.store.treeGen !== currentGen) return { next: 0, treeGen: this.store.treeGen, done: false };
             if (!this.stopped) {

@@ -35,7 +35,8 @@ export interface PdfPoolDocument {
     readonly source: 'outer' | 'original';
     readonly info: Readonly<DocInfo>;
     readonly closed: boolean;
-    geometry(page: number): Readonly<PageGeometry>;
+    /** Exact transforms are acquired on demand; document extents alone are layout estimates. */
+    resolveGeometry(page: number, options: PdfRequestOptions): Promise<Readonly<PageGeometry>>;
     request<K extends PdfDocumentOp>(op: K, args: WithoutDocKey<PdfArgs<K>>, options: PdfRequestOptions): Promise<PdfResult<K>>;
     text(page: number, detail: PdfTextDetail, options: PdfRequestOptions): Promise<PageTextReply>;
     tile(args: WithoutDocKey<PageTileArgs>, options: PdfRequestOptions): Promise<PageTileResult>;

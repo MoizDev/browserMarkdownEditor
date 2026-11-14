@@ -33,6 +33,7 @@ export class PaneSizeObserver {
     private pending = false;
     private frameId = -1;
     private frameValue: PaneSizeObservation | null = null;
+    private readingFrame = false;
 
     constructor(host: HTMLElement, private readonly onSize: (size: PaneSizeObservation) => void,
         private readonly onError: (error: unknown) => void) {
@@ -52,8 +53,12 @@ export class PaneSizeObserver {
         }
         if (!this.active) return null;
         if (frameId === this.frameId) return this.frameValue;
-        this.checkDpr();
+        // onSize may synchronously reenter this reader while a DPR check publishes.
         this.frameId = frameId;
+        this.frameValue = this.value;
+        this.readingFrame = true;
+        try { this.checkDpr(); }
+        finally { this.readingFrame = false; }
         this.frameValue = this.value;
         this.pending = false;
         return this.frameValue;
@@ -121,19 +126,20 @@ export class PaneSizeObserver {
 
     private record(entry: ResizeObserverEntry): void {
         if (!this.host || !this.view) return;
-        if (entry.contentBoxSize.length > 1) throw new RangeError('A canvas pane must not fragment');
+        if (entry.contentBoxSize?.length > 1) throw new RangeError('A canvas pane must not fragment');
         const content = { width: entry.contentRect.width, height: entry.contentRect.height,
             x: entry.contentRect.x, y: entry.contentRect.y };
         if (!Object.values(content).every(Number.isFinite) || content.width < 0 || content.height < 0) {
             throw new RangeError('Invalid pane content box');
         }
-        this.content = content;
         const dpr = this.nominalDpr();
         const mode = this.view.getComputedStyle(this.host).writingMode;
         const vertical = mode.startsWith('vertical') || mode.startsWith('sideways');
         const fragments = entry.devicePixelContentBoxSize;
         const physical = fragments?.length ? devicePixelBox(fragments, vertical ? 'vertical' : 'horizontal') :
             cssFallbackBox(content.width, content.height, dpr);
+        // Do not let a rejected fragmented/device-box entry become the next DPR fallback.
+        this.content = content;
         if (this.mediaDpr !== dpr) this.armDpr();
         this.publish(physical, dpr, content, mode);
     }
@@ -151,6 +157,7 @@ export class PaneSizeObserver {
         const value = Object.freeze({ generation: this.generation, physical: Object.freeze({ ...physical }), nominalDpr,
             cssWidth, cssHeight, contentX: content.x, contentY: content.y, writingMode });
         this.value = value;
+        if (this.readingFrame) this.frameValue = value;
         this.onSize(value);
     }
 

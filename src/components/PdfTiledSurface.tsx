@@ -3,8 +3,9 @@ import type { PdfReadingBinding } from '../types/reading';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
-import type { PdfTiledSource, PdfTiledSourceFactory } from './PdfTiledView';
+import type { PdfTiledSource } from './PdfTiledView';
 import PdfTiledView from './PdfTiledView';
+import PdfPasswordCoordinator from './PdfPasswordCoordinator';
 
 interface Props {
     reading: PdfReadingBinding;
@@ -29,14 +30,16 @@ export default function PdfTiledSurface(props: Props) {
     const [loaded, setLoaded] = useState<{ key: string; source: PdfTiledSource } | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [retry, setRetry] = useState(0);
+    const [passwords, setPasswords] = useState<typeof import('../pdf/session/passwords') | null>(null);
     const key = identity ? `${reading.identity.vaultEpoch}:${reading.identity.documentId}:${identity.serial}:${identity.bytesGeneration}` : '';
     const source = loaded?.key === key ? loaded.source : null;
     useEffect(() => {
         if (!key) return;
         const controller = new AbortController();
-        void import('../pdf/session/sourceRuntime').then(({ getPdfTiledSourceFactory }) => {
-            const factory: PdfTiledSourceFactory | undefined = getPdfTiledSourceFactory();
-            if (!factory) throw new Error('The new PDF engine is unavailable. Retry or choose Classic in settings.');
+        void Promise.all([import('../pdf/session/sourceRuntime'), import('../pdf/session/passwords')]).then(async ([{ ensurePdfTiledSourceFactory }, store]) => {
+            if (!controller.signal.aborted) setPasswords(store);
+            const factory = await ensurePdfTiledSourceFactory();
+            controller.signal.throwIfAborted();
             return factory.open(reading, controller.signal);
         }).then(value => {
             if (!controller.signal.aborted) { setLoaded({ key, source: value }); setError(null); }
@@ -45,10 +48,23 @@ export default function PdfTiledSurface(props: Props) {
         });
         return () => controller.abort();
     }, [reading, key, retry]);
+    useEffect(() => {
+        if (!key) return;
+        let disposed = false;
+        let release: (() => void) | undefined;
+        void import('../pdf/session/startup').then(({ retainPdfFocus }) => {
+            if (disposed) return;
+            const lease = retainPdfFocus(reading.identity.documentId);
+            lease.setFocused(props.visible && props.focused);
+            release = () => lease.dispose();
+        });
+        return () => { disposed = true; release?.(); };
+    }, [key, reading.identity.documentId, props.visible, props.focused]);
     useEffect(() => { if (source) onSource(source); }, [onSource, source]);
-    if (error && !source) return <div className="pdf-pane-message" role="alert">{error}
-        <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button></div>;
-    if (!source) return <div className="pdf-pane-message" role="status">Loading PDF…</div>;
+    const passwordPrompt = passwords ? <PdfPasswordCoordinator identity={reading.identity} store={passwords} /> : null;
+    if (error && !source) return <>{passwordPrompt}<div className="pdf-pane-message" role="alert">{error}
+        <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button></div></>;
+    if (!source) return <>{passwordPrompt}<div className="pdf-pane-message" role="status">Loading PDF…</div></>;
     return <PdfTiledView reading={reading} session={source.session} document={source.document}
         mirror={source.mirror} capturer={source.capturer} selectionState={source.selection}
         filePath={props.filePath} isVisible={props.visible} isFocused={props.focused} sourceHash={props.sourceHash}

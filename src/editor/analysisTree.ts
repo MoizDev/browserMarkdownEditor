@@ -44,34 +44,71 @@ export function treeDelta(oldTree: Tree, newTree: Tree, changes: ChangeDesc,
         edits.push({ from, to });
         dirty.push({ from, to });
     });
-    // A stable block with stable neighbours at every container level bounds the
-    // change without enumerating every item in a long list or quote.
-    if (edits.length === 1 && changes.mapPos(oldTree.length, -1) === newTree.length) {
-        let a: SyntaxNode | null = oldTree.resolveInner(Math.min(editsOld[0].from, oldTree.length), 1);
-        let b: SyntaxNode | null = newTree.resolveInner(Math.min(editsNew[0].from, newTree.length), 1);
-        while (a?.parent && !CONTAINERS.has(a.parent.name)) a = a.parent;
-        while (b?.parent && !CONTAINERS.has(b.parent.name)) b = b.parent;
-        const oldBlock = a, changedBlock = b;
-        const sameNeighbour = (left: SyntaxNode | null, right: SyntaxNode | null) =>
-            left && right ? sameMappedNode(left, right, changes) : left === right;
-        let stable = !!a && !!b && a.name !== 'Document' && sameMappedNode(a, b, changes);
-        while (stable && a && b && a.parent && b.parent) {
-            stable = sameNeighbour(a.prevSibling, b.prevSibling) && sameNeighbour(a.nextSibling, b.nextSibling)
-                && sameMappedNode(a.parent, b.parent, changes);
-            a = a.parent; b = b.parent;
-        }
-        if (stable && oldBlock && changedBlock) {
-            if (oldDoc && oldBlock.name === 'FencedCode' && changedBlock.name === 'FencedCode') {
-                const oldFirst = oldDoc.lineAt(oldBlock.from), newFirst = newDoc.lineAt(changedBlock.from);
-                const oldLast = oldDoc.lineAt(Math.max(oldBlock.from, oldBlock.to - 1));
-                const newLast = newDoc.lineAt(Math.max(changedBlock.from, changedBlock.to - 1));
-                const opener = /^\s*(`{3,}|~{3,})([^`]*)$/.exec(oldFirst.text);
-                if (opener && oldFirst.text === newFirst.text && oldLast.text === newLast.text
-                    && !/^\s*mermaid(?:\s|$)/i.test(opener[2])
-                    && editsOld[0].from > oldFirst.to && editsOld[0].to < oldLast.from) return mergeAnalysisRanges(dirty);
+    if (edits.length) {
+        const oldFrom = editsOld[0].from, oldTo = editsOld[editsOld.length - 1].to;
+        const newFrom = edits[0].from, newTo = edits[edits.length - 1].to;
+        const mappedFrom = (node: SyntaxNode) => changes.mapPos(node.from, 1);
+        const mappedTo = (node: SyntaxNode) => changes.mapPos(node.to, -1);
+        const narrowFence = (a: SyntaxNode, b: SyntaxNode): boolean => {
+            if (!oldDoc || a.name !== 'FencedCode' || b.name !== 'FencedCode') return false;
+            const markA = a.getChild('CodeMark'), markB = b.getChild('CodeMark');
+            if (!markA || !markB) return false;
+            const firstA = oldDoc.lineAt(markA.from), firstB = newDoc.lineAt(markB.from);
+            const lastA = oldDoc.lineAt(Math.max(a.from, a.to - 1));
+            const lastB = newDoc.lineAt(Math.max(b.from, b.to - 1));
+            const closedA = a.lastChild?.name === 'CodeMark' && a.lastChild.from !== markA.from;
+            const closedB = b.lastChild?.name === 'CodeMark' && b.lastChild.from !== markB.from;
+            const info = oldDoc.sliceString(markA.to, firstA.to);
+            return firstA.text === firstB.text && closedA === closedB && lastA.text === lastB.text
+                && !/^\s*mermaid(?:\s|$)/i.test(info)
+                && oldFrom > firstA.to && oldTo < lastA.from;
+        };
+        const compareRun = (oldParent: SyntaxNode, newParent: SyntaxNode): void => {
+            // Find an unchanged predecessor, walking backwards across every
+            // mismatched sibling rather than assuming the immediate neighbour is stable.
+            let a = oldParent.childBefore(Math.min(oldTo + 1, oldParent.to));
+            let b = newParent.childBefore(Math.min(newTo + 1, newParent.to));
+            while (a && b) {
+                if (a.to < oldFrom && b.to < newFrom && sameMappedNode(a, b, changes)) break;
+                const af = mappedFrom(a);
+                if (af >= b.from) a = a.prevSibling;
+                if (af <= b.from) b = b.prevSibling;
             }
-            return mergeAnalysisRanges([...dirty, { from: changedBlock.from, to: changedBlock.to }]);
+            // Only a matched pair is an anchor; otherwise start at the first child.
+            const anchored = !!a && !!b;
+            a = anchored ? a!.nextSibling : oldParent.firstChild;
+            b = anchored ? b!.nextSibling : newParent.firstChild;
+            const oldRun: SyntaxNode[] = [], newRun: SyntaxNode[] = [];
+            while (a || b) {
+                if (a && b && a.from >= oldTo && b.from >= newTo && sameMappedNode(a, b, changes)) break;
+                if (!b) { oldRun.push(a!); a = a!.nextSibling; continue; }
+                if (!a) { newRun.push(b); b = b.nextSibling; continue; }
+                const af = mappedFrom(a);
+                if (af <= b.from) { oldRun.push(a); a = a.nextSibling; }
+                if (af >= b.from) { newRun.push(b); b = b.nextSibling; }
+            }
+            if (oldRun.length === 1 && newRun.length === 1) {
+                const oldNode = oldRun[0], newNode = newRun[0];
+                if (oldNode.name === newNode.name && oldNode.from <= oldFrom && oldNode.to >= oldTo
+                    && newNode.from <= editsNew[0].from && newNode.to >= editsNew[editsNew.length - 1].to) {
+                    if (CONTAINERS.has(newNode.name)) { compareRun(oldNode, newNode); return; }
+                    if (narrowFence(oldNode, newNode)) return;
+                }
+            }
+            for (const node of oldRun) dirty.push({ from: mappedFrom(node), to: mappedTo(node) });
+            for (const node of newRun) dirty.push({ from: node.from, to: node.to });
+        };
+        compareRun(oldTree.topNode, newTree.topNode);
+        const mappedLength = changes.mapPos(oldTree.length, -1);
+        if (mappedLength !== newTree.length) {
+            const start = mappedLength < newTree.length ? changes.mapPos(lastLeafStart(oldTree), -1) : lastLeafStart(newTree);
+            dirty.push({ from: Math.max(0, start), to: Math.max(mappedLength, newTree.length) });
         }
+        return mergeAnalysisRanges(dirty.map(range => {
+            const from = Math.max(0, Math.min(newDoc.length, range.from));
+            const to = Math.max(from, Math.min(newDoc.length, range.to));
+            return { from: newDoc.lineAt(from).from, to: newDoc.lineAt(to).to };
+        }));
     }
     const mapped = (node: SyntaxNode): CharRange => ({
         from: changes.mapPos(node.from, 1), to: changes.mapPos(node.to, -1),

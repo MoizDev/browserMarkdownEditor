@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { developmentPdfiumAssets } from './build/pdfiumDevAssets'
 import { pdfClassicAssets } from './build/pdfClassicAssets'
 import { pdfContainedAssets } from './build/pdfContainedAssets'
+import { pdfFontAssets } from './build/pdfFontAssets'
 import { whiteboardSvgFrames } from './build/whiteboardSvgFrames.mjs'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
@@ -16,7 +17,7 @@ const buildId = randomUUID()
 export default defineConfig({
   // Index workers share split modules; Chromium-only module workers support ES chunks.
   worker: { format: 'es' },
-  plugins: [react(), pdfClassicAssets(), developmentPdfiumAssets(), pdfContainedAssets(), whiteboardSvgFrames(root), {
+  plugins: [react(), pdfClassicAssets(), developmentPdfiumAssets(), pdfContainedAssets(), pdfFontAssets(), whiteboardSvgFrames(root), {
     // The benchmark-build constant (verification.md §2.1, contracts C9): true only
     // in `vite build --mode benchmark` (a dev server in that mode stays false: the
     // benchmark build is the production build plus hooks, nothing else), so every

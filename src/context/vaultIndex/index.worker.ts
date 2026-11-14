@@ -49,6 +49,8 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
             }, (changes, sweepComplete) => {
                 context.emit('fileTimes', { session, changes, sweepComplete });
                 if (sweepComplete) context.emit('searchChanged', { session });
+            }, () => {
+                if (current(session) === owner) context.emit('mediaChanged', { session, treeGen: owner.store.treeGen });
             });
         const owner = engine;
         const persistence = new PersistSession(session.vaultId, (kind, detail) => context.emit('problem', { session, kind, detail }));
@@ -56,6 +58,9 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         const records = await persistence.open();
         if (current(session) !== owner) { await persistence.close(); return null; }
         owner.store.hydrate(records);
+        const media = await persistence.readMedia();
+        if (current(session) !== owner) return null;
+        if (owner.store.treeGen < 0) owner.media.restore(media);
         owner.store.onChange = (path, record, text) => persistence.mark(path, record, text);
         searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner,
             (path, mtime, size) => owner.readPersistedText(path, mtime, size),
@@ -88,6 +93,7 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         const files = pending.files;
         pending = undefined;
         if (active.store.setTree(treeGen, files.map(({ path, kind }) => ({ path, kind })))) {
+            active.media.invalidate([]);
             reader.handles.clear();
             for (const file of files) reader.handles.set(file.path, file.handle);
             searchText?.setTree(treeGen, active.store.files);
@@ -100,6 +106,7 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         };
         const active = current(session);
         if (active && reader && active.store.treeDelta(treeGen, added, removed, renamed, order)) {
+            active.media.invalidate([...removed, ...added.map(file => file.path), ...renamed.flatMap(file => [file.from, file.to])]);
             for (const path of removed) reader.handles.delete(path);
             for (const item of renamed) { reader.handles.delete(item.from); reader.handles.set(item.to, item.handle); }
             for (const file of added) reader.handles.set(file.path, file.handle);
@@ -108,6 +115,20 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
             for (const path of removed) overlays.delete(path);
             for (const item of renamed) { overlays.delete(item.from); overlays.delete(item.to); }
         }
+        return null;
+    },
+    mediaAssets(value) {
+        const { session, entries } = value as SessionArgs & { entries: [string, string[]][] };
+        current(session)?.setMediaAssets(entries);
+        return null;
+    },
+    mediaSnapshot(value) {
+        const { session, folder } = value as SessionArgs & { folder: string };
+        return current(session)?.mediaSnapshot(folder) ?? null;
+    },
+    async mediaSweep(value, context) {
+        const { session } = value as SessionArgs;
+        await current(session)?.reconcileMedia(context);
         return null;
     },
     async graph(value, context) {
@@ -171,6 +192,7 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         const active = current(session);
         if (active) {
             active.store.rebuild();
+            active.media.invalidate();
             searchText?.invalidate(active.store.files.map(file => file.path));
         }
         return null;

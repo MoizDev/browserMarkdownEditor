@@ -176,6 +176,7 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
             setSlot<T>(key: symbol, value: T, dispose?: (value: T) => void | Promise<void>) {
                 if (closed) throw new Error('Cannot set a slot on a released session');
                 const previous = slots.get(key);
+                if (previous && Object.is(previous.value, value)) return;
                 slots.delete(key);
                 disposeSlot(documentId, previous?.dispose);
                 slots.set(key, { value, dispose: dispose ? () => dispose(value) : undefined });

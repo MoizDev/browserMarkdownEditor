@@ -3478,7 +3478,10 @@ body.is-resizing-panes * {
 .pdf-platform-preview-surface > canvas { width: 100%; height: 100%; display: block; }
 .pdf-platform-preview-live .pdf-platform-preview-surface { visibility: visible; }
 .pdf-platform-preview-live .pdf-viewer-inner { position: relative; z-index: 2; }
-.pdf-platform-preview-live .pdf-viewer-page { background: transparent; }
+/* The inverted reader's black page box is above this canvas too. Its more specific
+   background must not conceal otherwise complete page+ink pixels on a tab return. */
+.pdf-viewer.pdf-platform-preview-live .pdf-viewer-page,
+.pdf-viewer.pdf-platform-preview-live.is-inverted .pdf-viewer-page { background: transparent; }
 .pdf-platform-preview-live .pdf-viewer-page > canvas { visibility: hidden; }
 
 /* The CSS-variable contract pdf.js text layers size themselves by:

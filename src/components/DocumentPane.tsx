@@ -9,7 +9,9 @@ import WordEmphasisToggle from './WordEmphasisToggle';
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { Compartment, EditorState } from '@codemirror/state';
-import type { ChangeDesc } from '@codemirror/state';
+import type { ChangeDesc, Extension } from '@codemirror/state';
+import { createMarkdownSession } from '../editor/markdownSession';
+import type { MarkdownSessionHost, MarkdownSessionUpdate } from '../editor/markdownSession.types';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { LanguageDescription } from '@codemirror/language';
@@ -20,7 +22,7 @@ import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidian
 import { createLivePreviewPlugin, livePreviewField } from '../editor/livePreview';
 import { docAnalysisField } from '../editor/docAnalysis';
 import { markEditorModeRender } from '../editor/editorPerf';
-import type { ImageDeleteRequest, ImageEmbedActions } from '../editor/imageWidget';
+import type { ImageEmbedActions } from '../editor/imageWidget';
 import { markdownFormatExtension } from '../editor/formatKeymap';
 import { indentSettings, listIndentKeymap } from '../editor/lists';
 import { wikiLinkAutocomplete } from '../editor/wikiLinkComplete';
@@ -48,7 +50,7 @@ import { tabIntoText } from '../editor/tabIntoText';
 import { docString } from '../editor/docCache';
 import { wordCountField } from '../editor/wordCount';
 import { publishWordCounts } from '../utils/wordCountStore';
-import { externalReload, reloadSpec } from '../editor/externalReload';
+import { reloadSpec } from '../editor/externalReload';
 import { registerView, type LineCol, type MarkdownViewInfo, type TextChange } from '../utils/viewRegistry';
 import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
@@ -491,13 +493,6 @@ function editorMenuEntries(view: EditorView, notify: (message: string) => void):
     ];
 }
 
-/** A delete request, tagged with the document it was raised against — the
- *  confirmation is the app's (EditorPane's), and with several panes on screen
- *  it has to know which one asked. */
-export interface PaneImageDelete extends ImageDeleteRequest {
-    path: string;
-}
-
 interface DocumentPaneProps {
     reading: ReaderIntegration;
     tab: OpenTab;
@@ -565,6 +560,7 @@ interface DocumentPaneProps {
     stateCache: Map<string, EditorState>;
     contentOf(path: string): string | undefined;
     documentBuffers: DocumentBufferStore;
+    markdownSessions: MarkdownSessionHost;
     /** Register what takes the keyboard when a tab-bar click brings this note
      *  to the front (see EditorPane's handKeyboardToNote); returns the
      *  unregister. Stable, for the memo. Called from an effect and never baked
@@ -585,7 +581,6 @@ interface DocumentPaneProps {
     onRetryRead: (path: string) => Promise<boolean>;
     onFocusPane: (path: string) => void;
     onOpenNote: OpenNoteByNameHandler;
-    onImageDelete: (request: PaneImageDelete) => void;
     /** Say something to the reader — the app's own dialog, from App's `tell`.
      *  A refused clipboard and a refused `.md` drop use it, and it is the
      *  difference between a gesture that explains itself and a dead one.
@@ -598,9 +593,10 @@ interface DocumentPaneProps {
     onRevealHandled: () => void;
 }
 
-function TexDocument({ store, documentId, path, contentOf, initial }: { store: DocumentBufferStore; documentId: string; path: string; contentOf(path: string): string | undefined; initial: string }) {
+function TexDocument({ store, documentId, path, contentOf }: { store: DocumentBufferStore; documentId: string; path: string; contentOf(path: string): string | undefined }) {
     useDocumentRevision(store, documentId);
-    return <TexView source={contentOf(path) ?? initial} />;
+    const text = contentOf(path);
+    return text === undefined ? null : <TexView source={text} />;
 }
 
 /**
@@ -638,6 +634,7 @@ function DocumentPane({
     stateCache,
     contentOf,
     documentBuffers,
+    markdownSessions,
     registerKeyboardTarget,
     getWikiLinkTargets,
     onContentChange,
@@ -650,7 +647,6 @@ function DocumentPane({
     onToggleMode,
     onExportNotebook,
     onOpenNote,
-    onImageDelete,
     onNotify,
     onConfirm,
     revealRequest,
@@ -661,6 +657,7 @@ function DocumentPane({
 
     const file = tab.file;
     const path = file.path;
+    const documentId = tab.id;
     const mode = tab.mode;
     const isDrawing = !file.isHelp && isDrawingFile(file.name);
     const isNotebook = !file.isHelp && isNotebookFile(file.name);
@@ -697,6 +694,7 @@ function DocumentPane({
     };
 
     const viewRef = useRef<EditorView | null>(null);
+    const detachViewRef = useRef<(() => void) | undefined>(undefined);
     /** True only while setEditorContainer builds the view — see there. */
     const buildingViewRef = useRef(false);
 
@@ -781,10 +779,12 @@ function DocumentPane({
     useEffect(() => { tabRef.current = tab; }, [tab]);
     const isHelp = !!file.isHelp;
     useEffect(() => {
-        if (isCanvas || unreadable) return;
+        if (isCanvas || unreadable || contentOf(path) === undefined) return;
         const text = () => {
             const view = viewRef.current;
-            return view ? docString(view.state.doc) : contentOf(path) ?? tabRef.current.content;
+            const current = view ? docString(view.state.doc) : contentOf(path);
+            if (current === undefined) throw new Error('Document text is unavailable.');
+            return current;
         };
         return registerView(path, {
             kind: 'markdown',
@@ -793,7 +793,7 @@ function DocumentPane({
                 const { mode: tabMode, dirty } = tabRef.current;
                 if (view) return describeMarkdown(view, tabMode, !!dirty, codeLanguage?.name);
                 // Between the pane's mount and its view (a frame at most).
-                const content = contentOf(path) ?? tabRef.current.content;
+                const content = text();
                 const state = EditorState.create({ doc: content });
                 return {
                     kind: 'markdown', mode: tabMode, text: content, lineCount: state.doc.lines,
@@ -841,25 +841,8 @@ function DocumentPane({
     // in any note whose pane had been unmounted once — it is now stable in
     // App.tsx, where the fix belongs.) Anything genuinely per-document that the
     // handlers need goes by PATH instead, like scrollDebounce above.
-    const onContentChangeRef = useRef(onContentChange);
-    const onOpenNoteRef = useRef(onOpenNote);
-    const onImageDeleteRef = useRef(onImageDelete);
-    const fileRef = useRef(file);
-    const getTargetsRef = useRef(getWikiLinkTargets);
-    useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
-    useEffect(() => { onOpenNoteRef.current = onOpenNote; }, [onOpenNote]);
-    useEffect(() => { onImageDeleteRef.current = onImageDelete; }, [onImageDelete]);
-    useEffect(() => { fileRef.current = file; }, [file]);
-    useEffect(() => { getTargetsRef.current = getWikiLinkTargets; }, [getWikiLinkTargets]);
-
-    // Bound to THIS pane's document, so a picture is resolved against the
-    // folder its own note sits in — with several notes on screen there is no
-    // "the active file" to fall back on.
-    const boundGetAssetUrl = useRef<(fileName: string) => Promise<string | null>>(
-        (fileName) => getAssetUrl(fileName, file.parentHandle || null));
-    useEffect(() => {
-        boundGetAssetUrl.current = (fileName) => getAssetUrl(fileName, fileRef.current.parentHandle || null);
-    }, [getAssetUrl]);
+    // These callbacks are App/context lifetime. A cached state must resolve the
+    // document's current destination, not the refs of the pane that made it.
 
     // ONE stable identity for the life of the pane. ImageWidget.eq() compares
     // its resolver by identity, so a fresh closure per call site made every
@@ -868,13 +851,19 @@ function DocumentPane({
     // asset, and flashed each image back through its "Loading …" placeholder.
     // Held in state rather than a ref because it is READ during render (it goes
     // into the editor's extensions), which is exactly what a ref is not for.
-    const [stableGetAssetUrl] = useState(() => (fileName: string) => boundGetAssetUrl.current(fileName));
+    const [stableGetAssetUrl] = useState(() => (fileName: string) =>
+        getAssetUrl(fileName, markdownSessions.parentHandleOf(documentId)));
 
     // Deleting an embedded image is the editor's only action that needs the app:
     // it has to be confirmed first, since the picture goes to .Garbage with it.
     // Stable for the same reason the resolver is.
     const [imageActions] = useState<ImageEmbedActions>(() => ({
-        confirmDelete: (request) => onImageDeleteRef.current({ ...request, path }),
+        confirmDelete: (request) => {
+            const adapter = markdownSessions.get(documentId), doc = adapter?.state.doc;
+            void onConfirm({ title: 'Remove image?', body: `${request.name} is removed from this note, and its file moves to .Garbage if no other note uses it. You can undo this.`, confirmLabel: 'Remove', danger: true }).then(confirmed => {
+                if (confirmed && adapter && markdownSessions.get(documentId) === adapter && adapter.state.doc === doc) request.run();
+            });
+        },
     }));
 
     /**
@@ -897,9 +886,23 @@ function DocumentPane({
 
     /** The full extension list for this document. Every dynamic bit goes
      *  through a ref, so the view never has to be rebuilt. */
-    const createTabState = (doc: string): EditorState => EditorState.create({
-        doc: doc || '',
-        extensions: [
+    const metadataUpdate = (update: MarkdownSessionUpdate) => {
+        stateCache.set(documentId, update.state);
+        const currentPath = markdownSessions.pathOf(documentId);
+        if (currentPath === undefined) return;
+        if (update.docChanged) {
+            const words = update.state.field(wordCountField, false);
+            if (words !== undefined) publishWordCounts(currentPath, { words, chars: update.state.doc.length });
+            mapRememberedScroll(currentPath, update.changes);
+        }
+        const before = update.startState.field(headingFoldField, false);
+        const after = update.state.field(headingFoldField, false);
+        if (before && after && (before.folded !== after.folded || (
+            update.docChanged && before.folded.length > 0
+            && update.changes.touchesRange(0, update.startState.doc.lineAt(before.folded[before.folded.length - 1]).to) !== false
+        ))) rememberFolds(currentPath, update.state);
+    };
+    const editorExtensions = (): Extension => [
             // ── Code files take a different editor entirely ──
             // No line wrapping (a long line scrolls, as in any editor), no
             // markdown grammar, no live preview, no wikilinks: everything below
@@ -952,12 +955,12 @@ function DocumentPane({
             ...(!isCode && !isTex ? [readingEmphasis, readingEmphasisCompartment.of(readingEmphasisOptions({enabled: getReadingPreferences().emphasis.enabled, mode, locale: ''}))] : []),
             ...(isCode ? [] : [
                 tabIntoText,
-                wikiLinkAutocomplete(() => getTargetsRef.current()),
+                wikiLinkAutocomplete(getWikiLinkTargets),
                 ...(isTex ? [] : [docAnalysisField, livePreviewField]),
                 livePreviewCompartment.of(livePreviewFor(mode)),
                 // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
                 // that, which would forget every collapsed section (headingFold.ts).
-                headingFold(storedFoldKeys(path)),
+                headingFold(storedFoldKeys(markdownSessions.pathOf(documentId) ?? path)),
             ]),
             // Outside every compartment for the same reason: a reconfigure
             // (⌘E, the theme) must not drop a restored place still being held.
@@ -965,34 +968,11 @@ function DocumentPane({
             ...(isCode ? [] : [markdownFormatExtension]),
             revealHighlightField,
             ...(isCode ? [] : [wordCountField]),
-            EditorView.updateListener.of((update) => {
-                if (update.docChanged) {
-                    const words = update.state.field(wordCountField, false);
-                    if (words !== undefined) publishWordCounts(path, { words, chars: update.state.doc.length });
-                    // A reload from disk is the file's own text, not an edit:
-                    // marked dirty, it would be saved straight back over the
-                    // file it came from (editor/externalReload.ts).
-                    const fromDisk = update.transactions.some(tr => tr.annotation(externalReload));
-                    onContentChangeRef.current(path, docString(update.state.doc), fromDisk ? { fromDisk } : undefined);
-                    // Keyed by path, like everything else baked in here.
-                    mapRememberedScroll(path, update.changes);
-                }
-                // Keyed by path, like scroll. `folded` changes identity only
-                // when a section folds, unfolds or moves; an edit at or above
-                // the last collapsed heading may also rename one in place.
-                const before = update.startState.field(headingFoldField, false);
-                const after = update.state.field(headingFoldField, false);
-                if (before && after && (before.folded !== after.folded || (
-                    update.docChanged && before.folded.length > 0
-                    && update.changes.touchesRange(0, update.startState.doc.lineAt(before.folded[before.folded.length - 1]).to) !== false
-                ))) {
-                    rememberFolds(path, update.state);
-                }
-            }),
+            EditorView.updateListener.of(update => markdownSessions.get(documentId)?.observe(update)),
             EditorView.domEventHandlers({
                 paste(event, view) {
                     const items = event.clipboardData?.items;
-                    if (!items) return false;
+                    if (!items || !canWrite(view.state)) return false;
 
                     for (const item of items) {
                         if (item.type.startsWith('image/')) {
@@ -1017,15 +997,24 @@ function DocumentPane({
                             const filename = `Pasted image ${timestamp}${ext}`;
 
                             // Into the .Assets folder beside THIS pane's note.
-                            const parentHandle = fileRef.current.parentHandle || null;
-                            const assetFolder = joinVaultPath(parentVaultPath(fileRef.current.path), ASSETS_DIR);
-                            saveAsset(filename, blob!, parentHandle).then(() => {
-                                // Insert the markdown at cursor
+                            const currentPath = markdownSessions.pathOf(documentId);
+                            if (currentPath === undefined || !blob) return true;
+                            const parentHandle = markdownSessions.parentHandleOf(documentId);
+                            const assetFolder = joinVaultPath(parentVaultPath(currentPath), ASSETS_DIR);
+                            const adapter = markdownSessions.get(documentId);
+                            saveAsset(filename, blob, parentHandle).then(() => {
+                                // A move during the write must not insert a reference
+                                // to a picture saved beside the old destination.
+                                if (!adapter || markdownSessions.get(documentId) !== adapter) return;
+                                if (markdownSessions.parentHandleOf(documentId) !== parentHandle) {
+                                    onNotify('The note moved while its picture was saving. Paste it again in the new folder.');
+                                    return;
+                                }
                                 const insertText = `![[${filename}]]\n`;
-                                const ranges = view.state.selection.ranges;
+                                const ranges = adapter.state.selection.ranges;
                                 if (ranges.length > 0) {
                                     const pos = ranges[0].from;
-                                    view.dispatch({
+                                    adapter.dispatch({
                                         changes: { from: pos, insert: insertText },
                                         selection: { anchor: pos + insertText.length }
                                     });
@@ -1045,7 +1034,8 @@ function DocumentPane({
                     // Also called by CodeMirror's IntersectionObserver at mount,
                     // at scrollTop 0 — harmless only because a holding view
                     // remembers nothing.
-                    rememberScroll(path, view);
+                    const currentPath = markdownSessions.pathOf(documentId);
+                    if (currentPath !== undefined) rememberScroll(currentPath, view);
                 },
                 drop(event) {
                     // A dropped .md replaces the whole note, and the pane's
@@ -1065,16 +1055,15 @@ function DocumentPane({
                 mousedown(event) {
                     // Navigate when a rendered [[wikilink]] is clicked.
                     const el = (event.target as HTMLElement).closest?.('.cm-wikilink');
-                    if (el && onOpenNoteRef.current) {
+                    if (el) {
                         event.preventDefault();
-                        onOpenNoteRef.current(el.getAttribute('data-wikilink') as string);
+                        onOpenNote(el.getAttribute('data-wikilink') as string);
                         return true;
                     }
                     return false;
                 }
             })
-        ],
-    });
+        ];
 
     // Build the view as soon as the container is mounted, from this document's
     // cached state when it has one. A cached state was configured by whichever
@@ -1082,7 +1071,7 @@ function DocumentPane({
     // same reconfigure the single-view build did on a tab swap.
     const setEditorContainer = (node: HTMLDivElement | null) => {
         if (!node || viewRef.current) return;
-        const cached = stateCache.get(stateKey);
+        const cached = markdownSessions.get(documentId);
         // A cached state whose search panel was left open focuses that panel's
         // Find field as the view is built (SearchPanel.mount). That is not the
         // reader choosing this pane, so the slot's focus handler must not take
@@ -1092,8 +1081,15 @@ function DocumentPane({
         const keyboardBefore = document.activeElement;
         buildingViewRef.current = true;
         try {
-            const initial = contentOf(path) ?? tab.content;
-            const view = new EditorView({ state: cached ?? createTabState(initial), parent: node });
+            const initial = contentOf(path);
+            if (initial === undefined) return;
+            const adapter = markdownSessions.ensure(documentId, owner => createMarkdownSession(owner,
+                EditorState.create({ doc: initial, extensions: history() }), () => documentBuffers.get(documentId)?.source));
+            if (!adapter) return;
+            adapter.configure(editorExtensions(), metadataUpdate);
+            stateCache.set(documentId, adapter.state);
+            const view = new EditorView({ state: adapter.state, parent: node });
+            detachViewRef.current = adapter.attach(view);
             viewRef.current = view;
             // KaTeX is fetched on demand (editor/mathWidget.ts). Start it the
             // moment a document that could contain a formula opens, so the
@@ -1154,7 +1150,9 @@ function DocumentPane({
         const view = viewRef.current;
         if (view) {
             cancelReadingConfiguration(view); cancelWordReadingAnchor(view);
-            stateCache.set(stateKey, view.state);
+            stateCache.set(documentId, view.state);
+            detachViewRef.current?.();
+            detachViewRef.current = undefined;
             view.destroy();
             viewRef.current = null;
         }
@@ -1163,10 +1161,10 @@ function DocumentPane({
         // path, so this finds the timer the handler actually armed even when
         // that handler belongs to an earlier pane for this document. The same
         // holds for a section collapsed just before the switch.
-        flushScroll(path);
-        flushFolds(path);
+        const currentPath = markdownSessions.pathOf(documentId);
+        if (currentPath !== undefined) { flushScroll(currentPath); flushFolds(currentPath); }
         if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
-    }, [path, stateKey, stateCache]);
+    }, [documentId, markdownSessions, stateCache]);
 
     /* ── Live settings → the open view ────────────────────────────────────
        The three effects below carry a CHANGE of setting into a view that is
@@ -1510,7 +1508,7 @@ function DocumentPane({
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => e.preventDefault()}
                     >
-                        <TexDocument store={documentBuffers} documentId={tab.id} path={path} contentOf={contentOf} initial={tab.content} />
+                        <TexDocument store={documentBuffers} documentId={tab.id} path={path} contentOf={contentOf} />
                     </div>
                 )}
                 {!isCanvas && !unreadable && !texReading && (

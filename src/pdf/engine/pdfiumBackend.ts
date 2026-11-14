@@ -1,10 +1,12 @@
 import type { PageGeometry } from '../../platform/types';
-import { PdfEngineError } from './types';
+import { PdfEngineError, PdfFontPendingError } from './types';
 import type { BackendDoc, BackendEnv, BackendInfo, ByteSource, DocInfo, EngineLimits, PdfAttachmentInfo, PdfBackend, RenderJob, RenderRequest } from './types';
 import { pdfiumAttachmentInventory, readPdfiumAttachment } from './pdfium/attachments';
 import { pdfiumComplexity } from './pdfium/complexity';
 import { createPdfiumFileAccess } from './pdfium/fileAccess';
 import type { PdfiumFileAccess } from './pdfium/fileAccess';
+import { installPdfiumFontBridge } from './pdfium/fontBridge';
+import type { PdfiumFontBridge } from './pdfium/fontBridge.types';
 import { createPdfiumForms } from './pdfium/forms';
 import type { PdfiumForms } from './pdfium/forms';
 import { pdfiumPageGeometry, pdfiumPageSize } from './pdfium/geometry';
@@ -57,7 +59,7 @@ class PdfiumDocument implements BackendDoc {
         const attachments = this.inventory();
         // Index-only extents deliberately omit rotation and transforms. Exact
         // geometry comes from page(), never an invented affine on doc.open.
-        const pages = this.sizes.map((size, index) => ({ index, ...size })) as unknown as PageGeometry[];
+        const pages = this.sizes.map((size, index) => ({ index, ...size }));
         this.documentInfo = { pageCount: count, pages, encrypted: revision >= 0,
             permissions: runtime.call('FPDF_GetDocPermissions', document) >>> 0, signatureCount: signatures,
             tagged: runtime.call('FPDFCatalog_IsTagged', document) !== 0, hasForms: type !== 0,
@@ -243,7 +245,51 @@ class PdfiumDocument implements BackendDoc {
 /** The compiled module and all native handles stay inside the opaque worker. */
 export async function loadPdfiumBackend(options: PdfiumLoadOptions): Promise<PdfBackend> {
     const runtime = await loadPdfiumModule(options);
-    let environment: BackendEnv | undefined;
+    let environment: BackendEnv | undefined, bridge: PdfiumFontBridge | undefined, closed = false;
+    const documents = new Set<BackendDoc>();
+    // A font callback can occur in any synchronous native call, including a
+    // progressive-render step. Never publish its provisional result.
+    const scoped = <T,>(run: () => T, discard?: (result: T | undefined) => void): T => {
+        if (closed || !bridge) throw new PdfEngineError('EngineBroken', 'PDF backend is closed');
+        bridge.begin();
+        let result: T | undefined, error: unknown, failed = false;
+        try { result = run(); } catch (cause) { failed = true; error = cause; }
+        const status = bridge.end();
+        if (status.failure || status.missing.length) {
+            try { discard?.(result); } catch { /* preserve the font error */ }
+            if (status.failure) throw status.failure;
+            throw new PdfFontPendingError(status.missing);
+        }
+        if (failed) throw error;
+        return result as T;
+    };
+    const wrap = (doc: BackendDoc): BackendDoc => {
+        documents.add(doc);
+        const discard = () => { documents.delete(doc); doc.close(); };
+        return new Proxy(doc, {
+            get(target, property) {
+                const value: unknown = Reflect.get(target, property, target);
+                if (typeof value !== 'function') return value;
+                if (property === 'close') return discard;
+                return (...args: unknown[]) => {
+                    const result = scoped(() => Reflect.apply(value, target, args) as unknown, provisional => {
+                        if (property === 'openEmphasisClone' && provisional) {
+                            try { (provisional as BackendDoc).close(); } catch { /* discard both native documents */ }
+                        }
+                        discard();
+                    });
+                    if (property === 'openEmphasisClone') return wrap(result as BackendDoc);
+                    if (property !== 'render' && property !== 'emphasisStroked') return result;
+                    const job = result as RenderJob;
+                    return {
+                        step: (budget: number) => scoped(() => job.step(budget), discard),
+                        result: () => scoped(() => job.result(), discard),
+                        abort: () => job.abort(),
+                    } satisfies RenderJob;
+                };
+            },
+        });
+    };
     const info: BackendInfo = { engine: 'pdfium', version: '6688c576fd851f4159c6fae39396da50939de110',
         artifactSha256: runtime.artifactSha256, buildId: runtime.buildId,
         features: ['forms', 'emphasis', 'structTree', 'outline', 'attachments'] };
@@ -269,15 +315,26 @@ export async function loadPdfiumBackend(options: PdfiumLoadOptions): Promise<Pdf
     return {
         id: 'pdfium',
         init(env) {
-            if (environment) throw new PdfEngineError('EngineBroken', 'PDFium backend is already initialized');
-            withPdfiumMemory(runtime, runtime.abi.structs.libraryConfig.size, pointer => {
-                heapView(runtime, pointer, runtime.abi.structs.libraryConfig.size).setInt32(runtime.abi.structs.libraryConfig.offsets.version, 2, true);
-                runtime.initLibrary(pointer);
-            });
-            environment = env;
-            return info;
+            if (environment || closed) throw new PdfEngineError('EngineBroken', 'PDFium backend is already initialized or closed');
+            try {
+                withPdfiumMemory(runtime, runtime.abi.structs.libraryConfig.size, pointer => {
+                    heapView(runtime, pointer, runtime.abi.structs.libraryConfig.size).setInt32(runtime.abi.structs.libraryConfig.offsets.version, 2, true);
+                    runtime.initLibrary(pointer);
+                });
+                bridge = installPdfiumFontBridge(runtime, env.fonts);
+                environment = env;
+                return info;
+            } catch (error) { closed = true; runtime.dispose(); throw error; }
         },
-        open(source: ByteSource, openOptions: { password?: string }) { return openDocument(source, openOptions.password, false); },
-        heapBytes() { return runtime.HEAPU8.byteLength; },
+        open(source: ByteSource, openOptions: { password?: string }) {
+            return wrap(scoped(() => openDocument(source, openOptions.password, false), doc => doc?.close()));
+        },
+        heapBytes() { return closed ? 0 : runtime.HEAPU8.byteLength; },
+        close() {
+            if (closed) return;
+            for (const doc of documents) { try { doc.close(); } catch { /* continue teardown */ } }
+            documents.clear();
+            try { bridge?.close(); } finally { closed = true; runtime.dispose(); }
+        },
     };
 }

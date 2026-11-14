@@ -68,7 +68,8 @@ export class PdfiumWriter {
             const path = source.attachmentProof
                 ? preservationPath(pristineAttachments, outerAttachments, source.formatId, source.pristineFingerprint, source.outerFingerprint)
                 : 'legacy';
-            const writerSession = crypto.randomUUID();
+            const random = crypto.getRandomValues(new Uint8Array(16));
+            const writerSession = Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('');
             if (this.disposed || context.cancelled) throw new PdfEngineError('AbortError', 'PDF writer preparation cancelled');
             this.sessions.set(writerSession, { source, path, pageCount: count });
             return { writerSession, sourceFingerprint: source.pristineFingerprint,

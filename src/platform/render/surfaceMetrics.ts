@@ -21,7 +21,9 @@ function validateDpr(dpr: number): void {
 
 /** Reject fragmented panes; vertical writing exchanges the physical axes (design §3.2:331). */
 export function devicePixelBox(fragments: readonly DevicePixelFragment[], writingMode: 'horizontal' | 'vertical' = 'horizontal'): PhysicalBox {
-    if (fragments.length !== 1) throw new RangeError('A surface must have exactly one content-box fragment');
+    if (fragments.length !== 1 || (writingMode !== 'horizontal' && writingMode !== 'vertical')) {
+        throw new RangeError('A surface must have exactly one content-box fragment and a valid axis');
+    }
     const fragment = fragments[0];
     const width = writingMode === 'horizontal' ? fragment.inlineSize : fragment.blockSize;
     const height = writingMode === 'horizontal' ? fragment.blockSize : fragment.inlineSize;
@@ -71,7 +73,7 @@ export type SurfaceMetrics = DormantSurfaceMetrics | ReadySurfaceMetrics;
  */
 export function computeSurfaceMetrics(box: PhysicalBox, nominalDpr: number, limits: Readonly<GfxLimits>, pixelGrant: number): SurfaceMetrics {
     validateDpr(nominalDpr);
-    if (!validDimension(box.width) || !validDimension(box.height) || !Number.isFinite(pixelGrant) || pixelGrant < 0) {
+    if (!validDimension(box.width) || !validDimension(box.height) || !Number.isSafeInteger(pixelGrant) || pixelGrant < 0) {
         throw new RangeError('Surface dimensions/grant must be finite and nonnegative');
     }
     const axes = [limits.maxTexture2D, limits.maxRenderTargetSize, ...limits.maxViewport];
@@ -156,7 +158,7 @@ export class SurfaceMetricsCommitter {
         else {
             try {
                 actual = Object.freeze({ ...target.resizeSurface(metrics.backingWidth, metrics.backingHeight) });
-                if (actual.generation !== target.generation) reason = 'stale-generation';
+                if (target.generation !== tags.deviceGeneration || actual.generation !== tags.deviceGeneration) reason = 'stale-generation';
                 else if (!actual.complete) reason = 'incomplete';
                 else if (actual.width !== metrics.backingWidth || actual.height !== metrics.backingHeight) reason = 'buffer-mismatch';
             } catch {

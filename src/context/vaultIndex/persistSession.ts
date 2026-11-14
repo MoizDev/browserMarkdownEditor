@@ -1,4 +1,4 @@
-import type { FileRecord } from '../../utils/vaultIndex/types';
+import type { FileRecord, IndexMediaFacts } from '../../utils/vaultIndex/types';
 import { INDEX_EXTRACTOR, INDEX_SCHEMA, openIndexDatabase, requestResult, transactionDone } from './persistence';
 
 type StoredNote = Omit<FileRecord, 'path' | 'rev' | 'text'>;
@@ -56,7 +56,7 @@ export class PersistSession {
             const message = event.data as { vaultId?: string; layout?: unknown; forget?: boolean };
             if (message.vaultId !== this.vaultId) return;
             if (message.forget) {
-                this.closed = true; this.dirty.clear(); this.layout = undefined; this.reset = false;
+                this.closed = true; this.dirty.clear(); this.layout = undefined; this.media = undefined; this.reset = false;
                 if (this.timer) clearTimeout(this.timer);
                 if (this.held) this.release?.(); else this.abort.abort();
                 this.channel?.close();
@@ -73,6 +73,20 @@ export class PersistSession {
         }).catch(() => {});
     }
     private layout: unknown;
+    private media?: Record<string, IndexMediaFacts>;
+    async readMedia(): Promise<Record<string, IndexMediaFacts>> {
+        if (this.closed || this.reset) return {};
+        try {
+            const db = await openIndexDatabase();
+            const value: unknown = await requestResult(db.transaction('media').objectStore('media').get(this.vaultId));
+            return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, IndexMediaFacts> : {};
+        } catch { return {}; }
+    }
+    markMedia(facts: Record<string, IndexMediaFacts>): void {
+        if (this.closed) return;
+        this.media = facts;
+        this.schedule();
+    }
     mark(path: string, record: FileRecord | null, text?: string): void {
         if (this.closed) return;
         const previous = this.dirty.get(path);
@@ -93,16 +107,17 @@ export class PersistSession {
     }
     flush(): Promise<void> {
         const run = async () => {
-            if (!this.held || (!this.dirty.size && !this.reset && !this.layout)) return;
+            if (!this.held || (!this.dirty.size && !this.reset && !this.layout && !this.media)) return;
             const entries = [...this.dirty];
             const layout = this.layout;
+            const media = this.media;
             const reset = this.reset;
-            this.dirty.clear(); this.layout = undefined; this.reset = false;
+            this.dirty.clear(); this.layout = undefined; this.media = undefined; this.reset = false;
             try {
                 const db = await openIndexDatabase();
-                const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts'], 'readwrite');
+                const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts', 'media'], 'readwrite');
                 const notes = tx.objectStore('notes'), texts = tx.objectStore('texts');
-                if (reset) { notes.delete(range(this.vaultId)); texts.delete(range(this.vaultId)); tx.objectStore('layouts').delete(this.vaultId); }
+                if (reset) { notes.delete(range(this.vaultId)); texts.delete(range(this.vaultId)); tx.objectStore('layouts').delete(this.vaultId); tx.objectStore('media').delete(this.vaultId); }
                 for (const [path, change] of entries) {
                     const key = [this.vaultId, path];
                     if (change.record === null) { notes.delete(key); texts.delete(key); continue; }
@@ -115,6 +130,7 @@ export class PersistSession {
                         texts.put({ ...change.textVersion, text: change.text }, key);
                     }
                 }
+                if (media) tx.objectStore('media').put(media, this.vaultId);
                 if (layout) tx.objectStore('layouts').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR, layout }, this.vaultId);
                 const count = notes.count(range(this.vaultId));
                 count.onsuccess = () => tx.objectStore('vaults').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR,
@@ -124,16 +140,18 @@ export class PersistSession {
                 const quota = error instanceof DOMException && error.name === 'QuotaExceededError';
                 this.problem(quota ? 'quota' : 'corrupt', String(error));
                 for (const [path, change] of entries) if (!this.dirty.has(path)) this.dirty.set(path, change);
+                this.media ??= media;
                 this.reset ||= reset || quota;
                 if (quota) {
                     // Deletion frees cache space and is independent of vault saves.
                     try {
                         const db = await openIndexDatabase();
-                        const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts'], 'readwrite');
+                        const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts', 'media'], 'readwrite');
                         tx.objectStore('vaults').delete(this.vaultId);
                         tx.objectStore('notes').delete(range(this.vaultId));
                         tx.objectStore('texts').delete(range(this.vaultId));
                         tx.objectStore('layouts').delete(this.vaultId);
+                        tx.objectStore('media').delete(this.vaultId);
                         await transactionDone(tx);
                     } catch { /* The in-memory index remains usable. */ }
                 }

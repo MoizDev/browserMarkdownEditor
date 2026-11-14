@@ -20,7 +20,7 @@ let control: MessagePort | undefined;
 let stopServing: (() => void) | undefined;
 let closed = false;
 const slots = new Map<number, WorkerSlot>();
-const protocolError = () => new WorkerHostError('Protocol', 'Invalid PDF worker bootstrap');
+const protocolError = (phase = 'request') => new WorkerHostError('Protocol', `Invalid PDF worker bootstrap (${phase})`);
 
 function drop(id: number): void {
     const slot = slots.get(id);
@@ -55,7 +55,10 @@ async function spawn(value: unknown, context: WorkerContext): Promise<PdfBrokerS
     const wasmUrl = URL.createObjectURL(data.wasm);
     const channel = new MessageChannel();
     let worker: Worker;
-    try { worker = new Worker(codeUrl, { type: 'module', name: `pdf-${data.engine.role}` }); }
+    // The fixed bundle is an IIFE. Module-worker fetch uses CORS even for a
+    // blob minted by an opaque origin; Chromium rejects that before execution.
+    // A classic bootstrap stays opaque and imports only the verified ES glue.
+    try { worker = new Worker(codeUrl, { name: `pdf-${data.engine.role}` }); }
     catch {
         for (const url of [codeUrl, glueUrl, wasmUrl]) URL.revokeObjectURL(url);
         channel.port1.close(); channel.port2.close(); throw protocolError();
@@ -66,20 +69,22 @@ async function spawn(value: unknown, context: WorkerContext): Promise<PdfBrokerS
     const result = await new Promise<PdfBrokerSpawnResult>((resolve, reject) => {
         slot.reject = reject;
         let sent = false;
-        const failure = () => {
+        const failure = (phase: string) => {
             if (slots.get(data.id) !== slot) return;
+            slot.reject?.(protocolError(phase));
+            slot.reject = undefined;
             context.emit('worker.failed', { id: data.id, generation: data.generation });
             drop(data.id);
         };
         const receive = ({ data: message }: MessageEvent<unknown>) => {
             if (slots.get(data.id) !== slot || !identity) return;
-            if (!isWorkerMessage(message)) { failure(); return; }
+            if (!isWorkerMessage(message)) { failure('worker envelope'); return; }
             if ('hello' in message && !sent && message.hello.protocol === PDF_FRAME_VERSION && message.hello.buildId === 'pdf-worker-binding-v1') {
                 sent = true;
                 const args: PdfWorkerBinding = { nonce: identity.nonce, id: data.id, generation: data.generation,
                     port: channel.port2, glueUrl, abi: data.abi, engine: { ...data.engine, engineUrl: wasmUrl } };
                 try { worker.postMessage({ v: 1, id: 1, op: 'worker.bind', args, priority: 0 }, [channel.port2]); }
-                catch { channel.port2.close(); failure(); }
+                catch { channel.port2.close(); failure('bind transfer'); }
             } else if ('id' in message && message.id === 1 && sent && message.ok && frameRecord(message.result) && message.result.bound === true) {
                 clearTimeout(slot.timer);
                 slot.reject = undefined;
@@ -87,12 +92,12 @@ async function spawn(value: unknown, context: WorkerContext): Promise<PdfBrokerS
                 URL.revokeObjectURL(slot.codeUrl); slot.codeUrl = '';
                 const port = slot.port!; slot.port = undefined;
                 resolve({ id: data.id, generation: data.generation, engineUrl: wasmUrl, port });
-            } else { failure(); }
+            } else { failure('bind acknowledgement'); }
         };
         worker.addEventListener('message', receive);
-        worker.addEventListener('error', event => { event.preventDefault(); failure(); });
-        worker.addEventListener('messageerror', failure);
-        slot.timer = setTimeout(failure, 10_000);
+        worker.addEventListener('error', event => { event.preventDefault(); failure('worker load'); });
+        worker.addEventListener('messageerror', () => failure('worker message'));
+        slot.timer = setTimeout(() => failure('bind timeout'), 10_000);
     });
     if (context.cancelled || closed) { result.port.close(); drop(data.id); throw protocolError(); }
     context.transfer(result.port);

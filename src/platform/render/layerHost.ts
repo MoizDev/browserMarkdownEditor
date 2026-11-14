@@ -1,4 +1,5 @@
 import type { Rect, ViewState } from '../types';
+import type { DamageRecord } from './damage';
 import type { CompositorResources, LayerAllocators, LayerHost, PaneCompositor, TexturedQuadOptions } from './compositor.types';
 import type { GpuPass, TextureHandle, UniformSlice } from './gfx/api';
 import { paintCanvasIsolation } from './canvas2dContext';
@@ -11,7 +12,7 @@ export interface LayerHostBindings {
     compositor(): PaneCompositor | null;
     /** The scheduled candidate can differ from the currently selected display. */
     preparationCompositor(): PaneCompositor | null;
-    invalidate(reason: string): void;
+    invalidate(reason: string, damage?: DamageRecord): void;
     wakeAt(deadlineMs: number | null): void;
 }
 
@@ -46,7 +47,7 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
             preparing.resources.reserveIsolation(reservation);
         },
         paintIsolation: paintCanvasIsolation,
-        invalidate: reason => bindings.invalidate(reason),
+        invalidate: (reason, damage) => bindings.invalidate(reason, damage),
         wakeAt: deadline => bindings.wakeAt(deadline),
         paintWorld: (ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void) => compositor().paintWorld(ctx, view, paint),
         paintPage: (ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void) => compositor().paintPage(ctx, view, index, paint),

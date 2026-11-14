@@ -9,6 +9,7 @@ export interface PreparedNativeBoard<S extends BoardSessionPort> {
     readonly conversionPending?: boolean;
     take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null): {
         readonly board: S;
+        readonly pdfWriteAuthority?: { canWrite(): boolean };
         dispose(): void | Promise<void>;
     };
     dispose(): void | Promise<void>;
@@ -21,6 +22,7 @@ export interface NativeBoardAcquisitionOptions<S extends BoardSessionPort> {
     readonly attachCanvasSession: AttachCanvasSession;
     readonly onNativeCanvasReady: NativeCanvasReady;
     readonly emergencyReadOnlyReason: string;
+    currentOwner(): boolean;
     existing?(): AcquiredNativeBoard<S> | undefined;
     prepare(signal: AbortSignal): Promise<PreparedNativeBoard<S>>;
     acceptConvertedSource?: (source: DeferredSource, originalDigest: string) => void;

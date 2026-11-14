@@ -28,8 +28,12 @@ export interface NativeCanvasHost {
     isCurrent(identity: NativeCanvasIdentity): boolean;
     acquireBytes(identity: NativeCanvasIdentity, signal: AbortSignal): Promise<Blob>;
     keepConversionBackup(identity: NativeCanvasIdentity, original: Blob, digest: string, signal: AbortSignal): Promise<TrashItem>;
+    confirmLegacyPdfConversion(identity: NativeCanvasIdentity, request: { originalSha256: string;
+        foreign: Extract<import('../utils/pdfWriteMark').PdfWriteMarkCheck, { kind: 'foreign' }> | null }, signal: AbortSignal): Promise<boolean>;
     acceptConvertedSource(identity: NativeCanvasIdentity, source: DeferredSource, originalDigest: string): void;
     appendJournal(identity: NativeCanvasIdentity, source: ContentSource, capture: JournalCapture): Promise<void>;
     readMedia(identity: NativeCanvasIdentity, media: NativeCanvasMedia, signal: AbortSignal): Promise<{ name: string; blob: Blob } | null>;
+    /** Resolve a local legacy media reference relative to this document's folder. */
+    readLegacyAsset(identity: NativeCanvasIdentity, src: string, signal: AbortSignal): Promise<Blob | null>;
     putMedia(identity: NativeCanvasIdentity, media: NativeCanvasMedia & { extension: string }, blob: Blob, signal: AbortSignal): Promise<string>;
 }

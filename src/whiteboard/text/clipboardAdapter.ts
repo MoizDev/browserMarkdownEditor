@@ -40,8 +40,10 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
             if (disposed) return null;
             const range = options.editor.clipboardSelection();
             if (!range) { options.copy.setSelection(null); return null; }
-            const snapshot = snapshotCopiedTextRange(options.copyHost(), range.node, range.selection, range.fragment, range.bounds);
-            if (!current(snapshot)) { for (const lease of snapshot.leases) lease.release(); return null; }
+            const host = options.copyHost();
+            if (host.doc.rev !== range.revision || !options.isCurrent(options.identity())) { options.copy.setSelection(null); return null; }
+            const snapshot = snapshotCopiedTextRange(host, range.node, range.selection, range.fragment, range.bounds);
+            if (!current(snapshot)) { for (const lease of snapshot.leases) lease.release(); options.copy.setSelection(null); return null; }
             options.copy.setSelection(snapshot);
             return snapshot;
         },

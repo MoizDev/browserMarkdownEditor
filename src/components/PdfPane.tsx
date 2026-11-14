@@ -4,6 +4,7 @@ import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfAnnotation';
 import { createPdfDocumentSession } from '../utils/pdfDocumentSession';
 import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
+import { clearPdfRotationPicture, peekPdfRotation, stagePdfRotation, type PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { prepareClassicPdfRetry } from '../utils/pdfClassicOpen';
 import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth, type ClassicPdfHealth } from '../utils/pdfClassicHealth';
 import PdfRenderNotice from './PdfRenderNotice';
@@ -131,6 +132,14 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const writeState = useRef({ isDirty, disk, onAnnotationPreflight });
     useLayoutEffect(() => { binding.current = reading; writeState.current = { isDirty, disk, onAnnotationPreflight }; });
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
+    const documentId = reading?.identity.documentId;
+    const [rotationPreview, setRotationPreview] = useState(() => documentId ? peekPdfRotation(documentId) : undefined);
+    const discardRotationPreview = useCallback(() => {
+        setRotationPreview(previous => {
+            if (documentId && previous) clearPdfRotationPicture(documentId, previous);
+            return undefined;
+        });
+    }, [documentId]);
     const pageDigest = useRef<string | undefined>(undefined);
     const restoredRecord = useRef(false);
     const [roleRetry, setRoleRetry] = useState(0);
@@ -494,6 +503,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 const b = binding.current;
                 if (b?.initialRecord?.record.rawFingerprint !== version.hash) protectedRestore.current = undefined;
                 displayedVersion.current = version;
+                if (rotationPreview && rotationPreview.resultHash !== version.hash) discardRotationPreview();
                 b?.onReaderVersion(b.identity, version);
                 if (!restoredRecord.current) {
                     restoredRecord.current = true;
@@ -539,7 +549,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         })();
 
         return () => { cancelled = true; };
-    }, [activated, mode, readOnly, flushing, isDirty, session, file.handle, file.path, readBytesVersioned, retryEpoch]);
+    }, [activated, mode, readOnly, flushing, isDirty, session, file.handle, file.path, readBytesVersioned, retryEpoch, rotationPreview, discardRotationPreview]);
 
     function focusReading() {
         root.current?.querySelector<HTMLElement>(mode === 'edit' && !readOnly ? '.tl-container' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-viewer-scroll')?.focus({ preventScroll: true });
@@ -589,8 +599,15 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     // Bound to this pane's path once: a fresh arrow per render would re-render
     // the memoized viewer on every keystroke anywhere in the app.
     const rotateThis = useCallback(
-        (delta: number, pageIndex?: number) => onRotate(file.path, delta, pageIndex),
-        [onRotate, file.path]);
+        (delta: number, pageIndex?: number, picture?: PdfRotationPicture) => {
+            const hash = displayedVersion.current?.hash;
+            if (documentId) stagePdfRotation(documentId, picture && hash ? { ...picture, sourceHash: hash } : undefined);
+            onRotate(file.path, delta, pageIndex);
+        }, [onRotate, file.path, documentId]);
+    const previewPainted = useCallback((page: number) => {
+        if (rotationPreview?.page === page) discardRotationPreview();
+    }, [rotationPreview, discardRotationPreview]);
+    const showRotationPreview = !!rotationPreview && !fatalRenderIssue && !error && mode === 'read' && !textSurface;
 
     let body: ReactNode = null;
     if (activated) {
@@ -667,8 +684,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         publishLocation(cause);
                     }} onTextQuality={setTextQuality} emphasisEnabled={false} typography={reading?.typography ?? DEFAULT_TEXT_TYPOGRAPHY}
                     onTypographyChange={reading?.onTypographyChange} />
-            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer ref={viewerActions} filePath={file.path} session={session} reader={textReader ?? undefined} findMemory={findMemory} onNotify={reading?.onNotify} isActive={isFocused} isVisible={isVisible} onRotate={rotateThis}
-                onLocation={() => publishLocation('layout', false)} emphasisEnabled={reading?.emphasisEnabled ?? false}
+            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer ref={viewerActions} filePath={file.path} session={session} reader={textReader ?? undefined} findMemory={findMemory} onNotify={reading?.onNotify} isActive={isFocused && !showRotationPreview} isVisible={isVisible} onRotate={rotateThis}
+                onLocation={() => publishLocation('layout', false)} onPageRendered={previewPainted} emphasisEnabled={reading?.emphasisEnabled ?? false}
                 onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} onRetry={retryRendering}
                 retryDisabled={retryBusy || isDirty || flushing || !!disk} />
                 {mappingNotice && <div className="pdf-pane-mapping-notice" role="status">{mappingNotice}</div>}
@@ -702,12 +719,17 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             {disk && <DiskBar name={file.name} state={disk} path={file.path} onAction={onDiskAction} />}
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the viewer and lose the reading position. */}
-            <div className="pdf-pane-body">
+            <div className="pdf-pane-body" inert={showRotationPreview}>
                 {body}
                 {!fatalRenderIssue && !error && (documentRenderIssue || renderDelayIssue) && <div className="pdf-render-document-notice"><PdfRenderNotice
                     issue={(documentRenderIssue || renderDelayIssue)!} annotation={annotationMode} onRetry={retryRendering}
                     retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>}
             </div>
+            {showRotationPreview && rotationPreview && <div className="pdf-rotation-preview" role="status"
+                onContextMenu={event => event.preventDefault()} onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
+                <img src={rotationPreview.dataUrl} alt="" draggable={false} />
+                <span>Loading rotated PDF…</span>
+            </div>}
         </div>
     );
 }

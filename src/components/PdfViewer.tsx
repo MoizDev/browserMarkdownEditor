@@ -16,6 +16,7 @@ import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { LEFT, RIGHT } from '../utils/pdfRotation';
 import { isPdfRotating, subscribePdfRotating } from '../utils/pdfRotating';
+import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { bindPdfTextLayerSelection } from '../utils/pdfTextLayerSelection';
 import { copyPdfDocumentText } from '../utils/pdfDocumentCopy';
 import { remeasurePdfTextLayer } from '../utils/pdfTextLayerRemeasure';
@@ -110,7 +111,8 @@ interface PdfViewerProps {
      * `/Rotate` goes into the file, the pane remounts on the new bytes, and
      * pdf.js reports the turned geometry like any other document's.
      */
-    onRotate?: (delta: number, pageIndex?: number) => void;
+    onRotate?: (delta: number, pageIndex?: number, picture?: PdfRotationPicture) => void;
+    onPageRendered?: (pageIndex: number) => void;
 }
 
 interface DocState {
@@ -279,7 +281,7 @@ interface PinchGesture {
     timer: number | null;
 }
 
-function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult, onRetry, retryDisabled = false }: PdfViewerProps,
+function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, isVisible = true, onRotate, onPageRendered, onLocation, emphasisEnabled = false, onNativeEmphasisResult, onRetry, retryDisabled = false }: PdfViewerProps,
     forwarded: React.ForwardedRef<PdfViewerHandle>) {
     const renderDiagnostics = useSyncExternalStore(session.health.subscribe, session.health.getSnapshot);
     const pageRenderIssues = useMemo(() => new Map(renderDiagnostics.filter(issue => issue.incomplete && issue.pageIndex !== undefined).map(issue => [issue.pageIndex!, issue])), [renderDiagnostics]);
@@ -1148,6 +1150,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     display.drawImage(work, 0, 0);
                     placeCanvas(canvas, rect);
                     st.rendered = target;
+                    onPageRendered?.(i);
                     canvas.dataset.nativeEmphasis = String(target.emphasis);
                     canvas.dataset.emphasizedGlyphs = String(emphasis.result.painted);
                     nativePages.current.set(i, { ...emphasis.result });
@@ -1179,7 +1182,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 st.rendered = undefined;
             }
         }
-    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice, session]);
+    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice, session, onPageRendered]);
 
     const ensurePage = useCallback((i: number) => {
         if (session.health.getSnapshot().some(issue => issue.incomplete && issue.pageIndex === i)) return;
@@ -1646,7 +1649,37 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
      * page box shows, so "this page" means the one under the top edge.
      */
     const rotate = useCallback((delta: number, onePage: boolean) => {
-        onRotate?.(delta, onePage ? shownPageRef.current : undefined);
+        const index = shownPageRef.current;
+        const canvas = canvasElsRef.current[index];
+        const page = layoutRef.current?.pages[index];
+        const rendered = pageStatesRef.current.get(index)?.rendered;
+        let picture: PdfRotationPicture | undefined;
+        if (canvas?.width && page && rendered) {
+            // A band is copied into its real place on a small page, not stretched
+            // to impersonate the whole page. No full-size raster is allocated.
+            const scale = Math.min(1, 768 / Math.max(page.w, page.h));
+            const base = document.createElement('canvas');
+            base.width = Math.max(1, Math.round(page.w * scale));
+            base.height = Math.max(1, Math.round(page.h * scale));
+            const ctx = base.getContext('2d');
+            const output = document.createElement('canvas');
+            output.width = base.height; output.height = base.width;
+            const rotated = output.getContext('2d');
+            if (ctx && rotated) {
+                ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, base.width, base.height);
+                const rect = rendered.rect;
+                ctx.drawImage(canvas, (rect?.x ?? 0) * scale, (rect?.y ?? 0) * scale,
+                    (rect?.w ?? page.w) * scale, (rect?.h ?? page.h) * scale);
+                if (delta > 0) { rotated.translate(output.width, 0); rotated.rotate(Math.PI / 2); }
+                else { rotated.translate(0, output.height); rotated.rotate(-Math.PI / 2); }
+                rotated.drawImage(base, 0, 0);
+                try {
+                    picture = { page: index, dataUrl: output.toDataURL('image/jpeg', 0.78), width: output.width, height: output.height };
+                } catch { /* A preview must never prevent the actual file edit. */ }
+            }
+            base.width = base.height = output.width = output.height = 0;
+        }
+        onRotate?.(delta, onePage ? index : undefined, picture);
     }, [onRotate]);
     /** A turn of THIS file is being written. Shown on the buttons, never used
      *  to block them: a second click while one is pending queues a second

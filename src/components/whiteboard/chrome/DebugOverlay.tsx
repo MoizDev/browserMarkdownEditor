@@ -21,6 +21,7 @@ export interface DebugOverlayProps {
     readonly nodeCount: number;
     readonly visibleCount: number;
     readonly backend: string;
+    /** CSS-pixel bounds relative to the board overlay, after camera projection. */
     readonly outlines: readonly { readonly id: string; readonly x: number; readonly y: number; readonly width: number; readonly height: number }[];
 }
 

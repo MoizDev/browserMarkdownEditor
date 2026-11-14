@@ -1,7 +1,16 @@
 import { SWATCHES, type Dash, type Fill, type Font, type Size, type Swatch, type TextAlign } from '../model/styles';
 import { DEFAULT_BOARD_PALETTES } from '../render/palette';
 import { newNodeId, type NodeId, type SheetId } from '../model/ids';
-import { createFigure, createText, type Node } from '../model/nodes';
+import { createConnector, createFigure, createPicture, createPolyline, createStroke, createText, type Attachment, type ConnectorNode, type Node } from '../model/nodes';
+import { createBoardDoc, type BoardDoc } from '../model/doc';
+import { UI_DEFAULTS, VIEW_DEFAULTS } from '../model/defaults';
+import { NATIVE_VERSION } from '../format/schema';
+import { CURVE_VERSION } from '../ink/curve';
+import { SampleBuilder, SampleStore } from '../ink/samples';
+import type { SampleLease } from '../model/samples';
+import type { MediaEntry, MediaId } from '../model/media';
+import type { InspectedMedia } from '../media/ingest';
+import type { ExcalidrawWireFile } from '../workers/excalidrawClipboard';
 import { keysBetween } from '../model/orderKey';
 import { SECURITY_LIMITS } from '../security/limits';
 import type { Block, RichText } from '../text/richText';
@@ -184,4 +193,177 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
     }
     check();
     return { nodes: Object.freeze(nodes), ids, deferred: Object.freeze(deferred), skipped };
+}
+
+export interface ExcalidrawBindingRequest {
+    readonly targetId: NodeId;
+    readonly targetNode: Readonly<Node>;
+    readonly endWorld: Readonly<{ x: number; y: number }>;
+    readonly nextWorld: Readonly<{ x: number; y: number }>;
+    readonly fixedPoint?: readonly [number, number];
+    readonly focus?: number;
+    readonly gap?: number;
+    readonly binding: Readonly<Record<string, unknown>>;
+}
+export interface FinalExcalidrawDraft {
+    readonly nodes: readonly Node[];
+    readonly samples: SampleStore;
+    readonly media: readonly MediaEntry[];
+    readonly blobs: ReadonlyMap<MediaId, Blob>;
+    readonly skipped: number;
+    release(): void;
+}
+function pointGeometry(element: Readonly<Record<string, unknown>>): { x: number; y: number; rotation: number; opacity: number } | null {
+    if (!finite(element.x, -SECURITY_LIMITS.world, SECURITY_LIMITS.world) || !finite(element.y, -SECURITY_LIMITS.world, SECURITY_LIMITS.world)
+        || !finite(element.width, 0, 1_000_000) || !finite(element.height, 0, 1_000_000)
+        || !finite(element.angle, -1e12, 1e12) || !finite(element.opacity, 0, 100)) return null;
+    const rotation = ((element.angle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI), c = Math.cos(rotation), s = Math.sin(rotation);
+    const hx = element.width / 2, hy = element.height / 2, x = element.x + hx - c * hx + s * hy, y = element.y + hy - s * hx - c * hy;
+    return finite(x, -SECURITY_LIMITS.world, SECURITY_LIMITS.world) && finite(y, -SECURITY_LIMITS.world, SECURITY_LIMITS.world)
+        ? { x, y, rotation, opacity: element.opacity / 100 } : null;
+}
+function arrowhead(value: unknown): ConnectorNode['headStart'] | null {
+    if (value === null || value === undefined) return 'none';
+    if (value === 'arrow' || value === 'triangle' || value === 'diamond' || value === 'dot' || value === 'bar') return value;
+    return null;
+}
+function visibleDash(element: Readonly<Record<string, unknown>>): Dash | null {
+    if (!finite(element.roughness, 0, 10) || !['solid', 'dashed', 'dotted'].includes(String(element.strokeStyle))) return null;
+    return element.roughness > 0 ? 'draw' : element.strokeStyle === 'dashed' ? 'dashed' : element.strokeStyle === 'dotted' ? 'dotted' : 'solid';
+}
+/** Both callbacks are real host admission/geometry providers; no image or binding is fabricated here. */
+export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, options: {
+    readonly elements: readonly Readonly<Record<string, unknown>>[];
+    readonly files: readonly ExcalidrawWireFile[];
+    readonly sheet: SheetId;
+    readonly signal: AbortSignal;
+    current(): boolean;
+    cooperate(): Promise<void>;
+    inspectImage(file: ExcalidrawWireFile, signal: AbortSignal): Promise<InspectedMedia>;
+    resolveBinding(request: ExcalidrawBindingRequest, context: { readonly actualDraftDoc: BoardDoc; readonly signal: AbortSignal }): Promise<Attachment>;
+}): Promise<FinalExcalidrawDraft> {
+    if (typeof options.inspectImage !== 'function' || typeof options.resolveBinding !== 'function') throw new TypeError('Excalidraw finalization requires real media and binding providers');
+    const check = () => { options.signal.throwIfAborted(); if (!options.current()) throw new DOMException('Excalidraw conversion became stale', 'AbortError'); };
+    const yieldHost = async () => { check(); await options.cooperate(); check(); };
+    const samples = new SampleStore(), leases: SampleLease[] = [], media = new Map<MediaId, MediaEntry>(), blobs = new Map<MediaId, Blob>();
+    const ids = new Map(draft.ids), nodes = [...draft.nodes], orders = keysBetween(null, null, options.elements.length);
+    const files = new Map(options.files.map(file => [file.fileId, file]));
+    const labelsByContainer = new Map<string, Readonly<Record<string, unknown>>[]>(), removed = new Set<NodeId>();
+    for (const element of options.elements) if (element.type === 'text' && typeof element.containerId === 'string') {
+        let labels = labelsByContainer.get(element.containerId); if (!labels) labelsByContainer.set(element.containerId, labels = []); labels.push(element);
+    }
+    const bindings: { id: NodeId; terminal: 'start' | 'end'; source: Readonly<Record<string, unknown>> }[] = [];
+    let skipped = draft.skipped, held = true;
+    const release = () => { if (held) { held = false; for (const lease of leases) lease.release(); leases.length = 0; } };
+    try {
+        check();
+        let work = 0;
+        for (const { index, element } of draft.deferred) {
+            check(); if ((++work & 63) === 0) await yieldHost();
+            const sourceId = element.id;
+            if (typeof sourceId !== 'string' || !ids.has(sourceId)) { skipped++; continue; }
+            const id = ids.get(sourceId)!, pos = pointGeometry(element), stroke = colour(element.strokeColor);
+            if (element.type === 'image') {
+                const geometry = elementGeometry(element), file = typeof element.fileId === 'string' ? files.get(element.fileId) : undefined;
+                if (!geometry || !file) { skipped++; ids.delete(sourceId); continue; }
+                let info: InspectedMedia;
+                try { info = await options.inspectImage(file, options.signal); check(); }
+                catch { check(); skipped++; ids.delete(sourceId); continue; }
+                if (!/^sha256:[0-9a-f]{64}$/.test(info.id) || !info.mime.startsWith('image/') || !finite(info.width, 1, 2 ** 26)
+                    || !finite(info.height, 1, 2 ** 26) || info.width * info.height > SECURITY_LIMITS.mediaPixels || info.duration !== null
+                    || typeof info.animated !== 'boolean') throw new TypeError('Invalid inspected Excalidraw image');
+                const entry: MediaEntry = { id: info.id, mime: info.mime, bytes: file.blob.size, w: info.width, h: info.height,
+                    duration: null, animated: info.animated, name: file.fileId, file: null, ext: null };
+                const prior = media.get(info.id);
+                if (prior && (prior.bytes !== entry.bytes || prior.mime !== entry.mime || prior.w !== entry.w || prior.h !== entry.h || prior.animated !== entry.animated)) throw new Error('Conflicting Excalidraw image metadata');
+                const scale = Array.isArray(element.scale) ? element.scale : [1, 1];
+                if (scale.length !== 2 || ![1, -1].includes(scale[0] as number) || ![1, -1].includes(scale[1] as number)) { skipped++; ids.delete(sourceId); continue; }
+                media.set(info.id, entry); blobs.set(info.id, new Blob([file.blob], { type: info.mime }));
+                nodes.push(createPicture({ id, parent: options.sheet, order: orders[index], page: -1, x: geometry.x, y: geometry.y,
+                    rotation: geometry.rotation, opacity: geometry.opacity, ext: null, w: geometry.w, h: geometry.h, media: info.id, crop: null,
+                    flipX: scale[0] === -1, flipY: scale[1] === -1, alt: '', inverted: false, playing: false, url: null }));
+            } else if (element.type === 'arrow' || element.type === 'line' || element.type === 'freedraw') {
+                const dash = visibleDash(element), rawPoints = element.points;
+                if (!pos || !stroke || !dash || !finite(element.strokeWidth, 0.05, 500) || !Array.isArray(rawPoints)
+                    || rawPoints.length < (element.type === 'freedraw' ? 1 : 2) || rawPoints.length > SECURITY_LIMITS.pointsPerStroke) { skipped++; ids.delete(sourceId); continue; }
+                const points: { x: number; y: number }[] = [];
+                for (let i = 0; i < rawPoints.length; i++) {
+                    const item = rawPoints[i];
+                    if (!Array.isArray(item) || item.length !== 2 || !finite(item[0], -SECURITY_LIMITS.world, SECURITY_LIMITS.world)
+                        || !finite(item[1], -SECURITY_LIMITS.world, SECURITY_LIMITS.world)) throw new TypeError('Invalid Excalidraw point');
+                    points.push({ x: item[0], y: item[1] });
+                    if ((i & 1023) === 1023) await yieldHost();
+                }
+                const base = { id, parent: options.sheet, order: orders[index], page: -1, x: pos.x, y: pos.y,
+                    rotation: pos.rotation, opacity: pos.opacity, ext: null };
+                if (element.type === 'freedraw') {
+                    const pressures = element.pressures, real = element.simulatePressure === false && Array.isArray(pressures);
+                    if (element.simulatePressure === false && !real || real && pressures.length !== points.length) throw new TypeError('Invalid Excalidraw pressure count');
+                    const builder = new SampleBuilder({ pressure: real, declaredMaxScale: 1, precision: 'float64' });
+                    for (let i = 0; i < points.length; i++) {
+                        const pressure = real ? pressures[i] : undefined;
+                        if (real && !finite(pressure, 0, 1)) throw new TypeError('Invalid Excalidraw pressure');
+                        builder.append(points[i].x, points[i].y, pressure as number | undefined);
+                        if ((i & 1023) === 1023) await yieldHost();
+                    }
+                    const lease = samples.commit(builder); leases.push(lease);
+                    nodes.push(createStroke({ ...base, tool: 'pen', samples: lease.ref, pressure: real ? 'real' : 'none',
+                        widthModel: real ? { id: 'pressure-linear-v1', rMin: 0, rMax: element.strokeWidth / 2 } : { id: 'uniform' },
+                        geomVersion: CURVE_VERSION, fairTol: 0, closed: element.closed === true, width: element.strokeWidth, color: stroke, dash }));
+                } else if (points.length > 2) {
+                    if (element.startBinding || element.endBinding) throw new Error('Excalidraw multi-point bound lines require a binding-capable polyline seam');
+                    nodes.push(createPolyline({ ...base, points, spline: 'line', color: stroke, dash,
+                        size: sizeFor(element.strokeWidth, [2, 3.5, 5, 10]), width: element.strokeWidth }));
+                } else {
+                    const headStart = arrowhead(element.startArrowhead), headEnd = arrowhead(element.endArrowhead);
+                    if (!headStart || !headEnd) { skipped++; ids.delete(sourceId); continue; }
+                    let label: RichText | null = null, labelColor = stroke, font: Font = 'draw', size: Size = sizeFor(element.strokeWidth, [2, 3.5, 5, 10]), labelScale = 1;
+                    for (const entry of labelsByContainer.get(sourceId) ?? []) {
+                        if (entry.isDeleted === true || typeof entry.id !== 'string' || typeof entry.text !== 'string') continue;
+                        const style = textStyle(entry, true), color = colour(entry.strokeColor);
+                        if (!style || !color) continue;
+                        label = await plainText(entry.text, options.cooperate, options.signal); check();
+                        labelColor = color; font = style.font; size = style.size; labelScale = style.scale;
+                        const oldId = ids.get(entry.id); if (oldId) removed.add(oldId);
+                        ids.set(entry.id, id); break;
+                    }
+                    nodes.push(createConnector({ ...base, route: 'arc', start: { ...points[0], attach: null }, end: { ...points[1], attach: null },
+                        bend: 0, headStart, headEnd, color: stroke, labelColor, fill: 'none', dash, size, font, label, width: element.strokeWidth, labelScale }));
+                    if (element.startBinding && typeof element.startBinding === 'object' && !Array.isArray(element.startBinding)) bindings.push({ id, terminal: 'start', source: element.startBinding as Record<string, unknown> });
+                    if (element.endBinding && typeof element.endBinding === 'object' && !Array.isArray(element.endBinding)) bindings.push({ id, terminal: 'end', source: element.endBinding as Record<string, unknown> });
+                }
+            } else { skipped++; ids.delete(sourceId); }
+            if ((index & 63) === 63) await yieldHost();
+        }
+        const retainedNodes = nodes.filter(node => !removed.has(node.id));
+        const actualDraftDoc = createBoardDoc({ kind: 'whiteboard', sheets: [{ id: options.sheet, name: 'External clipboard', order: 'a0', ext: null }],
+            nodes: retainedNodes, media: media.values(), host: { kind: 'whiteboard' }, ui: UI_DEFAULTS, view: VIEW_DEFAULTS,
+            preserved: { version: NATIVE_VERSION, fields: new Map(), records: [], end: null }, preservedMediaRefs: new Map() });
+        const replacements = new Map<NodeId, ConnectorNode>();
+        for (const binding of bindings) {
+            check();
+            const connector = replacements.get(binding.id) ?? actualDraftDoc.nodes.get(binding.id);
+            const targetSource = binding.source.elementId, targetId = typeof targetSource === 'string' ? ids.get(targetSource) : undefined;
+            const targetNode = targetId ? actualDraftDoc.nodes.get(targetId) : undefined;
+            if (!connector || connector.kind !== 'connector' || !targetNode || targetNode.id === connector.id) continue;
+            const endpoint = connector[binding.terminal], other = connector[binding.terminal === 'start' ? 'end' : 'start'];
+            const c = Math.cos(connector.rotation), s = Math.sin(connector.rotation);
+            const world = (point: { x: number; y: number }) => ({ x: connector.x + c * point.x - s * point.y, y: connector.y + s * point.x + c * point.y });
+            const fixed = binding.source.fixedPoint;
+            if (fixed !== undefined && fixed !== null && (!Array.isArray(fixed) || fixed.length !== 2 || !finite(fixed[0], 0, 1) || !finite(fixed[1], 0, 1))) throw new TypeError('Invalid Excalidraw fixed binding point');
+            const focus = binding.source.focus, gap = binding.source.gap;
+            if (focus !== undefined && !finite(focus, -1, 1) || gap !== undefined && !finite(gap, 0, SECURITY_LIMITS.world)) throw new TypeError('Invalid Excalidraw binding parameters');
+            const attachment = await options.resolveBinding({ targetId: targetNode.id, targetNode, endWorld: world(endpoint), nextWorld: world(other),
+                ...(Array.isArray(fixed) ? { fixedPoint: [fixed[0] as number, fixed[1] as number] as const } : {}),
+                ...(typeof focus === 'number' ? { focus } : {}), ...(typeof gap === 'number' ? { gap } : {}), binding: binding.source },
+            { actualDraftDoc, signal: options.signal });
+            check();
+            if (!attachment || attachment.target !== targetNode.id || !attachment.anchor || !finite(attachment.anchor.x, 0, 1) || !finite(attachment.anchor.y, 0, 1)
+                || typeof attachment.exact !== 'boolean' || typeof attachment.precise !== 'boolean' || !['none', 'center', 'edge-point', 'edge'].includes(attachment.snap)) throw new TypeError('Invalid resolved Excalidraw attachment');
+            replacements.set(connector.id, { ...connector, [binding.terminal]: { ...endpoint, attach: { ...attachment, anchor: { ...attachment.anchor } } } });
+        }
+        const output = retainedNodes.map(node => replacements.get(node.id) ?? node);
+        check();
+        return { nodes: Object.freeze(output), samples, media: Object.freeze([...media.values()]), blobs, skipped, release };
+    } catch (error) { release(); throw error; }
 }

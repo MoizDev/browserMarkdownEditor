@@ -32,13 +32,31 @@ export function decodeInlineAsset(asset: LegacyObject): DecodedLegacyAsset {
     return { bytes, blob: new Blob([bytes], { type: mimeHint }), name: typeof props.name === 'string' ? props.name : '', mimeHint };
 }
 
-export async function readInlineAsset(asset: LegacyObject, admit: AdmitLegacyMedia, signal?: AbortSignal): Promise<ImportedMedia> {
-    const decoded = decodeInlineAsset(asset), { bytes, blob } = decoded;
-    const props = object(asset.props)!;
+/** A source descriptor is not permission to fetch it; only App's scoped disk port resolves it. */
+export function relativeLegacyAssetSource(asset: LegacyObject): string | null {
+    const props = object(asset.props), src = props?.src;
+    if (asset.typeName !== 'asset' || (asset.type !== 'image' && asset.type !== 'video') || typeof src !== 'string'
+        || !src.length || src.length > 16_384 || src.includes('\u0000') || src.includes('\\') || src.startsWith('/')
+        || /^[a-z][a-z0-9+.-]*:/i.test(src)) return null;
+    return src;
+}
+
+export async function readInlineAsset(asset: LegacyObject, admit: AdmitLegacyMedia, signal?: AbortSignal,
+    resolved?: Blob): Promise<ImportedMedia> {
+    const props = object(asset.props);
+    if (!props) throw new Error('Invalid media asset properties');
+    if (resolved && (!relativeLegacyAssetSource(asset) || !(resolved instanceof Blob) || resolved.size > MAX_MEDIA_BYTES))
+        throw new Error('Invalid resolved legacy asset');
+    signal?.throwIfAborted();
+    const decoded = resolved ? { bytes: new Uint8Array(await resolved.arrayBuffer()), blob: resolved,
+        name: typeof props.name === 'string' ? props.name : '', mimeHint: typeof props.mimeType === 'string' ? props.mimeType : '' } : decodeInlineAsset(asset);
+    signal?.throwIfAborted();
+    const { bytes, blob } = decoded;
     const result = await admit(blob, { signal });
     if (!/^sha256:[0-9a-f]{64}$/.test(result.id)) throw new Error('Media admission returned an invalid identity');
     const metadata = object(asset.meta) ? preserveMetadata(object(asset.meta)!) : null;
     const fields = new Map(metadata?.fields ?? []);
+    if (resolved) fields.set('legacyAssetSource', parseJson(JSON.stringify(props.src)).raw());
     const extraProps: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [key, value] of Object.entries(props)) if (key !== 'src') extraProps[key] = value;
     if (Object.keys(extraProps).length) fields.set('legacyAssetProps', parseJson(JSON.stringify(extraProps)).raw());

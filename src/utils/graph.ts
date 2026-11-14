@@ -103,7 +103,7 @@ export function primeLinks(path: string, mtime: number, size: number, text: stri
         || targets.some((t, i) => t !== prev.targets[i]);
 }
 
-async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<string[]> {
+async function linksFor(node: FileTreeFileNode, revalidate: boolean, readSnapshot: (handle: FileSystemFileHandle) => Promise<File>): Promise<string[]> {
     const entry = linkCache.get(node.path);
     const cached = entry?.schema === LINK_SCHEMA ? entry : undefined;
     // The caller knows nothing on disk has moved since the last build (one of
@@ -111,7 +111,7 @@ async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<st
     // saving: a `getFile()` is a round trip to the browser's file thread, and
     // there is one per note in the vault.
     if (!revalidate && cached) return cached.targets;
-    const file = await node.handle.getFile();
+    const file = await readSnapshot(node.handle);
     const prev = cached;
     if (prev && prev.mtime === file.lastModified && prev.size === file.size) return prev.targets;
     // Normalized exactly as readFile does, so link extraction sees the same
@@ -130,7 +130,7 @@ async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<st
  * Reads only files whose (lastModified, size) have moved since the last build —
  * see the link cache above — and with `revalidate` false does not even stat the
  * ones it has already extracted, which is what a save after `primeLinks` wants. Reads its own text rather than taking a readFile
- * callback, because it needs the File object for that validation anyway.
+ * callback; the context supplies a File snapshot for that validation.
  *
  * @param {Array} fileTree  nested file tree from FileSystemContext
  * @returns {{ nodes, links, backlinks, outlinks }}
@@ -139,7 +139,7 @@ async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<st
  *   backlinks: { [id]: [sourceId, ...] }
  *   outlinks:  { [id]: [targetId, ...] }
  */
-export async function buildGraph(fileTree: FileTreeNode[], revalidate = true): Promise<GraphData> {
+export async function buildGraph(fileTree: FileTreeNode[], revalidate: boolean, readSnapshot: (handle: FileSystemFileHandle) => Promise<File>): Promise<GraphData> {
     const resolver = getNoteResolver(fileTree);
     const files = resolver.files;
 
@@ -164,7 +164,7 @@ export async function buildGraph(fileTree: FileTreeNode[], revalidate = true): P
     // read for every file that hasn't changed since the last rebuild. With
     // `revalidate` false it is neither: every note already extracted is taken
     // from the cache, and only a note this build has never seen is opened.
-    const targetsPerFile = await mapPool(files, f => linksFor(f, revalidate).catch(() => [] as string[]));
+    const targetsPerFile = await mapPool(files, f => linksFor(f, revalidate, readSnapshot).catch(() => [] as string[]));
 
     // Track the vault: drop entries for files that have been deleted or renamed,
     // so the cache can never outgrow the notes it describes.

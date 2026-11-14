@@ -377,6 +377,7 @@
     "paper.deleteContents": "এই পৃষ্ঠায় {items} রয়েছে৷",
     "paper.deleteConfirm": "পৃষ্ঠা মুছুন",
     "paper.cancel": "বাতিল করুন",
-    "paper.keepProtected": "লক কন্টেন্ট রাখা হবে."
+    "paper.keepProtected": "লক কন্টেন্ট রাখা হবে.",
+    "chrome.readOnly": "এই বোর্ড শুধুমাত্র পঠনযোগ্য."
   }
 }

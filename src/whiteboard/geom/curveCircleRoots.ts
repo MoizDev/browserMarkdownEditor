@@ -2,6 +2,8 @@ import { dyadic, dyadicMultiply, dyadicSubtract, type Dyadic, type Interval } fr
 import { dyadicRatioInterval } from './dyadicRatio';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
 import type { Vec2 } from './path';
+import { createPolynomialRootsJob } from './polynomialRootsJob';
+import type { DyadicRootCell } from './polynomial';
 
 export interface CircleRootBox { readonly x: Interval; readonly y: Interval; readonly exact?: Readonly<{ x: Dyadic; y: Dyadic }> }
 export type CircleRootResult = Readonly<{ status: 'pending' }> | Readonly<{ status: 'done'; roots: readonly CircleRootBox[] }>
@@ -46,6 +48,8 @@ export function createCurveCircleRootsJob(curve: ExactCurve, centre: Vec2, radiu
         || !Number.isSafeInteger(maxWork) || maxWork < 1 || !Number.isSafeInteger(maxRoots) || maxRoots < 1) throw new RangeError('Invalid curve circle root job');
     const cx = dyadic(centre.x), cy = dyadic(centre.y), r = dyadic(radius), rr = dyadicMultiply(r, r), stack: Work[] = [{ curve, depth: 0 }];
     const roots: CircleRootBox[] = []; let spent = 0, nodes = 1, cancelled = false, finished: CircleRootResult | undefined;
+    let algebraic: ReturnType<typeof createPolynomialRootsJob> | undefined, algebraicCurve: ExactCurve | undefined;
+    let cells: readonly DyadicRootCell[] = [], cellIndex = 0, cellCurve: ExactCurve | undefined, cellDepth = 0;
     const finish = (result: CircleRootResult): CircleRootResult => { finished = Object.freeze(result); return finished; };
     const append = (root: CircleRootBox) => {
         if (root.exact && roots.some(old => old.exact && same(old.exact, root.exact!))) return;
@@ -65,6 +69,19 @@ export function createCurveCircleRootsJob(curve: ExactCurve, centre: Vec2, radiu
         }
         return out;
     };
+    const polynomial = (item: ExactCurve): Dyadic[] => {
+        const coordinate = (axis: 'x' | 'y', origin: Dyadic): Dyadic[] => {
+            const p = item.map(point => point[axis]);
+            if (p.length === 2) return [dyadicSubtract(p[0], origin), dyadicSubtract(p[1], p[0])];
+            return [dyadicSubtract(p[0], origin), scale(dyadicSubtract(p[1], p[0]), 3n),
+                scale(sum(dyadicSubtract(p[0], scale(p[1], 2n)), p[2]), 3n),
+                sum(dyadicSubtract(scale(p[1], 3n), p[0]), dyadicSubtract(p[3], scale(p[2], 3n)))];
+        };
+        const x = coordinate('x', cx), y = coordinate('y', cy), result: Dyadic[] = Array.from({ length: x.length * 2 - 1 }, () => ({ n: 0n, e: 0 }));
+        for (let i = 0; i < x.length; i++) for (let j = 0; j < x.length; j++)
+            result[i + j] = sum(result[i + j], sum(dyadicMultiply(x[i], x[j]), dyadicMultiply(y[i], y[j])));
+        result[0] = dyadicSubtract(result[0], rr); return result;
+    };
     return {
         step(budget) {
             if (!Number.isFinite(budget.deadline) || !Number.isSafeInteger(budget.maxWork) || budget.maxWork < 1) throw new RangeError('Invalid curve circle slice');
@@ -73,6 +90,31 @@ export function createCurveCircleRootsJob(curve: ExactCurve, centre: Vec2, radiu
             try {
                 for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                     if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Curve circle work limit exhausted' });
+                    if (algebraic) {
+                        const result = algebraic.step({ deadline: budget.deadline, maxWork: 1 });
+                        if (result.status === 'pending') continue;
+                        algebraic.cancel(); algebraic = undefined;
+                        if (result.status === 'uncertain') return finish(result);
+                        cells = result.roots; cellIndex = 0; cellCurve = undefined; continue;
+                    }
+                    if (cellIndex < cells.length) {
+                        const cell = cells[cellIndex];
+                        if (!cellCurve) {
+                            cellCurve = algebraicCurve!; cellDepth = 0;
+                            if (cell.point && cell.index === (1n << BigInt(cell.depth))) {
+                                append(pointBox(cellCurve[cellCurve.length - 1])); cellCurve = undefined; cellIndex++; continue;
+                            }
+                        }
+                        if (cellDepth < cell.depth) {
+                            const [left, right] = splitExactCurve(cellCurve), bit = (cell.index >> BigInt(cell.depth - cellDepth - 1)) & 1n;
+                            cellCurve = bit ? right : left; cellDepth++; continue;
+                        }
+                        const root = cell.point ? pointBox(cellCurve[0]) : box(cellCurve);
+                        if (!cell.point && Math.max(root.x.hi - root.x.lo, root.y.hi - root.y.lo) > options.width)
+                            return finish({ status: 'uncertain', reason: 'Curve circle root enclosure exceeds its width' });
+                        append(root); cellCurve = undefined; cellIndex++; continue;
+                    }
+                    if (cells.length) { cells = []; algebraicCurve = undefined; }
                     const item = stack.pop();
                     if (!item) return finish({ status: 'done', roots: Object.freeze(roots) });
                     const control = signs(item.curve);
@@ -82,7 +124,11 @@ export function createCurveCircleRootsJob(curve: ExactCurve, centre: Vec2, radiu
                     const count = variations(control); if (!count) continue;
                     const extent = box(item.curve);
                     if (![extent.x.lo, extent.x.hi, extent.y.lo, extent.y.hi].every(Number.isFinite)) return finish({ status: 'uncertain', reason: 'Curve circle root bounds overflow' });
-                    if (count === 1 && Math.max(extent.x.hi - extent.x.lo, extent.y.hi - extent.y.lo) <= options.width) { append(extent); continue; }
+                    if (Math.max(extent.x.hi - extent.x.lo, extent.y.hi - extent.y.lo) <= options.width) {
+                        if (count === 1) append(extent);
+                        else { algebraicCurve = item.curve; algebraic = createPolynomialRootsJob(polynomial(item.curve), { maxDepth, maxNodes, maxWork }); }
+                        continue;
+                    }
                     if (item.depth >= maxDepth) return finish({ status: 'uncertain', reason: 'Curve circle root cannot be isolated' });
                     if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Curve circle node limit exhausted' });
                     const [left, right] = splitExactCurve(item.curve); nodes += 2;
@@ -91,6 +137,6 @@ export function createCurveCircleRootsJob(curve: ExactCurve, centre: Vec2, radiu
                 return PENDING;
             } catch (error) { if (!(error instanceof RangeError)) throw error; return finish({ status: 'uncertain', reason: error.message }); }
         },
-        cancel() { cancelled = true; stack.length = 0; roots.length = 0; },
+        cancel() { cancelled = true; algebraic?.cancel(); algebraic = undefined; stack.length = 0; roots.length = 0; cells = []; cellCurve = algebraicCurve = undefined; },
     };
 }

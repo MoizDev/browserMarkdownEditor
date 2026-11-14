@@ -52,7 +52,8 @@ export interface Pane2DPresenter<T extends object> {
 }
 
 export interface PaneSession<T extends object> {
-    readonly mirrors: MirrorSet<T>;
+    /** Procedural/model-backed sources may redraw directly and keep no session mirror. */
+    readonly mirrors: MirrorSet<T> | null;
     /** Synchronous capture into the App save funnel, never an awaited disk write. */
     checkpoint(): void;
 }
@@ -172,7 +173,7 @@ export class PaneLifecycle<T extends object> {
         const drawable = view.cssWidth > 0 && view.cssHeight > 0;
         this.visible = true;
         this.view = { ...view, visible: true };
-        this.options.session.mirrors.setVisible(true, this.options.now());
+        this.options.session.mirrors?.setVisible(true, this.options.now());
         if (!wasDrawable && drawable) this.begin2D();
         this.withGpuRelease('hidden', () => this.surface.updateView(this.view));
         if (!drawable) {
@@ -211,7 +212,7 @@ export class PaneLifecycle<T extends object> {
         finally {
             try {
                 all([() => this.discard2D(), () => this.options.presenter.releaseSurface(), () => this.returnBorrow(),
-                () => this.options.session.mirrors.setVisible(false, this.options.now())]);
+                () => this.options.session.mirrors?.setVisible(false, this.options.now())]);
             } finally { this.uploaded = new WeakSet<T>(); this.uploadGeneration = null; }
         }
     }
@@ -311,7 +312,9 @@ export class PaneLifecycle<T extends object> {
             renderTokenKey(budget.token) !== renderTokenKey(this.surface.stamp.documentToken) ||
             renderTokenKey(view.token) !== renderTokenKey(this.surface.stamp.documentToken)) return;
         this.returnBorrow();
-        const borrow = this.options.session.mirrors.borrow(view, this.options.now());
+        const borrow = this.options.session.mirrors?.borrow(view, this.options.now()) ?? {
+            read: () => [], sharpEligible: () => false, release: () => {},
+        };
         this.borrow = borrow;
         const entries = borrow.read(view);
         const byId = new Map(entries.map(entry => [entry.entry.id, entry]));
@@ -436,7 +439,7 @@ export class PaneLifecycle<T extends object> {
         this.first2DPresented = false;
         this.options.presenter.select2D();
         const view = this.options.currentView();
-        if (!this.borrow && view && this.canDraw()) this.borrow = this.options.session.mirrors.borrow(view, this.options.now());
+        if (!this.borrow && view && this.canDraw()) this.borrow = this.options.session.mirrors?.borrow(view, this.options.now()) ?? null;
         this.binding?.invalidate('mirror');
     }
 

@@ -176,12 +176,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const frameCopies = 2 + Number(!!options.session.mirrors) + isolated;
             let mandatory = 0, prefetch = 0;
             for (const layer of layerSet.layers) {
-                const demand = layerSet.definition(layer)?.cpuWorkingSet?.(layer, size?.physical ?? { width: 0, height: 0 });
+                // An unobserved/zero box has no drawable viewport. Asking a producer for an
+                // artificial 0×0 floor can deny it before ResizeObserver has published its size.
+                const demand = requestedPixels > 0 ? layerSet.definition(layer)?.cpuWorkingSet?.(layer, size!.physical) : undefined;
                 mandatory += Math.max(layer.memory().cpuBytes, demand?.mandatoryBytes ?? 0);
                 prefetch += demand?.prefetchBytes ?? 0;
             }
-            const cpuMandatoryBytes = Math.max(mandatory, requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel) +
-                (requestedPixels + bandPixels) * 4;
+            const cpuMandatoryBytes = requestedPixels ? Math.max(mandatory, requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel) +
+                (requestedPixels + bandPixels) * 4 : 0;
             return { paneId: options.paneId, visible, focused, requestedPixels,
                 // Needs stay inside G/C: detached CPU completion, staged GPU, mirror/effect targets,
                 // native bitmap residency and one bounded colour band do not raise either cap.

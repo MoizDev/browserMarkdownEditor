@@ -37,7 +37,9 @@ export interface TextInputRoutingPorts {
     readonly manager: TextEditingManager;
     selected(): NodeId | null;
     /** null means a non-text hit; 'blank' permits double-click creation. */
-    locate(clientX: number, clientY: number): { readonly node: NodeId; readonly offset: number } | 'blank' | null;
+    locate(clientX: number, clientY: number, signal: AbortSignal): { readonly node: NodeId; readonly offset: number } | 'blank' | null | Promise<{ readonly node: NodeId; readonly offset: number } | 'blank' | null>;
+    isCurrent(): boolean;
+    error(error: unknown): void;
     containsActive(clientX: number, clientY: number): boolean;
     clientToWorld(clientX: number, clientY: number): { readonly x: number; readonly y: number };
     worldToClient(x: number, y: number): { readonly x: number; readonly y: number };

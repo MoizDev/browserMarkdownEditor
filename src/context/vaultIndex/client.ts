@@ -23,6 +23,7 @@ export class VaultIndexClient {
     private readonly worker: WorkerClient;
     private readonly stopForeground: () => void;
     private foregroundActive = 0;
+    private foregroundRevision = 0;
     private tree: IndexTreeFile[] = [];
     private treeGen = 0;
     private graphGen = 0;
@@ -53,7 +54,7 @@ export class VaultIndexClient {
                 this.graphGen = 0;
                 this.graphEpoch++;
                 await bootstrap.request('open', { session }, control);
-                await bootstrap.request('fgio', { session, active: this.foregroundActive }, control);
+                await bootstrap.request('fgio', { session, active: this.foregroundActive, revision: this.foregroundRevision }, control);
                 await this.sendTree(bootstrap, this.treeGen, this.tree);
                 for (const [path, value] of this.overlays) await bootstrap.request('overlay', { session, path, rev: value.rev, text: value.text }, control);
                 queueMicrotask(() => { if (!this.disposed) void this.sweep('open').catch(() => {}); });
@@ -84,7 +85,7 @@ export class VaultIndexClient {
         this.worker.on('status', value => { if (currentEvent(value)) onStatus?.(value); });
         this.stopForeground = observeForegroundReads(active => {
             this.foregroundActive = active;
-            void this.foregroundIO(active).catch(() => {});
+            void this.foregroundIO(active, ++this.foregroundRevision).catch(() => {});
         });
     }
     acceptsGraph(graphGen: number, treeGen: number, epoch: number): boolean {
@@ -182,8 +183,8 @@ export class VaultIndexClient {
         try { await this.worker.request('invalidate', { session: this.session, paths }, background); }
         catch (error) { this.reportFailure(error); throw error; }
     }
-    async foregroundIO(active: number): Promise<void> {
-        try { await this.worker.request('fgio', { session: this.session, active }, control); }
+    async foregroundIO(active: number, revision: number): Promise<void> {
+        try { await this.worker.request('fgio', { session: this.session, active, revision }, control); }
         catch (error) { this.reportFailure(error); throw error; }
     }
     private async syncOverlays(buffers: readonly SearchBuffer[]): Promise<void> {

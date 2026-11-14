@@ -201,7 +201,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         };
         const memory = getGraphLayout(vaultKey);
         if (memory || !vaultKey.startsWith('vault:')) start(memory);
-        else void import('../context/vaultIndex/persistence').then(db => db.loadLayout(vaultKey)).then(start, () => start());
+        else void import('../context/vaultIndex/persistence').then(db => db.loadLayout(vaultKey.slice(6))).then(start, () => start());
         return () => {
             live = false;
             if (!owner) return;
@@ -469,7 +469,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     putGraphLayout(vaultKey, snapshot);
                     if (vaultKey.startsWith('vault:')) queueGraphLayoutSave(vaultKey, async () => {
                         const { saveLayout } = await import('../context/vaultIndex/persistence');
-                        await saveLayout(vaultKey, snapshot);
+                        await saveLayout(vaultKey.slice(6), snapshot);
                     });
                 }
                 if (frame.moved) {

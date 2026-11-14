@@ -2072,7 +2072,7 @@ export default function App() {
   // vault switch passes the one being left, since by then the context already
   // names the next one.
   const flushTab = useCallback(async (
-    path: string | null, force = false, contentOverride?: string, closing = false,
+    path: string | null, force = false, closing = false,
     vaultRoot?: FileSystemDirectoryHandle | null,
   ): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
     if (!path) return 'skipped';
@@ -2090,12 +2090,11 @@ export default function App() {
     // that '' would erase a note the app merely failed to read.
     const pendingRevision = pendingRevisionsRef.current.get(tab.id);
     const pending = !!pendingRevision && pendingRevision.revision > pendingRevision.saved;
-    if (!canFlushTab(tab) && !((contentOverride !== undefined || pending) && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
+    if (!canFlushTab(tab) && !(pending && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !pending && !force) return 'skipped';
     // A drain reports into the synchronous funnel before React commits its tab.
-    // An older caller override must never replace that newer report.
-    const snapshot = contentOf(path) ?? contentOverride ?? tab.content;
+    const snapshot = contentOf(path) ?? tab.content;
     if (isCanvasFile(tab.file.name)) unsavedBoardContentRef.current.set(path, snapshot);
     const revision = pendingRevision?.revision ?? 0;
     const existingWrite = pendingWritesRef.current.get(tab.id);
@@ -2329,7 +2328,7 @@ export default function App() {
     latestContentRef.current.set(path, content);
     reportRevision(target.id);
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
-    await flushTab(path, true, content);
+    await flushTab(path, true);
   }, [flushTab, reportRevision]);
 
   const checkpointRef = useRef<Promise<void> | null>(null);
@@ -2471,7 +2470,7 @@ export default function App() {
     // flushTab captures the tab synchronously, clears the timer, and no-ops for
     // non-dirty / Help / handle-less tabs, so calling it whenever we flush is safe.
     // `closing`: a last write its file can no longer take keeps the text beside it.
-    if (flush) flushTab(path, false, undefined, true); else clearSaveTimer(path);
+    if (flush) void flushTab(path, false, true); else clearSaveTimer(path);
     // The document's disk state goes with it — after the flush above, which
     // captured its baseline synchronously.
     const doc = tabsRef.current.find(t => t.file.path === path);
@@ -2527,7 +2526,7 @@ export default function App() {
     if (path === movedFrom) return;
     if (!tabsRef.current.some(t => t.file.path === path)) return;
     if (keep) {
-      const result = await flushTab(path, false, undefined, true);
+      const result = await flushTab(path, false, true);
       const tab = tabsRef.current.find(t => t.file.path === path);
       const revision = tab && pendingRevisionsRef.current.get(tab.id);
       if (result === 'failed' || (result === 'skipped' && revision && revision.revision > revision.saved)) throw new Error('Could not preserve the overwritten document.');
@@ -2599,6 +2598,12 @@ export default function App() {
         if (reopenedClosingRef.current.has(tab.id)) return;
         releaseTab(path, false);
         setTabs(prev => prev.filter(t => t.id !== tab.id));
+      } catch (error) {
+        console.error('Could not close document:', error);
+        if (rootHandleRef.current === root && tabsRef.current.some(t => t.id === tab.id)) {
+          setLayout(l => openTabIn(l, path));
+          notifyRef.current(`Could not save “${tab.file.name}”; its tab remains open.`);
+        }
       } finally {
         closingRef.current.delete(tab.id);
         reopenedClosingRef.current.delete(tab.id);
@@ -3660,7 +3665,7 @@ export default function App() {
       // than merely cancelled: the copy then carries the reader's last words,
       // which is what a trash folder is for.
       const doomedTabs = tabsRef.current.filter(t => doomed(t.file.path));
-      const saved = await Promise.all(doomedTabs.map(t => flushTab(t.file.path, false, undefined, true)));
+      const saved = await Promise.all(doomedTabs.map(t => flushTab(t.file.path, false, true)));
       if (saved.some((result, i) => {
         const revision = pendingRevisionsRef.current.get(doomedTabs[i].id);
         return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
@@ -3860,7 +3865,7 @@ export default function App() {
             // gets displaced into `.Garbage` carries the reader's last words
             // rather than the disk's — handleTrash's reason, and its ordering.
             const displacedTabs = tabsRef.current.filter(doomed);
-            const saved = await Promise.all(displacedTabs.map(t => flushTab(t.file.path, false, undefined, true)));
+            const saved = await Promise.all(displacedTabs.map(t => flushTab(t.file.path, false, true)));
             if (saved.some((result, i) => {
               const revision = pendingRevisionsRef.current.get(displacedTabs[i].id);
               return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
@@ -4717,7 +4722,7 @@ export default function App() {
       const copy = await writeConflictCopy(path, disk.bytes);
       setBaseline(id, disk.version);
       setDiskState(id, null);
-      const outcome = await flushTab(path, true, contentOf(path));
+      const outcome = await flushTab(path, true);
       if (outcome === 'changed') announce(`“${file.name}” changed on disk again. The earlier version was kept as “${shortName(copy)}”.`);
       else announce(`The version on disk was kept as “${shortName(copy)}”.`);
     } catch (err) {

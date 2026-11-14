@@ -8,7 +8,7 @@ import type { NodeRecord } from '../model/nodes';
 import { scanRawMedia, visitExtRaw, visitHostRaw, visitNodeRaw, visitPreservedRaw } from '../model/rawMedia';
 import type { UiBlock } from '../model/styles';
 import type { SavedView } from './encode';
-import { hasNativeMarker, JsonReadError, parseJson } from './jsonRead';
+import { hasNativeMarker, JsonReadError, parseJson, parseJsonIncremental } from './jsonRead';
 import type { JsonSpan } from './jsonRead';
 import { readHeader, readRecord } from './readModel';
 import type { MappedRecord } from './readModel';
@@ -348,7 +348,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
             haveRecord = true; lastComma = comma;
             let root: JsonSpan;
             try {
-                root = parseJson(body);
+                root = options.cooperate ? await parseJsonIncremental(body, options.cooperate) : parseJson(body);
                 if (recordType(root) !== null) { recordLines = true; state.fallback = null; }
             } catch (error) {
                 if (!(error instanceof JsonReadError)) throw error;
@@ -385,7 +385,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
             if (bomBytes) { text = text.slice(1); reformatted = true; }
             if (!white(text)) return result('empty', null, true);
             native ||= hasNativeMarker(text);
-            const root = parseJson(text);
+            const root = options.cooperate ? await parseJsonIncremental(text, options.cooperate) : parseJson(text);
             if (!hasNativeMarker(text)) return result('other', null, true);
             native = true;
             records = new Records(safeOptions); // Failed line guesses admitted no samples.

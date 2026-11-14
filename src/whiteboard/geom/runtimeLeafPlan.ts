@@ -3,13 +3,15 @@ import { worldPose } from '../change/coordinates';
 import type { NodeSetOp, Transaction } from '../change/ops';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
-import { hasOpaqueDescendant, sheetOf, type BoardDoc } from '../model/doc';
+import { childrenOf, hasOpaqueDescendant, sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import type { Vec2 } from './path';
 import { prepareBoardLeafResize, type BoardLeafResizeResult } from './runtimeResizeKinds';
 import { ResizePlan, type SelectionResizePreview } from './resizePlan';
 import type { ResizeTargetSnapshot } from './resizePlan.types';
+import type { KindResizeFactors } from './resizeKinds.types';
+import { commonResizeRotation } from './transforms';
 import type { OrientedBox, ResizeHandle, ResizeModifiers } from './transforms';
 
 export interface BoardLeafResizePlanOptions {
@@ -31,7 +33,7 @@ export interface BoardLeafResizePlan {
 
 type Leaf = Exclude<Node, { kind: 'opaque' | 'group' | 'connector' }>;
 
-/** A coordinated leaf selection uses one immutable candidate and one history transaction. */
+/** A coordinated selection uses one immutable candidate and one history transaction. */
 export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOptions): Promise<BoardLeafResizePlan> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
@@ -47,19 +49,40 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
     const nodes = selectedRoots(doc, options.ids);
     if (!nodes.length) throw new Error('Nothing selected for resize');
     for (const node of nodes) {
-        if (node.kind === 'opaque' || node.kind === 'group' || node.kind === 'connector' || isLocked(doc, node)
-            || hasOpaqueDescendant(doc, node.id) || sheetOf(doc, node.id) !== selection.sheet) throw new Error(`Not a leaf resize target: ${node.id}`);
+        if (node.kind === 'opaque' || node.kind === 'connector' || isLocked(doc, node)
+            || hasOpaqueDescendant(doc, node.id) || sheetOf(doc, node.id) !== selection.sheet) throw new Error(`Unsupported resize target: ${node.id}`);
     }
-    const scope = await acquireBoardGeometryScope(runtime, nodes.map(node => node.id), { signal, current, cooperate: options.cooperate });
+    const leaves = new Map<NodeId, NodeId[]>(), all = new Set<NodeId>(), cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    let count = 0;
+    for (const root of nodes) {
+        const result: NodeId[] = [], pending = [root]; leaves.set(root.id, result);
+        while (pending.length) {
+            check(); const node = pending.pop()!;
+            if (node.locked) continue;
+            if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
+            else {
+                if (node.kind === 'opaque' || node.kind === 'connector') throw new Error(`Unsupported group resize descendant: ${node.id}`);
+                result.push(node.id); all.add(node.id);
+            }
+            if (++count % 256 === 0) { await cooperate(); check(); }
+        }
+        if (!result.length) throw new Error(`Group has no resizable content: ${root.id}`);
+        all.add(root.id);
+    }
+    const scope = await acquireBoardGeometryScope(runtime, all, { signal, current, cooperate: options.cooperate });
     try { check(); fontEpoch = runtime.render.text.fonts.epoch; } catch (error) { scope.release(); throw error; }
     const snapshots = new Map<NodeId, ResizeTargetSnapshot>();
     try { for (const node of nodes) {
         const box = scope.localBounds(node.id), pose = worldPose(doc, node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
         const point = (x: number, y: number) => ({ x: pose.x + c * x - s * y, y: pose.y + s * x + c * y });
+        const descendants = leaves.get(node.id)!.map(id => doc.nodes.get(id)!);
         snapshots.set(node.id, { node, centreWorld: point((box[0] + box[2]) / 2, (box[1] + box[3]) / 2),
             cornersWorld: [point(box[0], box[1]), point(box[2], box[1]), point(box[2], box[3]), point(box[0], box[3])],
-            relevantRotations: [pose.rotation], worldRotation: pose.rotation });
+            relevantRotations: descendants.map(child => worldPose(doc, child.id).rotation),
+            forceAspect: descendants.some(child => child.kind === 'clip' || child.kind === 'sticky'
+                || (child.kind === 'text' && !!options.handle.x && !!options.handle.y)), worldRotation: pose.rotation });
     } } catch (error) { scope.release(); throw error; }
+    const mixed = commonResizeRotation([...snapshots.values()].flatMap(value => value.relevantRotations)) === null;
     let latest: { value: BoardLeafResizePreview; leases: BoardLeafResizeResult[]; generation: number; signal: AbortSignal } | undefined;
     let pending: { doc: BoardDoc; leases: BoardLeafResizeResult[]; generation: number } | undefined;
     const release = (leases: readonly BoardLeafResizeResult[]) => { for (let i = leases.length - 1; i >= 0; i--) leases[i].release(); };
@@ -74,16 +97,41 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
             let candidate = doc, transferred = false;
             try {
                 for (const target of targets) {
-                    check(request); if (!active()) throw new DOMException('Resize preview superseded', 'AbortError');
-                    const node = candidate.nodes.get(target.snapshot.node.id);
-                    if (!node || node.kind === 'opaque' || node.kind === 'group' || node.kind === 'connector') throw new Error('Resize target changed');
-                    const fx = target.factors.x < 0 || (target.factors.x === 0 && target.factors.zeroSignX < 0);
-                    const fy = target.factors.y < 0 || (target.factors.y === 0 && target.factors.zeroSignY < 0);
-                    // Default, calibration cut by owner: a single crossed axis reflects orientation without shear.
-                    const rotationWorld = fx !== fy ? 2 * frame.box.rotation - target.snapshot.worldRotation : target.snapshot.worldRotation;
-                    const result = await prepareBoardLeafResize(node as Leaf, { runtime, doc: candidate, factors: target.factors,
-                        centreWorld: target.centre, rotationWorld, signal: request, current: active, cooperate: options.cooperate });
-                    leases.push(result); candidate = result.doc; ops.push(...result.kindOps, ...result.placementOps);
+                    const rootId = target.snapshot.node.id, rootTurns = Math.round((target.snapshot.worldRotation - frame.box.rotation) / (Math.PI / 2));
+                    const rootSwap = !mixed && Math.abs(rootTurns % 2) === 1;
+                    const zeroX = rootSwap ? target.factors.zeroSignY : target.factors.zeroSignX;
+                    const zeroY = rootSwap ? target.factors.zeroSignX : target.factors.zeroSignY;
+                    for (const id of leaves.get(rootId)!) {
+                        check(request); if (!active()) throw new DOMException('Resize preview superseded', 'AbortError');
+                        const node = candidate.nodes.get(id);
+                        if (!node || node.kind === 'opaque' || node.kind === 'group' || node.kind === 'connector') throw new Error('Resize target changed');
+                        let factors: KindResizeFactors = target.factors, centreWorld = target.centre;
+                        const oldPose = scope.worldPose(id);
+                        if (id !== rootId) {
+                            const turns = Math.round((oldPose.rotation - frame.box.rotation) / (Math.PI / 2));
+                            const swap = !mixed && Math.abs(turns % 2) === 1, turn = mixed ? 0 : (turns % 4 + 4) % 4;
+                            const hx = options.handle.x, hy = options.handle.y;
+                            factors = { x: swap ? frame.scaleY : frame.scaleX, y: swap ? frame.scaleX : frame.scaleY,
+                                zeroSignX: swap ? zeroY : zeroX, zeroSignY: swap ? zeroX : zeroY,
+                                handleX: (turn === 0 ? hx : turn === 1 ? hy : turn === 2 ? -hx : -hy) as -1 | 0 | 1,
+                                handleY: (turn === 0 ? hy : turn === 1 ? -hx : turn === 2 ? -hy : hx) as -1 | 0 | 1,
+                                handle: hx && hy ? 'corner' : 'side', scope: 'multi' };
+                            const b = scope.localBounds(id), c0 = Math.cos(oldPose.rotation), s0 = Math.sin(oldPose.rotation);
+                            const x = (b[0] + b[2]) / 2, y = (b[1] + b[3]) / 2;
+                            const worldX = oldPose.x + c0 * x - s0 * y, worldY = oldPose.y + s0 * x + c0 * y;
+                            const c = Math.cos(frame.box.rotation), s = Math.sin(frame.box.rotation);
+                            const dx = worldX - frame.anchor.x, dy = worldY - frame.anchor.y, u = c * dx + s * dy, v = -s * dx + c * dy;
+                            centreWorld = { x: frame.anchor.x + c * u * frame.scaleX - s * v * frame.scaleY,
+                                y: frame.anchor.y + s * u * frame.scaleX + c * v * frame.scaleY };
+                        }
+                        const fx = factors.x < 0 || (factors.x === 0 && factors.zeroSignX < 0);
+                        const fy = factors.y < 0 || (factors.y === 0 && factors.zeroSignY < 0);
+                        // Default, calibration cut by owner: a single crossed axis reflects orientation without shear.
+                        const rotationWorld = fx !== fy ? 2 * frame.box.rotation - oldPose.rotation : oldPose.rotation;
+                        const result = await prepareBoardLeafResize(node as Leaf, { runtime, doc: candidate, factors,
+                            centreWorld, rotationWorld, signal: request, current: active, cooperate: options.cooperate });
+                        leases.push(result); candidate = result.doc; ops.push(...result.kindOps, ...result.placementOps);
+                    }
                 }
                 check(request); if (!active()) throw new DOMException('Resize preview superseded', 'AbortError');
                 pending = { doc: candidate, leases, generation: turn }; transferred = true;

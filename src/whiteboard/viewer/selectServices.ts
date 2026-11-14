@@ -63,6 +63,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const pending = new Set<() => void>(), controllers = new Set<AbortController>();
     let disposed = false, regionPreview: SelectRegion | null = null, previewIds = new Set<NodeId>();
     let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
+    let scribbleSource: readonly Vec2[] | null = null, scribbleCount = 0, scribbleCamera = '';
+    let scribbleTail: SVGPolylineElement | null = null, scribblePoints: string[] = [];
     let guides: readonly BoardSnapGuide[] = [];
     let warmedRevision = -1, warmed = new Set<NodeId>();
     let nudgeEpoch = 0, nudgeTail: Promise<void> = Promise.resolve();
@@ -336,14 +338,20 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
             }
         } else { guideSvg?.remove(); guideSvg = null; }
-        if (!regionPreview) { svg?.remove(); svg = null; shape = null; return; }
+        if (!regionPreview) {
+            svg?.remove(); svg = null; shape = null; scribbleSource = null; scribbleCount = 0;
+            scribbleTail = null; scribblePoints = []; scribbleCamera = ''; return;
+        }
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
             svg.setAttribute('aria-hidden', 'true'); svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
             options.overlay.append(svg);
         }
-        const kind = regionPreview.kind === 'marquee' ? 'rect' : 'polyline';
-        if (!shape || shape.localName !== kind) { shape?.remove(); shape = document.createElementNS('http://www.w3.org/2000/svg', kind); svg.append(shape); }
+        const kind = regionPreview.kind === 'marquee' ? 'rect' : 'g';
+        if (!shape || shape.localName !== kind) {
+            shape?.remove(); shape = document.createElementNS('http://www.w3.org/2000/svg', kind); svg.append(shape);
+            scribbleSource = null; scribbleCount = 0; scribbleTail = null; scribblePoints = []; scribbleCamera = '';
+        }
         shape.setAttribute('stroke', previewIds.size ? '#75b7ff' : '#6a9fff'); shape.setAttribute('stroke-width', '1.5');
         if (regionPreview.kind === 'marquee') {
             const a = worldToSurface(regionPreview.start, frame.view.camera), b = worldToSurface(regionPreview.end, frame.view.camera);
@@ -351,9 +359,30 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             shape.setAttribute('width', String(Math.abs(a.x - b.x))); shape.setAttribute('height', String(Math.abs(a.y - b.y)));
             shape.setAttribute('fill', 'rgba(106,159,255,0.12)'); shape.setAttribute('stroke-dasharray', '4 3');
         } else {
-            const points = regionPreview.points.map(point => worldToSurface(point, frame.view.camera));
-            shape.setAttribute('points', points.map(point => `${point.x},${point.y}`).join(' '));
+            const source = regionPreview.points, camera = frame.view.camera, cameraKey = `${camera.x}:${camera.y}:${camera.z}`;
+            if (scribbleSource !== source || scribbleCamera !== cameraKey || scribbleCount > source.length) {
+                shape.replaceChildren(); scribbleSource = source; scribbleCamera = cameraKey; scribbleCount = 0;
+                scribbleTail = null; scribblePoints = [];
+            }
             shape.setAttribute('fill', 'none'); shape.removeAttribute('stroke-dasharray');
+            // Keep exact points, but bound DOM projection to four small chunks per shared frame.
+            const limit = Math.min(source.length, scribbleCount + 1024);
+            while (scribbleCount < limit) {
+                if (!scribbleTail || scribblePoints.length >= 257) {
+                    scribbleTail = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+                    scribbleTail.setAttribute('stroke-linejoin', 'round'); scribbleTail.setAttribute('stroke-linecap', 'round');
+                    shape.append(scribbleTail); scribblePoints = [];
+                    if (scribbleCount) {
+                        const previous = worldToSurface(source[scribbleCount - 1], camera); scribblePoints.push(`${previous.x},${previous.y}`);
+                    }
+                }
+                const remaining = Math.min(limit - scribbleCount, 257 - scribblePoints.length);
+                for (let i = 0; i < remaining; i++) {
+                    const p = worldToSurface(source[scribbleCount++], camera); scribblePoints.push(`${p.x},${p.y}`);
+                }
+                scribbleTail.setAttribute('points', scribblePoints.join(' '));
+            }
+            if (scribbleCount < source.length) requestFrame();
         }
     };
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
@@ -443,6 +472,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
     return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
+        dispose() { if (disposed) return; cancelPending(); disposed = true; navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+            regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

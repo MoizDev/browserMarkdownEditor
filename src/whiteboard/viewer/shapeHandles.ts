@@ -22,7 +22,7 @@ import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
 import type { NodeId } from '../model/ids';
 import type { AttachmentRequest } from './attachments';
 import type { Attachment } from '../model/nodes';
-import type { NodeSetOp } from '../change/ops';
+import type { Op } from '../change/ops';
 
 export type ShapeHandleHit = Readonly<{ kind: 'connector-end'; terminal: 'start' | 'end' }>
     | Readonly<{ kind: 'connector-control'; control: ConnectorControl }>
@@ -40,7 +40,7 @@ export interface ShapeHandleOptions {
     readonly invalidate: () => void;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
-    readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly show: (ops: readonly Op[]) => void;
     readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
     readonly waitUntilIdle: (signal: AbortSignal) => Promise<void>;
     readonly armCommit: () => void;

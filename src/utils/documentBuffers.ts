@@ -14,12 +14,15 @@ export interface BuildJob {
 /** Binary/build branches are pinned by the engine adapter for a later save. */
 export type SnapshotData = string | Uint8Array | Blob | BuildJob;
 
-/** A pinned snapshot whose synchronous, side-effect-free read remains valid for the app's life. */
+export interface SourceLease { release(): void }
+
+/** A revision source; retain it when its data must outlive the current buffer. */
 export interface DeferredSource {
     readonly kind: 'deferred';
     readonly owner: SourceOwner;
     readonly revision: number;
     read(): SnapshotData;
+    retain?(): SourceLease;
 }
 
 export type ContentSource = string | DeferredSource;
@@ -59,6 +62,8 @@ export interface BufferSnapshot {
     readonly revision: number;
     readonly data: SnapshotData;
 }
+
+export interface PinnedBufferSnapshot extends BufferSnapshot, SourceLease {}
 
 /** App owns one store, outside React; path accessors resolve the current document on every call. */
 export interface DocumentBufferStore {
@@ -102,6 +107,8 @@ export interface DocumentBufferStore {
     /** Binary-aware save/conflict snapshot, independent of readable. */
     snapshotOf(path: string): BufferSnapshot | undefined;
     snapshotForDocument(documentId: string): BufferSnapshot | undefined;
+    retainSnapshotOf(path: string): PinnedBufferSnapshot | undefined;
+    retainSnapshotForDocument(documentId: string): PinnedBufferSnapshot | undefined;
 
     /** The same ledger as revisionForDocument, resolving today's id at the supplied path. */
     revisionOf(path: string): BufferRevision | undefined;
@@ -118,7 +125,8 @@ export interface DocumentBufferStore {
 export function createDocumentBuffers(
     documentIdAtPath: (path: string) => string | undefined,
 ): DocumentBufferStore {
-    const buffers = new Map<string, Readonly<DocumentBuffer>>();
+    type OwnedBuffer = DocumentBuffer & { readonly sourceLease?: SourceLease };
+    const buffers = new Map<string, Readonly<OwnedBuffer>>();
     // A source can flatten to text, bytes, a Blob or a BuildJob. Both accessors
     // share this one capture so an expensive read is not repeated per revision.
     const snapshots = new Map<string, { revision: number; data: SnapshotData }>();
@@ -129,7 +137,7 @@ export function createDocumentBuffers(
     const notify = (documentId: string) => {
         for (const listener of [...(listeners.get(documentId) ?? [])]) listener();
     };
-    const publish = (documentId: string, next: DocumentBuffer): Readonly<DocumentBuffer> => {
+    const publish = (documentId: string, next: OwnedBuffer): Readonly<OwnedBuffer> => {
         const buffer = Object.freeze(next);
         buffers.set(documentId, buffer);
         const previous = revisions.get(documentId);
@@ -168,6 +176,17 @@ export function createDocumentBuffers(
         return buffer ? readSnapshot(documentId, buffer) : undefined;
     };
 
+    const retainSnapshotForDocument = (documentId: string): PinnedBufferSnapshot | undefined => {
+        const buffer = buffers.get(documentId);
+        if (!buffer) return undefined;
+        const lease = typeof buffer.source === 'string' ? undefined : buffer.source.retain?.();
+        try {
+            const snapshot = readSnapshot(documentId, buffer);
+            let released = false;
+            return { ...snapshot, release() { if (!released) { released = true; lease?.release(); } } };
+        } catch (error) { lease?.release(); throw error; }
+    };
+
     return {
         open(documentId, source, readable) {
             const existing = buffers.get(documentId);
@@ -198,14 +217,17 @@ export function createDocumentBuffers(
         report(documentId, source, fromDisk = false, flushable) {
             const buffer = buffers.get(documentId);
             if (!buffer) return undefined;
-            snapshots.delete(documentId);
             const revision = buffer.revision + 1;
             if (!Number.isSafeInteger(revision)) throw new RangeError('Document revision exhausted');
-            return publish(documentId, {
-                owner: buffer.owner, source, revision,
-                savedRevision: fromDisk ? revision : buffer.savedRevision,
-                readable: buffer.readable, flushable: fromDisk ? false : flushable ?? buffer.flushable,
-            });
+            const sourceLease = typeof source === 'string' ? undefined : source.retain?.();
+            snapshots.delete(documentId);
+            try {
+                return publish(documentId, {
+                    owner: buffer.owner, source, sourceLease, revision,
+                    savedRevision: fromDisk ? revision : buffer.savedRevision,
+                    readable: buffer.readable, flushable: fromDisk ? false : flushable ?? buffer.flushable,
+                });
+            } finally { buffer.sourceLease?.release(); }
         },
         markSaved(documentId, revision) {
             const buffer = buffers.get(documentId);
@@ -239,12 +261,19 @@ export function createDocumentBuffers(
             const documentId = documentIdAtPath(path);
             return documentId === undefined ? undefined : snapshotForDocument(documentId);
         },
+        retainSnapshotForDocument,
+        retainSnapshotOf(path) {
+            const documentId = documentIdAtPath(path);
+            return documentId === undefined ? undefined : retainSnapshotForDocument(documentId);
+        },
         revisionOf(path) {
             const documentId = documentIdAtPath(path);
             return documentId === undefined ? undefined : revisions.get(documentId);
         },
         remove(documentId) {
-            if (!buffers.delete(documentId)) return false;
+            const buffer = buffers.get(documentId);
+            if (!buffer || !buffers.delete(documentId)) return false;
+            buffer.sourceLease?.release();
             snapshots.delete(documentId);
             revisions.delete(documentId);
             notify(documentId);
@@ -252,7 +281,9 @@ export function createDocumentBuffers(
         },
         clear() {
             const documentIds = [...buffers.keys()];
+            const owned = [...buffers.values()];
             buffers.clear();
+            for (const buffer of owned) buffer.sourceLease?.release();
             snapshots.clear();
             revisions.clear();
             // Subscriptions outlive an entry until their caller unsubscribes;

@@ -107,7 +107,8 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     const capturer = pdfSessionCapturer(retained.session, stack), focus = retainPdfFocus(token.documentId);
     const lease: ViewLease = { visible: options.isVisible(), focused: options.isFocused(), enabled: options.emphasisEnabled(), pages: [], focusPage: -1 };
     retained.views.add(lease);
-    let disposed = false;
+    let disposed = false, updating = false;
+    let latestView: ViewState | null = null;
     const sync = () => {
         const views = [...retained.views].filter(view => view.visible);
         pdf.setVisible(views.length > 0);
@@ -127,6 +128,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         return document.producer.render(request, signal);
     } }, isCurrent: () => isCurrent() && options.isVisible(), mirror: { store: mirror, view: view => lease.enabled ? null : mirrorView(view) }, bridge,
     onError: error => options.onError(error), demand(view) {
+        latestView = view;
         lease.visible = options.isVisible(); lease.focused = options.isFocused(); lease.enabled = options.emphasisEnabled();
         const top = view.camera.y, bottom = top + view.viewport.height / view.camera.z;
         const pages: number[] = [];
@@ -143,7 +145,11 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     const observeTransition = () => {
         unsubscribeTransition?.(); unsubscribeTransition = undefined;
         if (!lease.visible || !bridge) return;
-        const refresh = () => { if (!transition.isActive(bridge)) layer.current()?.expireBridge(); };
+        const refresh = () => {
+            if (transition.isActive(bridge)) return;
+            layer.current()?.expireBridge();
+            if (!updating) { updating = true; options.onUpdating?.(true); }
+        };
         unsubscribeTransition = transition.subscribe(refresh); refresh();
     };
     const setVisible = (visible: boolean, focused = false) => {
@@ -173,6 +179,12 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         try { check(signal); return bitmap; } catch (error) { bitmap.close(); throw error; }
     };
     return { pages: document.pages.map(page => ({ width: page.width, height: page.height })), layers: [definition], setVisible,
+        notePresentation() {
+            if (!updating || !latestView || !isCurrent() || !lease.visible || !options.isVisible()) return;
+            const coverage = layer.current()?.coverage(latestView, false);
+            if (!coverage?.complete || !coverage.sharp) return;
+            updating = false; options.onUpdating?.(false);
+        },
         async resolveGeometry(page, signal) {
             check(signal);
             const geometry = await pdf.resolveGeometry(page, { priority: 0, signal });

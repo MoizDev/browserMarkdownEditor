@@ -25,6 +25,8 @@ export interface PdfMirrorPublish {
 
 export interface PdfSessionMirrors {
     readonly mirrors: MirrorSet<PdfMirrorPixels>;
+    remember(view: MirrorView): void;
+    lastView(): MirrorView | null;
     publish(input: PdfMirrorPublish): string | null;
     mirrorQuad(item: BorrowedMirror<PdfMirrorPixels>, view: MirrorView): CompositorMirrorQuad;
 }
@@ -41,6 +43,7 @@ export function getPdfSessionMirrors(options: {
     if (existing) return existing;
     const pixels = new Map<string, PdfMirrorPixels>();
     let nextId = 0;
+    let lastView: MirrorView | null = null;
     const storage = {
         read: (id: string) => pixels.get(id),
         close: (id: string) => {
@@ -54,6 +57,11 @@ export function getPdfSessionMirrors(options: {
         currentToken: options.currentToken, storage });
     const result = {
         mirrors,
+        remember(view: MirrorView): void {
+            lastView = { ...view, token: { ...view.token },
+                view: { camera: { ...view.view.camera }, viewport: { ...view.view.viewport } } };
+        },
+        lastView: () => lastView,
         /** On success the mirror owns pixels and lease; on refusal both remain with the caller. */
         publish(input: PdfMirrorPublish): string | null {
             if (input.lease.bytes !== input.pixels.bitmap.width * input.pixels.bitmap.height * 4) {

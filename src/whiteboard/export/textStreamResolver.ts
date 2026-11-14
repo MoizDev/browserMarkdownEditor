@@ -3,24 +3,19 @@ import type { PaintNodeSource, PaintTextItem } from '../render/paintStream'
 import { isOutlinePathPiece } from '../text/outlinePieces'
 import type { OutlinePiece } from '../text/outlinePieces'
 import type { OutlineStreamReply } from '../text/outlineStream'
-import { boardWorker } from '../workers/client'
 import { openExportTextStream } from './textStreamLease'
 
 function resolver(source: PaintNodeSource, signal: AbortSignal, chunkPaths: boolean) {
-  const client = boardWorker('export')
   return async function* resolve(item: PaintTextItem, pageScale: number, requestSignal?: AbortSignal): AsyncGenerator<OutlinePiece> {
     const active = requestSignal && requestSignal !== signal ? AbortSignal.any([signal, requestSignal]) : signal
     const lease = await openExportTextStream(source, item, pageScale, active, chunkPaths)
-    const base = { outlineStream: 1 as const, id: lease.id, owner: lease.owner }
     let pathOpen = false
     try {
       for (;;) {
         active.throwIfAborted()
-        const reply = await client.request<OutlineStreamReply>('textOutline', { ...base, mode: 'nextBatch' }, lease.owner,
-          { priority: 0, signal: active }, lease.current)
+        const reply: OutlineStreamReply = await lease.pull(active)
         if (reply.kind !== 'batch' || typeof reply.done !== 'boolean' || !Array.isArray(reply.items) || reply.items.length > 64 || (!reply.done && !reply.items.length))
           throw new TypeError('Invalid text outline stream batch')
-        if (reply.done) lease.complete()
         for (const part of reply.items) {
           active.throwIfAborted()
           if (!part) throw new TypeError('Invalid text outline stream item')
@@ -41,7 +36,7 @@ function resolver(source: PaintNodeSource, signal: AbortSignal, chunkPaths: bool
           return
         }
       }
-    } finally { lease.release() }
+    } finally { await lease.release() }
   }
 }
 

@@ -231,7 +231,17 @@ export async function rehostLegacyBoard(source: EditableLegacy,
                 'dissolved-group-child', 'dissolved-group', 'detached-attachment', 'detached-attachment-cycle',
                 'numeric', 'missing-media', 'rich-text', 'rich-text-replaced-controls']);
             const repairs = (report.repaired?.repairs ?? []).slice(0, 8).map(item => known.has(item.code) ? item.code : 'other');
-            const issues = report.issues.slice(0, 1).map(issue => issue.code);
+            const staticReasons = new Map([
+                ['Missing comma between native records', 'missing-record-comma'],
+                ['Trailing comma after the final record', 'trailing-record-comma'],
+                ['End count does not match the number of preceding records', 'end-count'],
+                ['The end record is not last', 'end-order'],
+                ['Native input is missing its final end record', 'missing-end'],
+                ['Native envelope is incomplete; recovered content is read-only', 'incomplete-envelope'],
+                ['Unexpected content after native envelope', 'after-envelope'],
+                ['Unexpected content after records array', 'after-records'],
+            ]);
+            const issues = report.issues.slice(0, 1).map(issue => `${issue.code}/${staticReasons.get(issue.reason) ?? 'other'}`);
             throw new Error(`Final legacy PDF HOST C5 admission failed (status: ${owned.status}, format: ${report.format}, complete: ${report.complete}, repairs: ${report.repaired?.repairs.length ?? 0} [${repairs.join(', ')}], issues: ${report.issueCount} [${issues.join(', ')}]). The original is unchanged.`);
         }
         const native = owned; owned = undefined;

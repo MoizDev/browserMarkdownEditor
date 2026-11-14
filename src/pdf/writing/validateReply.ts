@@ -122,6 +122,14 @@ export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, 
                 verification: { pageCount, attachmentCount } };
             break;
         }
+        case 'writer.verifyNotebookOutput': {
+            const input = args as WriterOperations['writer.verifyNotebookOutput']['args'];
+            const o = record(value, ['bytes', 'sha256', 'path', 'geometries']);
+            const path = text(o.path, 4096), pages = geometries(o.geometries);
+            if (path !== input.notebookSource.path || !pages.length) invalidPdfReply();
+            result = { bytes: outputBytes(o.bytes), sha256: fingerprint(o.sha256), path, geometries: pages };
+            break;
+        }
         case 'writer.rotate': {
             const input = args as WriterOperations['writer.rotate']['args'];
             const o = record(value, ['bytes', 'sourceFingerprint', 'geometries']);

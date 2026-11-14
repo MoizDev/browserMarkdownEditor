@@ -37,6 +37,7 @@ export interface ShapeHandleOptions {
     readonly registerPending: (cancel: () => void) => () => void;
     readonly show: (ops: readonly NodeSetOp[]) => void;
     readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
+    readonly waitUntilIdle: (signal: AbortSignal) => Promise<void>;
     readonly armCommit: () => void;
     readonly finishCommit: () => void;
     readonly cancelCommit: () => void;
@@ -144,16 +145,21 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             if (node.points.length <= 2) { options.error(new Error('A line must retain at least two vertices')); return true; }
             if (controlPending) return true;
             const id = node.id, request = new AbortController(), release = options.hold();
+            const revision = doc.rev, owner = session.owner, selection = runtime.selection.getSnapshot();
+            const active = () => !request.signal.aborted && current() && session.owner === owner && doc.rev === revision
+                && runtime.selection.getSnapshot() === selection;
             controlPending = request; let unregister: (() => void) | undefined;
             try { unregister = options.registerPending(() => request.abort()); }
             catch (error) { controlPending = undefined; release(); throw error; }
             void (async () => {
+                await options.waitUntilIdle(request.signal);
+                request.signal.throwIfAborted(); if (!active()) throw new DOMException('Polyline edit became stale', 'AbortError');
                 const preview = await preparePolylineControl({ runtime, id, action: { kind: 'delete', index: hit.index },
-                    current, signal: request.signal, cooperate: options.cooperate });
+                    current: active, signal: request.signal, cooperate: options.cooperate });
                 try {
-                    request.signal.throwIfAborted(); if (!current()) throw new DOMException('Polyline edit became stale', 'AbortError');
+                    request.signal.throwIfAborted(); if (!active()) throw new DOMException('Polyline edit became stale', 'AbortError');
                     options.show(preview.ops); await options.waitUntilReady(request.signal);
-                    request.signal.throwIfAborted(); if (!current()) throw new DOMException('Polyline edit became stale', 'AbortError');
+                    request.signal.throwIfAborted(); if (!active()) throw new DOMException('Polyline edit became stale', 'AbortError');
                     options.armCommit();
                     try { preview.commit(); options.finishCommit(); }
                     catch (error) { options.cancelCommit(); throw error; }

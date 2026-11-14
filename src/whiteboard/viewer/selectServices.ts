@@ -90,7 +90,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
     const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
         sampleToSurface: physicalSurface, invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
-        show: ops => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
+        show: ops => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady, waitUntilIdle: options.preview.waitUntilIdle,
         armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
         clear: () => options.preview.clear(), resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
     const stickyHandles = createStickyHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,

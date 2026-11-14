@@ -476,7 +476,12 @@ export class MemoryGovernor {
             this.trimPool(pool, Math.max(0, Math.min(this.target[pool] - bytes,
                 Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio))));
             this.trimHiddenMirrors(kind === 'mirror' && cache.activity.hiddenAt !== null ? bytes : 0);
-            if (!allowed()) { this.degrade(); this.onPressureChange?.(); return null; }
+            if (!allowed()) {
+                this.lastTrouble = 'allocation';
+                this.degrade();
+                this.onPressureChange?.();
+                return null;
+            }
         }
         if (!Number.isSafeInteger(this.nextLease)) throw new MemoryAdmissionError('invalid-input');
         const lease = Object.freeze({ id: this.nextLease++, bytes });

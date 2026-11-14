@@ -36,11 +36,12 @@ third-party code included (normally "none") · date.
 | `model/defaults.ts` | lane w-c | M-3/7/9, R-W13/28/35 | document-model §§3.1–3.2/7; native-format §§3.2/5; spec/styles F-STYLE-010 | Lead-confirmed UI/view/media defaults; penStyle constant via lead citation; provisional initial pen/yellow selection | none | 2026-11-13 |
 | `model/fileFields.ts` | lane w-c | M-3, H-2, R-W23 | document-model §9.3; native-format §§3.3–3.4; change-and-history §2 | Design/ruling; node and board property-to-native-token mapping for transactional raw invalidation and encoder | none | 2026-11-13 |
 | `model/samples.ts` | lane w-c | M-10, V-10, CH-1 | ink §2.1; document-model §10.2 | Design and interface agreement with w-e; sealed pressure-mode metadata, no chunk read/decode | none | 2026-11-13 |
-| `model/validate.ts` | lane w-c | DM-3, V-1..V-12, M-11, H-3, RV-8/22, R-W25/30/32/40 | document-model §§3/5/6/8/9; change-and-history §2; text §4; security §§4/8.1 | Design/rulings; pressure checks, inverse forms, shared caps, live/preserved media guards, existing-entry safe-leaf bookkeeping and O(1) opaque guard | none | 2026-11-13 |
+| `model/validate.ts` | lane w-c | DM-3/4, V-1..V-12, M-11, H-3, RV-8/22, R-W25/30/32/40 | document-model §§3/5/6/8/9; change-and-history §2; text §4; security §§4/8.1 | Design/rulings; pressure checks, inverse forms, shared caps, live/preserved media guards, existing-entry safe-leaf bookkeeping and O(1) opaque guard | none | 2026-11-13 |
 | `model/textOffsets.ts` | lane w-c | V-11, H-2, R-W18/21 | text §4.1; UTF-16 projection | Design and approved allocation-free UTF-16 scan, block-aligned inverse ranges and splice block counts | none | 2026-11-13 |
 | `model/textLimits.ts` | lane w-c | V-11, H-2 | text §4; document-model §9 | Design/rulings; shared one-million UTF-16 and hundred-thousand block caps | none | 2026-11-13 |
 | `model/loadTypes.ts` | w-d | W-C5, M-11 | document-model §§9.1–9.3; threading §2 | Types-only ordered repair draft, inert projection, sample wire and rehydration lease ownership; no tldraw source/package | none | 2026-11-13 |
 | `model/rawMedia.ts` | lane w-c, w-d | M-3/9, R-W25/30/37; THR-3 | document-model §9.3; preserved-media rulings | Independent escaped-string/key scan; 64-hex runs plus first/last candidates in longer runs, bounded ring and per-raw dedup; w-d added resumable scan and carrier iteration with unchanged visitor semantics; no upstream read or registry | none | 2026-11-13 |
+| `model/loadRepair.ts` | lane w-c | DM-4, V-1..V-12, M-9/10 | document-model §§9–10; native-format §7 | Design only; ordered graph repair, retained-carrier media recount, loaded-node validation and source re-encode marks before inert projection; no source code from upstream | none | 2026-11-13 |
 | `model/loadProjection.ts` | lane w-c | DM-4, M-10, SEC-1 | document-model §§9–10; native-format §7 | Design only; inert tagged map-pair projection, encoded sample handles re-admitted in receiving store with explicit creator leases, bounded cooperation and cleanup | none | 2026-11-13 |
 | `model/repairGraph.ts` | lane w-c | DM-4, V-1/2/3, RV-22 | document-model §§9.2–9.3 | Design only; ordered duplicate/parent/cycle/depth/order repair, opaque preservation and cooperative admission; no upstream source | none | 2026-11-13 |
 | `model/doc.ts` | lane w-c | M-1/3/4/6/8/10, C2.2, RV-22, R-W17/18/19/20/21/23/25/30 | document-model §§1/3/5/6/8/9.3/10; native-format §6 | Design/rulings; live/preserved reference indices; private strict opaque-descendant counts with public boolean query, no file field or exposed map; no tldraw source | none | 2026-11-13 |
@@ -223,6 +224,7 @@ third-party code included (normally "none") · date.
 | `host/ownedSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4 | One shared session factory with owner-fenced pinned builds and disposal; no tldraw source | none | 2026-11-13 |
 | `host/prepareSessionTypes.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Native admission ownership and App session preparation ports; no tldraw source | none | 2026-11-13 |
 | `host/prepareSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Single-use C5 admission transfer, read-only authority and session lease cleanup; no tldraw source | none | 2026-11-13 |
+| `host/pdfInkAssemblyTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned PDF source, all-sheet ink and attachment writer boundary; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 
@@ -289,7 +291,7 @@ third-party code included (normally "none") · date.
 | `geom/transformCommands.types.ts` | lane w-g | GE-4 | geometry §6.2/6.7 | Design; nudge, resize, rotation and per-kind reflection command services | none | 2026-11-13 |
 | `geom/flip.types.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; per-kind reflection and projected world-pose services | none | 2026-11-13 |
 | `geom/flip.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; reflected centres, local sign/flip properties and delegated container/binding policies | none | 2026-11-13 |
-| `geom/transformCommands.ts` | lane w-g | GE-4; F-XFORM-009/015 | geometry §6.7 | Design; ±15°/±15⁄16° rotations, 1.1 scale and centre-reflection transaction builders | none | 2026-11-13 |
+| `geom/transformCommands.ts` | lane w-g | GE-4; F-XFORM-002/003/009/015 | geometry §6.2/6.7 | Design; discrete nudges, ±15°/±15⁄16° rotations, 1.1 scale and centre-reflection transactions | none | 2026-11-13 |
 | `geom/rotationPlacement.types.ts` | lane w-g | GE-4 | geometry §6.3 | Design; local-centre and page-aware rotation placement service contract | none | 2026-11-13 |
 | `geom/rotationPlacement.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.3 | Design; selection-centre rotation mapped through shared parent/page pose | none | 2026-11-13 |
 | `geom/rotationPlan.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.1–6.3 | Design; angle unwrapping, selection-centre rotation and one-transaction placement | none | 2026-11-13 |

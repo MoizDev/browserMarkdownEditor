@@ -107,8 +107,10 @@ names (`useFileSystem().nameTaken`) and never truncate; move REFUSES a taken tar
 `App.performTrash` without the question; canvas ops land in the live tldraw editor (`pdf-and-drawings`),
 opening a closed canvas beside the user via `openInSidePane` without moving the focus.
 
-- **Search never executes an agent-supplied regex on the UI thread.** Its worker is cancellable and
-  deadline-bounded; incomplete results say so, and the currently open buffer outranks disk text.
+- **Search never executes an agent-supplied regex on the UI thread.** `vault_search` goes through
+  `context/vaultIndex/` (tree order, bounded text residency, open-buffer overlays) and runs its
+  cancellable, deadline-bounded matcher in a worker owned by the index worker. Incomplete results
+  say so before the rows; an open buffer, including an empty one, outranks disk text.
 - **`afterWrite` primes the vault index with the text and stat already written**, only for the vault
   activation captured by the tool operation. A late write from a vault being left must never prime
   the new vault's same-named path; a save must not trigger a full vault walk.

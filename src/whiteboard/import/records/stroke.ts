@@ -1,7 +1,8 @@
+import { styleGeometryMetrics } from '../../geom/styleMetrics';
 import { SampleBuilder, SampleStore } from '../../ink/samples';
 import type { SampleLease } from '../../model/samples';
 import type { NodeBase, StrokeNode } from '../../model/nodes';
-import { DASHES, FILLS, SIZES, SWATCHES, type Dash, type Fill, type Size, type Swatch } from '../../model/styles';
+import { DASHES, FILLS, SIZES, SWATCHES, type Dash, type Fill, type Swatch } from '../../model/styles';
 import { decodeLegacySegment, type LegacySegment } from '../segments';
 import { object } from './envelope';
 import type { LegacyShape } from './common';
@@ -18,9 +19,6 @@ function bool(value: unknown, name: string): boolean {
     if (typeof value !== 'boolean') throw new Error(`Invalid ${name}`);
     return value;
 }
-const PEN_WIDTHS: Readonly<Record<Size, number>> = { s: 3, m: 4.5, l: 6, xl: 11 };
-const HIGHLIGHT_WIDTHS: Readonly<Record<Size, number>> = { s: 20.16, m: 26.88, l: 40.32, xl: 49.28 };
-
 // The returned lease belongs to the importer until the host accepts or discards the draft.
 export function readStroke(shape: LegacyShape, base: NodeBase, samples: SampleStore): { node: StrokeNode; lease: SampleLease } {
     const p = shape.props, highlight = shape.type === 'highlight';
@@ -47,7 +45,7 @@ export function readStroke(shape: LegacyShape, base: NodeBase, samples: SampleSt
         }
     }
     if (!builder.count) throw new Error('Empty stroke');
-    const width = (highlight ? HIGHLIGHT_WIDTHS[size] : PEN_WIDTHS[size]) * scale;
+    const width = styleGeometryMetrics.actualWidth(highlight ? 'stroke:highlighter' : 'stroke:pen', size, scale);
     const lease = samples.commit(builder);
     return { lease, node: { ...base, kind: 'stroke', tool: highlight ? 'highlighter' : 'pen', samples: lease.ref,
         pressure: pen ? 'real' : 'none', widthModel: dash === 'solid' || !pen

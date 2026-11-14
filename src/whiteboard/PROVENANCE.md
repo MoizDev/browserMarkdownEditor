@@ -104,17 +104,17 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `import/segments.ts` | w-o | IMP-2, E-IMP-15 | import §3; current-format §2.3 | Documented legacy point layout and corpus facts; no old canvas or tldraw source | none | 2026-11-13 |
-| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping and recorded PDF layout contract | none | 2026-11-13 |
+| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping and saved PDF backdrop layout contract | none | 2026-11-13 |
 | `import/report.ts` | w-o | IMP-5 | import §§1,6 | Import report and notice contract | none | 2026-11-13 |
 | `import/records/envelope.ts` | w-o | IMP-1, E-IMP-1/2 | import §§2,6; current-format §§1–3 | Observed envelopes and schema counters | none | 2026-11-13 |
 | `import/records/storeFields.ts` | w-o | IMP-1, E-IMP-4 | import §6; document-model §9.2 | JSON format and duplicate-record preservation requirement | none | 2026-11-13 |
 | `import/records/common.ts` | w-o | IMP-1, IMP-3 | import §§2–3; current-format §2 | Observed shape and backdrop layout | none | 2026-11-13 |
 | `import/records/sheets.ts` | w-o | IMP-1 | import §3; current-format §2 | Observed page and metadata fields | none | 2026-11-13 |
-| `import/records/stroke.ts` | w-o | IMP-1/2, E-IMP-15 | import §3; geometry §3.2 | Observed segment/style fields and documented width table; public sample model | none | 2026-11-13 |
-| `import/records/basic.ts` | w-o | IMP-1 | import §3; current-format §2 | Documented group, frame, embed and line records | none | 2026-11-13 |
+| `import/records/stroke.ts` | w-o | IMP-1/2, E-IMP-15 | import §3; geometry §3.2 | Observed segment/style fields; shared style metrics and public sample model | none | 2026-11-13 |
+| `import/records/basic.ts` | w-o | IMP-1 | import §3; current-format §2 | Documented group, frame, embed and line records; shared style metrics | none | 2026-11-13 |
 | `import/records/bindings.ts` | w-o | IMP-1, E-IMP-5 | import §§3,6 | Documented connector bindings and dangling-target rule | none | 2026-11-13 |
 | `import/records/fields.ts` | w-o | IMP-1, E-IMP-3 | import §§2–3,6 | Observed properties and unknown-field refusal | none | 2026-11-13 |
-| `import/records/labelled.ts` | w-o | IMP-1 | import §3; geometry §3.2 | Documented figure, text, note and connector fields; rich reader injected | none | 2026-11-13 |
+| `import/records/labelled.ts` | w-o | IMP-1 | import §3; geometry §3.2 | Documented figure, text, note and connector fields; shared style metrics; rich reader injected | none | 2026-11-13 |
 | `import/records/media.ts` | w-o | IMP-1, E-IMP-6 | import §3; security §4 | Inline asset format and w-q SEC-W4 admission seam | none | 2026-11-13 |
 | `import/records/pictures.ts` | w-o | IMP-1 | import §3; current-format §2 | Observed picture, video and bookmark fields | none | 2026-11-13 |
 | `import/records/view.ts` | w-o | IMP-1 | import §3; current-format §§2,6 | Documented session, camera and UI fields | none | 2026-11-13 |

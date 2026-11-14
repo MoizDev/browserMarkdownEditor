@@ -1,9 +1,10 @@
 import type { Camera, Rect, ViewState } from '../types';
 import type { DamageRecord } from './damage';
+import type { Point } from './camera';
 import type { CompositorAppearance, CompositorBackend, CompositorCaptureOptions, CompositorIsolation, CompositorMirrorQuad, LayerCoverage, LayerHost } from './compositor.types';
 import type { BorrowedMirror, MirrorSet, MirrorView } from './mirrorSet';
 import type { PageStack } from './pageStack';
-import type { ScheduledFrame } from './scheduler';
+import type { ScheduledFrame, TouchPanSample } from './scheduler';
 import type { FrameToken, Layer, RenderToken } from './types';
 
 /** Retain a definition object to retain its layer across setLayers; removing it ends the layer once. */
@@ -76,6 +77,9 @@ export interface PlatformPane {
     observeSize(): void;
     setLayers(layers: readonly PlatformLayerDefinition[]): void;
     invalidate(reason: string, damage?: DamageRecord): void;
+    startFling(samples: readonly TouchPanSample[]): void;
+    animateZoom(targetZ: number, anchor?: Point): void;
+    cancelMotion(): void;
     captureRegion(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
     dispose(): void;
 }

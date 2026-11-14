@@ -66,6 +66,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const compositorRef: { current: PaneCompositor | null } = { current: null };
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
+    let sampledCamera = { ...camera.camera };
     let lastInputAt = performance.now();
     let pendingInputAt: number | null = null;
     let healthyInputAt: number | null = null;
@@ -137,7 +138,19 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     try { created = cpuFactory<T>({
         paneId: options.paneId, governor: runtime.governor, currentToken: token,
         invalidate: reason => lifecycle?.invalidate(reason), recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms),
-        select2D: cpu => { if (!disposed) surfaceHost.select(cpu); },
+        select2D: cpu => {
+            if (disposed) return;
+            if (gpu && surfaceHost.current === gpu.bundle.compositor &&
+                (gpu.grant.canvas.width || gpu.grant.canvas.height || gpu.backing.reservedBytes)) {
+                // CPU has already submitted its complete detached bridge. Return the old
+                // display credit before promoting it; both were never charged as two displays.
+                const zeroed = gpu.backing.resize(0, 0, gpu.grant.resizeSurface);
+                if (!zeroed?.complete) throw new Error('Could not relinquish the GPU display backing');
+                gpu.backing.stage();
+            }
+            if (cpu.promoteSurface?.() === false) throw new Error('CPU backing promotion was refused');
+            surfaceHost.select(cpu);
+        },
         selectGpu: grant => {
             if (!gpu || gpu.grant.generation !== grant.generation) throw new Error('GPU grant is no longer current');
             created.presenter.releaseSurface();
@@ -299,7 +312,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             if (now - pendingInputAt <= RENDER_CONSTANTS.stalledFenceMs) healthyInputAt = now;
                             pendingInputAt = null;
                         }
-                        camera.setCamera(options.readCamera());
+                        const next = options.readCamera();
+                        if (next.x !== sampledCamera.x || next.y !== sampledCamera.y || next.z !== sampledCamera.z) camera.setCamera(next);
+                        sampledCamera = { ...next };
                     },
                     isInteracting: options.isInteracting,
                     snapshotScene: (view: ViewState) => {
@@ -335,6 +350,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const encoding = drawing.encode(frame);
                         if (!encoding && !(drawing === compositor && options.session.mirrors)) return null;
                         const revision = options.revision();
+                        const sourceCamera = sampledCamera;
                         return {
                             discard: () => { lifecycle?.discardFrame(frame.frameId); encoding?.discard(); },
                             submit: () => {
@@ -366,7 +382,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 const liveCamera = options.readCamera();
                                 const geometry = observer.current;
                                 if (!complete || !current || !sameFrame(current, frame.token) || options.revision() !== revision ||
-                                    (!frame.view.moving && (liveCamera.x !== frame.view.camera.x || liveCamera.y !== frame.view.camera.y || liveCamera.z !== frame.view.camera.z)) ||
+                                    (liveCamera.x !== sourceCamera.x || liveCamera.y !== sourceCamera.y || liveCamera.z !== sourceCamera.z) ||
                                     geometry?.generation !== activeMetrics().current?.tags.geometryGeneration) return null;
                                 if (drawing === compositor) {
                                     lifecycle?.note2DPresented(frame.token, revision);
@@ -390,6 +406,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         };
                     },
                     writeOverlays: options.writeOverlays,
+                    ...(__BME_BENCH__ ? { benchmarkMemory: () => {
+                        const memory = runtime.governor.readout();
+                        const grant = runtime.governor.grant(options.paneId);
+                        return {
+                            memory: { gpuChargedBytes: memory.gpu.chargedBytes, cpuChargedBytes: memory.cpu.chargedBytes,
+                                gpuRetiringBytes: memory.gpu.retiringBytes, cpuRetiringBytes: memory.cpu.retiringBytes },
+                            grants: { pixelGrant: grant?.pixelGrant ?? 0, gpuCacheBytes: grant?.gpuCacheBytes ?? 0,
+                                cpuBytes: grant?.cpuBytes ?? 0 },
+                        };
+                    } } : {}),
                     suspend: (reason: Parameters<PaneLifecycle<T>['suspend']>[0]) => { options.onPresentation(null); lifecycle?.suspend(reason); },
                 };
                 frameLease = runtime.scheduler.register(pane);
@@ -468,6 +494,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (reason === 'input') { lastInputAt = performance.now(); pendingInputAt = lastInputAt; }
             lifecycle?.invalidate(reason, damage);
         },
+        startFling(samples) { if (!disposed && visible) frameLease?.startFling(samples); },
+        animateZoom(targetZ, anchor) { if (!disposed && visible) frameLease?.animateZoom(targetZ, anchor); },
+        cancelMotion() { if (!disposed && visible) frameLease?.cancelMotion(); },
         captureRegion(worldRect, maxSidePx, captureOptions) {
             if (disposed) return Promise.reject(new Error('Pane capture is unavailable'));
             // Session capture owns its own revision lease and survives later pane unmount.

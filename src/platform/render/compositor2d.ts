@@ -183,6 +183,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
 
     get surfaceGeneration(): number { return this.generation; }
 
+    promoteSurface(): boolean { return this.backing?.promote() ?? true; }
+
     attach(host: PaneSurfaceHost): void {
         this.check();
         if (this.host && this.host !== host) this.detach();
@@ -602,6 +604,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.busy++;
         try {
             if (!this.init()) return result(false);
+            if (!this.host && !this.surface.width && !this.surface.height && !this.displayReserved) this.backing!.stage();
             const bytes = width * height * POLICY.surfaceReserveBytesPerPixel;
             if (bytes > this.displayReserved) {
                 if (!this.backing!.reserve(bytes - this.displayReserved)) return result(false);
@@ -650,6 +653,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         return null;
     }
     private closeBuffer(key: string, buffer: Buffer2D): void {
+        // A colour job owns both its accumulated back pixels and its current band.
+        // Retiring either must prevent a later frame from acknowledging the cleared canvas.
+        if (this.job && (this.job.back === buffer || this.job.band === buffer)) this.cancelJob();
+        if (this.mirrorJob?.buffer === buffer) this.cancelMirror();
+        if (key === 'back') { this.presentedKey = ''; this.report = null; }
         buffer.canvas.width = 0; buffer.canvas.height = 0;
         for (const use of buffer.images.values()) this.releaseGpuLease(use.lease);
         this.releaseGpuLease(buffer.lease); this.buffers.delete(key);

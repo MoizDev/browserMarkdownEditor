@@ -124,7 +124,7 @@ The **Search** tab at the top of the sidebar looks through every note in the
 vault — file names *and* the text inside them — and replaces the file tree while
 it is open; the **Files** tab beside it brings the tree back. Picking a result
 opens that note and scrolls to the line it matched, then puts the tree back. EPUBs, notebooks, drawings and PDFs match on their names only, since what is in
-them is not text. Saved note changes update search results even after the note is closed; an open note's current text is searched before its saved version.
+them is not text. Results appear as the vault is searched. An open note's current text is searched before its saved version, and results refresh as you edit; saved changes remain searchable after the note closes.
 
 ### Drag and Drop
 Files dropped on an area that does not handle them are refused rather than opened in a browser tab. Links dropped outside editable fields are likewise refused when no area handles them. Dropping a Markdown file onto an editable note can replace its text, as described below.

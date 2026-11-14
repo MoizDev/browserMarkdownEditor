@@ -66,7 +66,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);
     const [capabilities, setCapabilities] = useState<NativeEditingCapabilities | null>(null), [attached, setAttached] = useState(false);
     const commandRef = useRef<((id: string, event: KeyboardEvent) => boolean) | null>(null), linksRef = useRef<Links | null>(null);
-    const contextMenuRef = useRef<((event: MouseEvent) => void) | null>(null), embedControllerRef = useRef<NativeEmbedController | null>(null);
+    const contextMenuRef = useRef<ReturnType<typeof createNativeBoardContextMenu> | null>(null), embedControllerRef = useRef<NativeEmbedController | null>(null);
     const [lifetime, setLifetime] = useState<AbortController | null>(null);
     const viewRef = useRef<NativeViewLease | null>(null), chromeMountedRef = useRef(false), styleRef = useRef<Styles | null>(null);
     // Populated only when the real presentation port AND semantic per-node Load service are attached.
@@ -96,7 +96,8 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
                         isDirectPen: event => event.pointerType === 'pen' && navigator.maxTouchPoints > 0,
                         ownsWheel: event => !event.composedPath().some(target => target instanceof Element &&
                             target.matches('input,textarea,select,[contenteditable="true"],[role="dialog"],[role="menu"]')),
-                        error: report, contextMenu(event) { const open = contextMenuRef.current; if (!open) throw new Error('Board context menu is unavailable'); open(event); },
+                        error: report, contextMenu(event) { const menu = contextMenuRef.current; if (!menu) throw new Error('Board context menu is unavailable'); menu.pointer(event); },
+                        openKeyboardContextMenu(request) { const menu = contextMenuRef.current; if (!menu) throw new Error('Board context menu is unavailable'); menu.keyboard(request); },
                         penModeChanged(enabled) { viewRef.current?.editing?.announce(enabled ? 'Pen mode enabled.' : 'Pen mode disabled.'); },
                         text: { openLink(url) { const target = linksRef.current; if (!target) throw new Error('Link actions are unavailable'); target.openLink(url); },
                             command(name) { const target = linksRef.current; if (name !== 'link' || !target) throw new Error('Text command is unavailable'); void target.editText().catch(report); },
@@ -140,7 +141,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     readonly renderView: (context: NativeEditingRenderContext) => ReactNode;
     readonly canMutateView: () => boolean; readonly onChromeReady: (ready: boolean) => void;
     readonly embedPort: EmbedPresentationPort | null;
-    readonly contextMenuRef: RefObject<((event: MouseEvent) => void) | null>;
+    readonly contextMenuRef: RefObject<ReturnType<typeof createNativeBoardContextMenu> | null>;
     readonly embedControllerRef: RefObject<NativeEmbedController | null>;
     readonly styleRef: RefObject<Styles | null>;
 }) {

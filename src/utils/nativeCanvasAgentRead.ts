@@ -34,6 +34,8 @@ export async function readNativeCanvasShapePage(options: {
         check();
         if (!source.isCurrent()) throw new DOMException('Canvas session changed', 'AbortError');
         return createNativeAgentReader({ runtime: source.runtime,
+            // App's canonical pending-or-disk media reader: the export producer uses it for embedded pictures.
+            readMedia: (entry, mediaSignal) => source.readMedia(entry, mediaSignal),
             isCurrent: () => guard.isCurrent() && source.isCurrent(), notice: deps.notify,
             onError: error => console.error('Native canvas tool capture failed:', error),
         }).shapes({ ...options.query }, job);

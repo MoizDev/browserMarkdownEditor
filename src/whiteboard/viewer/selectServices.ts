@@ -46,7 +46,7 @@ export interface BoardSelectServicesOptions {
     readonly sampleToSurface: (sample: RealSample) => Vec2;
     readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget'>;
     readonly region: Pick<ReturnType<typeof createBoardRegionQuery>, 'region'>;
-    readonly preview: Pick<BoardPreview, 'showOps' | 'waitUntilReady' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
+    readonly preview: Pick<BoardPreview, 'showOps' | 'waitUntilReady' | 'waitUntilIdle' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly overlay: HTMLElement;
     readonly token: RenderToken;
     current(token: RenderToken): boolean;
@@ -180,6 +180,17 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         },
         onError: report,
     };
+    const presentAndCommit = async (ops: readonly Op[], signal: AbortSignal, active: () => boolean, commit: () => void) => {
+        if (!ops.length) { commit(); return; }
+        options.preview.showOps(ops);
+        try {
+            await options.preview.waitUntilReady(signal);
+            signal.throwIfAborted(); if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
+            options.preview.armCommit();
+            try { commit(); options.preview.finishCommit(); }
+            catch (error) { options.preview.cancelCommit(); throw error; }
+        } finally { options.preview.clear(); }
+    };
     const nudge = (key: string, coarse: boolean): boolean => {
         const direction: Record<string, Vec2> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 },
             ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
@@ -196,10 +207,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection;
             try {
                 unregister = registerPending(() => controller.abort());
+                await options.preview.waitUntilIdle(controller.signal);
+                if (!active()) throw new DOMException('Keyboard nudge became stale', 'AbortError');
                 plan = await createBoardTranslationPlan({ runtime, ids, down: { x: 0, y: 0 }, zoom: () => options.camera().camera.z,
                     alwaysSnap: () => false, current: active, signal: controller.signal });
                 const preview = await plan.preview({ x: delta.x * scale, y: delta.y * scale }, false, false, controller.signal);
-                if (active()) plan.commit(preview);
+                if (active()) await presentAndCommit(preview.ops, controller.signal, active, () => plan!.commit(preview));
             } catch (error) { if (active()) report(error); }
             finally { try { plan?.cancel(); } finally { try { unregister?.(); } finally { release(); } } }
         });
@@ -226,6 +239,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection;
             try {
                 unregister = registerPending(() => controller.abort());
+                await options.preview.waitUntilIdle(controller.signal);
+                if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
                 if (stretch) {
                     await stretchBoardLeaves({ runtime, ids, axis: stretch, current: active, signal: controller.signal });
                     return;
@@ -238,7 +253,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                         const dx = box.width * (factor - 1) / 2, dy = box.height * (factor - 1) / 2;
                         const result = await plan.preview({ x: c * dx - s * dy, y: s * dx + c * dy },
                             { shift: true, alt: true }, controller.signal);
-                        if (active()) plan.commit(result);
+                        if (active()) await presentAndCommit(result.ops, controller.signal, active, () => plan.commit(result));
                     } finally { plan.cancel(); }
                     return;
                 }
@@ -263,7 +278,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                     current: active, signal: controller.signal });
                 try {
                     const preview = await plan.preview({ x: centre.x + Math.cos(angle), y: centre.y + Math.sin(angle) }, false, controller.signal);
-                    if (active()) plan.commit(preview);
+                    if (active()) await presentAndCommit(preview.ops, controller.signal, active, () => plan.commit(preview));
                 } finally { plan.cancel(); }
             } catch (error) { if (active()) report(error); }
             finally { try { unregister?.(); } finally { release(); } }

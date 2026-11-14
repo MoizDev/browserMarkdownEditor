@@ -30,6 +30,7 @@ export interface BoardPreview {
     show(nodes: readonly Node[]): void;
     showOps(ops: readonly Op[]): void;
     waitUntilReady(signal: AbortSignal): Promise<void>;
+    waitUntilIdle(signal: AbortSignal): Promise<void>;
     armCommit(): void;
     finishCommit(): void;
     cancelCommit(): void;
@@ -89,6 +90,12 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
     const frameIds = new WeakMap<PaintFrame, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintFrame, number>();
     const waiters = new Set<{ generation: number; resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
+    const idleWaiters = new Set<{ resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
+    const settleIdle = () => {
+        for (const waiter of [...idleWaiters]) {
+            idleWaiters.delete(waiter); waiter.signal.removeEventListener('abort', waiter.abort); waiter.resolve();
+        }
+    };
     const settle = (error?: unknown) => {
         for (const waiter of [...waiters]) {
             waiters.delete(waiter); waiter.signal.removeEventListener('abort', waiter.abort);
@@ -107,7 +114,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         for (const lease of [...held]) release(lease);
         const oldPin = pin; pin = null; document = null;
         try { oldPin?.release(); } catch (error) { report(error); }
-        try { engine.setPreviewLayers(null); } finally { releaseCommit?.(); }
+        try { engine.setPreviewLayers(null); } finally { try { releaseCommit?.(); } finally { settleIdle(); } }
     };
     const clear = () => {
         if (commitRevision !== null && options.current() && engine.getView().visible && runtime.session.doc.rev <= commitRevision) return;
@@ -304,6 +311,16 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 const waiter = { generation, resolve, reject, signal, abort: () => {} };
                 waiter.abort = () => { if (waiters.delete(waiter)) reject(interrupted()); };
                 waiters.add(waiter); signal.addEventListener('abort', waiter.abort, { once: true });
+                if (signal.aborted) waiter.abort();
+            });
+        },
+        waitUntilIdle(signal) {
+            if (disposed || signal.aborted) return Promise.reject(interrupted());
+            if (commitRevision === null) return Promise.resolve();
+            return new Promise<void>((resolve, reject) => {
+                const waiter = { resolve, reject, signal, abort: () => {} };
+                waiter.abort = () => { if (idleWaiters.delete(waiter)) reject(interrupted()); };
+                idleWaiters.add(waiter); signal.addEventListener('abort', waiter.abort, { once: true });
                 if (signal.aborted) waiter.abort();
             });
         },

@@ -51,9 +51,11 @@ export class RichWordNavigation {
         const length = projectionLength(text);
         if (!length) return { anchor: 0, focus: 0 };
         const cursor = Math.min(length - 1, this.offset(text, offset)), point = projectionPosition(text, cursor);
-        const entry = this.block(point.block);
-        if (point.offset === entry.text.length && point.index + 1 < text.blocks.length)
-            return { anchor: cursor, focus: cursor + 1 };
+        const entry = this.block(point.block), followedByBreak = point.index + 1 < text.blocks.length;
+        if (followedByBreak && point.offset === entry.text.length)
+            return { anchor: entry.text.endsWith('\r') ? cursor - 1 : cursor, focus: cursor + 1 };
+        if (followedByBreak && point.offset === entry.text.length - 1 && entry.text.endsWith('\r'))
+            return { anchor: cursor, focus: cursor + 2 };
         const part = entry.segments.containing(point.offset);
         return part ? { anchor: point.start + part.index, focus: point.start + part.index + part.segment.length }
             : { anchor: cursor, focus: cursor };

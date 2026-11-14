@@ -7,6 +7,8 @@ import type { NodeId, SheetId } from '../model/ids';
 import type { BoardSession } from '../session/BoardSession';
 import type { ToolState } from './gesture';
 import type { RealSample } from './tool';
+import type { DryInkIdentity, InkIdentity, InkPresentation } from './liveInk';
+import type { PaintClip } from '../render/paintStream';
 
 export interface InkContinuationOptions {
     readonly session: BoardSession;
@@ -16,9 +18,19 @@ export interface InkContinuationOptions {
     readonly sheet: () => string;
     readonly selection: () => unknown;
     readonly declaredMaxScale: () => number;
+    readonly captureDeviceScale: () => number;
 }
 
-export type InkContinuation = (endpoint: RealSample, signal: AbortSignal) => Promise<boolean>;
+export interface InkContinuation {
+    readonly identity: InkIdentity;
+    readonly presentation: InkPresentation;
+    readonly first: Readonly<{ x: number; y: number }>;
+    readonly declaredMaxScale: number;
+    readonly captureDeviceScale: number;
+    current(): boolean;
+    toLocal(sample: RealSample): Readonly<{ x: number; y: number }>;
+    commit(endpoint: RealSample, signal: AbortSignal): Promise<DryInkIdentity | null>;
+}
 
 /** The last real pen stroke is session-owned. Its original samples stay leased until
  * the complete continuation has been admitted or cancelled; no partial run is saved. */
@@ -36,16 +48,40 @@ export function createInkContinuation(options: InkContinuationOptions): (sample:
         }
         const sheet = options.sheet(), selection = options.selection(), original = node.samples;
         if (parent !== sheet) return null;
-        return async (endpoint, signal) => {
-            const valid = () => !signal.aborted && options.current() && !session.isReadOnly && session.owner === owner
-                && session.doc === doc && doc.rev === revision && options.sheet() === sheet && options.selection() === selection
-                && options.tools.getLastStroke() === node.id && doc.nodes.get(node.id) === node && node.samples === original;
+        const source = samples.sequence(original);
+        if (!source.count) return null;
+        const first = { x: source.x(source.count - 1), y: source.y(source.count - 1) };
+        const pose = worldPose(doc, node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+        const clips: PaintClip[] = []; let opacity = node.opacity, ancestor = doc.nodes.get(node.parent as NodeId);
+        for (let depth = 0; ancestor && depth < 64; depth++) {
+            opacity *= ancestor.opacity;
+            if (ancestor.kind === 'frame') {
+                const frame = worldPose(doc, ancestor.id), fc = Math.cos(frame.rotation), fs = Math.sin(frame.rotation);
+                clips.unshift({ key: `frame:${ancestor.id}`, fillRule: 'nonzero',
+                    d: [['M', 0, 0], ['L', ancestor.w, 0], ['L', ancestor.w, ancestor.h], ['L', 0, ancestor.h], ['Z']],
+                    localToWorld: [fc, fs, -fs, fc, frame.x, frame.y] });
+            }
+            ancestor = doc.nodes.get(ancestor.parent as NodeId);
+        }
+        const identity = { nodeId: node.id, gestureSequence: options.tools.nextInkSequence() };
+        const presentation: InkPresentation = { tool: 'pen', color: node.color, width: node.width, fairTol: node.fairTol,
+            localToWorld: [c * node.sx, s * node.sx, -s * node.sy, c * node.sy, pose.x, pose.y], opacity, clips };
+        const toLocal = (sample: RealSample) => {
+            const point = worldToLocal(doc, node, sample);
+            return { x: point.x / node.sx, y: point.y / node.sy };
+        };
+        const current = () => options.current() && !session.isReadOnly && session.owner === owner
+            && session.doc === doc && doc.rev === revision && options.sheet() === sheet && options.selection() === selection
+            && options.tools.getLastStroke() === node.id && doc.nodes.get(node.id) === node && node.samples === original;
+        return { identity, presentation, first, declaredMaxScale: options.declaredMaxScale(),
+            captureDeviceScale: options.captureDeviceScale(), current, toLocal,
+            async commit(endpoint, signal) {
             const check = () => {
                 signal.throwIfAborted();
-                if (!valid()) throw new DOMException('Ink continuation became stale', 'AbortError');
+                if (!current()) throw new DOMException('Ink continuation became stale', 'AbortError');
             };
             check();
-            const local = worldToLocal(doc, node, endpoint), x = local.x / node.sx, y = local.y / node.sy;
+            const { x, y } = toLocal(endpoint);
             if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Ink continuation coordinate is invalid');
             const previous = samples.retain(original);
             try {
@@ -61,8 +97,9 @@ export function createInkContinuation(options: InkContinuationOptions): (sample:
                 const finalPressure = pressure ? source.pressure(source.count - 1) : undefined;
                 builder.append(x, y, finalPressure, 'straight');
                 const summary = builder.summary(), lease = samples.commit(builder);
+                let wet: ReturnType<SampleStore['retain']> | undefined;
                 try {
-                    check();
+                    check(); wet = samples.retain(lease.ref);
                     const growth = (() => {
                         if (doc.host.kind !== 'notebook' || !summary) return null;
                         const [sx, sy, w, h] = summary.localBounds, pose = worldPose(doc, node.id);
@@ -76,10 +113,13 @@ export function createInkContinuation(options: InkContinuationOptions): (sample:
                     const applied = session.apply({ origin: 'tool', label: 'Continue stroke', ops: [
                         ...(growth ? [growth] : []), { t: 'set', id: node.id, key: 'samples', value: lease.ref },
                     ] });
-                    applied.release();
-                    return true;
-                } finally { lease.release(); }
+                    let recorded: boolean;
+                    try { recorded = applied.recorded; } finally { applied.release(); }
+                    if (!recorded) return null;
+                    const held = wet; wet = undefined;
+                    return { ...identity, nodeRevision: doc.rev, release: () => held?.release() };
+                } finally { wet?.release(); lease.release(); }
             } finally { previous.release(); }
-        };
+        } };
     };
 }

@@ -4,6 +4,7 @@ import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputView } from '../input/attach';
 import type { ToolStateSnapshot } from '../input/gesture';
 import type { NodeId } from '../model/ids';
+import { createAccessibilityOrder } from './accessibilityOrder';
 import type { ViewerAccessibilitySnapshot, ViewerEngine } from './types';
 
 export interface BoardAccessibilityDomOptions {
@@ -15,6 +16,7 @@ export interface BoardAccessibilityDomOptions {
     readonly visible: () => boolean;
     readonly schedule: (callback: () => void) => () => void;
     readonly reveal: (id: NodeId | null) => void;
+    readonly contextMenu: (event: MouseEvent) => void;
     readonly error: (error: unknown) => void;
 }
 
@@ -25,7 +27,7 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     root.setAttribute('aria-label', 'Whiteboard accessibility');
     root.style.cssText = 'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0';
     const status = document.createElement('div');
-    status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); status.setAttribute('aria-atomic', 'true');
+    status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'assertive'); status.setAttribute('aria-atomic', 'true');
     const cursorButton = document.createElement('button');
     cursorButton.type = 'button'; cursorButton.textContent = 'Use keyboard drawing cursor';
     cursorButton.setAttribute('aria-label', 'Use keyboard drawing cursor');
@@ -36,10 +38,23 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     const list = document.createElement('ul'); list.setAttribute('aria-label', 'Board objects');
     root.append(status, cursorButton, description, heading, summary, list);
     options.overlay.append(root);
+    const enterCanvas = document.createElement('button');
+    enterCanvas.type = 'button'; enterCanvas.textContent = 'Move focus to canvas'; enterCanvas.hidden = true;
+    enterCanvas.style.cssText = 'position:absolute;left:8px;top:8px;z-index:20;pointer-events:auto;clip-path:inset(50%);';
+    options.overlay.append(enterCanvas);
+    const canvasFocus = () => { enterCanvas.style.clipPath = 'none'; enterCanvas.style.outline = '2px solid #75b7ff'; };
+    const canvasBlur = () => { enterCanvas.style.clipPath = 'inset(50%)'; enterCanvas.style.outline = ''; };
+    const enter = () => { if (active()) options.surface.focus({ preventScroll: true }); };
+    enterCanvas.addEventListener('focus', canvasFocus); enterCanvas.addEventListener('blur', canvasBlur); enterCanvas.addEventListener('click', enter);
     const cursor = document.createElement('div');
     cursor.setAttribute('aria-hidden', 'true');
     cursor.style.cssText = 'position:absolute;left:0;top:0;width:12px;height:12px;border:2px solid #75b7ff;border-radius:50%;box-shadow:0 0 0 1px #fff;transform:translate(-50%,-50%);pointer-events:none;display:none;z-index:1';
     options.overlay.append(cursor);
+    const exitPenMode = document.createElement('button');
+    exitPenMode.type = 'button'; exitPenMode.textContent = 'Exit pen mode';
+    exitPenMode.setAttribute('aria-label', 'Exit pen mode');
+    exitPenMode.style.cssText = 'position:absolute;top:8px;right:8px;z-index:2;pointer-events:auto;padding:5px 9px;border:1px solid #75b7ff;border-radius:5px;background:var(--background-primary,#25262a);color:var(--text-normal,#fff);font:inherit';
+    exitPenMode.hidden = true; options.overlay.append(exitPenMode);
     const rows = new Map<NodeId, { item: HTMLLIElement; button: HTMLButtonElement }>();
     let disposed = false, scheduled: (() => void) | undefined, activate: (() => void) | undefined;
     let lastTool = '', lastSelection = '', lastCursorActive = false, lastAnnouncement = '', announcementVersion = 0;
@@ -63,13 +78,23 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
         });
         return true;
     };
+    const order = createAccessibilityOrder({ runtime: options.runtime, current: active, schedule: options.schedule, error: report });
     const cursorClick = () => { if (active()) activate?.(); };
-    cursorButton.addEventListener('click', cursorClick);
+    const exitPen = () => {
+        if (!active()) return;
+        options.runtime.tools.setPenMode(false);
+    };
+    const menu = (event: MouseEvent) => {
+        if (!active()) return;
+        event.preventDefault(); options.contextMenu(event);
+    };
+    cursorButton.addEventListener('click', cursorClick); root.addEventListener('contextmenu', menu); enterCanvas.addEventListener('contextmenu', menu);
+    exitPenMode.addEventListener('click', exitPen); exitPenMode.addEventListener('contextmenu', menu);
     const dropRows = () => { for (const row of rows.values()) row.item.remove(); rows.clear(); };
     const sync = () => {
         scheduled = undefined;
-        if (!active()) { root.hidden = true; cursor.style.display = 'none'; dropRows(); return; }
-        root.hidden = false;
+        if (!active()) { order.cancel(); root.hidden = true; enterCanvas.hidden = true; exitPenMode.hidden = true; cursor.style.display = 'none'; dropRows(); return; }
+        root.hidden = false; enterCanvas.hidden = false; exitPenMode.hidden = !options.runtime.tools.penMode;
         let snapshot: ViewerAccessibilitySnapshot;
         try { snapshot = options.engine.accessibility.getSnapshot(); }
         catch (error) { report(error); return; }
@@ -102,10 +127,21 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
         for (const [id, row] of rows) if (!keep.has(id)) { row.item.remove(); rows.delete(id); }
         const selection = `${snapshot.focusedId ?? ''}:${snapshot.selectedCount}`;
         if (selection !== lastSelection) {
-            lastSelection = selection;
-            const focused = snapshot.items.find(item => item.id === snapshot.focusedId);
-            announce(focused ? `${focused.label || 'Object'} selected. ${snapshot.selectedCount} selected.`
-                : snapshot.selectedCount ? `${snapshot.selectedCount} objects selected.` : 'Selection cleared.');
+            lastSelection = selection; order.cancel();
+            if (snapshot.selectedCount > 1) announce(`${snapshot.selectedCount} shapes selected.`);
+            else if (snapshot.selectedCount === 1 && snapshot.focusedId) {
+                const id = snapshot.focusedId as NodeId, focused = snapshot.items.find(item => item.id === id);
+                const node = options.runtime.session.doc.nodes.get(id);
+                const names: Readonly<Record<string, string>> = { stroke: 'Stroke', figure: 'Figure', text: 'Text', sticky: 'Note',
+                    connector: 'Arrow', polyline: 'Line', frame: 'Frame', group: 'Group', picture: 'Picture', clip: 'Video',
+                    linkcard: 'Bookmark', embed: 'Embed', opaque: 'Object' };
+                const type = node ? names[node.kind] ?? 'Object' : 'Object', label = focused?.label?.trim() || type;
+                const description = label.toLocaleLowerCase() === type.toLocaleLowerCase() ? type : `${label}, ${type}`;
+                const ticket = ++announcementVersion;
+                order.describe(id, (position, total) => {
+                    if (active() && ticket === announcementVersion) announce(position && total ? `${description}. ${position} of ${total}.` : `${description} selected.`);
+                });
+            }
         }
     };
     const refresh = () => {
@@ -114,12 +150,25 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
         if (!scheduled) scheduled = options.schedule(sync);
     };
     const unsubscribe = options.engine.accessibility.subscribe(refresh);
+    const unsubscribePenMode = options.runtime.tools.subscribePenMode(enabled => {
+        if (active()) {
+            const wasFocused = document.activeElement === exitPenMode;
+            exitPenMode.hidden = !enabled;
+            if (!enabled && wasFocused) options.surface.focus({ preventScroll: true });
+            announce(enabled ? 'Pen mode enabled.' : 'Pen mode disabled.');
+        }
+        else exitPenMode.hidden = true;
+    }, report);
     const a11y: BoardInputView['a11y'] = {
         toolState(snapshot: ToolStateSnapshot) {
             if (!active()) return;
-            const tool = `${snapshot.active.id}${snapshot.active.variant ? `, ${snapshot.active.variant}` : ''}${snapshot.locked ? ', locked' : ''}`;
-            if (tool !== lastTool) { lastTool = tool; announce(`Tool: ${tool}.`); }
+            const names: Readonly<Record<string, string>> = { pen: 'Draw', highlighter: 'Highlight', eraser: 'Eraser', select: 'Select',
+                hand: 'Hand', connector: 'Arrow', polyline: 'Line', sticky: 'Note', text: 'Text', frame: 'Frame', laser: 'Laser', figure: 'Figure' };
+            const name = names[snapshot.active.id] ?? snapshot.active.id;
+            const tool = `${name}${snapshot.active.variant ? `, ${snapshot.active.variant}` : ''}${snapshot.locked ? ', locked' : ''}`;
+            if (tool !== lastTool) { lastTool = tool; announce(`${tool}.`); }
         },
+        repeatAnnouncement: repeat,
         bindKeyboardCursor(callback) {
             activate = callback;
             return () => { if (activate === callback) activate = undefined; };
@@ -141,8 +190,12 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
         dispose() {
             if (disposed) return;
             disposed = true; scheduled?.(); scheduled = undefined; repeated?.(); repeated = undefined;
-            announcementVersion++; lastAnnouncement = ''; unsubscribe(); activate = undefined;
-            cursorButton.removeEventListener('click', cursorClick); dropRows(); cursor.remove(); root.remove();
+            announcementVersion++; lastAnnouncement = ''; order.dispose(); unsubscribe(); unsubscribePenMode(); activate = undefined;
+            cursorButton.removeEventListener('click', cursorClick); root.removeEventListener('contextmenu', menu);
+            enterCanvas.removeEventListener('contextmenu', menu); enterCanvas.removeEventListener('focus', canvasFocus);
+            enterCanvas.removeEventListener('blur', canvasBlur); enterCanvas.removeEventListener('click', enter);
+            exitPenMode.removeEventListener('click', exitPen); exitPenMode.removeEventListener('contextmenu', menu);
+            dropRows(); enterCanvas.remove(); exitPenMode.remove(); cursor.remove(); root.remove();
         },
     };
 }

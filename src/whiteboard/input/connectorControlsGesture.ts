@@ -1,4 +1,5 @@
-import type { NodeSetOp } from '../change/ops';
+import type { Op } from '../change/ops';
+import { prepareNotebookTransform } from './notebookTranslation';
 import { prepareConnectorControl, type ConnectorControl, type ConnectorControlPreview } from '../geom/connectorControls';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
@@ -11,7 +12,7 @@ export interface ConnectorControlGestureOptions {
     readonly current: () => boolean;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
-    readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly show: (ops: readonly Op[]) => void;
     readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
     readonly armCommit: () => void;
     readonly finishCommit: () => void;
@@ -44,13 +45,20 @@ export function connectorControlGesture(first: RealSample, _modifiers: Modifiers
             if (cleaned || request.signal.aborted || turn !== sequence) return;
             if (!options.current()) { cancel(); return; }
             if (commit) {
-                options.show(result.ops); await options.waitUntilReady(request.signal);
-                if (cleaned || request.signal.aborted || turn !== sequence) return;
-                if (!options.current()) { cancel(); return; }
-                options.armCommit();
-                try { result.commit(); result = undefined; options.finishCommit(); }
-                catch (error) { options.cancelCommit(); throw error; }
-                cleanup();
+                const notebook = result.ops.length ? await prepareNotebookTransform({ runtime: options.runtime, ids: [options.id], preview: result,
+                    signal: request.signal, current: () => !cleaned && options.current() && turn === sequence, cooperate: options.cooperate }) : null;
+                try {
+                    options.show(notebook?.ops ?? result.ops); await options.waitUntilReady(request.signal);
+                    if (cleaned || request.signal.aborted || turn !== sequence) return;
+                    if (!options.current()) { cancel(); return; }
+                    options.armCommit();
+                    try {
+                        if (notebook) { const applied = options.runtime.session.apply({ origin: 'tool', label: 'Edit connector', ops: notebook.ops }); applied.release(); result.release(); }
+                        else result.commit();
+                        result = undefined; options.finishCommit();
+                    } catch (error) { options.cancelCommit(); throw error; }
+                    cleanup();
+                } finally { notebook?.release(); }
             } else { preview = result; result = undefined; options.show(preview.ops); }
         } catch (error) {
             if (!cleaned && !request.signal.aborted && turn === sequence) { try { options.error(error); } finally { cancel(); } }

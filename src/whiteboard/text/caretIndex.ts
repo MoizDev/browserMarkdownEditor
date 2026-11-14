@@ -186,6 +186,7 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
     }
     function visitSelection(start: number, end: number, visit: (rect: Rect) => void, visible?: { readonly top: number; readonly bottom: number }): void {
         if (start > end) [start, end] = [end, start];
+        if (start === end) return;
         let first = firstLine(start);
         if (visible) {
             let lo = 0, hi = lines.length;

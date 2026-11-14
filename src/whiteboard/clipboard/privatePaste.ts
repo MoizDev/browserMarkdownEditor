@@ -11,6 +11,7 @@ import type { CopySnapshot } from './snapshot';
 import { insertNativeClipboard } from './insertNative';
 import { planBoardClipboardPlacement } from './placement';
 import { prepareBoardClipboardMediaInJob } from './prepareMedia';
+import type { StoreMedia } from '../media/storage.types';
 import type { ClipboardIntent, ClipboardTarget } from './types';
 
 // Provenance: private clipboard C5 admission, serial session jobs and atomic
@@ -27,7 +28,7 @@ export interface PrivateClipboardPasteOptions {
     readonly cache?: Pick<ClipboardCopy, 'match'>;
     current(target: Readonly<ClipboardTarget>): boolean;
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
-    storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    readonly storeMedia: StoreMedia;
     noticeMissing(ids: readonly MediaId[]): void;
     cooperate?(): Promise<void>;
 }

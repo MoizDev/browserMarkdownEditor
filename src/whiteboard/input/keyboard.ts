@@ -53,6 +53,7 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'select.previous', group: 'edit', label: 'Select previous', key: 'Tab', shift: true },
   { id: 'group', group: 'edit', label: 'Group', key: 'g', accel: true },
   { id: 'ungroup', group: 'edit', label: 'Ungroup', key: 'g', accel: true, shift: true },
+  { id: 'frame.toggle', group: 'edit', label: 'Frame selection or remove frame', key: 'g', accel: true, alt: true },
   { id: 'lock', group: 'edit', label: 'Lock', key: 'l', shift: true },
   { id: 'duplicate', group: 'edit', label: 'Duplicate', key: 'd', accel: true },
   { id: 'media.insert', group: 'edit', label: 'Insert media', key: 'u', accel: true },

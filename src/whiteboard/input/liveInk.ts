@@ -1,7 +1,9 @@
 import { LocalCurveBuilder, type CurvePublication } from '../ink/curve'
+import { StraightInkBuilder } from './straightInk'
 import type { SampleBuilder, SampleBuilderOptions, SampleSequence } from '../ink/samples'
 import type { FinishReason, GestureOwner, Modifiers, RealSample, Tool } from './tool'
 import type { PredictedPoint } from './prediction'
+import type { PaintClip } from '../render/paintStream'
 
 export interface InkIdentity {
   readonly nodeId: string
@@ -19,6 +21,9 @@ export interface InkPresentation {
   readonly width: number
   readonly fairTol: number
   readonly localToWorld: readonly [number, number, number, number, number, number]
+  /** Continuations inherit their existing node's opacity and ancestor frame clips. */
+  readonly opacity?: number
+  readonly clips?: readonly PaintClip[]
 }
 
 export interface LiveInkContext {
@@ -31,7 +36,7 @@ export interface LiveInkContext {
   toLocal(sample: RealSample): { readonly x: number; readonly y: number }
   clearRedoAtDown(): void
   invalidate(): void
-  commit(builder: SampleBuilder, identity: InkIdentity, undoImmediately: boolean): DryInkIdentity
+  commit(builder: SampleBuilder, identity: InkIdentity, undoImmediately: boolean, closed: boolean): DryInkIdentity
   error(error: unknown): void
 }
 
@@ -80,7 +85,7 @@ export class WetInkHandover {
 export class LiveInk implements GestureOwner {
   readonly kind = 'ink' as const
   readonly pointerIds: ReadonlySet<number>
-  private readonly builder: LocalCurveBuilder
+  private readonly builder: StraightInkBuilder
   private ended = false
   private last: RealSample | null = null
   private dirty = true
@@ -88,10 +93,17 @@ export class LiveInk implements GestureOwner {
   private snapshot: CurvePublication | null = null
   // Translucent prediction is withheld until its two-band composition is certified.
   get allowsPrediction(): boolean { return this.context.presentation.tool === 'pen' }
+  get delegatedState(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample }> | null {
+    return !this.ended && this.last ? { identity: this.context.identity, presentation: this.context.presentation, sample: this.last } : null
+  }
+  get delegatedCandidate(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number; predicted: boolean }> | null {
+    return !this.ended && this.last && this.snapshot ? { identity: this.context.identity, presentation: this.context.presentation,
+      sample: this.last, curveSequence: this.snapshot.sequence, predicted: this.snapshot.prediction !== null } : null
+  }
 
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
     this.pointerIds = new Set([first.pointerId])
-    this.builder = new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol)
+    this.builder = new StraightInkBuilder(new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol))
     this.append(first, modifiers)
     context.clearRedoAtDown()
     context.invalidate()
@@ -100,8 +112,10 @@ export class LiveInk implements GestureOwner {
   update(samples: readonly RealSample[], modifiers: Modifiers): void {
     if (this.ended) return
     try {
+      const sealed = !modifiers.shift && this.builder.flush()
+      if (sealed) this.dirty = true
       for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) this.append(sample, modifiers)
-      if (samples.length) this.context.invalidate()
+      if (samples.length || sealed) this.context.invalidate()
     } catch (error) {
       this.context.error(error)
       this.finish('os-cancel')
@@ -136,7 +150,11 @@ export class LiveInk implements GestureOwner {
     try {
       const finished = this.builder.finish()
       this.snapshot = finished.publication
-      this.dry = this.context.commit(finished.samples, this.context.identity, reason === 'undo')
+      const points = finished.publication.samples, last = points.count - 1
+      // R-20 keeps closure inert; only an exact, non-degenerate loop is marked.
+      const closed = this.context.presentation.tool === 'pen' && points.count >= 4
+        && points.x(0) === points.x(last) && points.y(0) === points.y(last)
+      this.dry = this.context.commit(finished.samples, this.context.identity, reason === 'undo', closed)
       if (reason === 'undo') this.handover.clear(this.context.identity)
       else {
         try { this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, curve: this.snapshot, dry: this.dry }) }
@@ -162,7 +180,7 @@ export class LiveInk implements GestureOwner {
     if (this.last && sample.x === this.last.x && sample.y === this.last.y && (!this.context.builderOptions.pressure || sample.pressure === this.last.pressure)) return
     const point = this.context.toLocal(sample)
     const pressure = sample.source === 'pen' && sample.buttons === 0 && sample.pressure === 0 && this.last ? this.last.pressure : sample.pressure
-    this.builder.append(point.x, point.y, this.context.builderOptions.pressure ? pressure : undefined, modifiers.shift ? 'straight' : 'freehand')
+    this.builder.append(point.x, point.y, this.context.builderOptions.pressure ? pressure : undefined, modifiers.shift)
     this.last = sample
     this.dirty = true
   }

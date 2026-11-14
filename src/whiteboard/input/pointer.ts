@@ -40,6 +40,7 @@ export class MappingHistory {
     if (time < this.entries[0].time) this.onExpired()
     return this.entries[i]
   }
+  latest(): PresentedMapping | null { return this.entries[this.entries.length - 1] ?? null }
   map(time: number, x: number, y: number): { readonly x: number; readonly y: number } {
     return this.at(time).clientToWorld(x, y)
   }
@@ -71,10 +72,18 @@ export interface PointerSink {
   error?(error: unknown, pointerId: number): void
 }
 
+class PartialPointerBatchError extends Error {
+  constructor(readonly samples: readonly RealSample[], readonly failure: unknown) {
+    super('Pointer batch stopped after a preserved prefix')
+  }
+}
+
 interface Contact {
   readonly id: number
   watermark: number
   suffix: string[]
+  /** Raw points already delivered since the last pointermove, including equal-time points. */
+  rawSinceMove: Map<string, number>
 }
 
 function modifiers(event: PointerEvent, mac: boolean): Modifiers {
@@ -138,23 +147,36 @@ export class PointerAcquisition {
       buttons: event.buttons, tiltX: Math.max(-90, Math.min(90, event.tiltX || 0)), tiltY: Math.max(-90, Math.min(90, event.tiltY || 0)), twist: ((event.twist || 0) % 360 + 360) % 360 }
   }
 
-  private batch(contact: Contact, event: PointerEvent): RealSample[] {
+  private batch(contact: Contact, event: PointerEvent, raw: boolean): RealSample[] {
     const coalesced = event.getCoalescedEvents?.() ?? []
     const events = coalesced.length ? [...coalesced] : [event]
     if (event.type === 'pointerup' && coalesced.length && tuple(coalesced[coalesced.length - 1]) !== tuple(event)) events.push(event)
     const result: RealSample[] = []
     let previous = -Infinity
-    for (const item of events) {
+    try { for (const item of events) {
       if (item.pointerId !== contact.id || !Number.isFinite(item.timeStamp) || item.timeStamp < previous) throw new Error('Unordered pointer batch')
       previous = item.timeStamp
       const key = tuple(item)
+      // Earlier timestamps are already rejected by the watermark; retain the full
+      // equal-time raw suffix so coarse browser clocks cannot reintroduce duplicates.
+      if (raw && item.timeStamp > contact.watermark) contact.rawSinceMove.clear()
+      if (raw && contact.rawSinceMove.has(key)) continue
+      if (!raw) {
+        const delivered = contact.rawSinceMove.get(key) ?? 0
+        if (delivered) {
+          if (delivered === 1) contact.rawSinceMove.delete(key); else contact.rawSinceMove.set(key, delivered - 1)
+          continue
+        }
+      }
       if (item.timeStamp < contact.watermark || contact.suffix.includes(key)) continue
       const sample = this.sample(item)
+      result.push(sample)
       contact.watermark = item.timeStamp
       contact.suffix.push(key)
       if (contact.suffix.length > 64) contact.suffix.shift()
-      result.push(sample)
-    }
+      if (raw) contact.rawSinceMove.set(key, (contact.rawSinceMove.get(key) ?? 0) + 1)
+    } } catch (error) { throw new PartialPointerBatchError(result, error) }
+    if (!raw) contact.rawSinceMove.clear()
     return result
   }
 
@@ -168,7 +190,7 @@ export class PointerAcquisition {
     try {
       const sample = this.sample(event)
       if (!this.sink.down(sample, modifiers(event, this.mac), event)) return
-      const contact: Contact = { id: event.pointerId, watermark: event.timeStamp, suffix: [tuple(event)] }
+      const contact: Contact = { id: event.pointerId, watermark: event.timeStamp, suffix: [tuple(event)], rawSinceMove: new Map() }
       this.contacts.set(event.pointerId, contact)
       try { this.root.setPointerCapture(event.pointerId) } catch { this.end(event.pointerId, 'capture-failed') }
     } catch (error) { this.sink.error?.(error, event.pointerId) }
@@ -180,10 +202,18 @@ export class PointerAcquisition {
     if (raw && event.pointerType !== 'pen' && event.pointerType !== 'mouse') return
     this.predict(event.pointerId, null)
     try {
-      const samples = this.batch(contact, event)
+      const samples = this.batch(contact, event, raw)
       if (samples.length) this.sink.move(event.pointerId, samples, modifiers(event, this.mac), event)
       if (!raw) this.predict(event.pointerId, event)
-    } catch (error) { this.sink.error?.(error, event.pointerId); this.end(event.pointerId, 'cancel') }
+    } catch (error) {
+      try {
+        if (error instanceof PartialPointerBatchError && error.samples.length)
+          this.sink.move(event.pointerId, error.samples, modifiers(event, this.mac), event)
+      } finally {
+        try { this.sink.error?.(error instanceof PartialPointerBatchError ? error.failure : error, event.pointerId) }
+        finally { this.end(event.pointerId, 'cancel') }
+      }
+    }
   }
   private move = (event: PointerEvent): void => { this.process(event, false) }
   private raw = (event: PointerEvent): void => { this.process(event, true) }
@@ -192,10 +222,18 @@ export class PointerAcquisition {
     if (!contact) return
     this.predict(event.pointerId, null)
     try {
-      const samples = this.batch(contact, event)
+      const samples = this.batch(contact, event, false)
       this.sink.up(event.pointerId, samples, modifiers(event, this.mac), event)
       this.contacts.delete(event.pointerId)
-    } catch (error) { this.sink.error?.(error, event.pointerId); this.end(event.pointerId, 'cancel') }
+    } catch (error) {
+      try {
+        if (error instanceof PartialPointerBatchError && error.samples.length)
+          this.sink.move(event.pointerId, error.samples, modifiers(event, this.mac), event)
+      } finally {
+        try { this.sink.error?.(error instanceof PartialPointerBatchError ? error.failure : error, event.pointerId) }
+        finally { this.end(event.pointerId, 'cancel') }
+      }
+    }
   }
   private end(id: number, reason: 'cancel' | 'capture-lost' | 'capture-failed'): void {
     if (!this.contacts.delete(id)) return

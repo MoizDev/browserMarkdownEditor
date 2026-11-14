@@ -30,6 +30,7 @@ export interface BoardPreview {
     show(nodes: readonly Node[]): void;
     showOps(ops: readonly Op[]): void;
     waitUntilReady(signal: AbortSignal): Promise<void>;
+    waitUntilIdle(signal: AbortSignal): Promise<void>;
     armCommit(): void;
     finishCommit(): void;
     cancelCommit(): void;
@@ -62,8 +63,9 @@ class OverlayNodes implements ReadonlyMap<NodeId, Node> {
     }
 }
 function copyNode(node: Node): Node { return createNode(structuredClone(node)); }
-function operationNodes(doc: BoardDoc, ops: readonly Op[]): Map<NodeId, Node> {
+function operationNodes(doc: BoardDoc, ops: readonly Op[]): { changes: Map<NodeId, Node>; paper?: Readonly<import('../../utils/paper').NotebookPaper> } {
     const changes = new Map<NodeId, Node>();
+    let paper: Readonly<import('../../utils/paper').NotebookPaper> | undefined;
     for (const op of ops) {
         if (op.t === 'create') {
             if (doc.nodes.has(op.node.id) || changes.has(op.node.id)) throw new Error('Preview creation already exists');
@@ -74,9 +76,16 @@ function operationNodes(doc: BoardDoc, ops: readonly Op[]): Map<NodeId, Node> {
                 throw new Error('Unsupported preview property');
             }
             changes.set(op.id, copyNode({ ...old, [op.key]: structuredClone(op.value) } as Node));
+        } else if (op.t === 'board' && op.key === 'host.paper' && doc.host.kind === 'notebook') {
+            const before = paper ?? doc.host.paper, next = op.value;
+            if (!Number.isSafeInteger(next.pageCount) || next.pageCount < before.pageCount
+                || Object.keys(before).some(key => key !== 'pageCount' && !Object.is(before[key as keyof typeof before], next[key as keyof typeof next]))) {
+                throw new Error('Preview paper changes must only grow the page stack');
+            }
+            paper = structuredClone(next);
         } else throw new Error(`Unsupported preview operation: ${op.t}`);
     }
-    return changes;
+    return { changes, ...(paper ? { paper } : {}) };
 }
 
 export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
@@ -89,6 +98,12 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
     const frameIds = new WeakMap<PaintFrame, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintFrame, number>();
     const waiters = new Set<{ generation: number; resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
+    const idleWaiters = new Set<{ resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
+    const settleIdle = () => {
+        for (const waiter of [...idleWaiters]) {
+            idleWaiters.delete(waiter); waiter.signal.removeEventListener('abort', waiter.abort); waiter.resolve();
+        }
+    };
     const settle = (error?: unknown) => {
         for (const waiter of [...waiters]) {
             waiters.delete(waiter); waiter.signal.removeEventListener('abort', waiter.abort);
@@ -107,14 +122,15 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         for (const lease of [...held]) release(lease);
         const oldPin = pin; pin = null; document = null;
         try { oldPin?.release(); } catch (error) { report(error); }
-        try { engine.setPreviewLayers(null); } finally { releaseCommit?.(); }
+        try { engine.setPreviewLayers(null); } finally { try { releaseCommit?.(); } finally { settleIdle(); } }
     };
     const clear = () => {
         if (commitRevision !== null && options.current() && engine.getView().visible && runtime.session.doc.rev <= commitRevision) return;
         clearNow();
     };
     const unbind = engine.bindPreviewClear(clear);
-    const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>) => {
+    const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>,
+        paper?: Readonly<import('../../utils/paper').NotebookPaper>) => {
         if (disposed) throw new Error('Preview is disposed');
         if (!changes.size) { clear(); return; }
         if (commitRevision !== null) throw new Error('A committed preview is awaiting presentation');
@@ -150,7 +166,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             try {
                 const original = await base; check();
                 const nodes = new OverlayNodes(original.nodes, changes);
-                const doc: BoardDoc = { ...original, nodes };
+                if (paper && original.host.kind !== 'notebook') throw new Error('Preview paper target changed');
+                const host = paper && original.host.kind === 'notebook' ? { ...original.host, paper } : original.host;
+                const doc: BoardDoc = { ...original, nodes, host };
                 if (!doc.sheets.has(sheet)) throw new Error('Preview sheet is unavailable');
                 const candidates = new Set<NodeId>(), pending = [...changes.keys()];
                 const additional = new Map<ParentId, NodeId[]>();
@@ -295,7 +313,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 start(changes);
             } catch (error) { clear(); report(error); }
         },
-        showOps(ops) { try { start(operationNodes(runtime.session.doc, ops)); } catch (error) { clear(); report(error); } },
+        showOps(ops) { try { const projected = operationNodes(runtime.session.doc, ops); start(projected.changes, undefined, projected.paper); } catch (error) { clear(); report(error); } },
         waitUntilReady(signal) {
             if (disposed || signal.aborted || !pin || !controller) return Promise.reject(interrupted());
             const frame = pair?.readyFrame();
@@ -304,6 +322,16 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 const waiter = { generation, resolve, reject, signal, abort: () => {} };
                 waiter.abort = () => { if (waiters.delete(waiter)) reject(interrupted()); };
                 waiters.add(waiter); signal.addEventListener('abort', waiter.abort, { once: true });
+                if (signal.aborted) waiter.abort();
+            });
+        },
+        waitUntilIdle(signal) {
+            if (disposed || signal.aborted) return Promise.reject(interrupted());
+            if (commitRevision === null) return Promise.resolve();
+            return new Promise<void>((resolve, reject) => {
+                const waiter = { resolve, reject, signal, abort: () => {} };
+                waiter.abort = () => { if (idleWaiters.delete(waiter)) reject(interrupted()); };
+                idleWaiters.add(waiter); signal.addEventListener('abort', waiter.abort, { once: true });
                 if (signal.aborted) waiter.abort();
             });
         },

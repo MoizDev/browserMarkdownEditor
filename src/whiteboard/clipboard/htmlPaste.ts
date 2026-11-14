@@ -4,8 +4,9 @@ import type { BoardRuntime } from '../host/runtime';
 import type { BoardClipboardAcquisition } from '../host/clipboardAcquisition';
 import { inspectMedia } from '../media/inspect';
 import type { MediaLease } from '../media/store';
+import type { StoreMedia } from '../media/storage.types';
 import { newNodeId, type NodeId, type SheetId } from '../model/ids';
-import { isSafeMediaFile, type MediaEntry, type MediaId } from '../model/media';
+import type { MediaEntry, MediaId } from '../model/media';
 import { createPicture, createText, type Node } from '../model/nodes';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { keysBetween } from '../model/orderKey';
@@ -37,7 +38,7 @@ export interface HtmlClipboardPasteOptions {
     readonly receivingBoardId: string;
     readonly cameraZoom: number;
     current(target: Readonly<ClipboardTarget>): boolean;
-    storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    readonly storeMedia: StoreMedia;
     /** Real native encoding, C5 admission and canonical source geometry. */
     admitSource(source: HtmlClipboardSource, context: JobContext, identity: BoardJobIdentity): Promise<{
         readonly acquisition: BoardClipboardAcquisition; readonly bounds: Readonly<{ x: number; y: number; w: number; h: number }>;
@@ -71,7 +72,7 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
                 cameraZoom: options.cameraZoom, intent: options.intent, content: { kind: 'rich', fragment: projected.rich }, signal: context.signal, cooperate: options.cooperate });
             return id ? [id as NodeId] : [];
         }
-        const records = new Map<MediaId, { entry: MediaEntry; blob: Blob; file: string | null }>();
+        const records = new Map<MediaId, { entry: MediaEntry; blob: Blob }>();
         const images: { id: MediaId; alt: string; width: number; height: number }[] = [];
         for (const image of projected.dataImages) {
             check();
@@ -85,14 +86,11 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
                         || old.duration !== null || old.animated !== info.animated)) throw new Error('Existing image metadata conflicts with verified bytes');
                     const entry: MediaEntry = old ?? { id: info.id, mime: info.mime, bytes: image.blob.size, w: info.width, h: info.height,
                         duration: null, animated: info.animated, name: image.alt.slice(0, 10_000), file: null, ext: null };
-                    const file = await options.storeMedia(entry, image.blob, context.signal); check();
-                    if (!isSafeMediaFile(file)) throw new Error('Invalid stored image name');
-                    if (old && old.file !== file && (old.ext?.raw.size || old.ext?.fields.size || (doc.preservedMediaRefs.get(info.id) ?? 0) > 0)) {
-                        throw new Error('Cannot remap an image with preserved filename dependencies');
-                    }
                     const blob = new Blob([image.blob], { type: info.mime });
                     leases.push(runtime.media.retain(info.id, 'snapshot')); runtime.media.put(info.id, blob);
-                    item = { entry: old ?? { ...entry, file }, blob, file }; records.set(info.id, item);
+                    // Admission first; the final shared media stage performs
+                    // storage exactly once under this same job and one receipt.
+                    item = { entry, blob }; records.set(info.id, item);
                 }
                 const scale = Math.min(1, 5000 / Math.max(info.width, info.height));
                 images.push({ id: info.id, alt: image.alt.slice(0, 10_000), width: info.width * scale, height: info.height * scale });

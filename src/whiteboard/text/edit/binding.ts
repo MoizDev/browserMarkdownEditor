@@ -56,7 +56,8 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
             void layoutEngine.prepare(request).then(() => { if (!closed) view.requestChrome(); }, view.reportError);
         }
         const paint = layoutEngine.layout(request);
-        if (paint.key !== lastPaint) { lastPaint = paint.key; options.paintChanged(paint, layoutEngine.faceTable); }
+        if (!paint.faceTable) throw new Error('Text paint has no owning face table');
+        if (paint.key !== lastPaint) { lastPaint = paint.key; options.paintChanged(paint, paint.faceTable); }
         return { paint, caret: layoutEngine.caretIndex(request, paint), ...options.transforms() };
     }
     function translateFrame(transaction: Transaction): Transaction {

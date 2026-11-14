@@ -407,6 +407,13 @@ export class PaneLifecycle<T extends object> {
         if (this.pending?.frameId === frameId) this.discard2D();
     }
 
+    /** A model-backed pane may have no raster mirrors: a complete ordinary 2D frame is its bridge. */
+    note2DPresented(token: FrameToken, revision: string): void {
+        const current = this.options.currentFrameToken();
+        if (!this.canDraw() || this.usingGpu || !current || !sameFrame(token, current) || revision !== this.options.currentRevision()) return;
+        this.first2DPresented = true;
+    }
+
     /** Complete current coverage, not upload completion alone, authorizes the compositor's swap. */
     presentGpu(grant: GpuGrant, token: FrameToken, view: MirrorView, revision: string, complete: boolean): boolean {
         const current = this.options.currentFrameToken();

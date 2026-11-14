@@ -69,7 +69,10 @@ export class PreviewBitmapLayer implements Layer {
             const y0 = Math.min(...tiles.map(tile => tile.destination.y));
             const x1 = Math.max(...tiles.map(tile => tile.destination.x + tile.destination.width));
             const y1 = Math.max(...tiles.map(tile => tile.destination.y + tile.destination.height));
-            if (x0 > left || y0 > top || x1 < right || y1 < bottom) return { complete: false, sharp: false };
+            const epsilon = 1e-7;
+            if (x0 > left + epsilon || y0 > top + epsilon || x1 < right - epsilon || y1 < bottom - epsilon) {
+                return { complete: false, sharp: false };
+            }
             if (gpu && tiles.some(tile => onScreen(tile.destination, view) && this.uploaded.get(tile)?.device !== this.host.device())) {
                 return { complete: false, sharp: false };
             }

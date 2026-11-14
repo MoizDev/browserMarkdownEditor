@@ -34,7 +34,15 @@ export class PreviewScene {
     get snapshot(): PreviewSnapshot | null { return this.snapshotValue; }
 
     sync(snapshot: PreviewSnapshot | null): void {
-        if (this.disposed || !this.visible || !snapshot) return;
+        if (this.disposed || !this.visible) return;
+        if (!snapshot) {
+            this.snapshotValue = null;
+            this.requests.clear();
+            this.layer.setExpected(new Map());
+            this.sceneRevision++;
+            this.invalidate();
+            return;
+        }
         this.snapshotValue = snapshot;
         this.sceneRevision++;
         const view = snapshot.camera;

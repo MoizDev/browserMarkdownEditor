@@ -14,6 +14,8 @@ export interface StyleGeometryMetrics {
     legacyEquivalent(kind: OutlineKind, size: Size, actualWidth: number): number;
     openArrow(actualWidth: number): Readonly<{ length: number; halfSpan: number }>;
     dash(actualWidth: number): Readonly<{ lengths: readonly [number, number]; dotSpacing: number; status: 'provisional' }>;
+    stickyCornerRadius(scale: number): Readonly<{ value: number; status: 'provisional' }>;
+    frameBorderWidth(): Readonly<{ value: number; status: 'provisional' }>;
     bendThreshold(size: Size, actualWidth: number): CalibratedLength;
     attachedGap(size: Size, actualWidth: number, head: Arrowhead): CalibratedLength;
 }
@@ -61,6 +63,12 @@ export const styleGeometryMetrics: StyleGeometryMetrics = Object.freeze({
         const width = nonnegative(actualWidth);
         if (width === 0) throw new RangeError('Dash width must be positive');
         return { lengths: [finiteResult(4 * width), finiteResult(3 * width)], dotSpacing: finiteResult(2 * width), status: 'provisional' };
+    },
+    stickyCornerRadius(scale: number): Readonly<{ value: number; status: 'provisional' }> {
+        return { value: finiteResult(4 * nonnegative(scale)), status: 'provisional' };
+    },
+    frameBorderWidth(): Readonly<{ value: number; status: 'provisional' }> {
+        return { value: 1, status: 'provisional' };
     },
     bendThreshold(size: Size, actualWidth: number): CalibratedLength {
         nonnegative(actualWidth);

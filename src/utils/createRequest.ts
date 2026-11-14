@@ -14,7 +14,8 @@
 // two implementations of one name box, and only one of them reachable from the
 // toolbar. Now both raise a request and whichever row matches renders the box.
 
-import { ensureDrawingExt, ensureNotebookExt } from './fileTypes';
+import { ensureDrawingExt, ensureNotebookExt, isNativeDrawingFile, NATIVE_DRAWING_EXT } from './fileTypes';
+import { routeEngines } from './engineRouting';
 
 /** What the name box is about to make. The last two differ from `file` only in
  *  the extension forced onto the typed name — see utils/fileTypes.ts. */
@@ -77,7 +78,11 @@ export function ancestorsOf(path: string): string[] {
  */
 export function nameForKind(kind: CreateKind | null, name: string): string {
     if (kind === 'notebook') return ensureNotebookExt(name);
-    if (kind === 'drawing') return ensureDrawingExt(name);
+    if (kind === 'drawing') {
+        if (routeEngines().canvas.drawing.engine !== 'board') return ensureDrawingExt(name);
+        if (isNativeDrawingFile(name)) return name;
+        return `${name.replace(/\.tldraw$/i, '')}${NATIVE_DRAWING_EXT}`;
+    }
     return name;
 }
 
@@ -86,7 +91,7 @@ export function nameForKind(kind: CreateKind | null, name: string): string {
 export function placeholderFor(kind: CreateKind | null): string {
     switch (kind) {
         case 'notebook': return 'Untitled.notebook';
-        case 'drawing': return 'Untitled.tldraw';
+        case 'drawing': return routeEngines().canvas.drawing.engine === 'board' ? 'Untitled.drawing' : 'Untitled.tldraw';
         case 'folder': return 'New folder';
         default: return 'Untitled.md';
     }

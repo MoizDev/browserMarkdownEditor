@@ -382,11 +382,11 @@ export class TextEditSession {
         finally { this.services.history.close(); }
     }
 
-    applyLink(url: string, selection: EditSelection): boolean {
+    applyLink(url: string | null, selection: EditSelection): boolean {
         let applied: boolean;
         try { applied = this.controller.applyLink(url, selection); }
         catch (error) { this.services.reportError(error); return false; }
-        if (applied) { this.selection = selection; this.services.changed(selection); this.services.announce('Link formatting changed'); this.host.focus(); }
+        if (applied) { this.selection = selection; this.services.changed(selection); this.services.announce(url === null ? 'Link removed' : 'Link formatting changed'); this.host.focus(); }
         return applied;
     }
 

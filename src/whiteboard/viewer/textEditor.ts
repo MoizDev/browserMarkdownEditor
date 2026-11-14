@@ -475,7 +475,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             }
             return { node: node.id, revision: doc.rev, selection, href };
         },
-        applyTextLink(context: { readonly node: NodeId; readonly revision: number; readonly selection: EditSelection }, href: string) {
+        applyTextLink(context: { readonly node: NodeId; readonly revision: number; readonly selection: EditSelection }, href: string | null) {
             const editor = manager.current?.editor, selection = editor?.getSelection();
             if (!editor || active !== context.node || doc.rev !== context.revision || !selection
                 || selection.anchor !== context.selection.anchor || selection.focus !== context.selection.focus) return false;

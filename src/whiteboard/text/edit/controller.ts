@@ -18,7 +18,7 @@ export interface EditTransactions {
     marksAt(offset: number): Marks;
     fragment(from: number, value: string, storedMarks: Marks | null): RichText;
     format(mark: ToggleMark, from: number, to: number): Transaction | null;
-    link(url: string, from: number, to: number): Transaction | null;
+    link(url: string | null, from: number, to: number): Transaction | null;
     enter(selection: EditSelection): { readonly transaction: Transaction; readonly selection: EditSelection };
 }
 
@@ -40,12 +40,14 @@ export class TextEditController {
         if (tx) { this.services.typing('boundary', selection, selection); this.services.apply(tx); }
     }
 
-    applyLink(href: string, selection: EditSelection): boolean {
+    applyLink(href: string | null, selection: EditSelection): boolean {
         const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
-        const url = linkUrl(href);
-        if (!url) return false;
+        const url = href === null ? null : linkUrl(href);
+        if (href !== null && !url) return false;
         if (from === to) {
-            this.storedMarks = { ...(this.storedMarks ?? this.services.marksAt(from)), link: url };
+            const marks = { ...(this.storedMarks ?? this.services.marksAt(from)) };
+            if (url === null) delete marks.link; else marks.link = url;
+            this.storedMarks = marks;
             return true;
         }
         const tx = this.services.link(url, from, to);

@@ -1,9 +1,10 @@
-import type { Block, BlockCarrier } from './richText';
+import type { Block, BlockCarrier, Run } from './richText';
 
 // Independent future tails stay byte-exact as range carriers, never concatenated positional fields.
 const carrierOrigins = new WeakMap<BlockCarrier, object>();
 const carrierSources = new WeakMap<BlockCarrier, object>();
 const blockOrigins = new WeakMap<Block, object>();
+const runOrigins = new WeakMap<Run, object>();
 export const carrierOrigin = (carrier: BlockCarrier): object => carrierOrigins.get(carrier) ?? carrier;
 export const carrierSource = (carrier: BlockCarrier): object => carrierSources.get(carrier) ?? carrier;
 export const blockOrigin = (block: Block): object => {
@@ -14,6 +15,15 @@ export const blockOrigin = (block: Block): object => {
 export function trackBlock(block: Block, origin: Block): Block {
     blockOrigins.set(block, blockOrigin(origin));
     return block;
+}
+export function runOrigin(run: Run): object {
+    let origin = runOrigins.get(run);
+    if (!origin) { origin = {}; runOrigins.set(run, origin); }
+    return origin;
+}
+export function trackRun(run: Run, origin: Run): Run {
+    runOrigins.set(run, runOrigin(origin));
+    return run;
 }
 export function mapCarrier(carrier: BlockCarrier, from: number, to: number, preserveOrigin = true): BlockCarrier {
     const mapped: BlockCarrier = { ...carrier, from, to };

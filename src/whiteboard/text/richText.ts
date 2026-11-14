@@ -2,7 +2,7 @@ import type { RawJson } from '../model/json';
 import { blockTextLength } from '../model/textOffsets';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { inheritProjection, projectionLength, projectionPosition } from './projection';
-import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, sliceCarriers, trackBlock } from './carriers';
+import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOrigin, sliceCarriers, trackBlock, trackRun } from './carriers';
 
 // text.md §4.1: immutable values; UTF-16 offsets refer to the plain-text projection.
 export interface RichText { readonly blocks: readonly Block[] }
@@ -104,30 +104,33 @@ function locate(text: RichText, offset: number): TextPoint {
     return { block: point.index, offset: point.offset, start: point.start };
 }
 
-function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boolean): Run[] {
+function slicedRun(run: Run, text: string, preserveOrigin: boolean): Run {
+    const result = preserveOrigin && text === run.text ? run : { ...run, text };
+    return preserveOrigin && opaqueRun(run) ? trackRun(result, run) : result;
+}
+function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Run[] {
     const runs: Run[] = [];
     let position = 0;
     for (let i = 0; i < block.runs.length; i++) {
         const run = block.runs[i];
         const end = position + run.text.length;
         if (run.text.length === 0) {
-            if (position >= from && (position < to || (keepEndAnchors && position === to))) runs.push(run);
+            if (position >= from && (position < to || (keepEndAnchors && position === to))) runs.push(slicedRun(run, '', preserveOrigin));
         } else {
             const startInRun = Math.max(0, from - position);
             const endInRun = Math.min(run.text.length, to - position);
-            if (startInRun < endInRun) runs.push(startInRun === 0 && endInRun === run.text.length
-                ? run : { ...run, text: run.text.slice(startInRun, endInRun) });
+            if (startInRun < endInRun) runs.push(slicedRun(run, run.text.slice(startInRun, endInRun), preserveOrigin));
         }
         position = end;
     }
     return runs;
 }
-function emptyRun(block: Block, offset: number): Run {
+function emptyRun(block: Block, offset: number, preserveOrigin: boolean): Run {
     let position = 0;
     for (let i = 0; i < block.runs.length; i++) {
         const run = block.runs[i];
         position += run.text.length;
-        if (position >= offset) return run.text.length === 0 ? run : { ...run, text: '' };
+        if (position >= offset) return slicedRun(run, '', preserveOrigin);
     }
     return { text: '', marks: {} };
 }
@@ -141,10 +144,10 @@ export function sliceRichText(text: RichText, from: number, to: number, preserve
         const block = text.blocks[i];
         const start = i === first.block ? first.offset : 0;
         const end = i === last.block ? last.offset : blockTextLength(block);
-        const runs = sliceRuns(block, start, end, from === to);
+        const runs = sliceRuns(block, start, end, from === to, preserveOrigins);
         const { carriers: _carriers, ...base } = block;
         const carriers = sliceCarriers(block, start, end, preserveOrigins);
-        const sliced: Block = { ...base, runs: runs.length ? runs : [emptyRun(block, start)], ...(carriers ? { carriers } : {}) };
+        const sliced: Block = { ...base, runs: runs.length ? runs : [emptyRun(block, start, preserveOrigins)], ...(carriers ? { carriers } : {}) };
         blocks.push(preserveOrigins ? trackBlock(sliced, block) : sliced);
     }
     return { blocks };
@@ -228,12 +231,22 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
         const startBlock = text.blocks[first.block];
         const endBlock = text.blocks[last.block];
         const mappedCarriers = spliceCarriers(before, first.offset, last.offset, insert);
-        const prefix = sliceRuns(startBlock, 0, first.offset, false);
-        const suffix = sliceRuns(endBlock, last.offset, blockTextLength(endBlock), from === to);
+        const prefix = sliceRuns(startBlock, 0, first.offset, false, true);
+        const suffix = sliceRuns(endBlock, last.offset, blockTextLength(endBlock), from === to, true);
+        const retained = new Set<object>();
+        for (const run of prefix) if (opaqueRun(run)) retained.add(runOrigin(run));
+        for (const block of insert.blocks) for (const run of block.runs) if (opaqueRun(run)) retained.add(runOrigin(run));
+        for (const run of suffix) if (opaqueRun(run)) retained.add(runOrigin(run));
+        const anchors: Run[] = [];
+        for (const block of before) for (const run of block.runs) {
+            if (!opaqueRun(run)) continue;
+            const origin = runOrigin(run);
+            if (!retained.has(origin)) { anchors.push(trackRun({ ...run, text: '' }, run)); retained.add(origin); }
+        }
         const blocks: Block[] = [];
         for (let i = 0; i < insert.blocks.length; i++) {
             const fragment = insert.blocks[i];
-            const runs = [...(i === 0 ? prefix : []), ...fragment.runs, ...(i + 1 === insert.blocks.length ? suffix : [])];
+            const runs = [...(i === 0 ? prefix : []), ...(i === 0 ? anchors : []), ...fragment.runs, ...(i + 1 === insert.blocks.length ? suffix : [])];
             // Existing first-block attributes live outside the replaced character
             // range. Newline-bearing fragment blocks carry their own attributes.
             const base = i === 0 ? startBlock : fragment;

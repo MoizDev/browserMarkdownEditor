@@ -3,7 +3,7 @@ import { projectionLength as indexedLength, projectionPosition, projectionText }
 import { normalizePlainInsertion } from './plainText';
 import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
-import { trackBlock } from './carriers';
+import { trackBlock, trackRun } from './carriers';
 
 const position = projectionPosition;
 function check(text: RichText, from: number, to = from): void {
@@ -82,7 +82,7 @@ export function insertionFragment(value: RichText, from: number, inserted: strin
 function mapMarks(value: RichText, from: number, to: number, map: (marks: Marks) => Marks): RichFragment {
     check(value, from, to);
     const fragment = sliceRichText(value, from, to, true);
-    return normalizeRichText({ blocks: fragment.blocks.map(block => trackBlock({ ...block, runs: block.runs.map(run => ({ ...run, marks: map(run.marks) })) }, block)) });
+    return normalizeRichText({ blocks: fragment.blocks.map(block => trackBlock({ ...block, runs: block.runs.map(run => trackRun({ ...run, marks: map(run.marks) }, run)) }, block)) });
 }
 export function toggleMark(value: RichText, from: number, to: number, mark: RichMark): RichFragment {
     check(value, from, to);

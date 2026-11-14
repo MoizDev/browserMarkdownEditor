@@ -108,7 +108,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     const transition = pdfVersionTransitionOwner(token.documentId, 'original');
     if (!retained.adoption) {
         const adoption = transition.adopt({ session: retained.session, document, mirror },
-            () => pdfMirrorRevision(options.emphasisEnabled(), getPdfFontEpoch(pdf.docKey), emphasis.revision()), retained.session.lifetimeSignal);
+            () => pdfMirrorRevision(options.emphasisEnabled(), pdf.docKey, emphasis.revision()), retained.session.lifetimeSignal);
         retained.adoption = adoption;
         void adoption.catch(() => { if (retained.adoption === adoption) retained.adoption = undefined; });
     }
@@ -131,7 +131,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     sync();
     const isCurrent = () => !disposed && retained.session.isCurrent() && options.isCurrent();
     const mirrorView = (view: ViewState) => ({ token, sourceRole: 'original' as const,
-        contentRevision: pdfMirrorRevision(lease.enabled, getPdfFontEpoch(pdf.docKey), emphasis.revision()),
+        contentRevision: pdfMirrorRevision(lease.enabled, pdf.docKey, emphasis.revision()),
         colourVersion: 0, geometryDigest, nominalDpr: Math.min(view.viewport.dpr, 2), view });
     const layer = pdfPageLayerDefinition({ producer: { render(request, signal) {
         assertPdfRenderAllowed(tiledPdfCapabilities(pdf.info));

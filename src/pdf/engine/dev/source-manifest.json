@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "qualification": "development",
   "shippingAllowed": false,
-  "buildId": "dev-fd3b40d3b2ca9635dac3bf7ef1ad9005e2118f25e4029e9c656fb47156ce5fe9",
-  "sha256": "fd3b40d3b2ca9635dac3bf7ef1ad9005e2118f25e4029e9c656fb47156ce5fe9",
+  "buildId": "dev-c2e072100dae3807a736e0d512670dff4e32e78412c07895303204e63f305f2b",
+  "sha256": "c2e072100dae3807a736e0d512670dff4e32e78412c07895303204e63f305f2b",
   "hashMeaning": "SHA-256 of canonical true input bytes, NOT archive or WASM bytes",
-  "artifactSha256": "73f62292af0788136a8ef95cb1bd0e534b1d87d602593c65617f43e5741e260c",
-  "assetDirectory": "dev-fd3b40d3b2ca9635dac3bf7ef1ad9005e2118f25e4029e9c656fb47156ce5fe9",
-  "servedBase": "/__bme_pdfium_dev/dev-fd3b40d3b2ca9635dac3bf7ef1ad9005e2118f25e4029e9c656fb47156ce5fe9/",
+  "artifactSha256": "345c2b28544832688a60a3a3924bd059acde45d131223d2f279d73b78cd9cfcd",
+  "assetDirectory": "dev-c2e072100dae3807a736e0d512670dff4e32e78412c07895303204e63f305f2b",
+  "servedBase": "/__bme_pdfium_dev/dev-c2e072100dae3807a736e0d512670dff4e32e78412c07895303204e63f305f2b/",
   "factory": {
     "format": "es-module",
     "export": "default",
@@ -19,17 +19,17 @@
   "files": {
     "glue": {
       "path": "pdfium.mjs",
-      "sha256": "688ca5f500026f9c11640384b348b58b5917376998e57a1019be12a372e001bf",
-      "bytes": 36448,
-      "gzipBytes": 8679,
-      "brotliBytes": 7638
+      "sha256": "559942cb4933a769d4a87e9531a0f761dd084855fbb891bfe716f4ec88a0486b",
+      "bytes": 36568,
+      "gzipBytes": 8707,
+      "brotliBytes": 7633
     },
     "wasm": {
       "path": "pdfium.wasm",
-      "sha256": "73f62292af0788136a8ef95cb1bd0e534b1d87d602593c65617f43e5741e260c",
-      "bytes": 5351153,
-      "gzipBytes": 2456315,
-      "brotliBytes": 1924624
+      "sha256": "345c2b28544832688a60a3a3924bd059acde45d131223d2f279d73b78cd9cfcd",
+      "bytes": 5351284,
+      "gzipBytes": 2457079,
+      "brotliBytes": 1928242
     }
   },
   "initialMemoryBytes": 33554432,
@@ -39,7 +39,7 @@
     "version": 1,
     "writer": 3758096384
   },
-  "nativeExports": 138,
+  "nativeExports": 139,
   "allocatorExports": [
     "malloc",
     "free"
@@ -56,27 +56,12 @@
   "imports": [
     {
       "module": "env",
-      "name": "_abort_js",
-      "kind": "function"
-    },
-    {
-      "module": "env",
       "name": "emscripten_resize_heap",
       "kind": "function"
     },
     {
       "module": "env",
-      "name": "__syscall_openat",
-      "kind": "function"
-    },
-    {
-      "module": "wasi_snapshot_preview1",
-      "name": "fd_close",
-      "kind": "function"
-    },
-    {
-      "module": "env",
-      "name": "__syscall_getdents64",
+      "name": "_abort_js",
       "kind": "function"
     },
     {
@@ -111,6 +96,11 @@
     },
     {
       "module": "env",
+      "name": "__syscall_openat",
+      "kind": "function"
+    },
+    {
+      "module": "env",
       "name": "__syscall_fcntl64",
       "kind": "function"
     },
@@ -135,6 +125,26 @@
       "kind": "function"
     },
     {
+      "module": "wasi_snapshot_preview1",
+      "name": "fd_close",
+      "kind": "function"
+    },
+    {
+      "module": "env",
+      "name": "emscripten_errn",
+      "kind": "function"
+    },
+    {
+      "module": "env",
+      "name": "_munmap_js",
+      "kind": "function"
+    },
+    {
+      "module": "env",
+      "name": "_mmap_js",
+      "kind": "function"
+    },
+    {
       "module": "env",
       "name": "__syscall_stat64",
       "kind": "function"
@@ -146,12 +156,27 @@
     },
     {
       "module": "env",
+      "name": "invoke_viii",
+      "kind": "function"
+    },
+    {
+      "module": "env",
+      "name": "invoke_ii",
+      "kind": "function"
+    },
+    {
+      "module": "env",
       "name": "invoke_iii",
       "kind": "function"
     },
     {
       "module": "env",
       "name": "invoke_iiii",
+      "kind": "function"
+    },
+    {
+      "module": "env",
+      "name": "__syscall_getdents64",
       "kind": "function"
     },
     {
@@ -176,31 +201,6 @@
     },
     {
       "module": "env",
-      "name": "_munmap_js",
-      "kind": "function"
-    },
-    {
-      "module": "env",
-      "name": "_mmap_js",
-      "kind": "function"
-    },
-    {
-      "module": "env",
-      "name": "emscripten_errn",
-      "kind": "function"
-    },
-    {
-      "module": "env",
-      "name": "invoke_viii",
-      "kind": "function"
-    },
-    {
-      "module": "env",
-      "name": "invoke_ii",
-      "kind": "function"
-    },
-    {
-      "module": "env",
       "name": "__syscall_unlinkat",
       "kind": "function"
     },
@@ -210,7 +210,7 @@
       "kind": "function"
     }
   ],
-  "canonicalExportMapSha256": "9329444bd4245287ece48a32e79322c2da132c320f227450e03116239fed369c",
+  "canonicalExportMapSha256": "e93b80a2d35a4125a432759b5cbd1884f1cd18b26204637aede0b5d73d1e9446",
   "opCoverage": {
     "doc.attachment": [
       "FPDFAttachment_GetDescription",
@@ -341,6 +341,7 @@
       "FPDFPageObj_GetMatrix",
       "FPDFPageObj_GetType",
       "FPDFPage_CountObjects",
+      "FPDFPage_GetAnnotCount",
       "FPDFPage_GetCropBox",
       "FPDFPage_GetMediaBox",
       "FPDFPage_GetObject",
@@ -404,6 +405,7 @@
       "FPDFPageObj_SetStrokeColor",
       "FPDFPageObj_SetStrokeWidth",
       "FPDFPage_CountObjects",
+      "FPDFPage_GetAnnotCount",
       "FPDFPage_GetCropBox",
       "FPDFPage_GetMediaBox",
       "FPDFPage_GetObject",
@@ -540,6 +542,7 @@
       "FPDFPageObj_GetMatrix",
       "FPDFPageObj_GetType",
       "FPDFPage_CountObjects",
+      "FPDFPage_GetAnnotCount",
       "FPDFPage_GetCropBox",
       "FPDFPage_GetMediaBox",
       "FPDFPage_GetObject",
@@ -629,6 +632,7 @@
       "FPDFPageObj_SetStrokeColor",
       "FPDFPageObj_SetStrokeWidth",
       "FPDFPage_CountObjects",
+      "FPDFPage_GetAnnotCount",
       "FPDFPage_GetCropBox",
       "FPDFPage_GetMediaBox",
       "FPDFPage_GetObject",
@@ -816,6 +820,7 @@
       "FPDFPageObj_GetMatrix",
       "FPDFPageObj_GetType",
       "FPDFPage_CountObjects",
+      "FPDFPage_GetAnnotCount",
       "FPDFPage_GetCropBox",
       "FPDFPage_GetMediaBox",
       "FPDFPage_GetObject",
@@ -1087,7 +1092,7 @@
   "inputs": {
     "allocator": "dlmalloc",
     "architecture": "linux-arm64-native",
-    "canonicalExportMapSha256": "9329444bd4245287ece48a32e79322c2da132c320f227450e03116239fed369c",
+    "canonicalExportMapSha256": "e93b80a2d35a4125a432759b5cbd1884f1cd18b26204637aede0b5d73d1e9446",
     "containerImageConfig": "sha256:a43e70a74c6a9d4d44294ed41ae79dc96678eaa7f9e86e617906f783c8127d93",
     "deps": {
       "pdfium": {
@@ -1356,6 +1361,7 @@
           "_FPDFPageObj_SetStrokeWidth",
           "_FPDFPage_CountObjects",
           "_FPDFPage_GenerateContent",
+          "_FPDFPage_GetAnnotCount",
           "_FPDFPage_GetCropBox",
           "_FPDFPage_GetMediaBox",
           "_FPDFPage_GetObject",
@@ -1513,7 +1519,7 @@
     "schemaVersion": 1,
     "templates": {
       "abi.c": "8bf35ca3f9a7bbbb88263ae4c26e0a4845ce96a05789d2d89d4c65528b7290eb",
-      "generate-inputs.mjs": "233b080831b325462d76e1b07c57c344020c61a7af0a3949954bc84bf2d65626",
+      "generate-inputs.mjs": "c473ca9a1c6cf127f8a91a5bdce35082048b2c1e802f81b9058108528f62378e",
       "link.sh": "ce084de20e861bd85b5a4c3d5c257b0d656bce3dd769253dfc2053f3c8808dbf",
       "role-pre.template.js": "40eb9925fd42365e1406c737fbaa668919f10cb726f22604dec88ba0a136ee77"
     },

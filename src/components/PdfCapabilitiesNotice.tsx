@@ -2,8 +2,9 @@ import { PDF_COPY_RESTRICTED, PDF_COPY_UNKNOWN, PDF_ENCRYPTED_READ_ONLY, PDF_PRI
 import './PdfCapabilitiesNotice.css';
 
 /** Persistent disclosure: a blank XFA page must not look like a clean rendering. */
-export default function PdfCapabilitiesNotice({ capabilities }: { capabilities: PdfCapabilities }) {
+export default function PdfCapabilitiesNotice({ capabilities, nativeFontPolicy = false }: { capabilities: PdfCapabilities; nativeFontPolicy?: boolean }) {
     const messages: string[] = [];
+    if (nativeFontPolicy) messages.push('When non-embedded fonts are substituted, this reader uses bundled Noto faces where supported. Ambiguous Chinese uses Simplified Chinese (SC); a known character set takes precedence over a conflicting language hint.');
     if (capabilities.xfa === true) messages.push(capabilities.formType === 'xfa-full'
         ? 'This PDF uses XFA forms, which are unsupported. Pages may be blank or incomplete.'
         : capabilities.formType === 'xfa-foreground'

@@ -51,7 +51,8 @@ as live tldraw shapes.
 - **Annotations reach the page as VECTOR paths, not pixels.** `getSvgString` → `svgToVectorOps`
   (`pdfVector.ts`) → `page.drawSvgPath` per op. A `PageOverlay` (`pdfOverlay.ts`) carries `vector`
   and/or `raster`; shapes with no path form (text, images — `RASTER_ONLY_SHAPES`) still export as a
-  PNG, and the builder draws that **first** so ink lands on top. `svgToVectorOps` returning null
+  PNG, and the builder draws that **first** so ink lands on top. Each physical page carries an
+  ordered layer per tldraw sheet, stamped bottom to top. `svgToVectorOps` returning null
   (embedded fonts, `<pattern>` fills, clip paths, a non-similarity transform) sends the whole page
   down the raster route, which is the pre-vector behaviour — so a failure is softer output, never
   wrong output.
@@ -541,7 +542,7 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
 - **It scrolls like a PDF and has the annotator's page strip and page box** (`pagedCanvas.ts`,
   `PageControls`, `PdfThumbnails`). `layOutPages` is the one place the page stack changes, so it is
   where `lockRef.setPages` re-bounds the camera. A thumbnail is the page's region through
-  `editor.toImage` with `bounds`, as the PDF export renders it. A document-scope store listener
+  `editor.toImage` with `bounds`, composited in sheet order as in the PDF export. A document-scope store listener
   collects the pages each changed shape touches (live bounds, plus the record's `y`, which is all a
   removed shape leaves) and calls the strip's `invalidate` 700ms after the pen pauses; the old image
   stays up until its replacement lands. The strip is keyed on the paper's LOOK, not its page count:

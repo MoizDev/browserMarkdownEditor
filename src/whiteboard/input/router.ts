@@ -54,6 +54,7 @@ export class InputRouter<Context> {
   suspendInk(token: InputToken, pan: InkPanSuspension): boolean {
     if (!this.isCurrent(token) || this.owner?.kind !== 'ink' || !this.lastReal || this.suspended) return false
     pan.begin(this.lastReal)
+    this.owner.suspend?.()
     this.suspended = pan
     return true
   }
@@ -75,6 +76,15 @@ export class InputRouter<Context> {
     try { owner.cancel(reason) } finally { release?.() }
   }
 
+  discardPreview(token: InputToken): boolean {
+    if (!this.isCurrent(token) || !this.owner) return false
+    const owner = this.owner
+    this.owner = null
+    const release = this.takeRelease()
+    try { if (owner.discard) owner.discard(); else owner.cancel('invalidated') } finally { release?.() }
+    return true
+  }
+
   // Undo/escape seal ink but discard reversible previews. The owner implements
   // the atomic finish-and-undo transaction for an ink undo.
   interrupt(token: InputToken, reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
@@ -91,6 +101,7 @@ export class InputRouter<Context> {
   }
 
   get activeOwner(): GestureOwner | null { return this.owner }
+  get inkSuspended(): boolean { return this.suspended !== null }
 
   private finishCurrent(reason: FinishReason): void {
     const owner = this.owner

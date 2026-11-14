@@ -1,6 +1,6 @@
 import type { DiskStat, DiskVersion } from '../utils/diskVersion';
 export type LoadedDocumentKind = 'markdown'|'text'|'code'|'tex'|'drawing'|'notebook'|'pdf'|'epub'|'unsupported';
-export interface DocumentRepresentation { generation:number; loadedKind:LoadedDocumentKind; status:'loading'|'ready'|'unavailable'; bufferKind:'text'|'annotationSnapshot'|'unavailable'; contentWritable:boolean; nativeCanvasKind?:'drawing'|'notebook'|'pdfInk'; emergencyReadOnly?:boolean }
+export interface DocumentRepresentation { generation:number; loadedKind:LoadedDocumentKind; status:'loading'|'ready'|'unavailable'; bufferKind:'text'|'annotationSnapshot'|'unavailable'; contentWritable:boolean; nativeCanvasKind?:'drawing'|'notebook'|'pdfInk'; emergencyReadOnly?:boolean; legacyOriginalSha256?:string }
 export interface ReaderToken { vaultId:string; vaultEpoch:number; documentId:string; byteGeneration:number }
 export interface ReaderIdentity extends ReaderToken { path:string; diskRev:number; rawVersion?:DiskVersion }
 export interface ReadOnlyFileSnapshot { snapshotId:string; blob:Blob; stat:DiskStat; fingerprint(signal?:AbortSignal):Promise<DiskVersion>; dispose():void }
@@ -19,7 +19,8 @@ export interface EpubFixedLocator extends EpubSectionKey {kind:'fixed';sectionDi
 export type EpubLocator=EpubTextLocator|EpubFixedLocator;
 export interface EpubReadingRecord {v:1;kind:'epub';rawFingerprint:string;parserSchema:1;sanitizerSchema:1;projectionSchema:1;requestedLayout:ReaderFlow;locator:EpubLocator}
 export interface PdfTextAnchor extends TextContext {physicalPageIndex:number;offsetUTF16:number;affinity:Affinity;alignHint?:number}
-export interface PdfTextReadingRecord {v:1;surface:'original'|'text';textChoice?:'manual';rawFingerprint:string;extractionSchema:1;pageDigest?:string;textAnchor?:PdfTextAnchor;originalCheckpoint:{page:number;offset:number;zoom:number;navigationRevision:number};textNavigationRevision:number}
+export interface PdfTextReadingRecord {v:1;surface:'original'|'text';textChoice?:'manual';rawFingerprint:string;extractionSchema:1|2;pageDigest?:string;textAnchor?:PdfTextAnchor;originalCheckpoint:{page:number;offset:number;zoom:number;navigationRevision:number};textNavigationRevision:number}
+export interface PdfTextRecordRead {record:PdfTextReadingRecord;storedSchema:number;storedV:number;anchorUsable:boolean}
 export type ReaderLocation={kind:'epub';value:EpubReadingRecord}|{kind:'pdf-text';value:PdfTextReadingRecord};
 export type ReaderHostCommand='next-document'|'previous-document'|'close-document'|'reopen-document'|'find'|'dismiss'|'read-only-mode';
 export interface ReadingTypography {family:'serif'|'sans'|'publisher';size:number;leading:number;measure:'compact'|'comfortable'|'wide';margins:'small'|'medium'|'large';theme:'follow-app'|'light'|'sepia'|'dark'}
@@ -30,7 +31,7 @@ export interface ReaderCallbacks {
  onReaderLocation(token:ReaderToken,location:ReaderLocation,cause:LocationCause):void;
  onNotify(message:string):void;
 }
-export interface PdfReadingBinding extends ReaderCallbacks {identity:ReaderIdentity;initialRecord?:PdfTextReadingRecord;emphasisEnabled:boolean;typography:ReadingTypography;onEmphasisChange(enabled:boolean):void;onTypographyChange(typography:ReadingTypography):void;registerKeyboardTarget(path:string,take:()=>void):()=>void}
+export interface PdfReadingBinding extends ReaderCallbacks {identity:ReaderIdentity;initialRecord?:PdfTextRecordRead;emphasisEnabled:boolean;typography:ReadingTypography;onEmphasisChange(enabled:boolean):void;onTypographyChange(typography:ReadingTypography):void;registerKeyboardTarget(path:string,take:()=>void):()=>void}
 export interface ReaderIntegration extends ReaderCallbacks {
  identityForTab(tab:import('./index').OpenTab):ReaderIdentity;
  acquireSnapshot(identity:ReaderIdentity,signal:AbortSignal):Promise<ReadOnlyFileSnapshot>;

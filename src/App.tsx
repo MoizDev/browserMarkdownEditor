@@ -1,6 +1,8 @@
 import { runReaderHostCommand } from './utils/documentReading';
 import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface } from './utils/documentReading';
+import { conversionDigestFromText, registerConversionRestore } from './utils/conversionRestore';
+import { fingerprintSnapshot } from './utils/snapshotFingerprint';
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
 import { flushSync } from 'react-dom';
@@ -9,6 +11,7 @@ import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
+import type { IndexProgress } from './context/vaultIndex/useIndexGraph';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { subscribeRenderStatus } from './utils/renderStatus';
@@ -23,6 +26,7 @@ import { collectFiles } from './utils/tree';
 import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
+import { clearPdfRotation, publishPdfRotation, takePdfRotation } from './utils/pdfRotationPreview';
 import { getFileTimes, recordFileWritten, resetFileTimes, stampFileTimes } from './utils/fileTimes';
 import { clearBaselines, dropBaseline, getBaseline, setBaseline } from './utils/docBaselines';
 import { decodeDocumentText, hashBytes, sameStat, type DiskVersion } from './utils/diskVersion';
@@ -31,7 +35,7 @@ import { IndexSessionGuard } from './utils/indexSessionGuard';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
-import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
+import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNativeDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -78,7 +82,9 @@ import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/
 // (~1.3MB) into the main bundle, which a markdown-only session never needs.
 // The builder itself is import()ed at the two points that actually write a PDF.
 import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
-import { canRebuildAnnotatedPdf, canRotatePdfRole, pdfRoleNotice } from './utils/pdfRole';
+import { authorizeKeptPdfRole, canRebuildAnnotatedPdf, canRotatePdfRole, pdfRoleNotice, revokePdfRole } from './utils/pdfRole';
+import type { PdfAnnotationPreflight } from './utils/pdfRole';
+import { PdfBuildRefused, pdfSnapshotRefusal } from './utils/pdfBuildRefusal';
 import { clearViews, getView, moveView } from './utils/viewRegistry';
 import { anyPending, drain, drainAll, subscribePending } from './utils/unloadCoordinator';
 import type { AgentHostDeps } from './utils/agentHost';
@@ -336,6 +342,16 @@ function foldersWithStyleFile(
     return out;
 }
 
+interface PdfRebuildEntry {
+  identity: ReaderIdentity;
+  root: FileSystemDirectoryHandle;
+  handle: FileSystemFileHandle;
+  value: PdfAnnotationPreflight;
+  baseline: DiskVersion;
+  copyName?: string;
+  approved: boolean;
+}
+
 export default function App() {
   useEffect(() => {
     const refuseUnclaimedDrop = (event: DragEvent) => {
@@ -391,8 +407,11 @@ export default function App() {
     restoreVault,
     requestIndexPermission,
     moveToTrash,
+    keepCopyInGarbage,
     listTrash,
     restoreFromTrash,
+    restoreConversionCopy,
+    copyTrashFile,
     deleteFromTrash,
     emptyTrash,
     moveFile,
@@ -474,11 +493,23 @@ export default function App() {
   const [mainView, setMainView] = useState<MainView>('editor');
 
   // The link graph powering the Neural Brain view and backlinks panel
-  const [graph, setGraph] = useState<GraphData>(EMPTY_GRAPH);
+  const [graphState, setGraphState] = useState<{ activation: number; value: GraphData }>(() => ({ activation: searchActivation, value: EMPTY_GRAPH }));
+  const graph = graphState.activation === searchActivation ? graphState.value : EMPTY_GRAPH;
+  const [graphFreshness, setGraphFreshness] = useState<{ activation: number; stale: boolean } | null>(null);
+  const [indexProgressState, setIndexProgressState] = useState<{ activation: number; value: IndexProgress } | null>(null);
+  const indexProgress = indexProgressState?.activation === searchActivation ? indexProgressState.value : null;
+  const reportGraphFreshness = useCallback((stale: boolean) => {
+    if (getVaultActivation() === searchActivation) setGraphFreshness({ activation: searchActivation, stale });
+  }, [getVaultActivation, searchActivation]);
+  const reportIndexProgress = useCallback((value: IndexProgress) => {
+    if (getVaultActivation() === searchActivation) setIndexProgressState({ activation: searchActivation, value });
+  }, [getVaultActivation, searchActivation]);
   const publishIndexGraph = useCallback((next: GraphData | null) => {
+    if (getVaultActivation() !== searchActivation) return;
     const value = next ?? EMPTY_GRAPH;
-    setGraph(previous => sameGraph(previous, value) ? previous : value);
-  }, []);
+    setGraphState(previous => previous.activation === searchActivation && sameGraph(previous.value, value)
+      ? previous : { activation: searchActivation, value });
+  }, [getVaultActivation, searchActivation]);
   const [indexProblem, setIndexProblem] = useState<{ activation: number; kind: string } | null>(null);
   const reportIndexProblem = useCallback((value: unknown) => {
     const problem = value as { kind?: string } | null;
@@ -486,7 +517,7 @@ export default function App() {
   }, [getVaultActivation]);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
     getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
-    publish: publishIndexGraph, onProblem: reportIndexProblem });
+    publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem });
   const retryIndex = useCallback(async () => {
     const owner = indexGraphRef.current;
     if (!owner || !indexProblem || owner.activation !== indexProblem.activation || owner.activation !== getVaultActivation()) return;
@@ -1557,9 +1588,13 @@ export default function App() {
   }, []);
   requeueAssetFolderRef.current = requeueAssetFolder;
   const requeueAssetsAffected = useCallback((path: string) => {
+    // Wakeups can arrive while a proof is still running and not blocked yet.
+    // Its revision check both invalidates that proof and preserves the wakeup.
+    assetReferenceRevisionRef.current++;
     for (const folder of assetBacklogRef.current.affected(path)) requeueAssetFolder(folder);
   }, [requeueAssetFolder]);
   const requeueAllAssets = useCallback(() => {
+    assetReferenceRevisionRef.current++;
     for (const folder of assetBacklogRef.current.all()) requeueAssetFolder(folder);
   }, [requeueAssetFolder]);
 
@@ -1900,72 +1935,121 @@ export default function App() {
   const notebookExportInFlightRef = useRef(false);
   const trashInFlightRef = useRef<boolean>(false);
 
-  /**
-   * Write the open notebook out as a PDF beside it.
-   *
-   * The notebook stays the editable original and the PDF is an OUTPUT, so
-   * re-exporting uses the same name rather than piling up copies. A previous
-   * target is preserved in Trash, and a changed or unfamiliar target needs
-   * confirmation before it can be replaced.
-   */
-  const handleExportNotebook = useCallback(async (file: ActiveFile) => {
-    if (!file.parentHandle || notebookExportInFlightRef.current || trashInFlightRef.current) return;
-    const targetName = notebookPdfName(file.name);
-    const vault = currentVaultIdRef.current;
-    const root = rootHandleRef.current;
-    if (!vault || !root) { notify('The vault is not ready for export.'); return; }
-    const parentPath = parentVaultPath(file.path);
-    const targetPath = joinVaultPath(parentPath, targetName);
-    const key = JSON.stringify([vault, file.path, targetPath]);
-
-    const exporter = getNotebookExporter(file.path);
-    if (!exporter) {
-      notify(`Open "${file.name}" before exporting it.`);
-      return;
-    }
-
-    notebookExportInFlightRef.current = true;
+  const restoreBeforeConversion = useCallback(async (node: FileTreeNode) => {
+    if (trashInFlightRef.current || node.kind !== 'file' || !node.parentHandle || !rootHandle) return;
     trashInFlightRef.current = true;
+    const activation = getVaultActivation();
+    const controller = new AbortController();
+    const pdfTab = isPdfFile(node.name) ? tabsRef.current.find(t => t.file.path === node.path) : undefined;
+    const current = () => getVaultActivation() === activation && (!pdfTab || tabsRef.current.some(t => t.id === pdfTab.id && t.file.path === node.path && t.representation.generation === pdfTab.representation.generation && t.representation.legacyOriginalSha256 === pdfTab.representation.legacyOriginalSha256));
     try {
-      const exported = await exporter();
-      if (!exported) { notify(`Open "${file.name}" before exporting it.`); return; }
-      const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
-      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, {
-        path: file.path,
-        exportedAt: Date.now(),
-      });
-      if (rootHandleRef.current !== root || currentVaultIdRef.current !== vault) return;
-      const observed = await inspectExportTarget(file.parentHandle, targetName);
-      const trusted = exportedNotebooksRef.current.get(key);
-      if (observed && (!trusted || observed.hash !== trusted.hash || !sameStat(observed, trusted))) {
-        const replace = await ask({
-          title: `Replace "${targetName}"?`,
-          body: 'A PDF of that name is already in this folder. Its existing contents will be kept in Trash.',
-          confirmLabel: 'Replace', danger: true,
-        });
-        if (!replace) return;
-      }
-      if (rootHandleRef.current !== root || currentVaultIdRef.current !== vault) return;
-      const result = await writeNotebookExport(file.parentHandle, parentPath, targetName, bytes, observed);
-      if (result.status !== 'written') {
-        notify(`"${targetName}" changed while exporting. Export again to review it.`);
+      await reconcileQueueRef.current;
+      if (isPdfFile(node.name) && !pdfTab) { notify('Open the converted PDF annotation view first to locate its pre-conversion copy.'); return; }
+      const source = pdfTab ? null : await readFileVersioned(node.handle);
+      const digest = pdfTab ? pdfTab.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
+      if (!digest || !/^[a-f0-9]{64}$/.test(digest)) {
+        notify('No pre-conversion copy is recorded for this file. For a converted PDF, open its annotation view first.');
         return;
       }
-      exportedNotebooksRef.current.set(key, result.version);
+      const items = await listTrash();
+      const queue = [...items];
+      let match: TrashItem | undefined;
+      let unreadable = false;
+      for (let i = 0; i < queue.length && current(); i++) {
+        const item = queue[i];
+        if (item.kind === 'directory') { if (item.children) queue.push(...item.children); continue; }
+        if (item.origin !== 'trashed') continue;
+        try {
+          const file = await handleIO.file(item.handle as FileSystemFileHandle);
+          if (await fingerprintSnapshot(file, controller.signal) === digest) { match = item; break; }
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') throw error;
+          unreadable = true;
+        }
+      }
+      if (!current()) return;
+      if (!match) { notify(unreadable ? 'Some Trash files could not be read; the pre-conversion copy could not be located.' : 'The pre-conversion copy is no longer available in Trash.'); return; }
+      if (source && (await readFileVersioned(node.handle)).version.hash !== source.version.hash) {
+        notify('The converted file changed; try restoring again.'); return;
+      }
+      const name = await restoreConversionCopy({ root: rootHandle, parent: node.parentHandle, owner: node.handle,
+        hash: digest, signal: controller.signal, isCurrent: current }, match);
+      if (current()) notify(`Restored a copy as "${name}". The converted file and Trash backup are unchanged.`);
+    } catch (error) {
+      console.error('Could not restore pre-conversion copy:', error);
+      if (current()) notify('Could not restore the pre-conversion copy. Nothing was replaced.');
+    } finally {
+      controller.abort();
+      trashInFlightRef.current = false;
+    }
+  }, [getVaultActivation, handleIO, listTrash, notify, readFileVersioned, restoreConversionCopy, rootHandle]);
+  useEffect(() => registerConversionRestore(node => { void restoreBeforeConversion(node); }), [restoreBeforeConversion]);
+
+  // Shared destination transaction for a staged notebook PDF. The source owner
+  // is pinned before rendering; no worker receives a filesystem handle.
+  const commitNotebookPdf = useCallback(async (file: ActiveFile, bytes: Uint8Array, sourceId: string, isCurrent: () => boolean): Promise<boolean> => {
+    if (!file.parentHandle || trashInFlightRef.current || !isCurrent()) return false;
+    const vault = currentVaultIdRef.current;
+    const parentPath = parentVaultPath(file.path), targetName = notebookPdfName(file.name);
+    const targetPath = joinVaultPath(parentPath, targetName);
+    const key = JSON.stringify([vault, sourceId, file.path, targetPath]);
+    const targetClosed = () => !tabsRef.current.some(tab => tab.file.path === targetPath);
+    if (!targetClosed()) { notify(`Close "${targetName}" before replacing it.`); return false; }
+    trashInFlightRef.current = true;
+    try {
+      await reconcileQueueRef.current;
+      while (isCurrent() && targetClosed()) {
+        const observed = await inspectExportTarget(file.parentHandle, targetName);
+        if (!isCurrent() || !targetClosed()) return false;
+        const trusted = exportedNotebooksRef.current.get(key);
+        if (observed && (!trusted || observed.hash !== trusted.hash || !sameStat(observed, trusted))) {
+          const replace = await ask({
+            title: `Replace "${targetName}"?`,
+            body: 'A PDF of that name is already in this folder. Its existing contents will be kept in Trash.',
+            confirmLabel: 'Replace', danger: true,
+          });
+          if (!replace || !isCurrent() || !targetClosed()) return false;
+        }
+        const result = await writeNotebookExport(file.parentHandle, parentPath, targetName, bytes, observed, () => isCurrent() && targetClosed());
+        if (result.status !== 'written') {
+          if (result.status === 'changed') continue;
+          return false;
+        }
+        exportedNotebooksRef.current.set(key, result.version);
+        return true;
+      }
+      return false;
+    } finally { trashInFlightRef.current = false; }
+  }, [ask, inspectExportTarget, notify, writeNotebookExport]);
+
+  /** Export the notebook's frozen render; destination consent is a separate transaction. */
+  const handleExportNotebook = useCallback(async (file: ActiveFile) => {
+    if (!file.parentHandle || notebookExportInFlightRef.current) return;
+    const vault = currentVaultIdRef.current, root = rootHandleRef.current;
+    const source = tabsRef.current.find(tab => tab.file.path === file.path);
+    const exporter = getNotebookExporter(file.path);
+    if (!vault || !root || !source || !exporter) { notify(`Open "${file.name}" before exporting it.`); return; }
+    const epoch = readerEpochRef.current.epoch, generation = source.representation.generation, diskRev = source.diskRev;
+    const isCurrent = () => rootHandleRef.current === root && currentVaultIdRef.current === vault && readerEpochRef.current.epoch === epoch &&
+      tabsRef.current.some(tab => tab.id === source.id && tab.file.path === file.path && tab.representation.generation === generation && tab.diskRev === diskRev);
+    notebookExportInFlightRef.current = true;
+    try {
+      const exported = await exporter();
+      if (!exported || !isCurrent()) return;
+      const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
+      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, { path: file.path, exportedAt: Date.now() });
+      if (!isCurrent() || !await commitNotebookPdf(file, bytes, source.id, isCurrent)) return;
       void tell({
-        title: 'Exported to PDF',
-        confirmLabel: 'OK',
-        body: `"${targetName}" is in the same folder — ${exported.paper.pageCount} `
+        title: 'Exported to PDF', confirmLabel: 'OK',
+        body: `"${notebookPdfName(file.name)}" is in the same folder — ${exported.paper.pageCount} `
           + `${exported.paper.pageCount === 1 ? 'page' : 'pages'}.`,
       });
     } catch (err) {
       console.error('Could not export the notebook:', err);
-      notify(`Could not export "${file.name}".`);
-    } finally {
-      notebookExportInFlightRef.current = false;
-      trashInFlightRef.current = false;
-    }
-  }, [ask, inspectExportTarget, notify, tell, writeNotebookExport]);
+      notify(err instanceof DOMException && err.name === 'TypeMismatchError'
+        ? `A folder named "${notebookPdfName(file.name)}" already exists.` : `Could not export "${file.name}".`);
+    } finally { notebookExportInFlightRef.current = false; }
+  }, [commitNotebookPdf, notify, tell]);
 
   // The graph and the click share one canonical resolver revision. Read it
   // through an App-lifetime ref: the wikilink handler is baked into cached
@@ -2011,14 +2095,109 @@ export default function App() {
    * save funnel must stop writing the moment a conflict or a deletion is
    * raised, and the resolutions must be able to lift it and save in one step.
    */
+  const pdfRebuildRef = useRef(new Map<string, PdfRebuildEntry>());
+  const pdfIoRef = useRef({ readBytesVersioned, keepCopyInGarbage });
+  useLayoutEffect(() => { pdfIoRef.current = { readBytesVersioned, keepCopyInGarbage }; });
+  const setPdfRebuildNotice = useCallback((id: string, notice: OpenTab['pdfRebuild']) => {
+    setTabs(prev => prev.map(t => t.id === id ? { ...t, pdfRebuild: notice } : t));
+  }, []);
   const diskStateRef = useRef(new Map<string, 'conflict' | 'deleted'>());
   const setDiskState = useCallback((id: string, state: 'conflict' | 'deleted' | null) => {
     if (state) diskStateRef.current.set(id, state); else diskStateRef.current.delete(id);
+    const entry = pdfRebuildRef.current.get(id);
+    if (state && entry) {
+      entry.approved = false;
+      entry.copyName = undefined;
+      const role = entry.value.role;
+      if (role.kind === 'annotated' && role.writeMark.kind === 'foreign') {
+        setPdfRebuildNotice(id, { state: 'foreign', generation: role.generation, reason: role.writeMark.reason });
+      }
+    }
     const next = state ?? undefined;
     setTabs(prev => prev.some(t => t.id === id && t.disk !== next)
       ? prev.map(t => (t.id === id ? { ...t, disk: next } : t))
       : prev);
+  }, [setPdfRebuildNotice]);
+
+  const currentPdfOwner = useCallback((identity: ReaderIdentity) => {
+    if (identity.vaultId !== currentVaultIdRef.current || identity.vaultEpoch !== readerEpochRef.current.epoch ||
+        invalidReaderTokens.current.has(`${identity.documentId}|${identity.byteGeneration}`)) return undefined;
+    return tabsRef.current.find(t => t.id === identity.documentId && t.file.path === identity.path &&
+      t.representation.loadedKind === 'pdf' && t.representation.generation === identity.byteGeneration &&
+      (t.diskRev ?? 0) === identity.diskRev);
   }, []);
+  const onAnnotationPreflight = useCallback((identity: ReaderIdentity, value: PdfAnnotationPreflight) => {
+    const tab = currentPdfOwner(identity), root = rootHandleRef.current;
+    if (!tab?.file.handle || !root || value.role.generation !== value.version.hash) { revokePdfRole(value.role); return; }
+    const baseline = getBaseline(tab.id);
+    if (diskStateRef.current.has(tab.id) || baseline && baseline.hash !== value.version.hash) {
+      revokePdfRole(value.role);
+      setDiskState(tab.id, diskStateRef.current.get(tab.id) ?? 'conflict');
+      return;
+    }
+    setBaseline(tab.id, value.version);
+    const previous = pdfRebuildRef.current.get(tab.id);
+    const role = value.role;
+    if (role.kind !== 'annotated' || role.writeMark.kind === 'verified') {
+      pdfRebuildRef.current.delete(tab.id);
+      setPdfRebuildNotice(tab.id, undefined);
+      return;
+    }
+    const same = previous && currentPdfOwner(previous.identity) && previous.root === root &&
+      previous.handle === tab.file.handle && previous.baseline.hash === value.version.hash;
+    const entry: PdfRebuildEntry = { identity, root, handle: tab.file.handle as FileSystemFileHandle, value,
+      baseline: value.version, copyName: same ? previous.copyName : undefined, approved: !!(same && previous.approved && previous.copyName) };
+    if (role.writeMark.kind === 'foreign' && entry.approved) authorizeKeptPdfRole(role, value.version.hash);
+    pdfRebuildRef.current.set(tab.id, entry);
+    setPdfRebuildNotice(tab.id, { state: role.writeMark.kind === 'foreign' && !entry.approved ? 'foreign' : 'kept',
+      generation: role.generation, reason: role.writeMark.kind === 'foreign' ? role.writeMark.reason : undefined,
+      approved: entry.approved, copyName: entry.copyName });
+  }, [currentPdfOwner, setDiskState, setPdfRebuildNotice]);
+
+  // The outer bytes, not the embedded original, are what another program edited.
+  // Check both sides of the awaited close; a successful copy never grants a
+  // source belonging to a tab, vault or generation that changed while copying.
+  const keepPdfBaseline = useCallback(async (entry: PdfRebuildEntry, trashOwned = false): Promise<boolean> => {
+    const { identity, root, handle } = entry, id = identity.documentId;
+    const current = () => pdfRebuildRef.current.get(id) === entry && rootHandleRef.current === root &&
+      currentPdfOwner(identity)?.file.handle === handle && !diskStateRef.current.has(id) &&
+      getBaseline(id)?.hash === entry.baseline.hash;
+    if (!current()) return false;
+    if (entry.copyName) return true;
+    if (trashInFlightRef.current && !trashOwned) {
+      setPdfRebuildNotice(id, { ...tabsRef.current.find(t => t.id === id)!.pdfRebuild!, error: 'Trash is busy. Wait for it to finish, then retry.' });
+      return false;
+    }
+    if (!trashOwned) trashInFlightRef.current = true;
+    let copying = false;
+    try {
+      await reconcileQueueRef.current;
+      if (!current()) return false;
+      const disk = await pdfIoRef.current.readBytesVersioned(handle);
+      if (!current()) return false;
+      if (disk.version.hash !== entry.baseline.hash) { setDiskState(id, 'conflict'); return false; }
+      const tab = currentPdfOwner(identity)!;
+      if (!tab.file.parentHandle) throw new Error('The PDF folder is unavailable.');
+      copying = true;
+      const copyName = await pdfIoRef.current.keepCopyInGarbage(tab.file.parentHandle, tab.file.name, disk.bytes);
+      copying = false;
+      if (!current()) return false;
+      const after = await pdfIoRef.current.readBytesVersioned(handle);
+      if (!current()) return false;
+      if (after.version.hash !== entry.baseline.hash) { setDiskState(id, 'conflict'); return false; }
+      entry.copyName = copyName;
+      return true;
+    } catch (error) {
+      if (!current()) return false;
+      if (!copying && isNotFound(error)) setDiskState(id, 'deleted');
+      else {
+        // A failed close is not a backup, even if its partial file survived.
+        entry.copyName = undefined;
+        setPdfRebuildNotice(id, { ...tabsRef.current.find(t => t.id === id)!.pdfRebuild!, error: describeReadError(error) });
+      }
+      return false;
+    } finally { if (!trashOwned) trashInFlightRef.current = false; }
+  }, [currentPdfOwner, setDiskState, setPdfRebuildNotice]);
 
   /**
    * The newest buffered text per path, ahead of tabsRef (which catches up only
@@ -2089,10 +2268,11 @@ export default function App() {
         confirmLabel: 'OK',
         body: `“${name}” changed or was deleted on disk, so your unsaved edits were kept beside it as “${copy.slice(copy.lastIndexOf('/') + 1)}”.`,
       });
+      return true;
     } catch (err) {
       console.error('Could not keep the unsaved edits of a closing document:', path, err);
       notifyRef.current(`Could not keep the unsaved edits to “${name}”: ${describeReadError(err)}`);
-      throw err;
+      return false;
     }
   }, []);
 
@@ -2110,12 +2290,14 @@ export default function App() {
   // names the next one.
   const flushTab = useCallback(async (
     path: string | null, force = false, closing = false,
-    vaultRoot?: FileSystemDirectoryHandle | null,
+    vaultRoot?: FileSystemDirectoryHandle | null, trashOwned = false, serializerCallback = false,
   ): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
     if (!path) return 'skipped';
     const initial = tabsRef.current.find(t => t.file.path === path);
     if (!initial || initial.file.isHelp || !initial.file.handle) return 'skipped';
-    try { await drain(initial.id); } catch (error) {
+    // A PDF serializer awaits its own immediate save; re-entering drain there
+    // would wait on that same serializer forever. Its snapshot is already parked.
+    if (!serializerCallback) try { await drain(initial.id); } catch (error) {
       console.error('Could not serialize pending document:', error);
       return 'failed';
     }
@@ -2152,7 +2334,14 @@ export default function App() {
     // change — which is also every PDF only ever read.
     const pdfData = isPdf ? getPdfRenderData(path) : undefined;
     if (isPdf && (!pdfData || !canRebuildAnnotatedPdf(pdfData.original))) return 'skipped';
-    // Capture the baseline and PDF seed with the drained revision.
+    const pdfEntry = isPdf ? pdfRebuildRef.current.get(id) : undefined;
+    if (isPdf) {
+      const refusal = pdfSnapshotRefusal(snapshot);
+      if (refusal) { setSaveStatus('Not saved'); notifyRef.current(new PdfBuildRefused(refusal).message); return 'skipped'; }
+      if (!closing && pdfEntry?.value.role.kind === 'annotated' && pdfEntry.value.role.writeMark.kind === 'foreign' && !pdfEntry.approved) return 'skipped';
+    }
+    // Captured now too: a vault switch clears every baseline right after its
+    // flushes, and this write still has to be checked against this one.
     const baselineAtCall = getBaseline(id);
     // A PDF's fingerprint starts here if this is the first write to need one.
     const seedAtCall = pdfSeedForRef.current(id);
@@ -2170,9 +2359,13 @@ export default function App() {
         const data = isPdf
           ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
           : snapshot;
-        await keepClosingEdits(rootAtCall, path, file.name, data);
+        if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed';
         return held === 'conflict' ? 'changed' : 'deleted';
-      } catch { return 'failed'; }
+      } catch (error) {
+        if (error instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(error.message); return 'skipped'; }
+        notifyRef.current(`Could not keep annotations: ${describeReadError(error)}`);
+        return 'failed';
+      }
     }
 
     // Capture the record after the drain and before a close can remove it.
@@ -2184,6 +2377,11 @@ export default function App() {
 
     const write = async (): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
       try {
+        // A legacy file's first rebuild is the destructive boundary, not entry
+        // to Annotate. An oversized revision above never even creates a copy.
+        if (pdfEntry && !closing && !await keepPdfBaseline(pdfEntry, trashOwned)) return diskStateRef.current.get(id) === 'deleted' ? 'deleted' : diskStateRef.current.has(id) ? 'changed' : 'skipped';
+        if (pdfEntry && closing && !held && !await keepPdfBaseline(pdfEntry, trashOwned)) return 'skipped';
+        if (!closing && diskStateRef.current.has(id)) return 'skipped';
         // Off the main thread: stamping overlays costs ~150ms per annotated
         // page (~4.2s at 30 pages), which would land as stutter under the pen.
         const data: string | Uint8Array = isPdf
@@ -2195,13 +2393,14 @@ export default function App() {
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? baselineAtCall ?? seeded ?? null;
         // An awaited build/baseline must not resurrect a revoked role capability.
-        if (isPdf && !canRebuildAnnotatedPdf(pdfData!.original)) return 'skipped';
+        if (isPdf && (!canRebuildAnnotatedPdf(pdfData!.original) || !closing && diskStateRef.current.has(id))) return 'skipped';
+        if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return 'skipped';
         if (__BME_BENCH__) {
           try { reportVault({ op: 'write', path, caller: 'flushTab' }); } catch { /* Measurement must not interrupt a write. */ }
         }
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
-          if (closing) await keepClosingEdits(rootAtCall, path, file.name, data);
+          if (closing) { if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed'; }
           else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return result.status;
         }
@@ -2209,6 +2408,14 @@ export default function App() {
         // Only while the document is still open: a close drops its entry, and
         // this must not put one back (getBaseline is set from open to close).
         if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
+        if (isPdf && data instanceof Uint8Array) {
+          const aliases = (await import('./utils/pdfBuildClient')).pdfBuildAliases(data);
+          if (aliases.length) notifyRef.current(`Attachments with conflicting names were preserved under recovered names: ${aliases.join(', ')}.`);
+        }
+        if (pdfEntry && pdfRebuildRef.current.get(id) === pdfEntry) {
+          pdfEntry.baseline = result.version;
+          setPdfRebuildNotice(id, { state: 'kept', generation: pdfEntry.value.role.generation, approved: pdfEntry.approved, copyName: pdfEntry.copyName });
+        }
         // Stamped here, the one save funnel, rather than re-statted: the
         // explorer's Modified-time sort then moves the note to the top without
         // a getFile() per save (utils/fileTimes.ts). The write's own stat now.
@@ -2256,7 +2463,9 @@ export default function App() {
         bumpSaveEpoch();
         return 'written';
       } catch (err) {
+        if (err instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(err.message); return 'skipped'; }
         console.error('Auto-save failed:', err);
+        if (isPdf) notifyRef.current(`The PDF was not saved: ${describeReadError(err)}`);
         return 'failed';
       }
     };
@@ -2280,7 +2489,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [clearSaveTimer, contentOf, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation]);
+  }, [clearSaveTimer, contentOf, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -2355,7 +2564,7 @@ export default function App() {
     latestContentRef.current.set(path, content);
     reportRevision(target.id);
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
-    await flushTab(path, true);
+    await flushTab(path, true, false, undefined, false, true);
   }, [flushTab, reportRevision]);
 
   const checkpointRef = useRef<Promise<void> | null>(null);
@@ -2396,6 +2605,41 @@ export default function App() {
     };
   }, [beforeUnload, checkpointAll, syncExitGuard]);
 
+  const preparePdfPrint = useCallback(async (path: string) => {
+    const tab = tabsRef.current.find(t => t.file.path === path);
+    const root = rootHandleRef.current;
+    if (!tab || !root || tab.representation.loadedKind !== 'pdf' || !tab.file.handle) throw new Error('This PDF is no longer open.');
+    const { id } = tab, generation = tab.representation.generation, handle = tab.file.handle;
+    const current = () => {
+      const now = tabsRef.current.find(t => t.id === id);
+      return rootHandleRef.current === root && activeTabPathRef.current === path && now?.file.path === path &&
+        now.file.handle === handle && now.representation.generation === generation && !diskStateRef.current.get(id);
+    };
+    if (!current()) throw new Error('Return to this PDF and resolve any disk conflict before printing.');
+    await drain(id);
+    await flushChainsRef.current.get(id);
+    if (!current()) throw new Error('The document changed while preparing to print.');
+    const content = contentOf(path);
+    const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || latestContentRef.current.has(path);
+    if (needsSave) {
+      const outcome = await flushTab(path, true);
+      if (outcome !== 'written') throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
+    }
+    if (!current() || contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The document changed while preparing to print.');
+    const baseline = getBaseline(id) ?? await pdfSeedForRef.current(id);
+    const disk = await readBytesVersioned(handle as FileSystemFileHandle);
+    if (!current() || !baseline || disk.version.hash !== baseline.hash || getBaseline(id)?.hash !== baseline.hash ||
+        contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
+    const valid = () => current() && getBaseline(id)?.hash === disk.version.hash && contentOf(path) === content &&
+      !getView(path)?.hasPendingEdits?.() && !flushingRef.current.has(id);
+    const validate = async () => {
+      if (!valid()) return false;
+      try { const latest = await readBytesVersioned(handle as FileSystemFileHandle); return valid() && latest.version.hash === disk.version.hash; }
+      catch { return false; }
+    };
+    return { bytes: disk.bytes, valid, validate };
+  }, [contentOf, flushTab, readBytesVersioned]);
+
   /**
    * Turn a PDF's pages a quarter at a time, and write it.
    *
@@ -2417,6 +2661,7 @@ export default function App() {
   const rotatePdf = useCallback(async (path: string, delta: number, pageIndex?: number) => {
     const tab = tabsRef.current.find(t => t.file.path === path);
     const handle = tab?.file.handle as FileSystemFileHandle | undefined;
+    const preview = tab ? takePdfRotation(tab.id) : undefined;
     if (!tab || !handle) return;
     if (diskStateRef.current.get(tab.id)) {
       notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.');
@@ -2460,6 +2705,7 @@ export default function App() {
           return;
         }
         if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
+        if (tabsRef.current.some(t => t.id === id)) publishPdfRotation(id, preview, expected?.hash, result.version.hash);
         recordFileWritten(path, result.version.lastModified);
         // The parked original predates the rotation, and the next annotation
         // save would rebuild the old orientation over this one.
@@ -2491,6 +2737,45 @@ export default function App() {
     }
   }, [readFileBytes, setDiskState]);
 
+  const pdfDeparturesRef = useRef(new Set<string>());
+  const preparePdfDeparture = useCallback(async (paths: readonly string[], trashOwned = false): Promise<boolean> => {
+    for (const path of paths) {
+      const tab = tabsRef.current.find(t => t.file.path === path);
+      if (tab?.representation.loadedKind !== 'pdf') continue;
+      if (pdfDeparturesRef.current.has(tab.id)) return false;
+      pdfDeparturesRef.current.add(tab.id);
+      try {
+        await drain(tab.id);
+        const content = contentOf(path);
+        const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || latestContentRef.current.has(path);
+        const outcome = await flushTab(path, !!needsSave, true, undefined, trashOwned);
+        const now = tabsRef.current.find(t => t.id === tab.id);
+        if (!now || now.file.path !== path || now.representation.generation !== tab.representation.generation) return false;
+        if (outcome === 'failed' || contentOf(path) !== content || getView(path)?.hasPendingEdits?.() ||
+            outcome === 'skipped' && (now.dirty || latestContentRef.current.has(path))) {
+          if (outcome === 'skipped' && !pdfSnapshotRefusal(content ?? '')) notifyRef.current('These annotations have not been saved. Keep this PDF open and resolve its notice before closing it.');
+          return false;
+        }
+      } catch (error) { notifyRef.current(`Could not finish PDF annotations: ${describeReadError(error)}`); return false; }
+      finally { pdfDeparturesRef.current.delete(tab.id); }
+    }
+    return true;
+  }, [contentOf, flushTab]);
+
+  // Keep the gesture synchronous for the directory picker/permission prompt.
+  // A refused PDF revision stays in its current vault instead of being dropped
+  // by the workspace reset before an asynchronous refusal can reach it.
+  const canLeavePdfVault = useCallback(() => {
+    const tab = tabsRef.current.find(t => t.representation.loadedKind === 'pdf' &&
+      (t.dirty || latestContentRef.current.has(t.file.path) || flushingRef.current.has(t.id) || getView(t.file.path)?.hasPendingEdits?.()));
+    if (!tab) return true;
+    const refusal = pdfSnapshotRefusal(contentOf(tab.file.path) ?? '');
+    notifyRef.current(refusal ? new PdfBuildRefused(refusal).message : 'Keep this vault open until its PDF annotations are saved. Resolve any notice first, or wait for the pending save.');
+    return false;
+  }, [contentOf]);
+  const pickDirectorySafely = useCallback(() => canLeavePdfVault() ? pickDirectory() : Promise.resolve('busy' as const), [canLeavePdfVault, pickDirectory]);
+  const openRecentVaultSafely = useCallback((vault: Parameters<typeof openRecentVault>[0]) => canLeavePdfVault() ? openRecentVault(vault) : Promise.resolve('busy' as const), [canLeavePdfVault, openRecentVault]);
+
   /** Everything that has to happen for ONE document to stop being open, short
    *  of the two state updates (which differ per caller). */
   const releaseTab = useCallback((path: string) => {
@@ -2501,12 +2786,14 @@ export default function App() {
     if (doc) {
       pendingRevisionsRef.current.delete(doc.id); syncExitGuard();
       invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
+      clearPdfRotation(doc.id);
       flushReaderViewState(); flushPdfTextViewState();
       readerIdentityCache.current.forEach((value,key)=>{if(value.documentId===doc.id)readerIdentityCache.current.delete(key)});
       dropBaseline(doc.id);
       pdfSeedsRef.current.delete(doc.id);
       pdfSeedSourcesRef.current.delete(doc.id);
       diskStateRef.current.delete(doc.id);
+      pdfRebuildRef.current.delete(doc.id);
     }
     latestContentRef.current.delete(path);
     // A successful closing flush has already captured the render data.
@@ -2607,11 +2894,15 @@ export default function App() {
       const path = tab.file.path;
       try {
         await getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.().catch(() => {});
+        if (tab.representation.loadedKind === 'pdf' && !await preparePdfDeparture([path])) {
+          setLayout(l => openTabIn(l, path));
+          return;
+        }
         const result = await flushTab(path);
         const revision = pendingRevisionsRef.current.get(tab.id);
         const pending = !!revision && revision.revision > revision.saved;
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
-        if (result === 'failed' || result === 'changed' || result === 'deleted' || pending) {
+        if (result === 'failed' || result === 'changed' || result === 'deleted' || (result === 'skipped' && (pending || (tab.representation.loadedKind !== 'pdf' && tab.dirty))) || pending) {
           setLayout(l => openTabIn(l, path));
           notifyRef.current(`Could not save “${tab.file.name}”; its tab remains open.`);
           return;
@@ -2632,7 +2923,7 @@ export default function App() {
         setClosingDocumentIds(new Set(closingRef.current));
       }
     })();
-  }, [flushTab, releaseTab, rememberClosed]);
+  }, [flushTab, releaseTab, rememberClosed, preparePdfDeparture]);
 
   const closeTab = useCallback((path: string) => {
     closeDocuments([path], () => setLayout(l => closePath(l, path)));
@@ -2801,10 +3092,13 @@ export default function App() {
     const mode = requestedMode ?? (tab.mode === 'edit' ? 'read' : 'edit');
     if (mode === tab.mode) return;
     const view = getView(path);
-    if (tab.representation.loadedKind === 'pdf' && tab.mode === 'edit' && view?.hasPendingEdits?.() && view.flushPending) {
+    if (tab.representation.loadedKind === 'pdf' && tab.mode === 'edit' && view?.flushPending) {
       if (pendingPdfMode.current.has(tab.id)) return;
       pendingPdfMode.current.add(tab.id);
-      void Promise.resolve(view.flushPending()).then(() => {
+      void Promise.resolve(view.flushPending()).then(async () => {
+        const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || latestContentRef.current.has(path);
+        const outcome = await flushTab(path, !!needsSave);
+        if (outcome === 'failed' || outcome === 'skipped' && (tabsRef.current.find(t => t.id === tab.id)?.dirty || latestContentRef.current.has(path))) return;
         setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation && t.mode === tab.mode ? {...t,mode} : t));
       }).catch(error => notifyRef.current(`Could not finish saving PDF annotations: ${String(error)}`)).finally(() => pendingPdfMode.current.delete(tab.id));
       return;
@@ -2822,7 +3116,7 @@ export default function App() {
       t.file.path === path && canChangeTabMode(t)
         ? { ...t, mode }
         : t));
-  }, []);
+  }, [flushTab]);
   const toggleTabMode = useCallback((path: string | null) => changeTabMode(path), [changeTabMode]);
 
   // Open a note by its name (used by [[wikilinks]], graph nodes, backlinks).
@@ -2932,6 +3226,7 @@ export default function App() {
     pdfSeedsRef.current.clear();
     pdfSeedSourcesRef.current.clear();
     diskStateRef.current.clear();
+    pdfRebuildRef.current.clear();
     latestContentRef.current.clear();
     // These paths index the vault being left.
     assetRefsRef.current.clear();
@@ -3480,15 +3775,20 @@ export default function App() {
     setSaveStatus('');
   }, []);
 
+  const createInFlightRef = useRef(false);
   const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath = '') => {
     if (isEpubFile(name) || isPdfFile(name)) { void tell({title:'Import an existing document',body:'EPUB and PDF documents must be imported as original binary files.',confirmLabel:'OK'}); return; }
-    const where = parentPath || parentHandle?.name || 'this folder';
+    if (!parentHandle || !rootHandleRef.current || createInFlightRef.current) return;
+    createInFlightRef.current = true;
+    const where = parentPath || parentHandle.name || 'this folder';
+    const root = rootHandleRef.current;
     try {
       // Nothing here overwrites a file by accident — the rule the rest of the
       // app keeps with freeEntryName, kept here with a refusal instead,
       // because the user named this file and silently getting "note (1).md"
-      // is not what they asked for either.
-      if (parentHandle && await nameTaken(parentHandle, name)) {
+      // is not what they asked for either. Native drawings use the unique-name
+      // creation path below instead.
+      if (!isNativeDrawingFile(name) && await nameTaken(parentHandle, name)) {
         await tell({
           title: 'That name is taken',
           confirmLabel: 'OK',
@@ -3499,16 +3799,28 @@ export default function App() {
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path: joinVaultPath(parentPath, name), caller: 'create' }); } catch { /* Measurement must not interrupt a write. */ }
       }
-      const newFileHandle = await createFile(parentHandle!, name);
-      // Auto-open the newly created file straight into edit mode. Build the path
-      // to match buildFileTree's convention (vault-root-relative, no vault-name
-      // prefix) so the tab dedups / highlights / restores correctly.
+      // An empty native drawing is the format's defined new-board state. Use
+      // the import path's freeEntryName (files AND folders) rather than the
+      // truncating createFile primitive, and carry its actual name forward.
+      let createdName = name;
+      let newFileHandle: FileSystemFileHandle | null;
+      if (isNativeDrawingFile(name)) {
+        const created = await importFiles([new File([], name)], parentHandle);
+        if (!created.length || !root) throw new Error('Could not create the drawing.');
+        createdName = created[0];
+        ({ handle: newFileHandle } = await resolveVaultFile(root, joinVaultPath(parentPath, createdName)));
+      } else {
+        newFileHandle = await createFile(parentHandle, name);
+      }
+      // A vault switch during creation must not open the old folder's file in
+      // the new workspace, even if the path exists in both.
+      if (root !== rootHandleRef.current) return;
       if (newFileHandle) {
-        const newPath = joinVaultPath(parentPath, name);
+        const newPath = joinVaultPath(parentPath, createdName);
         const newNode: FileTreeFileNode = {
-          name,
+          name: createdName,
           handle: newFileHandle,
-          parentHandle: parentHandle!,
+          parentHandle,
           kind: 'file',
           path: newPath,
         };
@@ -3524,8 +3836,10 @@ export default function App() {
         confirmLabel: 'OK',
         body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
       });
+    } finally {
+      createInFlightRef.current = false;
     }
-  }, [createFile, handleFileClick, tell, nameTaken]);
+  }, [createFile, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
 
   /**
    * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab
@@ -3634,6 +3948,7 @@ export default function App() {
     if (openAsVaultInFlightRef.current) return;
     openAsVaultInFlightRef.current = true;
     try {
+      if (!canLeavePdfVault()) return;
       const result = await openFolderAsVault(node.handle);
       // 'busy' is another raiser's switch still walking, not a failure — the
       // ref above only covers a second click on the TREE. The vault menu says
@@ -3652,7 +3967,7 @@ export default function App() {
     } finally {
       openAsVaultInFlightRef.current = false;
     }
-  }, [openFolderAsVault, tell]);
+  }, [openFolderAsVault, tell, canLeavePdfVault]);
 
   /**
    * Move a file — or a whole folder, contents and all — to the Trash.
@@ -3686,9 +4001,11 @@ export default function App() {
       // than merely cancelled: the copy then carries the reader's last words,
       // which is what a trash folder is for.
       const doomedTabs = tabsRef.current.filter(t => doomed(t.file.path));
-      const saved = await Promise.all(doomedTabs.map(t => flushTab(t.file.path, false, true)));
+      if (!await preparePdfDeparture(doomedTabs.map(t => t.file.path), true)) return false;
+      const saved = await Promise.all(doomedTabs.filter(t => t.representation.loadedKind !== 'pdf').map(t => flushTab(t.file.path, false, true)));
+      const savedTabs = doomedTabs.filter(t => t.representation.loadedKind !== 'pdf');
       if (saved.some((result, i) => {
-        const revision = pendingRevisionsRef.current.get(doomedTabs[i].id);
+        const revision = pendingRevisionsRef.current.get(savedTabs[i].id);
         return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
       })) return false;
       // …and let the asset reconciles those saves queued run to completion, so
@@ -3733,7 +4050,7 @@ export default function App() {
       }
       return true;
     });
-  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected]);
+  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture]);
 
   const handleTrash = useCallback(async (node: FileTreeNode) => {
     // A folder copy runs for seconds, and its row stays on screen throughout —
@@ -3886,9 +4203,11 @@ export default function App() {
             // gets displaced into `.Garbage` carries the reader's last words
             // rather than the disk's — handleTrash's reason, and its ordering.
             const displacedTabs = tabsRef.current.filter(doomed);
-            const saved = await Promise.all(displacedTabs.map(t => flushTab(t.file.path, false, true)));
+            if (!await preparePdfDeparture(displacedTabs.map(t => t.file.path), true)) return { status: 'error' as const };
+            const savedTabs = displacedTabs.filter(t => t.representation.loadedKind !== 'pdf');
+            const saved = await Promise.all(savedTabs.map(t => flushTab(t.file.path, false, true)));
             if (saved.some((result, i) => {
-              const revision = pendingRevisionsRef.current.get(displacedTabs[i].id);
+              const revision = pendingRevisionsRef.current.get(savedTabs[i].id);
               return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
             })) return { status: 'error' as const };
             // …and re-drain the reconcile queue: the question above took real
@@ -3957,9 +4276,24 @@ export default function App() {
     } finally {
       trashInFlightRef.current = false;
     }
-  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected]);
+  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture]);
 
   /** Erase one trashed item. One of the app's two points of no return. */
+  const handleTrashCopy = useCallback(async (item: TrashItem) => {
+    if (!rootHandle || trashInFlightRef.current) return;
+    trashInFlightRef.current = true;
+    const activation = getVaultActivation();
+    const current = () => getVaultActivation() === activation;
+    try {
+      await reconcileQueueRef.current;
+      const name = await copyTrashFile(item, rootHandle, current);
+      if (current()) notify(`Restored a copy as "${name}". The Trash original remains.`);
+    } catch (error) {
+      console.error('Could not copy from Trash:', error);
+      if (current()) notify('Could not restore the copy. Nothing was replaced.');
+    } finally { trashInFlightRef.current = false; }
+  }, [copyTrashFile, getVaultActivation, notify, rootHandle]);
+
   const handleTrashDelete = useCallback(async (item: TrashItem) => {
     if (trashInFlightRef.current) return false;
     trashInFlightRef.current = true;
@@ -4130,7 +4464,10 @@ export default function App() {
     const open = new Set(tabsRef.current.map(t => t.file.path));
     for (const source of sources) {
       const dest = to(source);
-      if (open.has(dest)) await releaseOverwritten(dest, source, fromDisk);
+      if (open.has(dest)) {
+        if (!await preparePdfDeparture([dest])) return [];
+        await releaseOverwritten(dest, source, fromDisk);
+      }
     }
 
     for (const { from, to: dest, doc } of moving) {
@@ -4181,7 +4518,10 @@ export default function App() {
         if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
         // A destination opened during retargeting must not share this path or
         // lose its new edits. Closing preservation uses its own loaded kind.
-        if (tabsRef.current.some(t => t.file.path === dest)) await releaseOverwritten(dest, from, true);
+        if (tabsRef.current.some(t => t.file.path === dest)) {
+          if (!await preparePdfDeparture([dest])) return [];
+          await releaseOverwritten(dest, from, true);
+        }
         moveReaderViewState({vaultId:vaultIdAtMove,vaultEpoch:0,documentId:doc.id,byteGeneration:doc.representation.generation,path:from,diskRev:doc.diskRev??0},from,dest);
         clearSaveTimer(from);          // cancel any save pending against the OLD handle
         // An annotated PDF's parked original + overlays are keyed by path; re-key
@@ -4227,7 +4567,7 @@ export default function App() {
       }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -4259,29 +4599,35 @@ export default function App() {
         if (['failed','changed','deleted'].includes(result) || diskStateRef.current.has(tab.id)) return false;
       }
     }
+    const newPath = joinVaultPath(parentVaultPath(node.path), newName);
+    const sources = node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path];
+    const destinations = sources.map(path => node.kind === 'directory' ? newPath + path.slice(node.path.length) : newPath).filter(path => path !== node.path);
+    if (!await preparePdfDeparture(destinations)) return false;
     const success = await renameFile(node, newName);
     if (!success) return false;
-    const newPath = joinVaultPath(parentVaultPath(node.path), newName);
     requeueAssetsAffected(node.path);
     requeueAssetsAffected(newPath);
     retargetExpanded(node, newPath);
     await retargetTabs(node, newPath);
     return true;
-  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab, requeueAssetsAffected]);
+  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab, requeueAssetsAffected, preparePdfDeparture]);
 
   // Wrap moveFile so a moved document's tab tracks its new path and handle —
   // including every document inside a moved FOLDER.
   const handleMoveFile = useCallback((sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath = '') => trackVaultMove(async () => {
+    const newPath = joinVaultPath(targetPath, sourceNode.name);
+    const sources = sourceNode.kind === 'directory' ? collectFiles(sourceNode.children).map(f => f.path) : [sourceNode.path];
+    const destinations = sources.map(path => sourceNode.kind === 'directory' ? newPath + path.slice(sourceNode.path.length) : newPath).filter(path => path !== sourceNode.path);
+    if (!await preparePdfDeparture(destinations)) return false;
     const success = await moveFile(sourceNode, targetDirHandle);
     if (success) {
-      const newPath = joinVaultPath(targetPath, sourceNode.name);
       requeueAssetsAffected(sourceNode.path);
       requeueAssetsAffected(newPath);
       retargetExpanded(sourceNode, newPath);
       await retargetTabs(sourceNode, newPath);
     }
     return success;
-  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove, requeueAssetsAffected]);
+  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove, requeueAssetsAffected, preparePdfDeparture]);
 
   // ── Changes made OUTSIDE the app ────────────────────────────────────────
   // A `git pull` in the terminal, a formatter, a sync client, another editor.
@@ -4335,6 +4681,7 @@ export default function App() {
     clearSaveTimer(path);
     setBaseline(id, version);
     diskStateRef.current.delete(id);
+    pdfRebuildRef.current.delete(id);
     pendingRevisionsRef.current.delete(id);
     syncExitGuard();
     if (isCanvasFile(file.name) || isPdfFile(file.name) || isEpubFile(file.name)) {
@@ -4343,7 +4690,7 @@ export default function App() {
       if (isPdfFile(file.name)) clearPdfRenderData(path);
       latestContentRef.current.set(path, text);
       setTabs(prev => prev.map(t => (t.id === id
-        ? { ...t, content: text, dirty: false, disk: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) }
+        ? { ...t, content: text, dirty: false, disk: undefined, pdfRebuild: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) }
         : t)));
       return;
     }
@@ -4644,6 +4991,27 @@ export default function App() {
     const indexAtCall = searchIndexRef.current;
     const graphAtCall = indexGraphRef.current;
     const searchWriteRevision = ++searchWriteRevisionRef.current;
+    if (action === 'keep-pdf' || action === 'rebuild-pdf') {
+      const entry = pdfRebuildRef.current.get(id);
+      if (!entry || diskStateRef.current.has(id) || !currentPdfOwner(entry.identity)) return;
+      if (action === 'keep-pdf') {
+        setTabs(prev => prev.map(t => t.id === id ? { ...t, mode: 'read' } : t));
+        return;
+      }
+      resolvingRef.current.add(id);
+      try {
+        if (!await keepPdfBaseline(entry)) return;
+        const role = entry.value.role;
+        if (role.kind === 'annotated' && role.writeMark.kind === 'foreign') {
+          if (!authorizeKeptPdfRole(role, entry.value.version.hash)) return;
+          entry.approved = true;
+          setTabs(prev => prev.map(t => t.id === id ? { ...t, mode: 'edit' } : t));
+        }
+        setPdfRebuildNotice(id, { state: 'kept', generation: role.generation, approved: entry.approved, copyName: entry.copyName });
+        if (tab.dirty) await flushTab(path, true);
+      } finally { resolvingRef.current.delete(id); }
+      return;
+    }
     if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf') {
       if (action === 'close') removeTab(path);
       else if (action === 'retry' || action === 'reload') await retryUnreadTabRef.current(path);
@@ -4744,6 +5112,15 @@ export default function App() {
         return;
       }
 
+      // A read-only PDF has no local version to prefer. Reopen the current
+      // bytes rather than leave a clean tab behind a revoked preflight.
+      if (isPdf && !getPdfRenderData(path)) {
+        const disk = await readBytesVersioned(handle);
+        const now = tabsRef.current.find(t => t.id === id);
+        if (now) reloadFromDisk(now, '', disk.version);
+        return;
+      }
+
       // 'keep': theirs goes beside the file, then mine is saved through the
       // one save funnel — against the version just read, so a disk that moved
       // AGAIN in between raises the conflict again rather than being overwritten.
@@ -4754,8 +5131,19 @@ export default function App() {
       }
       const copy = await writeConflictCopy(path, disk.bytes);
       setBaseline(id, disk.version);
+      const entry = pdfRebuildRef.current.get(id);
+      if (entry) { entry.baseline = disk.version; entry.copyName = undefined; }
       setDiskState(id, null);
+      if (entry?.value.role.kind === 'annotated' && entry.value.role.writeMark.kind === 'foreign') {
+        if (!await keepPdfBaseline(entry) || !authorizeKeptPdfRole(entry.value.role, entry.value.version.hash)) return;
+        entry.approved = true;
+        setPdfRebuildNotice(id, { state: 'kept', generation: entry.value.role.generation, approved: true, copyName: entry.copyName });
+      }
       const outcome = await flushTab(path, true);
+      if (isPdf && outcome === 'written') {
+        const now = tabsRef.current.find(t => t.id === id), version = getBaseline(id);
+        if (now && version) reloadFromDisk(now, '', version);
+      }
       if (outcome === 'changed') announce(`“${file.name}” changed on disk again. The earlier version was kept as “${shortName(copy)}”.`);
       else announce(`The version on disk was kept as “${shortName(copy)}”.`);
     } catch (err) {
@@ -4765,7 +5153,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes
@@ -4930,7 +5318,13 @@ export default function App() {
     };
     return { identityForTab,
       async acquireSnapshot(identity, signal) { const tab = current(identity); if (!tab?.file.handle || tab.file.path !== identity.path) throw new DOMException('Reader changed', 'AbortError'); return readerDeps.current.readFileSnapshot(tab.file.handle as FileSystemFileHandle, signal); },
-      onReaderVersion(token, version) { const tab = current(token); if (tab) setBaseline(tab.id, version); },
+      onReaderVersion(token, version) {
+        const tab = current(token);
+        if (!tab || tab.dirty || diskStateRef.current.has(tab.id) || getView(tab.file.path)?.hasPendingEdits?.()) return;
+        const entry = pdfRebuildRef.current.get(tab.id);
+        if (entry && entry.baseline.hash !== version.hash) { setDiskState(tab.id, 'conflict'); return; }
+        setBaseline(tab.id, version);
+      },
       onReaderStatus(token, status) { if(!current(token))return; setTabs(prev=>{
         if(!current(token))return prev;
         const tab=prev.find(t=>t.id===token.documentId&&t.representation.generation===token.byteGeneration);
@@ -4953,7 +5347,7 @@ export default function App() {
       },
       onNotify(message) { readerDeps.current.notify(message); },
     };
-  }, []);
+  }, [setDiskState]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -5138,7 +5532,7 @@ export default function App() {
               style={linkedVault
                 ? { margin: 0, background: 'var(--background-modifier-border)', color: 'var(--text-normal)' }
                 : { margin: 0 }}
-              onClick={pickDirectory}
+              onClick={pickDirectorySafely}
             >
               Open Vault
             </button>
@@ -5212,10 +5606,10 @@ export default function App() {
           recentVaults={recentVaults}
           currentVaultId={currentVaultId}
           recentVaultLimit={recentVaultLimit}
-          onOpenRecentVault={openRecentVault}
+          onOpenRecentVault={openRecentVaultSafely}
           onForgetRecentVault={forgetRecentVault}
           onPinRecentVault={pinRecentVault}
-          onChangeVault={pickDirectory}
+          onChangeVault={pickDirectorySafely}
           graphOpen={mainView === 'graph'}
           onToggleGraph={toggleGraph}
           agentOpen={agentPanelOpen}
@@ -5240,6 +5634,9 @@ export default function App() {
         {mainView === 'graph' ? (
           <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView
+            key={searchActivation}
+            indexing={graphFreshness?.activation !== searchActivation}
+            updating={(graphFreshness?.activation === searchActivation && graphFreshness.stale) || indexProgress?.phase === 'sweeping'}
             nodes={graph.nodes}
             links={graph.links}
             activeFilePath={activeFile?.path || null}
@@ -5271,7 +5668,9 @@ export default function App() {
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
             onDiskAction={handleDiskAction}
+            onAnnotationPreflight={onAnnotationPreflight}
             onFlushNow={flushTabNow}
+            onPreparePdfPrint={preparePdfPrint}
             onRotatePdf={rotatePdf}
             onRetryRead={retryUnreadTab}
             onOpenNotebookSource={handleOpenNotebookSource}
@@ -5352,6 +5751,7 @@ export default function App() {
         <TrashPanel
           onClose={() => setShowTrash(false)}
           onCrawl={listTrash}
+          onCopy={handleTrashCopy}
           onRestore={handleTrashRestore}
           onDelete={handleTrashDelete}
           onEmpty={handleTrashEmpty}

@@ -25,6 +25,12 @@ export class SelectionState {
         for (const listener of this.listeners) listener();
     }
     setSheet(sheet: SheetId): void { this.publish(sheet, sheet, [], null); }
+    restore(doc: BoardDoc, sheet: SheetId, ids: readonly NodeId[], focus: ParentId = sheet, active: NodeId | null = ids[ids.length - 1] ?? null): void {
+        if (!doc.sheets.has(sheet)) return;
+        const scope = focus === sheet || sheetOf(doc, focus) === sheet ? focus : sheet;
+        const eligible = ids.filter(id => selectableAtFocus(doc, id, scope, sheet) === id);
+        this.publish(sheet, scope, eligible, active !== null && eligible.includes(active) ? active : eligible[eligible.length - 1] ?? null);
+    }
     setFocus(focus: ParentId): void { this.publish(this.snapshot.sheet, focus, [], null); }
     setScope(focus: ParentId, ids: readonly NodeId[], active: NodeId | null = ids[ids.length - 1] ?? null): void { this.publish(this.snapshot.sheet, focus, ids, active); }
     replace(ids: readonly NodeId[], active: NodeId | null = ids[ids.length - 1] ?? null): void { this.publish(this.snapshot.sheet, this.snapshot.focus, ids, active); }

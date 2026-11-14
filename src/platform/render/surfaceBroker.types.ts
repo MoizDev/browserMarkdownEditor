@@ -121,6 +121,8 @@ export interface SurfaceLease {
     updateToken(token: RenderToken): void;
     requestGpu(canvas: HTMLCanvasElement, stamp: SurfaceStamp): Promise<GpuRequestResult>;
     markPresented(stamp: SurfaceStamp, generation: number): boolean;
+    /** An unrecoverable qualified-backend fault abandons this reservation and returns to CPU. */
+    failGpu(stamp: SurfaceStamp, generation: number, reason: 'creation-failed' | 'out-of-budget'): void;
     /** One fresh attempt after an outright failure/timeout, only on explicit user action or later show. */
     retry(): void;
     snapshot(): SurfaceSnapshot;

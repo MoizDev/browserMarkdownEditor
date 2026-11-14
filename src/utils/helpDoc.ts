@@ -48,11 +48,13 @@ At the bottom, a row of five icons: **Neural Brain** (the graph view of how your
 
 In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; changes apply when you next open a pane. Only engines included in this build are offered. An emergency read-only switch for each native canvas kind permits viewing, copying and export but prevents edits and saves. Turning developer settings off restores the normal engine choices without deleting your saved selections.
 
+To recover a converted canvas's old file, right-click it and choose **Restore the copy from before conversion**. The app finds the matching backup in Trash and restores a separate file under a free name; it leaves the converted file and backup alone. For a converted PDF, open its annotation view first. In Trash, **Restore a copy** likewise copies a selected file back without consuming it or replacing an existing file.
+
 **Settings → Editing → Board dictionary → Manage** lists the words saved for board spelling in this browser. Use **Remove** beside a word to remove it; the list is shared by boards across vaults, not saved inside a vault.
 
 When a newer app version is available, a notice offers **Reload**. Save your edits and resolve any disk conflicts first; the app will not reload from the notice while a document still has unsaved changes.
 
-In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
+In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. **Indexing your notes…** means the graph is being built; **Updating…** marks a graph while its index catches up. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
 
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
@@ -353,8 +355,9 @@ the pages are ordinary PDF pages that anything can open.
 The notebook stays the original you keep writing in. Exporting again uses the
 same PDF name rather than leaving a pile of copies. An existing PDF is kept in
 the folder's Trash before replacement. The app asks first unless it is this
-notebook's unchanged last export; if the target changes during export, export
-again to review it.
+notebook's unchanged last export; if the target changes during export, it asks
+again. Close the target PDF tab before replacing it, so an open document cannot
+lose unsaved annotations. A folder with the PDF's name cannot be replaced.
 
 The exported PDF remembers which notebook it came from, so pressing the pen on
 it **opens that notebook** instead of annotating the PDF as if it were someone
@@ -381,9 +384,10 @@ file starts at the width you were last using, since that is usually the one you
 want again.
 
 ### Drawings
-A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endless
-sheet in every direction, for diagrams and thinking rather than for a page you
-intend to hand in.
+A **drawing** is a canvas with no pages at all — an endless sheet in every
+direction, for diagrams and thinking rather than for a page you intend to hand
+in. New drawings use \`.drawing\` when the new whiteboard engine is selected;
+otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
@@ -417,9 +421,17 @@ The **Word emphasis** button in a reading header, its **⋯** row, and **Setting
 It leaves the source, save state, undo history and copied text intact. PDF and EPUB emphasis paints eligible glyphs in the same document view, preserving original layout, artwork and reading position. Switching it Off restores the original paint. Image-only pages and unsupported text profiles remain unchanged and show why the control is inactive, while retaining your preference. Source editing and code/TeX keep their existing presentation. Notes, TXT and extensionless files keep their existing Markdown presentation and editor typography. Toggle with Enter/Space or a pointer; no new global shortcut is added. Reading preferences are stored in your browser, never in the vault.
 
 ### PDFs
+Use **Print…** in a PDF pane (or \`Cmd + P\` / \`Ctrl + P\` while the PDF has focus) to save pending annotations and open the saved PDF in a new browser tab. Print from the browser’s PDF viewer there. An encrypted PDF may ask for its password again. To print a notebook, export it to PDF first.
+
 The pane header’s **Word emphasis** toggle paints supported glyphs directly on the original PDF page, including while annotating. It keeps the same tab, page layout, camera, links and annotations; switching Off restores the original paint. It never opens extracted text or performs OCR. Image-only scans, hidden OCR, fully clipped or covered text, missing font mappings and unsupported painting routes stay original. The header reports availability for the current page. **Aa** does not replace the native PDF’s fonts or geometry.
 
-The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by pdf.js, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find searches all physical pages, folds case, accents and ligatures, and matches across line breaks, line-end hyphens and adjacent PDF text runs. It reports coverage and stops at 10,000 hits. **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically. **Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
+The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by pdf.js, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find searches all physical pages, folds case, accents and ligatures, and matches across line breaks, line-end hyphens and adjacent PDF text runs. It reports coverage and stops at 10,000 hits.
+
+**Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically.
+
+When switching PDF engines, saved Text passages are matched by their words and surrounding context; an approximate match is labelled. A position from a newer app restores only its page and surface, with a notice. Merely opening, resizing or hiding a PDF does not replace another engine's saved position: it is updated only after you navigate.
+
+**Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
 
 If the PDF reader's code cannot load, its column offers **Retry**. This retries
 the reader, not your files. If the browser retains the loading failure, reload
@@ -437,6 +449,21 @@ beside the page box opens a **strip of page thumbnails** down the left; click on
 to go to that page. The button next to it **inverts the pages** so they are easy on the
 eyes in the dark, while reading and while writing on them. It only changes how
 they look: the file, and any PDF made from it, keeps its real colours.
+
+The turn buttons (or \`[\` and \`]\`) rotate the PDF itself and save the new orientation;
+Option-click a button to turn just the current page. PDFs annotated in this app cannot be
+rotated because their ink was placed against the original pages. After a successful turn,
+a low-resolution picture may appear labelled **Loading rotated PDF…** while the new pages
+are read; it is only a temporary preview, not the finished page.
+
+**Copying PDF text.** Select a passage and press \`Cmd + C\` / \`Ctrl + C\` to copy it.
+With a PDF page focused, \`Cmd + A\` / \`Ctrl + A\` visibly selects the built text and marks
+**the whole document** for copying. Follow with \`Cmd + C\` / \`Ctrl + C\` to gather every
+physical page, including pages you have never opened, separated by a newline. A notice
+shows progress or a blocked clipboard write. Changing the selection returns to ordinary
+passage copying. Whole-document text above **16 MiB** is refused rather than silently
+cut off; select a smaller passage instead. The text-order/extraction warning can mean
+columns or unusual reading order, not necessarily missing text; compare the original.
 
 If a page cannot be rendered completely, a notice stays on that page; an error
 whose page is unknown appears above the document. Its thumbnail says
@@ -464,6 +491,7 @@ marks are drawn against the pages as they are, and turning the paper would move
 every one of them — so straighten a scan before you start annotating it. Only a
 plain PDF turns: a notebook's export, or a PDF whose embedded attachments are not
 ones this app can read, is left alone too, and its note says what to do instead.
+Encrypted PDFs are left unchanged rather than rewritten without their encryption.
 
 \`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
 **writing on it** — the same toggle every other file has. Draw on it as you would
@@ -486,6 +514,10 @@ rather than being stuck with it. It is also why annotating never builds up:
 every save redraws from that pristine copy, so the marks never thicken or
 double no matter how many times you edit.
 
+Annotated saves also carry a write mark. If another program changes the file after a marked save, Annotate stays read-only and explains that rebuilding from your last editable version would drop those changes. **Keep the file as it is** (the default, or Escape while the notice is focused) leaves it unchanged. **Annotate from my last version** first keeps the exact current PDF in that folder’s **Trash**, then enables editing. If the mark is malformed or belongs to an unsupported version, the notice says it cannot be verified and offers the same safe choice. A changed or deleted file must be resolved before this choice can continue; a failed copy enables nothing and offers Retry.
+
+Older annotated PDFs without a mark can still be edited. Before their first save here, a copy of the current file is kept in **Trash**; the saved PDF gains the mark. The notice names the retained copy. Editable annotations are limited to **32 MiB of UTF-8 JSON**: exceeding that limit refuses the save without changing the PDF. Keep those unsaved annotations open, or reduce them before saving. A refused revision is not reported as Saved and cannot be silently dropped by closing its tab or switching vaults. After a stroke, annotations are pending until the versioned write completes; closing or switching vaults waits for the pending checkpoint. If an export fails, keep the tab open and retry. A browser or operating-system termination cannot wait for an unfinished save.
+
 **A PDF that cannot be written on safely stays read-only.** Before the pen opens,
 the app checks what the file actually carries, not its name. A PDF holding an
 unrelated \`original.pdf\`, attachments that cannot be read or that contradict each
@@ -494,7 +526,11 @@ saying it is read-only; drawing and saving change nothing in it. You can still
 read, select, copy and find in it, and open its Text. Choose **Retry** if an
 attachment could not be read; otherwise open it in a version of the app that wrote
 it, or recover the annotations first. Never delete attachments from your only copy
-just to make the note go away.
+just to make the note go away. If one PDF page cannot be rendered, its notice offers
+Retry while the other pages remain available. Very long PDFs initially use estimated
+page sizes; those estimates adjust as you visit pages. Existing attachments are retained when you save;
+if different attachments have the same name, a notice gives the recovered names
+used to keep both. If attachment repair or its verification fails, nothing is written.
 
 Everything around a page — the toolbars, the pen panel, the space the pages sit
 on — follows the app's theme, so a notebook or a PDF is dark at night like the

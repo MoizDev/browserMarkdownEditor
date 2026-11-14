@@ -9,6 +9,8 @@ import { handleEditKey } from './keys';
 import { TextPointerSelection, type TextPointer } from './pointer';
 import { selectBlock, selectWord, wordBoundary } from './selection';
 import type { NodeId } from '../../model/ids';
+import type { HistoryController } from '../../change/historyTypes';
+import { TypingHistory } from './typingHistory';
 import type { Rect } from '../../../platform/types';
 
 export interface EditLayout {
@@ -17,7 +19,8 @@ export interface EditLayout {
     readonly localToClient: TextTransform;
     readonly clientToLocal: TextTransform;
 }
-export interface EditSessionServices extends EditTransactions {
+export interface EditSessionServices extends Omit<EditTransactions, 'typing' | 'completeTyping' | 'markTransformation' | 'rememberTransformation'> {
+    readonly history: HistoryController;
     plainText(): string;
     alive(): boolean;
     layout(): EditLayout;
@@ -25,15 +28,14 @@ export interface EditSessionServices extends EditTransactions {
     compositionFormat(event: Event): void;
     command(name: string, selection: EditSelection): void;
     inList(offset: number): boolean;
-    undoTransformation(): boolean;
     changed(selection: EditSelection): void;
     reportError(error: unknown): void;
     autoScroll(x: number, y: number): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
     isStandaloneText(): boolean;
-    // Joins deletion to the last text step, or cancels an empty creation.
-    removeEmptyText(): void;
+    /** The creation step token for a text node created by this edit session. */
+    readonly creationToken?: number;
     finish(): void;
 }
 
@@ -47,6 +49,7 @@ export class TextEditSession {
     readonly host: EditHost;
     readonly pointer: TextPointerSelection;
     readonly controller: TextEditController;
+    private readonly typingHistory: TypingHistory;
     private selection: EditSelection;
     private affinity: CaretPosition['affinity'];
     private goalX: number | undefined;
@@ -59,7 +62,18 @@ export class TextEditSession {
     constructor(container: HTMLElement, label: string, private readonly id: NodeId, private readonly key: 'text' | 'label', selection: EditSelection,
         private readonly services: EditSessionServices, private readonly mac: boolean, forceFallback = false) {
         this.selection = selection;
-        this.controller = new TextEditController(id, key, services);
+        this.typingHistory = new TypingHistory(services.history, next => this.restoreSelection(next));
+        this.controller = new TextEditController(id, key, {
+            apply: transaction => services.apply(transaction), readText: () => services.readText(),
+            setSelection: next => { this.selection = next; services.setSelection(next); }, marksAt: offset => services.marksAt(offset),
+            fragment: (from, text, marks) => services.fragment(from, text, marks),
+            format: (mark, from, to) => services.format(mark, from, to),
+            link: (url, from, to) => services.link(url, from, to),
+            typing: (kind, before, after, change) => this.typingHistory.begin(kind, before, after, change),
+            completeTyping: (kind, after) => this.typingHistory.complete(kind, after),
+            markTransformation: () => this.typingHistory.mark(),
+            rememberTransformation: (mark, before) => this.typingHistory.remember(mark, before),
+        });
         this.pointer = new TextPointerSelection({
             selection: () => this.selection,
             setSelection: next => this.select(next),
@@ -115,8 +129,9 @@ export class TextEditSession {
     }
 
     private select(next: EditSelection, moving = false): void {
-        if (next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
+        if (!moving && next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
         this.lastActivity = performance.now();
+        this.typingHistory.invalidateRule();
         this.selection = next;
         if (!moving) { this.affinity = undefined; this.goalX = undefined; }
         this.controller.setStoredMarks(null);
@@ -184,10 +199,13 @@ export class TextEditSession {
                     try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); }
                     catch (error) { this.services.reportError(error); }
                     this.host.sync();
-                } else this.services.command(command, this.selection);
+                } else {
+                    if (command === 'undo' || command === 'redo' || command === 'finish') this.typingHistory.close();
+                    this.services.command(command, this.selection);
+                }
             },
             inList: () => this.services.inList(this.selection.focus),
-            undoTransformation: () => this.services.undoTransformation(),
+            undoTransformation: () => this.typingHistory.undoTransformation(),
         }, this.mac);
     }
 
@@ -232,20 +250,35 @@ export class TextEditSession {
         return { selection, caret, composition, handles };
     }
 
+    externalChange(): void { this.typingHistory.close(); this.sync(); }
     getSelection(): EditSelection { return this.selection; }
+    selectAll(): void { this.select({ anchor: 0, focus: this.services.plainText().length }); }
+    restoreSelection(selection: EditSelection): void { this.select(selection); this.sync(); }
 
     copySelection(): RichFragment {
         return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
+    }
+
+    deleteSelection(): void {
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        if (from === to) return;
+        this.typingHistory.close();
+        this.services.history.open('Cut text');
+        try { this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary'); this.host.sync(); }
+        finally { this.services.history.close(); }
     }
 
     replaceSelection(fragment: RichFragment): void {
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
         const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
         const next = { anchor: from + length, focus: from + length };
-        this.services.typing('boundary', this.selection, next);
-        try { this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] }); }
-        catch (error) { this.services.reportError(error); return; }
-        this.select(next);
+        this.typingHistory.close();
+        this.services.history.open('Paste text');
+        try {
+            this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
+            this.select(next);
+        } catch (error) { this.services.reportError(error); }
+        finally { this.services.history.close(); }
     }
 
     applyLink(url: string, selection: EditSelection): boolean {
@@ -264,8 +297,24 @@ export class TextEditSession {
         if (this.closed) return;
         this.host.finishComposition(commitComposition);
         this.closed = true;
+        this.typingHistory.dispose();
         this.pointer.dispose(); this.host.dispose();
-        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) this.services.removeEmptyText();
+        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) {
+            const history = this.services.history;
+            const tokens = this.typingHistory.stepTokens;
+            try {
+                const last = tokens[tokens.length - 1];
+                if (last === undefined || !history.reopenLast(last)) history.open('Delete empty text');
+                let deleted = false;
+                try { this.services.apply({ origin: 'tool', label: 'Delete empty text', ops: [{ t: 'delete', id: this.id }] }); deleted = true; }
+                finally {
+                    const deletion = history.close();
+                    if (deleted && this.services.creationToken !== undefined && deletion !== null) {
+                        history.forgetCreatedNode(this.id, this.services.creationToken, [...tokens, deletion]);
+                    }
+                }
+            } catch (error) { this.services.reportError(error); }
+        }
         this.services.finish();
     }
 }

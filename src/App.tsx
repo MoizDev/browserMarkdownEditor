@@ -2375,27 +2375,37 @@ export default function App() {
     const source = tabsRef.current.find(tab => tab.file.path === file.path);
     const exporter = getNotebookExporter(file.path);
     if (!vault || !root || !source || !exporter) { notify(`Open "${file.name}" before exporting it.`); return; }
-    const epoch = readerEpochRef.current.epoch, generation = source.representation.generation, diskRev = source.diskRev;
+    const epoch = readerEpochRef.current.epoch, activation = getVaultActivation(), generation = source.representation.generation, diskRev = source.diskRev;
+    let nativeJob: import('./utils/notebookRenderCache').NativeNotebookExportJob | undefined;
     const isCurrent = () => rootHandleRef.current === root && currentVaultIdRef.current === vault && readerEpochRef.current.epoch === epoch &&
-      tabsRef.current.some(tab => tab.id === source.id && tab.file.path === file.path && tab.representation.generation === generation && tab.diskRev === diskRev);
+      getVaultActivation() === activation && tabsRef.current.some(tab => tab.id === source.id && tab.file.path === file.path &&
+        (nativeJob ? nativeJob.isCurrent() : tab.representation.generation === generation && tab.diskRev === diskRev));
     notebookExportInFlightRef.current = true;
     try {
-      const exported = await exporter();
-      if (!exported || !isCurrent()) return;
-      const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
-      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, { path: file.path, exportedAt: Date.now() });
+      let paper: import('./utils/paper').NotebookPaper, bytes: Uint8Array;
+      if (typeof exporter === 'function') {
+        const exported = await exporter();
+        if (!exported || !isCurrent()) return;
+        const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
+        paper = exported.paper;
+        bytes = await buildNotebookPdfAsync(paper, exported.overlays, { path: file.path, exportedAt: Date.now() });
+      } else {
+        nativeJob = exporter.prepare();
+        if (nativeJob.sourcePath !== file.path || !isCurrent()) return;
+        ({ paper, bytes } = await nativeJob.run(new AbortController().signal));
+      }
       if (!isCurrent() || !await commitNotebookPdf(file, bytes, source.id, isCurrent)) return;
       void tell({
         title: 'Exported to PDF', confirmLabel: 'OK',
-        body: `"${notebookPdfName(file.name)}" is in the same folder — ${exported.paper.pageCount} `
-          + `${exported.paper.pageCount === 1 ? 'page' : 'pages'}.`,
+        body: `"${notebookPdfName(file.name)}" is in the same folder — ${paper.pageCount} `
+          + `${paper.pageCount === 1 ? 'page' : 'pages'}.`,
       });
     } catch (err) {
       console.error('Could not export the notebook:', err);
       notify(err instanceof DOMException && err.name === 'TypeMismatchError'
         ? `A folder named "${notebookPdfName(file.name)}" already exists.` : `Could not export "${file.name}".`);
-    } finally { notebookExportInFlightRef.current = false; }
-  }, [commitNotebookPdf, notify, tell]);
+    } finally { try { nativeJob?.release(); } finally { notebookExportInFlightRef.current = false; } }
+  }, [commitNotebookPdf, getVaultActivation, notify, tell]);
 
   // The graph and the click share one canonical resolver revision. Read it
   // through an App-lifetime ref: the wikilink handler is baked into cached

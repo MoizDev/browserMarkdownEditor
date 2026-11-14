@@ -38,12 +38,19 @@ function inkBounds(node: StrokeNode, m: Affine, samples: SampleStore): Box {
 }
 // Connectors use their owning geometry provider, never a straight-line fallback.
 export function basicLegacyGeometry(samples: SampleStore, remaining: LegacyGeometry): LegacyGeometry {
+    let lastNode: Readonly<Node> | undefined, lastTransform: Affine | undefined, lastSupplied: Box | undefined;
     return { worldBounds(node: Readonly<Node>, transform: Affine): Box | undefined {
+        const supplied = remaining.worldBounds(node, transform);
+        lastNode = node; lastTransform = transform; lastSupplied = supplied;
+        if (supplied !== undefined) return supplied;
         if (node.kind === 'stroke') return inkBounds(node, transform, samples);
         if (node.kind === 'polyline') {
             const r = polylineWorldSemanticBounds(node, transform);
             return [r.x, r.y, r.x + r.width, r.y + r.height];
         }
-        return remaining.worldBounds(node, transform);
+        return undefined;
+    }, worldBoundsError(node: Readonly<Node>, transform: Affine): number {
+        const supplied = node === lastNode && transform === lastTransform ? lastSupplied : remaining.worldBounds(node, transform);
+        return supplied !== undefined ? remaining.worldBoundsError?.(node, transform) ?? 0 : 0;
     } };
 }

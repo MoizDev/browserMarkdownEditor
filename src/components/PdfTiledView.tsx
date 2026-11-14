@@ -22,7 +22,7 @@ import type { PdfLinkDestination, PdfLinkTarget } from '../pdf/pdfLinkModel';
 import type { PdfSelectionState } from '../pdf/text/selectionState';
 import type { PdfHighlightPalette } from '../pdf/overlay/textHighlight';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
-import type { PdfReadingBinding } from '../types/reading';
+import type { PdfReadingBinding, ReaderCapabilities } from '../types/reading';
 import { pdfAgentPages } from '../pdf/text/agentText';
 import { captureTiledRotationPreview } from '../utils/pdfTiledRotationPreview';
 import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
@@ -83,6 +83,7 @@ interface Props {
     readonly selectionState: PdfSelectionState;
     readonly onOpenTextView: (page?: number) => void;
     readonly onNotice: (message: string) => void;
+    readonly onCapabilities: (capabilities: ReaderCapabilities) => void;
     /** App owns this explicit route switch; it must retain the current document and ink. */
     readonly onOpenClassic?: () => void;
 }
@@ -90,7 +91,7 @@ interface Props {
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
 export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
-    mirror, transition, bridge, capturer, findMemory, selectionState, sourceHash, onSearchVault, onRotate, onOpenTextView, onNotice, onOpenClassic }: Props) {
+    mirror, transition, bridge, capturer, findMemory, selectionState, sourceHash, onSearchVault, onRotate, onOpenTextView, onNotice, onCapabilities, onOpenClassic }: Props) {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
     const [contentHost, setContentHost] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
@@ -159,20 +160,22 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         pdf.poolDocument.setVisible(isVisible);
         return () => pdf.poolDocument.setVisible(false);
     }, [pdf.poolDocument, isVisible]);
-    useEffect(() => {
-        if (!session.isCurrent()) return;
+    useLayoutEffect(() => {
+        if (!session.isCurrent() || !isVisible) return;
         reading.onReaderStatus(reading.identity, pageQuality.state === 'degraded'
             ? { phase: 'partial', message: pageQuality.reason ?? 'This page may contain missing image content.' }
             : capabilities.xfa === true
             ? { phase: 'partial', message: 'XFA forms are unsupported; pages or fields may be missing.' }
             : pdf.poolDocument.info.repairStatus === 'repaired'
                 ? { phase: 'partial', message: 'This PDF required repair; editing is unavailable.' } : { phase: 'ready' });
-        reading.onReaderCapabilities(reading.identity, { surface: 'pdf-original',
+        const nativeCapabilities: ReaderCapabilities = { surface: 'pdf-original',
             emphasis: pdf.emphasis.capability(page).kind === 'active' ? { kind: 'toggle' }
                 : { kind: 'inactive', reason: pdf.emphasis.capability(page).reason ?? 'Word emphasis is unavailable on this page.' },
             text: capabilities.copy === true ? 'available' : 'none', find: capabilities.copy === true,
-            appearance: 'fixed', copy: capabilities.copy === true });
-    }, [capabilities, reading, session, pdf, page, emphasisRevision, pageQuality]);
+            appearance: 'fixed', copy: capabilities.copy === true };
+        onCapabilities(nativeCapabilities);
+        reading.onReaderCapabilities(reading.identity, nativeCapabilities);
+    }, [capabilities, reading, session, pdf, page, emphasisRevision, pageQuality, isVisible, onCapabilities]);
     const constraint = useMemo(() => pagedConstraint(stack, LIMITS, INSETS), [stack]);
     const initial = useRef(readPdfViewPos(filePath));
     const camera = useRef<Camera>({ x: 0, y: 0, z: 1 });
@@ -422,7 +425,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         setReaderVisible: () => {}, clearMirrorPages: () => {}, releaseGpu: () => {},
         rebuildVisible: () => paneRef.current?.current?.invalidate('pdf-selection-visible') });
     const mirrorView = useCallback((view: ViewState) => ({ token: session.token, sourceRole: session.source,
-        contentRevision: pdfMirrorRevision(profile.current.enabled, getPdfFontEpoch(pdf.poolDocument.docKey), pdf.emphasis.revision()),
+        contentRevision: pdfMirrorRevision(profile.current.enabled, pdf.poolDocument.docKey, pdf.emphasis.revision()),
         colourVersion: 0, geometryDigest, nominalDpr: Math.min(view.viewport.dpr, 2), view }),
         [session, geometryDigest, pdf]);
     const textMirror = usePdfTextMirror({ host: overlay, visible: isVisible && capabilities.copy === true, fileName: filePath.split('/').at(-1) ?? filePath,
@@ -659,7 +662,23 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         };
     }, [host, clamp, constraint, capabilities, filePath, find.find, goPage, onNotice, onRotate, persist, platformPane, rotate, stack, updateCamera]);
 
-    useEffect(() => registerView(filePath, {
+    useEffect(() => {
+        const renderPageWithInfo = async (pageNumber: number, maxSide: number) => {
+            assertPdfRenderAllowed(capabilities);
+            assertPdfCaptureAllowed(capabilities);
+            const index = pageNumber - 1, page = pdf.pages[index];
+            if (!Number.isInteger(pageNumber) || !page) throw new RangeError('PDF page is out of range.');
+            if (!Number.isFinite(maxSide) || maxSide <= 0 || !session.isCurrent()) throw new Error('PDF page capture is unavailable.');
+            const capture = await capturer.capturePageWithInfo(index, maxSide);
+            try {
+                if (!mounted.current || liveSession.current !== session) { capture.bitmap.close(); throw new DOMException('PDF view changed', 'AbortError'); }
+                const png = await bitmapPng(capture.bitmap);
+                capture.check();
+                if (!mounted.current || liveSession.current !== session) throw new DOMException('PDF view changed', 'AbortError');
+                return { png, emphasis: capture.emphasis };
+            } finally { capture.release(); }
+        };
+        return registerView(filePath, {
         kind: 'pdf',
         describe(): PdfViewInfo {
             const position = pagedPosition(camera.current, viewport.current, stack, INSETS) ?? { page: 0, offset: 0, zoom: 1 };
@@ -687,27 +706,16 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             const now = camera.current;
             return session.isCurrent() && active.current.isVisible && snapshot.x === now.x && snapshot.y === now.y && snapshot.z === now.z ? output : null;
         },
-        async renderPage(pageNumber, maxSide) {
-            assertPdfRenderAllowed(capabilities);
-            assertPdfCaptureAllowed(capabilities);
-            const index = pageNumber - 1, page = pdf.pages[index];
-            if (!Number.isInteger(pageNumber) || !page) throw new RangeError('PDF page is out of range.');
-            if (!Number.isFinite(maxSide) || maxSide <= 0 || !session.isCurrent()) return null;
-            const scale = Math.min(maxSide, 1568) / Math.max(page.width, page.height);
-            const bitmap = await pdf.poolDocument.renderPage(index, scale, { priority: 0, ...pdf.emphasis.variant(index), maxPixels: 1568 * 1568 });
-            if (getPdfPageQuality(pdf.poolDocument.docKey, index).state === 'degraded') {
-                bitmap.close(); throw new Error('This PDF page may be incomplete and cannot be captured as complete.');
-            }
-            const output = await bitmapPng(bitmap);
-            return session.isCurrent() && getPdfPageQuality(pdf.poolDocument.docKey, index).state !== 'degraded' ? output : null;
-        },
+        renderPageWithInfo,
+        async renderPage(pageNumber, maxSide) { return (await renderPageWithInfo(pageNumber, maxSide)).png; },
         async pdfText(pages) {
             assertPdfCopyAllowed(capabilities);
             const result = await pdfAgentPages(pdf.poolDocument, pages, new AbortController().signal, () => session.isCurrent());
             if (!session.isCurrent()) throw new Error('PDF text changed during the request.');
             return result;
         },
-    }), [capabilities, filePath, pdf, platformPane, selectedText, session, stack]);
+        });
+    }, [capabilities, capturer, filePath, pdf, platformPane, selectedText, session, stack]);
     useEffect(() => { platformPane.current?.invalidate('pdf-invert'); }, [inverted, platformPane]);
     useEffect(() => {
         const observer = new MutationObserver(() => platformPane.current?.invalidate('pdf-theme'));
@@ -738,7 +746,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     return <div className={`pdf-viewer pdf-tiled-view${thumbs ? ' has-thumbs' : ''}`}>
         {find.bar}
         {outline.panel}
-        <PdfCapabilitiesNotice capabilities={capabilities} />
+        <PdfCapabilitiesNotice capabilities={capabilities} nativeFontPolicy />
         {visibleNotice && <div className="pdf-tiled-notice" role="status">
             <div>{visibleNotice}</div>
             <div className="pdf-tiled-notice-actions">

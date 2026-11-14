@@ -96,6 +96,16 @@ export interface PaneCapturerOptions {
     tryGpu?(snapshot: CaptureSnapshot): CaptureGpuOwner | null;
 }
 
+type CaptureOutput = ImageBitmap | Blob;
+type CaptureOutputKind = 'bitmap' | 'png';
+
+function frozenIsolation(snapshot: CaptureSnapshot): readonly IsolationReservation[] {
+    // The retained source is frozen before awaiting; its async plan publishes bounds in prepare.
+    return Object.freeze((snapshot.isolation ?? []).map(item => Object.freeze({ ...item,
+        bounds: Object.freeze({ ...item.bounds }), targets: item.targets ? Object.freeze({ ...item.targets,
+            bounds: Object.freeze({ ...item.targets.bounds }) }) : undefined })));
+}
+
 interface CaptureScope {
     readonly signal: AbortSignal;
     check(): void;
@@ -179,6 +189,17 @@ export class PaneCapturer {
     }
 
     captureRegion(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<ImageBitmap> {
+        return this.capture(worldRect, maxSidePx, options, 'bitmap');
+    }
+
+    /** PNG from the same default-2D target, not a second canvas repaint of the bitmap. */
+    captureBlob(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<Blob> {
+        return this.capture(worldRect, maxSidePx, options, 'png');
+    }
+
+    private capture(worldRect: Rect, maxSidePx: number, options: CaptureOptions, output: 'bitmap'): Promise<ImageBitmap>;
+    private capture(worldRect: Rect, maxSidePx: number, options: CaptureOptions, output: 'png'): Promise<Blob>;
+    private capture(worldRect: Rect, maxSidePx: number, options: CaptureOptions, output: CaptureOutputKind): Promise<CaptureOutput> {
         let operation: CaptureScope | null = null, snapshot: CaptureSnapshot | null = null;
         try {
             const request = requestFor(worldRect, maxSidePx, options);
@@ -197,9 +218,6 @@ export class PaneCapturer {
                 throw new CaptureError('incomplete');
             }
             const lease = snapshot, active = operation;
-            const isolation = Object.freeze((snapshot.isolation ?? []).map(item => Object.freeze({ ...item,
-                bounds: Object.freeze({ ...item.bounds }), targets: item.targets ? Object.freeze({ ...item.targets,
-                    bounds: Object.freeze({ ...item.targets.bounds }) }) : undefined })));
             const layers = Object.freeze(snapshot.layers.map(layer => Object.freeze({
                 id: layer.id, draw2d: layer.draw2d.bind(layer), drawGpu: layer.drawGpu?.bind(layer),
             })));
@@ -211,7 +229,7 @@ export class PaneCapturer {
             };
             return this.options.queue.run(this.options.paneId, active.signal, async () => {
                 started = true;
-                try { return await this.render(request, lease, layers, isolation, active); }
+                try { return await this.render(request, lease, layers, active, output); }
                 finally { release(); }
             }, options.thumbnailKey).finally(() => {
                 // An active abort may reject before prepare/readback has unwound. The
@@ -234,10 +252,10 @@ export class PaneCapturer {
     }
 
     private async render(request: CaptureRequest, snapshot: CaptureSnapshot, layers: readonly CapturedLayer[],
-        isolation: readonly IsolationReservation[], active: CaptureScope): Promise<ImageBitmap> {
+        active: CaptureScope, output: CaptureOutputKind): Promise<CaptureOutput> {
         try {
             active.check();
-            const owner = layers.every(layer => layer.drawGpu) ? this.options.tryGpu?.(snapshot) : null;
+            const owner = output === 'bitmap' && layers.every(layer => layer.drawGpu) ? this.options.tryGpu?.(snapshot) : null;
             if (owner?.withCapturePass) {
                 try {
                     await this.prepare(request, snapshot, 'gpu', active);
@@ -245,7 +263,7 @@ export class PaneCapturer {
                     // generations. Never submit to an owner no longer selected for capture.
                     const current = this.options.tryGpu?.(snapshot);
                     if (current?.withCapturePass && current.resources === owner.resources &&
-                        current.prepareIsolation?.(request.view, isolation)) {
+                        current.prepareIsolation?.(request.view, frozenIsolation(snapshot))) {
                         return await this.drawGpu(request, layers, current, active);
                     }
                 } catch (error) {
@@ -257,17 +275,18 @@ export class PaneCapturer {
                 }
             }
             await this.prepare(request, snapshot, '2d', active);
-            return await this.draw2d(request, layers, active);
+            return await this.draw2d(request, layers, active, output);
         } catch (error) {
             active.check();
             throw renderError(error);
         }
     }
 
-    private async draw2d(request: CaptureRequest, layers: readonly CapturedLayer[], active: CaptureScope): Promise<ImageBitmap> {
+    private async draw2d(request: CaptureRequest, layers: readonly CapturedLayer[], active: CaptureScope,
+        output: CaptureOutputKind): Promise<CaptureOutput> {
         const { width, height } = request.view.viewport;
-        // Canvas backing and its snapshot can coexist. The returned bitmap becomes
-        // caller-owned; only our temporary storage is charged to this operation.
+        // Backing and bitmap/PNG encoder output coexist. The result becomes caller-owned;
+        // temporary storage stays charged until encoding actually settles, even on abort.
         const memory = this.options.memory.reserve(width * height * 8);
         if (!memory) throw new CaptureError('out-of-budget');
         let canvas: HTMLCanvasElement | null = null, bitmap: ImageBitmap | null = null;
@@ -286,6 +305,15 @@ export class PaneCapturer {
             if (ctx.isContextLost()) throw new CaptureError('render-failed');
             // This checks origin cleanliness without reading back an entire capture.
             ctx.getImageData(0, 0, 1, 1);
+            if (output === 'png') {
+                const target = canvas;
+                const blob = await new Promise<Blob>((resolve, reject) => target.toBlob(value => {
+                    if (value?.size && value.type === 'image/png') resolve(value);
+                    else reject(new CaptureError('render-failed'));
+                }, 'image/png'));
+                active.check();
+                return blob;
+            }
             bitmap = await createImageBitmap(canvas, { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'none' });
             active.check();
             const result = bitmap; bitmap = null;

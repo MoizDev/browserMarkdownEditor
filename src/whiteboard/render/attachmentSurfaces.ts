@@ -62,7 +62,7 @@ function segment(a: Vec2, b: Vec2, c1: Vec2, c2: Vec2, straight: boolean): { sam
         && values[0] === values[4] && values[1] === values[5] && values[0] === values[6] && values[1] === values[7] };
 }
 
-export async function prepareBoardAttachmentSurface(node: Readonly<Node>, options: BoardAttachmentSurfaceOptions): Promise<BoardAttachmentSurface | null> {
+function* attachmentSurface(node: Readonly<Node>, options: BoardAttachmentSurfaceOptions): Generator<void, BoardAttachmentSurface | null> {
     const { signal } = options;
     signal.throwIfAborted();
     const tolerance = options.toleranceWorld ?? 0.01;
@@ -73,14 +73,13 @@ export async function prepareBoardAttachmentSurface(node: Readonly<Node>, option
     if (!Number.isFinite(scale) || scale <= 0) throw new RangeError('Invalid attachment geometry scale');
     const outline: PathOp[] = [];
     let bounds: Rect | null = null, error = 0, work = 0, started = performance.now();
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-    const tick = async () => { signal.throwIfAborted(); await cooperate(); signal.throwIfAborted(); work = 0; started = performance.now(); };
+    const reset = () => { signal.throwIfAborted(); work = 0; started = performance.now(); };
     const due = () => ++work >= 256 || performance.now() - started >= 3;
     const emit = (command: PathCommand) => {
         if (outline.length >= MAX_COMMANDS) throw new RangeError('Attachment outline exceeds its contour budget');
         outline.push(pathOp(command));
     };
-    const addCoverage = async (coverage: InkCoverage) => {
+    const addCoverage = function* (coverage: InkCoverage): Generator<void, void> {
         const bound = coverage.centreErrorWorld + coverage.radiusErrorWorld + coverage.dashPhaseErrorWorld + INK_CAP_ERROR_DEVICE_PX / scale;
         if (!Number.isFinite(bound) || bound < 0) throw new RangeError('Attachment boundary error is invalid');
         if (bound > tolerance) throw new AttachmentBoundaryUncertified(bound, tolerance);
@@ -94,24 +93,24 @@ export async function prepareBoardAttachmentSurface(node: Readonly<Node>, option
                 const status = job.step(1);
                 if (status === 'complete') break;
                 if (status !== 'pending') throw new DOMException('Attachment outline cancelled', 'AbortError');
-                if (due()) await tick();
+                if (due()) { yield; reset(); }
             }
         } finally { job.cancel(); }
     };
     if (node.kind === 'stroke') {
         if (!options.ink) throw new Error('Stroke attachment coverage is unavailable');
-        for (const coverage of options.ink) { signal.throwIfAborted(); await addCoverage(coverage); if (due()) await tick(); }
+        for (const coverage of options.ink) { signal.throwIfAborted(); yield* addCoverage(coverage); if (due()) { yield; reset(); } }
     } else {
         if (!options.vector) throw new Error('Polyline attachment geometry is unavailable');
         const vector = options.vector as PolylineGeometry;
         if (node.width <= 0) return null;
         for (const part of vector.paths) {
-            if (due()) await tick();
+            if (due()) { yield; reset(); }
             if (part.role !== 'outline' || !Array.isArray(part.ops) || part.width !== node.width) throw new Error('Unexpected polyline stroke geometry');
             let current: Vec2 | null = null, start: Vec2 | null = null;
             for (const op of part.ops) {
                 signal.throwIfAborted();
-                if (op.op === 'M') { current = start = op.p; if (due()) await tick(); continue; }
+                if (op.op === 'M') { current = start = op.p; if (due()) { yield; reset(); } continue; }
                 if (!current || !start) throw new Error('Polyline path does not start with a move');
                 const end = op.op === 'Z' ? start : op.p;
                 const line = op.op !== 'C';
@@ -125,12 +124,12 @@ export async function prepareBoardAttachmentSurface(node: Readonly<Node>, option
                         const status = job.step(1); signal.throwIfAborted();
                         if (status === 'complete') break;
                         if (status !== 'pending') throw new DOMException('Attachment coverage cancelled', 'AbortError');
-                        if (due()) await tick();
+                        if (due()) { yield; reset(); }
                     }
-                    await addCoverage(job.result);
+                    yield* addCoverage(job.result);
                 } finally { job.cancel(); }
                 current = end;
-                if (due()) await tick();
+                if (due()) { yield; reset(); }
             }
         }
         // Anchor semantics are the real provider's un-stroked logical box.
@@ -139,4 +138,27 @@ export async function prepareBoardAttachmentSurface(node: Readonly<Node>, option
     signal.throwIfAborted();
     if (!outline.length || !bounds) return null;
     return Object.freeze({ outline: Object.freeze(outline), logicalBox: Object.freeze({ ...bounds }), boundaryErrorWorld: error });
+}
+
+export async function prepareBoardAttachmentSurface(node: Readonly<Node>, options: BoardAttachmentSurfaceOptions): Promise<BoardAttachmentSurface | null> {
+    const job = attachmentSurface(node, options);
+    try {
+        for (;;) {
+            options.signal.throwIfAborted();
+            const next = job.next(); if (next.done) return next.value;
+            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            options.signal.throwIfAborted();
+        }
+    } finally { job.return(undefined as never); }
+}
+
+/** The same certified contour path, drained synchronously for capture. */
+export function prepareBoardAttachmentSurfaceNow(node: Readonly<Node>, options: Omit<BoardAttachmentSurfaceOptions, 'cooperate'>): BoardAttachmentSurface | null {
+    const job = attachmentSurface(node, options);
+    try {
+        for (;;) {
+            options.signal.throwIfAborted();
+            const next = job.next(); if (next.done) return next.value;
+        }
+    } finally { job.return(undefined as never); }
 }

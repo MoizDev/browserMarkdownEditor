@@ -112,6 +112,22 @@ export class MediaIngestor {
         return this.jobs.run(context => this.run(sources, options, context), { signal: options.signal, deadlineMs });
     }
 
+    /** The caller already owns this session's serial job; enqueueing again would deadlock. */
+    ingestInJob(sources: readonly MediaSource[], options: MediaIngestOptions, context: JobContext): Promise<readonly NodeId[]> {
+        this.jobs.assertContext(context);
+        if (options.signal && options.signal !== context.signal) throw new TypeError('In-job media must use its owning context signal');
+        if (!sources.length || sources.length > SECURITY_LIMITS.mediaBatch) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
+        this.host.finishGesture();
+        return this.run(sources, { ...options, signal: context.signal }, context);
+    }
+
+    replaceInJob(id: NodeId, source: MediaSource, options: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }, context: JobContext): Promise<void> {
+        this.jobs.assertContext(context);
+        if (options.signal && options.signal !== context.signal) throw new TypeError('In-job media must use its owning context signal');
+        this.host.finishGesture();
+        return this.runReplace(id, source, { ...options, signal: context.signal }, context);
+    }
+
     replace(id: NodeId, source: MediaSource, options: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }): Promise<void> {
         this.host.finishGesture();
         return this.jobs.run(context => this.runReplace(id, source, options, context), { signal: options.signal, deadlineMs: 30000 });

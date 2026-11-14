@@ -5,10 +5,10 @@ import type { PdfVersionBridge } from '../layer/versionBridge';
 import type { PdfSessionMirrors } from '../layer/tileMirror';
 import { pdfGeometryDigest } from './documentSession';
 import type { OpenTiledDocument, PdfTiledDocumentSession } from './documentSession';
-import { pdfVariantRevision } from '../fonts/profiles';
+import { pdfMirrorProfilePrefix } from '../fonts/profiles';
 
-export function pdfMirrorRevision(enabled: boolean, fontEpoch: number, proofRevision: number): string {
-    return `${pdfVariantRevision(enabled ? 'emphasis' : 'plain', fontEpoch)}:proof:${enabled ? proofRevision : 0}`;
+export function pdfMirrorRevision(enabled: boolean, docKey: string, proofRevision: number): string {
+    return `${pdfMirrorProfilePrefix(enabled ? 'emphasis' : 'plain', docKey)}${enabled ? proofRevision : 0}`;
 }
 
 type Role = 'outer' | 'original';

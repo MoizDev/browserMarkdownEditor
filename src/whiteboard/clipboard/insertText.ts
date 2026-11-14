@@ -119,8 +119,8 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             const prepared = runtime.render.text.prepareNow(node, { revision: `clipboard:${id}:${revision}` });
             if (!prepared) throw new Error('Clipboard text layout is unavailable');
             const width = Math.max(1, prepared.paint.box.w);
-            if (!Number.isFinite(width) || width > 1_000_000) throw new RangeError('Clipboard text is too wide');
-            node = { ...node, w: width };
+            if (!Number.isFinite(width)) throw new RangeError('Clipboard text is too wide');
+            node = width > 1200 ? { ...node, autoSize: false, w: 600 } : { ...node, w: width };
             scope.release(); scope = undefined;
             candidate = createAddedBoardDoc(doc, [node], [], preserved);
             scope = await acquireBoardGeometryScope(runtime, [id], { doc: candidate, signal, current: () => { check(); return true; }, cooperate });

@@ -8,7 +8,8 @@ import { WriterNativeDocument } from './nativeStage';
 import { inventoryNativeAttachments } from './nativeInventory';
 import { buildNativeNotebook } from './nativeNotebook';
 import { verifyNativeNotebook } from './notebookVerify';
-import { rotateNativePdf } from './nativeRotate';
+import { prepareUnsignedCopy, verifyUnsignedCopy } from './unsignedCopy';
+import { rotateNativePdf, verifyNativeRotation } from './nativeRotate';
 import { validateWriterSource } from './source';
 import type { CreatePdfWriterRuntime, PdfWriterHandler } from './nativeHandlers.types';
 import type { WriterOperations } from './protocol';
@@ -78,6 +79,16 @@ export const createPdfWriterRuntime: CreatePdfWriterRuntime = async options => {
             const result = await buildNativeNotebook(runtime, args as unknown as WriterOperations['writer.buildNotebook']['args'], ctx);
             ctx.transfer(result.bytes); return result;
         }),
+        'writer.prepareUnsignedCopy': serial(async (value, ctx) => {
+            const args = object(value);
+            if (!(args.source instanceof Blob)) throw new PdfEngineError('InvalidPdf', 'Invalid signed PDF source');
+            return prepareUnsignedCopy(args as unknown as WriterOperations['writer.prepareUnsignedCopy']['args'], ctx);
+        }),
+        'writer.verifyUnsignedCopy': serial(async (value, ctx) => {
+            const args = object(value);
+            if (!(args.source instanceof Blob) || !(args.bytes instanceof ArrayBuffer)) throw new PdfEngineError('InvalidPdf', 'Invalid unsigned copy verification');
+            return verifyUnsignedCopy(runtime, args as unknown as WriterOperations['writer.verifyUnsignedCopy']['args'], ctx);
+        }),
         'writer.verifyNotebookOutput': serial(async (value, ctx) => {
             const args = object(value);
             object(args.notebookSource);
@@ -86,8 +97,15 @@ export const createPdfWriterRuntime: CreatePdfWriterRuntime = async options => {
         }),
         'writer.rotate': serial(async (value, ctx) => {
             const args = object(value); object(args.source);
-            if ((args.delta !== 90 && args.delta !== -90) || (args.pageIndices !== undefined && !Array.isArray(args.pageIndices))) throw new PdfEngineError('InvalidPdf', 'Invalid rotation request');
+            if (typeof args.delta !== 'number' || !Number.isSafeInteger(args.delta / 90) || (args.pageIndices !== undefined && !Array.isArray(args.pageIndices))) throw new PdfEngineError('InvalidPdf', 'Invalid rotation request');
             const result = await rotateNativePdf(runtime, args as unknown as WriterOperations['writer.rotate']['args'], ctx);
+            ctx.transfer(result.bytes); return result;
+        }),
+        'writer.verifyRotation': serial(async (value, ctx) => {
+            const args = object(value); object(args.source);
+            if (typeof args.delta !== 'number' || !Number.isSafeInteger(args.delta / 90) || !(args.bytes instanceof ArrayBuffer) ||
+                !Array.isArray(args.expected) || (args.pageIndices !== undefined && !Array.isArray(args.pageIndices))) throw new PdfEngineError('InvalidPdf', 'Invalid rotation verification request');
+            const result = await verifyNativeRotation(runtime, args as unknown as WriterOperations['writer.verifyRotation']['args'], ctx);
             ctx.transfer(result.bytes); return result;
         }),
         'writer.inspect': serial(async (value, ctx) => {

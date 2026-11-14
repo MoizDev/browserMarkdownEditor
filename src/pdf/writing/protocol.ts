@@ -92,13 +92,25 @@ export interface WriterOperations {
         args: { revision: number; displayListSchema: 1; pages: GeneratedPage[]; notebookSource: { path: string }; writeId: string };
         result: Omit<StagedWriterResult, 'sourceFingerprint' | 'verification'> & { verification: { pageCount: number; attachmentCount: number } };
     };
+    'writer.prepareUnsignedCopy': {
+        args: { source: Blob };
+        result: { bytes: ArrayBuffer; originalSha: string; attachmentName: string };
+    };
+    'writer.verifyUnsignedCopy': {
+        args: { source: Blob; bytes: ArrayBuffer; attachmentName: string };
+        result: { bytes: ArrayBuffer; originalSha: string; outputSha: string };
+    };
     'writer.verifyNotebookOutput': {
         args: { bytes: ArrayBuffer; notebookSource: { path: string } };
         result: { bytes: ArrayBuffer; sha256: string; path: string; geometries: PageGeometry[] };
     };
     'writer.rotate': {
-        args: { source: WriterSource; delta: 90 | -90; pageIndices?: number[] };
+        args: { source: WriterSource; delta: number; pageIndices?: number[] };
         result: { bytes: ArrayBuffer; sourceFingerprint: string; geometries: PageGeometry[] };
+    };
+    'writer.verifyRotation': {
+        args: { source: WriterSource; delta: number; pageIndices?: number[]; bytes: ArrayBuffer; expected: PageGeometry[] };
+        result: { bytes: ArrayBuffer; sourceFingerprint: string; outputSha: string; geometries: PageGeometry[] };
     };
     'writer.inspect': {
         args: { source: WriterSource; includeAttachments: boolean; signaturePolicy: 'refuse' | 'inspect' };

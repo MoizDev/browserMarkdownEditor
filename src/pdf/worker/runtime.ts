@@ -9,6 +9,7 @@ import { buildEmphasisPlan } from '../emphasis/plan';
 import { compositeEmphasis } from '../emphasis/composite';
 import { planEmphasisProbeGeometry } from '../emphasis/profile';
 import { compilePdfEngine } from './compileEngine';
+import { createPdfMetadataLoader } from './metadataLoader';
 import { PdfBlobSource } from './rangeSource';
 import { pdfWorkerOwnedMemory } from './ownedMemory';
 import { runPdfRenderJob } from './renderJob';
@@ -34,6 +35,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
     let chain: Promise<unknown> = Promise.resolve();
     let closed = false;
     const docs = new Map<string, OpenDoc>();
+    const metadata = createPdfMetadataLoader();
     let inspector: PdfInkInspector | undefined;
     type CachedInspection = { result: Extract<PdfInkInspection, { kind: 'plain' | 'native' }>; bytes: number };
     const inspections = new Map<string, CachedInspection>();
@@ -44,11 +46,16 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         inspections.delete(key); inspectionBytes -= entry.bytes; inspector?.release(entry.result.id);
     };
     const fonts = new Map<PdfFontId, Uint8Array>();
+    const fontProfiles = new Map<string, string>();
     let fontEpoch = 0;
     let geometryEventAt = -Infinity;
     let memoryEventAt = -Infinity;
     const channel = new MessageChannel();
-    const yieldTurn = () => new Promise<void>(resolve => { channel.port1.onmessage = () => resolve(); channel.port2.postMessage(0); });
+    const turns: Array<() => void> = [];
+    // Reply validation can yield after its native serial turn has ended. A per-call
+    // onmessage replacement strands that reply when the next render yields too.
+    channel.port1.onmessage = () => { turns.shift()?.(); };
+    const yieldTurn = () => new Promise<void>(resolve => { turns.push(resolve); channel.port2.postMessage(0); });
     const serial = (fn: (value: unknown, context: WorkerContext) => unknown | Promise<unknown>) =>
         (value: unknown, context: WorkerContext) => {
             const next = chain.then(async () => {
@@ -68,6 +75,14 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                     context.emit('font.needed', { ids, docKey: key, ...(typeof args.page === 'number' ? { page: args.page } : {}) });
                     throw new PdfEngineError('FontPending', 'PDF fonts are being installed');
                 } finally {
+                    const key = value && typeof value === 'object' ? (value as { docKey?: unknown }).docKey : undefined;
+                    if (!closed && typeof key === 'string' && docs.has(key)) {
+                        const ids = [...fonts.keys()].sort(), mask = JSON.stringify(ids);
+                        if (fontProfiles.get(key) !== mask) {
+                            context.emit('font.profile', { docKey: key, ids });
+                            fontProfiles.set(key, mask);
+                        }
+                    }
                     if (!closed && performance.now() - memoryEventAt >= 500) {
                         memoryEventAt = performance.now();
                         try {
@@ -148,7 +163,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         check();
         const cached = inspections.get(key);
         if (cached) { inspections.delete(key); inspections.set(key, cached); return { result: cached.result, release() {} }; }
-        inspector ??= new (await import('../writing/inkInspection')).PdfInkInspector();
+        inspector ??= new (await metadata.get(ctx)).PdfInkInspector();
         check();
         const result = await inspector.inspect(item.sourceBlob, () => ctx.slice());
         try { check(); } catch (error) { if (result.kind !== 'read-only') inspector.release(result.id); throw error; }
@@ -160,7 +175,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         return { result, release() {} };
     };
     const writerHandlers = Object.fromEntries((['writer.prepareSource', 'writer.emitInk', 'writer.stageAnnotated',
-        'writer.finishAnnotated', 'writer.buildNotebook', 'writer.verifyNotebookOutput', 'writer.rotate', 'writer.inspect', 'writer.release'] as const).map(op =>
+        'writer.finishAnnotated', 'writer.buildNotebook', 'writer.verifyNotebookOutput', 'writer.prepareUnsignedCopy', 'writer.verifyUnsignedCopy', 'writer.rotate', 'writer.verifyRotation', 'writer.inspect', 'writer.release'] as const).map(op =>
         [op, serial((value, ctx) => {
             if (!writer || binding.engine.role !== 'writer') throw bad('EngineBroken', 'PDF writer is unavailable');
             return writer.handlers[op as keyof WriterOperations](value, ctx);
@@ -168,13 +183,15 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
     const stop = serve({ endpoint: binding.port, protocol: PDF_ENGINE_PROTOCOL, buildId: binding.engine.buildId, yield: yieldTurn,
         handlers: {
             ...writerHandlers,
+            // This control request must bypass the native serial chain: that chain may be waiting for the module.
+            'code.provide': value => metadata.provide(value),
             'engine.init': serial(async (value, ctx) => {
                 const args = record(value) as unknown as EngineInitArgs;
                 if (backend || writer || args.role !== binding.engine.role || args.protocol !== PDF_ENGINE_PROTOCOL || args.roleVersion !== PDF_ENGINE_ROLE_VERSION ||
                     JSON.stringify(args) !== JSON.stringify(binding.engine)) throw bad('EngineBroken', 'PDF engine initialization mismatch');
                 const started = performance.now(), wasm = await compilePdfEngine(args, ctx.signal);
                 if (args.role === 'writer') {
-                    const { createPdfWriterRuntime } = await import('../writing/nativeHandlers');
+                    const { createPdfWriterRuntime } = await metadata.get(ctx);
                     writer = await createPdfWriterRuntime({ wasm, glueUrl: binding.glueUrl, abi: binding.abi, role: 'writer',
                         buildId: args.buildId, artifactSha256: args.artifactSha256 });
                     return { ...writer.info, initMs: performance.now() - started, heapBytes: writer.heapBytes() };
@@ -193,6 +210,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 catch (error) { source.close(); throw error; }
             }),
             'doc.close': serial(value => { const args = record(value); if (typeof args.docKey !== 'string') throw bad('RangeError', 'Invalid PDF document key');
+                fontProfiles.delete(args.docKey);
                 const item = docs.get(args.docKey); if (item) { docs.delete(args.docKey); dropInspection(args.docKey); item.clone?.close(); item.doc.close(); item.source.close(); } return {}; }),
             'page.text': serial(async (value, ctx): Promise<PageTextReply> => {
                 const { args, key, item } = lookup(value), page = pageNumber(args.page, item), info = item.doc.info();
@@ -279,8 +297,17 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
             'doc.inspectNotebook': serial(async (value, ctx) => {
                 const { args, key, item } = lookup(value);
                 if (typeof args.expectedPath !== 'string' || args.expectedPath.length > 4096) throw bad('RangeError', 'Invalid notebook source path');
-                const { inspectPdfNotebook } = await import('../writing/notebookInspection');
+                const { inspectPdfNotebook } = await metadata.get(ctx);
                 const result = await inspectPdfNotebook(item.sourceBlob, args.expectedPath, () => ctx.slice());
+                if (closed || ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError');
+                return result;
+            }),
+            'doc.inspectLegacyInk': serial(async (value, ctx) => {
+                const { key, item } = lookup(value), info = item.doc.info();
+                if (info.encrypted) return { kind: 'read-only', reason: 'encrypted' };
+                if (info.signatureCount !== 0) return { kind: 'read-only', reason: 'signed' };
+                const { inspectLegacyPdfInk } = await metadata.get(ctx);
+                const result = await inspectLegacyPdfInk(item.sourceBlob, () => ctx.slice());
                 if (closed || ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError');
                 return result;
             }),
@@ -315,5 +342,5 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
             }),
             'worker.stats': serial(() => ({ heapBytes: backend?.heapBytes() ?? writer?.heapBytes() ?? 0, docs: docs.size, pagesLoaded: [...docs.values()].reduce((sum, item) => sum + item.doc.residentPages() + (item.clone?.residentPages() ?? 0), 0), blockCacheBytes: [...docs.values()].reduce((sum, item) => sum + item.source.cachedBytes, 0) })),
         } });
-    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); inspections.clear(); inspectionBytes = 0; inspector?.dispose(); fonts.clear(); backend?.close?.(); void writer?.close(); channel.port1.close(); channel.port2.close(); };
+    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); fontProfiles.clear(); inspections.clear(); inspectionBytes = 0; inspector?.dispose(); metadata.dispose(); fonts.clear(); backend?.close?.(); void writer?.close(); channel.port1.close(); channel.port2.close(); for (const resolve of turns.splice(0)) resolve(); };
 }

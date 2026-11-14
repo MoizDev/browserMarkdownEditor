@@ -161,6 +161,17 @@ export class TextEditSession {
             text: () => this.services.plainText(), selection: () => this.selection,
             setSelection: selection => this.select(selection, true), replace: change => { this.replace(change, 'typing'); this.host.sync(); },
             move: (offset, direction) => this.move(offset, direction),
+            collapse: (selection, direction) => {
+                const index = this.services.layout().caret;
+                const a = index.caret({ offset: selection.anchor });
+                const b = index.caret({ offset: selection.focus, affinity: this.affinity });
+                const first = a.line < b.line || (a.line === b.line && a.x <= b.x) ? a : b;
+                const last = first === a ? b : a;
+                const stop = direction === 'left' ? first : last;
+                this.affinity = stop.affinity;
+                this.goalX = undefined;
+                return stop.offset;
+            },
             command: command => {
                 const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', italic: 'i', underline: 'u', strike: 's', code: 'code', highlight: 'hl' };
                 const mark = marks[command];

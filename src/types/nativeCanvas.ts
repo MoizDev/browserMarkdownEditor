@@ -3,6 +3,7 @@ import type { ContentSource, DeferredSource } from '../utils/documentBuffers';
 import type { JournalCapture } from '../utils/recoveryFunnel';
 import type { ClipboardCache } from '../utils/clipboardCache';
 import type { TrashItem } from './index';
+import type { EmbedContainmentApproval, EmbedContainmentFactory, EmbedFrameManifest } from '../platform/embedContainment.types';
 
 export interface NativeCanvasIdentity {
     readonly documentId: string;
@@ -19,8 +20,15 @@ export interface NativeCanvasMedia {
     readonly preferredName?: string | null;
 }
 
+export interface NativeEmbedHost {
+    readonly manifest: EmbedFrameManifest;
+    readonly create: EmbedContainmentFactory;
+    readonly approved: EmbedContainmentApproval;
+}
+
 export interface NativeCanvasHost {
     readonly clipboard: ClipboardCache;
+    readonly embeds: NativeEmbedHost;
     identity(documentId: string): NativeCanvasIdentity | undefined;
     /** The current outer-file generation, even when a native session retains its source generation. */
     outerIdentity(documentId: string): NativeCanvasIdentity | undefined;

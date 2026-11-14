@@ -14,26 +14,45 @@ export interface SessionGestureQueue {
     beginGesture(): () => void;
     dispose(): void;
 }
-interface Pending { run(): void; cancel(error: unknown): void }
+interface Pending {
+    previous: Pending | null;
+    next: Pending | null;
+    linked: boolean;
+    run(): void;
+    cancel(error: unknown): void;
+}
 
 // C7.2/WB-D17: one session-owned FIFO shared by input and agent callers. Stop
 // cancels while held; owner/read-only/cancellation are checked AGAIN just before
 // the synchronous task. A microtask keeps edits outside apply's publication.
 export function createSessionGestureQueue(options: SessionGestureQueueOptions): SessionGestureQueue {
     const owner = Object.freeze({ documentId: options.owner.documentId, session: options.owner.session });
-    const pending: Pending[] = [];
+    let first: Pending | null = null, last: Pending | null = null;
     let holds = 0, disposed = false, scheduled = false;
     const schedule = () => {
-        if (!disposed && !holds && !scheduled && pending.length) {
+        if (!disposed && !holds && !scheduled && first) {
             scheduled = true;
             queueMicrotask(drain);
         }
     };
+    // An aborted request must leave the FIFO immediately: a long gesture can
+    // otherwise retain every cancelled agent/paste promise until pointer-up.
+    function unlink(item: Pending): void {
+        if (!item.linked) return;
+        if (item.previous) item.previous.next = item.next;
+        else first = item.next;
+        if (item.next) item.next.previous = item.previous;
+        else last = item.previous;
+        item.previous = item.next = null;
+        item.linked = false;
+    }
     function drain(): void {
         scheduled = false;
-        let index = 0;
-        while (!disposed && !holds && index < pending.length) pending[index++].run();
-        if (index) pending.splice(0, index);
+        while (!disposed && !holds && first) {
+            const item: Pending = first;
+            unlink(item);
+            item.run();
+        }
         schedule();
     }
     const check = (signal: AbortSignal) => {
@@ -48,8 +67,9 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
             return new Promise<T>((resolve, reject) => {
                 try { check(signal); }
                 catch (error) { work = undefined; reject(error); return; }
-                const clear = () => { work = undefined; signal.removeEventListener('abort', abort); };
+                const clear = () => { work = undefined; unlink(item); signal.removeEventListener('abort', abort); };
                 const item: Pending = {
+                    previous: null, next: null, linked: false,
                     run() {
                         if (!work) return;
                         const run = work;
@@ -66,7 +86,11 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
                 function abort() { item.cancel(new DOMException('Canvas edit cancelled', 'AbortError')); }
                 try {
                     signal.addEventListener('abort', abort, { once: true });
-                    pending.push(item);
+                    item.previous = last;
+                    if (last) last.next = item;
+                    else first = item;
+                    last = item;
+                    item.linked = true;
                     if (signal.aborted) abort();
                     schedule();
                 } catch (error) { item.cancel(error); }
@@ -86,8 +110,7 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
         dispose() {
             if (disposed) return;
             disposed = true;
-            for (const item of pending) item.cancel(new ApplyFailed('stale-session', 'The board session has ended'));
-            pending.length = 0;
+            while (first) first.cancel(new ApplyFailed('stale-session', 'The board session has ended'));
         },
     };
 }

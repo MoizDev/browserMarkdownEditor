@@ -11,8 +11,10 @@ import type { TextEditBinding, TextEditBindingOptions } from './bindingTypes';
 export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding {
     const { session, node: id, key, view, layoutEngine } = options;
     let closed = false, overlay: TextChange | null = null, overlayRevision = 0;
+    let overlayCache: { readonly source: RichText; readonly change: TextChange; readonly text: RichText } | null = null;
     let releaseComposition: (() => void) | undefined;
     let lastPaint = '', lastOwnRevision = session.doc.rev, prepared = '';
+    let cachedFrameName: string | undefined, cachedFrameText: RichText | undefined;
     const editorRef: { current?: TextEditSession } = {};
     function node(): Readonly<Node> {
         const current = session.doc.nodes.get(id);
@@ -21,7 +23,12 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
     }
     function readText(): RichText {
         const current = node();
-        if (key === 'name' && current.kind === 'frame') return rich.fromPlain(current.name);
+        if (key === 'name' && current.kind === 'frame') {
+            if (!cachedFrameText || cachedFrameName !== current.name) {
+                cachedFrameName = current.name; cachedFrameText = rich.fromPlain(current.name);
+            }
+            return cachedFrameText;
+        }
         if (key === 'text' && (current.kind === 'text' || current.kind === 'sticky')) return current.text;
         if (key === 'label' && (current.kind === 'figure' || current.kind === 'connector')) return current.label ?? EMPTY_RICH_TEXT;
         throw new Error('Node does not own this text field');
@@ -29,9 +36,12 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
     const adapter = richEditAdapter(id, key === 'label' ? 'label' : 'text', readText, rich);
     function overlayText(): RichText {
         const source = readText();
-        if (!overlay) return source;
+        if (!overlay) { overlayCache = null; return source; }
+        if (overlayCache?.source === source && overlayCache.change === overlay) return overlayCache.text;
         const insert = rich.insertionFragment(source, overlay.from, overlay.text, null);
-        return rich.splice(source, overlay.from, overlay.to, insert).text;
+        const text = rich.splice(source, overlay.from, overlay.to, insert).text;
+        overlayCache = { source, change: overlay, text };
+        return text;
     }
     function layout(): EditLayout {
         const text = overlayText(), request = options.request(node(), text, overlayRevision);
@@ -46,7 +56,8 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
             void layoutEngine.prepare(request).then(() => { if (!closed) view.requestChrome(); }, view.reportError);
         }
         const paint = layoutEngine.layout(request);
-        if (paint.key !== lastPaint) { lastPaint = paint.key; options.paintChanged(paint, layoutEngine.faceTable); }
+        if (!paint.faceTable) throw new Error('Text paint has no owning face table');
+        if (paint.key !== lastPaint) { lastPaint = paint.key; options.paintChanged(paint, paint.faceTable); }
         return { paint, caret: layoutEngine.caretIndex(request, paint), ...options.transforms() };
     }
     function translateFrame(transaction: Transaction): Transaction {
@@ -70,6 +81,27 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
         lastOwnRevision = session.doc.rev;
         applied.release();
     }
+    function prepareCut(transaction: Transaction): { commit(): void; release(): void } {
+        if (closed || !session.doc.nodes.has(id)) throw new Error('Text editing is no longer active');
+        const revision = session.doc.rev;
+        const prepared = options.prepareTransaction(translateFrame(transaction));
+        const proof = session.preflight(prepared);
+        const current = () => !closed && session.doc.rev === revision && session.doc.nodes.has(id);
+        try {
+            if (!current() || !proof.ops.length) throw new Error('Text cut is not available');
+        } catch (error) { proof.release(); throw error; }
+        let released = false, committed = false;
+        return {
+            commit() {
+                if (released || committed || !current()) throw new Error('Text changed; nothing was cut');
+                const applied = session.apply({ ...prepared, ops: proof.ops });
+                committed = true;
+                lastOwnRevision = session.doc.rev;
+                applied.release();
+            },
+            release() { if (!released) { released = true; proof.release(); } },
+        };
+    }
     function inList(offset: number): boolean {
         const text = readText();
         let position = 0;
@@ -85,6 +117,7 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
         history: session.history,
         ...adapter,
         apply,
+        prepareCut,
         alive: () => !closed && session.doc.nodes.has(id),
         layout,
         inList,

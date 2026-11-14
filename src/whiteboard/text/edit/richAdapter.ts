@@ -19,7 +19,7 @@ export function richEditAdapter(id: NodeId, key: 'text' | 'label', read: () => R
         marksAt: (offset: number) => rich.marksAt(read(), offset),
         fragment: (from: number, value: string, marks: Marks | null) => rich.insertionFragment(read(), from, value, marks),
         format: (mark: ToggleMark, from: number, to: number) => from === to ? null : splice(from, to, rich.toggleMark(read(), from, to, mark), 'Format text'),
-        link: (url: string, from: number, to: number) => from === to ? null : splice(from, to, rich.applyLink(read(), from, to, url), 'Apply text link'),
+        link: (url: string | null, from: number, to: number) => from === to ? null : splice(from, to, rich.applyLink(read(), from, to, url), url === null ? 'Remove text link' : 'Apply text link'),
         enter: (selection: EditSelection) => edit(rich.enter(read(), selection), 'Enter paragraph'),
         blocks: (selection: EditSelection, kind: Block['kind'] | 'indent' | 'outdent') =>
             edit(rich.blocks(read(), Math.min(selection.anchor, selection.focus), Math.max(selection.anchor, selection.focus), kind), 'Format text blocks'),

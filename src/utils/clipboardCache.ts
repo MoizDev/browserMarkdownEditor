@@ -7,6 +7,8 @@ export interface ClipboardCacheEntry {
 }
 
 export interface ClipboardCache {
+  /** Borrow synchronously; the payload's owner must retain before returning to the event loop. */
+  peek(): object | undefined;
   match(encoded: string, plain: string): object | undefined;
   replace(entry: ClipboardCacheEntry): void;
   clear(): void;
@@ -20,6 +22,7 @@ export function createClipboardCache(onError: (error: unknown) => void): Clipboa
     try { entry?.release(); } catch (error) { onError(error); }
   };
   return {
+    peek: () => written?.value,
     match(encoded, plain) {
       return written && written.encoded === encoded && (!written.cacheOnly || written.plain === plain) ? written.value : undefined;
     },

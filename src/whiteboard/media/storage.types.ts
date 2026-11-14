@@ -59,6 +59,10 @@ export type MediaStorageReceipt = MediaStorageReceiptBase & (
         /** Available only after commit, while the receipt is retained. */
         captureCurrentBytes(signal: AbortSignal): Promise<CurrentDocumentBytes> }>
 );
+/** Existing filesystem adapters may still return their actual written filename.
+ * Embedded storage always requires an issued receipt; null never means stored. */
+export type MediaStorageResult = MediaStorageReceipt | string | null;
+export type StoreMedia = (entry: MediaEntry, blob: Blob, signal: AbortSignal, proof: MediaStorageProof) => Promise<MediaStorageResult>;
 export type StoreVerifiedMedia = (entry: MediaEntry, blob: Blob, signal: AbortSignal,
     proof: MediaStorageProof) => Promise<MediaStorageReceipt>;
 export type MediaStorageIssuer = (request: MediaStorageRequest, destination: MediaStorageDestination) => MediaStorageReceipt;

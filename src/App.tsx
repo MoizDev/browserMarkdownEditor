@@ -51,6 +51,7 @@ import type { RecoveryEntry } from './utils/recoveryJournal';
 import type { NativeCanvasHost, NativeCanvasIdentity } from './types/nativeCanvas';
 import { pdfEngineAvailableInBuild } from './utils/pdfEngineAvailability';
 import { createClipboardCache } from './utils/clipboardCache';
+import { createNativeEmbedHost } from './utils/nativeEmbedHost';
 import { materializeRecoveryCopy, recoveryCopyMedia } from './utils/recoveryCopy';
 import { bindRecoveryAdapter, recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
@@ -1211,6 +1212,7 @@ export default function App() {
     return { emergencyReadOnly };
   }, [documentSessions, getVaultActivation]);
   const [nativeClipboard] = useState(() => createClipboardCache(error => console.error('Could not release clipboard resources:', error)));
+  const [nativeEmbeds] = useState(createNativeEmbedHost);
   useEffect(() => { nativeClipboard.setActive(true); return () => nativeClipboard.setActive(false); }, [nativeClipboard]);
   const nativeCanvasHost = useMemo<NativeCanvasHost>(() => {
     const current = (identity: NativeCanvasIdentity) => {
@@ -1246,6 +1248,7 @@ export default function App() {
     };
     return {
       clipboard: nativeClipboard,
+      embeds: nativeEmbeds,
       identity(id) {
         const tab = tabsRef.current.find(tab => tab.id === id), entry = documentSessions.get(id);
         if (!tab || tab.readError || tab.representation.status !== 'ready' || !entry) return undefined;
@@ -1471,7 +1474,7 @@ export default function App() {
         return name;
       },
     };
-  }, [nativeClipboard, documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, readLegacyBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal, ask]);
+  }, [nativeClipboard, nativeEmbeds, documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, readLegacyBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal, ask]);
   useEffect(() => {
     const open = new Set(tabs.map(tab => tab.id));
     for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);

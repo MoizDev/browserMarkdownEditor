@@ -19,6 +19,8 @@ export interface BoardJournalOptions {
     projectMedia?: (entry: MediaEntry) => MediaEntry;
     prepareMedia?: (payload: unknown, signal: AbortSignal, isCurrent: () => boolean) => Promise<{ readonly files: ReadonlyMap<MediaId, string>; release(): void }>;
     isCurrent?: () => boolean;
+    /** App re-reads disk and compares its stat/hash with the session baseline. */
+    assertDiskBaseline(signal: AbortSignal): Promise<void>;
     onError(error: unknown): void;
     cooperate?: () => Promise<void>;
 }
@@ -30,6 +32,7 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
     let disposed = false, captureReleased = false, inFlight = 0, failure: unknown;
     let tail: Promise<void> = Promise.resolve(), replay: Promise<void> | undefined;
+    let baselineBytes = options.capture.baseline.baseline;
     const report = (error: unknown) => { try { options.onError(error); } catch { /* Preserve the underlying failure. */ } };
     const releaseWhenIdle = () => {
         if (disposed && !inFlight && !replay && !captureReleased) { captureReleased = true; capture.dispose(); }
@@ -68,15 +71,36 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
             if (disposed) throw new Error('Board journal disposed');
             if (replay) throw new Error('Board recovery is already in progress');
             signal.throwIfAborted();
-            const revision = options.doc.rev;
-            const current = () => !disposed && !signal.aborted && options.doc.rev === revision && (options.isCurrent?.() ?? true);
+            const revision = options.doc.rev, expectedBaseline = baselineBytes;
+            const current = () => !disposed && !signal.aborted && options.doc.rev === revision && baselineBytes === expectedBaseline && (options.isCurrent?.() ?? true);
             const work = (async () => {
+                if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
+                const recipe = payload && typeof payload === 'object' ? payload as { prime?: { baseline?: unknown } } : undefined;
+                const source = recipe?.prime?.baseline;
+                if (!(source instanceof Blob) || (typeof File !== 'undefined' && source instanceof File) || source.size !== baselineBytes.size) {
+                    throw new Error('Recovery baseline differs; save a copy instead');
+                }
+                // Compare the exact source in bounded chunks before staging media or model edits.
+                for (let offset = 0; offset < baselineBytes.size; offset += 1024 * 1024) {
+                    if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
+                    const [left, right] = await Promise.all([
+                        source.slice(offset, offset + 1024 * 1024).arrayBuffer(),
+                        baselineBytes.slice(offset, offset + 1024 * 1024).arrayBuffer(),
+                    ]);
+                    if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
+                    const a = new Uint8Array(left), b = new Uint8Array(right);
+                    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) throw new Error('Recovery baseline differs; save a copy instead');
+                    await options.cooperate?.();
+                }
+                if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
+                await options.assertDiskBaseline(signal);
                 if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
                 const media = await options.prepareMedia?.(payload, signal, current);
                 try {
                     if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
                     await recoverBoardJournal(payload, { doc: options.doc, samples: options.samples, apply, signal,
-                        cooperate: options.cooperate, projectMedia: options.projectMedia, mediaFiles: media?.files, isCurrent: current });
+                        cooperate: options.cooperate, projectMedia: options.projectMedia, mediaFiles: media?.files, isCurrent: current,
+                        assertDiskBaseline: options.assertDiskBaseline });
                 } finally { media?.release(); }
             })();
             replay = work;
@@ -87,13 +111,15 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
         acknowledge(revision: number, baseline?: SerializerPrime) {
             if (disposed) throw new Error('Board journal disposed');
             capture.acknowledge(revision, baseline);
+            if (baseline) baselineBytes = baseline.baseline;
         },
         async drain() {
-            // Include appends enqueued while an earlier append was in flight.
+            // A recovery can enqueue its cumulative append only after replay commits.
             for (;;) {
-                const pending = tail;
+                const currentReplay = replay, pending = tail;
+                if (currentReplay) await currentReplay;
                 await pending;
-                if (pending === tail) break;
+                if (!replay && pending === tail) break;
             }
             if (failure !== undefined) { const error = failure; failure = undefined; throw error; }
         },

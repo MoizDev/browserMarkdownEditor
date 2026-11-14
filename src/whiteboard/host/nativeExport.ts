@@ -12,7 +12,7 @@ import { streamRasterPng } from '../export/streamRaster';
 import { streamSvg } from '../export/streamSvg';
 import { createBoardHostImages } from '../media/hostImages';
 import type { MediaLease } from '../media/store';
-import type { MediaId } from '../model/media';
+import type { MediaEntry, MediaId } from '../model/media';
 import type { NodeId } from '../model/ids';
 import { colourCss } from '../render/colour';
 import { DEFAULT_BOARD_PALETTES } from '../render/palette';
@@ -34,6 +34,9 @@ export interface NativeExportOptions {
     /** Agent viewport/page captures share this producer, including genuine PDF children. */
     readonly region?: Readonly<Rect>;
     readonly maxSide?: number;
+    /** A captured semantic selection, including the flatten operation's locked-subtree mask. */
+    readonly selection?: Readonly<{ roots: readonly NodeId[]; excludeSubtrees: readonly NodeId[] }>;
+    readMedia?(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     current(): boolean;
     notice(message: string): void;
     onError(error: unknown): void;
@@ -48,11 +51,16 @@ export interface NativeExportJob {
     release(): void;
 }
 
+export interface NativePreparedExportJob extends NativeExportJob {
+    readonly bounds: Readonly<Rect>;
+    readonly topmostRoot: NodeId | null;
+}
+
 let serial = 0;
 const stale = () => new DOMException('Board export ended', 'AbortError');
 
 /** Scene, selection and media are pinned before the first asynchronous boundary. */
-export async function prepareNativeExport(options: NativeExportOptions): Promise<NativeExportJob> {
+export async function prepareNativeExport(options: NativeExportOptions): Promise<NativePreparedExportJob> {
     const { runtime, signal, route, theme, transparent, boardName, maxSide } = options;
     const region = options.region ? { ...options.region } : undefined;
     if (region && (![region.x, region.y, region.width, region.height, region.x + region.width, region.y + region.height].every(Number.isFinite)
@@ -62,18 +70,34 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
     signal.throwIfAborted();
     if (!options.current() || !scene?.ready || scene.revision !== doc.rev) throw new Error('Board export scene is not ready');
     const selection = runtime.selection.getSnapshot(), revision = doc.rev, fontEpoch = runtime.render.text.fonts.epoch;
-    const selectedRoots = route === 'menu' || region ? [] : [...selection.selected];
-    const selected = new Set<NodeId>(), pending = [...selectedRoots];
+    if (region && options.selection) throw new TypeError('Explicit selection and capture region are mutually exclusive');
+    const selectedRoots = options.selection ? [...options.selection.roots] : route === 'menu' || region ? [] : [...selection.selected];
+    if (options.selection && !selectedRoots.length) throw new RangeError('Nothing to export');
+    const excluded = new Set(options.selection?.excludeSubtrees), rootOf = new Map<NodeId, NodeId>();
+    const selected = new Set<NodeId>(), pending = selectedRoots.map(id => ({ id, root: id }));
     const sheetNodes = doc.bySheet.get(selection.sheet);
     while (pending.length) {
-        const id = pending.pop()!;
-        if (selected.has(id)) continue;
+        const { id, root } = pending.pop()!;
+        if (selected.has(id) || excluded.has(id)) continue;
         const node = doc.nodes.get(id);
         if (!node || !sheetNodes?.has(id)) throw new Error('Export selection no longer belongs to this sheet');
-        selected.add(id);
-        for (const child of doc.children.get(id) ?? []) pending.push(child.id);
+        selected.add(id); rootOf.set(id, root);
+        for (const child of doc.children.get(id) ?? []) pending.push({ id: child.id, root });
     }
     const selectionOnly = selectedRoots.length > 0;
+    const visualNodes = new Set(selected);
+    for (const id of selectedRoots) {
+        let parent = doc.nodes.get(id)?.parent;
+        for (let depth = 0; parent && depth <= 64; depth++) {
+            const node = doc.nodes.get(parent as NodeId);
+            if (!node) break;
+            visualNodes.add(node.id); parent = node.parent;
+        }
+    }
+    const mediaIds = new Set<MediaId>();
+    for (const [id, references] of doc.mediaRefs) {
+        for (const node of references) if (selectionOnly ? selected.has(node) : sheetNodes?.has(node)) { mediaIds.add(id); break; }
+    }
     const pin = scene.pin(), leases: MediaLease[] = [], lifetime = new AbortController();
     let pdfLease: PdfInkSourceLease | undefined, images: ReturnType<typeof createBoardHostImages> | undefined;
     let pdfBackdrop: Awaited<ReturnType<PdfInkSourceLease['source']['createBackdrop']>> | undefined;
@@ -103,11 +127,17 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             if (sourceToken.documentId !== pin.token.documentId || sourceToken.session !== pin.token.session ||
                 sourceToken.vaultEpoch !== pin.token.vaultEpoch) throw new Error('PDF backdrop belongs to another document');
         }
-        const entries = new Map([...meta.media].map(([id, entry]) => [id, structuredClone(entry)]));
+        const entries = new Map<MediaId, MediaEntry>();
+        for (const id of mediaIds) {
+            const entry = meta.media.get(id);
+            if (!entry) throw new Error(`Captured board media entry is unavailable: ${id}`);
+            entries.set(id, structuredClone(entry));
+        }
         const blobs = new Map<MediaId, Blob>();
         for (const [id, entry] of entries) {
             leases.push(runtime.media.retain(id, 'snapshot'));
-            const blob = runtime.media.get(id);
+            const blob = runtime.media.get(id) ?? await options.readMedia?.(entry, signal);
+            signal.throwIfAborted();
             if (!blob || blob.size !== entry.bytes) throw new Error(`Captured board media is unavailable: ${id}`);
             blobs.set(id, blob.slice(0, blob.size, blob.type));
         }
@@ -136,18 +166,21 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         }
         const frozenDoc = await pin.readDocument(operationSignal);
         operationSignal.throwIfAborted();
-        const visual = await inspectPdfVisualDoc(frozenDoc, { signal: operationSignal });
+        const visual = await inspectPdfVisualDoc(frozenDoc, { signal: operationSignal,
+            ...(selectionOnly ? { includeNodes: visualNodes } : {}) });
         if (visual.status !== 'known') throw new Error('The export contains unsupported visual content.');
         if (runtime.render.text.fonts.epoch !== fontEpoch) throw new Error('Board fonts changed while preparing the export; retry.');
         const raw = await pin.paintSource({ sheetId: selection.sheet, theme: meta.kind === 'whiteboard' ? theme : 'light', deviceScale: 2 }, operationSignal);
         operationSignal.throwIfAborted();
         if (runtime.render.text.fonts.epoch !== fontEpoch) throw new Error('Board fonts changed while preparing the export; retry.');
+        let topmostRoot: NodeId | null = null, topmostIndex = -1;
         const filtered: PaintNodeSource = selectionOnly ? {
             token: raw.token, sceneRevision: raw.sceneRevision, nodeCount: raw.nodeCount, isCurrent: () => raw.isCurrent(),
             readNode(index) {
                 const node = raw.readNode(index);
-                return { underlay: node.underlay?.filter(item => selected.has(item.nodeId as NodeId)),
-                    content: node.content.filter(item => selected.has(item.nodeId as NodeId)) };
+                const underlay = node.underlay?.filter(item => selected.has(item.nodeId as NodeId));
+                const content = node.content.filter(item => selected.has(item.nodeId as NodeId));
+                return { underlay, content };
             },
         } : raw;
         const now = performance.now();
@@ -157,7 +190,13 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             lastVisibleAt: now, lastUsedAt: now, memory: () => ({ live, retiring: 0 }), evict: () => {} });
         let inkBounds: Rect | null;
         try {
-            const measured = await measureBoardPaintBounds(filtered, { signal: operationSignal, memory: {
+            const measured = await measureBoardPaintBounds(filtered, { signal: operationSignal,
+                onPaintedItem(item, index) {
+                    // Only the actual certified nonempty paint can choose the
+                    // replacement slot; opacity-zero and fully clipped roots cannot.
+                    const root = rootOf.get(item.nodeId as NodeId);
+                    if (root && index >= topmostIndex) { topmostIndex = index; topmostRoot = root; }
+                }, memory: {
                 reserve(bytes) { const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
                 release(lease) { cache.release(lease); live -= lease.bytes; },
             } });
@@ -351,6 +390,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         signal.addEventListener('abort', release, { once: true });
         if (signal.aborted) { release(); throw stale(); }
         return {
+            bounds: Object.freeze({ ...scope.bounds }), topmostRoot,
             png: requestSignal => run(requestSignal, combined => {
                 if (route === 'copy' && pngScale < 2) options.notice('The copied PNG was scaled down to fit the clipboard size limit.');
                 return pdfBackdrop ? pdfPng(combined) : streamRasterPng(source, capturedImages, scope.bounds, pngScale, combined,

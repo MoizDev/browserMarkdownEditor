@@ -224,17 +224,33 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             const captured = checkpoints.get(revision);
             if (!captured?.checkpoint.product()) return;
             savedRevision = revision;
-            journal.acknowledge(revision, captured.checkpoint.baseline());
+            // The durable write still needs serializer/PDF acknowledgement if journalling fails.
+            try { journal.acknowledge(revision, captured.checkpoint.baseline()); }
+            catch (error) { reportPendingError(error); }
             scheduler.setJournalPending(savedRevision < contentRevision);
-            void track(captured.checkpoint.written().then(() => options.afterWritten?.(revision, captured.context))).catch(reportPendingError);
+            const finishWritten = async () => {
+                try { await captured.checkpoint.written(); }
+                catch (error) { reportPendingError(error); }
+                // PDF source rebinding follows the real durable write even if its serializer failed.
+                await options.afterWritten?.(revision, captured.context);
+            };
+            void track(finishWritten()).catch(reportPendingError);
             for (const key of checkpoints.keys()) if (key <= revision) checkpoints.delete(key);
             notifyPending();
         },
-        async drain() { while (outstanding.size) await Promise.allSettled([...outstanding]); await journal.drain(); },
+        async drain() {
+            // A journal append may start another session-owned build while draining.
+            do {
+                while (outstanding.size) await Promise.allSettled([...outstanding]);
+                await scheduler.drain();
+                await journal.drain();
+            } while (outstanding.size);
+        },
         onChange(listener: (source: ContentSource) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         journalDelta() { capture(); return journal.delta(cachedSource!.context); },
         async recover(payload: unknown) {
             guard();
+            if (pendingState() || doc.rev !== savedRevision) throw new ApplyFailed('recovery-conflict', 'Current board state changed; save the recovery as a copy or reload before applying it');
             const release = queue.beginGesture();
             recovering = true; notifyPending();
             let opened = false;

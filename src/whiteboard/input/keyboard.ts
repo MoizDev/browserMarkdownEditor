@@ -205,8 +205,12 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
     if (event.key.toLowerCase() === 'z' || event.code === 'KeyZ') actions.run('zoom.release', event)
   }
   const blur = (): void => { actions.clearLatches() }
+  const focusout = (event: FocusEvent): void => {
+    if (!(event.relatedTarget instanceof Node) || !root.contains(event.relatedTarget)) actions.clearLatches()
+  }
+  root.addEventListener('focusout', focusout)
   root.addEventListener('keydown', keydown)
   window.addEventListener('keyup', keyup)
   window.addEventListener('blur', blur)
-  return () => { root.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('blur', blur); actions.clearLatches() }
+  return () => { root.removeEventListener('focusout', focusout); root.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('blur', blur); actions.clearLatches() }
 }

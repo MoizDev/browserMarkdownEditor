@@ -1,4 +1,6 @@
-import type { Block, Marks, RichText, Run } from '../text/richText';
+import type { Block, BlockCarrier, Marks, RichText, Run } from '../text/richText';
+import { projectBlockCarrier } from './projectCarrierRanges';
+import { validBlockCarrier } from './validate';
 import { NODE_FILE_FIELDS } from './fileFields';
 import type { RawJson } from './json';
 import type { LoadRepairNotice } from './loadTypes';
@@ -53,8 +55,9 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
         return json as RawJson;
     };
     const repair = async (source: unknown): Promise<{ value: RichText; changed: boolean; replacements: number }> => {
-        let changed = false, replacements = 0, length = 0;
-        const blocks: Block[] = [];
+        let changed = false, replacements = 0, length = 0, carrierCount = 0;
+        const blocks: Block[] = [], starts: number[] = [], lengths: number[] = [];
+        const carrierLists = new Map<number, BlockCarrier[]>();
         let input: unknown[];
         if (typeof source === 'string') { input = [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: source, marks: {} }] }]; changed = true; }
         else if (object(source) && Array.isArray(source.blocks) && Object.keys(source).every(key => key === 'blocks')) input = source.blocks;
@@ -69,11 +72,13 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
         };
         for (const rawBlock of input) {
             if (due()) await tick();
+            const firstBlock = blocks.length;
+            let sourceLength = 0, sourceOffset = 0, currentLength = 0;
             let block: ObjectValue;
             if (typeof rawBlock === 'string') { block = { kind: 'p', level: 0, dir: 'auto', runs: [{ text: rawBlock, marks: {} }] }; changed = true; }
             else if (object(rawBlock) && typeof rawBlock.text === 'string' && Object.keys(rawBlock).every(key => key === 'text')) {
                 block = { kind: 'p', level: 0, dir: 'auto', runs: [{ text: rawBlock.text, marks: {} }] }; changed = true;
-            } else if (object(rawBlock) && Object.keys(rawBlock).every(key => ['kind', 'level', 'start', 'dir', 'runs', 'tail'].includes(key))) block = rawBlock;
+            } else if (object(rawBlock) && Object.keys(rawBlock).every(key => ['kind', 'level', 'start', 'dir', 'runs', 'tail', 'carriers'].includes(key))) block = rawBlock;
             else return fail('Rich block structure cannot be preserved');
             let kind = block.kind;
             if (typeof kind !== 'string' || !kinds.has(kind)) { kind = 'p'; changed = true; }
@@ -82,7 +87,7 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
             const dir = block.dir === 'ltr' || block.dir === 'rtl' ? block.dir : 'auto';
             if (dir !== block.dir) changed = true;
             if (block.tail !== undefined && (typeof block.tail !== 'string' || !/^\s*\[/.test(block.tail) || !/\]\s*$/.test(block.tail))) fail('Invalid opaque block tail');
-            if (block.start !== undefined && (kind !== 'ol' || typeof block.start !== 'number' || !Number.isFinite(block.start))) return fail('Rich block start cannot be preserved');
+            if (block.start !== undefined && ((kind !== 'ol' && block.tail === undefined) || typeof block.start !== 'number' || !Number.isFinite(block.start))) return fail('Rich block start cannot be preserved');
             let runs: Run[] = [];
             let first = true;
             const flush = async () => {
@@ -97,7 +102,8 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
                 const out: Block = { kind: kind as Block['kind'], level, dir, runs: runs.length ? runs : [{ text: '', marks: {} }],
                     ...(first && block.start !== undefined ? { start: block.start as number } : {}),
                     ...(first && block.tail !== undefined ? { tail: block.tail as RawJson } : {}) };
-                push(out); runs = []; first = false;
+                starts.push(sourceOffset); lengths.push(currentLength); sourceOffset += currentLength + 1;
+                push(out); runs = []; currentLength = 0; first = false;
             };
             const rawRuns = Array.isArray(block.runs) ? block.runs : typeof block.runs === 'string' ? [block.runs] : null;
             if (!rawRuns) return fail('Rich runs cannot be preserved');
@@ -128,10 +134,11 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
                     changed = true;
                 }
                 const text = run.text;
-                length += text.length;
+                length += text.length; sourceLength += text.length;
                 if (length > MAX_TEXT_LENGTH) fail('Rich text exceeds 1000000 UTF-16 units');
                 let segment = '', last = 0;
                 const append = (part: string, tail?: RawJson) => {
+                    currentLength += part.length;
                     const previous = runs[runs.length - 1];
                     if (previous && previous.tail === undefined && previous.marks.x === undefined && tail === undefined && marks.x === undefined && equalMarks(previous.marks, marks)) {
                         runs[runs.length - 1] = { text: previous.text + part, marks: previous.marks }; changed = true;
@@ -145,7 +152,7 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
                         segment += text.slice(last, i); append(segment, run.tail as RawJson | undefined); await flush();
                         segment = ''; last = i + 1; changed = true;
                         if (run.tail !== undefined || marks.x !== undefined) return fail('Cannot split opaque rich run safely');
-                    } else if ((c < 32 && c !== 9) || (c >= 0xd800 && c <= 0xdfff && !(c <= 0xdbff && i + 1 < text.length && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff))) {
+                    } else if (c >= 0xd800 && c <= 0xdfff && !(c <= 0xdbff && i + 1 < text.length && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff)) {
                         segment += text.slice(last, i) + '\ufffd'; last = i + 1; changed = true; replacements++;
                     } else if (c >= 0xd800 && c <= 0xdbff) i++;
                 }
@@ -153,7 +160,22 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
                 append(segment, run.tail as RawJson | undefined);
             }
             await flush();
+            if (block.carriers !== undefined) {
+                if (!Array.isArray(block.carriers) || block.carriers.length > MAX_TEXT_LENGTH + MAX_TEXT_BLOCKS - carrierCount) return fail('Rich block carriers exceed limits');
+                for (const carrier of block.carriers) {
+                    if (due()) await tick();
+                    if (!validBlockCarrier(carrier, sourceLength)) return fail('Rich block carrier cannot be preserved');
+                    for (const projected of projectBlockCarrier(carrier, firstBlock, blocks.length, starts, lengths)) {
+                        if (due()) await tick();
+                        if (!projected) continue;
+                        if (++carrierCount > MAX_TEXT_LENGTH + MAX_TEXT_BLOCKS) fail('Rich block carrier expansion exceeds limits');
+                        const list = carrierLists.get(projected.index);
+                        if (list) list.push(projected.carrier); else carrierLists.set(projected.index, [projected.carrier]);
+                    }
+                }
+            }
         }
+        for (const [index, carriers] of carrierLists) { if (due()) await tick(); blocks[index] = { ...blocks[index], carriers }; }
         if (!blocks.length) { push({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }); changed = true; }
         return { value: { blocks }, changed, replacements };
     };
@@ -170,7 +192,7 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
                     if (NODE_FILE_FIELDS[key].some(token => node.ext?.raw.has(token))) return { nodes, changedOrdinals: new Set(), notices: [], readOnlyReason: `Repair would override preserved ${key} on ${node.id}` };
                     node = { ...node, [key]: fixed.value } as NodeRecord;
                     changed.add(i); notices.push({ code: 'rich-text', count: 1, nodeIds: [node.id] });
-                    if (fixed.replacements) notices.push({ code: 'rich-text-replaced-controls', count: fixed.replacements, nodeIds: [node.id] });
+                    if (fixed.replacements) notices.push({ code: 'rich-text-replaced-surrogates', count: fixed.replacements, nodeIds: [node.id] });
                 }
             }
             output.push(node);

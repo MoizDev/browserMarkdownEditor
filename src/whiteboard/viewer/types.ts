@@ -64,6 +64,7 @@ export interface ViewerEngine {
     subscribe(listener: () => void): () => void;
     setView(params: ViewerViewParams): void;
     focusNode(id: string): void;
+    cancelReveal(): void;
     bindInteractions(ports: ViewerInteractionPorts): () => void;
     readyPaintFrame(): PaintFrame | null;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;

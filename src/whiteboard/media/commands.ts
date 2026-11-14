@@ -13,6 +13,7 @@ export interface PictureCommands {
     invert(id: NodeId): void;
     setAlt(id: NodeId, text: string): void;
     original(id: NodeId): { readonly blob: Blob; readonly name: string };
+    downloadOriginal(id: NodeId): void;
 }
 export function createPictureCommands(options: { readonly runtime: BoardRuntime; current(): boolean }): PictureCommands {
     const { runtime } = options, session = runtime.session, doc = session.doc;
@@ -27,6 +28,19 @@ export function createPictureCommands(options: { readonly runtime: BoardRuntime;
         session.history.open(label);
         try { const applied = session.apply({ origin: 'host', label, ops }); applied.release(); }
         finally { session.history.close(); }
+    };
+    const original = (id: NodeId): { readonly blob: Blob; readonly name: string } => {
+        const node = picture(id, false), entry = node.media ? doc.media.get(node.media) : undefined;
+        const bytes = node.media ? runtime.media.get(node.media) : undefined;
+        if (!entry || !bytes) throw new Error('Original picture bytes are unavailable');
+        const ext = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+            'image/avif': 'avif', 'image/svg+xml': 'svg' } as Readonly<Record<string, string>>)[entry.mime];
+        if (!ext) throw new Error('Unsupported original picture type');
+        const stem = Array.from(node.alt || 'picture', character => {
+            const code = character.codePointAt(0)!;
+            return code < 32 || code === 127 || character === '/' || character === '\\' || character === ':' ? '_' : character;
+        }).join('').slice(0, 180) || 'picture';
+        return { blob: new Blob([bytes], { type: entry.mime }), name: `${stem}.${ext}` };
     };
     return {
         crop(id, preset, zoom) {
@@ -46,18 +60,11 @@ export function createPictureCommands(options: { readonly runtime: BoardRuntime;
             if (typeof text !== 'string' || text.length > 10_000) throw new RangeError('Picture alternative text exceeds its limit');
             apply('Edit alternative text', [{ t: 'set', id, key: 'alt', value: text }]);
         },
-        original(id) {
-            const node = picture(id, false), entry = node.media ? doc.media.get(node.media) : undefined;
-            const bytes = node.media ? runtime.media.get(node.media) : undefined;
-            if (!entry || !bytes) throw new Error('Original picture bytes are unavailable');
-            const ext = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
-                'image/avif': 'avif', 'image/svg+xml': 'svg' } as Readonly<Record<string, string>>)[entry.mime];
-            if (!ext) throw new Error('Unsupported original picture type');
-            const stem = Array.from(node.alt || 'picture', character => {
-                const code = character.codePointAt(0)!;
-                return code < 32 || code === 127 || character === '/' || character === '\\' || character === ':' ? '_' : character;
-            }).join('').slice(0, 180) || 'picture';
-            return { blob: new Blob([bytes], { type: entry.mime }), name: `${stem}.${ext}` };
+        original,
+        downloadOriginal(id) {
+            const value = original(id), link = document.createElement('a'), url = URL.createObjectURL(value.blob);
+            try { link.href = url; link.download = value.name; link.click(); }
+            finally { setTimeout(() => URL.revokeObjectURL(url), 30_000); }
         },
     };
 }

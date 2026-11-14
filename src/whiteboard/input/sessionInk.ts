@@ -20,6 +20,7 @@ export interface SessionInkServices {
   readonly declaredMaxScale: number
   readonly captureDeviceScale: number
   readonly nextSequence: () => number // Monotone per session, shared by every attached view.
+  readonly rememberStroke: (id: StrokeNode['id']) => void
   readonly admit: (builder: SampleBuilder) => SampleLease
   /** Extra operations join the stroke's one transaction, never a later save. */
   readonly planStroke?: (node: StrokeNode, summary: SampleSummary | null) => readonly Op[]
@@ -67,6 +68,7 @@ export function sessionInkContext(first: RealSample, services: SessionInkService
           if (!applied.recorded) throw new Error('Ink transaction was not recorded')
           nodeRevision = session.doc.rev
           if (undoImmediately) session.history.undo()
+          else if (tool === 'pen') services.rememberStroke(id)
         } finally { applied.release() }
         const transferred = wet; wet = undefined
         return { ...identity, nodeRevision, ...(transferred ? { release: () => transferred.release() } : {}) }

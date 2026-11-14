@@ -7,6 +7,7 @@ import { checkMediaBytes, checkMediaDimensions } from '../security/limits';
 import { sniffMedia } from './sniff';
 import { createSvgAdmissionProfile } from './svgProfile';
 import { svgFrameFactory } from './svgFrameHost';
+import { svgParseBudget } from './svgBudget';
 import { videoFrameInProfile } from './videoFrameHost';
 
 // SVG must be parsed and decoded in a network-denied opaque realm. This narrow
@@ -61,10 +62,20 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
     if (sniffMedia(prefix) === 'image/svg+xml') {
         if (!checkMediaBytes(blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
         const svg = options.svg ?? createSvgAdmissionProfile(svgFrameFactory, options.identity, options.isCurrent);
-        await call<boolean>('svgPreflight', { blob }, 5000);
-        signal.throwIfAborted();
-        const size = await svg.header(blob, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
-        signal.throwIfAborted();
+        const parsing = options.memory.reserve(svgParseBudget(blob.size));
+        if (!parsing) throw new Error('Not enough memory to inspect this SVG');
+        let size: Awaited<ReturnType<SvgAdmissionProfile['header']>>;
+        try {
+            try {
+                if (await call<boolean>('svgPreflight', { blob }, 5000) !== true) throw new Error('Invalid SVG preflight response');
+            } catch (error) {
+                if (signal.aborted) await worker.recycle('SVG preflight cancelled').catch(() => undefined);
+                throw error;
+            }
+            signal.throwIfAborted();
+            size = await svg.header(blob, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+            signal.throwIfAborted();
+        } finally { options.memory.release(parsing); }
         if (!validSize(size.width, size.height) || !Number.isSafeInteger(size.rgbaBytes)
             || size.rgbaBytes < 4 * size.width * size.height || size.rgbaBytes > 4 * (2 ** 26)) throw new RangeError('Invalid SVG dimensions');
         const id = await call<MediaId>('hash', { blob }, 10000);
@@ -73,14 +84,17 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         const lease = options.memory.reserve(size.rgbaBytes);
         if (!lease) throw new Error('Not enough memory to decode this picture');
         try {
-            const typed = blob.slice(0, blob.size, 'image/svg+xml');
+            const parsingProbe = options.memory.reserve(svgParseBudget(blob.size));
+            if (!parsingProbe) throw new Error('Not enough memory to probe this SVG');
             try {
-                await call<boolean>('probe', { blob: typed, width: size.width, height: size.height, animated: false, mime: 'image/svg+xml' }, 10000);
-            } catch {
-                await worker.recycle('SVG worker probe failed').catch(() => undefined);
-                signal.throwIfAborted();
-                await svg.probe(typed, size.width, size.height, signal);
-            }
+                const typed = blob.slice(0, blob.size, 'image/svg+xml');
+                try {
+                    await call<boolean>('probe', { blob: typed, width: size.width, height: size.height, animated: false, mime: 'image/svg+xml' }, 10000);
+                } catch (error) {
+                    if (signal.aborted) { await worker.recycle('SVG worker probe cancelled').catch(() => undefined); throw error; }
+                    await svg.probe(typed, size.width, size.height, signal);
+                }
+            } finally { options.memory.release(parsingProbe); }
         } finally { options.memory.release(lease); }
         signal.throwIfAborted();
         return attest({ id, mime: 'image/svg+xml', width: size.width, height: size.height, animated: false, duration: null });
@@ -109,8 +123,8 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             try {
                 await call<boolean>('probe', { blob, width: result.width, height: result.height, animated: result.animated, mime: result.mime }, 10000);
             } catch (error) {
-                // A cancelled native decoder may still be running after its request settles.
-                await worker.recycle('cancelled image probe').catch(() => undefined);
+                // Only cancellation can leave the native decoder running after the request settles.
+                if (signal.aborted) await worker.recycle('cancelled image probe').catch(() => undefined);
                 throw error;
             }
         }

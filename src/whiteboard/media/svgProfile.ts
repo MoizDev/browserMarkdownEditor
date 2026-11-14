@@ -63,9 +63,15 @@ export function createIsolatedFullFrameSvgDecoder(isCurrent: (identity: BoardJob
         const pinned = Object.freeze({ ...identity });
         const current = (value: BoardJobIdentity) => !signal.aborted && matchingIdentity(value, pinned) && isCurrent(pinned);
         const worker = boardWorker('decode');
-        const preflight = await worker.request<boolean>('svgPreflight', { blob }, pinned, { priority: 0, deadlineMs: 5000, signal }, current);
-        if (preflight !== true) throw new Error('Invalid SVG preflight response');
-        const hash = await worker.request<string>('hash', { blob }, pinned, { priority: 0, deadlineMs: 10000, signal }, current);
+        let preflight: boolean, hash: string;
+        try {
+            preflight = await worker.request<boolean>('svgPreflight', { blob }, pinned, { priority: 0, deadlineMs: 5000, signal }, current);
+            if (preflight !== true) throw new Error('Invalid SVG preflight response');
+            hash = await worker.request<string>('hash', { blob }, pinned, { priority: 0, deadlineMs: 10000, signal }, current);
+        } catch (error) {
+            if (signal.aborted) await worker.recycle('SVG preparation cancelled').catch(() => undefined);
+            throw error;
+        }
         signal.throwIfAborted();
         if (!current(pinned) || hash !== info.id) throw new Error('Full-frame SVG hash mismatch');
         const permit = cpuGovernor.acquire({ name: 'whiteboard-svg-full-frame', id: ++fullFrameJob, priority: 0,

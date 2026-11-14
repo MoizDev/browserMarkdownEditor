@@ -3,6 +3,23 @@ import type { Modifiers, RealSample } from './tool'
 export interface PresentedMapping {
   readonly time: number
   clientToWorld(x: number, y: number): { readonly x: number; readonly y: number }
+  clientToSurface(x: number, y: number): { readonly x: number; readonly y: number }
+}
+
+/** Freeze the DOM rectangle and camera from one actually presented frame. */
+export function presentedMapping(time: number,
+  rect: Readonly<{ left: number; top: number; width: number; height: number }>,
+  viewport: Readonly<{ width: number; height: number }>,
+  camera: Readonly<{ x: number; y: number; z: number }>): PresentedMapping {
+  const { left, top, width, height } = rect, { width: vw, height: vh } = viewport, { x, y, z } = camera
+  if (![time, left, top, width, height, vw, vh, x, y, z].every(Number.isFinite)
+    || time < 0 || width <= 0 || height <= 0 || vw <= 0 || vh <= 0 || z <= 0) throw new RangeError('Invalid presented mapping geometry')
+  const sx = vw / width, sy = vh / height
+  const clientToSurface = (clientX: number, clientY: number) => ({ x: (clientX - left) * sx, y: (clientY - top) * sy })
+  return Object.freeze({ time, clientToSurface, clientToWorld(clientX: number, clientY: number) {
+    const point = clientToSurface(clientX, clientY)
+    return { x: x + point.x / z, y: y + point.y / z }
+  } })
 }
 
 // Record mappings only after presentation, not when a future camera is scheduled.
@@ -10,7 +27,8 @@ export class MappingHistory {
   private entries: PresentedMapping[] = []
   constructor(private readonly onExpired: () => void = () => {}) {}
   present(mapping: PresentedMapping): void {
-    if (!Number.isFinite(mapping.time) || (this.entries.length && mapping.time < this.entries[this.entries.length - 1].time)) throw new Error('Invalid presentation time')
+    if (!Number.isFinite(mapping.time) || typeof mapping.clientToWorld !== 'function' || typeof mapping.clientToSurface !== 'function'
+      || (this.entries.length && mapping.time < this.entries[this.entries.length - 1].time)) throw new Error('Invalid presented input mapping')
     this.entries.push(mapping)
     // Retain at least 250 ms even at very high frame rates.
     while (this.entries.length > 64 && mapping.time - this.entries[1].time >= 250) this.entries.shift()
@@ -24,6 +42,9 @@ export class MappingHistory {
   }
   map(time: number, x: number, y: number): { readonly x: number; readonly y: number } {
     return this.at(time).clientToWorld(x, y)
+  }
+  surface(time: number, x: number, y: number): { readonly x: number; readonly y: number } {
+    return this.at(time).clientToSurface(x, y)
   }
   /** Recover the physical input point through the SAME presented affine that
    * acquired it. Reprojecting with a newer pan camera feeds motion back twice. */
@@ -88,7 +109,9 @@ export class PointerAcquisition {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    for (const id of [...this.contacts.keys()]) this.end(id, 'capture-lost')
+    for (const id of [...this.contacts.keys()]) {
+      try { this.end(id, 'capture-lost') } catch (error) { try { this.sink.error?.(error, id) } catch { /* Continue detaching other contacts. */ } }
+    }
     this.root.removeEventListener('pointerdown', this.down)
     this.root.removeEventListener('pointermove', this.move)
     this.root.removeEventListener('pointerrawupdate', this.raw as EventListener)
@@ -106,11 +129,12 @@ export class PointerAcquisition {
     const time = event.timeStamp
     if (!Number.isFinite(time) || time < 0 || time > performance.now() + 10000 || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) throw new Error('Invalid pointer sample')
     const point = this.mappings.map(time, event.clientX, event.clientY)
-    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('Invalid input mapping')
+    const surface = this.mappings.surface(time, event.clientX, event.clientY)
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(surface.x) || !Number.isFinite(surface.y)) throw new Error('Invalid input mapping')
     const source = event.pointerType === 'pen' || event.pointerType === 'touch' ? event.pointerType : 'mouse'
     const pressureKnown = source === 'pen' && Number.isFinite(event.pressure)
     return { pointerId: event.pointerId, sequence: ++this.sequence, source, x: point.x, y: point.y,
-      pressure: pressureKnown ? Math.max(0, Math.min(1, event.pressure)) : 0.5, pressureKnown, time,
+      surfaceX: surface.x, surfaceY: surface.y, pressure: pressureKnown ? Math.max(0, Math.min(1, event.pressure)) : 0.5, pressureKnown, time,
       buttons: event.buttons, tiltX: Math.max(-90, Math.min(90, event.tiltX || 0)), tiltY: Math.max(-90, Math.min(90, event.tiltY || 0)), twist: ((event.twist || 0) % 360 + 360) % 360 }
   }
 
@@ -134,8 +158,12 @@ export class PointerAcquisition {
     return result
   }
 
+  private predict(id: number, event: PointerEvent | null): void {
+    try { this.sink.prediction?.(id, event) } catch (error) { try { this.sink.error?.(error, id) } catch { /* Prediction never owns real input. */ } }
+  }
+
   private down = (event: PointerEvent): void => {
-    this.sink.prediction?.(event.pointerId, null)
+    this.predict(event.pointerId, null)
     if (this.contacts.has(event.pointerId)) return
     try {
       const sample = this.sample(event)
@@ -150,11 +178,11 @@ export class PointerAcquisition {
     const contact = this.contacts.get(event.pointerId)
     if (!contact) { if (!raw) this.sink.hover?.(event); return }
     if (raw && event.pointerType !== 'pen' && event.pointerType !== 'mouse') return
-    this.sink.prediction?.(event.pointerId, null)
+    this.predict(event.pointerId, null)
     try {
       const samples = this.batch(contact, event)
       if (samples.length) this.sink.move(event.pointerId, samples, modifiers(event, this.mac), event)
-      if (!raw) this.sink.prediction?.(event.pointerId, event)
+      if (!raw) this.predict(event.pointerId, event)
     } catch (error) { this.sink.error?.(error, event.pointerId); this.end(event.pointerId, 'cancel') }
   }
   private move = (event: PointerEvent): void => { this.process(event, false) }
@@ -162,7 +190,7 @@ export class PointerAcquisition {
   private up = (event: PointerEvent): void => {
     const contact = this.contacts.get(event.pointerId)
     if (!contact) return
-    this.sink.prediction?.(event.pointerId, null)
+    this.predict(event.pointerId, null)
     try {
       const samples = this.batch(contact, event)
       this.sink.up(event.pointerId, samples, modifiers(event, this.mac), event)
@@ -171,9 +199,9 @@ export class PointerAcquisition {
   }
   private end(id: number, reason: 'cancel' | 'capture-lost' | 'capture-failed'): void {
     if (!this.contacts.delete(id)) return
-    this.sink.prediction?.(id, null)
-    this.sink.cancel(id, reason)
-    try { if (this.root.hasPointerCapture(id)) this.root.releasePointerCapture(id) } catch { /* Capture may have ended already. */ }
+    this.predict(id, null)
+    try { this.sink.cancel(id, reason) }
+    finally { try { if (this.root.hasPointerCapture(id)) this.root.releasePointerCapture(id) } catch { /* Capture may have ended already. */ } }
   }
   private cancel = (event: PointerEvent): void => { this.end(event.pointerId, 'cancel') }
   private got = (event: PointerEvent): void => { if (this.contacts.has(event.pointerId)) this.sink.captured?.(event.pointerId) }

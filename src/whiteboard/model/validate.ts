@@ -1,6 +1,6 @@
 import { normalizePaper, PAPER_SIZES, type NotebookPaper } from '../../utils/paper';
 import type { Op, TouchedSet, TransactionOrigin } from '../change/ops';
-import type { RichText } from '../text/richText';
+import type { BlockCarrier, RichText } from '../text/richText';
 import { SECURITY_LIMITS } from '../security/limits';
 import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from './doc';
 import { isValidId, type NodeId, type ParentId, type SheetId } from './ids';
@@ -55,7 +55,8 @@ const MARK_KEYS = ['b', 'i', 'u', 's', 'code', 'hl', 'link', 'x'];
 const BLOCK_KINDS = ['p', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
 const NEXT_KEYS = ['color', 'fill', 'dash', 'size', 'font', 'align', 'textAlign', 'valign', 'headStart', 'headEnd', 'route', 'spline', 'highlighterColor'];
 const KEYS = {
-    extension: ['fields', 'raw'], rich: ['blocks'], block: ['kind', 'level', 'start', 'dir', 'runs', 'tail'],
+    extension: ['fields', 'raw'], rich: ['blocks'], block: ['kind', 'level', 'start', 'dir', 'runs', 'tail', 'carriers'],
+    carrier: ['from', 'to', 'kind', 'level', 'dir', 'start', 'tail'],
     run: ['text', 'marks', 'tail'], point: ['x', 'y'], end: ['x', 'y', 'attach'],
     attach: ['target', 'anchor', 'exact', 'precise', 'snap'], crop: ['x0', 'y0', 'x1', 'y1', 'circle'],
     preview: ['title', 'description', 'image', 'favicon'], uniform: ['id'], pressure: ['id', 'rMin', 'rMax'],
@@ -150,15 +151,22 @@ function rawArray(value: unknown): boolean {
     while (last >= first && (value.charCodeAt(last) === 32 || value.charCodeAt(last) === 9 || value.charCodeAt(last) === 10 || value.charCodeAt(last) === 13)) last--;
     return value[first] === '[' && value[last] === ']'; // Reader already validated the opaque JSON value.
 }
+export function validBlockCarrier(value: unknown, length: number): value is BlockCarrier {
+    if (!object(value) || !closed(value, KEYS.carrier) || !known(value.kind, BLOCK_KINDS)
+        || !integer(value.level, 0, 7) || (value.kind === 'p' && value.level !== 0) || !known(value.dir, VALUES.dir)
+        || !integer(value.from, 0, length) || !integer(value.to, value.from as number, length)
+        || value.start !== undefined && !number(value.start) || !rawArray(value.tail)) return false;
+    return true;
+}
 // V-11, text.md §§4.1/4.3. u/s are supported marks (§4.1); the shortened §4.3
 // inventory must not silently turn underline/strike into unsupported data.
 function richText(value: unknown): value is RichText {
     if (!object(value) || !closed(value, KEYS.rich) || !Array.isArray(value.blocks)
         || value.blocks.length === 0 || value.blocks.length > MAX_TEXT_BLOCKS) return false;
-    let length = value.blocks.length - 1;
+    let length = value.blocks.length - 1, carrierCount = 0;
     if (length > MAX_TEXT_LENGTH) return false;
     for (let b = 0; b < value.blocks.length; b++) {
-        const block = value.blocks[b];
+        const block = value.blocks[b], initialLength = length;
         if (!object(block) || !closed(block, KEYS.block)
             || !known(block.kind, BLOCK_KINDS) || !integer(block.level, 0, 7)
             || (block.kind === 'p' && block.level !== 0) || !known(block.dir, VALUES.dir)
@@ -180,6 +188,14 @@ function richText(value: unknown): value is RichText {
             if (marks.x !== undefined && typeof marks.x !== 'string') return false; // Reader-owned RawJson, never parsed.
             length += run.text.length;
             if (length > MAX_TEXT_LENGTH) return false;
+        }
+        if (block.carriers !== undefined) {
+            if (!Array.isArray(block.carriers)) return false;
+            carrierCount += block.carriers.length;
+            if (carrierCount > MAX_TEXT_LENGTH + MAX_TEXT_BLOCKS) return false;
+            for (const carrier of block.carriers) {
+                if (!validBlockCarrier(carrier, length - initialLength)) return false;
+            }
         }
     }
     // Adjacent equal-mark runs are merged by the rich splice/model (text §4.3),
@@ -582,10 +598,14 @@ function* loadedRootSteps(doc: BoardDoc): Generator<void, ValidationResult> {
             || !integer(preserved.version[1], 0) || !(preserved.fields instanceof Map)
             || !Array.isArray(preserved.records) || !(yield* rootExtension(preserved.end))) return bad('Invalid preserved data');
         for (const [key, value] of preserved.fields) { yield; rawEntry(value, key); }
+        const preservedIdentities = new Set<string>();
         for (const record of preserved.records) {
             yield;
             if (!object(record) || !closed(record, ['type', 'id', 'raw']) || !string(record.type)
                 || !id(record.id) || typeof record.raw !== 'string') return bad('Invalid preserved record');
+            const key = JSON.stringify([record.type, record.id]);
+            if (preservedIdentities.has(key)) return bad('Duplicate preserved record identity');
+            preservedIdentities.add(key);
         }
         if (!(doc.preservedMediaRefs instanceof Map)) return bad('Invalid preserved media references', 'V-9');
         for (const [key, count] of doc.preservedMediaRefs) {
@@ -613,7 +633,7 @@ export async function validateLoadedRootIncremental(doc: BoardDoc, cooperate?: (
         if (step.done) { check(); return step.value; }
         if (++count >= 256 || performance.now() - started >= 3) {
             check();
-            await cooperate?.();
+            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
             check();
             count = 0; started = performance.now();
         }

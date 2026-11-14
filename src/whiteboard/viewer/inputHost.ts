@@ -5,7 +5,7 @@ import type { RenderToken } from '../../platform/render/types';
 import type { Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import { attachBoardInput, type BoardInputMode, type BoardInputServices, type BoardInputView, type BoardWetLayer } from '../input/attach';
-import { MappingHistory } from '../input/pointer';
+import { MappingHistory, presentedMapping } from '../input/pointer';
 import type { InputToken, RealSample } from '../input/tool';
 import type { BoardSession } from '../session/BoardSession';
 import type { ViewerEngine, ViewerInteractionPorts } from './types';
@@ -47,11 +47,15 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     const token = Object.freeze({ ...options.token }), inputToken = Object.freeze({ ...options.inputToken });
     let disposed = false, enabled = false, attached: (() => void) | null = null, flush: (() => void) | null = null;
     let binding: { surface: HTMLElement; overlay: HTMLElement } | null = null, presented: PlatformPresentation | null = null;
+    let presentedAt = 0;
+    let pointerClient: { id: number; kind: string; x: number; y: number } | null = null;
     const contacts = new Set<number>();
     const scheduled = new Set<() => void>();
+    const attachmentListeners = new Set<(attached: boolean) => void>();
     const current = () => !disposed && options.visible() && options.current(token);
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting cannot block cleanup */ } };
     const safe = (fn: () => void) => { try { fn(); } catch (error) { report(error); } };
+    const notifyAttachment = () => { for (const listener of [...attachmentListeners]) safe(() => listener(attached !== null)); };
     const wet = createBoardWetLayer({ token, palette: () => options.engine.getSnapshot().palette,
         readyFrame: () => options.engine.readyPaintFrame(), current,
         exists: identity => options.session.doc.rev < identity.nodeRevision || options.session.doc.nodes.has(identity.nodeId as import('../model/ids').NodeId),
@@ -68,17 +72,23 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         liveNodeIds: () => wet.liveNodeIds(),
     };
     const stopInteraction = options.engine.bindInteractions(interaction);
-    const stopAttachment = () => { const stop = attached; attached = null; if (stop) safe(stop); contacts.clear(); flush = null; };
+    const stopAttachment = () => {
+        const stop = attached; attached = null; pointerClient = null;
+        if (stop) { safe(stop); notifyAttachment(); }
+        contacts.clear(); flush = null;
+    };
     const clientToSurface = (x: number, y: number): Point => {
         if (!binding) throw new Error('Input surface is not attached');
         const box = binding.surface.getBoundingClientRect(), viewport = options.viewport();
         if (box.width <= 0 || box.height <= 0 || viewport.width <= 0 || viewport.height <= 0) throw new RangeError('Input surface has no viewport');
-        return { x: (x - box.left) * viewport.width / box.width, y: (y - box.top) * viewport.height / box.height };
+        return presentedMapping(performance.now(), box, viewport, options.camera.camera).clientToSurface(x, y);
     };
     const sampleToSurface = (sample: RealSample): Point => {
         if (sample.source === 'keyboard') return worldToSurface(sample, options.camera.camera);
+        if (typeof sample.surfaceX === 'number' && typeof sample.surfaceY === 'number'
+            && Number.isFinite(sample.surfaceX) && Number.isFinite(sample.surfaceY)) return { x: sample.surfaceX, y: sample.surfaceY };
         const client = mappings.unmap(sample.time, sample);
-        return clientToSurface(client.x, client.y);
+        return mappings.surface(sample.time, client.x, client.y);
     };
     const connect = () => {
         if (!binding || attached || !enabled || !current()) return;
@@ -98,22 +108,34 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
                     permits: (x, y) => x >= 0 && y >= 0 && x <= viewport.width && y <= viewport.height };
             },
         };
-        const down = (event: PointerEvent) => { if (enabled && current()) contacts.add(event.pointerId); };
-        const end = (event: PointerEvent) => { contacts.delete(event.pointerId); };
+        const rememberPointer = (event: PointerEvent) => {
+            if (!enabled || !current() || !event.isPrimary || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+            pointerClient = { id: event.pointerId, kind: event.pointerType, x: event.clientX, y: event.clientY };
+        };
+        const leave = (event: PointerEvent) => { if (pointerClient?.id === event.pointerId) pointerClient = null; };
+        const down = (event: PointerEvent) => { rememberPointer(event); if (enabled && current()) contacts.add(event.pointerId); };
+        const end = (event: PointerEvent) => {
+            if (pointerClient?.id === event.pointerId && (pointerClient.kind === 'touch' || event.type === 'pointercancel')) pointerClient = null;
+            contacts.delete(event.pointerId);
+        };
+        surface.addEventListener('pointermove', rememberPointer); surface.addEventListener('pointerenter', rememberPointer);
+        surface.addEventListener('pointerleave', leave);
         surface.addEventListener('pointerdown', down); surface.addEventListener('pointerup', end);
         surface.addEventListener('pointercancel', end); surface.addEventListener('lostpointercapture', end);
+        const removeListeners = () => {
+            surface.removeEventListener('pointermove', rememberPointer); surface.removeEventListener('pointerenter', rememberPointer);
+            surface.removeEventListener('pointerleave', leave);
+            surface.removeEventListener('pointerdown', down); surface.removeEventListener('pointerup', end);
+            surface.removeEventListener('pointercancel', end); surface.removeEventListener('lostpointercapture', end);
+            pointerClient = null;
+        };
         let detach: () => void;
         try { detach = attachBoardInput(view, options.session, services, options.mode); }
-        catch (error) {
-            surface.removeEventListener('pointerdown', down); surface.removeEventListener('pointerup', end);
-            surface.removeEventListener('pointercancel', end); surface.removeEventListener('lostpointercapture', end); throw error;
-        }
-        attached = () => {
-            try { detach(); } finally {
-                surface.removeEventListener('pointerdown', down); surface.removeEventListener('pointerup', end);
-                surface.removeEventListener('pointercancel', end); surface.removeEventListener('lostpointercapture', end);
-            }
-        };
+        catch (error) { removeListeners(); throw error; }
+        attached = () => { try { detach(); } finally { removeListeners(); } };
+        // Constructing services is not input readiness: the browser listeners,
+        // router and session gesture bridge must all have attached successfully.
+        notifyAttachment();
     };
     const attachInput = (surface: HTMLElement, overlay: HTMLElement): (() => void) => {
         if (disposed) throw new Error('Input host disposed');
@@ -123,6 +145,21 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     };
     return {
         attachInput, mappings, sampleToSurface, clientToSurface,
+        isAttached: () => attached !== null && !disposed,
+        pointerSurface(): Point | null {
+            if (!current() || !enabled || !attached || !binding || !pointerClient) return null;
+            const rect = binding.surface.getBoundingClientRect(), viewport = options.viewport();
+            if (rect.width <= 0 || rect.height <= 0 || viewport.width <= 0 || viewport.height <= 0) return null;
+            // Actual browser coordinates survive camera/layout changes. An old
+            // world point is not a certificate of the cursor's physical position.
+            const point = clientToSurface(pointerClient.x, pointerClient.y);
+            return point.x >= 0 && point.y >= 0 && point.x <= viewport.width && point.y <= viewport.height ? point : null;
+        },
+        subscribeAttachment(listener: (attached: boolean) => void) {
+            if (disposed) return () => {};
+            attachmentListeners.add(listener);
+            return () => { attachmentListeners.delete(listener); };
+        },
         layers: wet.layers,
         schedule(callback: () => void) {
             if (disposed) return () => {};
@@ -143,16 +180,18 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
             safe(() => {
                 const rect = binding!.surface.getBoundingClientRect(), viewport = frame.view.viewport, camera = { ...frame.view.camera };
                 if (rect.width > 0 && rect.height > 0 && viewport.width > 0 && viewport.height > 0) {
-                    const left = rect.left, top = rect.top, width = rect.width, height = rect.height;
-                    mappings.present({ time: frame.timestamp, clientToWorld: (x, y) => surfaceToWorld({ x: (x - left) * viewport.width / width, y: (y - top) * viewport.height / height }, camera) });
+                    mappings.present(presentedMapping(presentedAt, rect, viewport, camera));
                 }
                 options.overlays?.write(frame, binding!.overlay);
             });
         },
-        onPresentation(value: PlatformPresentation | null) { presented = value && current() && sameToken(value.token, token) ? value : null; },
+        onPresentation(value: PlatformPresentation | null) {
+            presented = value && current() && sameToken(value.token, token) ? value : null;
+            if (presented) presentedAt = performance.now();
+        },
         dispose() {
             if (disposed) return;
-            stopAttachment(); scheduled.clear(); disposed = true; binding = null; presented = null;
+            stopAttachment(); attachmentListeners.clear(); scheduled.clear(); disposed = true; binding = null; presented = null;
             safe(stopInteraction); safe(() => options.engine.setInteractionLayers(null)); safe(() => wet.dispose()); safe(() => options.overlays?.dispose?.());
         },
     };

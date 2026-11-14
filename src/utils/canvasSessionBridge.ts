@@ -35,7 +35,6 @@ export function attachCanvasSession<A extends SessionAdapter>(
     }, (adapter, owner) => {
         if (!isLiveOwner(owner)) throw new DOMException('Canvas session ended', 'AbortError');
         commit?.(adapter, owner);
-        if (!isLiveOwner(owner)) throw new DOMException('Canvas session ended', 'AbortError');
     });
 }
 
@@ -104,7 +103,6 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
                 // A cold dirty source may change during C5 preparation. Peek is provisional
                 // here so App can authorize its exact checkpoint; failed CAS keeps coldSource.
                 commit?.(next, owner);
-                if (disposed) throw new Error('Canvas session was released during attachment');
                 committed = true;
             } catch (error) {
                 const detach = unsubscribe, detachPending = unsubscribePending;

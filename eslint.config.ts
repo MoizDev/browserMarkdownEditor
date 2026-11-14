@@ -193,11 +193,13 @@ export default defineConfig([
           // These hooks are reached only through the lazy PdfTiledView chunk.
           // Native clipboard adapters are consumed by lazy NativeCanvasEntry;
           // their document-owned service lends commands to attached views.
-          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/NativePdfEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts', 'src/components/whiteboard/nativeClipboardController.ts', 'src/components/whiteboard/useNativeClipboard.ts'],
+          // Agent reads load this projection only for a real tool call; its closed
+          // source authority is created by App's same canonical session store.
+          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/NativePdfEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts', 'src/components/whiteboard/nativeClipboardController.ts', 'src/components/whiteboard/useNativeClipboard.ts', 'src/utils/nativeCanvasAgentRead.ts', 'src/utils/closedCanvasSource.ts'],
           // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
           // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.
           // App's closed-PDF agent seam imports the contained host only on an awaited tiled tool call.
-          darkLazy: ['src/App.tsx', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
+          darkLazy: ['src/App.tsx', 'src/utils/agentHost.ts', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
           message: 'The new engines stay dark until their switch is wired',
         },
         {

@@ -4,9 +4,10 @@ import { BoardFonts, fontCss, fontDescriptor, fontSupports, type FontKey } from 
 import { itemizeBlock, type ItemizedBlock, type TextItem } from './itemize';
 import { ReferenceMeasurer } from './measure';
 import { CaretLineCache, makeCaretIndex } from './caretIndex';
+import { clearLongAsciiCaretIndex } from './asciiCaretIndex';
 import { wrapBlock } from './wrap';
 import type { Face, FaceTable, InkRef, PaintFragment, PaintLine, PaintRect, TextLayoutEngine, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
-import type { Marks } from './richText';
+import type { Marks, RichText } from './richText';
 
 interface Piece { readonly from: number; readonly to: number; readonly item: TextItem; readonly face: number; readonly ink: InkRef; readonly text: string; readonly width: number; readonly fallback: boolean }
 interface LineDraft { readonly block: ItemizedBlock; readonly from: number; readonly to: number; readonly height: number; readonly heading: boolean; readonly pieces: readonly Piece[]; readonly width: number; readonly marker: string; readonly markerFace: number; readonly markerWidth: number; readonly indent: number }
@@ -21,10 +22,16 @@ function role(ink: InkRef, marks: Marks): InkRef {
 
 /** A session owns one instance and its append-only face table. */
 export class BoardTextLayout implements TextLayoutEngine {
-    private readonly faces: Face[] = [];
-    private readonly faceIds = new Map<string, number>();
-    readonly faceTable: FaceTable = { faces: this.faces };
-    private readonly layouts = new Map<string, { paint: TextPaint; measurement: TextMeasurement }>();
+    private faces: Face[] = [];
+    private faceIds = new Map<string, number>();
+    private currentFaceTable: FaceTable = { faces: this.faces };
+    private faceGeneration = 0;
+    get faceTable(): FaceTable { return this.currentFaceTable; }
+    private readonly layouts = new Map<string, { paint: TextPaint; measurement: TextMeasurement; bytes: number }>();
+    private layoutBytes = 0;
+    private readonly textIds = new WeakMap<RichText, number>();
+    private readonly instanceId = crypto.randomUUID();
+    private nextTextId = 1;
     private readonly caretLines = new CaretLineCache();
     constructor(private readonly measurer: ReferenceMeasurer, private readonly fonts: BoardFonts) {}
     async prepare(request: TextLayoutRequest): Promise<void> {
@@ -103,9 +110,16 @@ export class BoardTextLayout implements TextLayoutEngine {
             const font = faceKey(request.style.font, {}, heading);
             states.set(JSON.stringify(font), this.fonts.isLoaded(font));
         }
-        const key = sha256(new TextEncoder().encode(JSON.stringify([request.revision, request.text, request.style, request.width, request.fontEpoch, [...states].sort()])));
-        const old = this.layouts.get(key);
-        if (old) return old;
+        let textId = this.textIds.get(request.text);
+        if (textId === undefined) { textId = this.nextTextId++; this.textIds.set(request.text, textId); }
+        const cacheKey = sha256(new TextEncoder().encode(JSON.stringify([this.instanceId, request.revision, textId, request.style, request.width, request.fontEpoch, [...states].sort()])));
+        const old = this.layouts.get(cacheKey);
+        if (old) { this.layouts.delete(cacheKey); this.layouts.set(cacheKey, old); return old; }
+        // Published paints retain their generation; never reuse an index from a retired table.
+        if (this.faces.length >= 4096) {
+            this.faces = []; this.faceIds = new Map(); this.currentFaceTable = { faces: this.faces }; this.faceGeneration++;
+        }
+        const key = `${cacheKey}:${this.faceGeneration}`;
         const style = request.style, pad = style.padding;
         const outerWidth = request.width === null ? null : Math.max(16, request.width);
         const available = outerWidth === null ? null : Math.max(0, outerWidth - pad.left - pad.right);
@@ -179,7 +193,9 @@ export class BoardTextLayout implements TextLayoutEngine {
                 }
                 const pieces = this.visual(last.block, last.from, fit, this.pieces(last.block, last.from, fit, request, size, last.heading));
                 const item: TextItem = { from: fit, to: fit, level: last.block.bidi.level, marks: {} };
-                const marker: Piece = { from: fit, to: fit, item, face, ink: style.ink, text: ellipsis, width: ellipsisWidth, fallback: true };
+                const ellipsisFace = this.faces[face];
+                const marker: Piece = { from: fit, to: fit, item, face, ink: style.ink, text: ellipsis, width: ellipsisWidth,
+                    fallback: !ellipsisFace.loaded || !fontSupports(ellipsisFace.key, ellipsis) };
                 if (last.block.bidi.level & 1) pieces.unshift(marker); else pieces.push(marker);
                 drafts[drafts.length - 1] = { ...last, to: fit, pieces, width: pieces.reduce((sum, piece) => sum + piece.width, 0) };
             }
@@ -213,7 +229,8 @@ export class BoardTextLayout implements TextLayoutEngine {
                 const markerWidth = metric.width * scale;
                 left = Math.min(left, markerX - metric.left * scale); right = Math.max(right, markerX + metric.right * scale);
                 top = Math.min(top, baseline - metric.ascent * scale); bottom = Math.max(bottom, baseline + metric.descent * scale);
-                fragments.push({ text: draft.marker, x: markerX, width: markerWidth, rtl: false, face: draft.markerFace, ink: style.ink, systemFallback: true, src: [draft.block.offset + draft.from, draft.block.offset + draft.from] });
+                fragments.push({ text: draft.marker, x: markerX, width: markerWidth, rtl: false, face: draft.markerFace, ink: style.ink,
+                    systemFallback: !markerFace.loaded || !fontSupports(markerFace.key, draft.marker), src: [draft.block.offset + draft.from, draft.block.offset + draft.from] });
             }
             for (const piece of draft.pieces) {
                 const f = this.faces[piece.face], scale = f.size / 64;
@@ -234,14 +251,27 @@ export class BoardTextLayout implements TextLayoutEngine {
             y += draft.height;
         }
         const ink = { x: left, y: top, width: right - left, height: bottom - top };
-        const paint: TextPaint = { key, fontEpoch: request.fontEpoch, box: { w: boxWidth, h: boxHeight }, ink, backgrounds, lines, decorations };
+        const paint: TextPaint = { key, fontEpoch: request.fontEpoch, faceTable: this.currentFaceTable, box: { w: boxWidth, h: boxHeight }, ink, backgrounds, lines, decorations };
         const measurement: TextMeasurement = { box: paint.box, ink, requiredHeight: naturalHeight, fontScale: appliedScale };
         const result = { paint, measurement };
-        this.layouts.set(key, result);
-        if (this.layouts.size > 512) this.layouts.delete(this.layouts.keys().next().value!);
+        let bytes = 512 + lines.length * 160 + (backgrounds.length + decorations.length) * 96;
+        for (const line of lines) for (const fragment of line.fragments) bytes += 192 + fragment.text.length * 2;
+        const limit = 32 * 1024 * 1024;
+        if (bytes <= limit) {
+            while (this.layouts.size && (this.layouts.size >= 512 || this.layoutBytes + bytes > limit)) {
+                const oldest = this.layouts.keys().next().value!, entry = this.layouts.get(oldest)!;
+                this.layouts.delete(oldest); this.layoutBytes -= entry.bytes;
+            }
+            this.layouts.set(cacheKey, { ...result, bytes }); this.layoutBytes += bytes;
+        }
         return result;
     }
+    product(request: TextLayoutRequest): { paint: TextPaint; measurement: TextMeasurement } { return this.build(request); }
     measure(request: TextLayoutRequest): TextMeasurement { return this.build(request).measurement; }
     layout(request: TextLayoutRequest): TextPaint { return this.build(request).paint; }
-    caretIndex(request: TextLayoutRequest, paint: TextPaint) { return makeCaretIndex(request, paint, this.faceTable, this.measurer, this.caretLines); }
+    caretIndex(request: TextLayoutRequest, paint: TextPaint) {
+        if (!paint.faceTable) throw new Error('Text paint has no owning face table');
+        return makeCaretIndex(request, paint, paint.faceTable, this.measurer, this.caretLines);
+    }
+    releaseEditingCache(): void { this.caretLines.clear(); clearLongAsciiCaretIndex(this.measurer); }
 }

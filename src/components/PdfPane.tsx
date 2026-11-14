@@ -936,7 +936,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                         onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
                 </Suspense>
             ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
-        } else if (mode === 'edit' && editableSource && loadedSource?.session) {
+        } else if (!tiled && mode === 'edit' && editableSource && loadedSource?.session) {
+            // Native conversion refusal keeps the outer PDF; only explicit Classic
+            // selection may mount its editor, including while a legacy offer is visible.
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
             // unmounting it is what flushes pending strokes to disk.

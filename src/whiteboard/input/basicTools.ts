@@ -1,4 +1,4 @@
-import type { GestureOwner, Modifiers, RealSample, Tool } from './tool'
+import { sampleSurface, type GestureOwner, type Modifiers, type RealSample, type Tool } from './tool'
 import type { NodeId } from '../model/ids'
 import { SweepQueue, type SweepQueueServices } from './sweepQueue'
 
@@ -6,6 +6,10 @@ export interface InkPoint { readonly x: number; readonly y: number }
 export interface EraserContext extends SweepQueueServices {
   hold(): () => void
   registerPending(cancel: () => void): () => void
+  prepareCommit(ids: ReadonlySet<NodeId>, signal: AbortSignal): Promise<void>
+  armCommit(): void
+  finishCommit(): void
+  cancelCommit(): void
   commit(ids: ReadonlySet<NodeId>): void
   clearPreview(): void
   error(error: unknown): void
@@ -16,6 +20,7 @@ class EraserGesture implements GestureOwner {
   readonly pointerIds: ReadonlySet<number>
   private readonly queue: SweepQueue
   private readonly release: () => void
+  private readonly controller = new AbortController()
   private unregister: (() => void) | null = null
   private last: InkPoint
   private ended = false
@@ -25,7 +30,8 @@ class EraserGesture implements GestureOwner {
     this.last = sample
     this.release = context.hold()
     this.queue = new SweepQueue(context)
-    this.collect(sample, modifiers)
+    try { this.collect(sample, modifiers) }
+    catch (error) { try { this.queue.cancel() } finally { this.release() }; throw error }
   }
   update(samples: readonly RealSample[], modifiers: Modifiers): void {
     if (this.ended) return
@@ -34,19 +40,36 @@ class EraserGesture implements GestureOwner {
   finish(): void {
     if (this.ended) return
     this.ended = true
-    this.unregister = this.context.registerPending(() => this.cancel())
-    void this.queue.finish().then(ids => {
-      if (!this.cancelled && ids.size) this.context.commit(ids)
+    try { this.unregister = this.context.registerPending(() => this.cancel()) }
+    catch (error) {
+      this.cancelled = true
+      try { this.queue.cancel(); this.context.clearPreview() } finally { this.release() }
+      throw error
+    }
+    void this.queue.finish().then(async ids => {
+      if (this.cancelled || !ids.size) return
+      await this.context.prepareCommit(ids, this.controller.signal)
+      if (this.cancelled || this.controller.signal.aborted) return
+      this.context.armCommit()
+      try { this.context.commit(ids); this.context.finishCommit() }
+      catch (error) { this.context.cancelCommit(); throw error }
     }).catch(error => {
       if (!this.cancelled) this.context.error(error)
-    }).finally(() => { this.unregister?.(); this.unregister = null; this.context.clearPreview(); this.release() })
+    }).finally(() => {
+      try { this.unregister?.() } finally {
+        this.unregister = null
+        try { this.context.clearPreview() } finally { this.release() }
+      }
+    })
   }
   cancel(): void {
     if (this.cancelled) return
-    this.cancelled = true
-    this.queue.cancel()
-    this.context.clearPreview()
-    if (!this.ended) { this.ended = true; this.release() }
+    this.cancelled = true; this.controller.abort()
+    try { this.queue.cancel() } finally {
+      try { this.context.clearPreview() } finally {
+        if (!this.ended) { this.ended = true; this.release() }
+      }
+    }
   }
   private collect(point: InkPoint, modifiers: Modifiers): void {
     const from = this.last
@@ -92,13 +115,13 @@ class HandGesture implements GestureOwner {
   private last: InkPoint
   private ended = false
   constructor(sample: RealSample, private readonly context: HandContext) {
-    this.pointerIds = new Set([sample.pointerId]); this.last = context.toSurface(sample)
+    this.pointerIds = new Set([sample.pointerId]); this.last = sampleSurface(sample, context.toSurface)
   }
   update(samples: readonly RealSample[]): void {
     if (this.ended) return
     for (const sample of samples) {
       if (!this.pointerIds.has(sample.pointerId)) continue
-      const point = this.context.toSurface(sample)
+      const point = sampleSurface(sample, this.context.toSurface)
       this.context.panBy({ x: this.last.x - point.x, y: this.last.y - point.y })
       this.last = point
     }

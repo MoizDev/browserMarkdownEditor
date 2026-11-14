@@ -2,7 +2,7 @@ import type { RawJson } from '../model/json';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { inheritProjection, projectionLength, projectionPosition } from './projection';
 import { inheritWordBoundaries, textBoundaries } from './boundaries';
-import { blockOccurrenceOrigin, blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOccurrenceOrigin, runOrigin, sliceCarrierSteps, trackBlock, trackBlockIdentity, trackRunIdentity } from './carriers';
+import { blockOccurrenceOrigin, carrierForTail, carrierOccurrence, carrierSource, coalesceCarriers, mapCarrier, mapCarrierIdentity, runOccurrenceOrigin, runOrigin, sliceCarrierSteps, trackBlock, trackBlockIdentity, trackRunIdentity } from './carriers';
 import { firstRunAt, runContaining, runIndex } from './runIndex';
 import type { PlainTextOptions } from './plainText';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
@@ -173,7 +173,7 @@ function* sliceSteps(text: RichText, from: number, to: number, preserveOrigins: 
         const end = i === last.block ? last.offset : blockTextLength(block);
         const runs = yield* sliceRunSteps(text, i, start, end, from === to, preserveOrigins);
         const { carriers: _carriers, ...base } = block;
-        const carriers = yield* sliceCarrierSteps(block, start, end, preserveOrigins);
+        const carriers = yield* sliceCarrierSteps(block, start, end, preserveOrigins, index => carrierOccurrence(text, i, index));
         const sliced: Block = { ...base, runs: runs.length ? runs : [emptyRun(text, i, start, preserveOrigins)], ...(carriers ? { carriers } : {}) };
         blocks.push(preserveOrigins ? trackBlockIdentity(sliced, blockOccurrenceOrigin(text, i)) : sliced);
     }
@@ -198,9 +198,10 @@ function spliceCarriers(text: RichText, firstIndex: number, before: readonly Blo
     const lastOutput = output.length - 1;
     const suffixStart = (lastOutput === 0 ? firstOffset : 0) + blockTextLength(insert.blocks[lastOutput]);
     const insertedSources = new Set<object>(), insertedTails = new Set<object>();
-    for (const block of insert.blocks) {
-        for (const carrier of block.carriers ?? []) insertedSources.add(carrierSource(carrier));
-        if (block.tail !== undefined && block.tail !== '[]') insertedTails.add(blockOrigin(block));
+    for (let b = 0; b < insert.blocks.length; b++) {
+        const block = insert.blocks[b];
+        for (let c = 0; c < (block.carriers?.length ?? 0); c++) insertedSources.add(carrierOccurrence(insert, b, c).source);
+        if (block.tail !== undefined && block.tail !== '[]') insertedTails.add(blockOccurrenceOrigin(insert, b));
     }
     const place = (carrier: BlockCarrier, blockIndex: number) => {
         let retained = false;
@@ -229,16 +230,22 @@ function spliceCarriers(text: RichText, firstIndex: number, before: readonly Blo
     };
     for (let index = 0; index < before.length; index++) {
         const block = before[index];
-        for (const carrier of block.carriers ?? []) place(carrier, index);
+        for (let c = 0; c < (block.carriers?.length ?? 0); c++) {
+            const carrier = block.carriers![c];
+            place(mapCarrierIdentity(carrier, carrier.from, carrier.to, carrierOccurrence(text, firstIndex + index, c)), index);
+        }
         const origin = block.tail !== undefined && block.tail !== '[]' ? blockOccurrenceOrigin(text, firstIndex + index) : undefined;
         if (index > 0 && origin && !insertedTails.has(origin))
             place(carrierForTail(block, 0, blockTextLength(block), origin), index);
     }
     for (let index = 0; index < insert.blocks.length; index++) {
         const block = insert.blocks[index], offset = index === 0 ? firstOffset : 0;
-        for (const carrier of block.carriers ?? []) output[index].push(mapCarrier(carrier, offset + carrier.from, offset + carrier.to));
-        if (index === 0 && block.tail !== undefined && block.tail !== '[]' && blockOrigin(block) !== blockOccurrenceOrigin(text, firstIndex))
-            output[0].push(carrierForTail(block, offset, offset + blockTextLength(block)));
+        for (let c = 0; c < (block.carriers?.length ?? 0); c++) {
+            const carrier = block.carriers![c];
+            output[index].push(mapCarrierIdentity(carrier, offset + carrier.from, offset + carrier.to, carrierOccurrence(insert, index, c)));
+        }
+        if (index === 0 && block.tail !== undefined && block.tail !== '[]' && blockOccurrenceOrigin(insert, index) !== blockOccurrenceOrigin(text, firstIndex))
+            output[0].push(carrierForTail(block, offset, offset + blockTextLength(block), blockOccurrenceOrigin(insert, index)));
     }
     return output.map(coalesceCarriers);
 }

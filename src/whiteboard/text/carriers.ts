@@ -3,6 +3,9 @@ import type { Block, BlockCarrier, RichText, Run } from './richText';
 // Independent future tails stay byte-exact as range carriers, never concatenated positional fields.
 const carrierOrigins = new WeakMap<BlockCarrier, object>();
 const carrierSources = new WeakMap<BlockCarrier, object>();
+interface CarrierIdentity { readonly origin: object; readonly source: object }
+const carrierOccurrences = new WeakMap<RichText, Map<number, Map<number, CarrierIdentity>>>();
+const carrierClaims = new WeakMap<RichText, WeakMap<BlockCarrier, { readonly block: number; readonly index: number }>>();
 const blockOrigins = new WeakMap<Block, object>();
 const blockOccurrences = new WeakMap<RichText, Map<number, object>>();
 const blockClaims = new WeakMap<RichText, WeakMap<Block, number>>();
@@ -11,6 +14,27 @@ const runOccurrences = new WeakMap<RichText, Map<number, Map<number, object>>>()
 const runClaims = new WeakMap<RichText, WeakMap<Run, { readonly block: number; readonly index: number }>>();
 export const carrierOrigin = (carrier: BlockCarrier): object => carrierOrigins.get(carrier) ?? carrier;
 export const carrierSource = (carrier: BlockCarrier): object => carrierSources.get(carrier) ?? carrier;
+export function carrierOccurrence(text: RichText, blockIndex: number, carrierIndex: number): CarrierIdentity {
+    let blocks = carrierOccurrences.get(text);
+    if (!blocks) { blocks = new Map(); carrierOccurrences.set(text, blocks); }
+    let carriers = blocks.get(blockIndex);
+    if (!carriers) { carriers = new Map(); blocks.set(blockIndex, carriers); }
+    let identity = carriers.get(carrierIndex);
+    if (!identity) {
+        const carrier = text.blocks[blockIndex].carriers![carrierIndex];
+        const origin = carrierOrigins.get(carrier), source = carrierSources.get(carrier);
+        if (origin || source) {
+            let claims = carrierClaims.get(text);
+            if (!claims) { claims = new WeakMap(); carrierClaims.set(text, claims); }
+            const claim = claims.get(carrier);
+            if (!claim) { claims.set(carrier, { block: blockIndex, index: carrierIndex }); identity = { origin: origin ?? carrier, source: source ?? carrier }; }
+            else identity = claim.block === blockIndex && claim.index === carrierIndex
+                ? { origin: origin ?? carrier, source: source ?? carrier } : { origin: {}, source: {} };
+        } else identity = { origin: {}, source: {} };
+        carriers.set(carrierIndex, identity);
+    }
+    return identity;
+}
 export const blockOrigin = (block: Block): object => {
     let origin = blockOrigins.get(block);
     if (!origin) { origin = {}; blockOrigins.set(block, origin); }
@@ -68,13 +92,15 @@ export function trackRunIdentity(run: Run, origin: object): Run {
 export function trackRun(run: Run, origin: Run): Run {
     return trackRunIdentity(run, runOrigin(origin));
 }
-export function mapCarrier(carrier: BlockCarrier, from: number, to: number, preserveOrigin = true): BlockCarrier {
+export function mapCarrierIdentity(carrier: BlockCarrier, from: number, to: number, identity: CarrierIdentity): BlockCarrier {
     const mapped: BlockCarrier = { ...carrier, from, to };
-    if (preserveOrigin) {
-        carrierOrigins.set(mapped, carrierOrigin(carrier));
-        carrierSources.set(mapped, carrierSource(carrier));
-    }
+    carrierOrigins.set(mapped, identity.origin);
+    carrierSources.set(mapped, identity.source);
     return mapped;
+}
+export function mapCarrier(carrier: BlockCarrier, from: number, to: number, preserveOrigin = true): BlockCarrier {
+    return preserveOrigin ? mapCarrierIdentity(carrier, from, to, { origin: carrierOrigin(carrier), source: carrierSource(carrier) })
+        : { ...carrier, from, to };
 }
 export function carrierForTail(block: Block, from: number, to: number, origin = blockOrigin(block)): BlockCarrier {
     if (block.tail === undefined) throw new Error('A block carrier requires a tail');
@@ -83,17 +109,24 @@ export function carrierForTail(block: Block, from: number, to: number, origin = 
     carrierOrigins.set(carrier, origin);
     return carrier;
 }
-export function* sliceCarrierSteps(block: Block, from: number, to: number, preserveOrigin: boolean): Generator<void, readonly BlockCarrier[] | undefined> {
+export function* sliceCarrierSteps(block: Block, from: number, to: number, preserveOrigin: boolean,
+    occurrence?: (index: number) => CarrierIdentity): Generator<void, readonly BlockCarrier[] | undefined> {
     const result: BlockCarrier[] = [];
     let visited = 0;
     for (const carrier of block.carriers ?? []) {
-        if ((++visited & 255) === 0) yield;
+        const index = visited++;
+        if ((visited & 255) === 0) yield;
+        let start: number, end: number;
         if (carrier.from === carrier.to) {
-            if (carrier.from >= from && carrier.from <= to) result.push(mapCarrier(carrier, carrier.from - from, carrier.to - from, preserveOrigin));
+            if (carrier.from < from || carrier.from > to) continue;
+            start = end = carrier.from - from;
         } else {
-            const start = Math.max(from, carrier.from), end = Math.min(to, carrier.to);
-            if (start < end) result.push(mapCarrier(carrier, start - from, end - from, preserveOrigin));
+            start = Math.max(from, carrier.from); end = Math.min(to, carrier.to);
+            if (start >= end) continue;
+            start -= from; end -= from;
         }
+        result.push(preserveOrigin && occurrence ? mapCarrierIdentity(carrier, start, end, occurrence(index))
+            : mapCarrier(carrier, start, end, preserveOrigin));
     }
     return result.length ? result : undefined;
 }

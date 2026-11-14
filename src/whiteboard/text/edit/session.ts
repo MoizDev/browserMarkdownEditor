@@ -233,6 +233,7 @@ export class TextEditSession {
     }
 
     getSelection(): EditSelection { return this.selection; }
+    restoreSelection(selection: EditSelection): void { this.select(selection); this.sync(); }
 
     copySelection(): RichFragment {
         return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));

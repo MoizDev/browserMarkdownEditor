@@ -188,18 +188,25 @@ export class TextEditSession {
         const position = { offset, affinity: this.affinity };
         let stop: CaretStop;
         if (direction === 'word-left' || direction === 'word-right') {
-            const step = direction === 'word-left' ? -1 : 1;
-            const text = this.services.readText(), direction = step < 0 ? 'left' : 'right';
+            const text = this.services.readText(), horizontal = direction === 'word-left' ? 'left' : 'right';
             const current = layout.caret.caret(position);
-            const next = moveCaret(layout.caret, current, direction);
-            const logicalStep = next.offset < current.offset ? -1 : 1;
+            const sameStop = (a: CaretStop, b: CaretStop) => a.offset === b.offset && a.affinity === b.affinity && a.line === b.line && a.x === b.x;
+            let probe = moveCaret(layout.caret, current, horizontal);
+            while (probe.offset === current.offset) {
+                const next = moveCaret(layout.caret, probe, horizontal);
+                if (sameStop(next, probe)) break;
+                probe = next;
+            }
+            const lineDirection = layout.paint.lines[current.line]?.direction ?? 'ltr';
+            const logicalStep = probe.offset < current.offset ? -1 : probe.offset > current.offset ? 1
+                : (horizontal === 'right') === (lineDirection === 'ltr') ? 1 : -1;
             const boundary = this.words.boundary(text, offset, logicalStep);
-            if (layout.caret.navigateWord) stop = layout.caret.navigateWord(current, direction, boundary);
+            if (layout.caret.navigateWord) stop = layout.caret.navigateWord(current, horizontal, boundary);
             else {
                 let visual = current;
                 for (let n = 0, length = projectionLength(text); n <= length; n++) {
-                    const candidate = moveCaret(layout.caret, visual, direction);
-                    if (candidate === visual) break;
+                    const candidate = moveCaret(layout.caret, visual, horizontal);
+                    if (sameStop(candidate, visual)) break;
                     visual = candidate;
                     if (visual.offset === boundary || (logicalStep < 0 ? visual.offset < boundary : visual.offset > boundary)) break;
                 }

@@ -50,6 +50,9 @@ export function createStagedGeometryReader(render: BoardRuntime['render'], doc: 
                     const value = doc.nodes.get(leaf);
                     return value && value.kind !== 'group' ? render.prepareForPickNow(value, signal, doc) : undefined;
                 },
+                // Attached ends need cooperative crossings, which a synchronous writer cannot wait for. They are
+                // refused (never estimated) by the logical formula; unattached polylines are exact here.
+                polylinePoints: () => undefined,
                 children: parent => doc.children.get(parent) ?? [],
                 pose,
                 check: () => signal.throwIfAborted(),

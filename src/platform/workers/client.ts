@@ -1,9 +1,10 @@
 import { now, watchClock } from './clock';
 import { assertPayload, isPriority, isWorkerMessage, WorkerHostError } from './envelope';
 import { cpuGovernor, workerPermitCounts } from './governor';
-import { recordWorkerPerf } from './perf';
 import { reportWorkerOwnedBytes, workerStopped } from './lifecycle';
 import type { ClientState, ContainedPort, CpuPermit, MainMessage, Priority, RequestOptions, WorkerClient, WorkerMessage, WorkerSpec } from './envelope';
+
+const benchmarkPerf = __BME_BENCH__ ? await import('./perf') : null;
 
 const clients = new Map<string, Client>();
 const silence = [20000, 20000, 60000, 60000];
@@ -554,10 +555,10 @@ class Client implements WorkerClient {
     };
 
     private record(job: Job, phase: 'request' | 'post' | 'settle'): void {
-        if (!__BME_BENCH__) return;
+        if (!benchmarkPerf) return;
         // An injected permit provider has its own ledger, not the shared governor's.
         const counts = this.spec.permits && this.spec.permits !== cpuGovernor ? { held: -1, queued: -1 } : workerPermitCounts();
-        recordWorkerPerf({ worker: this.spec.name, generation: job.perfGeneration ?? this.generation,
+        benchmarkPerf.recordWorkerPerf({ worker: this.spec.name, generation: job.perfGeneration ?? this.generation,
             requestId: job.id, priority: job.options.priority, phase, time: now(), requestTime: job.perfAsked!,
             postTime: job.perfPosted ?? null, inFlight: this.pending.size, permitsHeld: counts.held, permitsQueued: counts.queued });
     }

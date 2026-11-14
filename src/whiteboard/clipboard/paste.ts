@@ -99,12 +99,14 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
         const current = (value: BoardJobIdentity) => value.session === identity.session && value.epoch === identity.epoch && value.revision === revision
             && runtime.jobs.isCurrent(context.job) && host.current(captured) && session.doc === doc && doc.rev === revision;
         check();
-        const classification = await classifyClipboard(copied, intent, host.classifier, context.signal); check();
+        const classification = await classifyClipboard(copied, intent, host.classifier, context.signal);
+        try {
+        check();
         const noticeMissing = (ids: readonly MediaId[]) => host.notice(`${ids.length} clipboard media item(s) are missing; placeholders were pasted.`);
         const base = { runtime, target: captured, intent, current: host.current, receivingBoardId: host.receivingBoardId,
             cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment ?? { appOrigin: host.classifier.appOrigin },
             embedManifest: host.embedManifest, noticeMissing, cooperate: host.cooperate };
-        if (classification.kind === 'private') return pastePrivateClipboardInJob({ ...base, memory: host.memory, encoded: classification.encoded,
+        if (classification.kind === 'private') return await pastePrivateClipboardInJob({ ...base, memory: host.memory, encoded: classification.encoded,
             plain: copied.text ?? '', cache, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
         if (classification.kind === 'text' || classification.kind === 'url') {
             const id = await pasteClipboardTextInJob({ ...base, content: classification.kind === 'text'
@@ -167,4 +169,5 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
                 return inserted;
             } finally { media.release(); }
         } finally { acquisition?.dispose(); draft?.release(); wire?.release(); legacy?.release(); }
+        } finally { if ('release' in classification) classification.release?.(); }
 }

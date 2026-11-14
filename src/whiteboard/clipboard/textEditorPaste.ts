@@ -62,7 +62,9 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
     const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
     const board = async (): Promise<TextEditorPasteResult> => { check(); await options.pasteBoard(context, options.cache); context.assertCurrent(); return 'board'; };
     check();
-    const classification = await classifyClipboard(input, options.intent, options.classifier, context.signal); check();
+    const classification = await classifyClipboard(input, options.intent, options.classifier, context.signal);
+    try {
+    check();
     if (classification.kind === 'empty') return 'handled';
     if (classification.kind === 'text' || classification.kind === 'url') {
         const value = classification.kind === 'text' ? classification.text : input.text ?? classification.url;
@@ -93,12 +95,13 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
             check();
             const source = acquisition.load.doc, roots = source.children.get(acquisition.payload.from.sheet) ?? [];
             if (source.nodes.size !== 1 || roots.length !== 1 || roots[0].kind !== 'text') {
-                acquisition.dispose(); acquisition = undefined; decoded.release(); return await board();
+                acquisition.dispose(); acquisition = undefined; decoded.release(); classification.release?.(); return await board();
             }
             options.editor.replaceSelection(roots[0].text); return 'handled';
         } finally { acquisition?.dispose(); decoded.release(); }
     }
     return board();
+    } finally { if ('release' in classification) classification.release?.(); }
 }
 export function pasteIntoTextEditor(options: TextEditorPasteOptions, signal?: AbortSignal): Promise<TextEditorPasteResult> {
     const input = captureInput(options.input), cache = options.cache;

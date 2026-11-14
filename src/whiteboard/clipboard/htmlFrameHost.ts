@@ -167,8 +167,15 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
     };
     return {
         async markers(html, signal) { const result = await request(html, 'markers', signal);
-            try { signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
-                return markers(result.value, html.length); } finally { result.release(); } },
+            try {
+                signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
+                const value = markers(result.value, html.length), bytes = 2 * ((value.privatePayload?.length ?? 0) + (value.legacyPayload?.length ?? 0));
+                if (!bytes) { result.release(); return value; }
+                const retained = options.memory.reserve(bytes + 4096);
+                if (!retained) throw new Error('Insufficient memory for clipboard markers');
+                result.release(); let held = true;
+                return { ...value, release() { if (held) { held = false; options.memory.release(retained); } } };
+            } catch (error) { result.release(); throw error; } },
         projectHTML,
         async metadata(html, signal) {
             const result = await request(html, 'metadata', signal);

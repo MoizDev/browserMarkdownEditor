@@ -14,7 +14,6 @@ import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample, T
 import { hasOpaqueDescendant, isSheetParent, sheetOf } from '../model/doc';
 import { polylineHandleGesture } from '../input/polylineHandles';
 import type { Op } from '../change/ops';
-import type { BoardSession } from '../session/BoardSession';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { newNodeId, type NodeId, type ParentId } from '../model/ids';
 import { createConnector, createFigure, createFrame, createPolyline, createSticky, createText, type Attachment, type Node } from '../model/nodes';
@@ -26,7 +25,6 @@ import { EMPTY_RICH_TEXT } from '../text/richText';
 import type { AttachmentRequest } from './attachments';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
-const lastPolyline = new WeakMap<BoardSession, NodeId>();
 export interface BoardCreationContext {
     readonly runtime: BoardRuntime;
     readonly render: ReturnType<typeof createBoardRenderServices>;
@@ -270,7 +268,7 @@ class CreationGesture implements GestureOwner {
                     const applied = builder.commit(); applied.release();
                 } catch (error) { builder.abort(); throw error; }
                 runtime.selection.replace([node.id]);
-                if (node.kind === 'polyline') lastPolyline.set(runtime.session, node.id);
+                if (node.kind === 'polyline') runtime.tools.rememberPolyline(node.id);
             } finally { lease?.release(); }
         } finally { scope.release(); }
         if (this.context.current() && (node.kind === 'text' || node.kind === 'sticky')) await this.context.editText(node.id);
@@ -286,7 +284,7 @@ export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> 
     return { id, begin(sample, modifiers, context) {
         if (id === 'polyline' && modifiers.shift) {
             const { runtime } = context, session = runtime.session, doc = session.doc;
-            const prior = lastPolyline.get(session), node = prior ? doc.nodes.get(prior) : undefined;
+            const prior = runtime.tools.getLastPolyline(), node = prior ? doc.nodes.get(prior) : undefined;
             // Default: an attached terminal stays bound; continuation starts a new line rather than moving the binding.
             if (node?.kind === 'polyline' && node.points.length < 5000 && !node.endAttach && !isLocked(doc, node)
                 && sheetOf(doc, node.id) === runtime.selection.getSnapshot().sheet) {

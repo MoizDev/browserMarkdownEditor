@@ -195,7 +195,6 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (commit) {
           const continuation: Tool<unknown> = { id: 'continue-ink', begin: () => {
             let endpoint = sample, ended = false
-            services.history.clearRedo()
             return { kind: 'ink', pointerIds: new Set([sample.pointerId]),
               update: samples => { for (const point of samples) if (point.pointerId === sample.pointerId) endpoint = point },
               finish: reason => {

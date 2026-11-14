@@ -1,3 +1,5 @@
+import type { NodeId } from '../model/ids'
+
 // Tool choice is session UI state, not document history. Tool implementations and
 // their command services are registered by the host, not imported by the router.
 export interface ToolRegistration {
@@ -22,6 +24,9 @@ export class ToolState {
   private readonly registry = new Map<string, ToolRegistration>()
   private readonly listeners = new Set<() => void>()
   private snapshot: ToolStateSnapshot
+  private lastStroke: NodeId | null = null
+  private lastPolyline: NodeId | null = null
+  private inkSequence = 0
 
   constructor(registrations: readonly ToolRegistration[], private readonly selectId = 'select', private readonly figureId = 'figure', initialLocked = false) {
     for (const registration of registrations) {
@@ -33,6 +38,16 @@ export class ToolState {
   }
 
   getSnapshot = (): ToolStateSnapshot => this.snapshot
+  getLastStroke(): NodeId | null { return this.lastStroke }
+  rememberStroke(id: NodeId): void { this.lastStroke = id }
+  getLastPolyline(): NodeId | null { return this.lastPolyline }
+  rememberPolyline(id: NodeId): void { this.lastPolyline = id }
+  nextInkSequence(): number {
+    const next = this.inkSequence + 1
+    if (!Number.isSafeInteger(next)) throw new RangeError('Ink gesture sequence exhausted')
+    this.inkSequence = next
+    return next
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)

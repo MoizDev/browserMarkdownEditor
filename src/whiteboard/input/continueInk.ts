@@ -6,15 +6,12 @@ import { SampleBuilder, SampleStore } from '../ink/samples';
 import type { NodeId, SheetId } from '../model/ids';
 import type { BoardSession } from '../session/BoardSession';
 import type { RealSample } from './tool';
-
-const lastStroke = new WeakMap<BoardSession, NodeId>();
-
-/** The session, not a pane, remembers the last authored stroke across view changes. */
-export function rememberAuthoredStroke(session: BoardSession, id: NodeId): void { lastStroke.set(session, id); }
+import type { ToolState } from './gesture';
 
 export interface InkContinuationOptions {
     readonly session: BoardSession;
     readonly samples: SampleStore;
+    readonly tools: ToolState;
     readonly current: () => boolean;
     readonly sheet: () => string;
     readonly declaredMaxScale: () => number;
@@ -24,7 +21,7 @@ export interface InkContinuationOptions {
 export function createInkContinuation(options: InkContinuationOptions): (sample: RealSample) => ((endpoint: RealSample) => boolean) | null {
     return () => {
         const { session, samples } = options, doc = session.doc, owner = session.owner, revision = doc.rev;
-        const id = lastStroke.get(session), node = id ? doc.nodes.get(id) : undefined;
+        const id = options.tools.getLastStroke(), node = id ? doc.nodes.get(id) : undefined;
         if (!options.current() || session.isReadOnly || !node || node.kind !== 'stroke' || node.tool !== 'pen'
             || node.closed || isLocked(doc, node) || !samples.has(node.samples)) return null;
         let parent = node.parent;

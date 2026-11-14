@@ -51,7 +51,8 @@ if (__BME_BENCH__) serve({
                 if (ctx.isContextLost()) throw new Error('Coverage canvas lost');
                 const data = ctx.getImageData(0, 0, width, height).data;
                 if (ctx.isContextLost()) throw new Error('Coverage canvas lost');
-                let outside = 0, hole = 0, standin = 0, current = 0, invalid = 0;
+                let outside = 0, hole = 0, standin = 0, current = 0, invalid = 0, countMs = 0;
+                let countStarted = performance.now();
                 for (let i = 0; i < data.length; i += 4) {
                     const value = encoding === 'rgb' ? (data[i] ? 3 : data[i + 1] ? 2 : data[i + 2] ? 1 : 0) : data[i];
                     switch (value) {
@@ -61,10 +62,15 @@ if (__BME_BENCH__) serve({
                         case 3: current++; break;
                         default: invalid++; break;
                     }
-                    if (i && i % (65536 * 4) === 0) await context.slice();
+                    if (i && i % (65536 * 4) === 0) {
+                        countMs += performance.now() - countStarted;
+                        await context.slice();
+                        countStarted = performance.now();
+                    }
                 }
+                countMs += performance.now() - countStarted;
                 // Nominal canvas reserve (12 B/px) plus ImageData (4 B/px); the caller accounts for the transferred source.
-                return { frame, outside, hole, standin, current, invalid, pixels, ownedScratchBytes: pixels * 16 };
+                return { frame, outside, hole, standin, current, invalid, pixels, ownedScratchBytes: pixels * 16, countMs };
             } finally {
                 bitmap.close();
                 if (canvas) { canvas.width = 0; canvas.height = 0; }

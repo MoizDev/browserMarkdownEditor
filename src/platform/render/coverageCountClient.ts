@@ -19,6 +19,7 @@ export interface CoverageCount {
     readonly invalid: number;
     readonly pixels: number;
     readonly ownedScratchBytes: number;
+    readonly countMs: number;
 }
 export type CoverageDropReason = 'disabled' | 'overflow' | 'memory' | 'invalid' | 'deadline' | 'stale' | 'error' | 'disposed';
 export interface CoverageCounterOptions {
@@ -63,7 +64,8 @@ function sameFrame(a: CoverageFrameTag, b: CoverageFrameTag): boolean {
         a.token.viewLease === b.token.viewLease && a.token.deviceGeneration === b.token.deviceGeneration;
 }
 function validCount(result: CoverageCount, pixels: number): boolean {
-    if (!result || typeof result !== 'object' || result.pixels !== pixels || result.ownedScratchBytes !== pixels * 16) return false;
+    if (!result || typeof result !== 'object' || result.pixels !== pixels || result.ownedScratchBytes !== pixels * 16 ||
+        !Number.isFinite(result.countMs) || result.countMs < 0) return false;
     const counts = [result.outside, result.hole, result.standin, result.current, result.invalid];
     return counts.every(value => Number.isSafeInteger(value) && value >= 0) && counts.reduce((sum, value) => sum + value, 0) === pixels;
 }

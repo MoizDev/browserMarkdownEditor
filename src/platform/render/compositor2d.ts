@@ -583,6 +583,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     private init(): boolean {
         if (__BME_BENCH__ && benchmarkCanvas && !benchmarkCanvas.managers.has(this)) benchmarkCanvas.managers.set(this, new benchmarkCanvas.BenchmarkCanvas2D({
+            paneId: this.options.paneId,
             working: { reserve: bytes => this.reserveGpu(bytes), release: lease => this.releaseGpuLease(lease) },
             cpu: { reserve: bytes => this.reserveCpu(bytes), release: lease => this.releaseCpuLease(lease) },
         }));

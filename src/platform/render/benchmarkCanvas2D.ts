@@ -1,4 +1,5 @@
 import { benchmarkDeviceContext } from './benchmarkDeviceContext';
+import { measurementAllocator } from './benchmarkMemory';
 import { deviceContext } from './canvas2dContext';
 import type { CanvasImageCall } from './canvas2dContext';
 import { createCoverageCounter } from './coverageCountClient';
@@ -28,12 +29,16 @@ export class BenchmarkCanvas2D {
     private disposed = false;
     private readonly counter;
 
-    constructor(private readonly allocators: { working: MemoryAllocator; cpu: MemoryAllocator }) {
-        this.counter = createCoverageCounter({ memory: allocators.cpu,
+    private readonly allocators: { working: MemoryAllocator; cpu: MemoryAllocator };
+
+    constructor(options: { paneId: string; working: MemoryAllocator; cpu: MemoryAllocator }) {
+        this.allocators = { working: measurementAllocator(options.paneId, 'gpu', options.working),
+            cpu: measurementAllocator(options.paneId, 'cpu', options.cpu) };
+        this.counter = createCoverageCounter({ memory: this.allocators.cpu,
             onCount: result => {
                 const tag = this.retire(result.frame);
                 if (tag) recordCoverageFrame({ ...tag, outside: result.outside, hole: result.hole,
-                    standin: result.standin, current: result.current, invalid: result.invalid });
+                    standin: result.standin, current: result.current, invalid: result.invalid, countMs: result.countMs });
             },
             onDrop: (frame, reason) => { const tag = this.retire(frame); if (tag) recordCoverageDrop(tag, reason); },
         });

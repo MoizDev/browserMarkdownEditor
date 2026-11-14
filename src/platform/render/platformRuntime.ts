@@ -9,13 +9,15 @@ import { surfaceBroker } from './surfaceBroker';
 export interface RuntimePane {
     demand(): PaneMemoryDemand;
     interacting(): boolean;
+    windowVisibility?(visible: boolean): void;
     notice(message: 'memory-pressure'): void;
     error(error: unknown): void;
 }
 
 /** Private app-lifetime services. Creating a session mirror does not start a view or listeners. */
 export class PlatformRuntime {
-    readonly governor = new MemoryGovernor((navigator as Navigator & { deviceMemory?: number }).deviceMemory);
+    readonly governor = new MemoryGovernor((navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+        () => this.queueMemoryAdvance());
     readonly lifecycles: PaneLifecycleHost;
     readonly scheduler: FrameScheduler;
     private readonly panes = new Map<string, RuntimePane>();
@@ -23,6 +25,9 @@ export class PlatformRuntime {
     private started = false;
     private readonly slowGpu = new Set<string>();
     private readonly stalledFence = new Set<string>();
+    private readonly capabilityFailures = new Map<string, number>();
+    private memoryAdvanceQueued = false;
+    private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
     private motion: MediaQueryList | null = null;
 
     constructor() {
@@ -44,7 +49,10 @@ export class PlatformRuntime {
         this.scheduler = new FrameScheduler({
             reducedMotion: false,
             uploadAllowance: interval => defaultUploadAllowance(interval, this.bandwidth),
-            windowVisibility: visible => this.lifecycles.windowVisibility(visible),
+            windowVisibility: visible => {
+                this.lifecycles.windowVisibility(visible);
+                for (const pane of this.panes.values()) pane.windowVisibility?.(visible);
+            },
             releaseRetained: reason => this.lifecycles.releaseRetained(reason),
             onPressure: pressure => {
                 if (pressure.uploadMeasurementsComplete && pressure.reportedUploadBytes > 0 && pressure.uploadCallMs > 0) {
@@ -79,6 +87,7 @@ export class PlatformRuntime {
             this.panes.delete(paneId);
             this.slowGpu.delete(paneId);
             this.stalledFence.delete(paneId);
+            this.capabilityFailures.delete(paneId);
             this.refresh();
         };
     }
@@ -109,6 +118,17 @@ export class PlatformRuntime {
         } else if (!slow) this.slowGpu.delete(paneId);
     }
 
+    /** One unsupported device is a normal fallback; repeated qualification failures are pressure evidence. */
+    observeCapabilityFailure(paneId: string): void {
+        if (!this.panes.has(paneId)) return;
+        const previous = this.capabilityFailures.get(paneId) ?? 0;
+        const failures = Math.min(2, previous + 1);
+        this.capabilityFailures.set(paneId, failures);
+        if (previous < 2 && failures === 2) this.trouble('capability');
+    }
+
+    clearCapabilityFailure(paneId: string): void { this.capabilityFailures.delete(paneId); }
+
     /** A retired device cannot keep a symptom latched across its replacement generation. */
     clearDeviceTrouble(paneId: string): void {
         this.slowGpu.delete(paneId);
@@ -126,8 +146,29 @@ export class PlatformRuntime {
         } else if (!stalled) this.stalledFence.delete(paneId);
     }
 
+    private queueMemoryAdvance(): void {
+        if (this.memoryAdvanceQueued) return;
+        this.memoryAdvanceQueued = true;
+        queueMicrotask(() => {
+            this.memoryAdvanceQueued = false;
+            this.advance();
+        });
+    }
+
     private advance(): void {
         this.lifecycles.advancePressure(performance.now(), [...this.panes.values()].some(pane => pane.interacting()));
+        const { state, gpu, cpu } = this.governor.readout();
+        const canRecover = state !== 'normal' && gpu.chargedBytes < gpu.targetBytes * POLICY.memoryRecoveryRatio &&
+            cpu.chargedBytes < cpu.targetBytes * POLICY.memoryRecoveryRatio;
+        if (!canRecover && this.recoveryTimer !== null) {
+            clearTimeout(this.recoveryTimer);
+            this.recoveryTimer = null;
+        } else if (canRecover && this.recoveryTimer === null) {
+            this.recoveryTimer = setTimeout(() => {
+                this.recoveryTimer = null;
+                this.advance();
+            }, POLICY.memoryRecoveryDelayMs);
+        }
     }
 }
 

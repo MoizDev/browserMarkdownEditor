@@ -1,12 +1,18 @@
 import type { WorkerContext } from '../../platform/workers';
-import { decodePointsIncremental, inspectPointsIncremental } from '../format/points';
-import type { PointChannel } from '../format/points';
+import { decodePointsIncremental, encodePointsIncremental, inspectPointsIncremental } from '../format/points';
+import type { PointChannel, PointSamples } from '../format/points';
 
 function pointsArgument(payload: unknown): string {
     if (!payload || typeof payload !== 'object' || typeof (payload as { pts?: unknown }).pts !== 'string') {
         throw new TypeError('Invalid encoded point request');
     }
     return (payload as { pts: string }).pts;
+}
+export async function encodePoints(payload: unknown, context: WorkerContext) {
+    if (!payload || typeof payload !== 'object') throw new TypeError('Invalid point encoding request');
+    const request = payload as { samples?: PointSamples; k?: number };
+    if (!request.samples || typeof request.samples !== 'object') throw new TypeError('Missing point samples');
+    return encodePointsIncremental(request.samples, () => context.slice(), request.k);
 }
 export async function inspectPoints(payload: unknown, context: WorkerContext) {
     return inspectPointsIncremental(pointsArgument(payload), () => context.slice());

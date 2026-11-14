@@ -1247,8 +1247,10 @@ export default function App() {
           const bytes = await new Response(snapshot.blob.stream()).blob();
           const version = await snapshot.fingerprint(signal);
           signal.throwIfAborted();
-          if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
-          if (baseline && baseline.hash !== version.hash) throw new Error('The canvas changed on disk. Reload it before editing.');
+          const latest = current(identity), currentBaseline = getBaseline(identity.documentId);
+          if (!latest || latest.file.handle !== tab.file.handle) throw new DOMException('Canvas session ended', 'AbortError');
+          if ((baseline && baseline.hash !== version.hash) || (currentBaseline && currentBaseline.hash !== version.hash)) throw new Error('The canvas changed on disk. Reload it before editing.');
+          if (isNativeDrawingFile(latest.file.name) && !currentBaseline) setBaseline(identity.documentId, version);
           return bytes;
         } finally { snapshot.dispose(); }
       },
@@ -2010,14 +2012,14 @@ export default function App() {
       // outside change is compared with (checkOpenDocs).
       const handle = node.handle as FileSystemFileHandle;
       let readError: string | undefined;
-      const read = (isPdfFile(node.name) || isEpubFile(node.name)) ? null : await readFileVersioned(handle).catch(error => { readError=describeReadError(error); return null; });
+      const read = (isPdfFile(node.name) || isEpubFile(node.name) || isNativeDrawingFile(node.name)) ? null : await readFileVersioned(handle).catch(error => { readError=describeReadError(error); return null; });
       if (rootHandleRef.current !== rootAtOpen) return false;
       const content = read?.text ?? '';
       // What this note referred to when it was opened — the baseline every
       // later save's asset diff is taken against.
       if (read) rememberAssetRefs(node, content);
       const id = newTabId();
-      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, handle);
+      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, handle);
       // Re-check inside the updater: a second click can land while the first
       // read is still in flight, and tabsRef only updates post-commit.
       // A source file opens ready to type in: there is no "reading mode" worth
@@ -2312,6 +2314,7 @@ export default function App() {
     try {
       await reconcileQueueRef.current;
       if (isPdfFile(node.name) && (!pdfTab || !current())) { notify('Open the converted PDF annotation view first to locate its pre-conversion copy.'); return; }
+      if (isNativeDrawingFile(node.name)) { notify('No pre-conversion copy is recorded for this native drawing.'); return; }
       const source = pdfTab ? null : await readFileVersioned(node.handle);
       const digest = pdfTab ? pdfTab.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
       if (!digest || !/^[a-f0-9]{64}$/.test(digest)) {
@@ -2684,10 +2687,10 @@ export default function App() {
       && policy.activation === getVaultActivation() && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(tab.id) ?? 0)
       && hasHostedNativeOwner(documentSessions.get(tab.id), tab.id) && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
     const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
-    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && acceptedFlushable && tab.representation.status === 'ready'
+    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !((pending || documentBuffers.isDirty(tab.id)) && acceptedFlushable && tab.representation.status === 'ready'
       && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
-    if (!tab.dirty && !pending && !force) return 'skipped';
+    if (!tab.dirty && !documentBuffers.isDirty(tab.id) && !pending && !force) return 'skipped';
     // A drain reports into the synchronous funnel before React commits its tab.
     let captured;
     try { captured = documentBuffers.retainSnapshotOf(path); }
@@ -3548,7 +3551,10 @@ export default function App() {
     if (retryingReadsRef.current.has(tab.id)) return false;
     retryingReadsRef.current.add(tab.id);
     try {
-      const { text: content, version } = await readFileVersioned(tab.file.handle as FileSystemFileHandle);
+      const binaryDrawing = isNativeDrawingFile(tab.file.name);
+      const { text: content, version } = binaryDrawing
+        ? { text: '', version: (await readBytesVersioned(tab.file.handle as FileSystemFileHandle)).version }
+        : await readFileVersioned(tab.file.handle as FileSystemFileHandle);
       const current = tabsRef.current.find(t => t.id === tab.id);
       if (!current) return false;
       setBaseline(tab.id, version);
@@ -3558,8 +3564,8 @@ export default function App() {
       bumpBytesGeneration(tab.id);
       // The asset-diff baseline the restore held back, taken under the path the
       // document answers to NOW.
-      if ((tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) ||
-          (isCanvasFile(current.file.name) && !boardBaselinesRef.current.capture(current.file.path))) {
+      if (!binaryDrawing && ((tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) ||
+          (isCanvasFile(current.file.name) && !boardBaselinesRef.current.capture(current.file.path)))) {
         rememberAssetRefs(current.file, content);
       }
       assetReadableWakeRef.current.add(current.file.path);
@@ -3591,7 +3597,7 @@ export default function App() {
     } finally {
       retryingReadsRef.current.delete(tab.id);
     }
-  }, [readFileVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState, documentBuffers, bumpBytesGeneration, seedDocumentBuffer]);
+  }, [readFileVersioned, readBytesVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState, documentBuffers, bumpBytesGeneration, seedDocumentBuffer]);
   // handleFileClick is declared long before this, and reads it through a ref
   // rather than growing a dependency.
   useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab]);
@@ -4049,7 +4055,7 @@ export default function App() {
             // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
             // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
             // fill the buffer with garbage.
-            if (isPdfFile(path) || isEpubFile(path)) {
+            if (isPdfFile(path) || isEpubFile(path) || isNativeDrawingFile(path)) {
               entry.content = '';
               break;
             }
@@ -4119,8 +4125,8 @@ export default function App() {
             if (entry.help || entry.dropped || (entry.content === undefined && entry.readError === undefined)) continue;
             try {
               const { handle, parentHandle } = await resolveVaultFile(root, entry.path);
-              if (classifyRequestedKind(entry.origin) !== classifyRequestedKind(handle.name)) {
-                if (isEpubFile(handle.name) || isPdfFile(handle.name)) { entry.content=''; entry.readError=undefined; readVersions.delete(entry); }
+              if (classifyRequestedKind(entry.origin) !== classifyRequestedKind(handle.name) || isNativeDrawingFile(entry.origin) !== isNativeDrawingFile(handle.name)) {
+                if (isEpubFile(handle.name) || isPdfFile(handle.name) || isNativeDrawingFile(handle.name)) { entry.content=''; entry.readError=undefined; readVersions.delete(entry); }
                 else try { const read=await readFileVersioned(handle); entry.content=read.text; entry.readError=undefined; readVersions.set(entry,read.version); }
                 catch(error){entry.content='';entry.readError=describeReadError(error);}
               }
@@ -4163,7 +4169,7 @@ export default function App() {
             if (entry.readError === undefined) {
               const version = readVersions.get(entry);
               if (version) setBaseline(id, version);
-              else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
+              else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, node.handle);
             }
             seedDocumentBuffer(id, node.path, entry.readError !== undefined ? '' : entry.content!,
               entry.readError === undefined && representationFor(node.name).bufferKind === 'text');
@@ -5084,7 +5090,8 @@ export default function App() {
         invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
         const { handle, parentHandle } = await resolveVaultFile(rootHandle, dest);
         if (rootHandleRef.current !== rootHandle) return [];
-        const changedKind = classifyRequestedKind(handle.name) !== doc.representation.loadedKind;
+        const changedKind = classifyRequestedKind(handle.name) !== doc.representation.loadedKind
+          || isNativeDrawingFile(handle.name) !== isNativeDrawingFile(doc.file.name);
         if (changedKind) {
           await drain(doc.id);
           if (rootHandleRef.current !== rootHandle) return [];
@@ -5100,7 +5107,7 @@ export default function App() {
         }
         let replacement: { content: string; readError?: string } | undefined;
         if (changedKind) {
-          if (isEpubFile(handle.name) || isPdfFile(handle.name)) replacement = { content: '' };
+          if (isEpubFile(handle.name) || isPdfFile(handle.name) || isNativeDrawingFile(handle.name)) replacement = { content: '' };
           else try { const read = await readFileVersioned(handle); replacement = { content: read.text }; setBaseline(doc.id, read.version); }
           catch (error) { replacement = { content: '', readError: describeReadError(error) }; }
         }
@@ -5201,7 +5208,7 @@ export default function App() {
           clearPdfRenderData(from);
           assetRefsRef.current.delete(from);
           diskStateRef.current.delete(doc.id);
-          if (replacement && !replacement.readError) rememberAssetRefs({ ...doc.file, name: handle.name, path: dest, handle, parentHandle }, replacement.content);
+          if (replacement && !replacement.readError && !isNativeDrawingFile(handle.name)) rememberAssetRefs({ ...doc.file, name: handle.name, path: dest, handle, parentHandle }, replacement.content);
         }
         // Buffered edits go to the NEW handle, never the old one. They are not
         // in the copy the rename made: that read the file from disk.
@@ -5505,7 +5512,7 @@ export default function App() {
         if (sameStat(stat, baseline)) { if (held) lift(id, path); continue; }
         let read: { text: string; version: DiskVersion };
         try {
-          read = (isPdfFile(file.name) || isEpubFile(file.name))
+          read = (isPdfFile(file.name) || isEpubFile(file.name) || isNativeDrawingFile(file.name))
             ? { text: '', version: isEpubFile(file.name) ? await (async () => { const snap = await readFileSnapshot(handle); try { return await snap.fingerprint(); } finally { snap.dispose(); } })() : (await readBytesVersioned(handle)).version }
             : await readFileVersioned(handle);
         } catch (err) {
@@ -5679,7 +5686,13 @@ export default function App() {
       } finally { resolvingRef.current.delete(id); }
       return;
     }
-    if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf') {
+    const conflictSource = documentBuffers.get(id)?.source, conflictPolicy = nativePoliciesRef.current.get(id);
+    const nativeConflict = !!conflictSource && typeof conflictSource !== 'string' && !!conflictPolicy && !conflictPolicy.emergencyReadOnly
+      && conflictPolicy.kind === (tab.representation.loadedKind === 'pdf' ? 'pdfInk' : tab.representation.loadedKind)
+      && conflictPolicy.session === conflictSource.owner.session && conflictPolicy.activation === getVaultActivation()
+      && conflictPolicy.retainedThroughGeneration === (bytesGenerationsRef.current.get(id) ?? 0)
+      && hasHostedNativeOwner(documentSessions.get(id), id) && documentSessions.isLiveOwner(id, conflictSource.owner);
+    if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf' && !nativeConflict) {
       if (action === 'close') removeTab(path);
       else if (action === 'retry' || action === 'reload') await retryUnreadTabRef.current(path);
       return;
@@ -5790,7 +5803,7 @@ export default function App() {
         await drain(id);
         const captured = capturedMine = captureMine();
         const keep = await captured.build();
-        const read = isPdf
+        const read = isPdf || isNativeDrawingFile(file.name)
           ? { text: '', version: (await readBytesVersioned(handle)).version }
           : await readFileVersioned(handle);
         if (__BME_BENCH__) {
@@ -5874,13 +5887,13 @@ export default function App() {
     try {
       // As handleFileClick: a PDF's bytes are read by its pane, and decoding one
       // as UTF-8 would corrupt it.
-      const read = (isPdfFile(node.name) || isEpubFile(node.name)) ? null : await readFileVersioned(node.handle);
+      const read = (isPdfFile(node.name) || isEpubFile(node.name) || isNativeDrawingFile(node.name)) ? null : await readFileVersioned(node.handle);
       if (rootHandleRef.current !== rootAtOpen) return false;
       const content = read?.text ?? '';
-      rememberAssetRefs(node, content);
+      if (!isNativeDrawingFile(node.name)) rememberAssetRefs(node, content);
       // The disk baseline, as handleFileClick takes it.
       const id = newTabId();
-      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
+      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, node.handle);
       seedDocumentBuffer(id, node.path, content, representationFor(node.name).bufferKind === 'text');
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev

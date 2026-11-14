@@ -16,6 +16,7 @@ export interface ClipboardClassifierHost {
 }
 
 function url(value: string, appOrigin: string): string | null {
+    if (value.length > SECURITY_LIMITS.textCharacters) return null;
     const trimmed = value.trim();
     if (!/^https?:\/\//i.test(trimmed)) return null;
     const result = checkContentUrl(trimmed, 'click', { appOrigin });
@@ -40,10 +41,18 @@ async function firstUri(list: string, appOrigin: string, signal: AbortSignal): P
     return value ? url(value, appOrigin) : null;
 }
 function plain(value: string): ClipboardClassification {
+    if (value.length > SECURITY_LIMITS.textCharacters) throw new RangeError('Clipboard text is too large');
     return { kind: 'text', text: value.replace(/\r\n?/g, '\n') };
 }
-function svgText(value: string): boolean {
-    return /^(?:<\?xml\s[^?]*\?>\s*)?<svg(?:\s|>|\/)/i.test(value.trimStart());
+async function leading(value: string, signal: AbortSignal): Promise<number> {
+    let index = 0;
+    while (index < value.length && /\s/u.test(value[index])) {
+        if ((++index & 65535) === 0) { signal.throwIfAborted(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+    }
+    return index;
+}
+function svgText(value: string, start: number): boolean {
+    return value[start] === '<' && /^(?:<\?xml\s[^?]*\?>\s*)?<svg(?:\s|>|\/)/i.test(value.slice(start));
 }
 
 export async function classifyClipboard(input: ClipboardInput, intent: ClipboardIntent, host: ClipboardClassifierHost, signal: AbortSignal): Promise<ClipboardClassification> {
@@ -58,14 +67,15 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
             return { kind: 'html', html: input.html };
         }
         if (input.text !== null) {
-            if (input.text.trimStart().startsWith('{') || input.text.trimStart().startsWith('[')) {
+            const start = await leading(input.text, signal);
+            if (input.text[start] === '{' || input.text[start] === '[') {
                 const kind = await host.jsonKind(input.text, signal);
                 signal.throwIfAborted();
                 if (kind) return { kind, text: input.text };
             }
             const address = url(input.text, host.appOrigin);
             if (address) return { kind: 'url', url: address };
-            if (svgText(input.text)) return { kind: 'svg', text: input.text };
+            if (svgText(input.text, start)) return { kind: 'svg', text: input.text };
             return plain(input.text);
         }
         return { kind: 'empty' };
@@ -94,8 +104,8 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     const uri = input.uriList ? await firstUri(input.uriList, host.appOrigin, signal) : null;
     if (uri) return { kind: 'url', url: uri };
     if (input.text !== null) {
-        const text = input.text;
-        if (text.trimStart().startsWith('{') || text.trimStart().startsWith('[')) {
+        const text = input.text, start = await leading(input.text, signal);
+        if (text[start] === '{' || text[start] === '[') {
             // Syntax/unrecognized input is a null result. A worker budget,
             // identity or transport failure must not silently become plain text.
             const kind = await host.jsonKind(text, signal);
@@ -104,7 +114,7 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
             if (kind === 'native-records') return { kind, text };
         }
         if (input.svg !== null) return { kind: 'svg', text: input.svg };
-        if (svgText(text)) return { kind: 'svg', text };
+        if (svgText(text, start)) return { kind: 'svg', text };
         const address = url(text, host.appOrigin);
         if (address) return { kind: 'url', url: address };
     }

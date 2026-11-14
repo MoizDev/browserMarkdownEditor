@@ -15,6 +15,7 @@ function arrayIndex(key: PropertyKey, length: number): number | null {
  * The array surface remains compatible with indexed reads, iteration and Array methods.
  */
 export function packedMisspellings(text: string, ranges: Uint32Array): readonly Misspelling[] {
+    if (ranges.length % 2) throw new TypeError('Invalid packed spelling ranges');
     const length = ranges.length / 2;
     const target = new Array<Misspelling>(length);
     const cache = new Map<number, Misspelling>();
@@ -27,6 +28,7 @@ export function packedMisspellings(text: string, ranges: Uint32Array): readonly 
             return previous;
         }
         const from = ranges[index * 2], to = ranges[index * 2 + 1];
+        if (to <= from || to > text.length) throw new RangeError('Invalid packed spelling range');
         const item = { from, to, word: text.slice(from, to) };
         const cost = size(item);
         if (cost <= ITEM_CACHE_BYTES) {

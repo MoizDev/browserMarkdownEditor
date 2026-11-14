@@ -46,9 +46,9 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0))); let visited = 0;
     while (pending.length) {
         check(); const node = pending.pop()!;
+        if (++visited % 256 === 0) { await cooperate(); check(); }
         if (node.locked) { protectedRoots.push({ id: node.id, pose: worldPose(doc, node.id) }); continue; }
         if (node.kind === 'group' || node.kind === 'frame') for (const child of childrenOf(doc, node.id)) pending.push(child);
-        if (++visited % 256 === 0) { await cooperate(); check(); }
     }
     const source = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { signal, current, cooperate: options.cooperate });
     try { check(); font = runtime.render.text.fonts.epoch; } catch (error) { source.release(); throw error; }

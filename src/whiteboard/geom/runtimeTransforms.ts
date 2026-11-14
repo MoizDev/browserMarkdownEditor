@@ -83,9 +83,9 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
     let visited = 0;
     while (pending.length) {
         check(); const node = pending.pop()!;
+        if (++visited % 256 === 0) { await cooperate(); check(); }
         if (node.locked) { protectedRoots.push({ node, pose: worldPose(doc, node.id) }); continue; }
         if (node.kind === 'group' || node.kind === 'frame') for (const child of childrenOf(doc, node.id)) pending.push(child);
-        if (++visited % 256 === 0) { await cooperate(); check(); }
     }
     const protectedIds = new Set(protectedRoots.map(root => root.node.id));
     const base = await acquireBoardGeometryScope(runtime, roots.map(root => root.node.id), { signal, current, cooperate: options.cooperate });

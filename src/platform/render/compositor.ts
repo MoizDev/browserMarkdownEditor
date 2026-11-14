@@ -245,7 +245,7 @@ export class GpuCompositor implements PaneCompositor {
             this.#options.owner.prepareFrameResources(); this.#prepareQuad();
             if (benchmarkDomain) this.#options.owner.prepareCoverageFrame?.({ frameId: frame.frameId, token: frame.token,
                 cameraEpoch: frame.view.epoch, sceneRevision: frame.damage.contentRevision },
-                benchmarkDomain.benchmarkPaintDomain(snapshot, frame), () => this.#options.invalidate('coverage-ready'));
+                benchmarkDomain.benchmarkPaintDomain(snapshot, frame, 'webgl2'), () => this.#options.invalidate('coverage-ready'));
         } catch (error) { this.#failure(error); }
     }
 

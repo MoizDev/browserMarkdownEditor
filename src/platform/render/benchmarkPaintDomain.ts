@@ -1,5 +1,5 @@
 import type { Rect } from '../types';
-import type { CompositorLayer } from './compositor.types';
+import type { CompositorBackend, CompositorLayer } from './compositor.types';
 import { projectPage } from './compositorProjection';
 import type { RectI } from './gfx/api';
 import type { PageStack } from './pageStack';
@@ -12,7 +12,8 @@ export interface BenchmarkPaintDomain {
 }
 
 /** Geometry names the denominator only. Current/stand-in pixels come from executed paint. */
-export function benchmarkPaintDomain(snapshot: { readonly layout: Readonly<PageStack> | null; readonly layers: readonly CompositorLayer[] }, frame: ScheduledFrame): BenchmarkPaintDomain {
+export function benchmarkPaintDomain(snapshot: { readonly layout: Readonly<PageStack> | null; readonly layers: readonly CompositorLayer[] },
+    frame: ScheduledFrame, backend: CompositorBackend = 'canvas2d'): BenchmarkPaintDomain {
     const view = frame.view;
     const width = Math.round(view.viewport.width * view.viewport.dpr);
     const height = Math.round(view.viewport.height * view.viewport.dpr);
@@ -30,6 +31,12 @@ export function benchmarkPaintDomain(snapshot: { readonly layout: Readonly<PageS
         for (const layer of custom) for (const rect of layer.benchmarkDomain!(frame)) append(rect);
         return Object.freeze({ vector: false, rects: Object.freeze(rects) });
     }
+    const vector = () => snapshot.layers.every(binding => {
+        if (binding.group !== 'document') return true;
+        if (binding.layer.benchmarkRaster) return false;
+        const coverage = binding.coverage(frame, backend);
+        return coverage.complete && coverage.sharp && !coverage.staleVersion;
+    });
     const layout = snapshot.layout;
     if (layout) {
         const bottom = view.camera.y + view.viewport.height / view.camera.z;
@@ -39,11 +46,10 @@ export function benchmarkPaintDomain(snapshot: { readonly layout: Readonly<PageS
             const page = projectPage(layout, view, index);
             if (page) append(page.outline);
         }
-        return Object.freeze({ vector: !snapshot.layers.some(layer => layer.group === 'document' && layer.layer.benchmarkRaster),
-            rects: Object.freeze(rects) });
+        return Object.freeze({ get vector() { return vector(); }, rects: Object.freeze(rects) });
     }
     // An infinite vector document has no raster denominator or page gaps. Object fidelity
     // remains the separate canonical painter's responsibility, never a cache-coverage claim.
     if (snapshot.layers.some(layer => layer.group === 'document')) append({ x: 0, y: 0, width, height });
-    return Object.freeze({ vector: true, rects: Object.freeze(rects) });
+    return Object.freeze({ get vector() { return vector(); }, rects: Object.freeze(rects) });
 }

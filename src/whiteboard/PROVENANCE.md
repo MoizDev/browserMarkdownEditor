@@ -45,6 +45,7 @@ third-party code included (normally "none") · date.
 | `agent/validate.ts` | w-p | F-AGENT-002/012/013/015, C8 | integration §9 | Agent specification and public model style vocabulary; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/create.ts` | w-p | F-AGENT-002/012/013, C8 | integration §9, document-model §§3–4 | Agent spec and public model/change/page APIs; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/createInk.ts` | w-p | F-AGENT-002/003/013/015, C8 | integration §9, ink §2 | Agent spec, sample store and public geometry/model APIs; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/update.ts` | w-p | F-AGENT-004/012, WB-D10, C8 | integration §9, document-model §§3/7 | Agent specification and model/change/style metrics APIs; placement delegated to authoritative staged geometry; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/errors.ts` | w-p | F-AGENT-012/013, C8 | integration §9 | Agent specification; no tldraw or old canvas source | none | 2026-11-13 |
 
 ## Formats, importer, save and agent adapter (lane w-d)
@@ -70,6 +71,8 @@ third-party code included (normally "none") · date.
 | `session/saveScheduler.ts` | w-d | CH-3, H-4/7 | change-and-history §5 | Session-owned 150ms debounce, gesture/composition hold, serialized pinned 500ms journal capture; no tldraw source/package | none | 2026-11-13 |
 | `session/contentSource.ts` | w-d | CH-3, C7.5 | change-and-history §5; contracts C7 | Synchronous immutable revision-pinned BuildJob interface; PDF host composes pinned lists/bytes without an independent write; no tldraw source/package | none | 2026-11-13 |
 | `security/limits.ts` | w-d | SEC-W1, SEC-8 | security §3 | Independently implemented inclusive encoded-byte/pixel limits and checked aggregate arithmetic, before allocation/decoding; no tldraw source/package | none | 2026-11-13 |
+| `security/urlPolicy.ts` | w-d | SEC-W1, SEC-5/6/7 | security §8 | Independent URL parser policy and literal IPv4/IPv6 special-address classification; no DNS-rebinding claim, no automatic requests; no third-party matcher code | none | 2026-11-13 |
+| `security/admission.ts` | w-d | SEC-W1, SEC-8 | security §3 | Fixed immutable session/epoch/generation/request jobs, bounded serialized queue and cancellation/current checks; no tldraw source/package | none | 2026-11-13 |
 
 ## Ink, scene, rendering and the viewer host (lane w-e)
 
@@ -133,6 +136,7 @@ third-party code included (normally "none") · date.
 | `export/tiles.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7 | Export design; bounded bands and a renderer-supplied RGBA tile; no tldraw source | none | 2026-11-13 |
 | `export/rasterTile.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; shared reference painter and capture-pinned resources, per-tile world projection; no tldraw source | none | 2026-11-13 |
 | `export/displayList.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §3 | Shared paint frame, world-space clip geometry, shared ink outline and PDF display contract; no tldraw source | none | 2026-11-13 |
+| `export/svg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5 | Resolution-free shared display-list serialization, self-contained embedded images and local clip paths; no tldraw source | none | 2026-11-13 |
 
 ## Text (lane w-n)
 
@@ -173,7 +177,7 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `geom/styleMetrics.ts` | lane w-h | WB-D20 | geometry §3.2 | Geometry design and its provisional measurement table; no tldraw source | none | 2026-11-13 |
-| `geom/figures.ts` | lane w-h | F-FIG-001 | geometry §3 | Independent shape recipes from the design; fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
+| `geom/figures.ts` | lane w-h | F-FIG-001/002/003/004 | geometry §3 | Independent shape recipes from the design; FIG creation ratios and seed-centred gestures; analytic ellipse/stadium/cloud and fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe; no tldraw source | none | 2026-11-13 |
 
 ## Media and clipboard (lane w-q)

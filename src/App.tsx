@@ -1,6 +1,5 @@
 import { runReaderHostCommand } from './utils/documentReading';
 import { watchForNewVersion } from './utils/versionPoll';
-import { anyPending } from './utils/unloadCoordinator';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface } from './utils/documentReading';
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';

@@ -81,7 +81,9 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
             if (!attachment) return null;
             const mapped = ids.get(attachment.target);
             if (mapped) return { ...attachment, target: mapped };
-            if (mayKeepExternal && doc.nodes.has(attachment.target) && sheetOf(doc, attachment.target) === targetSheet) return attachment;
+            const targetNode = mayKeepExternal ? doc.nodes.get(attachment.target) : undefined;
+            if (targetNode && targetNode.kind !== 'connector' && targetNode.kind !== 'group' && targetNode.kind !== 'opaque'
+                && sheetOf(doc, targetNode.id) === targetSheet) return attachment;
             return null;
         };
         if (ids.size !== originalCount || !originalCount) throw new Error('Clipboard source identities are invalid');
@@ -115,13 +117,16 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
                 if (ref === undefined) { const lease = samples.importImmutable(acquisition.samples, node.samples); leases.push(lease); ref = lease.ref; copiedSamples.set(node.samples, ref); }
                 node = { ...node, samples: ref };
             } else if (node.kind === 'connector') {
-                node = { ...node, start: { ...node.start, attach: remapAttachment(node.start.attach) },
-                    end: { ...node.end, attach: remapAttachment(node.end.attach) } };
+                const external = acquisition.externalBindings?.get(original.id);
+                node = { ...node, start: { ...node.start, attach: remapAttachment(external?.start ?? node.start.attach) },
+                    end: { ...node.end, attach: remapAttachment(external?.end ?? node.end.attach) } };
             } else if (node.kind === 'polyline') {
                 // Endpoint attachments are remapped with their polyline, never detached by changing its geometry.
                 const line = node as typeof node & { readonly startAttach?: ConnectorNode['start']['attach']; readonly endAttach?: ConnectorNode['end']['attach'] };
-                node = { ...line, ...(line.startAttach === undefined ? {} : { startAttach: remapAttachment(line.startAttach) }),
-                    ...(line.endAttach === undefined ? {} : { endAttach: remapAttachment(line.endAttach) }) };
+                const external = acquisition.externalBindings?.get(original.id);
+                const start = external?.start ?? line.startAttach, end = external?.end ?? line.endAttach;
+                node = { ...line, ...(start === undefined ? {} : { startAttach: remapAttachment(start) }),
+                    ...(end === undefined ? {} : { endAttach: remapAttachment(end) }) };
             }
             additions.push(node);
             if ((++count & 127) === 0) await cooperate();

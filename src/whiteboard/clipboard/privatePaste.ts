@@ -104,7 +104,7 @@ export async function duplicateClipboardInJob(options: DuplicateClipboardOptions
     let acquisition: Awaited<ReturnType<typeof acquireBoardClipboard>> | undefined;
     try {
         acquisition = await acquireBoardClipboard({ decoded: { payload: snapshot.payload, cacheOnly: false, inline: [] },
-            identity, signal: context.signal, isCurrent: current, cooperate: options.cooperate });
+            duplicateSnapshot: snapshot, identity, signal: context.signal, isCurrent: current, cooperate: options.cooperate });
         check();
         let containsFrame = false, visited = 0;
         for (const node of acquisition.load.doc.nodes.values()) {

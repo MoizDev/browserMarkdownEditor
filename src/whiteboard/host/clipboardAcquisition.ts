@@ -1,8 +1,10 @@
 import type { CachedClipboard } from '../clipboard/copy';
 import { makeClipboardNativeRecords } from '../clipboard/nativeRecords';
-import type { BoardPayload } from '../clipboard/snapshot';
+import type { BoardPayload, CopySnapshot } from '../clipboard/snapshot';
 import type { SampleStore } from '../ink/samples';
 import type { MediaId } from '../model/media';
+import type { NodeId } from '../model/ids';
+import type { Attachment } from '../model/nodes';
 import type { RehydratedLoad } from '../model/loadTypes';
 import { SECURITY_LIMITS } from '../security/limits';
 import { boardWorker, importDeadline } from '../workers/client';
@@ -20,6 +22,8 @@ export interface BoardClipboardAcquisition {
     readonly load: RehydratedLoad;
     readonly samples: SampleStore;
     readonly inline: readonly Readonly<{ id: MediaId; blob: Blob }>[];
+    /** Exact in-window copy data for bindings outside the native source container. */
+    readonly externalBindings?: ReadonlyMap<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>;
     readonly report: NativeLoadReply;
     readonly originalSourceKind: BoardPayload['from']['kind'];
     dispose(): void;
@@ -32,6 +36,8 @@ export interface BoardClipboardAcquisitionOptions {
     cooperate?(): Promise<void>;
     /** Must be the exact result of ClipboardCopy.match for these actual clipboard strings. */
     readonly cache?: Readonly<{ match: CachedClipboard; encoded: string; plain: string }>;
+    /** Actual same-session snapshot owned by the duplicate command, never an external payload. */
+    readonly duplicateSnapshot?: CopySnapshot;
 }
 function snapshot(payload: BoardPayload): BoardPayload {
     if (!payload || payload.v !== 1 || typeof payload.nonce !== 'string' || !/^[A-Za-z0-9]{16}$/.test(payload.nonce)
@@ -71,6 +77,33 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
         source = snapshot(cache.match.snapshot.payload);
     }
     if (!source.records.length) throw new Error('Clipboard contains no native records');
+    const externalBindings = new Map<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>();
+    const cacheMatch = options.cache;
+    const cached = options.duplicateSnapshot ?? (cacheMatch && cacheMatch.match.encoded === cacheMatch.encoded
+        && (!cacheMatch.match.cacheOnly || cacheMatch.match.plain === cacheMatch.plain) ? cacheMatch.match.snapshot : undefined);
+    if (cached && sameMarker(marker, cached.payload)) {
+        const present = new Set<NodeId>(); let visited = 0;
+        for (const node of cached.nodes) {
+            present.add(node.id);
+            if ((++visited & 255) === 0) {
+                options.signal?.throwIfAborted(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError');
+            }
+        }
+        const external = (attachment: Attachment | null | undefined) => attachment && !present.has(attachment.target)
+            ? Object.freeze({ ...attachment, anchor: Object.freeze({ ...attachment.anchor }) }) : undefined;
+        for (const node of cached.nodes) {
+            if ((++visited & 255) === 0) {
+                options.signal?.throwIfAborted(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError');
+            }
+            if (node.kind !== 'connector' && node.kind !== 'polyline') continue;
+            const line = node as typeof node & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
+            const start = external(node.kind === 'connector' ? node.start.attach : line.startAttach);
+            const end = external(node.kind === 'connector' ? node.end.attach : line.endAttach);
+            if (start || end) externalBindings.set(node.id, Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) }));
+        }
+    }
     const inline: { id: MediaId; blob: Blob }[] = [], seen = new Set<string>();
     let total = 0;
     for (const item of options.decoded.inline) {
@@ -106,7 +139,7 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
         const owned = acquisition;
         acquisition = undefined;
         let disposed = false;
-        return { payload: source, load: owned.load, samples: owned.samples, inline, report: owned.report,
+        return { payload: source, load: owned.load, samples: owned.samples, inline, externalBindings, report: owned.report,
             originalSourceKind: result.originalSourceKind,
             dispose() { if (!disposed) { disposed = true; owned.dispose(); } } };
     } catch (error) { acquisition?.dispose(); throw error; }

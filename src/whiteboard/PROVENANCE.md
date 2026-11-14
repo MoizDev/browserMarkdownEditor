@@ -98,6 +98,13 @@ third-party code included (normally "none") · date.
 
 ## Editing lanes (w-f to w-j)
 
+### Input (lane w-f)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `input/tool.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
+| `input/router.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7,9 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
+
 ## Pages and paged hosts (lane w-l)
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |

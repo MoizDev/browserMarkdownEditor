@@ -38,7 +38,7 @@ export function stageAgentUpdate(op: UpdateOp, context: UpdateContext): { update
     if (op.text !== undefined && node.kind !== 'text' && node.kind !== 'sticky' && node.kind !== 'figure' && node.kind !== 'connector')
         throw new AgentOpRefused('shape does not support text');
     if (op.color !== undefined && node.kind !== 'stroke' && node.kind !== 'figure' && node.kind !== 'text'
-        && node.kind !== 'sticky' && node.kind !== 'connector' && node.kind !== 'polyline') throw new AgentOpRefused('shape does not support color');
+        && node.kind !== 'sticky' && node.kind !== 'connector' && node.kind !== 'polyline' && node.kind !== 'frame') throw new AgentOpRefused('shape does not support color');
     if (op.fill !== undefined && node.kind !== 'stroke' && node.kind !== 'figure' && node.kind !== 'connector') throw new AgentOpRefused('shape does not support fill');
     if (op.dash !== undefined && node.kind !== 'stroke' && node.kind !== 'figure' && node.kind !== 'connector' && node.kind !== 'polyline') throw new AgentOpRefused('shape does not support dash');
     if (op.size !== undefined && node.kind !== 'stroke' && node.kind !== 'figure' && node.kind !== 'text'

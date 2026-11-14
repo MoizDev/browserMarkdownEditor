@@ -1,10 +1,8 @@
 import type { WorkerContext } from '../../platform/workers';
-import { pageAt } from '../../platform/render/pageStack';
 import { readNative } from '../format/read';
 import type { ReadIssue } from '../format/readTypes';
 import { SampleStore } from '../ink/samples';
 import type { LoadRepairResult, LoadSampleWire } from '../model/loadTypes';
-import { boardPageStack, pageOrigin } from '../model/pages';
 import { repairLoad } from '../model/loadRepair';
 import type { SampleLease, SampleRef } from '../model/samples';
 import type { ParseNativeRequest } from './nativeParseTypes';
@@ -46,9 +44,8 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
             },
         });
         if (!parsed.draft || parsed.readOnly || !parsed.complete) return { format: parsed.format, readOnly: true, repaired: null, issues: parsed.issues, complete: parsed.complete };
-        const draft = parsed.draft, stack = boardPageStack(draft.input.host);
+        const draft = parsed.draft;
         let serial = 0;
-        const sourceByOrdinal = new Map(draft.sources.map(source => [source.position.ordinal, source]));
         let repaired: LoadRepairResult;
         try {
             repaired = await repairLoad({ input: draft.input, sources: draft.sources, unmapped: draft.unmapped, savedView: draft.savedView }, {
@@ -58,13 +55,11 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
                     if (!wire) throw new Error('Missing encoded sample for repaired stroke');
                     return wire;
                 },
-                rootPlacement(node, _sheet, ordinal) {
-                    if (!stack?.rects.length) throw new Error('Page geometry is unavailable for orphan repair');
-                    const bounds = sourceByOrdinal.get(ordinal)?.nodeBounds;
-                    if (!bounds) throw new Error('Exact orphan bounds are unavailable; keeping original bytes');
-                    const page = pageAt(stack, bounds[1] + bounds[3] / 2), origin = pageOrigin(stack, page);
-                    if (!origin) throw new Error('Page geometry is unavailable for orphan repair');
-                    return { page, x: node.x - origin.x, y: node.y - origin.y };
+                rootPlacement() {
+                    // The native `b` is an untrusted cold-rendering hint, not
+                    // an authoritative world bound for page membership. Keep
+                    // source bytes intact if exact geometry is unavailable.
+                    throw new Error('Exact orphan bounds are unavailable for paged repair');
                 },
                 cooperate: context.slice, signal: context.signal,
             });

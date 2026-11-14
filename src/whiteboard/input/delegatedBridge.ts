@@ -11,7 +11,8 @@ export interface DelegatedBridgeOptions {
     /** Only called for a wet curve that actually reached presentation. */
     onRealPresented(callback: (sample: PresentedWetSample) => void): () => void;
 }
-interface Candidate { readonly identity: InkIdentity; readonly presentation: InkPresentation; readonly sample: RealSample; readonly curveSequence: number }
+interface InkState { readonly identity: InkIdentity; readonly presentation: InkPresentation; readonly sample: RealSample }
+interface Candidate extends InkState { readonly curveSequence: number; readonly predicted: boolean }
 interface EventRecord { readonly event: PointerEvent; readonly sample: RealSample; readonly mapping: readonly number[] }
 interface Submitted { readonly identity: InkIdentity; readonly curveSequence: number; readonly record: EventRecord; readonly presentation: InkPresentation }
 
@@ -50,21 +51,25 @@ export class DelegatedInkBridge {
         if (this.event && !sameMapping(this.event.mapping, values)) this.delegatedPointer = null;
         this.event = { event, sample, mapping: values };
     }
-    submittedCurve(candidate: Candidate | null): void {
+    private eligible(candidate: InkState | null): candidate is InkState {
         const record = this.event;
-        if (!candidate || !record || candidate.sample.pointerId !== record.sample.pointerId
-            || candidate.sample.sequence !== record.sample.sequence || candidate.sample.time !== record.sample.time) {
-            this.submitted = null; this.delegatedPointer = null; return;
-        }
+        if (this.disposed || !this.options.current() || !this.delegated.ready || !candidate || !record
+            || candidate.sample.pointerId !== record.sample.pointerId || candidate.sample.sequence !== record.sample.sequence
+            || candidate.sample.time !== record.sample.time) return false;
+        const p = candidate.presentation, m = p.localToWorld;
+        const x = Math.hypot(m[0], m[1]), y = Math.hypot(m[2], m[3]), dot = m[0] * m[2] + m[1] * m[3];
+        return p.tool === 'pen' && (p.opacity ?? 1) === 1 && (p.clips?.length ?? 0) === 0
+            && Number.isFinite(x) && Number.isFinite(y) && x > 0 && Math.abs(x - y) <= 1e-9 * Math.max(1, x, y)
+            && Math.abs(dot) <= 1e-9 * Math.max(1, x * y);
+    }
+    wantsExclusive(candidate: InkState | null): boolean { return this.eligible(candidate); }
+    submittedCurve(candidate: Candidate | null): void {
+        if (!this.eligible(candidate) || candidate.predicted) { this.submitted = null; this.delegatedPointer = null; return; }
+        const record = this.event!;
         if (this.lastSent?.pointerId === record.sample.pointerId && this.lastSent.sequence === record.sample.sequence) {
             this.submitted = null; return;
         }
-        const p = candidate.presentation, m = p.localToWorld;
-        const x = Math.hypot(m[0], m[1]), y = Math.hypot(m[2], m[3]), dot = m[0] * m[2] + m[1] * m[3];
-        if (p.tool !== 'pen' || (p.opacity ?? 1) !== 1 || (p.clips?.length ?? 0) !== 0
-            || !Number.isFinite(x) || !Number.isFinite(y) || x <= 0 || Math.abs(x - y) > 1e-9 * Math.max(1, x, y)
-            || Math.abs(dot) > 1e-9 * Math.max(1, x * y)) { this.submitted = null; this.delegatedPointer = null; return; }
-        this.submitted = { identity: candidate.identity, curveSequence: candidate.curveSequence, record, presentation: p };
+        this.submitted = { identity: candidate.identity, curveSequence: candidate.curveSequence, record, presentation: candidate.presentation };
     }
     private presented(value: PresentedWetSample): void {
         const submitted = this.submitted;

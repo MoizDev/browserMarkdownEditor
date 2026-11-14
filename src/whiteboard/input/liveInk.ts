@@ -93,9 +93,12 @@ export class LiveInk implements GestureOwner {
   private snapshot: CurvePublication | null = null
   // Translucent prediction is withheld until its two-band composition is certified.
   get allowsPrediction(): boolean { return this.context.presentation.tool === 'pen' }
-  get delegatedCandidate(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number }> | null {
+  get delegatedState(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample }> | null {
+    return !this.ended && this.last ? { identity: this.context.identity, presentation: this.context.presentation, sample: this.last } : null
+  }
+  get delegatedCandidate(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number; predicted: boolean }> | null {
     return !this.ended && this.last && this.snapshot ? { identity: this.context.identity, presentation: this.context.presentation,
-      sample: this.last, curveSequence: this.snapshot.sequence } : null
+      sample: this.last, curveSequence: this.snapshot.sequence, predicted: this.snapshot.prediction !== null } : null
   }
 
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {

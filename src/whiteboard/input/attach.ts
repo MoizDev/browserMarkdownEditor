@@ -364,9 +364,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       catch (error) { pointer.interrupt('os-cancel'); services.error(error) }
     }
     if (current() && router.activeOwner instanceof LiveInk) {
-      if (pendingPrediction && router.activeOwner.allowsPrediction) router.activeOwner.publishPrediction(pendingPrediction)
-      else router.activeOwner.publish()
-      delegated?.submittedCurve(router.activeOwner.delegatedCandidate)
+      const owner = router.activeOwner
+      // Delegate only after a real-only frame replaces any local prediction.
+      if (delegated?.wantsExclusive(owner.delegatedState)) owner.publishPrediction([])
+      else if (pendingPrediction && owner.allowsPrediction) owner.publishPrediction(pendingPrediction)
+      else owner.publish()
+      delegated?.submittedCurve(owner.delegatedCandidate)
     } else if (current() && router.activeOwner instanceof InkContinuationGesture) {
       const owner = router.activeOwner
       try { owner.publish() }

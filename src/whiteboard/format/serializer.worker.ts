@@ -2,6 +2,7 @@ import { Sha256 } from '../../utils/sha256';
 import { serve } from '../../platform/workers';
 import type { WorkerContext } from '../../platform/workers';
 import type { RawJson } from '../model/json';
+import { boardHandlers } from '../workers/protocol';
 import { LineTable } from './lineTable';
 import type { BaselineLine, SerializerBuild, SerializerDelta, SerializerPrime, SerializerProduct, SerializerReply } from './serializerProtocol';
 import { writeFailure } from './writeTypes';
@@ -139,7 +140,7 @@ async function build(input: SerializerBuild, context: WorkerContext): Promise<Se
 serve({
     protocol: 1,
     buildId: 'board-serializer-v1',
-    handlers: {
+    handlers: boardHandlers({
         prime: (args, context) => serial(() => prime(args as SerializerPrime, context)),
         delta: (args, context) => serial(() => apply(args as SerializerDelta, context)),
         build: (args, context) => serial(() => build(args as SerializerBuild, context)),
@@ -149,5 +150,5 @@ serve({
             for (const revision of revisions.keys()) if (revision < through && revision !== current) revisions.delete(revision);
             return { ok: true, value: undefined };
         }),
-    },
+    }),
 });

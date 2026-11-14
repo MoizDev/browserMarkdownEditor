@@ -4,13 +4,15 @@ import './chrome.css';
 
 export interface ZoomControlsProps {
     readonly zoom: number;
+    readonly locale: string;
+    readonly direction: 'ltr' | 'rtl';
     readonly zoomLabel: string;
     readonly minimapLabel: string;
     readonly minimapVisible: boolean;
     readonly commands: Pick<MainMenuSource, 'actionLabel' | 'actionShortcut' | 'actionState' | 'runAction'>;
 }
 
-export function ZoomControls({ zoom, zoomLabel, minimapLabel, minimapVisible, commands }: ZoomControlsProps) {
+export function ZoomControls({ zoom, locale, direction, zoomLabel, minimapLabel, minimapVisible, commands }: ZoomControlsProps) {
     const ids: readonly MainAction[] = ['zoomIn', 'zoomOut', 'zoomToFit', 'zoomToSelection', 'zoomTo100'];
     const minimapState = commands.actionState('toggleMinimap');
     return <div className="board-chrome-tool-row">
@@ -18,7 +20,7 @@ export function ZoomControls({ zoom, zoomLabel, minimapLabel, minimapVisible, co
             data-tooltip={zoomLabel} aria-haspopup="menu" onClick={event => {
                 const anchor = event.currentTarget;
                 const rect = anchor.getBoundingClientRect();
-                openContextMenu({ x: rect.left, y: rect.top, anchor, opener: anchor, label: zoomLabel,
+                openContextMenu({ x: rect.left, y: rect.top, anchor, opener: anchor, label: zoomLabel, lang: locale, dir: direction,
                     entries: ids.map(id => {
                         const state = commands.actionState(id);
                         return { kind: 'command', id, label: commands.actionLabel(id), shortcut: commands.actionShortcut(id),

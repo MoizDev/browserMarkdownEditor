@@ -1,3 +1,4 @@
+import { parseJson } from '../../format/jsonRead';
 import type { MediaEntry, MediaId, MediaMime } from '../../model/media';
 import type { LegacyObject } from './envelope';
 import { object } from './envelope';
@@ -28,7 +29,17 @@ export async function readInlineAsset(asset: LegacyObject, admit: AdmitLegacyMed
     const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
     const result = await admit(new Blob([bytes], { type: match[1].toLowerCase() }), { signal });
     if (!/^sha256:[0-9a-f]{64}$/.test(result.id)) throw new Error('Media admission returned an invalid identity');
+    const metadata = object(asset.meta) ? preserveMetadata(object(asset.meta)!) : null;
+    const fields = new Map(metadata?.fields ?? []);
+    const extraProps: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(props)) if (key !== 'src') extraProps[key] = value;
+    if (Object.keys(extraProps).length) fields.set('legacyAssetProps', parseJson(JSON.stringify(extraProps)).raw());
+    const extraRecord: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(asset)) {
+        if (!['id', 'typeName', 'type', 'props', 'meta'].includes(key)) extraRecord[key] = value;
+    }
+    if (Object.keys(extraRecord).length) fields.set('legacyAssetFields', parseJson(JSON.stringify(extraRecord)).raw());
     return { bytes, entry: { id: result.id, mime: result.mime, bytes: bytes.length, w: result.width, h: result.height,
         duration: result.duration, animated: result.animated, name: typeof props.name === 'string' ? props.name : '',
-        file: null, ext: object(asset.meta) ? preserveMetadata(object(asset.meta)!) : null } };
+        file: null, ext: fields.size ? { fields, raw: metadata?.raw ?? new Map() } : null } };
 }

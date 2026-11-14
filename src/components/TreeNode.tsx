@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BookOpen, ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool, Notebook } from './icons';
-import { isCanvasFile, isEpubFile, isNotebookFile, noteDisplayName } from '../utils/fileTypes';
+import { isCanvasFile, isEpubFile, isNotebookFile, isPdfFile, noteDisplayName } from '../utils/fileTypes';
+import { requestConversionRestore } from '../utils/conversionRestore';
 import {
     clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor, requestCreate,
     subscribeCreateRequest, type CreateKind,
@@ -285,7 +286,9 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
         };
 
         const entries: ContextMenuEntry[] = node.kind === 'file'
-            ? [rename, { kind: 'separator', id: 'sep-style' }, styleRow, ...trash]
+            ? [rename, ...(isCanvasFile(node.name) || isPdfFile(node.name)
+                ? [{ kind: 'command' as const, id: 'restore-before-conversion', label: 'Restore the copy from before conversion', run: () => requestConversionRestore(node) }]
+                : []), { kind: 'separator', id: 'sep-style' }, styleRow, ...trash]
             : [
                 { kind: 'command', id: 'new-note', label: 'New note', run: () => startCreate('file') },
                 { kind: 'command', id: 'new-folder', label: 'New folder', run: () => startCreate('folder') },

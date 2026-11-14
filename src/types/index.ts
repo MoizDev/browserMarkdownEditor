@@ -492,6 +492,9 @@ export interface FileSystemContextValue {
   /** Board media are content-addressed but retain their actual collision-free leaf name. */
   readBoardAsset: (request: BoardAssetAccess) => Promise<{ name: string; blob: Blob } | null>;
   putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
+  /** Copy a verified pre-conversion backup out of Trash without removing it. */
+  restoreConversionCopy: (request: BoardAssetAccess, item: TrashItem) => Promise<string>;
+  copyTrashFile: (item: TrashItem, root: FileSystemDirectoryHandle, isCurrent: () => boolean) => Promise<string>;
   /** Move an asset into the folder's .Garbage only while its activation and
    *  reference proof remain valid, including after the copy. */
   retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
@@ -535,7 +538,7 @@ export interface FileSystemContextValue {
   /** THE document write: writes only if the file still is `expected` (equal
    *  stat, or equal hash when only the stat moved). Never recreates a missing
    *  file. Every document save goes through it. */
-  writeFileVersioned: (fileHandle: FileSystemFileHandle, data: string | Uint8Array, expected: DiskVersion | null) => Promise<VersionedWriteResult>;
+  writeFileVersioned: (fileHandle: FileSystemFileHandle, data: string | Uint8Array | Blob, expected: DiskVersion | null) => Promise<VersionedWriteResult>;
   /** Write `data` beside `filePath` as `stem (conflict).ext` (then
    *  `(conflict 2)`, …), never over anything, re-making deleted parent folders.
    *  `vaultRoot`: the document's vault, when it may no longer be the open one

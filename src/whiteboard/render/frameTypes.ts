@@ -7,7 +7,7 @@ import type { PaintFrameSource } from './resources';
  * mutable model data after admission; cancellation drops the partial frame rather than publishing. */
 export interface PinnedPaintSource {
     readonly source: PaintNodeSource;
-    release(): void;
+    release(): void | Promise<void>;
 }
 export interface PaintFrameAssembler extends PaintFrameSource {
     bindMemory?(allocator: MemoryAllocator): void;
@@ -26,5 +26,7 @@ export interface PaintFrameAssembler extends PaintFrameSource {
     retire(frame: PaintFrame): void;
     /** Retire pins on hide; outstanding presentation-fact borrows still own their source. */
     clear(): void;
+    /** Resolves after retired sources, including outstanding borrows, physically release. */
+    whenRetired(): Promise<void>;
     dispose(): void;
 }

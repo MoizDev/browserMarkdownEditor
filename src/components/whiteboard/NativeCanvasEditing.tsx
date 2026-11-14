@@ -55,7 +55,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     if (!runtime || runtime.session !== board) throw new Error('Native editor requires the acquired board runtime');
     const { identity, nativeCanvasHost: host } = props;
     const current = useCallback(() => host.isCurrent(identity), [host, identity]);
-    const language = useNativeBoardLanguage(onError);
+    const language = useNativeBoardLanguage(onUnavailable);
     const dialogs = useNativeBoardDialogs({ documentId: identity.documentId, session: identity.session, isVisible: props.isVisible, currentOwner: current });
     const [notice, setNotice] = useState<string | null>(null), [inverted, setInverted] = useState(false);
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);
@@ -183,7 +183,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             readOnly={adapter.board.isReadOnly || !canWrite()} readOnlyReason={adapter.board.readOnlyReason ?? 'Board editing services are not ready'} reportError={report}
             toolStateFor={toolStateFor} commands={commands} actionShortcut={commands.actionShortcut} actionState={commands.actionState}
             runAction={commands.runAction} openMedia={() => { void commands.runAction('uploadMedia'); }} zoom={context.zoom}
-            minimapVisible={context.minimapOpen} confirm={dialogs.confirm} registerShortcuts={registerShortcuts} onReady={handleChromeReady} onStyles={onStyles}
+            minimapVisible={context.minimapOpen} confirm={dialogs.confirm} canWrite={canWrite} registerShortcuts={registerShortcuts} onReady={handleChromeReady} onStyles={onStyles}
             notebook={runtime.session.doc.kind === 'notebook' ? { inverted, setInverted, thumbnailsOpen: thumbnails, setThumbnailsOpen: setThumbnails } : undefined} /></NativeChromeAttachment>;
     }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap]);
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;

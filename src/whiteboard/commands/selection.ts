@@ -25,6 +25,7 @@ export type SelectionOrder = 'front' | 'back' | 'forward' | 'backward';
 
 /** The structural scope rule every restructuring command enforces before it prepares: same sheet, inside focus, unlocked, no opaque content below. */
 export type SelectionBlock = 'no-selection' | 'not-groups' | 'other-sheet' | 'outside-focus' | 'locked' | 'opaque';
+export type UngroupBlock = SelectionBlock;
 export function structuralRootsBlock(doc: BoardDoc, roots: readonly Node[], state: { readonly sheet: SheetId; readonly focus: ParentId }): SelectionBlock | undefined {
     if (!roots.length) return 'no-selection';
     for (const node of roots) {

@@ -11,6 +11,7 @@ export function useNativeSheetControls(options: {
     readonly runtime: BoardRuntime;
     readonly lease: NativeViewLease;
     readonly current: () => boolean;
+    readonly canWrite: () => boolean;
     readonly readOnly: boolean;
     readonly isVisible: boolean;
     readonly direction: 'ltr' | 'rtl';
@@ -18,10 +19,10 @@ export function useNativeSheetControls(options: {
     readonly confirm: (question: BoardQuestion) => Promise<boolean>;
     readonly onError: (error: unknown) => void;
 }) {
-    const { runtime, lease, current, confirm, onError } = options;
-    const controls = useMemo(() => createStructureControls({ runtime, current, confirm, onError,
+    const { runtime, lease, current, canWrite, confirm, onError } = options;
+    const controls = useMemo(() => createStructureControls({ runtime, current, canWrite, confirm, onError,
         newSheetName: () => 'Untitled sheet', readPage: () => lease.getNavigationSnapshot().page, jump: page => lease.jump(page) }),
-    [runtime, lease, current, confirm, onError]);
+    [runtime, lease, current, canWrite, confirm, onError]);
     const subscribe = useCallback((listener: () => void) => {
         const a = runtime.session.subscribe(listener), b = runtime.selection.subscribe(listener);
         return () => { a(); b(); };

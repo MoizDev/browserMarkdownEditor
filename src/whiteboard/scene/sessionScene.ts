@@ -242,12 +242,15 @@ export class SessionScene implements SceneSpatial {
     }
     pin(): SceneSnapshot {
         if (this.disposed) throw new Error('Scene is disposed');
-        const binding = this.paintBinding, records = this.records.pin();
+        const binding = this.paintBinding, revision = this.options.doc.rev, records = this.records.pin();
         let renderer: { release(): void } | undefined;
         try {
+            const metadata = this.metadata.pin(), ready = this.ready;
+            const root = ready && !this.state.unbounded.size ? this.state.index.occupiedBounds() : null;
+            const occupiedBounds = root ? Object.freeze({ revision, bounds: root }) : null;
+            const bounds = ready ? this.boundsVersions.pin() : undefined;
             renderer = binding.retainRenderer?.();
-            return createSceneSnapshot({ token: binding.token, revision: this.options.doc.rev, records,
-                metadata: this.metadata.pin(), ...(this.ready ? { bounds: this.boundsVersions.pin() } : {}),
+            return createSceneSnapshot({ token: binding.token, revision, records, metadata, bounds, occupiedBounds,
                 renderer, prepare: binding.preparePaint,
                 cooperate: this.options.cooperate ?? yieldToHost, onError: this.options.onError });
         } catch (error) { try { records.release(); } finally { renderer?.release(); } throw error; }

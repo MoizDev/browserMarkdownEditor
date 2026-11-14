@@ -34,18 +34,17 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
         const ids = messages.get(code);
         if (ids) ids.push(id); else messages.set(code, [id]);
     };
-    let refusal: string | null = null;
     for (let i = 0; i < nodes.length; i++) {
         if ((steps++ & 255) === 0) await tick();
         const original = nodes[i];
         if (original.kind === 'opaque') { result.push(original); continue; }
         let node = original;
         let numericChanged = false, mediaChanged = false;
+        // Plan document-model §9.2 clamps out-of-range values with no content lost. A preserved raw token stays
+        // the write authority until the user sets the property (change/apply drops it, §9.3), so only the
+        // in-memory projection changes here; refusing the board would contradict the plan's clamp rule.
         const set = (key: keyof typeof NODE_FILE_FIELDS, value: unknown) => {
             if (Object.is(Reflect.get(node, key), value)) return;
-            if (NODE_FILE_FIELDS[key].some(token => node.ext?.raw.has(token))) {
-                refusal = `Repair would override preserved ${key} on node ${node.id}`; return;
-            }
             node = { ...node, [key]: value } as Exclude<NodeRecord, { kind: 'opaque' }>;
             numericChanged = true;
         };
@@ -149,8 +148,7 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
         if (numericChanged || mediaChanged) changed.add(i);
         if (numericChanged) notice('numeric', node.id);
         if (mediaChanged) notice('missing-media', node.id);
-        if (refusal) break;
     }
-    return { nodes: refusal ? nodes : result, changedOrdinals: changed,
-        notices: [...messages].map(([code, nodeIds]) => ({ code, count: nodeIds.length, nodeIds })), readOnlyReason: refusal };
+    return { nodes: result, changedOrdinals: changed,
+        notices: [...messages].map(([code, nodeIds]) => ({ code, count: nodeIds.length, nodeIds })), readOnlyReason: null };
 }

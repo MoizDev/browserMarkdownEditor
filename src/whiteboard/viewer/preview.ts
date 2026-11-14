@@ -20,7 +20,6 @@ export interface BoardPreviewOptions {
     readonly runtime: BoardRuntime;
     readonly render: {
         retainNode(node: Readonly<Node>): { release(): void };
-        prepareOverlay(doc: BoardDoc, request: ScenePaintRequest, ids: readonly NodeId[], signal: AbortSignal): Promise<PaintNodeSource>;
     };
     readonly images: PaintImageProvider;
     readonly current: () => boolean;
@@ -143,7 +142,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         if (!scene || !scene.ready || scene.revision !== live.rev) throw new Error('Preview scene is not ready');
         if (pin && pin.revision !== live.rev) clear();
         if (!pin) { pin = scene.pin(); document = pin.readDocument(); }
-        const pinned = pin, base = document!;
+        // Captured before any await: this job's overlay uses the paint binding of its own start,
+        // never a binding adopted later by a source rebind (new work only).
+        const pinned = pin, base = document!, binding = runtime.paintBinding;
         const view = engine.getView(), selection = runtime.selection.getSnapshot();
         const sheet = view.sheetId ?? selection.sheet;
         const job = new AbortController(), seq = ++generation;
@@ -238,7 +239,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     }
                     [ids, scratch] = [scratch, ids];
                 }
-                const source = await render.prepareOverlay(doc, { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) }, ids, job.signal);
+                const source = await binding.prepareOverlay(doc, { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) }, ids, job.signal);
                 check();
                 let textItem: PaintTextItem | null = null, textIndex = -1;
                 if (textOverlay) {

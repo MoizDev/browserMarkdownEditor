@@ -191,6 +191,8 @@ export interface ViewReporter {
     pdfText?(pages: number[]): Promise<Array<{ page: number; text: string; quality?: 'partial'; warnings?: readonly string[] }>>;
     /** A PNG of one 1-based page (PDF / notebook), long side ≤ maxSide. */
     renderPage?(page: number, maxSide: number): Promise<Blob | null>;
+    /** The requested PDF page's actual paint capability, when the native renderer can prove it. */
+    renderPageWithInfo?(page: number, maxSide: number): Promise<{ png: Blob; emphasis?: import('../types/vaultAgent').ClosedPdfEmphasis }>;
     /** Markdown: dispatch changes into the live editor as one undoable
      *  transaction (`userEvent: 'input.agent'`, isolated in the history), in
      *  reading mode too. Offsets are into the CURRENT text. False if the view

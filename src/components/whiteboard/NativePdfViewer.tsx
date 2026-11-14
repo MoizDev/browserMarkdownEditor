@@ -218,9 +218,12 @@ function PdfEditingAttached({ props, context, updating }: { props: NativePdfView
     const { lease } = context, source = useSyncExternalStore(props.sourceState.subscribe, props.sourceState.getSnapshot, props.sourceState.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
     const [minimapOpen, setMinimapOpen] = useState(false);
-    const token = lease.view.sourceToken, actual = source.source.source.token;
+    const token = lease.view.sourceToken, actual = source.source.source.token, outer = props.host.outerIdentity(props.identity.documentId);
     const paired = !!token && token.documentId === actual.documentId && token.session === actual.session
-        && token.vaultEpoch === actual.vaultEpoch && token.bytesGeneration === actual.bytesGeneration;
+        && token.vaultEpoch === actual.vaultEpoch && token.bytesGeneration === actual.bytesGeneration
+        && source.source.isCurrent() && props.host.isCurrent(props.identity) && !!outer && props.host.isCurrent(outer)
+        && outer.documentId === actual.documentId && outer.session === actual.session
+        && outer.vaultActivation === actual.vaultEpoch && outer.bytesGeneration === actual.bytesGeneration;
     const cover = updating || source.status !== 'ready' || !paired;
     useLayoutEffect(() => {
         if (cover) { lease.editing?.setInputEnabled(false); lease.editing?.cancelViewWork('pdf-source-updating'); }

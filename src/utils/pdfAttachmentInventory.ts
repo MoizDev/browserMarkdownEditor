@@ -84,8 +84,11 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
             const pristine = await PDFDocument.load(original, { parseSpeed: Infinity, updateMetadata: false });
             if (!pristine.getPageCount()) return unreadable(ORIGINAL_ATTACHMENT, 'corrupt', undefined, originals[0].id);
         } catch { return unreadable(ORIGINAL_ATTACHMENT, 'corrupt', undefined, originals[0].id); }
-        return { kind: 'annotated', generation, alreadyAnnotated: true, original, snapshot, notebookSource: null,
-            writeMark: await checkPdfWriteMark(bytes) };
+        const mark = await checkPdfWriteMark(bytes);
+        // A board-bound v2 mark is not authority for a legacy-only snapshot.
+        const writeMark = mark.kind === 'verified' && mark.writeId
+            ? { kind: 'foreign' as const, reason: 'unsupported' as const } : mark;
+        return { kind: 'annotated', generation, alreadyAnnotated: true, original, snapshot, notebookSource: null, writeMark };
     } catch (error) {
         return unreadable('attachment inventory', error instanceof Error && error.message.toLowerCase().includes('encrypted') ? 'encrypted' : 'corrupt');
     }

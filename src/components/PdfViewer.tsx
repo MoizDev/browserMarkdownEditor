@@ -35,6 +35,8 @@ import type { PdfTextReader } from '../utils/pdfReadingText';
 import { createPdfFindHighlights, pdfFindBreaks, pdfFindRange, pdfFindSpan } from '../utils/pdfFindHighlight';
 import type { PdfFindBoundary, PdfFindMemory, PdfFindTextLayer, PdfFindTextSpan } from '../utils/pdfFindHighlight';
 import type { TextContent } from 'pdfjs-dist/types/src/display/api';
+import { usePdfPlatformPreview } from './usePdfPlatformPreview';
+import type { PreviewSnapshot } from '../pdf/preview/contracts';
 
 export interface PdfViewerHandle { openFind(): void }
 const findKey = (hit: PdfFindHit) => `${hit.page}:${hit.from}:${hit.to}`;
@@ -95,6 +97,7 @@ interface PdfViewerProps {
     onLocation?(): void;
     /** Vault path — the persistence key for page position + zoom. */
     filePath: string;
+    previewIdentity?: { readonly vaultEpoch: number; readonly documentId: string; readonly byteGeneration: number };
     /** The PDF bytes to display. A new array identity reloads the document. */
     session: PdfDocumentSession;
     /** True while this viewer's tab is in front. Gates the +/- zoom keys —
@@ -288,7 +291,7 @@ interface PinchGesture {
     timer: number | null;
 }
 
-function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, isVisible = true, onRotate, onPageRendered, onLocation, emphasisEnabled = false, onNativeEmphasisResult, onRetry, retryDisabled = false }: PdfViewerProps,
+function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, isVisible = true, onRotate, onPageRendered, onLocation, emphasisEnabled = false, onNativeEmphasisResult, onRetry, retryDisabled = false, previewIdentity }: PdfViewerProps,
     forwarded: React.ForwardedRef<PdfViewerHandle>) {
     const renderDiagnostics = useSyncExternalStore(session.health.subscribe, session.health.getSnapshot);
     const pageRenderIssues = useMemo(() => new Map(renderDiagnostics.filter(issue => issue.incomplete && issue.pageIndex !== undefined).map(issue => [issue.pageIndex!, issue])), [renderDiagnostics]);
@@ -546,6 +549,38 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         return { gen: docState.gen, scale, pages, tops, maxPageW: maxW * scale };
     }, [docState, containerWidth, zoom]);
     const layoutRef = useRef<typeof layout>(null);
+    const readPreview = (): PreviewSnapshot | null => {
+        const L = layoutRef.current, scroll = scrollRef.current;
+        if (!L || !scroll || !visibleRef.current) return null;
+        const gesture = gestureRef.current;
+        const z = gesture?.k ?? 1;
+        const x = (scroll.scrollLeft - (1 - z) * (gesture?.originX ?? 0)) / z;
+        const y = (scroll.scrollTop - (1 - z) * (gesture?.originY ?? 0)) / z;
+        const right = x + scroll.clientWidth / z, bottom = y + scroll.clientHeight / z;
+        const width = Math.max(scroll.clientWidth, L.maxPageW);
+        const pages: PreviewSnapshot['pages'][number][] = [];
+        for (let i = 0; i < L.pages.length; i++) {
+            const page = L.pages[i];
+            const left = (width - page.w) / 2, top = L.tops[i];
+            if (left >= right || left + page.w <= x || top >= bottom || top + page.h <= y) continue;
+            const state = pageStatesRef.current.get(i);
+            const target = state?.rendered;
+            const canvas = canvasElsRef.current[i];
+            const ready = !!target && !!state?.want && satisfies(target, state.want) && !!canvas && canvas.width > 0;
+            const rect = target?.rect;
+            pages.push({
+                index: i,
+                pageRect: { x: left, y: top, width: page.w, height: page.h },
+                canvasRect: { x: left + (rect?.x ?? 0), y: top + (rect?.y ?? 0), width: rect?.w ?? page.w, height: rect?.h ?? page.h },
+                canvas: ready ? canvas : null,
+                rasterKey: ready ? JSON.stringify(target) : null,
+                current: () => visibleRef.current && layoutRef.current === L && canvasElsRef.current[i] === canvas
+                    && !!state?.wantRender && state.rendered === target && !!state.want && !!target && satisfies(target, state.want),
+            });
+        }
+        return { scroll, camera: { x, y, z }, inverted, pages };
+    };
+    const syncPreview = usePdfPlatformPreview(rootRef, previewIdentity, session, isVisible, isActive, readPreview);
 
     // ── Page rendering (windowed) ───────────────────────────────────────────
     const getState = useCallback((i: number): PageState => {
@@ -1171,6 +1206,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     display.drawImage(work, 0, 0);
                     placeCanvas(canvas, rect);
                     st.rendered = target;
+                    syncPreview();
                     onPageRendered?.(i);
                     canvas.dataset.nativeEmphasis = String(!!emphasis);
                     canvas.dataset.emphasizedGlyphs = String(emphasis?.result.painted ?? 0);
@@ -1188,7 +1224,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                             const reason = !rebuilt.result.supported ? rebuilt.result.reason ?? 'glyph-data'
                                 : !rememberPdfEmphasisPlan(page, rebuilt, classicEmphasisPlanKey(key)) ? 'page-budget' : undefined;
                             if (reason) session.emphasisVerdicts.rejectPlan(key, reason);
-                            else st.rendered = undefined;
+                            else { st.rendered = undefined; syncPreview(); }
                         }
                     }
                 } catch (err) {
@@ -1218,7 +1254,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 st.rendered = undefined;
             }
         }
-    }, [getPage, ensureText, ensureLinks, clearCanvas, session, watchShown, onPageRendered]);
+    }, [getPage, ensureText, ensureLinks, clearCanvas, session, watchShown, onPageRendered, syncPreview]);
 
     const ensurePage = useCallback((i: number) => {
         if (session.health.getSnapshot().some(issue => issue.incomplete && issue.pageIndex === i)) return;
@@ -1401,6 +1437,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             }
         }
 
+        syncPreview();
         // The position anchor is the top edge: restore sets scrollTop so that
         // the same fraction of the same page sits under it again.
         currentPosRef.current = { page: first, offset: (top - L.tops[first]) / L.pages[first].h };
@@ -1421,7 +1458,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         if (input && document.activeElement !== input) input.value = String(shown + 1);
         writePdfViewPos(filePath, { ...currentPosRef.current, zoom: zoomRef.current }, false);
         schedulePersist();
-    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice, session, watchShown]);
+    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice, session, watchShown, syncPreview]);
     /** So the hide/show effect above can call the latest `updateWindow` without
      *  being re-created (and re-evicting) every time one of its deps moves. */
     const updateWindowRef = useRef(updateWindow);
@@ -1668,13 +1705,15 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             const target = clampZoom(zoomRef.current * g.k * Math.exp(-d * 0.01));
             g.k = target / zoomRef.current;
             inner.style.transform = `scale(${g.k})`;
+            syncPreview();
 
             if (g.timer !== null) clearTimeout(g.timer);
             g.timer = window.setTimeout(commitGesture, SETTLE_MS);
         };
         root.addEventListener('wheel', onWheel, { passive: false });
         return () => root.removeEventListener('wheel', onWheel);
-    }, [commitGesture]);
+    }, [commitGesture, syncPreview]);
+    useLayoutEffect(() => { syncPreview(); }, [inverted, layout, syncPreview]);
 
     /**
      * Turn the document (or, with ⌥ held, just the page being read).

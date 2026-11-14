@@ -3462,6 +3462,20 @@ body.is-resizing-panes * {
   overscroll-behavior: contain;
 }
 
+/* The temporary platform preview stays underneath the reader's selectable DOM. */
+.pdf-platform-preview-surface {
+  position: absolute;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+}
+.pdf-platform-preview-surface > canvas { width: 100%; height: 100%; display: block; }
+.pdf-platform-preview-live .pdf-platform-preview-surface { visibility: visible; }
+.pdf-platform-preview-live .pdf-viewer-inner { position: relative; z-index: 2; }
+.pdf-platform-preview-live .pdf-viewer-page { background: transparent; }
+.pdf-platform-preview-live .pdf-viewer-page > canvas { visibility: hidden; }
+
 /* The CSS-variable contract pdf.js text layers size themselves by:
    --scale-factor is set inline to the live render scale; the rest are the
    companion defaults the library's own viewer defines. */

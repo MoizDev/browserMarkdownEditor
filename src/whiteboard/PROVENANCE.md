@@ -198,7 +198,8 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design and Unicode grapheme boundary API; no tldraw source | none | 2026-11-13 |
-| `text/edit/host.ts` | w-i | T-4, F-TEXT-016, E-TXT-2/21/22 | text §§5.1–5.3, 5.10 | Design, browser EditContext and textarea APIs | none | 2026-11-13 |
+| `text/edit/host.ts` | w-i | T-4, F-TEXT-016, E-TXT-2/12/15/21/22 | text §§5.1–5.3, 5.10 | Design, browser EditContext and textarea APIs | none | 2026-11-13 |
+| `text/edit/session.ts` | w-i | T-4, F-TEXT-006/016/018, E-TXT-2/5/12/15 | text §§5.1–5.7, 5.10 | Design and TX-3 public paint/caret types; injected model, history and view services | none | 2026-11-13 |
 | `text/edit/controller.ts` | w-i | T-5, WB-D26 | text §§4–5 | Design and public change operation types | none | 2026-11-13 |
 | `text/edit/format.ts` | w-i | WB-D26, E-TXT-14 | text §§4.1, 5.9 | Design and URL platform API | none | 2026-11-13 |
 | `text/edit/keys.ts` | w-i | F-TEXT-006/011, WB-D14 | text §5.4 | Design and Intl.Segmenter through TX-1 | none | 2026-11-13 |

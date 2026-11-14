@@ -11,8 +11,9 @@ export type ImportValidation<T extends ImportData> =
     | { readonly ok: true; readonly value: T; readonly notices: readonly string[] }
     | { readonly ok: false; readonly reason: string };
 export interface ProjectionLimits { readonly entries: number; readonly characters: number; readonly depth: number; }
+export type AdmissionResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: string };
 export interface ImportAdmission<T extends ImportData> {
-    prepare(input: unknown, job: ContentJob): ImportValidation<ValidatedImport<T>>;
+    prepare(input: unknown, job: ContentJob): AdmissionResult<ValidatedImport<T>>;
     /** One-shot: the issuer and job must match and the session must still be current. */
     take(token: ValidatedImport<T>, job: ContentJob): T;
 }

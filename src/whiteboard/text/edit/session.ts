@@ -65,7 +65,7 @@ export class TextEditSession {
         this.typingHistory = new TypingHistory(services.history, next => this.restoreSelection(next));
         this.controller = new TextEditController(id, key, {
             apply: transaction => services.apply(transaction), readText: () => services.readText(),
-            setSelection: next => services.setSelection(next), marksAt: offset => services.marksAt(offset),
+            setSelection: next => { this.selection = next; services.setSelection(next); }, marksAt: offset => services.marksAt(offset),
             fragment: (from, text, marks) => services.fragment(from, text, marks),
             format: (mark, from, to) => services.format(mark, from, to),
             link: (url, from, to) => services.link(url, from, to),
@@ -262,8 +262,10 @@ export class TextEditSession {
     deleteSelection(): void {
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
         if (from === to) return;
-        this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary');
-        this.host.sync();
+        this.typingHistory.close();
+        this.services.history.open('Cut text');
+        try { this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary'); this.host.sync(); }
+        finally { this.services.history.close(); }
     }
 
     replaceSelection(fragment: RichFragment): void {
@@ -271,9 +273,12 @@ export class TextEditSession {
         const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
         const next = { anchor: from + length, focus: from + length };
         this.typingHistory.close();
-        try { this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] }); }
-        catch (error) { this.services.reportError(error); return; }
-        this.select(next);
+        this.services.history.open('Paste text');
+        try {
+            this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
+            this.select(next);
+        } catch (error) { this.services.reportError(error); }
+        finally { this.services.history.close(); }
     }
 
     applyLink(url: string, selection: EditSelection): boolean {

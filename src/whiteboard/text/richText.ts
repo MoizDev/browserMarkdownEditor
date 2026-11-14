@@ -1,7 +1,7 @@
 import type { RawJson } from '../model/json';
-import { blockTextLength, isBlockRange } from '../model/textOffsets';
+import { blockTextLength } from '../model/textOffsets';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
-import { projectionPosition } from './projection';
+import { inheritProjection, projectionLength, projectionPosition } from './projection';
 import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, sliceCarriers, trackBlock } from './carriers';
 
 // text.md §4.1: immutable values; UTF-16 offsets refer to the plain-text projection.
@@ -217,7 +217,8 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
     if (to < from || insert.blocks.length === 0) throw new RangeError('Invalid rich splice');
     const first = locate(text, from);
     const last = locate(text, to);
-    if (wholeBlocks && !isBlockRange(text, from, to)) throw new RangeError('Whole-block splice is not block-aligned');
+    if (wholeBlocks && (first.offset !== 0 || last.offset !== blockTextLength(text.blocks[last.block])))
+        throw new RangeError('Whole-block splice is not block-aligned');
     const count = text.blocks.length - (last.block - first.block + 1) + insert.blocks.length;
     if (count > MAX_TEXT_BLOCKS) throw new RichTextLimitError('Rich text exceeds 100000 blocks');
     const before = text.blocks.slice(first.block, last.block + 1);
@@ -242,17 +243,16 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
         }
         after = normalizeRichText({ blocks }).blocks;
     }
-    let length = text.blocks.length - before.length + after.length - 1;
     let segmentLength = after.length - 1;
     for (let i = 0; i < after.length; i++) segmentLength += blockTextLength(after[i]);
-    for (let i = 0; i < text.blocks.length; i++) {
-        if (i < first.block || i > last.block) length += blockTextLength(text.blocks[i]);
-    }
-    length += segmentLength - (after.length - 1);
+    const replacedLength = last.start + blockTextLength(text.blocks[last.block]) - first.start;
+    const length = projectionLength(text) - replacedLength + segmentLength;
     if (length > MAX_TEXT_LENGTH) throw new RichTextLimitError('Rich text exceeds 1000000 UTF-16 units');
     const blocks = [...text.blocks.slice(0, first.block), ...after, ...text.blocks.slice(last.block + 1)];
+    const result = { blocks };
+    inheritProjection(text, result, first.block, before.length, after);
     return {
-        text: { blocks }, before, after,
+        text: result, before, after,
         inverse: { from: first.start, to: first.start + segmentLength, insert: { blocks: before }, wholeBlocks: true },
     };
 }

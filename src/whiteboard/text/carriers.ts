@@ -46,9 +46,9 @@ export function coalesceCarriers(carriers: readonly BlockCarrier[]): readonly Bl
     if (!carriers.length) return undefined;
     const groups = new Map<object, BlockCarrier[]>();
     for (const carrier of carriers) {
-        const source = carrierSource(carrier);
-        const group = groups.get(source);
-        if (group) group.push(carrier); else groups.set(source, [carrier]);
+        const origin = carrierOrigin(carrier);
+        const group = groups.get(origin);
+        if (group) group.push(carrier); else groups.set(origin, [carrier]);
     }
     const result: BlockCarrier[] = [];
     for (const group of groups.values()) {
@@ -56,7 +56,9 @@ export function coalesceCarriers(carriers: readonly BlockCarrier[]): readonly Bl
         let current = group[0];
         for (let i = 1; i < group.length; i++) {
             const next = group[i];
-            if (next.from <= current.to) current = mapCarrier(current, current.from, Math.max(current.to, next.to));
+            const bothRanges = current.from < current.to && next.from < next.to;
+            if (next.from <= current.to && (bothRanges || carrierSource(current) === carrierSource(next)))
+                current = mapCarrier(current, current.from, Math.max(current.to, next.to));
             else { result.push(current); current = next; }
         }
         result.push(current);

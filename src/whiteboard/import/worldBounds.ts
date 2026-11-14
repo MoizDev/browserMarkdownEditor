@@ -43,13 +43,13 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
     for (const node of nodes) {
         if (node.kind !== 'text') continue;
         const request: TextLayoutRequest = { text: node.text, revision: node.id,
-            style: { font: node.font, size: TEXT_SIZES[node.size] * node.scale,
+            style: { font: node.font, size: TEXT_SIZES[node.size],
                 ink: { swatch: node.color, role: 'text' }, align: node.align, verticalAlign: 'start',
                 padding: { top: 0, right: 0, bottom: 0, left: 0 }, minHeight: 0, overflow: 'allow' },
-            width: node.autoSize ? null : node.w * node.scale, fontEpoch: text.fontEpoch() };
+            width: node.autoSize ? null : node.w, fontEpoch: text.fontEpoch() };
         await text.engine.prepare(request);
         const measured = text.engine.measure({ ...request, fontEpoch: text.fontEpoch() });
-        textBoxes.set(node, [0, 0, measured.box.w, measured.box.h]);
+        textBoxes.set(node, [0, 0, measured.box.w * node.scale, measured.box.h * node.scale]);
     }
     const result = new Map<Node, LegacyWorldBounds>();
     for (const root of nodes) {

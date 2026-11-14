@@ -22,6 +22,7 @@ const background = { priority: 3 } as const;
 export class VaultIndexClient {
     private readonly worker: WorkerClient;
     private readonly stopForeground: () => void;
+    private foregroundActive = 0;
     private tree: IndexTreeFile[] = [];
     private treeGen = 0;
     private graphGen = 0;
@@ -42,6 +43,7 @@ export class VaultIndexClient {
         onTimes?: (changes: [string, number, number][], sweepComplete: boolean) => void) {
         this.worker = createWorkerClient({
             name: `vault-index-${session.sessionNo}`, protocol: 1,
+            restartPolicy: { delaysMs: [1000, 4000, 16000], maxFailures: 3, windowMs: 60000 },
             spawn: () => new Worker(new URL('./index.worker.ts', import.meta.url), { type: 'module' }),
             fileHandleOps: ['treeChunk', 'treeDelta'], events: ['graph', 'problem', 'status', 'results', 'fileTimes', 'searchChanged'], eventLimit: Infinity,
             onStart: async bootstrap => {
@@ -51,6 +53,7 @@ export class VaultIndexClient {
                 this.graphGen = 0;
                 this.graphEpoch++;
                 await bootstrap.request('open', { session }, control);
+                await bootstrap.request('fgio', { session, active: this.foregroundActive }, control);
                 await this.sendTree(bootstrap, this.treeGen, this.tree);
                 for (const [path, value] of this.overlays) await bootstrap.request('overlay', { session, path, rev: value.rev, text: value.text }, control);
                 queueMicrotask(() => { if (!this.disposed) void this.sweep('open').catch(() => {}); });
@@ -79,7 +82,10 @@ export class VaultIndexClient {
         });
         this.worker.on('problem', value => { if (currentEvent(value)) this.onProblem(value); });
         this.worker.on('status', value => { if (currentEvent(value)) onStatus?.(value); });
-        this.stopForeground = observeForegroundReads(active => { void this.foregroundIO(active).catch(() => {}); });
+        this.stopForeground = observeForegroundReads(active => {
+            this.foregroundActive = active;
+            void this.foregroundIO(active).catch(() => {});
+        });
     }
     acceptsGraph(graphGen: number, treeGen: number, epoch: number): boolean {
         return !this.disposed && epoch === this.publicationEpoch && graphGen === this.graphGen && treeGen === this.treeGen;

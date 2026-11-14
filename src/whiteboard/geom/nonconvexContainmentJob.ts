@@ -7,6 +7,7 @@ import { classifyCertifiedClipBox, certifiedCurveBox, expandCertifiedClipBox, pr
 import { splitCertifiedCurve, type CertifiedCurve } from './pointPathJob';
 import { splitExactCurve } from './exactCurve';
 import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { createFillVisibilityWitnessJob } from './fillVisibilityWitness';
 import type { ExactCurve } from './exactCurve';
 import type { PathOp, Vec2 } from './path';
 import type { RegionQuery } from './types';
@@ -36,9 +37,9 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
         }
         polygon.push({ op: 'Z' });
         const inverse = createExactInverseDistance(query.localToSurface), frames = (options.frames ?? []).map(preparePointClip);
-        let seen = false, commands = 0, nodes = 0;
-        const exactSegment = function* (curve: ExactCurve, radius: number): Generator<void, 'inside' | 'outside' | 'uncertain'> {
-            seen = true;
+        let seen = false, unresolvedFill = false, commands = 0, nodes = 0;
+        const exactSegment = function* (curve: ExactCurve, radius: number, visibleStroke: boolean): Generator<void, 'inside' | 'outside' | 'uncertain'> {
+            if (visibleStroke) seen = true;
             const witness = { ...curve[0], w: { n: 1n, e: 0 } };
             const fill = createFillPointJob([polygon], { x: 0, y: 0 }, 'nonzero', { exactPoint: witness, localToWorld: IDENTITY,
                 maxCommands: maxEdges + 1, maxWork });
@@ -69,7 +70,7 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
             return 'inside';
         };
         const segment = function* (curve: ExactCurve, radius: number, fillBoundary: boolean): Generator<void, 'inside' | 'outside' | 'uncertain'> {
-            if (!frames.length) return yield* exactSegment(curve, radius);
+            if (!frames.length) return yield* exactSegment(curve, radius, !fillBoundary);
             const scale = strokeRadiusBounds(query.localToSurface, radius);
             if (!scale) return 'uncertain';
             const points = curve.map(point => exactPointIntervals({ ...point, w: { n: 1n, e: 0 } })) as unknown as CertifiedCurve['points'];
@@ -85,7 +86,7 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
                 }
                 if (outside) { if (fillBoundary) return 'uncertain'; yield; continue; }
                 if (!overlap) {
-                    const result = yield* exactSegment(item.curve, radius); if (result !== 'inside') return result;
+                    const result = yield* exactSegment(item.curve, radius, !fillBoundary); if (result !== 'inside') return result;
                     yield; continue;
                 }
                 if (fillBoundary || item.bounds.depth >= maxDepth || nodes + 2 > maxNodes) return 'uncertain';
@@ -124,12 +125,27 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
                 if (result === 'uncertain') return { status: 'uncertain', reason: 'Stroke meets a nonconvex lasso boundary' };
                 yield;
             }
-            // A fill's subpaths can cancel by winding, so boundary containment
-            // alone cannot prove either visibility or a missing exterior part.
-            if (part.options.interiorPaths?.length)
-                return { status: 'uncertain', reason: 'Nonconvex filled containment needs a winding visibility witness' };
+            const fills = part.options.interiorPaths ?? [];
+            for (const ops of fills) {
+                const result = yield* path(ops, 0, true);
+                // A canceled contour outside the lasso does not prove that any
+                // rendered fill is outside; only the positive result is usable.
+                if (result !== 'inside') return { status: 'uncertain', reason: 'Filled contour meets or leaves a nonconvex lasso' };
+                yield;
+            }
+            if (fills.length && !seen) {
+                const witness = createFillVisibilityWitnessJob(fills, query.localToSurface, options.frames ?? [], { maxCommands, maxWork });
+                try {
+                    for (;;) {
+                        const result = witness.step({ deadline: performance.now() + 3, maxWork: 1 });
+                        if (result.status === 'pending') { yield; continue; }
+                        if (result.status === 'visible') seen = true; else unresolvedFill = true;
+                        break;
+                    }
+                } finally { witness.cancel(); }
+            }
         }
-        return { status: seen ? 'hit' : 'empty' };
+        return seen ? { status: 'hit' } : unresolvedFill ? { status: 'uncertain', reason: 'Filled visibility has no certified witness' } : { status: 'empty' };
     };
     let iterator: Generator<void, NonconvexContainmentResult> | undefined, cancelled = false, spent = 0, finished: NonconvexContainmentResult | undefined;
     const finish = (result: NonconvexContainmentResult): NonconvexContainmentResult => { finished = Object.freeze(result); return finished; };

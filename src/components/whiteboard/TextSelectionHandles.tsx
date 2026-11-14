@@ -11,7 +11,7 @@ export function TextSelectionHandles({ anchor, focus, down, move, up }: TextSele
     return <>
         {(['anchor', 'focus'] as const).map(which => {
             const p = which === 'anchor' ? anchor : focus;
-            return <button key={which} type="button" aria-label={which === 'anchor' ? 'Start of text selection' : 'End of text selection'}
+            return <button key={which} type="button" tabIndex={-1} aria-label={which === 'anchor' ? 'Start of text selection' : 'End of text selection'}
                 style={{ position: 'fixed', left: p.x - 22, top: p.y - 8, width: 44, height: 44, zIndex: 1000, padding: 0, border: 0, background: 'transparent', touchAction: 'none' }}
                 onContextMenu={event => event.preventDefault()}
                 onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); down(which, event); }}

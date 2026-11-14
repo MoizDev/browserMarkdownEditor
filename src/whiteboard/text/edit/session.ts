@@ -52,6 +52,7 @@ export class TextEditSession {
     private lastActivity = performance.now();
     private formats: readonly { from: number; to: number; style: string; thickness: string }[] = [];
     private compositionSelection: EditSelection | null = null;
+    private compositionRange: { from: number; to: number } | null = null;
     private closed = false;
 
     constructor(container: HTMLElement, label: string, private readonly id: NodeId, private readonly key: 'text' | 'label', selection: EditSelection,
@@ -75,9 +76,11 @@ export class TextEditSession {
             composition: change => {
                 if (change) {
                     this.compositionSelection ??= this.selection;
+                    this.compositionRange = { from: change.from, to: change.from + change.text.length };
                     this.selection = change.selection;
                 } else {
                     this.formats = [];
+                    this.compositionRange = null;
                     if (this.compositionSelection) this.selection = this.compositionSelection;
                     this.compositionSelection = null;
                 }
@@ -216,7 +219,8 @@ export class TextEditSession {
         const scale = Math.hypot(layout.localToClient.a, layout.localToClient.b) * Math.max(devicePixelRatio, 0.01);
         const caret = visible && this.selection.anchor === this.selection.focus
             ? { x: stop.x, y: stop.top, width: 1.5 / Math.max(scale, 0.0001), height: stop.bottom - stop.top } : null;
-        const composition = this.formats.flatMap(format => layout.caret.selection(format.from, format.to).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
+        const formats = this.formats.length ? this.formats : this.compositionRange ? [{ ...this.compositionRange, style: 'solid', thickness: 'thin' }] : [];
+        const composition = formats.flatMap(format => layout.caret.selection(format.from, format.to).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
         const anchor = layout.caret.caret({ offset: this.selection.anchor });
         const focus = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
         const handles = { anchor: point(layout.localToClient, anchor.x, anchor.bottom), focus: point(layout.localToClient, focus.x, focus.bottom) };

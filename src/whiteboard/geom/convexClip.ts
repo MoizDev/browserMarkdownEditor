@@ -79,45 +79,57 @@ function* hull(input: readonly Vec2[]): Generator<void, Vec2[]> {
     };
     return [...(yield* half(false)), ...(yield* half(true))];
 }
-function* clipSteps(polygons: readonly ConvexClipPolygon[], tolerance: number): Generator<void, ConvexClipResult> {
+function* clipSteps(polygons: readonly ConvexClipPolygon[], tolerance: number, halfPlanes: readonly ExactLine[]): Generator<void, ConvexClipResult> {
     if (!Number.isFinite(tolerance) || tolerance <= 0 || !polygons.length || polygons.length > MAX_CLIP_OPERANDS) throw new RangeError('Invalid convex clip budget');
     let vertices: Vertex[] = [], initialized = false;
     const lines: ExactLine[] = [];
+    const clipLine = function* (line: ExactLine): Generator<void, 'ok' | 'empty' | 'uncertain'> {
+        if (!vertices.length) return 'empty';
+        const output: Vertex[] = [];
+        const push = (value: Vertex) => { if (!output.length || !sameExactPoint(output.at(-1)!.point, value.point)) output.push(value); };
+        let previous = vertices.at(-1)!, previousSide = exactSide(line, previous.point);
+        for (const current of vertices) {
+            const currentSide = exactSide(line, current.point);
+            if ((previousSide < 0 && currentSide >= 0) || (previousSide >= 0 && currentSide < 0)) {
+                // Each incoming edge names its original supporting line, not a rounded intersection.
+                const intersection = exactIntersection(current.incoming, line);
+                if (!intersection) return 'uncertain';
+                push({ point: intersection, incoming: previousSide < 0 ? line : current.incoming });
+            }
+            if (currentSide >= 0) push(current);
+            previous = current; previousSide = currentSide; yield;
+        }
+        if (output.length > 1 && sameExactPoint(output[0].point, output.at(-1)!.point)) {
+            output[0] = { point: output[0].point, incoming: output.at(-1)!.incoming }; output.pop();
+        }
+        if (output.length > MAX_INPUT_VERTICES) return 'uncertain';
+        vertices = output;
+        return output.length ? 'ok' : 'empty';
+    };
     for (const input of polygons) {
         const polygon = yield* normalized(input);
         if (!polygon.length) return { status: 'empty' };
         const edges: ExactLine[] = [];
-        for (let i = 0; i < polygon.length; i++) { edges.push(exactLineBetween(polygon[(i + polygon.length - 1) % polygon.length], polygon[i])); yield; }
-        lines.push(...edges);
+        for (let i = 0; i < polygon.length; i++) {
+            const edge = exactLineBetween(polygon[(i + polygon.length - 1) % polygon.length], polygon[i]);
+            edges.push(edge); lines.push(edge); yield;
+        }
         if (!initialized) {
             initialized = true;
-            vertices = polygon.map((point, i) => ({ point, incoming: edges[i] }));
+            for (let i = 0; i < polygon.length; i++) { vertices.push({ point: polygon[i], incoming: edges[i] }); yield; }
             continue;
         }
         for (const line of edges) {
-            if (!vertices.length) return { status: 'empty' };
-            const output: Vertex[] = [];
-            const push = (value: Vertex) => { if (!output.length || !sameExactPoint(output.at(-1)!.point, value.point)) output.push(value); };
-            let previous = vertices.at(-1)!;
-            let previousSide = exactSide(line, previous.point);
-            for (const current of vertices) {
-                const currentSide = exactSide(line, current.point);
-                if ((previousSide < 0 && currentSide >= 0) || (previousSide >= 0 && currentSide < 0)) {
-                    // incoming names an ORIGINAL supporting line. Intersections
-                    // never accumulate rounded points or growing rational chains.
-                    const intersection = exactIntersection(current.incoming, line);
-                    if (!intersection) return { status: 'uncertain', reason: 'Parallel crossing could not be represented' };
-                    push({ point: intersection, incoming: previousSide < 0 ? line : current.incoming });
-                }
-                if (currentSide >= 0) push(current);
-                previous = current; previousSide = currentSide; yield;
-            }
-            if (output.length > 1 && sameExactPoint(output[0].point, output.at(-1)!.point)) {
-                output[0] = { point: output[0].point, incoming: output.at(-1)!.incoming }; output.pop();
-            }
-            if (output.length > MAX_INPUT_VERTICES) return { status: 'uncertain', reason: 'Frame intersection vertex budget exceeded' };
-            vertices = output;
+            const result = yield* clipLine(line);
+            if (result === 'empty') return { status: 'empty' };
+            if (result === 'uncertain') return { status: 'uncertain', reason: 'Convex intersection could not be represented' };
         }
+    }
+    for (const line of halfPlanes) {
+        lines.push(line);
+        const result = yield* clipLine(line);
+        if (result === 'empty') return { status: 'empty' };
+        if (result === 'uncertain') return { status: 'uncertain', reason: 'Half-plane intersection could not be represented' };
     }
     if (vertices.length < 3) return { status: 'empty' };
     const baseline = exactLineBetween(vertices[0].point, vertices[1].point);
@@ -168,15 +180,24 @@ function* clipSteps(polygons: readonly ConvexClipPolygon[], tolerance: number): 
     if (inner.length < 3 || outer.length < 3) return { status: 'uncertain', reason: 'Frame envelope collapsed at binary64 precision' };
     return { status: 'bounded', inner, outer, errorWorld: error };
 }
-export function createConvexClipJob(polygons: readonly ConvexClipPolygon[], toleranceWorld: number) {
+export function createConvexClipJob(polygons: readonly ConvexClipPolygon[], toleranceWorld: number, halfPlanes: readonly ExactLine[] = []) {
     const sourcePoints = (p: ConvexClipPolygon) => 'points' in p ? p.points : p;
     if (!polygons.length || polygons.length > MAX_CLIP_OPERANDS || polygons.some(p => sourcePoints(p).length < 3)
-        || polygons.reduce((sum, p) => sum + sourcePoints(p).length, 0) > MAX_INPUT_VERTICES) throw new RangeError('Invalid convex clip input budget');
+        || polygons.reduce((sum, p) => sum + sourcePoints(p).length, 0) > MAX_INPUT_VERTICES || halfPlanes.length > 256) throw new RangeError('Invalid convex clip input budget');
+    const planes: ExactLine[] = [], coefficientLimit = 1n << 16384n;
+    for (const line of halfPlanes) {
+        for (const coefficient of [line.a, line.b, line.c]) {
+            if (!coefficient || typeof coefficient.n !== 'bigint' || !Number.isSafeInteger(coefficient.e) || Math.abs(coefficient.e) > 32768
+                || coefficient.n <= -coefficientLimit || coefficient.n >= coefficientLimit) throw new RangeError('Invalid exact half-plane coefficient');
+        }
+        if (line.a.n === 0n && line.b.n === 0n) throw new RangeError('Invalid exact half-plane');
+        planes.push({ a: { ...line.a }, b: { ...line.b }, c: { ...line.c } });
+    }
     const copy = (m: Affine): Affine => [m[0], m[1], m[2], m[3], m[4], m[5]];
     const inputs = polygons.map(p => 'points' in p
         ? { points: p.points.map(point => ({ ...point })), localToWorld: copy(p.localToWorld) }
         : p.map(point => ({ ...point })));
-    const steps = clipSteps(inputs, toleranceWorld);
+    const steps = clipSteps(inputs, toleranceWorld, planes);
     let result: ConvexClipResult | undefined;
     return { step(budget: { deadline: number; maxWork: number }): { done: false } | { done: true; result: ConvexClipResult } {
         if (!Number.isFinite(budget.deadline) || !Number.isSafeInteger(budget.maxWork) || budget.maxWork < 1) throw new RangeError('Invalid convex clip work budget');

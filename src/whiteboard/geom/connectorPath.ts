@@ -62,18 +62,16 @@ function clipped(start: Vec2, end: Vec2, surfaces: readonly Surface[], maxPieces
 }
 
 /** Crossings are state changes, not synthetic entry/exit events at body endpoints. */
-export async function bodyCrossings(body: ConnectorBody, surface: AttachmentSurface, error: number, maxPieces: number,
-    cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<readonly { distance: number; entering: boolean }[]> {
+export function* bodyCrossingSteps(body: ConnectorBody, surface: AttachmentSurface, error: number, maxPieces: number):
+    Generator<void, readonly { distance: number; entering: boolean }[]> {
     const length = bodyLength(body);
     if (!Number.isFinite(error) || error <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1) throw new RangeError('Invalid connector crossing budget');
-    const tick = async () => { signal?.throwIfAborted(); await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); signal?.throwIfAborted(); };
-    signal?.throwIfAborted();
     const surfaces: Surface[] = [];
     for (const entry of [surface, ...surface.clips]) {
         const transform = inverse(entry.localToWorld, 1e12);
         if (!transform) throw new RangeError('Connector attachment transform is singular or ill-conditioned');
         surfaces.push({ clipper: new ContourClipper([entry.outline], maxPieces), inverse: transform });
-        if ((surfaces.length & 255) === 0) await tick();
+        yield;
     }
     if (!length) return Object.freeze([]);
     const result: { distance: number; entering: boolean }[] = [];
@@ -87,9 +85,8 @@ export async function bodyCrossings(body: ConnectorBody, surface: AttachmentSurf
             const interval = intervals[i];
             if (interval.from > 0) add(interval.from * length, true);
             if (interval.to < 1) add(interval.to * length, false);
-            if ((i & 255) === 255) await tick();
+            yield;
         }
-        signal?.throwIfAborted();
         return Object.freeze(result);
     }
     const radius = body.arc.radius, sweep = Math.abs(body.arc.sweep);
@@ -98,21 +95,19 @@ export async function bodyCrossings(body: ConnectorBody, surface: AttachmentSurf
     const angle = Math.min(Math.PI / 2, 4 * Math.asin(Math.sqrt(Math.min(1, error / radius / 2))));
     const pieces = Math.ceil(sweep / angle);
     if (!Number.isSafeInteger(pieces) || pieces < 1 || pieces > maxPieces) throw new RangeError('Connector arc crossing budget exhausted');
-    let work = 0, started = performance.now();
-    const checkpoint = async () => { await tick(); work = 0; started = performance.now(); };
     const inside = (distance: number): boolean => {
         const point = pointAtLength(body, distance);
         for (const entry of surfaces) if (!entry.clipper.contains(transformPoint(entry.inverse, point))) return false;
         return true;
     };
     let previousDistance = 0, previousInside = inside(0);
-    const probe = async (distance: number) => {
-        if (++work >= 256 || performance.now() - started >= 3) await checkpoint();
+    const probe = function* (distance: number): Generator<void, void> {
+        yield;
         const nextInside = inside(distance);
         if (nextInside !== previousInside) {
             let low = previousDistance, high = distance;
             while (high - low > error) {
-                if (++work >= 256 || performance.now() - started >= 3) await checkpoint();
+                yield;
                 const middle = low + (high - low) / 2;
                 if (middle === low || middle === high) break;
                 if (inside(middle) === previousInside) low = middle; else high = middle;
@@ -123,25 +118,41 @@ export async function bodyCrossings(body: ConnectorBody, surface: AttachmentSurf
         previousDistance = distance; previousInside = nextInside;
     };
     for (let i = 0; i < pieces; i++) {
-        if (++work >= 256 || performance.now() - started >= 3) await checkpoint();
+        yield;
         const a = length * (i / pieces), b = length * ((i + 1) / pieces);
         const intervals = clipped(pointAtLength(body, a), pointAtLength(body, b), surfaces, maxPieces);
         let previous = 0;
         for (const interval of intervals) {
-            if (interval.from > previous) await probe(a + (b - a) * ((previous + interval.from) / 2));
-            await probe(a + (b - a) * ((interval.from + interval.to) / 2));
+            if (interval.from > previous) yield* probe(a + (b - a) * ((previous + interval.from) / 2));
+            yield* probe(a + (b - a) * ((interval.from + interval.to) / 2));
             previous = interval.to;
         }
-        if (previous < 1) await probe(a + (b - a) * ((previous + 1) / 2));
-        await probe(b);
+        if (previous < 1) yield* probe(a + (b - a) * ((previous + 1) / 2));
+        yield* probe(b);
     }
     // A tangential touch has no interior interval; do not invent an enter/exit pair.
     const filtered: { distance: number; entering: boolean }[] = [];
     for (const item of result) {
+        yield;
         const last = filtered[filtered.length - 1];
         if (last && last.entering && !item.entering && item.distance - last.distance <= 2 * error) filtered.pop();
         else filtered.push(Object.freeze(item));
     }
-    signal?.throwIfAborted();
     return Object.freeze(filtered);
+}
+
+export async function bodyCrossings(body: ConnectorBody, surface: AttachmentSurface, error: number, maxPieces: number,
+    cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<readonly { distance: number; entering: boolean }[]> {
+    const steps = bodyCrossingSteps(body, surface, error, maxPieces);
+    let count = 0, started = performance.now();
+    signal?.throwIfAborted();
+    for (;;) {
+        const next = steps.next();
+        if (next.done) { signal?.throwIfAborted(); return next.value; }
+        if (++count >= 256 || performance.now() - started >= 3) {
+            signal?.throwIfAborted();
+            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            signal?.throwIfAborted(); count = 0; started = performance.now();
+        }
+    }
 }

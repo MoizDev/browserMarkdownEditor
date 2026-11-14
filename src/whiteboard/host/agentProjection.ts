@@ -110,10 +110,15 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
             }, options);
         },
         apply(ops, options) {
+            if (!Array.isArray(ops) || ops.length < 1 || ops.length > 200) return Promise.reject(new RangeError('Expected 1 to 200 canvas operations'));
+            // The caller cannot change a queued transaction after admission begins.
+            let captured: CanvasOp[];
+            try { captured = structuredClone(ops); }
+            catch (error) { return Promise.reject(error); }
             return authority.run(async context => {
                 authority.assertContext(context);
                 const sheet = host.sheet(), page = host.page();
-                const result = await adapter.apply(ops, {
+                const result = await adapter.apply(captured, {
                     signal: context.signal,
                     isCurrent: () => {
                         try { authority.assertContext(context); return host.isCurrent() && host.sheet() === sheet && host.page() === page; }

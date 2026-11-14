@@ -7,6 +7,7 @@ import type { AgentApplyResult } from '../agent/transaction';
 import { createStagedGeometryReader } from '../commands/stagedGeometry';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
+import { FONTS } from '../model/styles';
 import type { JobOptions } from '../security/admission';
 import { createLiveAgentBackend } from './agentProjection';
 import type { BoardRuntime } from './runtime';
@@ -74,7 +75,8 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
     const projection = () => {
         const reader = createStagedGeometryReader(runtime.render, runtime.session.doc, syncSignal);
         return createAgentProjection(runtime.session.doc, { worldBox: node => reader.worldBox(node),
-            localBox: node => reader.localBox(node), resolvedTip: reader.resolvedTip });
+            localBox: node => reader.localBox(node), resolvedTip: reader.resolvedTip,
+            resolvedPolylineTip: reader.resolvedPolylineTip });
     };
     const host: AgentAdapterHost = {
         get session() { return runtime.session; },
@@ -107,6 +109,10 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
         apply(ops, job) {
             if (!Array.isArray(ops) || ops.length < 1 || ops.length > 200) return Promise.reject(new RangeError('Expected 1 to 200 canvas operations'));
             if (!live()) return Promise.reject(new DOMException('Board source has ended', 'AbortError'));
+            let captured: CanvasOp[];
+            try { captured = structuredClone(ops); } catch (error) { return Promise.reject(error); }
+            const expected = job.expectedRevision ?? runtime.session.doc.rev, expectedSheet = source.sheet(), expectedPage = source.page();
+            if (!Number.isSafeInteger(expected) || expected < 0) return Promise.reject(new RangeError('Invalid expected board revision'));
             // One canonical job runs the whole write: readiness, pins, font warm-up and the writer. Nothing queues between them.
             return track(runtime.jobs.run(async context => {
                 runtime.jobs.assertContext(context);
@@ -117,31 +123,36 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
                 if (block !== null) throw new AgentApplyReadOnly(block);
                 const doc = runtime.session.doc, revision = doc.rev;
                 const sheet = source.sheet(), page = source.page();
+                if (revision !== expected || sheet !== expectedSheet || page !== expectedPage) {
+                    throw new DOMException('Board changed before the agent transaction started', 'AbortError');
+                }
                 const fence = () => {
                     try { runtime.jobs.assertContext(context); } catch { return false; }
                     return live() && runtime.session.doc === doc && doc.rev === revision && source.sheet() === sheet && source.page() === page;
                 };
+                // An empty board has no published faces, and a staged edit can introduce a new family/mark.
+                // Warm before pinning: an old fallback-font scope must not survive a face epoch change into C2.
+                for (const family of FONTS) for (const bold of [false, true]) for (const italic of [false, true]) {
+                    if (!await runtime.render.text.fonts.load({ family, bold, italic })) throw new Error('Required board font could not be loaded');
+                    runtime.jobs.assertContext(context);
+                    if (!fence()) throw new DOMException('Board changed during preflight', 'AbortError');
+                }
                 // Pins outlive the writer's synchronous commit: they are released only after the adapter settles.
-                const pin = await runtime.render.pinChangeGeometry(referencedIds(ops, doc), context.signal, doc, fence);
+                const pin = await runtime.render.pinChangeGeometry(referencedIds(captured, doc), context.signal, doc, fence);
                 try {
-                    // Every face the layout can request for the staged text, not only the agent's default family.
-                    for (const face of runtime.render.text.faces.faces) {
-                        if (!await runtime.render.text.fonts.load(face.key)) throw new Error('Required board font could not be loaded');
-                        runtime.jobs.assertContext(context);
-                        if (!fence()) throw new DOMException('Board changed during preflight', 'AbortError');
-                    }
                     if (!fence()) throw new DOMException('Board changed during preflight', 'AbortError');
                     const reason = source.writeBlock();
                     if (reason !== null) throw new AgentApplyReadOnly(reason);
-                    return await adapter.apply(structuredClone(ops), { signal: context.signal, isCurrent: fence });
+                    return await adapter.apply(captured, { signal: context.signal, isCurrent: fence });
                 } finally { pin.release(); }
             }, scoped(job)));
         },
         async retire() {
-            if (facade.signal.aborted) { await Promise.allSettled([...tracked]); return; }
-            facade.abort(new DOMException('Board source has ended', 'AbortError'));
-            // Settles only this facade's own promises; the runtime's job authority keeps serving the document.
+            if (!facade.signal.aborted) facade.abort(new DOMException('Board source has ended', 'AbortError'));
             while (tracked.size) await Promise.allSettled([...tracked]);
+            // Abort replies may settle before their underlying work. Drain the captured authority tail
+            // before releasing a source lease, without disposing or cancelling any other document job.
+            await runtime.jobs.drain();
         },
     };
 }

@@ -254,6 +254,7 @@ export const attachView: AttachView = options => {
             if (disposed || !options.session.doc.nodes.has(id as NodeId)) return;
             runtime.selection.replace([id as NodeId]); reveal(new Set([id as NodeId]));
         },
+        cancelReveal,
         connectEmbeds(port) {
             if (disposed) { if (port) void port.dispose().catch(report); return; }
             if (embedPort === port) return;
@@ -262,7 +263,6 @@ export const attachView: AttachView = options => {
             port?.setVisible(view.visible);
             publish(); layers.invalidate('board-embed-port');
         },
-        cancelReveal,
         bindInteractions(ports) {
             if (disposed) throw new Error('Board view is disposed');
             interaction?.finishGesture(); interaction?.finishComposition(); interaction = ports;

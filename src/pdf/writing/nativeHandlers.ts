@@ -75,7 +75,12 @@ export const createPdfWriterRuntime: CreatePdfWriterRuntime = async options => {
         }),
         'writer.buildNotebook': serial(async (value, ctx) => {
             const args = object(value);
-            if (!Array.isArray(args.pages) || !revision(args.revision) || args.displayListSchema !== 1 || typeof args.writeId !== 'string') throw new PdfEngineError('InvalidPdf', 'Invalid notebook request');
+            const emitted = args.kind === 'pre-emitted';
+            const allowed = emitted ? ['kind', 'pdf', 'pages', 'revision', 'notebookSource', 'writeId'] :
+                ['kind', 'displayListSchema', 'pages', 'revision', 'notebookSource', 'writeId'];
+            if (Object.keys(args).some(key => !allowed.includes(key)) || !Array.isArray(args.pages) || !revision(args.revision) ||
+                typeof args.writeId !== 'string' || (emitted ? !(args.pdf instanceof Blob) :
+                    (args.kind !== undefined && args.kind !== 'display') || args.displayListSchema !== 1)) throw new PdfEngineError('InvalidPdf', 'Invalid notebook request');
             const result = await buildNativeNotebook(runtime, args as unknown as WriterOperations['writer.buildNotebook']['args'], ctx);
             ctx.transfer(result.bytes); return result;
         }),

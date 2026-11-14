@@ -2,7 +2,7 @@ import type { PageGeometry } from '../../platform/types';
 import { NATIVE_FORMAT_ID } from '../format/identity';
 import type { PinnedPdfAssembly } from './saveBuildTypes';
 import { pdfBoardAttachments, pdfInkReservedNames } from './pdfAttachments';
-import { pdfInkPages } from './pdfInkExport';
+import { emitStreamingPdfInk } from './pdfInkExport';
 import type { OpenPdfInkWriter, PinnedPdfInkSnapshot } from './pdfInkAssemblyTypes';
 
 function sameGeometry(a: PageGeometry, b: PageGeometry): boolean {
@@ -41,9 +41,7 @@ export function pinPdfInkAssembly(snapshot: PinnedPdfInkSnapshot, openWriter: Op
                     || geometries.some((page, i) => !sameGeometry(page, prepared.inspection.geometries[i]))) {
                     throw new Error('PDF source or page geometry changed');
                 }
-                const pages = await pdfInkPages(snapshot.ink, signal);
-                check(signal);
-                const ink = await writer.request('writer.emitInk', { revision: snapshot.revision, displayListSchema: 1, pages }, request);
+                const ink = await emitStreamingPdfInk(snapshot.ink, snapshot.revision, signal);
                 check(signal);
                 const stage = await writer.request('writer.stageAnnotated', { writerSession: prepared.writerSession,
                     revision: snapshot.revision, ink, geometries, reservedNames: pdfInkReservedNames(snapshot.media) }, request);

@@ -1,5 +1,6 @@
 import { createExportImageResolver } from '../export/exportImage';
 import { streamPageDisplayList } from '../export/streamPage';
+import { writeIncrementalPdfPage, type IncrementalPdfPage } from '../export/incrementalPdf';
 import { createBoardHostImages } from '../media/hostImages';
 import type { MediaLease } from '../media/store';
 import type { SheetId } from '../model/ids';
@@ -68,9 +69,29 @@ export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, curr
             if (!match) throw new TypeError('Invalid captured board image key');
             return readBlob(`sha256:${match[1] ?? match[2]}` as MediaId, signal);
         };
+        const capturePage = async (sheet: SheetId, page: number, signal: AbortSignal) => {
+            const active = AbortSignal.any([signal, lifetime.signal]);
+            active.throwIfAborted();
+            const world = rects[page];
+            if (released || !current() || !world || !sheets.includes(sheet)) throw new Error('Captured board page is unavailable');
+            await visualCheck(active);
+            active.throwIfAborted();
+            if (released || !current()) throw new DOMException('Board capture ended', 'AbortError');
+            const source = await scene.paintSource({ sheetId: sheet, page, world, theme: 'light' }, active);
+            active.throwIfAborted();
+            if (released || !current()) throw new DOMException('Board capture ended', 'AbortError');
+            return { source, world, active,
+                image: createExportImageResolver(token, capturedImages, readImage, active) };
+        };
         return {
             revision, rects, sheets, media: Object.freeze([...entries.values()]),
             mediaBlob: (id: MediaId) => blobs.get(id),
+            async writeSheetPage(sheet: SheetId, page: number, sink: IncrementalPdfPage, signal: AbortSignal) {
+                const captured = await capturePage(sheet, page, signal);
+                await writeIncrementalPdfPage(captured, page, 1, captured.image, sink, captured.active);
+                captured.active.throwIfAborted();
+                if (released || !current()) throw new DOMException('Board capture ended', 'AbortError');
+            },
             async readSheetPage(sheet: SheetId, page: number, signal: AbortSignal) {
                 signal.throwIfAborted();
                 const box = rects[page];

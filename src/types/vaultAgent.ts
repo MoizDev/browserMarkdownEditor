@@ -11,10 +11,10 @@
 // App's state changes. The wire protocol with the helper is
 // shared/vaultAgentProtocol.ts; what each pane reports is utils/viewRegistry.ts.
 
-import type { AgentId, MirrorFile } from '../../shared/vaultAgentProtocol';
+import type { AgentId, CanvasOp, MirrorFile } from '../../shared/vaultAgentProtocol';
 import type { ChatTree } from '../utils/chatTree';
 import type { EditorMode, FileTreeNode, TabLayout, Theme } from './index';
-import type { CanvasShapePage, CanvasShapeQuery, TextChange, ViewReporter } from '../utils/viewRegistry';
+import type { CanvasApplyResult, CanvasShapePage, CanvasShapeQuery, DrawingViewInfo, TextChange, ViewReporter } from '../utils/viewRegistry';
 import type { AgentHostDeps } from '../utils/agentHost';
 
 /* ───────────────────────── the vault's chat index (.VaultAgent/chats.json) ───────────────────────── */
@@ -78,6 +78,9 @@ export interface AgentWorkspaceSnapshot {
     focusedPath: string | null;
     /** Stored position for a tab that is not on screen. */
     remembered(path: string): RememberedPosition | null;
+    /** An open native drawing read from its own session, for a tab with no mounted pane. null = not open
+     *  natively; a failure rejects and the caller names it. The signal bounds the work, which then stops. */
+    nativeView?(path: string, signal: AbortSignal): Promise<NativeCanvasView | null>;
 }
 
 /* ───────────────────────── VaultToolHost — the agent's hands, implemented by App ───────────────────────── */
@@ -104,6 +107,13 @@ export interface ClosedPdfAgentAccess {
  * executor (vaultAgentTools.normalizeAgentPath): no leading '/', no '.', '..',
  * '\\', NUL or empty segment. The host may assume it.
  */
+/** A native drawing's view as the agent reads it: the recorded viewport, or the whole sheet when never viewed. */
+export interface NativeCanvasView {
+    readonly info: DrawingViewInfo;
+    readonly wholeSheet: boolean;
+    capture(maxSide: number, signal?: AbortSignal): Promise<Blob>;
+}
+
 export interface VaultToolHost {
     /** Identity of the open vault — a new object on every switch, null with none.
      *  The executor captures it when a run starts and refuses once it changes. */
@@ -127,6 +137,12 @@ export interface VaultToolHost {
     /** Session-owned live read or C5-admitted closed read; null means not a new board. */
     canvasShapePage?(path: string, query: CanvasShapeQuery,
         guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasShapePage | null>;
+    /** Actual session mutation; null selects a genuinely different loaded representation. */
+    canvasApplyNative?(path: string, ops: CanvasOp[],
+        guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasApplyResult | null>;
+    /** An OPEN native drawing read from its session with no mounted pane. null = not open natively (a closed
+     *  drawing opens through openCanvasForAgent); an open board's failure throws and never falls back to a view. */
+    nativeCanvasView?(path: string, guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativeCanvasView | null>;
     /**
      * Apply `changes` (offsets into `expected`) to a text file. Refused as
      * 'stale' unless the current text (readText) still equals `expected`. Lands

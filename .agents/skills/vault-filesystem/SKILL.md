@@ -322,15 +322,13 @@ should spell `'.Assets'`.**
   and `restoreAsset` require a guard, checked before copying and immediately before source removal.
   A copy finishing after cancellation may leave both copies; it must not delete either source or
   revoke another activation's blob. Reference proofs also validate the edit/tree revision and open
-  readable buffers; undecided drops retry only on a later actual save, never a per-keystroke scan.
+  readable buffers; blocked folders retry on vault change, a later save or renewed access, never on a
+  timer or a per-keystroke scan.
 - **The diff is taken against the last SAVED text, not per keystroke** (`assetRefsRef`, seeded when a
-  tab opens). Until a removal reaches the disk it isn't one; the 1s save debounce doubles as the undo
-  grace period; and it is one regex pass per second instead of one per character. `flushTab` reads
-  the baseline and replaces it **in one synchronous step, before the write**, then hands both sets to
-  the async reconcile. Two things race that hand-over otherwise: `removeTab` drops the entry the
-  moment after it calls `flushTab` (so a closing tab's last save has to capture first — it does,
-  being synchronous up to the write), and a second save landing mid-reconcile would read a baseline
-  the first had yet to replace and could retire a picture that save had just put back.
+  tab opens). Until a removal reaches disk it isn't one, and the 1s debounce doubles as an undo grace
+  period. `flushTab` captures the shared baseline record before a close can drop it; serialized writes
+  advance the record and enqueue their diff only after a successful write. A failed write leaves it
+  unchanged, so a later successful save still retires or restores the picture it changed.
 - **Nothing is taken away while a neighbour still shows it.** The set consulted is the folder's own
   notes **and its whole subtree**, with open tabs read from their *buffers* so an unsaved reference
   counts. The subtree is not optional: the legacy walk above means a note in any descendant folder

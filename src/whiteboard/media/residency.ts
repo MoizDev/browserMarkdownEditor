@@ -33,6 +33,7 @@ interface Cached {
     readonly durationMs: number;
     readonly frameCount: number;
     refs: number;
+    retired: boolean;
     closed: boolean;
 }
 interface Pending {
@@ -91,7 +92,7 @@ export class MediaResidency implements PaintImageProvider {
                     release: () => {
                         if (!held) return;
                         held = false; entry.refs--;
-                        if (!entry.refs && this.wanted && !this.wanted.has(imageKey)) this.drop(imageKey, entry);
+                        if (!entry.refs && (entry.retired || this.wanted && !this.wanted.has(imageKey))) this.drop(imageKey, entry);
                     } });
             }, error => {
                 if (done) return;
@@ -137,8 +138,11 @@ export class MediaResidency implements PaintImageProvider {
 
     private drop(key: string, entry: Cached): void {
         if (entry.closed) return;
+        entry.retired = true;
+        if (this.cache.get(key) === entry) this.cache.delete(key);
+        // An in-flight capture owns its image lease even after the pane becomes hidden.
+        if (entry.refs) return;
         entry.closed = true;
-        this.cache.delete(key);
         entry.bitmap.close();
         this.host.memory.release(entry.memory);
     }
@@ -249,7 +253,7 @@ export class MediaResidency implements PaintImageProvider {
                 bitmap.close(); releaseMemory(); job.releaseMemory = undefined; return existing;
             }
             if (existing) this.drop(job.key, existing);
-            const entry: Cached = { bitmap, memory, token: job.token, identity: job.identity, durationMs, frameCount, refs: 0, closed: false };
+            const entry: Cached = { bitmap, memory, token: job.token, identity: job.identity, durationMs, frameCount, refs: 0, retired: false, closed: false };
             this.cache.set(job.key, entry);
             outputHeld = false;
             job.releaseMemory = undefined;

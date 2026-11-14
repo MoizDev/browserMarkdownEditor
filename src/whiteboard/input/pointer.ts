@@ -40,6 +40,7 @@ export class MappingHistory {
     if (time < this.entries[0].time) this.onExpired()
     return this.entries[i]
   }
+  latest(): PresentedMapping | null { return this.entries[this.entries.length - 1] ?? null }
   map(time: number, x: number, y: number): { readonly x: number; readonly y: number } {
     return this.at(time).clientToWorld(x, y)
   }

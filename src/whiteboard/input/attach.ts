@@ -12,6 +12,7 @@ import type { InkContinuation } from './continueInk'
 import { installWheel, TouchArbiter, type ContactPoint } from './navigation'
 import { MappingHistory } from './pointer'
 import { PointerRouter, type PointerRoute } from './pointerRouter'
+import { EdgeScroll } from './edgeScroll'
 import { predictedTail, type PredictedPoint, type PredictionMapping } from './prediction'
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
@@ -63,6 +64,7 @@ export interface BoardInputServices {
   keyboardNavigation?(keyboardCursorActive: boolean): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
+  edgeScrolling?(): boolean
   error(error: unknown): void
   pointerChanged?(sample: RealSample): void
   hover?(event: PointerEvent): void
@@ -146,9 +148,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   })
   const claim = (): boolean => services.tools.claimInput(owner, session.isGestureActive)
   const releaseClaim = (): void => { services.tools.releaseInput(owner) }
+  const edgeScroll = new EdgeScroll({ surface: view.surface, camera: view.camera, mappings: view.mappings, router, token: view.token,
+    mac: services.mac, current, enabled: () => services.edgeScrolling?.() ?? true, cameraChanged: services.cameraChanged })
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
-    sampleChanged: services.pointerChanged,
+    sampleChanged: sample => { edgeScroll.sample(sample); services.pointerChanged?.(sample) },
     hover: services.hover,
     claim, releaseClaim,
     resolve(sample, modifiers, event) {
@@ -489,7 +493,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!live) return
     flush()
     window.removeEventListener('pagehide', pagehide)
-    stopFlush?.(); cursor.dispose(); stopCursor?.()
+    stopFlush?.(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('keydown', keyActivity, true)

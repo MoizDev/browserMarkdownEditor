@@ -58,7 +58,8 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         owner.store.hydrate(records);
         owner.store.onChange = (path, record, text) => persistence.mark(path, record, text);
         searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner,
-            (path, mtime, size) => owner.readPersistedText(path, mtime, size));
+            (path, mtime, size) => owner.readPersistedText(path, mtime, size),
+            (path, mtime, size, text) => owner.persistSearchText(path, mtime, size, text));
         return null;
     },
     async close(value) {

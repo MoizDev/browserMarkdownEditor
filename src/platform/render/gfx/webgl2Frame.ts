@@ -96,6 +96,8 @@ export interface FrameBackend {
     quad(command: QuadCommand): () => void;
     acquireTarget(request: TargetRequest): TargetLease | null;
     releaseTarget(lease: TargetLease): void;
+    acquireIsolation(request: TargetRequest): TargetLease;
+    releaseIsolation(lease: TargetLease): void;
     issue(): number;
     cancel(): void;
     finish(serial: number | null): void;
@@ -289,7 +291,7 @@ class DeviceFrame implements ControlledFrame {
         const failures: unknown[] = [];
         if (cancel) { try { this.#backend.cancel(); } catch (error) { failures.push(error); } }
         for (const lease of this.#temporaries) {
-            try { this.#backend.releaseTarget(lease); } catch (error) { failures.push(error); }
+            try { this.#backend.releaseIsolation(lease); } catch (error) { failures.push(error); }
         }
         this.#temporaries.clear();
         try { this.#backend.finish(serial); } catch (error) { failures.push(error); }
@@ -346,14 +348,13 @@ class DeviceFrame implements ControlledFrame {
         this.#pass = null;
     }
     temporary(request: TargetRequest): TargetLease {
-        const lease = this.#backend.acquireTarget(request);
-        if (!lease) throw new ArenaError('out-of-budget');
+        const lease = this.#backend.acquireIsolation(request);
         this.#temporaries.add(lease);
         return lease;
     }
     releaseTemporary(lease: TargetLease): void {
         this.#temporaries.delete(lease);
-        this.#backend.releaseTarget(lease);
+        this.#backend.releaseIsolation(lease);
     }
     blit(source: FrameTarget, area: RectI, dest: FrameTarget, x: number, y: number): void {
         if (!area.width || !area.height) return;

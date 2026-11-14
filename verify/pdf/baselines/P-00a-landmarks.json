@@ -1,0 +1,98 @@
+[
+  {
+    "fixture": "GEN-23",
+    "dpr": 1,
+    "surface": "original",
+    "sha256": "d8525d998c8eceff17c8d6022d842e440fbc0349f904a2b5fea7da5c40e4a605"
+  },
+  {
+    "fixture": "GEN-23",
+    "dpr": 1,
+    "surface": "text",
+    "sha256": "5ddb6cb8be3e2ed843aeb4cd387f51b85104a1131aaf0ac322c60a6a7002b3b8"
+  },
+  {
+    "fixture": "GEN-18-876",
+    "dpr": 1,
+    "surface": "original",
+    "sha256": "628d7bf66cb7ceb1cc95e7ce53041d18b8628b49a1e1972cad329ce482d5699a"
+  },
+  {
+    "fixture": "GEN-18-876",
+    "dpr": 1,
+    "surface": "text",
+    "sha256": "5aafcf72853fee1b5041424ff4ce85413de58d4e5a67ffb694bb1f8fe7d16ef9"
+  },
+  {
+    "fixture": "GEN-18-1000",
+    "dpr": 1,
+    "surface": "original",
+    "sha256": "628887b9c7aad241a1ada3879aaf67467c18381b39e458502a37e25d91b19e71"
+  },
+  {
+    "fixture": "GEN-18-1000",
+    "dpr": 1,
+    "surface": "text",
+    "sha256": "e55cfc2d034cecbac823fa34e6b4196b553e0bfd7fbbe17be050df5aed0d5249"
+  },
+  {
+    "fixture": "GEN-21",
+    "dpr": 1,
+    "surface": "original",
+    "sha256": "bd92bce9fe687e0fb64d732d3b3c2ee437da04f73b4817e3e7cb06807e78c58d"
+  },
+  {
+    "fixture": "GEN-21",
+    "dpr": 1,
+    "surface": "text",
+    "sha256": "89dffa1bc812a87896043022263655d116ff8816343fa44beae91f9eafe0aa01"
+  },
+  {
+    "fixture": "GEN-23",
+    "dpr": 2,
+    "surface": "original",
+    "sha256": "79957caab33ae8c7f1e286b131bd4d4b4a10ea770a7f0c574e05e88f6deb4bc5"
+  },
+  {
+    "fixture": "GEN-23",
+    "dpr": 2,
+    "surface": "text",
+    "sha256": "e76beed101bf7fe140b266602d1a917c689831005e0d3b3f1f4b9e3a1d7256e8"
+  },
+  {
+    "fixture": "GEN-18-876",
+    "dpr": 2,
+    "surface": "original",
+    "sha256": "467f0224ebb83855a8d8e6b163eed750ba184fd8f0b42b74b8b471ec1916a8c5"
+  },
+  {
+    "fixture": "GEN-18-876",
+    "dpr": 2,
+    "surface": "text",
+    "sha256": "c7614e00c89db0284eb6bd4678d0cba2c7c87a94369b1b72de73028bf011e3a1"
+  },
+  {
+    "fixture": "GEN-18-1000",
+    "dpr": 2,
+    "surface": "original",
+    "sha256": "f14d58f150ea167ba9856cfa31882c5a9d28d36a70c26804454f2d2dc264b3ed"
+  },
+  {
+    "fixture": "GEN-18-1000",
+    "dpr": 2,
+    "surface": "text",
+    "sha256": "46880fd551f826fe5c9f703ffa61514de687fa81f08550831b30c6bca78acf33"
+  },
+  {
+    "fixture": "GEN-21",
+    "dpr": 2,
+    "surface": "original",
+    "sha256": "c177ceae7b47de19af3d82b1bfabbb482bdc3fd769b0f54ab93ef0f51234b066"
+  },
+  {
+    "fixture": "GEN-21",
+    "dpr": 2,
+    "surface": "text",
+    "sha256": "6790a755ab50ac5f465230972dfdc2e6dc21dab59a17988e6828ca1350783c5a"
+  }
+]

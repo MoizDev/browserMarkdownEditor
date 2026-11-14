@@ -21,17 +21,31 @@ function visitHash(hash: string, seen: Set<MediaId> | undefined, visit: (id: Med
     return seen;
 }
 
-// R-W25/R-W37: lexical discovery, not a parser for unknown data. A maximal run
-// of 64 lowercase hex characters anywhere in a string/key also covers filenames,
-// URLs and suffixed ids. A false positive keeps data; a false negative can trash it.
-// Decode at most a 64-character candidate, never an arbitrarily large string token.
+function visitRun(head: string, length: number, ring: Uint8Array | undefined, position: number,
+    seen: Set<MediaId> | undefined, visit: (id: MediaId) => void): Set<MediaId> | undefined {
+    if (length < HASH_LENGTH) return seen;
+    seen = visitHash(head, seen, visit);
+    if (length > HASH_LENGTH) {
+        let tail = '';
+        for (let j = 0; j < HASH_LENGTH; j++) tail += String.fromCharCode(ring![(position + j) & 63]);
+        seen = visitHash(tail, seen, visit);
+    }
+    return seen;
+}
+
+// R-W25/R-W37: escaped string/key discovery covers filenames, URLs and suffixed
+// ids. Long hex runs also contribute their first/last 64 characters (cafe<hash>
+// is still a dependency). A 64-byte ring avoids materializing long strings or
+// allocating a sliding substring per character; false positives keep data safe.
 export function scanRawMedia(raw: RawJson, visit: (id: MediaId) => void): void {
     let seen: Set<MediaId> | undefined;
+    let ring: Uint8Array | undefined;
     let i = 0;
     while (i < raw.length) {
         if (raw.charCodeAt(i++) !== 34) continue;
         let candidate = '';
         let length = 0;
+        let position = 0;
         let closed = false;
         while (i < raw.length) {
             let code = raw.charCodeAt(i++);
@@ -57,16 +71,24 @@ export function scanRawMedia(raw: RawJson, visit: (id: MediaId) => void): void {
             } else if (code < 32) throw new RangeError('Unescaped control character in preserved JSON');
             if ((code >= 48 && code <= 57) || (code >= 97 && code <= 102)) {
                 if (length < HASH_LENGTH) candidate += String.fromCharCode(code);
-                else candidate = ''; // Longer runs are not a 64-character hash; bound retained text.
+                else {
+                    if (length === HASH_LENGTH) {
+                        if (!ring) ring = new Uint8Array(HASH_LENGTH);
+                        for (let j = 0; j < HASH_LENGTH; j++) ring[j] = candidate.charCodeAt(j);
+                        position = 0;
+                    }
+                    ring![position] = code;
+                    position = (position + 1) & 63;
+                }
                 length++;
             } else {
-                if (length === HASH_LENGTH) seen = visitHash(candidate, seen, visit);
+                seen = visitRun(candidate, length, ring, position, seen, visit);
                 candidate = '';
                 length = 0;
             }
         }
         if (!closed) throw new RangeError('Unterminated string in preserved JSON');
-        if (length === HASH_LENGTH) seen = visitHash(candidate, seen, visit);
+        seen = visitRun(candidate, length, ring, position, seen, visit);
     }
 }
 

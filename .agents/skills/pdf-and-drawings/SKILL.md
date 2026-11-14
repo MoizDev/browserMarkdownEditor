@@ -158,7 +158,13 @@ requires reading it.
   library's contract — percent positions + `--scale-factor`/`--total-scale-factor` sizing, **plus the
   three `[data-main-rotation]` rules**: pdf.js sizes a text layer from the page's *unrotated* box and
   leaves the turn to the host's CSS, so without them a `/Rotate 90` page's selection lands nowhere
-  near its glyphs. Zoom therefore rescales text layers without rebuilding them.
+  near its glyphs. Zoom therefore rescales text layers without rebuilding them. Keep
+  `br::selection` transparent: positioned line breaks otherwise paint a stray box at the page edge.
+  `pdfTextLayerSelection.ts` anchors blank-margin drags to the nearest line/span and extends only
+  within this viewer; drags beginning on text remain native. Its capture ⌘/Ctrl+A handler selects
+  this viewer's built layers, not the app chrome, and stands down in inputs/editable content.
+  Until whole-document copy lands with D7, this covers eager pages (≤300) and visited pages only
+  above that limit. The classic reader's native right-click menu remains a documented exception.
 - **Text layers are built eagerly for every page of a document up to `TEXT_EAGER_LIMIT` (300 pages),
   and are never released.** That eagerness is what makes ⌘F find text on pages you have never scrolled
   to, and it is the largest single memory item in the app (measured ~4.3KB of renderer memory per
@@ -196,8 +202,10 @@ requires reading it.
   so a shared route is needed for pixel-exact restoration after native emphasis is switched Off.
 - Canvas **bitmaps are windowed**: only pages within `EVICT_BEYOND` (3) of the viewport hold one
   (~25-31MB each at Retina fit-width); scrolled-away canvases are freed and re-rendered on approach,
-  and pages further than `CLEANUP_BEYOND` (12) also get `page.cleanup()` so pdf.js releases their
-  parsed operator list and decoded images — the canvas is only half of what a page costs. That window
+  and pages further than `CLEANUP_BEYOND` (12) release the viewer's page lease after text/link work
+  settles. `PdfDocumentSession` calls `page.cleanup()` only when the last consumer releases it, so a
+  thumbnail, Text view or agent read cannot lose a page it is still using — the canvas is only half
+  of what a page costs. That window
   is deliberately much wider than the eviction one: re-rendering from a retained operator list is
   cheap, re-parsing the page is a worker round-trip.
 - **The PDF's own links work** (`pdfLinks.ts` + the `.pdf-link-layer` per page). Hand-rolled over four
@@ -337,18 +345,21 @@ Panes stay MOUNTED when another tab is shown and are hidden with `visibility` �
 coming back instant — so **the pane has to be told, or it goes on working for a reader who is not
 there.** `PdfViewer` takes `isVisible` (not `isActive`, which is keyboard focus) and on the way out:
 
-- **evicts every page bitmap.** Eviction lived only inside `updateWindow`, which runs on scroll and
-  layout, so a hidden pane never reached it and kept the band it had rastered — at dpr, per open
-  PDF. Measured with two documents open behind a whiteboard: **322 canvases, 62MB of bitmaps, none
-  of it on screen → 3MB**. A scanned book at a real page size is far worse.
+- **evicts offscreen page bitmaps, retaining the last visible pages as resume pixels.** The hide
+  effect reads `onScreenRef` and keeps that range; render-ahead and eviction-margin bitmaps go.
+  The older blanket-eviction fix reduced 62MB to 3MB, but is not today's policy: freeing the visible
+  scan forced a JPEG decode and repaint on every return. Do not cite that old number as the memory
+  retained by the current resume-pixel policy.
 - **stops the eager text pass.** Up to `TEXT_EAGER_LIMIT` (300) `TextLayer.render` calls, each with
   a worker round trip, were still running after the reader had switched to a whiteboard — which is
   exactly when tldraw is mounting and wants the main thread. It resumes where it left off.
 - **stops committing resizes.** The slot is a percentage of its column, so every sidebar toggle and
   window resize re-fit and re-rastered the hidden panes too. The last width is applied on the way in.
 
-What is KEPT: the pdf.js page objects and the text layers (⌘F still works), and the scroll position.
-Coming back re-rasters the band under the viewport, which is the work a scroll already does.
+What is KEPT: the last visible page bitmaps, the held pdf.js page leases, the text layers (⌘F still
+works) and the scroll position. Coming back runs the normal window pass: compatible resume pixels
+stay, missing/incompatible bands render and the surrounding prefetch margin refills. A far-page
+release is a session lease release, never a direct cleanup by the viewer.
 
 ## Tldraw's assets are OURS
 

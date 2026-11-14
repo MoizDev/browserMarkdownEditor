@@ -72,6 +72,7 @@ third-party code included (normally "none") · date.
 | `agent/placement.ts` | w-p | F-AGENT-004/013, WB-D10, C8 | integration §9; document-model transform | C8 centre-based rectangle semantics and public model/page APIs; local box supplied by shared geometry; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/reanchor.ts` | w-p | F-AGENT-007/013, C8 | integration §9; document-model pages | Staged world-centre reanchor via shared geometry/page stack; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/projectionTypes.ts` | w-p | F-AGENT-001/003/004, WB-D11, C8 | integration §9 | Structural agent/scene projection boundary; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/projection.ts` | w-p | F-AGENT-001/003/004, WB-D11, C8 | integration §9; document-model pages | Shared world geometry converted to agent page coordinates; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/errors.ts` | w-p | F-AGENT-012/013, C8 | integration §9 | Agent specification; no tldraw or old canvas source | none | 2026-11-13 |
 
 ## Formats, importer, save and agent adapter (lane w-d)

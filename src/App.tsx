@@ -6223,9 +6223,11 @@ export default function App() {
       const id = newTabId();
       if (read) setBaseline(id, read.version); else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, node.handle);
       seedDocumentBuffer(id, node.path, content, representationFor(node.name).bufferKind === 'text');
-      setTabs(prev => prev.some(t => t.file.path === node.path)
+      // Session-only tools acquire immediately after this resolves; commit the tab
+      // and its source classification before handing them the live App owner.
+      flushSync(() => setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
-        : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]);
+        : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]));
       return true;
     } catch (err) {
       console.error('Agent could not open a file:', err);
@@ -6337,8 +6339,24 @@ export default function App() {
     if (!runtime || !nativeCanvasHost.isCurrent(identity) || nativeCanvasHost.session(tab.id) !== acquired.adapter) {
       throw new DOMException('Canvas session ended', 'AbortError');
     }
-    return { identity, runtime, isCurrent: () => nativeCanvasHost.isCurrent(identity)
-      && nativeCanvasHost.session(tab.id) === acquired.adapter };
+    const isCurrent = () => nativeCanvasHost.isCurrent(identity) && nativeCanvasHost.session(tab.id) === acquired.adapter;
+    return { identity, runtime, isCurrent, canWrite: () => isCurrent() && nativeCanvasHost.canWrite(identity),
+      activateEditing() {
+        if (!isCurrent() || !nativeCanvasHost.canWriteSource(identity)) throw new Error('The native canvas source is not writable.');
+        if (!acquired.adapter.activateEditing) throw new Error('The native session has no editing admission.');
+        acquired.adapter.activateEditing();
+        if (!isCurrent() || !nativeCanvasHost.canWrite(identity)) throw new Error('The native canvas source is no longer writable.');
+      },
+      async readMedia(entry, mediaSignal) {
+        mediaSignal.throwIfAborted();
+        if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+        const pending = runtime.media.get(entry.id);
+        if (pending) return pending;
+        const result = await nativeCanvasHost.readMedia(identity, { hash: entry.id.slice(7), preferredName: entry.file }, mediaSignal);
+        mediaSignal.throwIfAborted();
+        if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+        return result?.blob ?? null;
+      } };
     } finally { if (!pinTransferred) pinned?.release(); }
   }, [announce, attachNativeCanvasSession, ensureCanvasBridge, nativeCanvasHost, onNativeCanvasReady]);
 

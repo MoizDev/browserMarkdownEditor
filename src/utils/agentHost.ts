@@ -75,6 +75,9 @@ export interface AgentHostDeps {
         readonly identity: import('../types/nativeCanvas').NativeCanvasIdentity;
         readonly runtime: import('../whiteboard/host/runtime').BoardRuntime;
         isCurrent(): boolean;
+        canWrite(): boolean;
+        activateEditing(): void;
+        readMedia(entry: import('../whiteboard/model/media').MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     }>;
     /** Offscreen, session-owned native-board projection; never reads through a mounted view. */
     canvasShapePage?: VaultToolHost['canvasShapePage'];
@@ -238,6 +241,23 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             return readNativeCanvasShapePage({ deps, path, handle: found?.handle, query,
                 guard: { signal: guard.signal, isCurrent: current } });
         },
+        async canvasApplyNative(path, ops, guard) {
+            const deps = getDeps();
+            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path))) return null;
+            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
+            guard.signal?.throwIfAborted();
+            if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
+            if (!openTabAt(deps, path)) {
+                const node = findNode(deps.fileTree, path);
+                if (!node || node.kind !== 'file') throw new Error('The canvas file is unavailable');
+                if (!await deps.addTabQuietly(node, 'read')) throw new Error('The canvas could not be opened');
+            }
+            guard.signal?.throwIfAborted();
+            if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
+            const { applyNativeCanvasOperations } = await import('./nativeCanvasAgentMutation');
+            return applyNativeCanvasOperations({ deps: getDeps(), path, ops,
+                guard: { signal: guard.signal, isCurrent: current } });
+        },
         closedPdfAgent: () => getDeps().closedPdfAgent?.() ?? null,
 
         getFileTree: () => getDeps().fileTree,
@@ -347,11 +367,17 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         },
 
         async createFile(path, content) {
-            if (isNativeDrawingFile(path)) return { ok: false, reason: 'invalid', message: 'This build cannot create native .drawing whiteboards.' };
-            if (isEpubFile(path) || isPdfFile(path) || !isTextFile(path)) return {ok:false,reason:'invalid',message:'Create accepts text documents only; import an existing binary document.'};
+            if (isEpubFile(path) || isPdfFile(path) || (!isNativeDrawingFile(path) && !isTextFile(path))) return {ok:false,reason:'invalid',message:'Create accepts text documents and empty canvases; import an existing binary document.'};
             const deps = getDeps();
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
             const root = deps.root;
+            const nativeKind = isNativeDrawingFile(path) || isDrawingFile(path) && routeEngines().canvas.drawing.engine === 'board' ? 'whiteboard'
+                : isNotebookFile(path) && routeEngines().canvas.notebook.engine === 'board' ? 'notebook' : null;
+            if (nativeKind) {
+                if (content.trim()) return { ok: false, reason: 'invalid', message: 'Create the native canvas empty, then use canvas_apply.' };
+                const { createEmptyNativeBytes } = await import('../whiteboard/host/emptyNative');
+                content = await createEmptyNativeBytes(nativeKind).text();
+            }
             const parent = await dirAt(root, parentVaultPath(path));
             if (!parent) return { ok: false, reason: 'no-parent' };
             const name = path.slice(path.lastIndexOf('/') + 1);
@@ -359,13 +385,16 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             // agent that asked for "Ideas.md" and silently got "Ideas (1).md"
             // would go on editing the one it named.
             if (await nameTaken(parent, name)) return { ok: false, reason: 'taken' };
+            if (getDeps().root !== root || getDeps().searchToken !== deps.searchToken) return { ok: false, reason: 'error', message: 'The vault changed before the file could be created.' };
             try {
                 const handle = await deps.createFile(parent, name);
                 if (content) {
                     await deps.writeFile(handle, content);
                     let version: import('./diskVersion').DiskStat | undefined;
                     try { version = await deps.statFile(handle) ?? undefined; } catch { /* The write succeeded; retry indexing later. */ }
-                    deps.afterWrite({ name, path, kind: 'file', handle, parentHandle: parent }, '', content, version);
+                    if (getDeps().root === root && getDeps().searchToken === deps.searchToken) {
+                        deps.afterWrite({ name, path, kind: 'file', handle, parentHandle: parent }, '', content, version);
+                    }
                 }
                 return { ok: true };
             } catch (err) {

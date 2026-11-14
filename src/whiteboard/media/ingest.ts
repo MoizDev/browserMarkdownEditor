@@ -46,6 +46,8 @@ export interface MediaPlacement {
     readonly page: number;
     readonly x: number;
     readonly y: number;
+    /** Local rotation preserving a world-horizontal row inside a rotated frame. */
+    readonly rotation?: number;
 }
 export interface MediaIngestOptions {
     readonly origin: TransactionOrigin;
@@ -238,18 +240,25 @@ export class MediaIngestor {
             const { parent, page, x, y } = options.placement;
             if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Invalid placement');
             const doc = this.session.doc, sizes = staged.map(item => box(item.info, item.pixelsPerWorldUnit));
-            let left = x - sizes.reduce((sum, size) => sum + size.w, 0) / 2;
+            const totalWidth = sizes.reduce((sum, size) => sum + size.w, 0), angle = options.placement.rotation ?? 0;
+            if (!Number.isFinite(angle)) throw new RangeError('Invalid media placement rotation');
+            let left = x - totalWidth / 2;
             const originalLeft = left, root = isSheetParent(doc, parent), stack = boardPageStack(doc.host);
             const origin = root && stack ? pageOrigin(stack, page) : undefined;
             if (root && stack && !origin) throw new Error('Media placement page is unavailable');
             const pose = root ? null : worldPose(doc, parent);
+            const localPosition = (rowLeft: number, width: number, height: number) => {
+                const distance = rowLeft - originalLeft + width / 2 - totalWidth / 2, cos = Math.cos(angle), sin = Math.sin(angle);
+                return { x: x + cos * distance - cos * width / 2 + sin * height / 2,
+                    y: y + sin * distance - sin * width / 2 - cos * height / 2 };
+            };
             let deepest = -Infinity, cursor = originalLeft;
             for (const size of sizes) {
-                const top = y - size.h / 2;
-                if (pose) {
-                    const sin = Math.sin(pose.rotation), cos = Math.cos(pose.rotation);
-                    for (const px of [cursor, cursor + size.w]) for (const py of [top, top + size.h]) deepest = Math.max(deepest, pose.y + sin * px + cos * py);
-                } else deepest = Math.max(deepest, (origin?.y ?? 0) + top + size.h);
+                const position = localPosition(cursor, size.w, size.h), localCos = Math.cos(angle), localSin = Math.sin(angle);
+                for (const dx of [0, size.w]) for (const dy of [0, size.h]) {
+                    const px = position.x + localCos * dx - localSin * dy, py = position.y + localSin * dx + localCos * dy;
+                    deepest = Math.max(deepest, pose ? pose.y + Math.sin(pose.rotation) * px + Math.cos(pose.rotation) * py : (origin?.y ?? 0) + py);
+                }
                 cursor += size.w;
             }
             const growth = doc.host.kind === 'notebook' ? notebookGrowthOp(doc, deepest) : undefined;
@@ -276,14 +285,16 @@ export class MediaIngestor {
                 }
                 const id = newNodeId({ nodes: { has: candidate => doc.nodes.has(candidate) || reserved.has(candidate) }, sheets: doc.sheets });
                 ids.push(id); reserved.add(id);
-                let targetPage = page, px = left, py = y - h / 2;
+                const position = localPosition(left, w, h);
+                let targetPage = page, px = position.x, py = position.y;
                 if (root && grownStack && origin) {
-                    targetPage = pageAt(grownStack, origin.y + y);
+                    const centreY = position.y + Math.sin(angle) * w / 2 + Math.cos(angle) * h / 2;
+                    targetPage = pageAt(grownStack, origin.y + centreY);
                     const target = grownStack.rects[targetPage];
                     if (!target) throw new Error('Media destination page is unavailable');
                     px += origin.x - target.x; py += origin.y - target.y;
                 } else if (!root) targetPage = -1;
-                const common = { id, parent, order: orders[i], page: targetPage, x: px, y: py, ext: null, w, h, media: info.id, alt: '' };
+                const common = { id, parent, order: orders[i], page: targetPage, x: px, y: py, rotation: angle, ext: null, w, h, media: info.id, alt: '' };
                 const node = info.mime.startsWith('video/')
                     ? createClip({ ...common, time: 0, playing: true, autoplay: true })
                     : createPicture({ ...common, crop: null, flipX: false, flipY: false, inverted: false, playing: true, url: null });

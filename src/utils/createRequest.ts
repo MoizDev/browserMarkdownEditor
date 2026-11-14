@@ -40,6 +40,10 @@ export function clearCreateRequest(): void {
     for (const listener of listeners) listener();
 }
 
+export function getCreateRequest(): CreateRequest | null {
+    return current;
+}
+
 export function subscribeCreateRequest(listener: () => void): () => void {
     listeners.add(listener);
     return () => { listeners.delete(listener); };

@@ -364,56 +364,121 @@ export class InkCoverageJob {
 // Tangent normals below follow directly from n·(b-a)=r0-r1; no library code/boolean union.
 export const INK_OUTLINE_FILL_RULE = 'nonzero' as const;
 
-// Every subpath below has positive orientation. Fill this ENTIRE path once with nonzero winding;
-// never source-over each capsule separately or count overlaps in a wrapping 8-bit GPU winding sum.
-export function coverageOutline(coverage: InkCoverage, deviceScale: number, maxCommands = 1048576): readonly PathCommand[] {
-    if (!Number.isFinite(deviceScale) || deviceScale <= 0 || !Number.isInteger(maxCommands) || maxCommands <= 0) throw new RangeError('Invalid vector outline budget');
-    const output: PathCommand[] = [], tolerance = INK_CAP_ERROR_DEVICE_PX / deviceScale;
-    const push = (command: PathCommand) => {
-        if (output.length >= maxCommands || command.slice(1).some(x => !Number.isFinite(x))) throw new RangeError('Ink vector outline exceeds its finite command budget');
-        output.push(command);
-    };
-    const arc = (x: number, y: number, radius: number, start: number, sweep: number) => {
-        if (!radius || !sweep) return;
-        let count = Math.max(1, Math.ceil(sweep / (Math.PI / 2)));
-        for (; ;) {
-            const angle = sweep / count, c = Math.cos(angle / 2), s = Math.sin(angle / 2);
-            const d = s * (1 - c) / (2 * (1 + c));
-            // For k=4/3*tan(theta/4), rho²-1 = d²*u²*(1-u²)², |u|<=1.
-            // max u²(1-u²)²=4/27 and sqrt(1+v)-1<=v/2: radial error <=2*r*d²/27.
-            const arithmetic = 128 * Number.EPSILON * Math.max(1, Math.abs(x), Math.abs(y), radius);
-            if (2 * radius * d * d / 27 + arithmetic <= tolerance) break;
-            count *= 2;
-            if (count > maxCommands) throw new RangeError('Ink cap cannot meet the declared scale within its command ceiling');
-        }
-        const angle = sweep / count, k = 4 / 3 * Math.tan(angle / 4);
-        for (let i = 0; i < count; i++) {
-            const a = start + i * angle, b = start + (i + 1) * angle;
-            push(['C', x + radius * (Math.cos(a) - k * Math.sin(a)), y + radius * (Math.sin(a) + k * Math.cos(a)),
-                x + radius * (Math.cos(b) + k * Math.sin(b)), y + radius * (Math.sin(b) - k * Math.cos(b)),
-                x + radius * Math.cos(b), y + radius * Math.sin(b)]);
-        }
-    };
-    const disc = (x: number, y: number, radius: number) => {
-        if (!radius) return;
-        push(['M', x + radius, y]); arc(x, y, radius, 0, 2 * Math.PI); push(['Z']);
-    };
-    const a = coverage.segments;
+type OutlineWork = Generator<PathCommand | undefined, void>;
+
+function* outlineArc(x: number, y: number, radius: number, start: number, sweep: number, tolerance: number, maxCommands: number): OutlineWork {
+    if (!radius || !sweep) return;
+    let count = Math.max(1, Math.ceil(sweep / (Math.PI / 2)));
+    const arithmetic = 128 * Number.EPSILON * Math.max(1, Math.abs(x), Math.abs(y), radius);
+    for (; ;) {
+        const angle = sweep / count, c = Math.cos(angle / 2), s = Math.sin(angle / 2);
+        const d = s * (1 - c) / (2 * (1 + c));
+        // For k=4/3*tan(theta/4), rho²-1 = d²*u²*(1-u²)², |u|<=1.
+        // max u²(1-u²)²=4/27 and sqrt(1+v)-1<=v/2: radial error <=2*r*d²/27.
+        const enough = 2 * radius * d * d / 27 + arithmetic <= tolerance;
+        yield undefined;
+        if (enough) break;
+        count *= 2;
+        if (count > maxCommands) throw new RangeError('Ink cap cannot meet the declared scale within its command ceiling');
+    }
+    const angle = sweep / count, k = 4 / 3 * Math.tan(angle / 4);
+    for (let i = 0; i < count; i++) {
+        const a = start + i * angle, b = start + (i + 1) * angle;
+        yield ['C', x + radius * (Math.cos(a) - k * Math.sin(a)), y + radius * (Math.sin(a) + k * Math.cos(a)),
+            x + radius * (Math.cos(b) + k * Math.sin(b)), y + radius * (Math.sin(b) - k * Math.cos(b)),
+            x + radius * Math.cos(b), y + radius * Math.sin(b)];
+    }
+}
+function* outlineDisc(x: number, y: number, radius: number, tolerance: number, maxCommands: number): OutlineWork {
+    if (!radius) return;
+    yield ['M', x + radius, y];
+    yield* outlineArc(x, y, radius, 0, 2 * Math.PI, tolerance, maxCommands);
+    yield ['Z'];
+}
+function* outlineWork(coverage: InkCoverage, deviceScale: number, maxCommands: number): OutlineWork {
+    const tolerance = INK_CAP_ERROR_DEVICE_PX / deviceScale, a = coverage.segments;
     for (let i = 0; i < a.length; i += 6) {
+        // Even empty primitives consume a slice: a million zero-radius rows must not hide inside
+        // one iterator.next(). Arc refinement and each output cubic have the same bounded unit.
+        yield undefined;
         const ax = a[i], ay = a[i + 1], r0 = a[i + 2], bx = a[i + 3], by = a[i + 4], r1 = a[i + 5];
         const dx = bx - ax, dy = by - ay, distance = Math.hypot(dx, dy), difference = r1 - r0;
-        if (distance <= Math.abs(difference)) { if (r0 >= r1) disc(ax, ay, r0); else disc(bx, by, r1); continue; }
+        if (distance <= Math.abs(difference)) {
+            if (r0 >= r1) yield* outlineDisc(ax, ay, r0, tolerance, maxCommands);
+            else yield* outlineDisc(bx, by, r1, tolerance, maxCommands);
+            continue;
+        }
         const ux = dx / distance, uy = dy / distance, along = -difference / distance;
         const perpendicular = Math.sqrt(Math.max(0, 1 - along * along));
         const minusX = along * ux + perpendicular * uy, minusY = along * uy - perpendicular * ux;
         const plusX = along * ux - perpendicular * uy, plusY = along * uy + perpendicular * ux;
         const start = Math.atan2(minusY, minusX), sweep = 2 * Math.acos(along);
-        push(['M', ax + r0 * minusX, ay + r0 * minusY]);
-        push(['L', bx + r1 * minusX, by + r1 * minusY]);
-        arc(bx, by, r1, start, sweep);
-        push(['L', ax + r0 * plusX, ay + r0 * plusY]);
-        arc(ax, ay, r0, start + sweep, 2 * Math.PI - sweep); push(['Z']);
+        yield ['M', ax + r0 * minusX, ay + r0 * minusY];
+        yield ['L', bx + r1 * minusX, by + r1 * minusY];
+        yield* outlineArc(bx, by, r1, start, sweep, tolerance, maxCommands);
+        yield ['L', ax + r0 * plusX, ay + r0 * plusY];
+        yield* outlineArc(ax, ay, r0, start + sweep, 2 * Math.PI - sweep, tolerance, maxCommands);
+        yield ['Z'];
     }
-    for (let i = 0; i < coverage.discs.length; i += 3) disc(coverage.discs[i], coverage.discs[i + 1], coverage.discs[i + 2]);
+    for (let i = 0; i < coverage.discs.length; i += 3) {
+        yield undefined;
+        yield* outlineDisc(coverage.discs[i], coverage.discs[i + 1], coverage.discs[i + 2], tolerance, maxCommands);
+    }
+}
+
+// Emission is append-only into the caller's UNPUBLISHED path. Every subpath has positive
+// orientation: fill the entire completed path ONCE with nonzero winding, never each capsule.
+// Work units bound geometry operations, not wall time/GC or the sink's own cost; Layer.prepare
+// checks its deadline between step(1) calls. Cancellation/error means discard the partial path.
+export class InkOutlineJob {
+    private iterator: OutlineWork | undefined;
+    private emit: ((command: PathCommand) => void) | undefined;
+    private state: 'pending' | 'complete' | 'cancelled' | 'failed' = 'pending';
+    private failure: unknown;
+    private stepping = false;
+    private emitted = 0;
+    constructor(coverage: InkCoverage, deviceScale: number, emit: (command: PathCommand) => void, private readonly maxCommands = 1048576) {
+        if (!Number.isFinite(deviceScale) || deviceScale <= 0 || !Number.isSafeInteger(maxCommands) || maxCommands <= 0
+            || coverage.segments.length % 6 || coverage.discs.length % 3) throw new RangeError('Invalid vector outline budget or primitive rows');
+        this.iterator = outlineWork(coverage, deviceScale, maxCommands); this.emit = emit;
+    }
+    get commandCount(): number { return this.emitted; }
+    private get wasCancelled(): boolean { return this.state === 'cancelled'; }
+    cancel(): void {
+        if (this.state !== 'pending') return;
+        this.state = 'cancelled'; this.iterator?.return(); this.iterator = undefined; this.emit = undefined;
+    }
+    step(maxWork: number): 'pending' | 'complete' | 'cancelled' {
+        if (this.state === 'failed') throw this.failure;
+        if (this.state !== 'pending') return this.state;
+        if (!Number.isSafeInteger(maxWork) || maxWork <= 0) throw new RangeError('Invalid outline work slice');
+        if (this.stepping) throw new Error('Outline step is not reentrant');
+        this.stepping = true;
+        try {
+            for (let work = 0; work < maxWork; work++) {
+                const next = this.iterator!.next();
+                if (next.done) {
+                    this.state = 'complete'; this.iterator = undefined; this.emit = undefined;
+                    return 'complete';
+                }
+                const command = next.value;
+                if (command) {
+                    if (this.emitted >= this.maxCommands) throw new RangeError('Ink vector outline exceeds its finite command budget');
+                    for (let i = 1; i < command.length; i++) if (!Number.isFinite(command[i])) throw new RangeError('Non-finite ink outline coordinate');
+                    this.emit!(command); this.emitted++;
+                    if (this.wasCancelled) return 'cancelled';
+                }
+            }
+            return 'pending';
+        } catch (error) {
+            this.failure = error; this.state = 'failed'; this.iterator?.return(); this.iterator = undefined; this.emit = undefined;
+            throw error;
+        } finally { this.stepping = false; }
+    }
+}
+
+export function coverageOutline(coverage: InkCoverage, deviceScale: number, maxCommands = 1048576): readonly PathCommand[] {
+    const output: PathCommand[] = [], job = new InkOutlineJob(coverage, deviceScale, command => output.push(command), maxCommands);
+    while (job.step(1024) === 'pending') { /* Synchronous convenience for already bounded geometry. */ }
     return Object.freeze(output);
 }

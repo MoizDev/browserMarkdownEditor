@@ -140,8 +140,9 @@ export class PreviewBitmapLayer implements Layer {
         }
     }
 
-    releaseGpu(_reason: GpuReleaseReason): void {
-        for (const [tile, uploaded] of this.uploaded) this.retire(tile, uploaded);
+    releaseGpu(reason: GpuReleaseReason): void {
+        if (reason === 'context-lost') this.uploaded.clear();
+        else for (const [tile, uploaded] of this.uploaded) this.retire(tile, uploaded);
         this.pendingFrame = false;
     }
 
@@ -168,6 +169,6 @@ export class PreviewBitmapLayer implements Layer {
 
     private retire(tile: PreviewTile, uploaded: UploadedTile): void {
         this.uploaded.delete(tile);
-        if (this.host.device() === uploaded.device) uploaded.device.destroy(uploaded.texture);
+        uploaded.device.destroy(uploaded.texture);
     }
 }

@@ -1,0 +1,75 @@
+import type { Block } from './richText';
+
+/** UTF-16 run starts, including the endpoint; duplicate starts are zero-width anchors. */
+export interface RunIndex {
+    readonly starts: Uint32Array;
+    readonly length: number;
+    readonly count: number;
+}
+
+interface CachedRunIndex { readonly index: RunIndex; readonly bytes: number }
+const BYTE_LIMIT = 8 * 1024 * 1024;
+const ENTRY_LIMIT = 256;
+const cache = new Map<Block, CachedRunIndex>();
+let used = 0;
+
+function construct(block: Block): CachedRunIndex {
+    const runs = block.runs, starts = new Uint32Array(runs.length + 1);
+    let length = 0;
+    for (let index = 0; index < runs.length; index++) {
+        starts[index] = length;
+        length += runs[index].text.length;
+        if (!Number.isSafeInteger(length) || length > 0xffffffff) throw new RangeError('Text block exceeds index limits');
+    }
+    starts[runs.length] = length;
+    // The cache retains the immutable block and its strings, not just the array.
+    return { index: { starts, length, count: runs.length }, bytes: 256 + starts.byteLength + length * 2 + runs.length * 48 };
+}
+
+export function runIndex(block: Block): RunIndex {
+    const hit = cache.get(block);
+    if (hit) { cache.delete(block); cache.set(block, hit); return hit.index; }
+    const built = construct(block);
+    if (built.bytes <= BYTE_LIMIT) {
+        while (cache.size && (cache.size >= ENTRY_LIMIT || used + built.bytes > BYTE_LIMIT)) {
+            const oldest = cache.keys().next().value!, value = cache.get(oldest)!;
+            cache.delete(oldest); used -= value.bytes;
+        }
+        cache.set(block, built); used += built.bytes;
+    }
+    return built.index;
+}
+
+function lowerBound(values: Uint32Array, value: number): number {
+    let low = 0, high = values.length;
+    while (low < high) {
+        const mid = low + ((high - low) >>> 1);
+        if (values[mid] < value) low = mid + 1; else high = mid;
+    }
+    return low;
+}
+function upperBound(values: Uint32Array, value: number): number {
+    let low = 0, high = values.length;
+    while (low < high) {
+        const mid = low + ((high - low) >>> 1);
+        if (values[mid] <= value) low = mid + 1; else high = mid;
+    }
+    return low;
+}
+
+/** First run which can overlap the range, including zero-width carriers at its start. */
+export function firstRunAt(index: RunIndex, offset: number): number {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > index.length) throw new RangeError('Invalid block offset');
+    const at = lowerBound(index.starts, offset);
+    if (at > 0 && index.starts[at - 1] < offset && index.starts[at] > offset) return at - 1;
+    return Math.min(at, index.count);
+}
+
+/** The run containing a code unit, never a zero-width anchor. */
+export function runContaining(index: RunIndex, offset: number): number {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= index.length) throw new RangeError('Invalid block character offset');
+    return upperBound(index.starts, offset) - 1;
+}
+
+/** Explicit disposal is useful for pane/application shutdown; cached blocks are otherwise bounded. */
+export function clearRunIndexes(): void { cache.clear(); used = 0; }

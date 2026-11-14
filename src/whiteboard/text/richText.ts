@@ -1,8 +1,8 @@
 import type { RawJson } from '../model/json';
-import { blockTextLength } from '../model/textOffsets';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { inheritProjection, projectionLength, projectionPosition } from './projection';
 import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOrigin, sliceCarriers, trackBlock, trackRun } from './carriers';
+import { firstRunAt, runContaining, runIndex } from './runIndex';
 
 // text.md §4.1: immutable values; UTF-16 offsets refer to the plain-text projection.
 export interface RichText { readonly blocks: readonly Block[] }
@@ -51,6 +51,8 @@ export const EMPTY_RICH_TEXT: RichText = {
 
 export class RichTextLimitError extends RangeError {}
 
+const blockTextLength = (block: Block): number => runIndex(block).length;
+
 function sameMarks(a: Marks, b: Marks): boolean {
     return a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.code === b.code
         && a.hl === b.hl && a.link === b.link && a.x === b.x;
@@ -58,22 +60,29 @@ function sameMarks(a: Marks, b: Marks): boolean {
 function opaqueRun(run: Run): boolean { return run.tail !== undefined || run.marks.x !== undefined; }
 
 function normalizedRuns(runs: readonly Run[]): readonly Run[] {
-    let output: Run[] | undefined;
-    for (let i = 0; i < runs.length; i++) {
-        const run = runs[i];
-        if (run.text.length === 0 && runs.length > 1 && !opaqueRun(run)) {
-            if (!output) output = runs.slice(0, i);
-            continue;
-        }
-        const before = output ? output[output.length - 1] : runs[i - 1];
-        // Unknown tuple/mark meaning can depend on run boundaries. Never discard
-        // opaque metadata just because its known drawing marks happen to match.
-        if (before && !opaqueRun(before) && !opaqueRun(run) && sameMarks(before.marks, run.marks)) {
-            if (!output) output = runs.slice(0, i);
-            output[output.length - 1] = { text: before.text + run.text, marks: before.marks };
-        } else if (output) output.push(run);
+    let previous: Run | undefined, changed = false;
+    for (const run of runs) {
+        if (!run.text.length && runs.length > 1 && !opaqueRun(run)) { changed = true; continue; }
+        if (previous && !opaqueRun(previous) && !opaqueRun(run) && sameMarks(previous.marks, run.marks)) changed = true;
+        previous = run;
     }
-    return output ? output.length ? output : [runs[0]] : runs;
+    if (!changed) return runs;
+    const output: Run[] = [];
+    let pending: Run | undefined, parts: string[] = [];
+    const flush = () => {
+        if (!pending) return;
+        output.push(parts.length === 1 ? pending : { text: parts.join(''), marks: pending.marks });
+        pending = undefined; parts = [];
+    };
+    for (const run of runs) {
+        if (!run.text.length && runs.length > 1 && !opaqueRun(run)) continue;
+        // Unknown tuple/mark meaning can depend on the original run boundary.
+        if (opaqueRun(run)) { flush(); output.push(run); }
+        else if (pending && sameMarks(pending.marks, run.marks)) parts.push(run.text);
+        else { flush(); pending = run; parts = [run.text]; }
+    }
+    flush();
+    return output.length ? output : [runs[0]];
 }
 
 const normalizedBlocks = new WeakMap<Block, Block>();
@@ -109,11 +118,10 @@ function slicedRun(run: Run, text: string, preserveOrigin: boolean): Run {
     return preserveOrigin && opaqueRun(run) ? trackRun(result, run) : result;
 }
 function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Run[] {
-    const runs: Run[] = [];
-    let position = 0;
-    for (let i = 0; i < block.runs.length; i++) {
-        const run = block.runs[i];
-        const end = position + run.text.length;
+    const runs: Run[] = [], indexed = runIndex(block);
+    for (let i = firstRunAt(indexed, from); i < block.runs.length; i++) {
+        const run = block.runs[i], position = indexed.starts[i], end = indexed.starts[i + 1];
+        if (position > to || (position === to && run.text.length > 0)) break;
         if (run.text.length === 0) {
             if (position >= from && (position < to || (keepEndAnchors && position === to))) runs.push(slicedRun(run, '', preserveOrigin));
         } else {
@@ -121,18 +129,14 @@ function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boole
             const endInRun = Math.min(run.text.length, to - position);
             if (startInRun < endInRun) runs.push(slicedRun(run, run.text.slice(startInRun, endInRun), preserveOrigin));
         }
-        position = end;
     }
     return runs;
 }
 function emptyRun(block: Block, offset: number, preserveOrigin: boolean): Run {
-    let position = 0;
-    for (let i = 0; i < block.runs.length; i++) {
-        const run = block.runs[i];
-        position += run.text.length;
-        if (position >= offset) return slicedRun(run, '', preserveOrigin);
-    }
-    return { text: '', marks: {} };
+    const indexed = runIndex(block);
+    if (!indexed.count) return { text: '', marks: {} };
+    const index = offset > 0 ? runContaining(indexed, offset - 1) : 0;
+    return slicedRun(block.runs[index], '', preserveOrigin);
 }
 
 export function sliceRichText(text: RichText, from: number, to: number, preserveOrigins = false): RichFragment {

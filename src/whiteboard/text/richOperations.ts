@@ -1,12 +1,13 @@
-import { blockTextLength } from '../model/textOffsets';
 import { textBoundaries } from './boundaries';
 import { projectionLength as indexedLength, projectionPosition, projectionText } from './projection';
 import { normalizePlainInsertion } from './plainText';
 import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
 import { trackBlock, trackRun } from './carriers';
+import { runContaining, runIndex } from './runIndex';
 
 const position = projectionPosition;
+const blockTextLength = (block: Block): number => runIndex(block).length;
 function check(text: RichText, from: number, to = from): void {
     if (to < from || !textBoundaries.isBoundary(text, from) || !textBoundaries.isBoundary(text, to))
         throw new RangeError('Text range must have grapheme boundaries');
@@ -35,42 +36,31 @@ export function fromPlain(value: string): RichText {
 export function marksAt(value: RichText, offset: number): Marks {
     check(value, offset);
     const { block, offset: local } = position(value, offset);
-    let at = 0;
-    for (let i = 0; i < block.runs.length; i++) {
-        const run = block.runs[i], end = at + run.text.length;
-        if (local < end || (local === end && (i === block.runs.length - 1 || end > at))) {
-            const { x: _x, link, ...marks } = run.marks;
-            if (!link) return marks;
-            if (local < end) return { ...marks, link };
-            // Formatting may split one link into adjacent runs; only its true end stops extension.
-            for (let next = i + 1; next < block.runs.length; next++) {
-                if (!block.runs[next].text.length) continue;
-                return block.runs[next].marks.link === link ? { ...marks, link } : marks;
-            }
-            return marks;
-        }
-        at = end;
+    const indexed = runIndex(block);
+    if (!indexed.count) return {};
+    const i = indexed.length ? runContaining(indexed, local ? local - 1 : 0) : indexed.count - 1;
+    const run = block.runs[i], end = indexed.starts[i + 1];
+    const { x: _x, link, ...marks } = run.marks;
+    if (!link) return marks;
+    if (local < end) return { ...marks, link };
+    // Formatting may split one link into adjacent runs; only its true end stops extension.
+    for (let next = i + 1; next < block.runs.length; next++) {
+        if (!block.runs[next].text.length) continue;
+        return block.runs[next].marks.link === link ? { ...marks, link } : marks;
     }
-    return {};
+    return marks;
 }
 export function linkRangeAt(value: RichText, offset: number): { readonly from: number; readonly to: number; readonly url: string } | null {
     check(value, offset);
-    const found = position(value, offset), runs = found.block.runs;
-    let at = 0, chosen = -1;
-    for (let index = 0; index < runs.length; index++) {
-        const end = at + runs[index].text.length;
-        if ((found.offset > at && found.offset <= end) || (found.offset === 0 && at === 0 && end > 0)) { chosen = index; break; }
-        at = end;
-    }
-    if (chosen < 0 || !runs[chosen].marks.link) return null;
+    const found = position(value, offset), runs = found.block.runs, indexed = runIndex(found.block);
+    if (!indexed.length) return null;
+    const chosen = runContaining(indexed, found.offset ? found.offset - 1 : 0);
+    if (!runs[chosen].marks.link) return null;
     const url = runs[chosen].marks.link!;
     let first = chosen, last = chosen;
     while (first > 0 && (!runs[first - 1].text.length || runs[first - 1].marks.link === url)) first--;
     while (last + 1 < runs.length && (!runs[last + 1].text.length || runs[last + 1].marks.link === url)) last++;
-    let from = found.start;
-    for (let index = 0; index < first; index++) from += runs[index].text.length;
-    let to = from;
-    for (let index = first; index <= last; index++) to += runs[index].text.length;
+    const from = found.start + indexed.starts[first], to = found.start + indexed.starts[last + 1];
     return from < to && textBoundaries.isBoundary(value, from) && textBoundaries.isBoundary(value, to) ? { from, to, url } : null;
 }
 export function insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment {

@@ -1,4 +1,5 @@
 import type { Block, RichText } from './richText';
+import { firstRunAt, runIndex } from './runIndex';
 
 export interface TextProjectionPosition {
     readonly block: Block;
@@ -148,12 +149,13 @@ export function projectionSlice(text: RichText, from: number, to: number): strin
     for (let index = first.index; index <= last.index; index++) {
         const block = text.blocks[index], low = index === first.index ? first.offset : 0;
         const high = index === last.index ? last.offset : lengthOf(block);
-        let position = 0;
-        for (const run of block.runs) {
-            const end = position + run.text.length;
-            if (end > low && position < high) pieces.push(run.text.slice(Math.max(0, low - position), Math.min(run.text.length, high - position)));
-            position = end;
-            if (position >= high) break;
+        if (low < high) {
+            const indexed = runIndex(block);
+            for (let r = firstRunAt(indexed, low); r < block.runs.length; r++) {
+                const start = indexed.starts[r], end = indexed.starts[r + 1];
+                if (start >= high) break;
+                if (end > low) pieces.push(block.runs[r].text.slice(Math.max(0, low - start), Math.min(end - start, high - start)));
+            }
         }
         if (index < last.index) pieces.push('\n');
     }

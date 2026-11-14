@@ -1,7 +1,7 @@
 import type { Transaction } from '../../change/ops';
 import type { NodeId } from '../../model/ids';
 import { sliceRichText, spliceRichText, type Block, type Marks, type RichText } from '../richText';
-import { trackBlock } from '../carriers';
+import { trackBlock, trackRun } from '../carriers';
 import { linkUrl, type ToggleMark } from './format';
 
 export interface InputRuleResult { readonly transaction: Transaction; readonly caret: number }
@@ -48,7 +48,7 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
         if (!match) continue;
         const from = start + match.index;
         const content = sliceRichText(text, from + delimiter, caret - delimiter, true);
-        const replacement = { blocks: content.blocks.map(item => trackBlock({ ...item, runs: item.runs.map(run => ({ ...run, marks: { ...run.marks, [mark]: true } as Marks })) }, item)) };
+        const replacement = { blocks: content.blocks.map(item => trackBlock({ ...item, runs: item.runs.map(run => trackRun({ ...run, marks: { ...run.marks, [mark]: true } as Marks }, run)) }, item)) };
         return { transaction: transaction(id, key, from, caret, replacement), caret: from + match[1].length };
     }
     const word = (trigger === 'typing'
@@ -61,7 +61,7 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
         const end = caret - (trigger === 'typing' ? 1 : 0) - (word[1].length - raw.length);
         const from = end - raw.length;
         const content = sliceRichText(text, from, end, true);
-        const replacement = { blocks: content.blocks.map(item => trackBlock({ ...item, runs: item.runs.map(run => ({ ...run, marks: { ...run.marks, link: url } })) }, item)) };
+        const replacement = { blocks: content.blocks.map(item => trackBlock({ ...item, runs: item.runs.map(run => trackRun({ ...run, marks: { ...run.marks, link: url } }, run)) }, item)) };
         return { transaction: transaction(id, key, from, end, replacement), caret };
     }
     return null;

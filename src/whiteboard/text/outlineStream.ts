@@ -19,6 +19,7 @@ interface StreamSlot {
     timer?: ReturnType<typeof setTimeout>;
     busy: boolean;
     closing: boolean;
+    holds: number;
 }
 
 // Slots hold a cloned paint until the consumer advances or closes the stream. Reserve before
@@ -74,7 +75,24 @@ function dispose(slot: StreamSlot): void {
 }
 function arm(slot: StreamSlot): void {
     if (slot.timer !== undefined) clearTimeout(slot.timer);
-    slot.timer = setTimeout(() => { if (!slot.busy) dispose(slot); }, IDLE_MS);
+    slot.timer = undefined;
+    if (!slot.holds) slot.timer = setTimeout(() => { if (!slot.busy && !slot.holds) dispose(slot); }, IDLE_MS);
+}
+
+/** A worker-local sink holds the stream while it writes; idle collection is only for abandoned clients. */
+export function holdOutlineStream(id: string, owner: BoardJobIdentity): () => void {
+    const slot = streams.get(id), valid = ownerOf(owner);
+    if (!slot || !valid || !sameOwner(slot.owner, valid) || slot.closing) throw new Error('Text outline stream expired');
+    slot.holds++;
+    if (slot.timer !== undefined) clearTimeout(slot.timer);
+    slot.timer = undefined;
+    let held = true;
+    return () => {
+        if (!held) return;
+        held = false;
+        slot.holds--;
+        if (!slot.busy && streams.get(slot.id) === slot) arm(slot);
+    };
 }
 
 export function isOutlineStreamRequest(value: unknown): boolean {
@@ -93,7 +111,7 @@ export async function handleOutlineStream(value: unknown, context: WorkerContext
     if (value.mode === 'reserve') {
         if (slot) throw new Error('Text outline stream already exists');
         if (streams.size >= MAX_STREAMS) return { kind: 'busy' };
-        const created = { id: value.id, owner, busy: false, closing: false } as StreamSlot;
+        const created = { id: value.id, owner, busy: false, closing: false, holds: 0 } as StreamSlot;
         (created as { proxy: WorkerContext }).proxy = proxyFor(created);
         streams.set(created.id, created);
         arm(created);

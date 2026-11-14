@@ -3,7 +3,7 @@ import { acquireLegacyPdfInkCandidate } from '../../pdf/session/legacyInkAcquisi
 import { createConvertedPdfInkSource } from '../../pdf/session/convertedInkSource';
 import { createPdfInkConversionHost } from '../../pdf/session/inkHost';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
-import { acquireLegacyBoard, type LegacyBoardAcquisition } from './legacyAcquisition';
+import { acquireLegacyBoard, rehostLegacyBoard, type LegacyBoardAcquisition } from './legacyAcquisition';
 import type { NativeLoadReply } from '../workers/nativeLoad';
 import { acquireNativeBoard } from './nativeAcquisition';
 import { inspectPdfVisualModel } from './pdfVisualPreflight';
@@ -87,13 +87,14 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             checkRenderable();
             const previousFrames = preview.previousFrames.map(frame => ({ width: frame.w, height: frame.h }));
             const finalHost = createPdfInkConversionHost(ready, previousFrames);
-            final = await convert(finalHost);
+            final = await rehostLegacyBoard(preview, finalHost, { identity: job, isCurrent, memory, signal: internal.signal });
             if (final.status !== 'editable' || final.originalSha256 !== preview.originalSha256
                 || final.previousFrames.length !== preview.previousFrames.length
                 || final.previousFrames.some((frame, i) => {
                     const old = preview!.status === 'editable' ? preview!.previousFrames[i] : undefined;
                     return !old || frame.x !== old.x || frame.y !== old.y || frame.w !== old.w || frame.h !== old.h;
                 })) throw new Error('The final PDF conversion does not match its verified preview');
+            preview.dispose(); preview = undefined;
             const finalVisual = await inspectPdfVisualModel(final.native.load, { signal: internal.signal });
             checkRenderable();
             if (finalVisual.status !== 'known') throw new Error('The final PDF conversion cannot be safely represented');

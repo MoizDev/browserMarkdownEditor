@@ -51,6 +51,7 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
         wakeAt: deadline => bindings.wakeAt(deadline),
         paintWorld: (ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void) => compositor().paintWorld(ctx, view, paint),
         paintPage: (ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void) => compositor().paintPage(ctx, view, index, paint),
+        paneTransform: (view, frameId) => bindings.compositor()?.paneTransform(view, frameId) ?? null,
         uniforms: (bytes: ArrayBufferView): UniformSlice => resources().uniforms(bytes),
         drawTexturedQuad,
     };

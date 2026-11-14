@@ -3,7 +3,7 @@ import type {
     CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
 } from './compositor.types';
 import { paintCanvasIsolation } from './canvas2dContext';
-import { paintPageScope, paintWorldScope, projectPage } from './compositorProjection';
+import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from './compositorProjection';
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
 import { IsolationShortfall } from './gfx/webgl2Isolation';
@@ -372,6 +372,11 @@ export class GpuCompositor implements PaneCompositor {
 
     page(view: ViewState, index: number): CompositorPage | null {
         return projectPage(this.#snapshot?.view === view ? this.#snapshot.layout : this.#layout, view, index);
+    }
+    paneTransform(view: ViewState, frameId: number) {
+        const prepared = this.#prepared;
+        if (!prepared || prepared.frameId !== frameId || prepared.snapshot !== this.#snapshot) return null;
+        return paneCssTransform(view, prepared.snapshot.view, prepared.snapshot.metrics);
     }
     paintWorld(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void { paintWorldScope(ctx, view, paint); }
     paintPage(ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void): void {

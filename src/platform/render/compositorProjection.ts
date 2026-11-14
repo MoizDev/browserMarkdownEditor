@@ -1,7 +1,8 @@
-import type { Rect, ViewState } from '../types';
+import type { Affine, Rect, ViewState } from '../types';
 import { pagePresentation } from './camera';
 import type { CompositorPage } from './compositor.types';
 import type { PageStack } from './pageStack';
+import type { ReadySurfaceMetrics } from './surfaceMetrics';
 
 /** The fractional outline and its integer scissor envelope are different (design §4.1:396–399).
  * Both backends use the camera's ONE page-rest correction, including for input/overlays (C1.2).
@@ -22,12 +23,30 @@ export function projectPage(stack: Readonly<PageStack> | null, view: ViewState, 
         clip: { x: left, y: top, width: right - left, height: bottom - top } };
 }
 
+export function worldDeviceTransform(view: ViewState): Affine {
+    const scale = view.camera.z * view.viewport.dpr;
+    return [scale, 0, 0, scale, -view.camera.x * scale, -view.camera.y * scale];
+}
+
+/** Only a matching prepared view and its actual backing can establish the displayed CSS mapping. */
+export function paneCssTransform(view: ViewState, prepared: ViewState, metrics: ReadySurfaceMetrics | null): Affine | null {
+    if (!metrics || view.epoch !== prepared.epoch || view.camera.x !== prepared.camera.x || view.camera.y !== prepared.camera.y
+        || view.camera.z !== prepared.camera.z || view.viewport.width !== prepared.viewport.width
+        || view.viewport.height !== prepared.viewport.height || view.viewport.dpr !== prepared.viewport.dpr
+        || view.viewport.width !== metrics.viewport.width || view.viewport.height !== metrics.viewport.height
+        || view.viewport.dpr !== metrics.viewport.dpr || metrics.backingWidth <= 0 || metrics.backingHeight <= 0
+        || metrics.viewport.width <= 0 || metrics.viewport.height <= 0 || view.camera.z <= 0 || view.viewport.dpr <= 0) return null;
+    const device = worldDeviceTransform(prepared);
+    const x = metrics.viewport.width / metrics.backingWidth, y = metrics.viewport.height / metrics.backingHeight;
+    const result: Affine = [device[0] * x, device[1] * y, device[2] * x, device[3] * y, device[4] * x, device[5] * y];
+    return result.every(Number.isFinite) ? Object.freeze(result) : null;
+}
+
 /** Scopes restore even if a producer throws; layers receive the original ViewState (C4.3; design §4.1). */
 export function paintWorldScope(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void {
-    const scale = view.camera.z * view.viewport.dpr;
     ctx.save();
     try {
-        ctx.setTransform(scale, 0, 0, scale, -view.camera.x * scale, -view.camera.y * scale);
+        ctx.setTransform(...worldDeviceTransform(view));
         paint();
     } finally { ctx.restore(); }
 }

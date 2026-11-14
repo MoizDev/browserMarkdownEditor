@@ -11,6 +11,8 @@ export interface StyleShortcutOptions {
     readonly inputToken: InputToken;
     hit(point: Readonly<{ x: number; y: number }>, signal: AbortSignal): Promise<NodeId | null>;
     current(): boolean;
+    /** The view's editable gate; style and grid/focus writes are refused while it is false. */
+    canMutateView(): boolean;
     registerPending(cancel: () => void): () => void;
     error(error: unknown): void;
     toggleWhiteboardTheme?(): void;
@@ -25,7 +27,7 @@ export function createStyleShortcuts(options: StyleShortcutOptions) {
     const controllers = new Set<AbortController>();
     let disposed = false, generation = 0;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
-    const writable = () => current() && !session.isReadOnly && !session.isGestureActive;
+    const writable = () => current() && options.canMutateView() && !session.isReadOnly && !session.isGestureActive;
     const commands = new BoardStyleCommands(session, () => runtime.selection.getSnapshot().selected, () => runtime.tools.getSnapshot().active.id);
     const cancel = () => { generation++; for (const controller of controllers) controller.abort(); controllers.clear(); };
     const change = (color: 'white' | null, fill: Fill | null): boolean => {
@@ -104,6 +106,9 @@ export function createStyleShortcuts(options: StyleShortcutOptions) {
         return true;
     };
     const run = (id: string): boolean => {
+        // grid and focus are document state too: a view that refuses edits consumes them instead of letting the global route promote them.
+        const owned = id.startsWith('style.') || id === 'preferences.grid' || id === 'preferences.focus';
+        if (owned && current() && (!options.canMutateView() || session.isReadOnly)) return true;
         switch (id) {
             case 'style.white': return change('white', null);
             case 'style.fill': return change(null, 'fill');

@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "روشنی",
     "chrome.system": "سسٹم",
     "chrome.language": "زبان",
+    "chrome.print": "پرنٹ کریں",
     "chrome.uploadMedia": "میڈیا اپ لوڈ کریں…",
     "chrome.insertEmbed": "سرایت داخل کریں…",
     "chrome.unlockAll": "سب کو غیر مقفل کریں۔",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "صفحہ حذف کریں۔",
     "paper.cancel": "منسوخ کریں۔",
     "paper.keepProtected": "مقفل مواد رکھا جائے گا۔",
-    "chrome.readOnly": "یہ بورڈ صرف پڑھنے کے لیے ہے۔"
+    "chrome.readOnly": "یہ بورڈ صرف پڑھنے کے لیے ہے۔",
+    "shortcuts.file.print": "پرنٹ کریں",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

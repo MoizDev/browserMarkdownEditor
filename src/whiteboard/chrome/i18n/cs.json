@@ -30,6 +30,16 @@
       "key": "commands.exportPng",
       "text": "PNG",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Světlo",
     "chrome.system": "Systém",
     "chrome.language": "Jazyk",
+    "chrome.print": "Tisk",
     "chrome.uploadMedia": "Nahrát média…",
     "chrome.insertEmbed": "Vložit vložení…",
     "chrome.unlockAll": "Odemknout vše",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "Smazat stránku",
     "paper.cancel": "Zrušit",
     "paper.keepProtected": "Uzamčený obsah bude zachován.",
-    "chrome.readOnly": "Tato deska je pouze pro čtení."
+    "chrome.readOnly": "Tato deska je pouze pro čtení.",
+    "shortcuts.file.print": "Tisk",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

@@ -124,6 +124,7 @@ import ContextMenu from './components/ContextMenu';
 import EditorPane from './components/EditorPane';
 import TerminalDock from './components/TerminalDock';
 import { connectHelperForTerminal } from './components/terminalLaunch';
+import { BOARD_Z_MAX } from './utils/boardZMax';
 import type {
   ActiveFile,
   ContentChangeOptions,
@@ -6363,7 +6364,7 @@ export default function App() {
       const changed = () => new Error('The PDF changed while the agent was reading it; try again.');
       const { preparePdfInkAttempt } = await import('./components/whiteboard/preparePdfInkAttempt');
       if (!pdfPinHolds(pin)) throw changed();
-      const prepared = await preparePdfInkAttempt({ host: nativeCanvasHost, identity, deadlineMs: 30_000, zMax: 100,
+      const prepared = await preparePdfInkAttempt({ host: nativeCanvasHost, identity, deadlineMs: 30_000, zMax: BOARD_Z_MAX,
         legacyConversion: false, requireExistingNative: true, onError,
         onNotice: announce, onHistoryLimit: () => announce('The board history limit was reached.') }, prepareSignal);
       if (!pdfPinHolds(pin)) { await prepared.dispose(); throw changed(); }
@@ -6381,7 +6382,7 @@ export default function App() {
         if (kind === 'pdf') return preparePdfAgentSource(prepareSignal);
         pinTransferred = true;
         return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: kind, sourcePin: pinned,
-          signal: prepareSignal, deadlineMs: 30_000, zMax: 100, onError,
+          signal: prepareSignal, deadlineMs: 30_000, zMax: BOARD_Z_MAX, onError,
           onHistoryLimit: () => announce('The board history limit was reached.') });
       },
     });

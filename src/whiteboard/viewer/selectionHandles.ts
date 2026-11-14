@@ -55,12 +55,16 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             const scope = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { signal, current: active, cooperate: options.cooperate });
             try {
                 if (!active()) return;
-                const rotations: number[] = [], pending = [...roots];
+                const rotations: number[] = [], pending = [...roots], cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+                let visited = 0;
                 while (pending.length) {
                     const node = pending.pop()!;
+                    if (++visited % 256 === 0) { await cooperate(); if (!active()) return; }
+                    if (node.locked) continue;
                     if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
                     else rotations.push(worldPose(doc, node.id).rotation);
                 }
+                if (!rotations.length) return;
                 const rotation = commonResizeRotation(rotations) ?? 0, c = Math.cos(rotation), s = Math.sin(rotation);
                 const target = inverse([c, s, -s, c, 0, 0], 1e12); if (!target) throw new Error('Selection frame is not invertible');
                 let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -97,7 +101,14 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             const geometry = projected(box, frame.view), path = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
             path.setAttribute('points', [0, 2, 4, 6].map(i => `${geometry.positions[i].x},${geometry.positions[i].y}`).join(' '));
             path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5');
-            svg.replaceChildren(path);
+            const stem = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            stem.setAttribute('x1', String(geometry.positions[2].x)); stem.setAttribute('y1', String(geometry.positions[2].y));
+            stem.setAttribute('x2', String(geometry.rotate.x)); stem.setAttribute('y2', String(geometry.rotate.y));
+            stem.setAttribute('stroke', '#75b7ff'); stem.setAttribute('stroke-width', '1.5');
+            const rotate = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            rotate.setAttribute('cx', String(geometry.rotate.x)); rotate.setAttribute('cy', String(geometry.rotate.y)); rotate.setAttribute('r', '3');
+            rotate.setAttribute('fill', '#ffffff'); rotate.setAttribute('stroke', '#75b7ff'); rotate.setAttribute('stroke-width', '1.5');
+            svg.replaceChildren(path, stem, rotate);
             for (const position of geometry.positions) {
                 const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
                 circle.setAttribute('cx', String(position.x)); circle.setAttribute('cy', String(position.y)); circle.setAttribute('r', '4');

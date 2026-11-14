@@ -343,13 +343,14 @@ export class PdfTileLayer implements Layer {
             if (this.mirrorJob !== job || this.disposed || !this.isCurrent()) {
                 copy.close(); this.host.allocator.cpu.release(lease); return;
             }
-            const world = { x: edges.left + (sx - 1) / scale, y: edges.top + (sy - 1) / scale,
-                width: width / scale, height: height / scale };
+            const world = { x: left, y: top, width: right - left, height: bottom - top };
+            const source = { x: 1 + (left - edges.left) * scale - sx, y: 1 + (top - edges.top) * scale - sy,
+                width: world.width * scale, height: world.height * scale };
             let id: string | null;
             try {
                 id = mirror.store.publish({ token: job.view.token, key: entry.request.key,
                     geometryDigest: job.view.geometryDigest, tier: entry.request.level === 'low' ? 'low' : 'exact', neededByCurrentFrame: true,
-                    pixels: { bitmap: copy, world }, lease });
+                    pixels: { bitmap: copy, world, source }, lease });
             } catch (error) {
                 copy.close(); this.host.allocator.cpu.release(lease); this.mirrorJob = null;
                 this.onError(error, entry.request); return;

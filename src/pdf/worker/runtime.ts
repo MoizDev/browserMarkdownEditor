@@ -5,6 +5,7 @@ import type { BackendDoc, PdfBackend, RawPageText } from '../engine/types';
 import { loadPdfiumBackend } from '../engine/pdfiumBackend';
 import { buildEmphasisPlan } from '../emphasis/plan';
 import { compositeEmphasis } from '../emphasis/composite';
+import { planEmphasisProbeGeometry } from '../emphasis/profile';
 import { compilePdfEngine } from './compileEngine';
 import { PdfBlobSource } from './rangeSource';
 import { runPdfRenderJob } from './renderJob';
@@ -108,6 +109,36 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 }
                 ctx.transfer(pixels); return { ...request, pixels, w: off.w, h: off.h, heapBytes: backend.heapBytes(),
                     ms: { load: 0, render: performance.now() - start, copy: 0 }, ...(emphasisResult ? { emphasisResult } : {}) };
+            }),
+            'page.emphasisProbe': serial(async (value, ctx) => {
+                const { args, key, item } = lookup(value), page = pageNumber(args.page, item);
+                if (args.algorithm !== 'latin-prefix-v1' || args.revision !== 'pdf-prefix-cells-v1' || args.strokeEm !== 0.035 ||
+                    typeof args.profileKey !== 'string' || typeof args.maxPixels !== 'number' || !Number.isSafeInteger(args.maxPixels) ||
+                    args.maxPixels < 1 || args.maxPixels > 1_048_576) throw bad('RangeError', 'Invalid emphasis probe');
+                const g = geometry(key, item, page, ctx);
+                const planned = planEmphasisProbeGeometry(g.width, g.height, Math.max(1, Math.min(args.maxPixels, 1_000_000)), binding.engine.limits.maxTileEdge - 2);
+                if (!planned.ok) throw new PdfEngineError(planned.error.name, planned.error.message);
+                const p = planned.geometry, raw = rawPage(item, page);
+                const plan = buildEmphasisPlan(raw, { locale: typeof args.locale === 'string' ? args.locale : 'en', deviceScale: p.scale });
+                const probe = { ...p, rendered: plan.eligibleGlyphs > 0 };
+                if (!plan.eligibleGlyphs) return { complete: true, candidates: plan.candidates, eligibleGlyphs: 0, changedPixels: 0,
+                    capability: 'unavailable', reason: raw.n ? 'no-eligible-prefixes' : 'no-text', probe };
+                const req = { page, scale: p.scale, rect: { x: 0, y: 0, w: p.w, h: p.h }, annotations: true, forms: true };
+                const bounds = { rect: req.rect, maxTileEdge: binding.engine.limits.maxTileEdge, maxTileBytes: binding.engine.limits.maxTileBytes };
+                const hooks = { signal: ctx.signal, heartbeat: () => ctx.heartbeat(), cooperate: () => ctx.slice() };
+                const off = await runPdfRenderJob(item.doc.render(req), bounds, hooks);
+                item.clone ??= item.doc.openEmphasisClone?.();
+                if (!item.clone?.emphasisStroked || JSON.stringify(item.clone.page(page)) !== JSON.stringify(g)) throw bad('EngineBroken', 'PDF emphasis clone mismatch');
+                const on = await runPdfRenderJob(item.clone.emphasisStroked(req, plan.objectIndexes, 0.035), bounds, hooks);
+                const composed = compositeEmphasis(new Uint8Array(off.pixels), new Uint8Array(on.pixels), plan.cells,
+                    { x: -1, y: -1, width: off.w, height: off.h, pageX: 0, pageY: 0, scale: p.scale });
+                let changedPixels = 0; const before = new Uint8Array(off.pixels);
+                for (let y = 1; y <= p.h; y++) for (let x = 1; x <= p.w; x++) {
+                    const i = (y * off.w + x) * 4;
+                    if (before[i] !== composed.pixels[i] || before[i + 1] !== composed.pixels[i + 1] || before[i + 2] !== composed.pixels[i + 2]) changedPixels++;
+                }
+                return { complete: true, candidates: plan.candidates, eligibleGlyphs: plan.eligibleGlyphs, changedPixels,
+                    capability: changedPixels ? 'supported' : 'unavailable', ...(changedPixels ? {} : { reason: 'no-visible-change' }), probe };
             }),
             'page.geometry': serial((value, ctx) => { const { args, key, item } = lookup(value); return geometry(key, item, pageNumber(args.page, item), ctx); }),
             'page.links': serial((value, ctx) => { const { args, key, item } = lookup(value), page = pageNumber(args.page, item); geometry(key, item, page, ctx); return item.doc.links(page); }),

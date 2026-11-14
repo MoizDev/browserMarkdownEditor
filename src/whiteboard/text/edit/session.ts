@@ -75,7 +75,7 @@ export class TextEditSession {
             setSelection: next => { this.selection = next; services.setSelection(next); }, marksAt: offset => services.marksAt(offset),
             fragment: (from, text, marks) => services.fragment(from, text, marks),
             format: (mark, from, to) => services.format(mark, from, to),
-            link: (url, from, to) => services.link(url, from, to),
+            link: (url, from, to) => services.link(url, from, to), enter: selection => services.enter(selection),
             typing: (kind, before, after, change) => this.typingHistory.begin(kind, before, after, change),
             completeTyping: (kind, after) => this.typingHistory.complete(kind, after),
             markTransformation: () => this.typingHistory.mark(),
@@ -235,6 +235,11 @@ export class TextEditSession {
                 if (mark) {
                     try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); this.services.announce(`${command} formatting changed`); }
                     catch (error) { this.services.reportError(error); }
+                    this.host.sync();
+                } else if (command === 'enter') {
+                    try { this.selection = this.controller.enter(this.selection); this.services.changed(this.selection); }
+                    catch (error) { this.services.reportError(error); }
+                    this.resetBlink();
                     this.host.sync();
                 } else {
                     if (command === 'undo' || command === 'redo' || command === 'finish') this.typingHistory.close();

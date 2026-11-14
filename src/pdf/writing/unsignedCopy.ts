@@ -3,6 +3,7 @@ import type { PDFObject, PDFPage } from 'pdf-lib';
 import type { WorkerContext } from '../../platform/workers/serve';
 import { boundedAttachmentBytes, inventoryAttachments } from '../../utils/pdfAttachmentTree';
 import { Sha256 } from '../../utils/sha256';
+import { inspectPdfDocumentWriteSafety } from '../../utils/pdfWriteSafety';
 import { pdfiumPageGeometry, pdfiumPageSize } from '../engine/pdfium/geometry';
 import type { PdfiumRuntime } from '../engine/pdfium/loader';
 import { WriterNativeDocument } from './nativeStage';
@@ -59,11 +60,29 @@ async function load(source: Blob, ctx: WorkerContext): Promise<{ doc: PDFDocumen
     return { doc, bytes };
 }
 
+// Stream dictionaries are traversed, but compressed stream bytes (including the
+// eventual signed-source attachment) are never interpreted as outer objects.
+function walkOuter(doc: PDFDocument, visit: (value: PDFObject, parent?: PDFObject) => void): void {
+    const seen = new Set<PDFObject>(), todo = doc.context.enumerateIndirectObjects().map(([, value]) => ({ value, parent: undefined as PDFObject | undefined }));
+    while (todo.length) {
+        const { value, parent } = todo.pop()!;
+        visit(value, parent);
+        if (value instanceof PDFRef || seen.has(value)) continue;
+        seen.add(value);
+        if (seen.size > 1_000_000 || todo.length > 1_000_000) refuse('object graph is too large');
+        const dict = value instanceof PDFRawStream ? value.dict : value instanceof PDFDict ? value : undefined;
+        if (dict) for (const [, child] of dict.entries()) todo.push({ value: child, parent: value });
+        else if (value instanceof PDFArray) for (let i = 0; i < value.size(); i++) todo.push({ value: value.get(i), parent: value });
+    }
+}
+
 /** The admitted form is deliberately narrow: no non-signature content is flattened. */
 function flattenSignatures(doc: PDFDocument, sourceSize: number): void {
     if (doc.catalog.has(key('StructTreeRoot')) || doc.catalog.has(key('MarkInfo')) || doc.catalog.has(key('Perms'))) refuse('tagged or certified PDF');
     const acro = doc.catalog.lookup(key('AcroForm'));
     if (!(acro instanceof PDFDict) || acro.has(key('XFA'))) refuse('missing or XFA form');
+    const flags = acro.lookup(key('SigFlags'));
+    if (flags !== undefined && (!(flags instanceof PDFNumber) || !Number.isInteger(flags.asNumber()) || flags.asNumber() < 0 || flags.asNumber() > 3)) refuse('unsupported signature flags');
     const roots = acro.lookup(key('Fields'));
     if (!(roots instanceof PDFArray) || !roots.size() || roots.size() > 10_000) refuse('ambiguous signature field tree');
     const form = doc.getForm(), fields = form.getFields();
@@ -71,6 +90,7 @@ function flattenSignatures(doc: PDFDocument, sourceSize: number): void {
     const byRef = new Map(fields.map(field => [field.ref.toString(), field]));
     if (byRef.size !== fields.length) refuse('duplicate signature fields');
     const captured: Array<{ page: PDFPage; ref: PDFRef }> = [];
+    const signatureRefs = new Map<string, PDFRef>(), knownSignatures = new Set<PDFDict>();
     for (let i = 0; i < roots.size(); i++) {
         const ref = roots.get(i);
         if (!(ref instanceof PDFRef)) refuse('direct signature field');
@@ -79,8 +99,13 @@ function flattenSignatures(doc: PDFDocument, sourceSize: number): void {
         const dict = field.acroField.dict;
         if (dict.has(key('Kids')) || dict.has(key('Parent')) || dict.has(key('Lock')) || dict.has(key('OC')) ||
             dict.lookup(key('Subtype')) !== key('Widget')) refuse('signature widget is not an unambiguous merged field');
-        const signature = dict.lookup(key('V'));
-        if (!(signature instanceof PDFDict) || signature.has(key('Reference'))) refuse('signature policy is ambiguous');
+        const signatureRef = dict.get(key('V'));
+        if (!(signatureRef instanceof PDFRef) || signatureRefs.has(signatureRef.toString())) refuse('signature value is direct or shared');
+        const signature = doc.context.lookup(signatureRef);
+        if (!(signature instanceof PDFDict) || signature.has(key('Reference')) || knownSignatures.has(signature)) refuse('signature policy is ambiguous');
+        signatureRefs.set(signatureRef.toString(), signatureRef);
+        knownSignatures.add(dict);
+        knownSignatures.add(signature);
         const range = numbers(signature.lookup(key('ByteRange')), 4);
         if (range.some(n => !Number.isSafeInteger(n) || n < 0) || range[0] !== 0 || range[1] > range[2] ||
             range[2] + range[3] > sourceSize) refuse('signature byte range is invalid');
@@ -111,6 +136,7 @@ function flattenSignatures(doc: PDFDocument, sourceSize: number): void {
         captured.push({ page, ref });
     }
     const expected = new Set(captured.map(item => item.ref.toString()));
+    if ([...signatureRefs.keys()].some(ref => expected.has(ref))) refuse('signature field and value objects overlap');
     let count = 0;
     for (const page of doc.getPages()) {
         const annots = page.node.lookup(key('Annots'));
@@ -123,9 +149,27 @@ function flattenSignatures(doc: PDFDocument, sourceSize: number): void {
         }
     }
     if (count !== captured.length) refuse('signature annotation is missing or duplicated');
+    const admittedRefs = new Set([...signatureRefs.keys(), ...expected]);
+    // Aliased indirect objects or unrecognized signature dictionaries cannot be
+    // attributed to a widget and must not be deleted as collateral.
+    for (const [ref, object] of doc.context.enumerateIndirectObjects()) {
+        if (object instanceof PDFDict && knownSignatures.has(object) && !admittedRefs.has(ref.toString())) refuse('signature object has an ambiguous alias');
+    }
+    walkOuter(doc, value => {
+        const dict = value instanceof PDFRawStream ? value.dict : value instanceof PDFDict ? value : undefined;
+        if (dict && (dict.has(key('ByteRange')) || dict.lookup(key('Type')) === key('Sig') || dict.lookup(key('FT')) === key('Sig')) &&
+            !knownSignatures.has(dict)) refuse('unmapped signature data');
+    });
     form.flatten({ updateFieldAppearances: false });
     for (const item of captured) item.page.node.removeAnnot(item.ref);
     acro.delete(key('SigFlags'));
+    // Only now can we prove the admitted value objects are obsolete. Do not
+    // delete a value still named by any surviving outer object.
+    walkOuter(doc, (value, parent) => {
+        if (value instanceof PDFRef && admittedRefs.has(value.toString()) ||
+            parent && value instanceof PDFDict && knownSignatures.has(value)) refuse('signature object is still referenced');
+    });
+    for (const ref of signatureRefs.values()) doc.context.delete(ref);
 }
 
 async function geometries(runtime: PdfiumRuntime, bytes: Uint8Array, requireSigned: boolean, ctx: WorkerContext) {
@@ -165,6 +209,7 @@ export async function verifyUnsignedCopy(runtime: PdfiumRuntime, args: WriterOpe
     const sourceGeometry = await geometries(runtime, source.bytes, true, ctx), originalSha = await hash(source.bytes, ctx);
     const output = new Uint8Array(args.bytes), outputSha = await hash(output, ctx);
     const check = await PDFDocument.load(output, { updateMetadata: false, parseSpeed: Infinity });
+    if (inspectPdfDocumentWriteSafety(check).kind !== 'safe') refuse('output write safety could not be established');
     const form = check.catalog.lookup(key('AcroForm'));
     if (check.catalog.has(key('Perms')) || (form !== undefined && (!(form instanceof PDFDict) || form.has(key('SigFlags')) ||
         form.has(key('XFA')) || !(form.lookup(key('Fields')) instanceof PDFArray) || (form.lookup(key('Fields')) as PDFArray).size() !== 0))) {

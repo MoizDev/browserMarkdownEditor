@@ -1516,7 +1516,7 @@ export default function App() {
     assetReferenceRevisionRef.current++;
   }, [rootHandle, fileTree, getVaultActivation]);
 
-  const assetNamesIn = useCallback(async (dir: FileSystemDirectoryHandle): Promise<Set<string>> => {
+  const assetNamesIn = useCallback(async (dir: FileSystemDirectoryHandle, activeOnly = false): Promise<Set<string>> => {
     const names = new Set<string>();
     const collect = async (parent: FileSystemDirectoryHandle, name: string) => {
       try {
@@ -1527,8 +1527,10 @@ export default function App() {
       }
     };
     await collect(dir, ASSETS_DIR);
-    try { await collect(await handleIO.dirIn(dir, TRASH_DIR), ASSETS_DIR); }
-    catch (error) { if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error; }
+    if (!activeOnly) {
+      try { await collect(await handleIO.dirIn(dir, TRASH_DIR), ASSETS_DIR); }
+      catch (error) { if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error; }
+    }
     return names;
   }, [handleIO]);
 
@@ -1618,6 +1620,7 @@ export default function App() {
         return [tab.file.path, documentBuffers.contentForDocument(tab.id)] as const;
       }));
       const proofRevisions = new Map(proofTabs.map(tab => [tab.id, documentBuffers.revisionForDocument(tab.id)?.revision]));
+      const proofMedia = new Map(proofTabs.map(tab => [tab.id, documentSessions.get(tab.id)?.adapter.mediaReferences?.()]));
       // Dirty-only save acknowledgements do not change a reference proof.
       // Opening/closing a tab or changing its readable buffer does.
       const proofCurrent = () => attached() && assetReferenceRevisionRef.current === revision
@@ -1648,12 +1651,24 @@ export default function App() {
       // newer unsaved buffer also counts, but must not erase that disk proof.
       const notes = [async () => ownFile ? await readFile(ownFile.handle).catch(() => null) : null, async () => ownText, ...neighbours.map(note => async () => {
         const open = proofTabs.find(t => t.file.path === note.path);
-        if (open) return proofContents.get(note.path) ?? null;
+        if (open) {
+          const refs = proofMedia.get(open.id);
+          return proofContents.get(note.path) ?? (refs ? refs.map(name => `[[${name}]]`).join('\n') : null);
+        }
         if (isCanvasFile(note.name)) {
           try { return (await handleIO.file(note.handle)).stream(); } catch { return null; }
         }
         return await readFile(note.handle).catch(() => null);
       })];
+      const activeAssetNames = boards.length ? await assetNamesIn(dir, true) : new Set<string>();
+      const listingKey = JSON.stringify([...activeAssetNames].sort());
+      const indexOwner = indexGraphRef.current;
+      const mediaSnapshot = indexOwner?.activation === activation ? await indexOwner.client.mediaSnapshot(folder) : undefined;
+      const indexedBoards = new Map(mediaSnapshot?.fresh && mediaSnapshot.listingKey === listingKey
+        ? mediaSnapshot.boards.map(board => [board.path, board]) : []);
+      if (indexOwner?.activation === activation && mediaSnapshot?.listingKey !== listingKey) {
+        void indexOwner.client.setFolderMediaAssets(folder, [...activeAssetNames]).catch(() => {});
+      }
       const closedVersions: Array<{ handle: FileSystemFileHandle; modified: number; size: number }> = [];
       const hashedVersions = new Map<string, { handle: FileSystemFileHandle; modified: number; size: number }>();
       // Before I4, a direct read at retirement time is the fresh answer; an
@@ -1661,6 +1676,8 @@ export default function App() {
       const boardReads = boards.map(board => async () => {
         const open = proofTabs.find(t => t.file.path === board.path);
         if (open) {
+          const refs = proofMedia.get(open.id);
+          if (refs) return { ok: true as const, names: [...refs] };
           if (!canReadTabText(open)) return { ok: false as const, reason: 'unreadable' as const };
           const text = proofContents.get(board.path);
           if (text === undefined) return { ok: false as const, reason: 'unreadable' as const };
@@ -1669,7 +1686,10 @@ export default function App() {
         if (!board.handle) return { ok: false as const, reason: 'unreadable' as const };
         try {
           const file = await handleIO.file(board.handle);
-          const refs = await resolveBoardMedia({ source: file.stream() }, assetNames, boardMediaRefs);
+          const indexed = indexedBoards.get(board.path);
+          const refs = indexed && indexed.mtime === file.lastModified && indexed.size === file.size
+            ? { ok: true as const, names: indexed.names }
+            : await resolveBoardMedia({ source: file.stream() }, assetNames, boardMediaRefs);
           closedVersions.push({ handle: board.handle, modified: file.lastModified, size: file.size });
           return refs;
         } catch { return { ok: false as const, reason: 'unreadable' as const }; }
@@ -1700,6 +1720,7 @@ export default function App() {
           if (handle.kind === 'file' && isCanvasFile(entry)) currentBoards.add(joinVaultPath(folder, entry));
         }
         if (currentBoards.size !== diskBoardPaths.size || [...currentBoards].some(boardPath => !diskBoardPaths.has(boardPath))) return abandon();
+        if (boards.length && JSON.stringify([...(await assetNamesIn(dir, true))].sort()) !== listingKey) return abandon();
         const hashed = hashedVersions.get(name);
         for (const version of hashed ? [...closedVersions, hashed] : closedVersions) {
           const current = await handleIO.file(version.handle).catch(() => null);
@@ -1726,7 +1747,7 @@ export default function App() {
       console.error('Could not reconcile assets for', path, err);
       return 'failed';
     }
-  }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation, documentBuffers]);
+  }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation, documentBuffers, documentSessions, indexGraphRef]);
 
   // Read through a ref to keep the captured IO callback current: it
   // keeps flushTab — and every timer and listener downstream of it — stable.
@@ -2498,7 +2519,8 @@ export default function App() {
     const nativeAuthorized = nativeSource && policy && !policy.emergencyReadOnly && policy.session === bufferedSource.owner.session
       && policy.activation === getVaultActivation() && policy.generation === (bytesGenerationsRef.current.get(tab.id) ?? 0)
       && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
-    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && tab.representation.status === 'ready'
+    const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
+    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && acceptedFlushable && tab.representation.status === 'ready'
       && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !pending && !force) return 'skipped';
@@ -2770,7 +2792,7 @@ export default function App() {
     if (!accepted) return;
     assetReferenceRevisionRef.current++;
     const wasDirty = documentBuffers.isDirty(target.id);
-    const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk);
+    const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk, !options?.fromDisk);
     if (!buffer) return;
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.

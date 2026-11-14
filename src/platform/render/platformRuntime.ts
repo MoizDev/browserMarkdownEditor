@@ -21,6 +21,8 @@ export class PlatformRuntime {
     private readonly panes = new Map<string, RuntimePane>();
     private bandwidth: number | undefined;
     private started = false;
+    private readonly slowGpu = new Set<string>();
+    private readonly stalledFence = new Set<string>();
     private motion: MediaQueryList | null = null;
 
     constructor() {
@@ -75,6 +77,8 @@ export class PlatformRuntime {
         return () => {
             if (this.panes.get(paneId) !== pane) return;
             this.panes.delete(paneId);
+            this.slowGpu.delete(paneId);
+            this.stalledFence.delete(paneId);
             this.refresh();
         };
     }
@@ -86,8 +90,40 @@ export class PlatformRuntime {
 
     trouble(reason: MemoryTrouble): void {
         this.governor.signalTrouble(reason);
-        this.scheduler.pressure();
+        // Governor eviction chooses actual reclaimable caches. Do not abandon every visible
+        // context merely because one allocation failed; that also destroys the retained frame.
         this.advance();
+    }
+
+    /** Real GPU timer samples only; disjoint intervals cannot establish either recovery or trouble. */
+    observeGpuTiming(paneId: string, p95Ms: number, intervalMs: number, samples: number, disjoint: boolean): void {
+        if (disjoint) return;
+        if (!Number.isFinite(p95Ms) || p95Ms < 0 || !Number.isFinite(intervalMs) || intervalMs <= 0 ||
+            !Number.isSafeInteger(samples) || samples < 0) throw new RangeError('Invalid GPU timing sample');
+        if (samples < POLICY.slowGpuSampleCount) return;
+        const slow = p95Ms > intervalMs;
+        if (slow && !this.slowGpu.has(paneId)) {
+            this.slowGpu.add(paneId);
+            this.governor.observeGpuTiming(p95Ms, intervalMs, samples, false);
+            this.advance();
+        } else if (!slow) this.slowGpu.delete(paneId);
+    }
+
+    /** A retired device cannot keep a symptom latched across its replacement generation. */
+    clearDeviceTrouble(paneId: string): void {
+        this.slowGpu.delete(paneId);
+        this.stalledFence.delete(paneId);
+    }
+
+    /** Only the backend's oldest genuinely unsignalled fence and host input health qualify. */
+    observeFence(paneId: string, oldestPendingMs: number, mainThreadInputHealthy: boolean): void {
+        if (!Number.isFinite(oldestPendingMs) || oldestPendingMs < 0) throw new RangeError('Invalid pending fence age');
+        const stalled = mainThreadInputHealthy && oldestPendingMs > POLICY.stalledFenceMs;
+        if (stalled && !this.stalledFence.has(paneId)) {
+            this.stalledFence.add(paneId);
+            this.governor.observeFence(oldestPendingMs, true);
+            this.advance();
+        } else if (!stalled) this.stalledFence.delete(paneId);
     }
 
     private advance(): void {

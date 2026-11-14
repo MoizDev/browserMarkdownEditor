@@ -1,5 +1,6 @@
 import { streamNotebookPdf } from './notebookExport'
 import type { NotebookExportSnapshot, NotebookPdfStreamWriter } from './notebookExport'
+import type { IncrementalPdfWriter } from '../export/incrementalPdf'
 
 /** Pin one revision synchronously. isCurrent must remain callable after release, so the
  * App can recheck the source owner at the later user-clicked print/write handoff. */
@@ -11,7 +12,7 @@ export interface NotebookCommandCapture {
 }
 export interface NotebookCommandHost {
   capture(): NotebookCommandCapture
-  readonly writer: NotebookPdfStreamWriter
+  readonly writer: NotebookPdfStreamWriter | IncrementalPdfWriter
   /** App owns target approval, exact backup and versioned write; never truncate first. */
   commit(bytes: Uint8Array, sourcePath: string, isCurrent: () => boolean): Promise<boolean>
   /** Host offers a one-use user-clicked Blob handoff; it must call valid at the click. */

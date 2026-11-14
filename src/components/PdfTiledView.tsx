@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { RotateCcw, RotateCw } from './icons';
 import { cameraForPagedPosition, fitWidthZ, pageAt, pageStack, pagedConstraint, pagedPosition } from '../platform/render';
-import type { Camera, PlatformPaneOptions, Viewport, ViewState } from '../platform/render';
+import type { Camera, PlatformPaneOptions, Rect, Viewport, ViewState } from '../platform/render';
 import { pdfGeometryDigest, type OpenTiledDocument, type PdfTiledDocumentSession } from '../pdf/session/documentSession';
 import { pdfPageLayerDefinition } from '../pdf/layer/definition';
 import type { PdfMirrorPixels, PdfSessionMirrors } from '../pdf/layer/tileMirror';
@@ -13,7 +13,7 @@ import type { PdfSelectionState } from '../pdf/text/selectionState';
 import type { PdfHighlightPalette } from '../pdf/overlay/textHighlight';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import { pdfAgentPages } from '../pdf/text/agentText';
-import { flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, recordPdfNavigation, subscribePdfInverted,
+import { flushPdfViewPositions, getPdfInverted, readPdfNavigationRevision, readPdfViewPos, readThumbnailsOpen, recordPdfNavigation, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen } from '../utils/pdfViewState';
 import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { ThumbnailsToggle, type PdfThumbnailsHandle } from './PdfThumbnails';
@@ -95,6 +95,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
     active.current = { isVisible, isFocused };
     const velocity = useRef({ x: 0, y: 0 });
     const previousInput = useRef({ x: 0, y: 0, time: 0 });
+    const revealMotion = useRef<{ from: Camera; to: Camera; start: number; revision: number; correction?: { page: number; box: Readonly<Rect> } } | null>(null);
 
     const persist = useCallback(() => {
         const pos = pagedPosition(camera.current, viewport.current, stack, INSETS);
@@ -148,6 +149,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
     }, [pdf, session]);
 
     const goPage = useCallback((index: number) => {
+        if (!initialized.current) return;
         const target = stack.rects[Math.max(0, Math.min(stack.rects.length - 1, index))];
         if (!target) return;
         recordPdfNavigation(filePath, 'user-navigation');
@@ -194,6 +196,16 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         };
     }, [overlay, navigate]);
 
+    const correctReveal = useCallback((index: number, box: Readonly<Rect>, revision: number) => {
+        if (readPdfNavigationRevision(filePath) !== revision) return;
+        const motion = revealMotion.current;
+        if (motion?.revision === revision) { motion.correction = { page: index, box }; return; }
+        const page = stack.rects[index];
+        if (!page) return;
+        const targetY = page.y + box.y, top = camera.current.y, bottom = top + viewport.current.height / camera.current.z;
+        if (targetY >= top && targetY + box.height <= bottom) return;
+        updateCamera({ ...camera.current, y: Math.max(page.y, targetY - viewport.current.height / (3 * camera.current.z)) });
+    }, [filePath, stack, updateCamera]);
     const find = usePdfTiledFind({ session, document: pdf.poolDocument, stack, isVisible, isFocused,
         initialPage: initial.current?.page ?? 0, memory: findMemory,
         palette: HIGHLIGHTS,
@@ -203,6 +215,19 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         reveal: (index, box) => { const target = stack.rects[index]; if (!target) return;
             recordPdfNavigation(filePath, 'search');
             updateCamera({ ...camera.current, y: Math.max(target.y, target.y + box.y - viewport.current.height / (3 * camera.current.z)) }); },
+        beginReveal: (index, box) => {
+            const target = stack.rects[index];
+            const revision = recordPdfNavigation(filePath, 'search');
+            if (!target) return revision;
+            const to = clamp({ ...camera.current, y: Math.max(target.y, target.y + box.y - viewport.current.height / (3 * camera.current.z)) });
+            if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) updateCamera(to);
+            else {
+                revealMotion.current = { from: { ...camera.current }, to, start: performance.now(), revision };
+                paneRef.current?.current?.invalidate('pdf-find-reveal');
+            }
+            return revision;
+        },
+        correctReveal,
         closeFind: hit => {
             if (hit) selectionState.set({ docKey: pdf.poolDocument.docKey, wholeDocument: false, granularity: 'char',
                 anchor: { page: hit.page, offset: hit.from, affinity: 'before' }, focus: { page: hit.page, offset: hit.to, affinity: 'after' } });
@@ -238,7 +263,20 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         currentToken: () => session.isCurrent() ? session.token : null,
         readCamera: () => camera.current,
         revision: () => String(pageLayer.current()?.revision() ?? 0),
-        consumeInput: () => {}, isInteracting: () => interacting.current,
+        consumeInput: now => {
+            const motion = revealMotion.current;
+            if (!motion) return;
+            if (readPdfNavigationRevision(filePath) !== motion.revision || !active.current.isVisible) { revealMotion.current = null; return; }
+            const t = Math.max(0, Math.min(1, (now - motion.start) / 150)), eased = 1 - (1 - t) ** 3;
+            camera.current = { x: motion.from.x + (motion.to.x - motion.from.x) * eased,
+                y: motion.from.y + (motion.to.y - motion.from.y) * eased, z: motion.from.z + (motion.to.z - motion.from.z) * eased };
+            persist();
+            if (t < 1) paneRef.current?.current?.invalidate('pdf-find-animation');
+            else {
+                revealMotion.current = null;
+                if (motion.correction) correctReveal(motion.correction.page, motion.correction.box, motion.revision);
+            }
+        }, isInteracting: () => interacting.current || revealMotion.current !== null,
         setInputEnabled: () => {},
         cancelViewWork: () => {
             for (const task of linkTasks.current.values()) task.abort();
@@ -271,7 +309,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         },
         onPresentation: () => {}, onError: error => onNotice(error instanceof Error ? error.message : 'PDF viewer is unavailable.'),
         onNotice: message => onNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.' : 'PDF rendering switched to a compatible mode.'),
-    }), [lease, mirror, mirrorView, onNotice, pageLayer, pdf, session, stack, textMirror.updateView, find.onView]);
+    }), [lease, mirror, mirrorView, onNotice, pageLayer, pdf, session, stack, textMirror.updateView, find.onView, filePath, persist, correctReveal]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
     paneRef.current = platformPane;
@@ -292,10 +330,11 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         };
         const observer = new ResizeObserver(resize); observer.observe(host); resize();
         const wheel = (event: WheelEvent) => {
-            if (!active.current.isVisible) return;
+            if (!active.current.isVisible || !initialized.current) return;
             event.preventDefault();
             const old = camera.current;
             if (event.ctrlKey || event.metaKey) {
+                recordPdfNavigation(filePath, 'user-navigation');
                 const box = host.getBoundingClientRect();
                 const x = event.clientX - box.left, y = event.clientY - box.top;
                 const z = constraint.clampZoom(old.z * Math.exp(-event.deltaY * 0.002), viewport.current);
@@ -309,7 +348,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
             }
         };
         const keydown = (event: KeyboardEvent) => {
-            if (!active.current.isVisible || !active.current.isFocused || event.defaultPrevented || event.isComposing) return;
+            if (!active.current.isVisible || !active.current.isFocused || !initialized.current || event.defaultPrevented || event.isComposing) return;
             if ((event.metaKey || event.ctrlKey) && ['f', 'g'].includes(event.key.toLowerCase())) {
                 event.preventDefault();
                 if (event.key.toLowerCase() === 'f') find.find.current?.openFind();
@@ -322,6 +361,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
                 if (!onRotate) return;
                 onRotate(event.code === 'BracketLeft' ? -90 : 90);
             } else if (event.key === '+' || event.key === '=' || event.key === '-') {
+                recordPdfNavigation(filePath, 'user-navigation');
                 const z = constraint.clampZoom(old.z * (event.key === '-' ? 1 / 1.2 : 1.2), viewport.current);
                 const x = viewport.current.width / 2, y = viewport.current.height / 2;
                 updateCamera({ z, x: old.x + x / old.z - x / z, y: old.y + y / old.z - y / z });
@@ -337,7 +377,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         };
         const pointers = new Map<number, { x: number; y: number }>();
         const pointerDown = (event: PointerEvent) => {
-            if (event.pointerType !== 'touch') return;
+            if (event.pointerType !== 'touch' || !initialized.current || !active.current.isVisible) return;
             pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
             host.setPointerCapture(event.pointerId);
         };
@@ -387,8 +427,11 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
                 if (stack.rects[index].y >= bottom) break;
                 visiblePages.push(index + 1);
             }
+            const selected = selectedText().trim();
             return { kind: 'pdf', surface: 'original', pageCount: pdf.pages.length, page: position.page + 1,
-                offset: position.offset, zoom: position.zoom, visiblePages, selectedText: null, inverted: getPdfInverted() };
+                offset: position.offset, zoom: position.zoom, visiblePages,
+                selectedText: selected ? selected.length > 20_000 ? `${selected.slice(0, 20_000)}…` : selected : null,
+                inverted: getPdfInverted() };
         },
         async capture(maxSide) {
             const pane = platformPane.current, current = camera.current, size = viewport.current;
@@ -415,7 +458,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
             if (!session.isCurrent()) throw new Error('PDF text changed during the request.');
             return result;
         },
-    }), [filePath, pdf, platformPane, session, stack]);
+    }), [filePath, pdf, platformPane, selectedText, session, stack]);
     useEffect(() => { platformPane.current?.invalidate('pdf-invert'); }, [inverted, platformPane]);
     useEffect(() => {
         const observer = new MutationObserver(() => platformPane.current?.invalidate('pdf-theme'));
@@ -432,6 +475,8 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         };
     }, []);
     const zoomBy = (factor: number) => {
+        if (!initialized.current) return;
+        recordPdfNavigation(filePath, 'user-navigation');
         const old = camera.current, z = constraint.clampZoom(old.z * factor, viewport.current);
         const x = viewport.current.width / 2, y = viewport.current.height / 2;
         updateCamera({ z, x: old.x + x / old.z - x / z, y: old.y + y / old.z - y / z });

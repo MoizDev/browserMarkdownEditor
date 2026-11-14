@@ -4,6 +4,7 @@ import type { MainMessage, Priority, WorkerMessage } from './envelope';
 
 export interface WorkerContext {
     readonly cancelled: boolean;
+    readonly signal: AbortSignal;
     slice(): Promise<void>;
     heartbeat(): void;
     transfer(...items: Transferable[]): void;
@@ -27,6 +28,7 @@ export interface ServeSpec {
 
 type Task = {
     cancelled: boolean;
+    controller: AbortController;
     paused: boolean;
     priority: Priority;
     heard: number;
@@ -51,7 +53,7 @@ export function serve(spec: ServeSpec): () => void {
     const tasks = new Map<number, Task>();
     let disposed = false;
     const post = (message: WorkerMessage, transfer: Transferable[] = []) => endpoint.postMessage(message, transfer);
-    const stop = (task: Task) => { task.cancelled = true; task.wake?.(); };
+    const stop = (task: Task) => { task.cancelled = true; task.controller.abort(); task.wake?.(); };
     const closeTransfers = (task: Task) => {
         for (const item of task.transfer) {
             if ((typeof ImageBitmap !== 'undefined' && item instanceof ImageBitmap)
@@ -68,11 +70,12 @@ export function serve(spec: ServeSpec): () => void {
             return;
         }
         if (tasks.has(data.id)) return;
-        const task: Task = { cancelled: false, paused: false, priority: data.priority, heard: -Infinity, transfer: [] };
+        const task: Task = { cancelled: false, controller: new AbortController(), paused: false, priority: data.priority, heard: -Infinity, transfer: [] };
         tasks.set(data.id, task);
         const check = () => { if (task.cancelled || disposed) throw new WorkerHostError('Cancelled', 'Worker request cancelled'); };
         const context: WorkerContext = {
             get cancelled() { return task.cancelled || disposed; },
+            signal: task.controller.signal,
             heartbeat() {
                 const time = now();
                 if (time - task.heard < 250) return;

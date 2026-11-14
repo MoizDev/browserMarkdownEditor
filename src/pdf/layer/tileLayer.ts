@@ -3,6 +3,7 @@ import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Laye
 import type { PdfSessionMirrors } from './tileMirror';
 import { covers, intersects } from './coverage';
 import { PdfTileCache } from './tileCache';
+import { PdfTexturePool, type PooledTexture } from './texturePool';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 
@@ -32,8 +33,7 @@ interface Entry {
     readonly lease: ByteLease;
     readonly controller: AbortController;
     bitmap?: ImageBitmap;
-    texture?: TextureHandle;
-    device?: GfxDevice;
+    texture?: PooledTexture;
     used: number;
 }
 
@@ -63,6 +63,7 @@ export class PdfTileLayer implements Layer {
     private readonly entries = new PdfTileCache<Entry>();
     private readonly failed = new Set<string>();
     private readonly retiring = new Set<Entry>();
+    private readonly texturePool: PdfTexturePool;
     private desired = new Set<string>();
     private sequence = 0;
     private contentRevision = 0;
@@ -71,6 +72,7 @@ export class PdfTileLayer implements Layer {
     private disposed = false;
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
+    private motionScaleAt = 0;
     private mirrorJob: MirrorJob | null = null;
     private mirrorKey = '';
 
@@ -78,7 +80,9 @@ export class PdfTileLayer implements Layer {
         private readonly demand: (view: ViewState) => Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
         private readonly isCurrent: () => boolean,
         private readonly onError: (error: unknown, request: PdfTileRequest) => void,
-        private readonly mirror?: PdfLayerMirror) {}
+        private readonly mirror?: PdfLayerMirror) {
+        this.texturePool = new PdfTexturePool(host.allocator.gpu);
+    }
 
     prepare(view: ViewState, budget: FrameBudget): void {
         this.pendingFrame = false;
@@ -107,9 +111,14 @@ export class PdfTileLayer implements Layer {
             this.failed.clear();
             this.contentIdentity = identity;
             this.lastMotionScale = undefined;
+            this.motionScaleAt = 0;
         }
+        const now = performance.now();
+        const holdMotionScale = input.moving && this.lastMotionScale && now - this.motionScaleAt < 50;
         const planned = planPdfTileDemand({ ...input, previousMotionScale: this.lastMotionScale,
+            motionScaleOverride: holdMotionScale ? this.lastMotionScale : undefined,
             covered: (page, area) => this.covered(page, area, device) });
+        if (input.moving && !holdMotionScale) this.motionScaleAt = now;
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
         for (const [key, entry] of this.entries) {
@@ -123,21 +132,20 @@ export class PdfTileLayer implements Layer {
             const existing = this.entries.get(key);
             if (existing) {
                 existing.used = ++this.sequence;
-                if (device && existing.bitmap && existing.device !== device) {
+                if (device && existing.bitmap && existing.texture?.device !== device) {
                     if (budget.shouldYield()) { this.pendingFrame = true; break; }
                     const bytes = existing.bitmap.width * existing.bitmap.height * 4;
                     if (!budget.claimUpload(bytes)) { this.pendingFrame = true; break; }
-                    const lease = this.host.allocator.gpu.reserve(bytes);
-                    if (!lease) continue;
-                    let texture: TextureHandle;
-                    try { texture = device.createTexture(existing.bitmap.width, existing.bitmap.height, 'rgba8', ['sample', 'copy-dst'], lease); }
-                    catch (error) { this.host.allocator.gpu.release(lease); this.onError(error, request); continue; }
+                    let texture: PooledTexture | null;
+                    try { texture = this.texturePool.acquire(device, existing.bitmap.width, existing.bitmap.height); }
+                    catch (error) { this.onError(error, request); continue; }
+                    if (!texture) continue;
                     try {
-                        device.writeTexture(texture, { x: 0, y: 0, width: existing.bitmap.width, height: existing.bitmap.height },
+                        device.writeTexture(texture.handle, { x: 0, y: 0, width: existing.bitmap.width, height: existing.bitmap.height },
                             { source: existing.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-                        if (existing.texture && existing.device) existing.device.destroy(existing.texture);
-                        existing.texture = texture; existing.device = device;
-                    } catch (error) { device.destroy(texture); this.onError(error, request); }
+                        if (existing.texture) this.texturePool.release(existing.texture);
+                        existing.texture = texture;
+                    } catch (error) { device.destroy(texture.handle); this.onError(error, request); }
                 }
                 continue;
             }
@@ -200,7 +208,7 @@ export class PdfTileLayer implements Layer {
         for (const request of desired.requests) {
             if (request.level !== 'exact' || !intersects(rect(request), input.viewport)) continue;
             const entry = this.entries.get(tileKeyString(request.key));
-            if (!entry?.bitmap || (device && entry.device !== device)) return { complete: true, sharp: false };
+            if (!entry?.bitmap || (device && entry.texture?.device !== device)) return { complete: true, sharp: false };
         }
         return { complete: true, sharp: true };
     }
@@ -218,9 +226,9 @@ export class PdfTileLayer implements Layer {
         }
         const stack = this.demand(view).stack;
         for (const entry of this.drawable(view)) {
-            if (!entry.texture || entry.device !== this.host.device()) continue;
+            if (!entry.texture || entry.texture.device !== this.host.device()) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
-            this.host.drawTexturedQuad(pass, entry.texture, source, destination, { opacity: 1, sampling: 'linear' });
+            this.host.drawTexturedQuad(pass, entry.texture.handle, source, destination, { opacity: 1, sampling: 'linear' });
         }
     }
 
@@ -243,9 +251,10 @@ export class PdfTileLayer implements Layer {
         if (this.frameTexture && reason !== 'context-lost') this.frameTexture.device.destroy(this.frameTexture.handle);
         this.frameTexture = null;
         for (const entry of this.entries.values()) {
-            if (entry.texture && entry.device && reason !== 'context-lost') entry.device.destroy(entry.texture);
-            entry.texture = undefined; entry.device = undefined;
+            if (entry.texture && reason !== 'context-lost') entry.texture.device.destroy(entry.texture.handle);
+            entry.texture = undefined;
         }
+        this.texturePool.clear(reason === 'context-lost');
         this.pendingFrame = false;
         if (reason === 'hidden') this.hide();
     }
@@ -261,10 +270,10 @@ export class PdfTileLayer implements Layer {
     }
 
     memory(): { gpuBytes: number; cpuBytes: number } {
-        let gpuBytes = this.frameTexture ? 8 : 0, cpuBytes = 0;
+        let gpuBytes = (this.frameTexture ? 8 : 0) + this.texturePool.memory(), cpuBytes = 0;
         for (const entry of this.entries.values()) {
             cpuBytes += entry.lease.bytes;
-            if (entry.texture) gpuBytes += entry.lease.bytes;
+            if (entry.texture) gpuBytes += entry.texture.bytes;
         }
         for (const entry of this.retiring) cpuBytes += entry.lease.bytes;
         return { gpuBytes, cpuBytes };
@@ -301,6 +310,7 @@ export class PdfTileLayer implements Layer {
             borrow.release();
             if (sharp) {
                 mirrors.retainViewport(new Set(job.ids));
+                mirror.store.remember(job.view);
                 this.mirrorKey = job.key;
             }
             this.mirrorJob = null;
@@ -356,7 +366,7 @@ export class PdfTileLayer implements Layer {
     private covered(page: number, area: Readonly<Rect>, device: GfxDevice | null): boolean {
         const boxes: Rect[] = [];
         for (const entry of this.entries.values()) {
-            if (entry.request.page !== page || !entry.bitmap || (device && entry.device !== device)) continue;
+            if (entry.request.page !== page || !entry.bitmap || (device && entry.texture?.device !== device)) continue;
             boxes.push(rect(entry.request));
         }
         return covers(area, boxes);
@@ -402,7 +412,7 @@ export class PdfTileLayer implements Layer {
         if (this.entries.get(key) !== entry) return;
         this.entries.delete(key);
         entry.controller.abort();
-        if (entry.texture && entry.device) entry.device.destroy(entry.texture);
+        if (entry.texture) this.texturePool.release(entry.texture);
         if (entry.bitmap) {
             this.contentRevision++;
             entry.bitmap.close();

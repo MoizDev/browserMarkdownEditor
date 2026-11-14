@@ -39,7 +39,7 @@ import {
 
 interface PdfAnnotateCanvasProps {
     /** OpenTab.id from reading.identity, never the mutable file path. */
-    documentId?: string;
+    documentId: string;
     emphasisEnabled?: boolean;
     onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;
     onRenderHealth?(health: ClassicPdfHealth): void;
@@ -743,7 +743,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
         const hasPendingEdits = () => hasUnsavedRef.current || pendingFlush !== null;
         const reportPending = () => {
             if (hasPendingEdits()) {
-                if (documentId && !unregisterPending) {
+                if (!unregisterPending) {
                     unregisterPending = registerPending({ documentId, hasPendingEdits, flushPending });
                 }
             } else {
@@ -769,8 +769,8 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
         };
         const flushPending = async () => {
             if (serializeTimerRef.current) { clearTimeout(serializeTimerRef.current); serializeTimerRef.current = null; }
-            if (pendingFlush) await pendingFlush;
-            while (hasUnsavedRef.current) await runFlush();
+            // Ink may arrive while an earlier overlay export is awaiting the renderer.
+            while (hasPendingEdits()) await runFlush();
         };
         const flushInBackground = (immediate = true) => {
             // Coordinator callers get the rejection; timers/unmount have no

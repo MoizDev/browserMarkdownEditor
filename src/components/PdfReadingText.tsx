@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import type { LocationCause, PdfFindBatch, PdfTextAnchor, PdfTextPage, PdfTextReader, PdfTextTypography } from '../utils/pdfReadingText';
+import type { LocationCause, PdfFindBatch, PdfFindHit, PdfTextAnchor, PdfTextPage, PdfTextReader, PdfTextTypography } from '../utils/pdfReadingText';
 import { pdfTextAnchor } from '../utils/pdfReadingText';
 import { emphasisRanges } from '../utils/readingEmphasis';
 import { dismissOnEscape } from '../utils/escapeDismiss';
@@ -286,15 +286,37 @@ function PdfReadingText({ filePath, expectedPageDigest, sameSchema = true, resto
         const keepResults = resume && lastFindQuery.current === query; lastFindQuery.current = query;
         findAbort.current?.abort(); const cancel = new AbortController(); findAbort.current = cancel; setFinding(true); if (!keepResults) setSearch(undefined);
         try {
-            for await (const batch of controller.find(query, cancel.signal)) if (!cancel.signal.aborted) setSearch(previous => {
-                if (!keepResults || batch.done || !previous) return batch;
-                // A resumed scan revisits cached keys before its old frontier.
-                // Do not flash those already-known hits away on early batches.
-                const hits = new Map([...previous.hits, ...batch.hits].map(hit => [`${hit.anchor.physicalPageIndex}:${hit.anchor.offsetUTF16}`, hit]));
-                return { ...batch, hits: [...hits.values()].sort((a, b) => a.anchor.physicalPageIndex - b.anchor.physicalPageIndex || a.anchor.offsetUTF16 - b.anchor.offsetUTF16),
-                    pagesDone: Math.max(previous.pagesDone, batch.pagesDone), textlessPages: Math.max(previous.textlessPages, batch.textlessPages),
-                    unavailablePages: [...new Set([...previous.unavailablePages, ...batch.unavailablePages])] };
-            });
+            const snippets = new Map<string, PdfFindHit>();
+            for await (const batch of controller.findEngine.search(query, currentRef.current, cancel.signal)) {
+                const hits: PdfFindHit[] = [];
+                let lastPage = -1, text = '', deadline = performance.now() + 4;
+                for (const hit of batch.hits.slice(0, 500)) {
+                    if (cancel.signal.aborted) return;
+                    const key = `${hit.page}:${hit.from}:${hit.to}`;
+                    let result = snippets.get(key);
+                    if (!result) {
+                        if (lastPage !== hit.page) { text = (await controller.findEngine.pageText(hit.page, cancel.signal)).text; lastPage = hit.page; }
+                        result = { anchor: pdfTextAnchor({ text, physicalPageIndex: hit.page }, hit.from),
+                            snippet: text.slice(Math.max(0, hit.from - 32), Math.min(hit.to + 64, hit.from + 320)) };
+                        snippets.set(key, result);
+                    }
+                    hits.push(result);
+                    if (performance.now() >= deadline) { await new Promise<void>(resolve => setTimeout(resolve, 0)); deadline = performance.now() + 4; }
+                }
+                if (cancel.signal.aborted) return;
+                const next: PdfFindBatch = { queryId: String(batch.queryId), hits, totalHits: batch.hits.length, done: batch.done,
+                    pagesDone: batch.pagesDone, pagesTotal: batch.pagesTotal, truncated: batch.capped,
+                    textlessPages: batch.textlessPages, unavailablePages: [...new Set([...batch.failedPages, ...batch.partialPages])] };
+                setSearch(previous => {
+                    if (!keepResults || next.done || !previous) return next;
+                    // A resumed scan revisits cached keys before its old frontier.
+                    const merged = new Map([...previous.hits, ...next.hits].map(hit => [`${hit.anchor.physicalPageIndex}:${hit.anchor.offsetUTF16}`, hit]));
+                    return { ...next, hits: [...merged.values()].sort((a, b) => a.anchor.physicalPageIndex - b.anchor.physicalPageIndex || a.anchor.offsetUTF16 - b.anchor.offsetUTF16).slice(0, 500),
+                        totalHits: Math.max(previous.totalHits, next.totalHits), pagesDone: Math.max(previous.pagesDone, next.pagesDone),
+                        textlessPages: Math.max(previous.textlessPages, next.textlessPages),
+                        unavailablePages: [...new Set([...previous.unavailablePages, ...next.unavailablePages])] };
+                });
+            }
         }
         catch (error) { if (!cancel.signal.aborted) setMessage(String(error)); }
         finally { if (findAbort.current === cancel) setFinding(false); }
@@ -358,7 +380,7 @@ function PdfReadingText({ filePath, expectedPageDigest, sameSchema = true, resto
             <button type="submit" disabled={!query.trim()}>Find</button>{finding && <button type="button" onClick={() => { findAbort.current?.abort(); setFinding(false); }}>Stop</button>}
         </form>
         {search && <div className="pdf-reading-results" aria-label="Extracted PDF search results">
-            <p role="status">{search.hits.length} matches · {search.pagesDone}/{search.pagesTotal} pages searched{search.truncated ? ' · Search limit reached (10,000 matches)' : ''}{search.unavailablePages.length + search.textlessPages ? ` · ${search.unavailablePages.length + search.textlessPages} pages have absent, partial or unavailable text` : ''}{!search.done && !finding ? ' · Stopped; coverage incomplete' : ''}</p>
+            <p role="status">{search.totalHits} matches{search.totalHits > search.hits.length ? ` (showing ${search.hits.length})` : ''} · {search.pagesDone}/{search.pagesTotal} pages searched{search.truncated ? ' · Search limit reached (10,000 matches)' : ''}{search.unavailablePages.length + search.textlessPages ? ` · ${search.unavailablePages.length + search.textlessPages} pages have absent, partial or unavailable text` : ''}{!search.done && !finding ? ' · Stopped; coverage incomplete' : ''}</p>
             <button type="button" onClick={() => { findAbort.current?.abort(); setFinding(false); setSearch(undefined); scroll.current?.focus(); }}>Close results</button>
             <ol>{search.hits.map((hit, i) => <li key={i}><button type="button" onClick={() => { void navigate(hit.anchor, 'search'); scroll.current?.focus(); }}>Page {hit.anchor.physicalPageIndex + 1} · {hit.snippet}</button></li>)}</ol>
         </div>}

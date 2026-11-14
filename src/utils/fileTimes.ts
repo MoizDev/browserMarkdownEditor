@@ -16,7 +16,10 @@
 import type { FileTreeFileNode } from '../types';
 
 let times = new Map<string, number>();
+const lastWrites = new Map<string, number>();
 let version = 0;
+let indexTimesReady = false;
+let indexNotifyFrame: number | undefined;
 const listeners = new Set<() => void>();
 
 // Bumped by resetFileTimes: a walk that began in the previous vault must not
@@ -56,10 +59,21 @@ export function getFileTimes(): ReadonlyMap<string, number> {
     return times;
 }
 
+export function areIndexTimesReady(): boolean { return indexTimesReady; }
+export function markIndexTimesReady(): void {
+    if (!indexTimesReady) {
+        indexTimesReady = true;
+        if (indexNotifyFrame !== undefined) cancelAnimationFrame(indexNotifyFrame);
+        indexNotifyFrame = undefined;
+        notify();
+    }
+}
+
 /** Called by the save funnel after a write it just made, so a sort reacts to a
  *  save without re-statting the vault. */
 export function recordFileWritten(path: string, time: number = Date.now()): void {
     times.set(path, time);
+    lastWrites.set(path, performance.timeOrigin + performance.now());
     for (const walk of walksInFlight) walk.set(path, time);
     notify();
 }
@@ -79,10 +93,28 @@ export function stampFileTimes(entries: Iterable<readonly [path: string, time: n
     if (any) notify();
 }
 
+/** A worker stat begun before an own save must not overwrite its newer stamp. */
+export function stampIndexedFileTimes(entries: Iterable<readonly [path: string, time: number, startedAt: number]>): void {
+    let changed = false;
+    for (const [path, time, startedAt] of entries) {
+        if ((lastWrites.get(path) ?? -Infinity) >= startedAt) continue;
+        times.set(path, time);
+        for (const walk of walksInFlight) walk.set(path, time);
+        changed = true;
+    }
+    if (changed && indexNotifyFrame === undefined) {
+        indexNotifyFrame = requestAnimationFrame(() => { indexNotifyFrame = undefined; notify(); });
+    }
+}
+
 /** For a vault switch: the old vault's paths mean nothing in the new one. */
 export function resetFileTimes(): void {
     generation++;
     walksInFlight.clear();
+    lastWrites.clear();
+    if (indexNotifyFrame !== undefined) cancelAnimationFrame(indexNotifyFrame);
+    indexNotifyFrame = undefined;
+    indexTimesReady = false;
     times = new Map();
     notify();
 }

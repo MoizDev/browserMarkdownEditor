@@ -179,11 +179,11 @@ export class EditHost {
         const plain = projection(text);
         const next = textWindow(plain, selection.anchor, selection.focus, this.window);
         if (this.context) {
-            this.context.updateText(0, this.window.text.length, next.text);
+            if (this.window.text !== next.text) this.context.updateText(0, this.window.text.length, next.text);
             this.context.updateSelection(Math.min(selection.anchor, selection.focus) - next.start, Math.max(selection.anchor, selection.focus) - next.start);
         } else {
             const textarea = this.element as HTMLTextAreaElement;
-            textarea.value = next.text;
+            if (textarea.value !== next.text) textarea.value = next.text;
             textarea.setSelectionRange(Math.min(selection.anchor, selection.focus) - next.start, Math.max(selection.anchor, selection.focus) - next.start, selection.anchor > selection.focus ? 'backward' : 'forward');
         }
         this.window = next;

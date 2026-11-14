@@ -20,6 +20,7 @@ export interface AgentStageHost {
     /** Authoritative current staged world geometry, expressed in the destination page. */
     target(node: Node, page: number): Point;
     placement(node: Node, op: UpdateOp): { readonly ops: readonly NodeSetOp[]; readonly notes?: readonly string[] };
+    reanchor(id: NodeId, builder: CommandBuilder): void;
     /** Shared deletion command stages into this same builder. */
     delete(id: NodeId, builder: CommandBuilder): { readonly deleted: readonly NodeId[]; readonly kept: readonly NodeId[]; readonly notes: readonly string[] };
 }
@@ -35,13 +36,21 @@ export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentO
                     if (node.kind === 'connector' || node.kind === 'group' || node.kind === 'opaque') throw new AgentOpRefused('shape cannot be a connector target');
                     return { id, center: host.target(node, page) };
                 } });
+            host.reanchor(created.id, context.builder);
             return { created: created.id, notes: created.notes };
         }
         const created = stageSimpleCreate(op, base);
+        host.reanchor(created.id, context.builder);
         return { created: created.id, notes: created.notes };
     }
-    if (op.op === 'update') return stageAgentUpdate(op, { ...base, resolve: context.resolve,
-        placement: (node, update) => host.placement(node, update) });
+    if (op.op === 'update') {
+        const result = stageAgentUpdate(op, { ...base, resolve: context.resolve,
+            placement: (node, update) => host.placement(node, update) });
+        if (op.page !== undefined || op.x !== undefined || op.y !== undefined || op.w !== undefined || op.h !== undefined || op.rotation !== undefined) {
+            host.reanchor(result.updated[0], context.builder);
+        }
+        return result;
+    }
     const deleted: NodeId[] = [], notes: string[] = [], problems: string[] = [];
     for (const reference of op.ids) {
         const point = context.builder.savepoint();

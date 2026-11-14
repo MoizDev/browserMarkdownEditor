@@ -59,7 +59,7 @@ function replacementCrop(crop: Crop | null, old: MediaEntry, next: InspectedMedi
 
 function checkResult(info: InspectedMedia): void {
     if (!/^sha256:[0-9a-f]{64}$/.test(info.id) || !Object.hasOwn(EXTENSIONS, info.mime)
-        || !checkMediaDimensions(info.width, info.height).ok
+        || !checkMediaDimensions(info.width, info.height).ok || info.width > 1_000_000 || info.height > 1_000_000
         || typeof info.animated !== 'boolean'
         || (info.duration !== null && (!Number.isFinite(info.duration) || info.duration < 0))
         || (info.mime.startsWith('video/') !== (info.duration !== null))) {

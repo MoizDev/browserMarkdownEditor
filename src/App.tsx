@@ -1232,7 +1232,8 @@ export default function App() {
         && policy.activation === identity.vaultActivation && policy.kind === identity.kind
         && policy.sourceGeneration === identity.bytesGeneration && policy.retainedThroughGeneration === entry?.bytesGeneration
         && hasWritableHostedNativeOwner(entry, identity.documentId)
-        && (identity.kind !== 'pdfInk' || policy.pdfWriteAuthority?.canWrite() === true);
+        && (identity.kind !== 'pdfInk' || !!getBaseline(identity.documentId) && !diskStateRef.current.has(identity.documentId)
+          && policy.pdfWriteAuthority?.canWrite() === true);
     };
     const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();

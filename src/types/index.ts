@@ -427,6 +427,7 @@ export interface FileSystemContextValue {
   rootHandle: FileSystemDirectoryHandle | null;          // FileSystemContext.jsx:70
   /** Synchronous ownership token; A→B→A has three distinct activations. */
   getVaultActivation: () => number;
+  registerBeforeRootChange: (callback: () => Promise<void>) => () => void;
   fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
   isLoading: boolean;                                     // FileSystemContext.jsx:72
   previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73

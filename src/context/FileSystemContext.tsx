@@ -887,6 +887,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * here, at the one funnel all three raisers pass through, not in any of them.
      */
     const switchInFlightRef = useRef(false);
+    const beforeRootChangeRef = useRef<(() => Promise<void>) | null>(null);
+    const registerBeforeRootChange = useCallback((callback: () => Promise<void>) => {
+        beforeRootChangeRef.current = callback;
+        return () => { if (beforeRootChangeRef.current === callback) beforeRootChangeRef.current = null; };
+    }, []);
 
     /**
      * True when `handle` names the folder that is already open, whatever object
@@ -1108,6 +1113,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             const tree = await loadTree(handle);
             if (!tree) return 'error';
 
+            if (rootHandleRef.current) await beforeRootChangeRef.current?.();
             await set(IDB_KEY, handle);
             setPreviousVault(null);
             commitRoot(handle);
@@ -1221,6 +1227,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // The three setters are synchronous and in one task, so React
             // batches them into a single render: `rootHandle` and `fileTree`
             // cannot be observed describing different vaults.
+            if (rootHandleRef.current) await beforeRootChangeRef.current?.();
             await set(IDB_KEY, handle);
             setPreviousVault(null);
             commitRoot(handle);
@@ -2507,6 +2514,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         ensureVaultId,
         rootHandle,
         getVaultActivation,
+        registerBeforeRootChange,
         resolveVaultDir,
         resolveVaultFile,
         vaultDirExists,
@@ -2562,6 +2570,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }), [
         rootHandle,
         getVaultActivation,
+        registerBeforeRootChange,
         fileTree,
         isLoading,
         previousVault,

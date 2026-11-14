@@ -35,6 +35,6 @@ export interface DocAnalysis {
     delta: AnalysisDelta | null;
 }
 
-export type TreeDelta = (oldTree: Tree, newTree: Tree, changes: ChangeDesc, newDoc: Text) => CharRange[];
+export type TreeDelta = (oldTree: Tree, newTree: Tree, changes: ChangeDesc, newDoc: Text, oldDoc?: Text) => CharRange[];
 export type ScanObjects = typeof import('./analysisObjects').scanObjects;
 export type UpdateObjects = typeof import('./analysisObjects').updateObjects;

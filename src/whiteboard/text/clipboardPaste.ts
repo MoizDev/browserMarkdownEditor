@@ -3,7 +3,11 @@ import type { ClipboardHtmlFrameHost } from '../clipboard/htmlFrameHost';
 import type { ClipboardInput } from '../clipboard/types';
 import { fromPlain } from './richOperations';
 import type { RichFragment } from './richText';
-import type { TextPasteContent } from './clipboardSession';
+
+export type TextPasteContent =
+    | { readonly kind: 'text'; readonly fragment: RichFragment }
+    | { readonly kind: 'board' }
+    | { readonly kind: 'empty' };
 
 export interface TextPasteReader {
     readonly classifier: ClipboardClassifierHost;

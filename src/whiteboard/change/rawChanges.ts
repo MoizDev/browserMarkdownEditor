@@ -43,6 +43,8 @@ export class RawChanges {
     }
     rich(before: readonly Block[], after: readonly Block[]): void {
         if (before === after) return;
+        // Joining paragraphs moves primary tails into range carriers. The same
+        // visitor handles both for splice/set, preserving independent equal tails.
         visitRichTextRaw({ blocks: before }, raw => this.add(raw, -1));
         visitRichTextRaw({ blocks: after }, raw => this.add(raw, 1));
     }

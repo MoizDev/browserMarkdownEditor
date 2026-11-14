@@ -4723,14 +4723,15 @@ export default function App() {
     if (!parentHandle || !rootHandleRef.current || createInFlightRef.current) return;
     createInFlightRef.current = true;
     const where = parentPath || parentHandle.name || 'this folder';
-    const root = rootHandleRef.current;
+    const root = rootHandleRef.current, activation = getVaultActivation();
+    const current = () => root === rootHandleRef.current && activation === getVaultActivation();
+    const nativeKind = isNativeDrawingFile(name) || isDrawingFile(name) && routeEngines().canvas.drawing.engine === 'board' ? 'whiteboard'
+      : isNotebookFile(name) && routeEngines().canvas.notebook.engine === 'board' ? 'notebook' : null;
     try {
-      // Nothing here overwrites a file by accident — the rule the rest of the
-      // app keeps with freeEntryName, kept here with a refusal instead,
-      // because the user named this file and silently getting "note (1).md"
-      // is not what they asked for either. Native drawings use the unique-name
-      // creation path below instead.
+      // Explicit names refuse collisions; native drawing imports keep their existing
+      // unique-name behavior and carry the actual freeEntryName result forward.
       if (!isNativeDrawingFile(name) && await nameTaken(parentHandle, name)) {
+        if (!current()) return;
         await tell({
           title: 'That name is taken',
           confirmLabel: 'OK',
@@ -4738,25 +4739,30 @@ export default function App() {
         });
         return;
       }
+      let nativeBytes: Blob | undefined;
+      if (nativeKind) {
+        const { createEmptyNativeBytes } = await import('./whiteboard/host/emptyNative');
+        nativeBytes = createEmptyNativeBytes(nativeKind);
+      }
+      // Encode before fresh-file creation. A failed native encoder never creates
+      // a blank artifact or authorizes a Classic writer; once IO starts, finish
+      // this immutable payload even if its vault goes out of view.
+      if (!current()) return;
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path: joinVaultPath(parentPath, name), caller: 'create' }); } catch { /* Measurement must not interrupt a write. */ }
       }
-      // An empty native drawing is the format's defined new-board state. Use
-      // the import path's freeEntryName (files AND folders) rather than the
-      // truncating createFile primitive, and carry its actual name forward.
       let createdName = name;
       let newFileHandle: FileSystemFileHandle | null;
-      if (isNativeDrawingFile(name)) {
-        const created = await importFiles([new File([], name)], parentHandle);
-        if (!created.length || !root) throw new Error('Could not create the drawing.');
+      if (nativeBytes) {
+        const created = await importFiles([new File([nativeBytes], name)], parentHandle);
+        if (!created.length) throw new Error('Could not create the native canvas.');
         createdName = created[0];
+        if (!current()) return;
         ({ handle: newFileHandle } = await resolveVaultFile(root, joinVaultPath(parentPath, createdName)));
       } else {
         newFileHandle = await createFile(parentHandle, name);
       }
-      // A vault switch during creation must not open the old folder's file in
-      // the new workspace, even if the path exists in both.
-      if (root !== rootHandleRef.current) return;
+      if (!current()) return;
       if (newFileHandle) {
         const newPath = joinVaultPath(parentPath, createdName);
         const newNode: FileTreeFileNode = {
@@ -4767,6 +4773,7 @@ export default function App() {
           path: newPath,
         };
         await handleFileClick(newNode);
+        if (!current()) return;
         setTabs(prev => prev.map(t => t.file.path === newPath ? { ...t, mode: 'edit' } : t));
       }
     } catch (err) {
@@ -4774,14 +4781,14 @@ export default function App() {
       // is indistinguishable from one that worked and left the tree alone.
       console.error('Failed to create file:', err);
       await tell({
-        title: 'Could not create the note',
+        title: 'Could not create the file',
         confirmLabel: 'OK',
         body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
       });
     } finally {
       createInFlightRef.current = false;
     }
-  }, [createFile, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
+  }, [createFile, getVaultActivation, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
 
   /**
    * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab

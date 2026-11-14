@@ -1,6 +1,6 @@
 import { createWorkerClient } from '../../platform/workers';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { MediaId, MediaMime } from '../model/media';
+import { MEDIA_MIMES, type MediaId, type MediaMime } from '../model/media';
 import type { InspectedMedia } from './ingest';
 import { checkMediaBytes, checkMediaDimensions } from '../security/limits';
 import { sniffMedia } from './sniff';
@@ -83,6 +83,7 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             || size.rgbaBytes < 4 * size.width * size.height || size.rgbaBytes > 4 * (2 ** 26)) throw new RangeError('Invalid SVG dimensions');
         const id = await worker.request<MediaId>('hash', { blob }, { priority: 1, deadlineMs: 10000, signal });
         signal.throwIfAborted();
+        if (typeof id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(id)) throw new Error('Invalid media worker reply');
         const lease = options.memory.reserve(size.rgbaBytes);
         if (!lease) throw new Error('Not enough memory to decode this picture');
         try {
@@ -100,7 +101,10 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
     }
     const result = await worker.request<WorkerInspection>('inspect', { blob }, { priority: 1, deadlineMs: 10000, signal });
     signal.throwIfAborted();
-    if (!/^sha256:[0-9a-f]{64}$/.test(result.id) || !validSize(result.width, result.height)) throw new Error('Invalid media worker reply');
+    if (!result || typeof result !== 'object' || typeof result.id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(result.id)
+        || !MEDIA_MIMES.includes(result.mime) || !validSize(result.width, result.height) || typeof result.animated !== 'boolean') {
+        throw new Error('Invalid media worker reply');
+    }
     const lease = options.memory.reserve(4 * result.width * result.height);
     if (!lease) throw new Error('Not enough memory to decode this media');
     try {

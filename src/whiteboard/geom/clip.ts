@@ -74,8 +74,8 @@ function parse(paths: readonly (readonly PathOp[])[], maxSegments: number): read
             }
             if (!current || !start) throw new RangeError('Clipping path must start with M');
             if (op.op === 'Z') { if (current.x !== start.x || current.y !== start.y) add(line(current, start), true); current = start; continue; }
-            if (op.op === 'L') add(line(current, op.p), true);
-            else add({ p0: current, p1: op.c1, p2: op.c2, p3: op.p }, false);
+            if (op.op === 'C') add({ p0: current, p1: op.c1, p2: op.c2, p3: op.p }, false);
+            else add(line(current, op.p), true);
             current = op.p;
         }
         if (start && current && (start.x !== current.x || start.y !== current.y)) throw new RangeError('Clipping path must be closed');
@@ -142,8 +142,21 @@ export class ContourClipper {
 }
 
 export interface HatchLine { readonly start: Vec2; readonly end: Vec2 }
+export interface HatchOrientation { readonly angle: number; readonly phase: number }
 
-/** The phase is local to the node, so camera motion and flips do not re-seed the pattern. */
+/** Reflect the line family along with a figure, rather than re-anchoring it to its new bounds. */
+export function reflectHatch(angle: number, phase: number, width: number, height: number,
+    flipX: boolean, flipY: boolean): HatchOrientation {
+    if (![angle, phase, width, height].every(Number.isFinite) || width < 0 || height < 0) throw new RangeError('Invalid hatch transform');
+    const xSign = flipX ? -1 : 1, ySign = flipY ? -1 : 1, determinant = xSign * ySign;
+    const dx = Math.cos(angle), dy = Math.sin(angle);
+    const nx = -dy * xSign, ny = dx * ySign;
+    const translated = determinant * (phase + nx * (flipX ? width : 0) + ny * (flipY ? height : 0));
+    if (!Number.isFinite(translated)) throw new RangeError('Hatch transform overflows');
+    return { angle: Math.atan2(dy * ySign, dx * xSign), phase: translated };
+}
+
+/** The phase is local to the node, so camera motion does not re-seed the pattern. */
 export function* hatchLines(clipper: ContourClipper, bounds: Rect, angle: number, spacing: number,
     phase: number, maxLines: number): Generator<HatchLine> {
     const { x, y, width, height } = bounds;

@@ -6,6 +6,10 @@ export interface InkPoint { readonly x: number; readonly y: number }
 export interface EraserContext extends SweepQueueServices {
   hold(): () => void
   registerPending(cancel: () => void): () => void
+  prepareCommit(ids: ReadonlySet<NodeId>, signal: AbortSignal): Promise<void>
+  armCommit(): void
+  finishCommit(): void
+  cancelCommit(): void
   commit(ids: ReadonlySet<NodeId>): void
   clearPreview(): void
   error(error: unknown): void
@@ -16,6 +20,7 @@ class EraserGesture implements GestureOwner {
   readonly pointerIds: ReadonlySet<number>
   private readonly queue: SweepQueue
   private readonly release: () => void
+  private readonly controller = new AbortController()
   private unregister: (() => void) | null = null
   private last: InkPoint
   private ended = false
@@ -41,8 +46,13 @@ class EraserGesture implements GestureOwner {
       try { this.queue.cancel(); this.context.clearPreview() } finally { this.release() }
       throw error
     }
-    void this.queue.finish().then(ids => {
-      if (!this.cancelled && ids.size) this.context.commit(ids)
+    void this.queue.finish().then(async ids => {
+      if (this.cancelled || !ids.size) return
+      await this.context.prepareCommit(ids, this.controller.signal)
+      if (this.cancelled || this.controller.signal.aborted) return
+      this.context.armCommit()
+      try { this.context.commit(ids); this.context.finishCommit() }
+      catch (error) { this.context.cancelCommit(); throw error }
     }).catch(error => {
       if (!this.cancelled) this.context.error(error)
     }).finally(() => {
@@ -54,7 +64,7 @@ class EraserGesture implements GestureOwner {
   }
   cancel(): void {
     if (this.cancelled) return
-    this.cancelled = true
+    this.cancelled = true; this.controller.abort()
     try { this.queue.cancel() } finally {
       try { this.context.clearPreview() } finally {
         if (!this.ended) { this.ended = true; this.release() }

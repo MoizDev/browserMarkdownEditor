@@ -259,6 +259,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const eraserSweep = sweep(true);
     const eraser: EraserContext = {
         ...eraserSweep, hold: () => session.beginGesture(), registerPending,
+        prepareCommit(ids, signal) {
+            check(signal);
+            options.preview.showOps([...ids].map(id => ({ t: 'set', id, key: 'opacity', value: 0.5 } as const)));
+            return options.preview.waitUntilReady(signal);
+        },
+        armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
         commit(ids) {
             check(); if (!ids.size) return;
             const builder = session.begin('tool', 'Erase');

@@ -3,7 +3,7 @@ import { exactAffinePoint } from './exactAffine';
 import { exactPointIntervals } from './homogeneous';
 import { add, interval, multiply, sqrtInterval } from './numeric';
 import { isUniformDistanceMatrix, splitCertifiedCurve, upperPointIntervalDistance, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
-import { classifyCertifiedClipBox, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
+import { classifyCertifiedClipBox, clipBoxStrictlyInside, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
     type CertifiedClipBox, type PointClipContour } from './clippedPointPathJob';
 import type { PathOp, Vec2 } from './path';
 import type { RegionQuery } from './types';
@@ -82,7 +82,7 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
                             visible = true; return finish({ status: query.containment ? 'miss' : 'hit' });
                         }
                     }
-                    if (query.containment && region === 'inside' && visible) continue;
+                    if (query.containment && region === 'inside' && visible && clipBoxStrictlyInside(bounds, polygon!)) continue;
                     if (curve.depth >= maxDepth) { uncertain = true; continue; }
                     if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Clipped polygon node limit exhausted' });
                     const [left, right] = splitCertifiedCurve(curve); nodes += 2; stack.push(right, left); continue;

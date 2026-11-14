@@ -54,6 +54,11 @@ export function classifyCertifiedClipBox(box: CertifiedClipBox, region: Certifie
     return inside ? 'inside' : 'overlap';
 }
 export function certifiedIntervalPointBox(point: BoundsPoint): CertifiedClipBox { return [point.x.lo, point.y.lo, point.x.hi, point.y.hi]; }
+export function clipBoxStrictlyInside(box: CertifiedClipBox, region: CertifiedClipRegion): boolean {
+    if (!box.every(Number.isFinite)) throw new RangeError('Point clipping box overflows');
+    const corners = [{ x: box[0], y: box[1] }, { x: box[2], y: box[1] }, { x: box[2], y: box[3] }, { x: box[0], y: box[3] }].map(exactPoint);
+    return region.every(plane => corners.every(corner => exactSide(plane.line, corner) * plane.sign > 0));
+}
 
 /** Certifies a point hit against actual stroked curves after convex frame clips
  * and convex label exclusions. Unresolved boundary cases remain uncertain. */

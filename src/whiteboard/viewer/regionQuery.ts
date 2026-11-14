@@ -7,6 +7,7 @@ import { createSweptPathJob } from '../geom/sweptPathJob';
 import { createClippedSweptPathJob } from '../geom/clippedSweptPathJob';
 import { createClippedPolygonPathJob } from '../geom/clippedPolygonPathJob';
 import { createClippedFilledSweepJob } from '../geom/clippedFilledSweepJob';
+import { createClippedFilledPolygonJob } from '../geom/clippedFilledPolygonJob';
 import type { PointClipContour } from '../geom/clippedPointPathJob';
 import { createPolygonPathJob } from '../geom/polygonPathJob';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
@@ -145,7 +146,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         const frame = ancestor;
                         const fullyVisible = corners.every(p => p.x.lo > 0 && p.y.lo > 0 && p.x.hi < frame.w && p.y.hi < frame.h);
                         if (!fullyVisible) {
-                            if (query.kind === 'swept' && node.kind === 'connector') partialFrame = true;
+                            if (node.kind === 'connector') partialFrame = true;
                             else {
                                 if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
                                 const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },
@@ -221,21 +222,35 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                             }
                         } finally { job.cancel(); }
                     };
+                    const clippedPolygonPart = async (path: readonly PathOp[], region: Extract<RegionQuery, { kind: 'polygon' }>, fill: boolean, strokeRadiusLocal: number): Promise<boolean | null> => {
+                        const job = createClippedFilledPolygonJob(path, region, { frames: frameClips, fill, strokeRadiusLocal });
+                        try {
+                            for (;;) {
+                                check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                if (value.status === 'pending') { await cooperate(); continue; }
+                                if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
+                                return value.status === 'empty' ? null : value.status === 'hit';
+                            }
+                        } finally { job.cancel(); }
+                    };
                     const parts: boolean[] = [];
                     for (const head of connector.heads) {
                         const closed = head[head.length - 1]?.op === 'Z';
-                        parts.push(partialFrame && worldQuery.kind === 'swept'
-                            ? await clippedPart(head, worldQuery, closed, node.width / 2)
-                            : await pathHit([head], worldQuery, { ...pathOptions, ...(closed ? { interiorPaths: [head] } : {}) }));
+                        const part = partialFrame ? (worldQuery.kind === 'swept' ? await clippedPart(head, worldQuery, closed, node.width / 2)
+                            : await clippedPolygonPart(head, worldQuery, closed, node.width / 2))
+                            : await pathHit([head], worldQuery, { ...pathOptions, ...(closed ? { interiorPaths: [head] } : {}) });
+                        if (part !== null) parts.push(part);
                     }
                     if (connector.label) {
                         const box = connector.label.paint.box, labelQuery = { ...localQuery, localToSurface: compose(worldToCss, connector.label.localToWorld) } as RegionQuery;
                         const labelPath = rectPath(0, 0, box.w, box.h);
-                        parts.push(partialFrame && labelQuery.kind === 'swept' ? await clippedPart(labelPath, labelQuery, true, 0)
-                            : await pathHit([], labelQuery, { ...pathOptions, strokeRadiusLocal: 0, interiorPaths: [labelPath] }));
+                        const part = partialFrame ? (labelQuery.kind === 'swept' ? await clippedPart(labelPath, labelQuery, true, 0)
+                            : await clippedPolygonPart(labelPath, labelQuery, true, 0))
+                            : await pathHit([], labelQuery, { ...pathOptions, strokeRadiusLocal: 0, interiorPaths: [labelPath] });
+                        if (part !== null) parts.push(part);
                     }
                     const containment = query.kind === 'polygon' && query.containment, otherHit = parts.some(Boolean);
-                    const partsCertified = partialFrame && worldQuery.kind === 'swept';
+                    const partsCertified = partialFrame;
                     if (!containment && otherHit && (!partialFrame || partsCertified)) hit = true;
                     else {
                         let body = false, bodyExists = true;
@@ -251,7 +266,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                         body = value.status === 'hit'; break;
                                     }
                                 } finally { job.cancel(); }
-                            } else if (worldQuery.kind === 'polygon' && connector.bodyExclusions.length) {
+                            } else if (worldQuery.kind === 'polygon' && (frameClips.length || connector.bodyExclusions.length)) {
                                 const exclusions = connector.bodyExclusions.map(clip => ({ outline: clip.outline, localToSurface: compose(worldToCss, clip.localToWorld) }));
                                 const job = createClippedPolygonPathJob([connector.body], worldQuery, { strokeRadiusLocal: node.width / 2, frames: frameClips, exclusions });
                                 try {

@@ -2,6 +2,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import type { Op } from '../change/ops';
 import type { MediaLocationWriter } from '../media/ingest';
 import type { MediaStore } from '../media/store';
+import { isSafeMediaFile } from '../model/media';
 import type { BoardSession } from '../session/BoardSession';
 import { createNativeMediaPorts } from './mediaPorts';
 import { createMediaRestorePin } from './pinMediaRestore';
@@ -39,7 +40,8 @@ export function createNativeMediaRestore(
         },
         updateFiles(changes, revision) {
             const board = current(revision);
-            if (!board || changes.some(change => board.doc.media.get(change.id)?.file !== change.expected)) return false;
+            // Every name is checked as a stored media name first, as the single-entry update checks it: a bad name refuses the whole batch.
+            if (!board || changes.some(change => !isSafeMediaFile(change.next) || board.doc.media.get(change.id)?.file !== change.expected)) return false;
             const ops: Op[] = changes.map(change => ({ t: 'media', op: 'set-file', id: change.id, file: change.next }));
             const applied = board.apply({ origin: 'host', label: 'Restore media', ops });
             applied.release();

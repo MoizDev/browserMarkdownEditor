@@ -500,10 +500,6 @@ function editorMenuEntries(view: EditorView, notify: (message: string) => void):
 interface DocumentPaneProps {
     reading: ReaderIntegration;
     tab: OpenTab;
-    /** What this pane's EditorState is cached under — the same string React
-     *  keys the pane by, so a pane and its state are one thing. It is NOT the
-     *  path: see EditorPane's paneKey. */
-    stateKey: string;
     /** Which column this is. Every pane-scoped action names it rather than a
      *  path, because closing the column, and stepping its history, outlive the
      *  document that happens to be showing. */
@@ -553,15 +549,6 @@ interface DocumentPaneProps {
     /** Settings → Colour brackets by depth. Code panes only; reconfigured
      *  live through a compartment, like the theme and the indent width. */
     rainbowBrackets: boolean;
-    /**
-     * Per-document EditorStates (doc + undo history + selection + search
-     * panel), owned by App — so they survive the graph view, which unmounts
-     * EditorPane — and shared by every pane, so a document that leaves the
-     * screen and comes back is exactly where it was left. Keyed by `tab.id` —
-     * the document, not its path, which a rename can hand to a different
-     * document (see OpenTab.id).
-     */
-    stateCache: Map<string, EditorState>;
     contentOf(path: string): string | undefined;
     documentBuffers: DocumentBufferStore;
     markdownSessions: MarkdownSessionHost;
@@ -609,15 +596,13 @@ function TexDocument({ store, documentId, path, contentOf }: { store: DocumentBu
  * Everything document-scoped lives here — the CodeMirror view, its
  * compartments, the paste/scroll/wikilink handlers and the drawing canvas — so
  * that showing N documents side by side is N of these rather than a special
- * case inside the editor. React keys the component by document (`paneKey`,
- * `OpenTab.id | path`), which is why there is no tab-swap logic in it at all:
+ * case inside the editor. React keys the component by document (`OpenTab.id`),
+ * which is why there is no tab-swap logic in it at all:
  * a pane shows one document for its whole life, and switching tabs mounts and
  * unmounts panes instead of re-pointing one.
  *
- * The state cache is what makes that free. A pane caches its EditorState on the
- * way out and adopts it on the way in, so undo history and selection survive
- * every tab switch exactly as they did when a single view was re-pointed — and
- * still never reach across documents.
+ * The App-owned Markdown session retains the EditorState across pane unmounts,
+ * so undo history and selection survive a tab switch or graph-view trip.
  *
  * A canvas document (a drawing, a PDF) builds no view: it never held text, and
  * the surface that draws it is either the drawing pane below or the PdfPane
@@ -625,7 +610,6 @@ function TexDocument({ store, documentId, path, contentOf }: { store: DocumentBu
  */
 function DocumentPane({
     tab,
-    stateKey,
     paneId,
     isFocused,
     isSplit,
@@ -635,7 +619,6 @@ function DocumentPane({
     theme,
     tabSize,
     rainbowBrackets,
-    stateCache,
     contentOf,
     documentBuffers,
     markdownSessions,
@@ -891,7 +874,6 @@ function DocumentPane({
     /** The full extension list for this document. Every dynamic bit goes
      *  through a ref, so the view never has to be rebuilt. */
     const metadataUpdate = (update: MarkdownSessionUpdate) => {
-        stateCache.set(documentId, update.state);
         const currentPath = markdownSessions.pathOf(documentId);
         if (currentPath === undefined) return;
         if (update.docChanged) {
@@ -1091,7 +1073,6 @@ function DocumentPane({
                 EditorState.create({ doc: initial, extensions: history() }), () => documentBuffers.get(documentId)?.source));
             if (!adapter) return;
             adapter.configure(editorExtensions(), metadataUpdate);
-            stateCache.set(documentId, adapter.state);
             const view = new EditorView({ state: adapter.state, parent: node });
             detachViewRef.current = adapter.attach(view);
             viewRef.current = view;
@@ -1147,14 +1128,11 @@ function DocumentPane({
         }
     };
 
-    // Hand the document's state back to the cache on the way out. Nothing to
-    // cache for a canvas document — it never built a view, and a blank doc
-    // stored under its path is exactly the wrong thing to restore.
+    // Detach the view; the App-owned session retains the document state.
     useEffect(() => () => {
         const view = viewRef.current;
         if (view) {
             cancelReadingConfiguration(view); cancelWordReadingAnchor(view);
-            stateCache.set(documentId, view.state);
             detachViewRef.current?.();
             detachViewRef.current = undefined;
             view.destroy();
@@ -1168,7 +1146,7 @@ function DocumentPane({
         const currentPath = markdownSessions.pathOf(documentId);
         if (currentPath !== undefined) { flushScroll(currentPath); flushFolds(currentPath); }
         if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
-    }, [documentId, markdownSessions, stateCache]);
+    }, [documentId, markdownSessions]);
 
     /* ── Live settings → the open view ────────────────────────────────────
        The three effects below carry a CHANGE of setting into a view that is

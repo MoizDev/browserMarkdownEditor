@@ -16,7 +16,6 @@ import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/readi
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
 import { flushSync } from 'react-dom';
 import React, { useState, useReducer, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
-import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
@@ -573,27 +572,9 @@ export default function App() {
     }).catch(() => {});
   }, [indexGraphRef, getVaultActivation]);
 
-  // ── Per-document editor state ────────────────────────────────────────────
-  // Each document's full EditorState (doc + undo history + selection + an open
-  // search panel) is cached by DOCUMENT — `${OpenTab.id}|${path}`, EditorPane's
-  // paneKey — and adopted by whichever pane shows it next, so undo survives tab
-  // switches and being dragged into a column of its own, and can never reach
-  // across documents. By id rather than by path because a rename that
-  // overwrites an open file leaves two documents answering to one path for a
-  // commit, and keyed by path the survivor adopted the loser's text and history —
-  // then saved it over the file that had just replaced it (see OpenTab.id).
-  //
-  // Held HERE rather than in EditorPane because the graph view REPLACES
-  // EditorPane, and a cache it owned went with it — measured: ⌘Z did nothing
-  // after a trip to the Neural Brain view and back (issue #34). EditorPane
-  // still prunes it to the open documents, so an entry for a document closed
-  // while the graph is up waits for its next mount; it cannot be adopted
-  // meanwhile, since ids never repeat (see newTabId).
-  const [editorStates] = useState(() => new Map<string, EditorState>());
-
   // The [[ autocomplete's targets, deduped by link name since wikilinks
   // resolve by name, not path. It is baked into each document's EditorState
-  // (outside any compartment), and that state is cached above and outlives
+  // (outside any compartment), and that session-owned state outlives
   // EditorPane, so the getter must be stable for the APP's life: one created in
   // EditorPane would go on reading that EditorPane's graph once a graph-view
   // trip unmounted it, and a note created afterwards would never be offered.
@@ -1074,11 +1055,10 @@ export default function App() {
         }
         if (!adapter) return false;
         adapter.dispatch(spec);
-        editorStates.set(id, adapter.state);
         return true;
       },
     };
-  }, [documentBuffers, documentSessions, editorStates, getVaultActivation]);
+  }, [documentBuffers, documentSessions, getVaultActivation]);
   const bumpBytesGeneration = useCallback((id: string) => {
     const generation = (bytesGenerationsRef.current.get(id) ?? 0) + 1;
     prepareBytesChange(id, generation);
@@ -3156,7 +3136,6 @@ export default function App() {
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
       documentSessions.release(doc.id, 'tab-close');
-      editorStates.delete(doc.id);
       if (bufferPathIdsRef.current.get(path) === doc.id) bufferPathIdsRef.current.delete(path);
       void documentSessions.settled(doc.id).then(() => { documentBuffers.remove(doc.id); syncExitGuard(); });
       bytesGenerationsRef.current.delete(doc.id);
@@ -3184,7 +3163,7 @@ export default function App() {
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
-  }, [clearSaveTimer, documentBuffers, documentSessions, editorStates, indexGraphRef, recoveryEvent, syncExitGuard]);
+  }, [clearSaveTimer, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, syncExitGuard]);
 
   /**
    * A rename or move that lands on a name another tab is holding. renameFile /
@@ -3553,8 +3532,7 @@ export default function App() {
   // ── Vault switch ────────────────────────────────────────────────────────
   // A tab is only meaningful inside the vault it was opened from: its path
   // indexes that vault's tree and its handle writes into that vault's folder.
-  // App owns the EditorState cache, keyed by document id AND path; both fields
-  // distinguish a surviving document from another at the same path. Carrying
+  // App owns each document session by id, distinct even at a reused path. Carrying
   // tabs across a switch would still show and autosave the previous vault's
   // notes behind the new tree. Flush the old handles and hand the new vault
   // an empty workspace, even when both vaults have a matching path.
@@ -5012,7 +4990,6 @@ export default function App() {
         setLayout(l => renamePath(l, from, dest));
         });
         if (changedKind) {
-          editorStates.delete(doc.id);
           clearPdfRenderData(from);
           assetRefsRef.current.delete(from);
           diskStateRef.current.delete(doc.id);
@@ -5031,7 +5008,7 @@ export default function App() {
       catch (error) { console.error('Could not move recovery records:', error); }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers, documentSessions, syncExitGuard, seedDocumentBuffer]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers, documentSessions, syncExitGuard, seedDocumentBuffer]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -5178,12 +5155,11 @@ export default function App() {
       const spec = reloadSpec(markdown.state, text);
       if (spec) markdown.dispatch(spec);
       else updateTabContent(path, markdown.checkpoint(), { fromDisk: true });
-      editorStates.set(id, markdown.state);
     } else updateTabContent(path, text, { fromDisk: true });
     // The asset diff's baseline is the file as it now is.
     rememberAssetRefs(file, text);
     setTabs(prev => prev.map(t => (t.id === id && (t.dirty || t.disk) ? { ...t, dirty: false, disk: undefined } : t)));
-  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, editorStates, markdownSessions, updateTabContent, rememberAssetRefs, syncExitGuard, seedDocumentBuffer]);
+  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, markdownSessions, updateTabContent, rememberAssetRefs, syncExitGuard, seedDocumentBuffer]);
 
   /**
    * Follow a rename/move made on disk: open documents, expanded folders, icons,
@@ -6266,7 +6242,6 @@ export default function App() {
             onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}
             onOpenNote={openNoteByName}
-            stateCache={editorStates}
             markdownSessions={markdownSessions}
             getWikiLinkTargets={getWikiLinkTargets}
             onNotify={notify}

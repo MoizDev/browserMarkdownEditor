@@ -122,6 +122,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const returnEpoch = useRef(0);
     useEffect(() => () => { ++returnEpoch.current; flushPdfTextViewState(); }, []);
     const [textReader, setTextReader] = useState<PdfTextReader | null>(null);
+    useLayoutEffect(() => { textReader?.setVisible(isVisible); }, [textReader, isVisible]);
     const [textSurface, setTextSurface] = useState(false);
     const lastReturnRevision = useRef<number | undefined>(undefined);
     const textAnchor = useRef<PdfTextAnchor | undefined>(undefined);
@@ -478,7 +479,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             body = <div className="pdf-pane-message">Loading PDF…</div>;
         } else {
             body = textSurface && textReader ? (
-                <PdfReadingText filePath={file.path} controller={textReader} isFocused={isFocused} anchor={initialTextAnchor} expectedPageDigest={pageDigest.current}
+                <PdfReadingText filePath={file.path} controller={textReader} isFocused={isFocused} isVisible={isVisible} anchor={initialTextAnchor} expectedPageDigest={pageDigest.current}
                     onShowOriginalPage={page => { void showOriginal(page); }} onShowOriginal={() => { void showOriginal(); }}
                     onLocation={(anchor, cause, digest) => {
                         textAnchor.current = anchor;

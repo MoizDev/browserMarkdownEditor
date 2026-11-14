@@ -5,7 +5,7 @@ import { pageAt } from '../platform/render';
 import type { PdfTiledDocumentSession } from '../pdf/session/documentSession';
 import type { PdfPoolDocument } from '../pdf/pool/types';
 import { pdfPoolTextSource } from '../pdf/text/poolSource';
-import { sessionPdfTextReader } from '../pdf/text/sessionReader';
+import { retainPdfTextReaderVisibility, sessionPdfTextReader } from '../pdf/text/sessionReader';
 import { PdfSelectionGeometryCache } from '../pdf/text/selectionCache';
 import type { PdfSelection } from '../pdf/text/selection';
 import { PdfTiledFindHighlights } from '../pdf/overlay/textFind';
@@ -52,6 +52,7 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
     const live = useRef(options), find = useRef<PdfFindBarHandle>(null);
     useLayoutEffect(() => { live.current = options; });
     const { session, document } = options;
+    const readerVisibility = useRef<ReturnType<typeof retainPdfTextReaderVisibility> | undefined>(undefined);
     const [stored, setStored] = useState<FindResource | null>(null);
     const resource = stored?.session === session && stored.document === document ? stored : null;
     useEffect(() => {
@@ -78,7 +79,13 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
     }, [session, document]);
     useLayoutEffect(() => {
         if (!resource) return;
-        resource.reader.setVisible(options.isVisible);
+        const lease = retainPdfTextReaderVisibility(resource.reader, live.current.isVisible);
+        readerVisibility.current = lease;
+        return () => { if (readerVisibility.current === lease) readerVisibility.current = undefined; lease.release(); };
+    }, [resource]);
+    useLayoutEffect(() => {
+        if (!resource) return;
+        readerVisibility.current?.setVisible(options.isVisible);
         resource.geometry.setVisible(options.isVisible);
         resource.highlights.setVisible(options.isVisible);
     }, [resource, options.isVisible]);

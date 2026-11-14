@@ -14,6 +14,7 @@ import { boardThemeMenu } from './themeMenu';
 /** Values come from the owning session and viewer; the chrome does not invent capability state. */
 export interface SessionBoardChromeProps {
     readonly kind: 'whiteboard' | 'notebook' | 'pdf-ink';
+    readonly isVisible: boolean;
     readonly locale: string;
     readonly direction: 'ltr' | 'rtl';
     readonly translate: BoardTranslate;
@@ -46,10 +47,14 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null);
     const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
-    useEffect(() => props.registerShortcuts?.(() => {
-        setReturnFocus(document.activeElement instanceof HTMLElement ? document.activeElement : null);
-        setShortcutsOpen(true);
-    }), [props.registerShortcuts]);
+    useEffect(() => { if (!props.isVisible) setShortcutsOpen(false); }, [props.isVisible]);
+    useEffect(() => {
+        if (!props.isVisible) return;
+        return props.registerShortcuts?.(() => {
+            setReturnFocus(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+            setShortcutsOpen(true);
+        });
+    }, [props.registerShortcuts, props.isVisible]);
     const labels = localizeBoardChrome(props.translate);
     const canRead = (id: BoardCommand) => id === 'copy' || id === 'selectAll' || id === 'copyAsPng'
         || id === 'copyAsSvg' || id === 'copyAsJson' || id === 'exportPng' || id === 'exportSvg';
@@ -86,6 +91,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
         transparent: props.localPreferences.view.transparent, debugMode: props.localPreferences.view.debugMode,
         toggleTransparent: () => props.localPreferences.setView('transparent', !props.localPreferences.view.transparent),
     };
+    if (!props.isVisible) return null;
     return <>
         <ConnectedBoardChrome toolState={props.toolState} openMedia={props.openMedia}
             locale={props.locale} direction={props.direction} commands={commandSource}

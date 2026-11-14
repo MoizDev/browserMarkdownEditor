@@ -3,6 +3,8 @@ import { clearRenderQuality, reportRenderPinned, reportRenderQuality } from '../
 import type { AttachPlatformPane, PlatformLayerDefinition, PlatformPaneOptions } from './attachPlatformPane.types';
 import { createPaneSurfaceHost, PaneBackendSwitch } from './backendSwitch';
 import { CameraController } from './camera';
+import { captureGpuOwner, registerCaptureGpu } from './captureRuntime';
+import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
 import { GpuPaneCandidate } from './gpuPaneCandidate';
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
@@ -151,6 +153,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         error: options.onError,
     };
     const removeRuntime = runtime.add(options.paneId, runtimePane);
+    let removeCapture = (): void => {};
     registerWebgl2PaneFactory();
     const candidate = new GpuPaneCandidate({
         runtime, paneId: options.paneId, viewLease: options.viewLease, owner: options.documentToken,
@@ -307,9 +310,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             setInputEnabled: options.setInputEnabled, cancelViewWork: options.cancelViewWork,
             recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms), now: () => performance.now(),
         });
+        removeCapture = registerCaptureGpu(options.paneId, () => {
+            if (disposed || !visible || !gpu || surfaceHost.current !== gpu.bundle.compositor) return null;
+            return captureGpuOwner(gpu.bundle.owner, gpu.bundle.compositor as GpuCompositor);
+        });
         runtime.start();
         observer.start();
     } catch (error) {
+        removeCapture(); lifecycle?.unmountPane();
         observer.dispose(); removeRuntime(); compositor.dispose();
         for (const cache of caches) { cache.cpu.close(); cache.gpu.close(); }
         throw error;
@@ -377,6 +385,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             disposed = true;
             options.onPresentation(null);
             observer.dispose();
+            removeCapture();
             lifecycle?.unmountPane();
             surfaceHost.dispose();
             compositor.dispose();

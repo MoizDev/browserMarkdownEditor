@@ -277,7 +277,81 @@ const pdfiumBoundaries: Rule.RuleModule = {
   },
 }
 
+// P-02a: utils/pdfClassicOpen.ts is the sole value caller of pdf.js's getDocument, so the
+// decoder/font/CMap assets, the shared worker and the protective byte slice cannot diverge.
+// Catches named aliases, namespace or default imports reached by any non-type use (a whole
+// namespace escape could hide the value from a local rule), re-exports and dynamic imports;
+// type-only imports stay allowed. Written by lane p-e and used verbatim.
+const classicPdfOpen: Rule.RuleModule = {
+  meta: { type: 'problem', schema: [], messages: { open: 'Open classic PDFs through utils/pdfClassicOpen so assets, worker and diagnostics cannot diverge.' } },
+  create(context) {
+    const source = context.sourceCode
+    const binding = (node: Node) => {
+      for (let scope: ReturnType<typeof source.getScope> | null = source.getScope(node); scope; scope = scope.upper) {
+        const variable = scope.set.get(node.name as string)
+        if (variable) return variable
+      }
+    }
+    const namespace = (node: Node | null | undefined, seen = new Set<unknown>()): boolean => {
+      if (node?.type !== 'Identifier') return false
+      const variable = binding(node)
+      if (!variable || seen.has(variable)) return false
+      seen.add(variable)
+      return variable.defs.some(def => {
+        const d = def as unknown as { type: string; parent: { source: { value: unknown }; importKind?: string }; node: { type: string; init?: Node } }
+        if (d.type === 'ImportBinding') return d.parent.source.value === 'pdfjs-dist'
+          && ['ImportNamespaceSpecifier', 'ImportDefaultSpecifier'].includes(d.node.type)
+          && d.parent.importKind !== 'type'
+        return d.type === 'Variable' && namespace(d.node.init, seen)
+      })
+    }
+    const key = (node: Node) => {
+      const property = node.property as Node
+      return !node.computed ? property.name : property.type === 'Literal' ? property.value : undefined
+    }
+    return {
+      ImportDeclaration(raw) {
+        const node = raw as unknown as Node
+        if ((node.source as Node).value !== 'pdfjs-dist' || node.importKind === 'type') return
+        for (const specifier of node.specifiers as Node[]) {
+          const imported = specifier.imported as Node | undefined
+          if (specifier.type === 'ImportSpecifier' && specifier.importKind !== 'type' && (imported?.name || imported?.value) === 'getDocument') context.report({ node: specifier, messageId: 'open' })
+        }
+      },
+      ImportExpression(raw) {
+        const node = raw as unknown as Node
+        if ((node.source as Node).value === 'pdfjs-dist') context.report({ node, messageId: 'open' })
+      },
+      ExportAllDeclaration(raw) {
+        const node = raw as unknown as Node
+        if ((node.source as Node).value === 'pdfjs-dist') context.report({ node, messageId: 'open' })
+      },
+      ExportNamedDeclaration(raw) {
+        const node = raw as unknown as Node
+        const specifiers = node.specifiers as Node[]
+        if ((node.source as Node | null)?.value === 'pdfjs-dist' && node.exportKind !== 'type' && specifiers.some(s => s.exportKind !== 'type' && ((s.local as Node)?.name === 'getDocument' || (s.local as Node)?.value === 'getDocument'))) context.report({ node, messageId: 'open' })
+      },
+      MemberExpression(raw) {
+        const node = raw as unknown as Node
+        if (namespace(node.object as Node) && (key(node) === 'getDocument' || key(node) === undefined)) context.report({ node, messageId: 'open' })
+      },
+      Identifier(raw) {
+        const node = raw as unknown as Node
+        if (!namespace(node)) return
+        const parent = node.parent as Node
+        // Module declaration, static non-open property access and type qualification only.
+        if (['ImportNamespaceSpecifier', 'ImportDefaultSpecifier', 'TSQualifiedName'].includes(parent.type)) return
+        if (parent.type === 'MemberExpression' && parent.object === node) return
+        // Only real references: property names can share an import's spelling.
+        const variable = binding(node)
+        if (!variable?.references.some(reference => reference.identifier === (node as unknown))) return
+        context.report({ node, messageId: 'open' })
+      },
+    }
+  },
+}
+
 export const bmePlugin = {
   meta: { name: 'bme' },
-  rules: { 'import-zones': importZones, 'no-tests': noTests, 'html-sinks': htmlSinks, 'fs-access': fsAccess, 'pdfium-boundaries': pdfiumBoundaries },
+  rules: { 'import-zones': importZones, 'no-tests': noTests, 'html-sinks': htmlSinks, 'fs-access': fsAccess, 'pdfium-boundaries': pdfiumBoundaries, 'classic-pdf-open': classicPdfOpen },
 }

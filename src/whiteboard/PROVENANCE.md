@@ -91,6 +91,7 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `export/png.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7; clipboard §2.4 | Export design; PNG chunk layout, sRGB and pHYs; browser CompressionStream; independent CRC arithmetic and per-row PNG filter choice; no tldraw source | none | 2026-11-13 |
+| `export/tiles.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7 | Export design; bounded bands and a renderer-supplied RGBA tile; no tldraw source | none | 2026-11-13 |
 
 ## Text (lane w-n)
 
@@ -106,8 +107,16 @@ third-party code included (normally "none") · date.
 
 ## Editing lanes (w-f to w-j)
 
+### Input (lane w-f)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `input/tool.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
+| `input/router.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7,9 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
+
 ## Pages and paged hosts (lane w-l)
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `model/pages.ts` | lane w-l | M-6, E-DOC-12/13/14, C1.5, C2.3 | document-model §6 | Design; platform pageStack and geometry contract; no tldraw source | none | 2026-11-13 |
+| `commands/pagesAndSheets.ts` | lane w-l | F-SHEET-002/003/005/006, F-NB-006/008, R-11, R-24 | document-model §6; change-and-history §2 | Specs and own model/apply interfaces; no tldraw source | none | 2026-11-13 |

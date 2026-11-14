@@ -15,7 +15,7 @@ import { isEmptyOverlay, type PageOverlay } from './pdfOverlay';
 import type { VectorOp } from './pdfVector';
 import { PDF_WRITE_MARK_PLACEHOLDER, sealPdfWriteMark } from './pdfWriteMark';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
-import { markEmbeddedFile, rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree';
+import { rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree';
 import { artifactHash, immutableArtifact } from './pdfWriteArtifacts';
 
 /**
@@ -318,7 +318,6 @@ export async function buildNotebookPdf(
             mimeType: 'application/json',
             description: `${marker}\nThe notebook this PDF was exported from. Edit that, then export again.`,
         }).embedIntoContext(doc.context);
-        markEmbeddedFile(doc, ref, marker);
         doc.catalog.set(PDFName.of('Names'), doc.context.obj({ EmbeddedFiles: { Names: [PDFHexString.fromText(NOTEBOOK_SOURCE_ATTACHMENT), ref] } }));
         doc.catalog.set(PDFName.of('AF'), doc.context.obj([ref]));
         // Said in the document properties too, where any PDF viewer will show

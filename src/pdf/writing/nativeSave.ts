@@ -29,7 +29,7 @@ function addNativeBytes(document: WriterNativeDocument, name: string, data: Uint
         if (!attachment) throw new PdfEngineError('FileError', 'Cannot add PDF attachment');
         const ptr = arena.bytes(data);
         if (!runtime.call('FPDFAttachment_SetFile', attachment, document.handle, ptr, data.byteLength)) throw new PdfEngineError('FileError', 'Cannot write PDF attachment');
-        setParameter(runtime, attachment, 'LocalVaultMarker', marker, arena);
+        if (!runtime.call('FPDFAttachment_SetDescription', attachment, arena.wide(marker))) throw new PdfEngineError('FileError', 'Cannot mark PDF attachment');
         if (writeMark !== undefined) setParameter(runtime, attachment, 'VaultWriteMark', writeMark, arena);
     } finally { arena.dispose(); }
 }

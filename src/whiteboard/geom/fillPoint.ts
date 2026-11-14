@@ -1,8 +1,10 @@
 import { dyadic, dyadicMultiply, dyadicSubtract } from './numeric';
+import { exactAffinePoint } from './exactAffine';
+import type { Affine } from '../../platform/types';
 import type { Dyadic } from './numeric';
 import type { PathOp, Vec2 } from './path';
 
-export interface FillPointLimits { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly maxCommands?: number }
+export interface FillPointLimits { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly maxCommands?: number; readonly localToWorld?: Affine }
 export type FillPointStep = { readonly status: 'pending' | 'inside' | 'outside' } | { readonly status: 'uncertain'; readonly reason: string };
 type DPoint = { readonly x: Dyadic; readonly y: Dyadic };
 type Curve = { readonly p: readonly [DPoint, DPoint, DPoint, DPoint]; readonly depth: number };
@@ -41,7 +43,8 @@ export function createFillPointJob(paths: readonly (readonly PathOp[])[], point:
     const origin = { x: dyadic(point.x), y: dyadic(point.y) };
     const translate = (p: Vec2): DPoint => {
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) throw new RangeError('Invalid fill path coordinate');
-        return { x: sub(dyadic(p.x), origin.x), y: sub(dyadic(p.y), origin.y) };
+        const mapped = limits.localToWorld ? exactAffinePoint(limits.localToWorld, p) : { x: dyadic(p.x), y: dyadic(p.y) };
+        return { x: sub(mapped.x, origin.x), y: sub(mapped.y, origin.y) };
     };
     let winding = 0, pathIndex = 0, commandIndex = 0, commands = 0, nodes = 0, work = 0;
     let start: DPoint | undefined, current: DPoint | undefined, finished: FillPointStep | undefined;

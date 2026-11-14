@@ -16,6 +16,8 @@ import type { ReadySurfaceMetrics, SurfaceCommitTarget } from './surfaceMetrics'
 import { allocateSurfaceGeneration } from './surfaceGeneration';
 import type { FrameBudget, FrameToken, GpuReleaseReason } from './types';
 
+const benchmarkDomain = __BME_BENCH__ ? await import('./benchmarkPaintDomain') : null;
+
 export interface GpuCompositorOptions {
     readonly owner: Webgl2Owner;
     readonly canvas: HTMLCanvasElement;
@@ -104,6 +106,7 @@ export class GpuCompositor implements PaneCompositor {
     #isolationReadyFrame = -1;
     #shortfalls: IsolationShortfall[] = [];
     #active: DrawScope | null = null;
+    #lastSubmissionSerial = 0;
     #quad: PipelineHandle | null = null;
     #nearest: SamplerHandle | null = null;
     #linear: SamplerHandle | null = null;
@@ -133,6 +136,12 @@ export class GpuCompositor implements PaneCompositor {
             paintIsolation: paintCanvasIsolation,
             uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
             drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'] });
+    }
+
+    get captureIdle(): boolean {
+        if (this.#disposed || !this.#available || this.#active || this.#encodings.size || !this.#lastSubmissionSerial) return false;
+        try { return this.#options.owner.resources.completed(this.#lastSubmissionSerial); }
+        catch { return false; }
     }
 
     get surfaceGeneration(): number { return this.#surfaceGeneration; }
@@ -234,6 +243,9 @@ export class GpuCompositor implements PaneCompositor {
                 this.#options.invalidate('gpu-frame-resources-deferred'); return;
             }
             this.#options.owner.prepareFrameResources(); this.#prepareQuad();
+            if (benchmarkDomain) this.#options.owner.prepareCoverageFrame({ frameId: frame.frameId, token: frame.token,
+                cameraEpoch: frame.view.epoch, sceneRevision: frame.damage.contentRevision },
+                benchmarkDomain.benchmarkPaintDomain(snapshot, frame), () => this.#options.invalidate('coverage-ready'));
         } catch (error) { this.#failure(error); }
     }
 
@@ -310,6 +322,7 @@ export class GpuCompositor implements PaneCompositor {
                     }
                     try {
                         const submitted = owned.submit();
+                        this.#lastSubmissionSerial = submitted.serial;
                         // Publish the canonical CSS extent with the completed framebuffer, not
                         // during metrics preparation while the previous picture is still displayed.
                         this.surface.style.width = `${snapshot.metrics!.viewport.width}px`;
@@ -324,7 +337,9 @@ export class GpuCompositor implements PaneCompositor {
                             qualityScale: snapshot.metrics!.qualityScale });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),
-                        completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial) };
+                        completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial),
+                        ...(__BME_BENCH__ ? { commitObservation: () => this.#options.owner.commitCoverage(submitted.serial),
+                            cancelObservation: () => this.#options.owner.cancelCoverage(submitted.serial) } : {}) };
                     } catch (error) {
                         done = true;
                         this.#encodings.delete(owned);
@@ -414,7 +429,8 @@ export class GpuCompositor implements PaneCompositor {
         const scissor = envelope(destRect, width, height);
         if (!scissor.width || !scissor.height) return;
         this.#quadData.set([0, 0, width, height, destRect.x, destRect.y, destRect.width, destRect.height,
-            sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height, info.width, info.height, opacity, 0]);
+            sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height, info.width, info.height, opacity,
+            __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
         const slice = this.uniforms(this.#quadData);
         pass.draw({ pipeline: this.#quad, vertices: [], first: 0, count: 4, instances: 1, scissor,
             bindings: { uniforms: [{ binding: 0, slice }], textures: [{ binding: 0, texture: gpuTexture,
@@ -424,6 +440,7 @@ export class GpuCompositor implements PaneCompositor {
     releaseGpu(reason: GpuReleaseReason): void {
         if (this.#disposed) return;
         this.#epoch++;
+        this.#lastSubmissionSerial = 0;
         this.#available = false;
         this.#retryPending = false;
         for (const encoder of this.#encodings) this.#options.owner.discardFrame(encoder);

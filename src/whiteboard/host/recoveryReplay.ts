@@ -13,11 +13,12 @@ import { rehydrateLoad } from '../model/loadProjection';
 export async function recoverBoardJournal(payload: unknown, options: {
     doc: BoardDoc; samples: SampleStore; apply: (tx: Transaction) => Applied; signal: AbortSignal;
     cooperate?: () => Promise<void>; projectMedia?: (entry: MediaEntry) => MediaEntry;
+    mediaFiles?: ReadonlyMap<string, string>; isCurrent?: () => boolean;
 }): Promise<void> {
     const { doc, signal } = options, initialRevision = doc.rev;
     const check = () => {
         signal.throwIfAborted();
-        if (doc.rev !== initialRevision) throw new Error('Board changed while recovery was being prepared');
+        if (doc.rev !== initialRevision || options.isCurrent?.() === false) throw new Error('Board changed while recovery was being prepared');
     };
     let steps = 0, started = performance.now();
     const cooperate = async () => {
@@ -52,7 +53,7 @@ export async function recoverBoardJournal(payload: unknown, options: {
         return true;
     };
     await cooperate();
-    const bytes = await materializeBoardRecoveryRecipe(payload, signal); check();
+    const bytes = await materializeBoardRecoveryRecipe(payload, signal, options.mediaFiles); check();
     const acquired = await acquireNativeBoard({ bytes, kind: doc.kind,
         identity: { session: `recovery-${crypto.randomUUID()}`, epoch: 0, generation: 0 },
         ...(doc.host.kind === 'pdf-ink' ? { pdfPages: doc.host.pages } : {}), signal, deadlineMs: 120_000, cooperate });

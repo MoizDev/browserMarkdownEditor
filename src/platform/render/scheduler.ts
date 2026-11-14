@@ -40,6 +40,9 @@ export interface PresentedLayerRevision {
 export interface ScheduledSubmission {
     readonly drawn: readonly PresentedLayerRevision[];
     readonly completed?: () => boolean;
+    /** Benchmark observation is committed only after this exact display and its overlays agree. */
+    readonly commitObservation?: () => void;
+    readonly cancelObservation?: () => void;
 }
 
 /** Encoding/submission belong to the compositor; abort cleanup must not publish pixels (§7.1:687–688).
@@ -412,6 +415,17 @@ export class FrameScheduler {
         for (const entry of this.panes.values()) this.mark(entry, 'pressure');
     }
 
+    idleForCapture(): boolean {
+        if (this.inFrame) return false;
+        for (const entry of this.panes.values()) {
+            if (!entry.renderable) continue;
+            if (entry.inputPriority || entry.motion || entry.reasons.size) return false;
+            try { if (entry.pane.isInteracting()) return false; }
+            catch { return false; }
+        }
+        return true;
+    }
+
     private live(entry: PaneEntry): boolean { return this.panes.get(entry.pane.paneId) === entry; }
 
     private mark(entry: PaneEntry, reason: string, preserveDamage = false): void {
@@ -659,7 +673,10 @@ export class FrameScheduler {
                     const submission = item.encoding.submit();
                     item.done = true;
                     if (!submission) { this.mark(item.work.entry, 'presentation-deferred', true); return; }
-                    if (!this.valid(item.work.entry, item.work.frame.token)) return;
+                    if (!this.valid(item.work.entry, item.work.frame.token)) {
+                        if (__BME_BENCH__) submission.cancelObservation?.();
+                        return;
+                    }
                     item.work.batch.submitted = true; item.work.batch.damage.consume();
                     item.work.entry.presented = { token: item.work.frame.token, epoch: item.work.frame.view.epoch, geometry: item.work.geometry };
                     const drawn = Object.freeze(submission.drawn.filter(revision => revision.layer.onFramePresented !== undefined)
@@ -670,6 +687,7 @@ export class FrameScheduler {
                     if (drawn.length) this.acknowledgements.push({ entry: item.work.entry, frameId, token: item.work.frame.token,
                         submission: completed ? { drawn, completed } : { drawn } });
                     item.work.entry.pane.writeOverlays(item.work.frame);
+                    if (__BME_BENCH__) submission.commitObservation?.();
                     if (benchmarkPerf) {
                         const frame = item.work.frame;
                         const accounting = item.work.entry.pane.benchmarkMemory?.();

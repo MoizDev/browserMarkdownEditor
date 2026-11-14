@@ -69,6 +69,8 @@ export interface PdfWriterSession {
     close(): Promise<void>;
 }
 export interface PdfPool {
+    /** Identity of the trusted, opened render engine and its display geometry schema. */
+    readonly geometryEngine: Readonly<WriterOperations['writer.stageAnnotated']['result']['geometryEngine']>;
     open(options: PdfOpenOptions): Promise<PdfPoolDocument>;
     writer(options?: { signal?: AbortSignal }): Promise<PdfWriterSession>;
     stats(): Promise<readonly PdfWorkerStats[]>;

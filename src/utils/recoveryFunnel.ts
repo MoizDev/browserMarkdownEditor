@@ -11,7 +11,7 @@ export interface JournalCapture {
 export type JournalEvent =
     | { type: 'change'; documentId: string; vaultId: string; path: string; fingerprint: string; kind: string; revision: number; capture(): JournalCapture }
     | { type: 'written'; documentId: string; revision: number; fingerprint: string }
-    | { type: 'checkpoint' }
+    | { type: 'checkpoint'; documentId?: string }
     | { type: 'retarget'; vaultId: string; from: string; to: string; folder: boolean }
     | { type: 'release'; documentId: string };
 
@@ -22,10 +22,13 @@ interface Session { journalId: string; saved: number; change?: Change }
 export function createRecoveryFunnel(journal: ReturnType<typeof createRecoveryJournal>, failed: (error: unknown) => void) {
     const sessions = new Map<string, Session>();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const checkpoint = () => {
-        if (timer !== undefined) clearTimeout(timer);
-        timer = undefined;
+    const checkpoint = (onlyDocumentId?: string) => {
+        if (onlyDocumentId === undefined) {
+            if (timer !== undefined) clearTimeout(timer);
+            timer = undefined;
+        }
         for (const [documentId, session] of [...sessions]) {
+            if (onlyDocumentId !== undefined && documentId !== onlyDocumentId) continue;
             let settled = false;
             for (let attempt = 0; attempt < 8; attempt++) {
                 const change = session.change;
@@ -50,10 +53,11 @@ export function createRecoveryFunnel(journal: ReturnType<typeof createRecoveryJo
                 if (timer === undefined) timer = setTimeout(checkpoint, 500);
             }
         }
-        void journal.flush().catch(() => {});
+        // Scoped callers await the journal flush themselves, so its failure reaches them.
+        if (onlyDocumentId === undefined) void journal.flush().catch(() => {});
     };
     return (event: JournalEvent): void | Promise<void> => {
-        if (event.type === 'checkpoint') { checkpoint(); return; }
+        if (event.type === 'checkpoint') { checkpoint(event.documentId); return; }
         if (event.type === 'retarget') {
             const move = (path: string) => path === event.from ? event.to : event.folder && path.startsWith(`${event.from}/`) ? event.to + path.slice(event.from.length) : path;
             for (const session of sessions.values()) {

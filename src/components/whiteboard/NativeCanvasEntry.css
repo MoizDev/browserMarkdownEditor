@@ -1,0 +1,43 @@
+.native-canvas-navigation {
+    position: absolute;
+    z-index: 2;
+    top: 12px;
+    right: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    max-width: calc(100% - 24px);
+    padding: 6px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    font-size: 12px;
+}
+
+.native-canvas-navigation label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.native-canvas-navigation button,
+.native-canvas-navigation input,
+.native-canvas-navigation select {
+    min-height: 26px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font: inherit;
+}
+
+.native-canvas-navigation button { min-width: 26px; cursor: pointer; }
+.native-canvas-navigation input { width: 4em; padding: 2px 4px; }
+.native-canvas-navigation select { max-width: 11em; }
+.native-canvas-navigation button[aria-pressed='true'] { color: var(--text-accent); }
+.native-canvas-navigation :is(button, input, select):focus-visible {
+    outline: 2px solid var(--text-accent);
+    outline-offset: 2px;
+}

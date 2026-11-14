@@ -3,7 +3,7 @@ export const MAX_USER_WORDS = 10_000;
 export const MAX_USER_WORD_LENGTH = 64;
 
 export function validUserWord(value: unknown): value is string {
-    return typeof value === 'string' && value.length > 0 && value.length <= MAX_USER_WORD_LENGTH && /^[\p{L}\p{M}'’\-]+$/u.test(value);
+    return typeof value === 'string' && value.length > 0 && value.length <= MAX_USER_WORD_LENGTH && /^[\p{L}\p{M}'’-]+$/u.test(value);
 }
 
 /** Storage is user-editable. Preserve spelling and order, discarding invalid and duplicate entries. */

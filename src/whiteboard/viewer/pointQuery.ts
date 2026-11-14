@@ -181,7 +181,8 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     }
                     check();
                     if (result.hit) {
-                        ambiguous ||= clipUncertain;
+                        // A zero-distance vector witness is the pointer itself and survives every containing clip.
+                        ambiguous ||= clipUncertain && (node.kind === 'stroke' || result.distanceCss !== 0);
                         const candidate = { id: selected, rank: resolved.rank, result, ...(target ? { target } : {}) };
                         if (ambiguous) uncertain.push(candidate);
                         else if (!winner || (targetMode ? candidate.rank > winner.rank : better(candidate, winner))) winner = candidate;

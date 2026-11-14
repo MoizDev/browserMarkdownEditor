@@ -15,6 +15,8 @@ export type { RepairedText } from './repair';
 export { GraphemeNavigator } from './graphemes';
 export { RichSelectionOperations } from './selectionOps';
 export type { LogicalMotion } from './selectionOps';
+export { TextProjectionReader } from './projectionReader';
+export type { ProjectionWindow, ProjectionReadOptions } from './projectionReader';
 export { normalizeRichText, normalizeRichTextCooperative, sliceRichText, sliceRichTextCooperative, spliceRichText } from './richText';
 export { convertLegacyRichText, convertLegacyRichTextCooperative, convertLegacyRichSpan, convertLegacyRichSpanCooperative } from './importRich';
 export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeTextSelection, mapTextSelectionTo,

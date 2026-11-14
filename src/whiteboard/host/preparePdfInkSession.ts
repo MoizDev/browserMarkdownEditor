@@ -1,4 +1,5 @@
 import type { prepareOwnedPdfInk } from '../../pdf/session/ownedInkAcquisition';
+import type { PdfRuntimeInkSource } from '../../pdf/session/legacyInkAcquisition.types';
 import type { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, rebindPdfInkSource, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { SourceOwner } from '../../utils/documentBuffers';
@@ -65,6 +66,15 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
     let accepted;
     try { signal.throwIfAborted(); if (!current()) throw stale(); accepted = acquisition.take(); }
     catch (error) { await acquisition.dispose(); throw error; }
+    return prepareAcceptedPdfInkSession(options, accepted);
+}
+
+/** Takes ownership of a genuine admitted source, including on failure. */
+export async function prepareAcceptedPdfInkSession(options: PreparePdfInkSessionOptions, accepted: PdfRuntimeInkSource,
+    onTransfer?: () => void) {
+    const { host, identity, signal } = options, documentId = identity.documentId;
+    const current = () => identity.kind === 'pdfInk' && host.isCurrent(identity) &&
+        getSessionIdentity(documentId)?.serial === identity.session;
     let controller: ReturnType<typeof createPdfInkRebind> | undefined;
     const prepared = await prepareNativePdfRuntime({ host, identity, accepted, signal, deadlineMs: options.deadlineMs, zMax: options.zMax,
         createHost: options.createHost, validateLoadedHost: options.validateLoadedHost, readLegacyDigest: options.readLegacyDigest, pinHost: options.pinHost,
@@ -87,6 +97,7 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
     let transferred = false, stagingDisposed = false;
     return {
         kind: 'ready' as const, legacyOriginalSha256: prepared.legacyOriginalSha256,
+        conversionPending: accepted.kind === 'legacy-converted',
         take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null) {
             if (transferred || stagingDisposed || !current() || owner.documentId !== documentId || owner.session !== identity.session || !isLiveOwner(owner)) throw stale();
             const slot = getSessionIdentity(documentId);
@@ -127,6 +138,7 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
             try { slot.setSlot(sourceSlot, facade, () => close()); }
             catch (error) { void close().catch(options.onError); throw error; }
             if (closed) throw stale();
+            try { onTransfer?.(); } catch (error) { void close().catch(options.onError); throw error; }
             const pdfWriteAuthority = Object.freeze({ canWrite() {
                 try {
                     const state = rebind.getSnapshot(), outer = host.outerIdentity(documentId), token = state.source.source.token;

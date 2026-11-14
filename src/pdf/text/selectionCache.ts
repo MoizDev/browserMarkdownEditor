@@ -2,6 +2,7 @@ import type { PdfPoolDocument } from '../pool/types';
 import type { PageSelectionModel, PageTextReply } from '../worker/protocol';
 import { exactPdfTextGeometry } from './exactGeometry';
 import { validatePdfTextReply } from './validate';
+import { getPdfFontEpoch, subscribePdfFontEpoch } from '../fonts/profiles';
 
 export type PdfSelectionReply = Omit<PageTextReply, 'model' | 'digest' | 'sel'> & { sel: PageSelectionModel };
 
@@ -22,12 +23,20 @@ export class PdfSelectionGeometryCache {
     private readonly pages = new Map<number, { value: PdfSelectionReply; bytes: number }>();
     private readonly lifetime = new AbortController();
     private visibility = new AbortController();
+    private profile = new AbortController();
+    private readonly unsubscribe: () => void;
     private visible = true;
     private pinned = new Set<number>();
     private findPage: number | null = null;
     private bytes = 0;
 
-    constructor(private readonly document: PdfPoolDocument) { this.key = document.docKey; }
+    constructor(private readonly document: PdfPoolDocument) {
+        this.key = document.docKey;
+        this.unsubscribe = subscribePdfFontEpoch(this.key, () => {
+            this.profile.abort(); this.profile = new AbortController();
+            this.pages.clear(); this.bytes = 0;
+        });
+    }
 
     cached(page: number): PdfSelectionReply | undefined {
         const found = this.pages.get(page);
@@ -47,7 +56,8 @@ export class PdfSelectionGeometryCache {
         if (!this.visible) this.dropUnpinned();
     }
     async get(page: number, priority: 0 | 1 | 2 | 3, external?: AbortSignal): Promise<PdfSelectionReply> {
-        const signal = AbortSignal.any([this.lifetime.signal, this.visibility.signal, ...(external ? [external] : [])]);
+        const epoch = getPdfFontEpoch(this.key);
+        const signal = AbortSignal.any([this.lifetime.signal, this.visibility.signal, this.profile.signal, ...(external ? [external] : [])]);
         if (signal.aborted || this.document.closed) throw abort();
         const found = this.cached(page);
         if (found) return found;
@@ -57,7 +67,7 @@ export class PdfSelectionGeometryCache {
             throw new Error('The PDF text worker returned stale or incomplete selection geometry.');
         const geometry = await exactPdfTextGeometry(this.document, page, priority, signal);
         await validatePdfTextReply(reply, geometry, 'select', signal);
-        if (signal.aborted || this.document.closed || this.document.docKey !== this.key) throw abort();
+        if (signal.aborted || this.document.closed || this.document.docKey !== this.key || getPdfFontEpoch(this.key) !== epoch) throw abort();
         // Selection has its own 8 MiB budget; the optional rich model belongs
         // only to the separate Text reader's 4 MiB cache.
         const value: PdfSelectionReply = { docKey: reply.docKey, page: reply.page, schema: reply.schema,
@@ -86,7 +96,7 @@ export class PdfSelectionGeometryCache {
     }
     diagnostics(): { pages: number; bytes: number } { return { pages: this.pages.size, bytes: this.bytes }; }
     dispose(): void {
-        this.lifetime.abort(); this.visibility.abort(); this.pages.clear(); this.pinned.clear(); this.findPage = null; this.bytes = 0;
+        this.unsubscribe(); this.lifetime.abort(); this.visibility.abort(); this.profile.abort(); this.pages.clear(); this.pinned.clear(); this.findPage = null; this.bytes = 0;
     }
     private dropUnpinned(): void {
         for (const [page, entry] of this.pages) if (!this.pinned.has(page)) { this.bytes -= entry.bytes; this.pages.delete(page); }

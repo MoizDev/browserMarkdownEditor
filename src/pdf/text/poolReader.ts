@@ -1,5 +1,5 @@
 import { createPdfFindEngine } from '../../utils/pdfFind';
-import type { PdfFindPageText } from '../../utils/pdfFind';
+import type { PdfFindEngine, PdfFindPageText } from '../../utils/pdfFind';
 import { PDF_TEXT_LIMITS } from '../../utils/pdfReadingText';
 import type { PdfTextAnchor, PdfTextPage, PdfTextReader, PdfTextReaderOptions } from '../../utils/pdfReadingText';
 import { resolvePdfTextAnchor } from '../../utils/pdfTextAnchors';
@@ -11,6 +11,8 @@ export interface PdfPoolTextSource {
     readonly generation: number;
     /** Raw immutable docKey plus extraction schema, not a path. */
     readonly cacheKey?: string;
+    readonly fontEpoch?: () => number;
+    readonly subscribeFontEpoch?: (listener: () => void) => () => void;
     readonly pageCount: number;
     text(page: number, priority: 0 | 1 | 2 | 3, signal: AbortSignal): Promise<PdfFindPageText>;
     model(page: number, priority: 0 | 1 | 2 | 3, signal: AbortSignal): Promise<PdfTextPage>;
@@ -20,10 +22,10 @@ const abort = () => new DOMException('PDF text operation cancelled', 'AbortError
 /** The Text and Original surfaces share this reader and its one find index. */
 export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfTextReaderOptions): PdfTextReader {
     const lifetime = new AbortController();
-    let visibility = new AbortController(), visible = true, hiddenTimer: ReturnType<typeof setTimeout> | undefined;
+    let visibility = new AbortController(), profile = new AbortController(), visible = true, hiddenTimer: ReturnType<typeof setTimeout> | undefined;
     let center = options.initialPageIndex, retainedBytes = 0, active = 0, extractions = 0;
     const cache = new Map<number, { page: PdfTextPage; bytes: number }>();
-    const signalFor = (signal?: AbortSignal) => AbortSignal.any([lifetime.signal, visibility.signal, ...(signal ? [signal] : [])]);
+    const signalFor = (signal?: AbortSignal) => AbortSignal.any([lifetime.signal, visibility.signal, profile.signal, ...(signal ? [signal] : [])]);
     const pageCount = async (signal?: AbortSignal) => {
         if (signalFor(signal).aborted) throw abort();
         return source.pageCount;
@@ -61,7 +63,23 @@ export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfT
             throw error;
         } finally { active--; }
     };
-    const findEngine = createPdfFindEngine({ cacheKey: source.cacheKey, pageCount: signal => pageCount(signal), page: (page, signal) => source.text(page, 1, signalFor(signal)) });
+    const newFindEngine = () => createPdfFindEngine({ cacheKey: source.cacheKey, pageCount: signal => pageCount(signal), page: (page, signal) => source.text(page, 1, signalFor(signal)) });
+    let currentFind = newFindEngine();
+    const findEngine: PdfFindEngine = {
+        search: (query, start, signal) => currentFind.search(query, start, signal),
+        project: page => currentFind.project(page),
+        pageText: (index, signal) => currentFind.pageText(index, signal),
+        peekPageText: index => currentFind.peekPageText(index),
+        clearIndex: () => currentFind.clearIndex(),
+        setVisible: next => currentFind.setVisible(next),
+        dispose: () => currentFind.dispose(),
+    };
+    const unsubscribe = source.subscribeFontEpoch?.(() => {
+        profile.abort(); profile = new AbortController();
+        cache.clear(); retainedBytes = 0;
+        currentFind.dispose(); currentFind = newFindEngine();
+        if (!visible) currentFind.setVisible(false);
+    });
     const resolveAnchor = async (anchor: PdfTextAnchor, opts: PdfTextAnchorOptions): Promise<PdfTextAnchorResolution> => {
         const signal = signalFor(opts.signal);
         const count = await pageCount(signal);
@@ -82,7 +100,7 @@ export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfT
             else { visibility.abort(); hiddenTimer = setTimeout(() => { findEngine.clearIndex(); hiddenTimer = undefined; }, 60_000); }
         },
         dispose() {
-            lifetime.abort(); visibility.abort(); findEngine.dispose();
+            lifetime.abort(); visibility.abort(); profile.abort(); unsubscribe?.(); findEngine.dispose();
             if (hiddenTimer !== undefined) clearTimeout(hiddenTimer);
             cache.clear(); retainedBytes = 0;
         },

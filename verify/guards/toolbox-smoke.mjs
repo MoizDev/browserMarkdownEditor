@@ -99,15 +99,18 @@ try {
     report.data.browser = session.identity;
     const initContext = initMutant ? {
         async addInitScript(callback, arg) {
-            const source = callback.toString(), start = source.indexOf('if (window !== window.top) return;');
+            const source = typeof callback === 'function' ? `(${callback.toString()})(${JSON.stringify(arg)});` : callback.content;
+            if (typeof source !== 'string') throw new Error('Init mutant requires a serializable callback/content script');
+            const start = source.indexOf('if (window !== window.top) return;');
             const marker = source.includes('if (window.__bmeCounters) return;') ? 'if (window.__bmeCounters) return;' : 'const grant = handle => {';
             const end = source.indexOf(marker, start);
             if (start < 0 || end < 0 || source.split('if (window !== window.top) return;').length !== 2) throw new Error('Unguarded-init mutant anchor changed (VER-13)');
             const fault = "if (window !== window.top) for (const name of ['FileSystemHandle','FileSystemDirectoryHandle','FileSystemFileHandle']) Reflect.deleteProperty(globalThis, name);\n";
-            const patched = source.slice(0, start) + fault + 'const storage = navigator.storage;\n' + source.slice(end);
+            const patched = source.slice(0, start) + fault + 'const storage = navigator.storage;\nconst legacyDirectory = FileSystemDirectoryHandle.prototype;\n' + source.slice(end);
             const receipts = report.data.initMutant ??= [];
             receipts.push({ removed: 'main-window and FSA feature guards', frameFault: 'hide FSA constructors only in subframes', continuation: marker });
-            await session.context.addInitScript(new Function(`return (${patched})`)(), arg);
+            new Function(patched); // A broken mutation is a patch-time fault (VER-13), never a killed gate.
+            await session.context.addInitScript({ content: patched });
         },
     } : session.context;
     await installCounters(initContext, { vaultName: 'Toolbox Vault' });

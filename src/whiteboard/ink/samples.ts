@@ -28,12 +28,15 @@ export type SampleBuilderOptions = Readonly<{
     maxDpr?: number;
     precision?: 'bounded' | 'float64';
 }>;
-// Structurally matches format/points.ts PointHeader; only the fully validating reader admits it.
+// Structurally matches the reader's PointInspectionHeader; writer consumers need only its base
+// count/k/pressure/run fields. R-W39's extra geometry metadata never needs sample materialization.
 export interface EncodedSampleHeader {
     readonly count: number;
     readonly k: number;
     readonly hasPressure: boolean;
     readonly runCount: number; // 0 is an absent source run channel, not a synthetic storage run.
+    readonly localBounds: readonly [number, number, number, number];
+    readonly maxPressure: number | null;
 }
 
 export function validateSample(x: number, y: number, pressure: number | undefined, hasPressure: boolean): void {
@@ -294,6 +297,7 @@ type SampleRecord = {
     ref: SampleRef; count: number; owners: number;
     chunks: readonly SampleChunk[] | null; bytes: number;
     encoded: string | null; k: number; hasPressure: boolean; runCount: number;
+    nativeBounds: readonly [number, number, number, number] | null; maxPressure: number | null;
 };
 // Handles are unique across stores in this realm; worker bridges re-admit encoded payloads into
 // their owning store rather than treating another realm's numeric handles as portable references.
@@ -317,7 +321,8 @@ export class SampleStore implements SampleStoreReader {
         return this.add({
             ref, count: builder.count, chunks, owners: 0,
             bytes: chunks.reduce((sum, c) => sum + c.byteLength, 0),
-            encoded: null, k: 0, hasPressure: builder.options.pressure, runCount: 0
+            encoded: null, k: 0, hasPressure: builder.options.pressure, runCount: 0,
+            nativeBounds: null, maxPressure: null
         });
     }
     admitEncoded(pts: string, header: EncodedSampleHeader): SampleLease {
@@ -327,10 +332,21 @@ export class SampleStore implements SampleStoreReader {
             || !Number.isInteger(header.count) || header.count < 1 || header.count > POINT_LIMITS.count
             || !Number.isInteger(header.k) || header.k < 0 || header.k > POINT_LIMITS.exponent
             || typeof header.hasPressure !== 'boolean' || !Number.isInteger(header.runCount)
-            || header.runCount < 0 || header.runCount > header.count) throw new RangeError('Invalid validated ink payload header');
+            || header.runCount < 0 || header.runCount > header.count
+            || header.localBounds.length !== 4 || !header.localBounds.every(Number.isFinite)
+            || header.localBounds[2] < 0 || header.localBounds[3] < 0
+            || header.localBounds[0] < -POINT_LIMITS.world || header.localBounds[1] < -POINT_LIMITS.world
+            || header.localBounds[0] + header.localBounds[2] > POINT_LIMITS.world
+            || header.localBounds[1] + header.localBounds[3] > POINT_LIMITS.world
+            || (header.hasPressure ? header.maxPressure === null || !Number.isFinite(header.maxPressure)
+                || header.maxPressure < 0 || header.maxPressure > MAX_PRESSURE : header.maxPressure !== null)) {
+            throw new RangeError('Invalid validated ink payload header');
+        }
+        const nativeBounds = Object.freeze([...header.localBounds]) as EncodedSampleHeader['localBounds'];
         return this.add({
             ref: sampleRef(), count: header.count, chunks: null, owners: 0, bytes: 0,
-            encoded: pts, k: header.k, hasPressure: header.hasPressure, runCount: header.runCount
+            encoded: pts, k: header.k, hasPressure: header.hasPressure, runCount: header.runCount,
+            nativeBounds, maxPressure: header.maxPressure
         });
     }
     private add(record: SampleRecord): SampleLease {
@@ -344,6 +360,7 @@ export class SampleStore implements SampleStoreReader {
     }
     has(ref: SampleRef): boolean { return this.records.has(ref); }
     count(ref: SampleRef): number { return this.record(ref).count; }
+    pressureMode(ref: SampleRef): 'real' | 'none' { return this.record(ref).hasPressure ? 'real' : 'none'; }
     private record(ref: SampleRef): SampleRecord {
         const record = this.records.get(ref);
         if (!record) throw new Error('Foreign or released ink sample reference');
@@ -359,7 +376,7 @@ export class SampleStore implements SampleStoreReader {
                 if (--record.owners === 0) {
                     this.records.delete(record.ref); this.bytes -= record.bytes;
                     this.encodedBytes -= record.encoded === null ? 0 : 2 * record.encoded.length;
-                    record.chunks = null; record.bytes = 0; record.encoded = null;
+                    record.chunks = null; record.bytes = 0; record.encoded = null; record.nativeBounds = null;
                 }
             }
         });
@@ -368,12 +385,13 @@ export class SampleStore implements SampleStoreReader {
     }
     readEncoded(ref: SampleRef): Readonly<{ pts: string; header: EncodedSampleHeader; }> | null {
         const record = this.record(ref);
-        if (record.encoded === null) return null;
+        if (record.encoded === null || record.nativeBounds === null) return null;
         // R-W34: native truth belongs to the immutable record, not an ExtBag/by-id copy. Borrowing
         // this payload needs the same caller-held SampleLease as read(); no samples are decoded.
         return Object.freeze({
             pts: record.encoded, header: Object.freeze({
                 count: record.count, k: record.k, hasPressure: record.hasPressure, runCount: record.runCount,
+                localBounds: record.nativeBounds, maxPressure: record.maxPressure,
             })
         });
     }

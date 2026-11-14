@@ -6,7 +6,7 @@ import type { RenderToken } from './types';
 export type MemoryPool = 'gpu' | 'cpu';
 export type MemoryClass = 'hidden-mirror' | 'obsolete-arrival' | 'offscreen-high' |
     'redundant-level' | 'prefetch' | 'scene-cache' | 'critical';
-export type MemoryKind = 'working' | 'program' | 'context' | 'surface' | 'mirror' | 'mirror-retiring' | 'capture';
+export type MemoryKind = 'working' | 'canvas-working' | 'program' | 'context' | 'surface' | 'mirror' | 'mirror-retiring' | 'capture';
 export type MemorySessionOwner = Readonly<Pick<RenderToken, 'vaultEpoch' | 'documentId' | 'session'>>;
 export type MemoryPressureState = 'normal' | 'trimming' | 'degraded' | 'cpu-pinned';
 export type DeviceMemoryClass = 'low' | 'medium' | 'high';
@@ -215,7 +215,7 @@ export class MemoryGovernor {
         }
         if (!registration.id || this.caches.has(registration.id) ||
             (['mirror', 'mirror-retiring'].includes(registration.kind) && registration.pool !== 'cpu') ||
-            (['program', 'context', 'surface'].includes(registration.kind) && registration.pool !== 'gpu') ||
+            (['program', 'context', 'surface', 'canvas-working'].includes(registration.kind) && registration.pool !== 'gpu') ||
             (registration.pool === 'gpu' && registration.kind !== 'context' && !registration.paneId)) {
             throw new MemoryAdmissionError('invalid-input');
         }
@@ -455,7 +455,7 @@ export class MemoryGovernor {
         const pane = this.panes.find(item => item.paneId === paneId);
         const grant = paneId === undefined ? undefined : this.grants.get(paneId);
         if (pool === 'gpu' && (cache.activity.hiddenAt !== null || !pane?.visible || !pane.requestedPixels ||
-            (pane.cpuPinned && kind !== 'surface'))) return false;
+            (pane.cpuPinned && kind !== 'surface' && kind !== 'canvas-working'))) return false;
         if (kind === 'mirror' && cache.activity.hiddenAt !== null &&
             this.hiddenMirrorBytes() + bytes > this.hiddenMirrorLimit()) return false;
         if (paneId === undefined || kind === 'program') return true;
@@ -564,10 +564,10 @@ export class MemoryGovernor {
         const minimum = this.minimumProgressBytes();
         const overhead = this.kindBytes('context') + this.kindBytes('program');
         let remaining = Math.max(0, this.target.gpu - overhead);
-        const accelerated: PaneMemoryDemand[] = [];
+        const supported: PaneMemoryDemand[] = [];
         for (const pane of [...visible].sort((a, b) => weight(b) - weight(a) || stableId(a.paneId, b.paneId))) {
-            if (pane.cpuPinned || remaining < minimum) continue;
-            accelerated.push(pane);
+            if (remaining < minimum) continue;
+            supported.push(pane);
             remaining -= minimum;
         }
         const surfaceBytes = Math.min(Math.floor(this.target.gpu * POLICY.surfaceMaxGpuGrantFraction), remaining);
@@ -576,16 +576,18 @@ export class MemoryGovernor {
             need: Math.floor(pane.requestedPixels * this.qualityLimit * this.qualityLimit) })),
         Math.floor(surfaceBytes / POLICY.surfaceReserveBytesPerPixel));
         const assignedSurface = [...pixels.values()].reduce((sum, value) => sum + value, 0) * POLICY.surfaceReserveBytesPerPixel;
-        const cache = waterFill(accelerated.map(pane => ({ id: pane.paneId, weight: weight(pane),
+        const cache = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: Math.max(0, pane.gpuNeedBytes - minimum) })), Math.max(0, remaining - assignedSurface));
         const cpu = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane), need: pane.cpuNeedBytes })), this.target.cpu);
         this.grants = new Map(this.panes.map(pane => {
             const pixelGrant = pixels.get(pane.paneId) ?? 0;
             const q = pane.requestedPixels ? Math.sqrt(pixelGrant / pane.requestedPixels) : 0;
-            const gpuEligible = pixelGrant > 0 && accelerated.includes(pane);
+            const hasCacheCredit = pixelGrant > 0 && supported.includes(pane);
+            const gpuEligible = hasCacheCredit && !pane.cpuPinned;
             return [pane.paneId, Object.freeze({
                 paneId: pane.paneId, pixelGrant, gpuEligible,
-                gpuCacheBytes: gpuEligible ? minimum + (cache.get(pane.paneId) ?? 0) : 0,
+                // Browser-managed 2D scratch needs the same logical G credit even without WebGL (§10).
+                gpuCacheBytes: hasCacheCredit ? minimum + (cache.get(pane.paneId) ?? 0) : 0,
                 cpuBytes: cpu.get(pane.paneId) ?? 0, qualityScale: q,
                 state: pane.cpuPinned ? 'cpu-pinned' as const :
                     pane.visible && pane.requestedPixels > 0 && q < 1 ? 'degraded' as const : this.state,

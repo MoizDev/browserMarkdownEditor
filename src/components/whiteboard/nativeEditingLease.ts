@@ -6,6 +6,9 @@ import { createBoardToolServices, type BoardToolServicesOptions } from '../../wh
 import { addBoardDictionaryWord, getBoardDictionary, subscribeBoardDictionary } from '../../utils/boardDictionary';
 import { closeContextMenu, getContextMenu, openContextMenu, type ContextMenuRequest } from '../../utils/contextMenu';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
+import { createEmbedPresentationPort } from '../../platform/render/embedPresentation';
+import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
+import { createNativeEmbedController, type NativeEmbedController } from '../../whiteboard/host/nativeEmbeds';
 import type { NativeClipboardBinding, NativeClipboardService } from './useNativeClipboard';
 import { createNativeImportAdapter } from './nativeImportAdapter';
 import { createNativeTextClipboard } from './nativeTextClipboard';
@@ -20,6 +23,8 @@ const spelling: BoardToolServicesOptions['spelling'] = {
     },
 };
 
+export interface NativeEmbedInfrastructure { readonly port: EmbedPresentationPort; readonly controller: NativeEmbedController }
+
 export type NativeEditingToolOptions = Omit<BoardToolServicesOptions, 'surface' | 'overlay' | 'inputFrames' | 'mappings' | 'sampleToSurface' | 'clientToSurface' | 'imports' | 'spelling' | 'ui'> & {
     readonly ui: Omit<BoardToolServicesOptions['ui'], 'text' | 'keyboardNavigation'> & {
         readonly text: Omit<BoardToolServicesOptions['ui']['text'], 'spellingMenu' | 'selectionChanged' | 'menu'>;
@@ -33,6 +38,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     readonly host: NativeCanvasHost;
     readonly identity: NativeCanvasIdentity;
     readonly clipboard: NativeClipboardService;
+    onEmbedInfrastructure(value: NativeEmbedInfrastructure | null): void;
     bindClipboard(surface: HTMLElement): NativeClipboardBinding;
 }) {
     if (options.toolOptions.runtime !== options.runtime || options.toolOptions.engine !== options.engine ||
@@ -42,12 +48,18 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     let binding: NativeClipboardBinding | null = null, textClipboard: ReturnType<typeof createNativeTextClipboard> | null = null;
     let importer: ReturnType<typeof createNativeImportAdapter> | null = null;
     let accessible: ReturnType<typeof createBoardAccessibilityDom> | null = null;
+    let embed: NativeEmbedInfrastructure | null = null;
     const closeSpelling = () => { if (spellingMenu && getContextMenu() === spellingMenu) closeContextMenu(); spellingMenu = null; };
     const closeTextMenu = () => { if (textMenu && getContextMenu() === textMenu) closeContextMenu(); textMenu = null; };
     const disposeTools = () => {
         closeSpelling(); closeTextMenu();
-        const text = textClipboard, old = tools, clip = binding, media = importer, a11y = accessible;
-        textClipboard = null; tools = null; binding = null; importer = null; accessible = null;
+        const text = textClipboard, old = tools, clip = binding, media = importer, a11y = accessible, previousEmbed = embed;
+        textClipboard = null; tools = null; binding = null; importer = null; accessible = null; embed = null;
+        if (previousEmbed) {
+            options.onEmbedInfrastructure(null);
+            options.engine.connectEmbeds(null);
+            void previousEmbed.controller.dispose().catch(options.onError);
+        }
         try { text?.dispose(); } finally { try { old?.dispose(); } finally {
             try { media?.dispose(); } finally { try { a11y?.dispose(); } finally { clip?.detach(); } }
         } }
@@ -65,6 +77,13 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             disposeTools();
             binding = options.bindClipboard(surface);
             try {
+                const port = createEmbedPresentationPort({ overlay, onError: options.onError });
+                try {
+                    const controller = createNativeEmbedController({ runtime: options.runtime, token: options.token, presentation: port,
+                        manifest: options.host.embeds.manifest, containment: options.host.embeds.create, environment: { appOrigin: location.origin },
+                        current: () => options.current(options.token), visible: options.visible, onError: options.onError });
+                    embed = { port, controller }; options.engine.connectEmbeds(port); options.onEmbedInfrastructure(embed);
+                } catch (error) { void port.dispose().catch(options.onError); throw error; }
                 accessible = createBoardAccessibilityDom({ runtime: options.runtime, engine: options.engine, surface, overlay,
                     current: () => options.current(options.token), visible: options.visible,
                     schedule: callback => input.schedule(callback), reveal: id => { if (id) options.engine.focusNode(id); },

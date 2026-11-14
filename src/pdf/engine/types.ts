@@ -62,12 +62,16 @@ export interface DocInfo {
     pageCount: number;
     pages: PageGeometry[];
     encrypted: boolean;
+    /** Unknown unless the engine can explicitly distinguish recovered from pristine input. */
+    repairStatus: 'clean' | 'repaired' | 'unknown';
     permissions: number | null;
     signatureCount: number;
     tagged: boolean;
     hasForms: boolean;
     attachments: PdfAttachmentInfo[];
     pdfVersion: number | null;
+    /** Unknown is not clean: public engines may not expose whether recovery repaired the file. */
+    repairStatus: 'clean' | 'repaired' | 'unknown';
 }
 export interface PageComplexity {
     objects: number; textObjects: number; imageObjects: number;

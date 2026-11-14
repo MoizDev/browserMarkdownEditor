@@ -9,6 +9,7 @@ import type { TileKey } from '../../platform/render/tiles/geometry';
 export interface PdfMirrorPixels {
     readonly bitmap: ImageBitmap;
     readonly world: Readonly<Rect>;
+    readonly source: Readonly<Rect>;
 }
 
 export interface PdfMirrorPublish {
@@ -54,6 +55,9 @@ export function getPdfSessionMirrors(options: {
         mirrors,
         /** On success the mirror owns pixels and lease; on refusal both remain with the caller. */
         publish(input: PdfMirrorPublish): string | null {
+            if (input.lease.bytes !== input.pixels.bitmap.width * input.pixels.bitmap.height * 4) {
+                throw new RangeError('PDF mirror lease does not cover its bitmap');
+            }
             const id = `pdf-mirror:${++nextId}`;
             const entry: MirrorEntry = { id, key: input.key, geometryDigest: input.geometryDigest,
                 tier: input.tier, bytes: input.lease.bytes, neededByCurrentFrame: input.neededByCurrentFrame };
@@ -69,10 +73,10 @@ export function getPdfSessionMirrors(options: {
         },
         /** The compositor consumes device-pixel destinations for the identical frozen view. */
         mirrorQuad(item: BorrowedMirror<PdfMirrorPixels>, view: MirrorView): CompositorMirrorQuad {
-            const { bitmap, world } = item.pixels;
+            const { bitmap, world, source } = item.pixels;
             const { camera, viewport } = view.view;
             const scale = camera.z * viewport.dpr;
-            return { image: bitmap, sourceRect: { x: 0, y: 0, width: bitmap.width, height: bitmap.height },
+            return { image: bitmap, sourceRect: source,
                 destRect: { x: (world.x - camera.x) * scale, y: (world.y - camera.y) * scale,
                     width: world.width * scale, height: world.height * scale } };
         },

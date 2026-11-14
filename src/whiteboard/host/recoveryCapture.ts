@@ -138,6 +138,21 @@ export function createBoardRecoveryCapture(options: {
                 try { cached = snapshot(prime, current, dirty, header, records.integrity()); failure = undefined; }
                 catch (error) { failure = error; throw error; }
             }
+            if (cached) {
+                const previousPaths = new Set<string>();
+                const paths: string[] = [];
+                for (const [id, hold] of held) {
+                    if (hold.path) previousPaths.add(hold.path);
+                    const path = options.mediaPath(id) ?? hold.path;
+                    if (path) { hold.path = path; paths.push(path); }
+                }
+                // Keep references not accounted for by a held asset: an unknown
+                // reference is a reason to retain media, never to discard it.
+                for (const path of cached.mediaRefs) if (!previousPaths.has(path)) paths.push(path);
+                if (paths.length !== cached.mediaRefs.length || paths.some((path, i) => path !== cached!.mediaRefs[i])) {
+                    cached = { ...cached, mediaRefs: paths };
+                }
+            }
             return cached;
         },
         acknowledge(revision, baseline) {

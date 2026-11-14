@@ -90,12 +90,17 @@ export class TouchArbiter {
 
   touchUp(id: number): void {
     this.touches.delete(id)
-    if (this.pendingPair?.includes(id)) { this.pendingPair = null; this.actions.endTouchCamera() }
+    if (this.pendingPair?.includes(id)) {
+      this.pendingPair = null
+      const remaining = [...this.touches.values()].filter(t => t.eligible)
+      if (remaining.length >= 2) this.beginPinch(remaining[0].point, remaining[1].point)
+      else this.actions.endTouchCamera()
+    }
     if (this.pinch?.ids.includes(id)) {
       this.pinch = null
       const remaining = [...this.touches.values()].filter(t => t.eligible)
       if (remaining.length >= 2) this.beginPinch(remaining[0].point, remaining[1].point)
-      else if (remaining.length === 1) this.pan = { id: remaining[0].point.id, point: remaining[0].point }
+      else if (remaining.length === 1 && !this.mode) this.pan = { id: remaining[0].point.id, point: remaining[0].point }
       else this.actions.endTouchCamera()
     } else if (this.pan?.id === id) { this.pan = null; this.actions.endTouchCamera() }
   }

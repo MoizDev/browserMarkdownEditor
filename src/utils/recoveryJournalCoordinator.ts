@@ -1,8 +1,9 @@
 import {
-    acknowledgeRecovery, discardRecovery, forgetRecoveryVault, listRecovery,
+    acknowledgeRecovery, discardRecovery, forgetRecoveryVault, listRecovery, markRecoveryCopies,
     retargetRecovery, writeRecoveryEntry,
 } from './recoveryJournal';
 import type { RecoveryEntry } from './recoveryJournal';
+import { groupRecovery } from './recoveryOffers';
 
 /** The one bridge C-20 calls from the funnel. No pane owns a journal timer. */
 export function createRecoveryJournal(options: { refused(): void; failed(error: unknown): void }) {
@@ -62,8 +63,13 @@ export function createRecoveryJournal(options: { refused(): void; failed(error: 
             void flush().catch(() => {});
             return enqueue(() => retargetRecovery(vaultId, from, to, folder));
         },
-        list(vaultId: string): Promise<RecoveryEntry[]> {
-            return tail.then(() => listRecovery(vaultId));
+        async list(vaultId: string): Promise<RecoveryEntry[]> {
+            await tail;
+            const entries = await listRecovery(vaultId);
+            const copies = [...groupRecovery(entries).values()].flatMap(group => group.copies);
+            await enqueue(() => markRecoveryCopies(vaultId, copies.map(entry => entry.journalId)));
+            const copyIds = new Set(copies.map(entry => entry.journalId));
+            return entries.map(entry => copyIds.has(entry.journalId) ? { ...entry, copyOnly: true } : entry);
         },
         discard(vaultId: string, journalId: string): Promise<void> {
             const id = key(vaultId, journalId);

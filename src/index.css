@@ -3260,6 +3260,11 @@ body.is-resizing-panes * {
   line-height: 1.4;
 }
 
+.recovery-bar { flex: none; background: var(--background-primary); }
+.recovery-copies { padding: 6px 12px; font-size: 12.5px; border-bottom: 1px solid var(--background-modifier-border); }
+.recovery-copies summary { cursor: pointer; }
+.recovery-copy { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 6px; overflow-wrap: anywhere; }
+
 .disk-bar-message {
   min-width: 0;
   flex: 1 1 220px;

@@ -8,6 +8,7 @@ import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault, setVaultPinned, withVaultPaths } from './recentVaults';
 import { ensureVaultId } from './agentVault';
 import { requestPersistentStorage } from '../utils/storagePersistence';
+import { forgetRecoveryVault } from '../utils/recoveryJournal';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
@@ -1160,6 +1161,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const forgetRecentVault = useCallback(async (id: string) => {
         try {
             await publishVaults(await forgetVault(id), rootHandleRef.current);
+            try { await forgetRecoveryVault(id); }
+            catch (error) { console.warn('Could not remove forgotten vault recovery records:', error); }
             return true;
         } catch (err) {
             console.warn('Could not drop the vault from the recent list:', err);

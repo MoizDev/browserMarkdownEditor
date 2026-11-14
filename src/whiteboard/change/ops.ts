@@ -92,14 +92,15 @@ export interface Applied {
     release(): void;
 }
 
+export interface OpSink { push(op: Op): void }
 // H-3: a builder's savepoints are private to that builder and expire on commit/abort.
-export interface TxBuilder {
+export interface TxBuilder extends OpSink {
     savepoint(): number;
     rollbackTo(savepoint: number): void;
-    push(op: Op): void;
     commit(): Applied;
     abort(): void;
 }
+export type CommandBuilder = Omit<TxBuilder, 'commit'>;
 
 // change-and-history.md §2.2, H-4/H-6: the one policy table. Scene masks describe
 // derived work; they do not grant another writer or put any derived data in undo.

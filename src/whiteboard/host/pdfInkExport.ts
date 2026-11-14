@@ -35,3 +35,14 @@ export async function pdfInkPages(snapshot: PdfInkSnapshot, signal: AbortSignal)
     }
     return output;
 }
+
+/** The PDF domain owns the writer; the host loads it only for a save. */
+export async function emitPdfInk<T>(
+    snapshot: PdfInkSnapshot,
+    writer: (pages: PdfInkPage[], options: { signal: AbortSignal }) => Promise<T>,
+    signal: AbortSignal,
+): Promise<T> {
+    const pages = await pdfInkPages(snapshot, signal);
+    signal.throwIfAborted();
+    return writer(pages, { signal });
+}

@@ -9,7 +9,7 @@ import {
     extensionForApply, ModelInvariantError, nodeMediaForApply, prepareMutationForApply,
     preparePreservedCountsForApply, prepareRevisionForApply, type ModelOp, type PreparedMutation,
 } from '../model/applyOnly';
-import { validateCommit, validateOp, type ValidationContext, type ValidationRefusal } from '../model/validate';
+import { validateCommit, validateOp, type ValidationContext } from '../model/validate';
 import { EMPTY_RICH_TEXT, spliceRichText, type RichText } from '../text/richText';
 import {
     opDirties, policyForOp, SceneImpact, type Applied, type AppliedLease, type BoardKey, type BoardOp,
@@ -17,27 +17,11 @@ import {
     type TouchedSet, type Transaction, type TransactionOrigin, type TxBuilder,
 } from './ops';
 import { RawChanges, type PreservedDelta } from './rawChanges';
-
-export class ApplyRefused extends Error {
-    readonly code: ValidationRefusal['code'];
-    readonly opIndex: number;
-    readonly nodeId: string | null;
-    readonly reason: string;
-    constructor(refusal: ValidationRefusal) {
-        super(refusal.reason);
-        this.name = 'ApplyRefused';
-        this.code = refusal.code;
-        this.opIndex = refusal.opIndex;
-        this.nodeId = refusal.nodeId;
-        this.reason = refusal.reason;
-    }
-}
-export class ApplyFailed extends Error {
-    constructor(readonly code: string, message: string, readonly unsafe = false, cause?: unknown) {
-        super(message, { cause });
-        this.name = 'ApplyFailed';
-    }
-}
+import { ApplyFailed, ApplyRefused } from './errors';
+import { captureBeforeChange, normalizeChanges, type NormalizationStep } from './normalize';
+import type { ChangeGeometry } from './coordinates';
+export { ApplyFailed, ApplyRefused } from './errors';
+const NO_CAPTURES = Object.freeze([]);
 
 // CH §3/R-W27: callbacks borrow the receipt for this call only. History or a
 // queued consumer calls retain() and releases that lease when it drops its work.
@@ -115,7 +99,7 @@ interface OpPlan {
     readonly touched: TouchedSet;
     readonly impacts: ReadonlyMap<NodeId, number>;
 }
-interface Entry {
+interface Entry extends NormalizationStep {
     readonly plan: OpPlan;
     readonly live: LiveChange | undefined;
     started: boolean;
@@ -354,7 +338,7 @@ function planOp(doc: BoardDoc, input: Op): OpPlan | undefined {
     return { forward, inverse, mutation, counts, delta, refs, live, ...touched };
 }
 
-export function createApplyController(doc: BoardDoc, samples: SampleStoreReader, consumers: ApplyConsumers = {}): ApplyController {
+export function createApplyController(doc: BoardDoc, samples: SampleStoreReader, consumers: ApplyConsumers = {}, geometry?: ChangeGeometry): ApplyController {
     const live = new Map<NodeId, SampleLease>();
     try {
         for (const node of doc.nodes.values()) {
@@ -412,9 +396,13 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
             const context: ValidationContext = { doc, samples, origin };
             const entries: Entry[] = [], resources = new ReceiptSamples(samples);
             const savepoints = new Map<number, number>();
-            let closed = false, attempted = 0;
-            const assertOpen = () => {
+            let closed = false, committing = false, staging = false, attempted = 0;
+            const assertStaging = () => {
                 if (closed || phase !== 'building' || active !== builder) throw new ApplyFailed('closed-builder', 'The transaction builder is closed');
+            };
+            const assertOpen = () => {
+                assertStaging();
+                if (committing || staging) throw new ApplyFailed('re-entrant', 'The transaction is already applying changes');
             };
             const releaseEntry = (entry: Entry) => {
                 if (entry.live) {
@@ -465,6 +453,49 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                     throw error;
                 } finally { close(); }
             };
+            const stageBody = (op: Op): void => {
+                const opIndex = attempted++;
+                const result = validateOp(context, op, opIndex);
+                if (!result.ok) throw new ApplyRefused(result);
+                let plan: OpPlan | undefined, captured: NormalizationStep['captured'];
+                try {
+                    plan = planOp(doc, op);
+                    captured = !plan || origin === 'undo' || origin === 'redo' ? NO_CAPTURES : captureBeforeChange(doc, plan.forward, geometry);
+                } catch (error) {
+                    if (error instanceof ApplyRefused) throw new ApplyRefused({ ok: false, code: error.code, reason: error.reason, nodeId: error.nodeId, opIndex });
+                    return fail(error, error instanceof ModelInvariantError);
+                }
+                if (!plan) return;
+                let owned = 0, after: SampleLease | undefined, entry: Entry;
+                try {
+                    for (const ref of plan.refs) { resources.add(ref); owned++; }
+                    const before = plan.live ? live.get(plan.live.id) : undefined;
+                    if (plan.live?.next !== undefined) after = samples.retain(plan.live.next);
+                    entry = { plan, op: plan.forward, touched: plan.touched, captured,
+                        live: plan.live ? { id: plan.live.id, before, after } : undefined, started: false };
+                    entries.push(entry);
+                } catch (error) {
+                    after?.release();
+                    for (let i = owned - 1; i >= 0; i--) resources.remove(plan.refs[i]);
+                    return fail(error);
+                }
+                try {
+                    entry.started = true;
+                    plan.mutation.write();
+                    plan.counts?.write();
+                    if (entry.live) {
+                        if (entry.live.after) live.set(entry.live.id, entry.live.after);
+                        else live.delete(entry.live.id);
+                    }
+                } catch (error) { return fail(error, true); }
+            };
+            const stage = (op: Op): void => {
+                assertStaging();
+                if (staging) throw new ApplyFailed('re-entrant', 'A board operation is already staging');
+                staging = true;
+                try { stageBody(op); }
+                finally { staging = false; }
+            };
             const builder: TxBuilder = {
                 savepoint() {
                     assertOpen();
@@ -480,43 +511,18 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                     try { rollback(point, false); }
                     catch (error) { return fail(error, true); }
                 },
-                push(op) {
-                    assertOpen();
-                    const result = validateOp(context, op, attempted++);
-                    if (!result.ok) throw new ApplyRefused(result);
-                    let plan: OpPlan | undefined;
-                    try { plan = planOp(doc, op); }
-                    catch (error) { return fail(error, error instanceof ModelInvariantError); }
-                    if (!plan) return;
-                    let owned = 0, after: SampleLease | undefined, entry: Entry;
-                    try {
-                        for (const ref of plan.refs) { resources.add(ref); owned++; }
-                        const before = plan.live ? live.get(plan.live.id) : undefined;
-                        if (plan.live?.next !== undefined) after = samples.retain(plan.live.next);
-                        entry = { plan, live: plan.live ? { id: plan.live.id, before, after } : undefined, started: false };
-                        entries.push(entry);
-                    } catch (error) {
-                        after?.release();
-                        for (let i = owned - 1; i >= 0; i--) resources.remove(plan.refs[i]);
-                        return fail(error);
-                    }
-                    try {
-                        entry.started = true;
-                        plan.mutation.write();
-                        plan.counts?.write();
-                        if (entry.live) {
-                            if (entry.live.after) live.set(entry.live.id, entry.live.after);
-                            else live.delete(entry.live.id);
-                        }
-                    } catch (error) { return fail(error, true); }
-                },
+                push(op) { assertOpen(); stage(op); },
                 commit() {
                     assertOpen();
+                    committing = true;
                     let applied: Applied, impacts: Map<NodeId, number>, transaction: Transaction;
                     const beforeRevision = doc.rev;
                     let restoreRevision: PreparedMutation | undefined;
                     let revisionStarted = false;
                     try {
+                        // Undo/redo already contain the exact follow-on ops. In
+                        // particular imported long keys must be restored verbatim.
+                        if (origin !== 'undo' && origin !== 'redo') normalizeChanges(doc, { push: stage }, entries, geometry);
                         const forward: Op[] = [], inverse: Op[] = [], touched = emptyTouched();
                         impacts = new Map();
                         let dirtying = false, recorded = false;
@@ -542,6 +548,9 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                         const result = validateCommit(context, touched, forward, attempted);
                         if (!result.ok) throw new ApplyRefused(result);
                     } catch (error) {
+                        // An unexpected staged-mutator failure already rolled back,
+                        // reported and closed this builder through fail().
+                        if (closed) throw error;
                         try { restoreRevision?.write(); }
                         catch (restoreError) { return fail(restoreError, true); }
                         return fail(error, error instanceof ModelInvariantError || (revisionStarted && !(error instanceof ApplyRefused)));

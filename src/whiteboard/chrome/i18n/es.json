@@ -295,6 +295,15 @@
     "shortcuts.select.neighbour.ArrowLeft": "Seleccionar izquierda",
     "shortcuts.nudge.ArrowRight": "Empujar hacia la derecha",
     "shortcuts.nudge.coarse.ArrowRight": "Empujar más hacia la derecha",
-    "shortcuts.select.neighbour.ArrowRight": "Seleccione a la derecha"
+    "shortcuts.select.neighbour.ArrowRight": "Seleccione a la derecha",
+    "chrome.debugOverlay": "Superposición de depuración",
+    "chrome.debugTool": "Herramienta",
+    "chrome.debugSelection": "Selección",
+    "chrome.debugSheet": "Hoja",
+    "chrome.debugZoom": "Ampliar",
+    "chrome.debugFrameTime": "tiempo de fotograma",
+    "chrome.debugNodes": "Nodos",
+    "chrome.debugVisibleNodes": "Nodos visibles",
+    "chrome.debugBackend": "backend de renderizado"
   }
 }

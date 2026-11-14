@@ -75,6 +75,15 @@ export interface ExcalidrawShapeDraft {
     readonly deferred: readonly Readonly<{ index: number; element: Readonly<Record<string, unknown>> }>[];
     readonly skipped: number;
 }
+async function externalOrders(count: number, yieldHost: () => Promise<void>): Promise<string[]> {
+    const result: string[] = [];
+    while (result.length < count) {
+        const next = keysBetween(result.at(-1) ?? null, null, Math.min(512, count - result.length));
+        result.push(...next);
+        if (result.length < count) await yieldHost();
+    }
+    return result;
+}
 function finite(value: unknown, min: number, max: number): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
 }
@@ -146,7 +155,7 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
         }
         if ((i & 255) === 255) await yieldHost();
     }
-    const orders = keysBetween(null, null, elements.length), nodes: Node[] = [], deferred: { index: number; element: Readonly<Record<string, unknown>> }[] = [];
+    const orders = await externalOrders(elements.length, yieldHost), nodes: Node[] = [], deferred: { index: number; element: Readonly<Record<string, unknown>> }[] = [];
     const absorbed = new Set<string>(); let skipped = 0;
     for (let i = 0; i < elements.length; i++) {
         const element = elements[i], sourceId = element.id;
@@ -266,11 +275,19 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
     const check = () => { options.signal.throwIfAborted(); if (!options.current()) throw new DOMException('Excalidraw conversion became stale', 'AbortError'); };
     const yieldHost = async () => { check(); await options.cooperate(); check(); };
     const samples = new SampleStore(), leases: SampleLease[] = [], media = new Map<MediaId, MediaEntry>(), blobs = new Map<MediaId, Blob>();
-    const ids = new Map(draft.ids), nodes = [...draft.nodes], orders = keysBetween(null, null, options.elements.length);
+    const ids = new Map<string, NodeId>(), nodes: Node[] = [];
+    let copied = 0;
+    for (const [source, id] of draft.ids) { ids.set(source, id); if ((++copied & 511) === 0) await yieldHost(); }
+    for (const node of draft.nodes) { nodes.push(node); if ((++copied & 511) === 0) await yieldHost(); }
+    const orders = await externalOrders(options.elements.length, yieldHost);
     const files = new Map(options.files.map(file => [file.fileId, file])), inspected = new Map<string, InspectedMedia | null>();
     const labelsByContainer = new Map<string, Readonly<Record<string, unknown>>[]>(), removed = new Set<NodeId>();
-    for (const element of options.elements) if (element.type === 'text' && typeof element.containerId === 'string') {
-        let labels = labelsByContainer.get(element.containerId); if (!labels) labelsByContainer.set(element.containerId, labels = []); labels.push(element);
+    for (let index = 0; index < options.elements.length; index++) {
+        const element = options.elements[index];
+        if (element.type === 'text' && typeof element.containerId === 'string') {
+            let labels = labelsByContainer.get(element.containerId); if (!labels) labelsByContainer.set(element.containerId, labels = []); labels.push(element);
+        }
+        if ((index & 255) === 255) await yieldHost();
     }
     const bindings: { id: NodeId; terminal: 'start' | 'end'; source: Readonly<Record<string, unknown>> }[] = [];
     let skipped = draft.skipped, held = true;
@@ -363,7 +380,11 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
             if (nodes.length - removed.size > SECURITY_LIMITS.clipboardNodes) throw new RangeError('Converted Excalidraw node count exceeds limits');
             if ((index & 63) === 63) await yieldHost();
         }
-        const retainedNodes = nodes.filter(node => !removed.has(node.id));
+        const retainedNodes: Node[] = [];
+        for (let i = 0; i < nodes.length; i++) {
+            if (!removed.has(nodes[i].id)) retainedNodes.push(nodes[i]);
+            if ((i & 511) === 511) await yieldHost();
+        }
         const actualDraftDoc = createBoardDoc({ kind: 'whiteboard', sheets: [{ id: options.sheet, name: 'External clipboard', order: 'a0', ext: null }],
             nodes: retainedNodes, media: media.values(), host: { kind: 'whiteboard' }, ui: UI_DEFAULTS, view: VIEW_DEFAULTS,
             preserved: { version: NATIVE_VERSION, fields: new Map(), records: [], end: null }, preservedMediaRefs: new Map() });
@@ -396,7 +417,11 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                 ? { ...connector, [binding.terminal]: { ...endpoint, attach: attached } }
                 : { ...connector, [binding.terminal === 'start' ? 'startAttach' : 'endAttach']: attached });
         }
-        const output = retainedNodes.map(node => replacements.get(node.id) ?? node);
+        const output: Node[] = [];
+        for (let i = 0; i < retainedNodes.length; i++) {
+            const node = retainedNodes[i]; output.push(replacements.get(node.id) ?? node);
+            if ((i & 511) === 511) await yieldHost();
+        }
         check();
         return { sheet: options.sheet, nodes: Object.freeze(output), samples, media: Object.freeze([...media.values()]), blobs, skipped, release };
     } catch (error) { release(); throw error; }

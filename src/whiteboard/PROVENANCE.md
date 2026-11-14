@@ -135,6 +135,7 @@ third-party code included (normally "none") · date.
 | `render/paintStream.ts` | lane w-e | W-E4 shared contract | rendering §§2–5,11,12 | Shared platform/ink/TX-3 public types; direct consumer agreement; own ordered two-band emission with TEXT fragments retained for Canvas/PNG, SVG/PDF-only outline boundary, no second scene or stroker | none | 2026-11-13 |
 | `render/resources.ts` | lane w-e | W-E4 shared contract | rendering §§7,10,11; C4 | Public render tokens and direct v-b preparation/asset-lease agreement; injected origin-clean async decoder ownership, immutable frame source and existing-host invalidation, no private scheduler/context | none | 2026-11-13 |
 | `viewer/types.ts` | lane w-e | Viewer host; INT-11; C4; C-19 | rendering §§2,10,12; integration §2 | Public synchronous PlatformLayerDefinition and App-owned BoardSession; w-b accessibility agreement; view-only attachment, no second mutable doc, lifecycle-owned layer disposal | none | 2026-11-13 |
+| `scene/columns.ts` | lane w-e | W-E3 dense scene storage | rendering §§2,6,7 | Own Float64 matrix/ink/selectable columns and typed inherited/index metadata, capacity doubling and reserved-byte accounting; no per-node wrapper allocation | none | 2026-11-13 |
 | `scene/types.ts` | lane w-e | Scene snapshot/capture/view interfaces | rendering §§2,6,12; C7 | Public model/render/query types and direct export/host/agent/pick agreements; synchronous immutable pin lease independent of later live edits, bounded geometry/capture preparation, no implementation stub | none | 2026-11-13 |
 
 ## Canvas 2D path (lane v-b)
@@ -214,6 +215,8 @@ third-party code included (normally "none") · date.
 | `host/saveBuildTypes.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned media restoration, atomic conditional set-file batch and PDF assembly ports; no tldraw source | none | 2026-11-13 |
 | `host/saveBuild.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned restore/build/assembly, location-change refusal, cancellation and release; no tldraw source | none | 2026-11-13 |
 | `host/pinMediaRestore.ts` | lane w-k | C7.1/5; F-INT-004 | integration §4; media §8 | Pinned media leases, revision-fenced restoration and atomic filename-change batch; no tldraw source | none | 2026-11-13 |
+| `host/ownedSessionTypes.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4 | Shared session factory and owner-lifetime pinned-build ports; no tldraw source | none | 2026-11-13 |
+| `host/ownedSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4 | One shared session factory with owner-fenced pinned builds and disposal; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 
@@ -289,12 +292,14 @@ third-party code included (normally "none") · date.
 | `accessibility/selection.ts` | lane w-g | GE-3; INT-11 | integration §6.1; selection spec | ViewerAccessibilitySource with revision consistency and bounded viewport/selection union | none | 2026-11-13 |
 | `commands/delete.ts` | lane w-g | GE-4; WB-D18; F-SEL-009; RV-22 | geometry §6.2; selection spec | Design; indexed opaque preflight, locked-node retention and w-c's shared deletion command | none | 2026-11-13 |
 | `session/createBoardSession.ts` | lane w-g | H-1; C7 | change-and-history §§2–4 | Session initialization binding made constant; no semantic changes | none | 2026-11-13 |
+| `text/edit/binding.ts` | lane w-g | T-5 | text §5 | Preserve construction-time callback behaviour with a stable editor holder | none | 2026-11-13 |
 | `clipboard/encode.ts` | lane w-g | CB-1 | clipboard §2 | DOM serialization for clipboard output without a restricted HTML sink | none | 2026-11-13 |
 | `text/importRich.ts` | lane w-g | T-2 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `text/richOperations.ts` | lane w-g | T-5 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool, shared swept queue and exception-safe pending-gesture lifetime | none | 2026-11-13 |
 | `tools/transform.types.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; injected preview, snap preflight and single session-apply services | none | 2026-11-13 |
 | `tools/transform.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; cancellable derived preview, pending preflight and atomic pointer-up apply | none | 2026-11-13 |
+| `tools/transformDrivers.ts` | lane w-g | GE-4; F-XFORM-001/004/008 | geometry §6.1–6.3 | Design; input adapters for translation, resize and rotation snapshot plans | none | 2026-11-13 |
 
 ## Figures and geometry providers (lane w-h)
 

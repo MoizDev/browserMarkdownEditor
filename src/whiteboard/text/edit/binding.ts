@@ -13,7 +13,7 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
     let closed = false, overlay: TextChange | null = null, overlayRevision = 0;
     let releaseComposition: (() => void) | undefined;
     let lastPaint = '', lastOwnRevision = session.doc.rev, prepared = '';
-    let editor: TextEditSession;
+    const editorRef: { current?: TextEditSession } = {};
     function node(): Readonly<Node> {
         const current = session.doc.nodes.get(id);
         if (!current) throw new Error('Edited text no longer exists');
@@ -107,8 +107,8 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
         command(command, selection) {
             if (command === 'undo' || command === 'redo') {
                 if (command === 'undo') session.history.undo(); else session.history.redo();
-                if (!closed) editor.externalChange();
-            } else if (command === 'finish') editor.close();
+                if (!closed) editorRef.current!.externalChange();
+            } else if (command === 'finish') editorRef.current!.close();
             else view.command(command, selection);
         },
         finish() {
@@ -120,7 +120,8 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
             view.finish();
         },
     };
-    editor = new TextEditSession(options.container, options.label, id, key === 'label' ? 'label' : 'text', options.initialSelection, services, options.mac);
+    const editor = new TextEditSession(options.container, options.label, id, key === 'label' ? 'label' : 'text', options.initialSelection, services, options.mac);
+    editorRef.current = editor;
     const unsubscribe = session.subscribe(notice => {
         if (closed || !notice.touched.nodes.has(id) || notice.rev <= lastOwnRevision) return;
         editor.externalChange();

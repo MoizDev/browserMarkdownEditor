@@ -57,16 +57,28 @@ export interface BackendInfo {
     buildId: string;
     features: Array<'forms' | 'emphasis' | 'structTree' | 'outline' | 'attachments' | 'write'>;
 }
-export interface PdfAttachmentInfo { index: number; name: string; size: number; desc?: string }
+export interface PdfAttachmentInfo {
+    index: number; name: string;
+    /** The public length query may decode the entire stream; unknown until explicitly requested. */
+    size: number | null;
+    desc?: string;
+    localVaultMarker?: string;
+}
 export interface DocInfo {
     pageCount: number;
     pages: PageGeometry[];
     encrypted: boolean;
+    /** Raw unsigned FPDF_GetDocPermissions bits; null means unavailable, not permission granted. */
     permissions: number | null;
     signatureCount: number;
     tagged: boolean;
     hasForms: boolean;
+    formType: 'none' | 'acroform' | 'xfa' | 'unknown';
+    javascript: 'present' | 'absent' | 'unknown';
+    actions: 'present' | 'absent' | 'unknown';
     attachments: PdfAttachmentInfo[];
+    /** A partial public-API inventory cannot establish absence, marker agreement or write authority. */
+    attachmentInventory: 'full' | 'name-tree-params-only' | 'unknown';
     pdfVersion: number | null;
     /** Unknown is not clean: public engines may not expose whether recovery repaired the file. */
     repairStatus: 'clean' | 'repaired' | 'unknown';

@@ -75,6 +75,8 @@ interface Contact {
   readonly id: number
   watermark: number
   suffix: string[]
+  /** Raw points already delivered since the last pointermove, including equal-time points. */
+  rawSinceMove: Map<string, number>
 }
 
 function modifiers(event: PointerEvent, mac: boolean): Modifiers {
@@ -138,7 +140,7 @@ export class PointerAcquisition {
       buttons: event.buttons, tiltX: Math.max(-90, Math.min(90, event.tiltX || 0)), tiltY: Math.max(-90, Math.min(90, event.tiltY || 0)), twist: ((event.twist || 0) % 360 + 360) % 360 }
   }
 
-  private batch(contact: Contact, event: PointerEvent): RealSample[] {
+  private batch(contact: Contact, event: PointerEvent, raw: boolean): RealSample[] {
     const coalesced = event.getCoalescedEvents?.() ?? []
     const events = coalesced.length ? [...coalesced] : [event]
     if (event.type === 'pointerup' && coalesced.length && tuple(coalesced[coalesced.length - 1]) !== tuple(event)) events.push(event)
@@ -148,13 +150,22 @@ export class PointerAcquisition {
       if (item.pointerId !== contact.id || !Number.isFinite(item.timeStamp) || item.timeStamp < previous) throw new Error('Unordered pointer batch')
       previous = item.timeStamp
       const key = tuple(item)
+      if (!raw) {
+        const delivered = contact.rawSinceMove.get(key) ?? 0
+        if (delivered) {
+          if (delivered === 1) contact.rawSinceMove.delete(key); else contact.rawSinceMove.set(key, delivered - 1)
+          continue
+        }
+      }
       if (item.timeStamp < contact.watermark || contact.suffix.includes(key)) continue
       const sample = this.sample(item)
       contact.watermark = item.timeStamp
       contact.suffix.push(key)
       if (contact.suffix.length > 64) contact.suffix.shift()
+      if (raw) contact.rawSinceMove.set(key, (contact.rawSinceMove.get(key) ?? 0) + 1)
       result.push(sample)
     }
+    if (!raw) contact.rawSinceMove.clear()
     return result
   }
 
@@ -168,7 +179,7 @@ export class PointerAcquisition {
     try {
       const sample = this.sample(event)
       if (!this.sink.down(sample, modifiers(event, this.mac), event)) return
-      const contact: Contact = { id: event.pointerId, watermark: event.timeStamp, suffix: [tuple(event)] }
+      const contact: Contact = { id: event.pointerId, watermark: event.timeStamp, suffix: [tuple(event)], rawSinceMove: new Map() }
       this.contacts.set(event.pointerId, contact)
       try { this.root.setPointerCapture(event.pointerId) } catch { this.end(event.pointerId, 'capture-failed') }
     } catch (error) { this.sink.error?.(error, event.pointerId) }
@@ -180,7 +191,7 @@ export class PointerAcquisition {
     if (raw && event.pointerType !== 'pen' && event.pointerType !== 'mouse') return
     this.predict(event.pointerId, null)
     try {
-      const samples = this.batch(contact, event)
+      const samples = this.batch(contact, event, raw)
       if (samples.length) this.sink.move(event.pointerId, samples, modifiers(event, this.mac), event)
       if (!raw) this.predict(event.pointerId, event)
     } catch (error) { this.sink.error?.(error, event.pointerId); this.end(event.pointerId, 'cancel') }
@@ -192,7 +203,7 @@ export class PointerAcquisition {
     if (!contact) return
     this.predict(event.pointerId, null)
     try {
-      const samples = this.batch(contact, event)
+      const samples = this.batch(contact, event, false)
       this.sink.up(event.pointerId, samples, modifiers(event, this.mac), event)
       this.contacts.delete(event.pointerId)
     } catch (error) { this.sink.error?.(error, event.pointerId); this.end(event.pointerId, 'cancel') }

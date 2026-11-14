@@ -1,4 +1,5 @@
 import { LocalCurveBuilder, type CurvePublication } from '../ink/curve'
+import { StraightInkBuilder } from './straightInk'
 import type { SampleBuilder, SampleBuilderOptions, SampleSequence } from '../ink/samples'
 import type { FinishReason, GestureOwner, Modifiers, RealSample, Tool } from './tool'
 import type { PredictedPoint } from './prediction'
@@ -84,7 +85,7 @@ export class WetInkHandover {
 export class LiveInk implements GestureOwner {
   readonly kind = 'ink' as const
   readonly pointerIds: ReadonlySet<number>
-  private readonly builder: LocalCurveBuilder
+  private readonly builder: StraightInkBuilder
   private ended = false
   private last: RealSample | null = null
   private dirty = true
@@ -95,7 +96,7 @@ export class LiveInk implements GestureOwner {
 
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
     this.pointerIds = new Set([first.pointerId])
-    this.builder = new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol)
+    this.builder = new StraightInkBuilder(new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol))
     this.append(first, modifiers)
     context.clearRedoAtDown()
     context.invalidate()
@@ -104,8 +105,10 @@ export class LiveInk implements GestureOwner {
   update(samples: readonly RealSample[], modifiers: Modifiers): void {
     if (this.ended) return
     try {
+      const sealed = !modifiers.shift && this.builder.flush()
+      if (sealed) this.dirty = true
       for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) this.append(sample, modifiers)
-      if (samples.length) this.context.invalidate()
+      if (samples.length || sealed) this.context.invalidate()
     } catch (error) {
       this.context.error(error)
       this.finish('os-cancel')
@@ -166,7 +169,7 @@ export class LiveInk implements GestureOwner {
     if (this.last && sample.x === this.last.x && sample.y === this.last.y && (!this.context.builderOptions.pressure || sample.pressure === this.last.pressure)) return
     const point = this.context.toLocal(sample)
     const pressure = sample.source === 'pen' && sample.buttons === 0 && sample.pressure === 0 && this.last ? this.last.pressure : sample.pressure
-    this.builder.append(point.x, point.y, this.context.builderOptions.pressure ? pressure : undefined, modifiers.shift ? 'straight' : 'freehand')
+    this.builder.append(point.x, point.y, this.context.builderOptions.pressure ? pressure : undefined, modifiers.shift)
     this.last = sample
     this.dirty = true
   }

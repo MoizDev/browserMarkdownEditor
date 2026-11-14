@@ -342,8 +342,10 @@ something has to decide.
   - **Holders are collected in full before any split** — `splitText` mutates the tree the
     `TreeWalker` is walking and the walker's position does not survive its current node being split.
   - **`katex.render` is a DOM builder, not a sink**: it builds with `createElement`/`createTextNode`,
-    so no note text is ever parsed as markup. And it is synchronous, which is required — `updateDOM`
-    may not go async. Don't lazy-import KaTeX in this path.
+    so no note text is parsed as markup. `renderMath` returns synchronously, but while lazy KaTeX loads
+    it shows source in the caller-owned element and tags it with `data-math-pending`; a late render
+    must still match that token. The source-to-glyph change affects table fit and cell text/caret
+    arithmetic, so preserve the fit sensors and editing guards when changing this hand-off.
   - **`output: 'html'` is load-bearing here**, not just cosmetic: MathML would put every formula in
     `cell.textContent` TWICE, and `tableEdit`'s caret arithmetic, its copy path and `beginCellEdit`'s
     "does the rendered text differ from the raw source" guard all read that. Its price is that

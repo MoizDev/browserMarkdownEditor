@@ -243,7 +243,10 @@ export class TextEditSession {
                     catch (error) { this.services.reportError(error); }
                     this.host.sync();
                 } else if (command === 'enter') {
-                    try { this.selection = this.controller.enter(this.selection); this.lastText = this.services.plainText(); this.services.changed(this.selection); }
+                    try {
+                        this.selection = this.controller.enter(this.selection); this.lastText = this.services.plainText();
+                        this.affinity = undefined; this.goalX = undefined; this.services.changed(this.selection);
+                    }
                     catch (error) { this.services.reportError(error); }
                     this.resetBlink();
                     this.host.sync();

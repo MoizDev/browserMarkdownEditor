@@ -61,10 +61,14 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     const identity = getSessionIdentity(token.documentId);
     if (!identity) throw stale();
     let owner = identity.getSlot<Owner>(slot);
-    if (owner && (!sameToken(owner.token, token) || owner.fingerprint !== source.pristineFingerprint || owner.pool !== options.pool)) {
-        throw new Error('The PDF ink source does not match its retained session');
+    if (owner) {
+        const sameOwner = owner.token.vaultEpoch === token.vaultEpoch && owner.token.documentId === token.documentId && owner.token.session === token.session;
+        if (!sameOwner || owner.fingerprint !== source.pristineFingerprint || owner.pool !== options.pool ||
+            (!sameToken(owner.token, token) && token.bytesGeneration <= owner.token.bytesGeneration)) {
+            throw new Error('The PDF ink source does not match its retained session');
+        }
     }
-    if (!owner) {
+    if (!owner || !sameToken(owner.token, token)) {
         const views = new Set<ViewLease>();
         const base = tiledPoolAdapter(options.pool, (document, emphasis) => {
             return createPdfTileProducer({ document, isCurrent: () => currentToken(token),
@@ -84,6 +88,9 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         identity.setSlot(slot, owner, value => value.session.close());
     }
     const retained = owner;
+    await waitFor(awaitSessionDisposals(token.documentId), options.signal);
+    if (options.signal?.aborted || !options.isCurrent() || !currentToken(token) ||
+        getSessionIdentity(token.documentId)?.getSlot<Owner>(slot) !== retained) throw stale();
     if (!retained.ready) {
         const ready = retained.session.open();
         retained.ready = ready;
@@ -146,7 +153,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         unsubscribeTransition?.(); unsubscribeTransition = undefined;
         if (!lease.visible || !bridge) return;
         const refresh = () => {
-            if (transition.isActive(bridge)) return;
+            if (!isCurrent() || transition.isActive(bridge)) return;
             layer.current()?.expireBridge();
             if (!updating) { updating = true; options.onUpdating?.(true); }
         };

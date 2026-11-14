@@ -17,7 +17,8 @@ import { defaultKeymap, history, historyKeymap, isolateHistory } from '@codemirr
 import { search, searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
-import { createLivePreviewPlugin } from '../editor/livePreview';
+import { createLivePreviewPlugin, livePreviewField } from '../editor/livePreview';
+import { docAnalysisField } from '../editor/docAnalysis';
 import { markEditorModeRender } from '../editor/editorPerf';
 import type { ImageDeleteRequest, ImageEmbedActions } from '../editor/imageWidget';
 import { markdownFormatExtension } from '../editor/formatKeymap';
@@ -58,6 +59,8 @@ import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
 import TexView from './TexView';
+import { useDocumentRevision } from '../utils/useDocumentRevision';
+import type { DocumentBufferStore } from '../utils/documentBuffers';
 import { bracketColourCompartment, codeExtensions, codeLanguageFor, loadCodeLanguage, type CodeLanguage } from '../editor/codeEditor';
 import { rainbowBrackets as rainbowBracketsExtension } from '../editor/rainbowBrackets';
 import { codeDarkTheme, codeLightTheme } from '../editor/codeHighlight';
@@ -560,6 +563,8 @@ interface DocumentPaneProps {
      * document (see OpenTab.id).
      */
     stateCache: Map<string, EditorState>;
+    contentOf(path: string): string | undefined;
+    documentBuffers: DocumentBufferStore;
     /** Register what takes the keyboard when a tab-bar click brings this note
      *  to the front (see EditorPane's handKeyboardToNote); returns the
      *  unregister. Stable, for the memo. Called from an effect and never baked
@@ -591,6 +596,11 @@ interface DocumentPaneProps {
     /** One-shot select+scroll order from vault search (null = nothing pending). */
     revealRequest: EditorRevealRequest | null;
     onRevealHandled: () => void;
+}
+
+function TexDocument({ store, documentId, path, contentOf }: { store: DocumentBufferStore; documentId: string; path: string; contentOf(path: string): string | undefined }) {
+    useDocumentRevision(store, documentId);
+    return <TexView source={contentOf(path) ?? ''} />;
 }
 
 /**
@@ -626,6 +636,8 @@ function DocumentPane({
     tabSize,
     rainbowBrackets,
     stateCache,
+    contentOf,
+    documentBuffers,
     registerKeyboardTarget,
     getWikiLinkTargets,
     onContentChange,
@@ -772,7 +784,7 @@ function DocumentPane({
         if (isCanvas || unreadable) return;
         const text = () => {
             const view = viewRef.current;
-            return view ? docString(view.state.doc) : tabRef.current.content;
+            return view ? docString(view.state.doc) : contentOf(path) ?? '';
         };
         return registerView(path, {
             kind: 'markdown',
@@ -781,7 +793,7 @@ function DocumentPane({
                 const { mode: tabMode, dirty } = tabRef.current;
                 if (view) return describeMarkdown(view, tabMode, !!dirty, codeLanguage?.name);
                 // Between the pane's mount and its view (a frame at most).
-                const content = tabRef.current.content;
+                const content = contentOf(path) ?? '';
                 const state = EditorState.create({ doc: content });
                 return {
                     kind: 'markdown', mode: tabMode, text: content, lineCount: state.doc.lines,
@@ -814,7 +826,7 @@ function DocumentPane({
         });
         // `codeLanguage` is a property of the PATH (one file, one language), so
         // it cannot change under a mounted pane; listed for the rule's sake.
-    }, [path, isCanvas, unreadable, isHelp, codeLanguage?.name]);
+    }, [path, isCanvas, unreadable, isHelp, codeLanguage?.name, contentOf]);
 
     // Live prop mirrors: the view is built once, so everything it calls has to
     // be reachable without rebuilding it.
@@ -875,9 +887,13 @@ function DocumentPane({
      * rather than three copies, because the compartment is reconfigured on ⌘E and
      * on a cached state's re-adoption as well as being built here.
      */
+    const [imageContexts] = useState(() => ({
+        read: { getAssetUrl: stableGetAssetUrl, actions: imageActions, editable: false },
+        edit: { getAssetUrl: stableGetAssetUrl, actions: imageActions, editable: true },
+    }));
     const livePreviewFor = useCallback((forMode: EditorMode) =>
-        (isTex || isCode ? [] : createLivePreviewPlugin(stableGetAssetUrl, forMode, imageActions)),
-    [isTex, isCode, stableGetAssetUrl, imageActions]);
+        (isTex || isCode ? [] : createLivePreviewPlugin(imageContexts[forMode], imageActions)),
+    [isTex, isCode, imageContexts, imageActions]);
 
     /** The full extension list for this document. Every dynamic bit goes
      *  through a ref, so the view never has to be rebuilt. */
@@ -937,6 +953,7 @@ function DocumentPane({
             ...(isCode ? [] : [
                 tabIntoText,
                 wikiLinkAutocomplete(() => getTargetsRef.current()),
+                ...(isTex ? [] : [docAnalysisField, livePreviewField]),
                 livePreviewCompartment.of(livePreviewFor(mode)),
                 // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
                 // that, which would forget every collapsed section (headingFold.ts).
@@ -1075,13 +1092,14 @@ function DocumentPane({
         const keyboardBefore = document.activeElement;
         buildingViewRef.current = true;
         try {
-            const view = new EditorView({ state: cached ?? createTabState(tab.content), parent: node });
+            const initial = contentOf(path) ?? '';
+            const view = new EditorView({ state: cached ?? createTabState(initial), parent: node });
             viewRef.current = view;
             // KaTeX is fetched on demand (editor/mathWidget.ts). Start it the
             // moment a document that could contain a formula opens, so the
             // renderer is usually already here when one scrolls into view; a
             // note with no `$` in it never asks for it at all.
-            if (tab.content.includes('$')) warmMath();
+            if (initial.includes('$')) warmMath();
             returnKeyboard(view, keyboardBefore);
             // Every grammar is a dynamic import, so a code pane paints at once
             // in plain text and takes its colours a tick later. A cached state
@@ -1157,12 +1175,9 @@ function DocumentPane({
        these values — either by baking them into a fresh state or by
        reconfiguring an adopted one — and re-stating them is not free.
 
-       livePreviewCompartment is the expensive one. Each createLivePreviewPlugin
-       mints a NEW StateField, so reconfiguring it discards the field's value and
-       runs create() — a full buildDecorations pass over the document (tens of
-       thousands of ranges on a large note; see AGENTS.md). Ungated, every pane
-       mount paid for two of those instead of one, and a pane now mounts on every
-       tab switch: a five-pane split cost ten walks where five would do. */
+       The live-preview field now survives compartment reconfiguration; mode
+       changes still require a full render, while a context change touches only
+       the image widgets. */
     const settled = useRef(false);
 
     useEffect(() => {
@@ -1495,7 +1510,7 @@ function DocumentPane({
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => e.preventDefault()}
                     >
-                        <TexView source={tab.content} />
+                        <TexDocument store={documentBuffers} documentId={tab.id} path={path} contentOf={contentOf} />
                     </div>
                 )}
                 {!isCanvas && !unreadable && !texReading && (

@@ -99,8 +99,7 @@ export interface VaultToolHost {
     /** Identity of the open vault — a new object on every switch, null with none.
      *  The executor captures it when a run starts and refuses once it changes. */
     vaultToken(): object | null;
-    /** Ensure only requested text paths, against authoritative full membership. */
-    searchTextIndex(files: import('./index').FileTreeFileNode[], paths: string[]): Promise<Map<string, string>>;
+    searchAgent(config: { query: string; regex: boolean; caseSensitive: boolean; scope: string; maxResults: number }, signal?: AbortSignal): Promise<import('../utils/agentMatcher/types').MatchAnswer>;
     /** The file tree as the sidebar has it (root hidden folders excluded). */
     getFileTree(): FileTreeNode[];
     /** Direct children of a vault folder, straight from disk, hidden ones

@@ -18,6 +18,8 @@ export interface PdfTextInputHost<Point> {
 export interface PdfTextInputBinding {
     /** The camera can move while the pointer is still at an edge. */
     refreshPointer(): void;
+    /** Hiding cancels gesture work synchronously, but not the selection model. */
+    setVisible(visible: boolean): void;
     dispose(): void;
 }
 interface Drag<Point> {
@@ -34,12 +36,14 @@ function edgeSpeed(position: number, start: number, end: number): number {
 /** Bind once to the tiled PDF surface; text and geometry stay in its owner. */
 export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInputHost<Point>): PdfTextInputBinding {
     let drag: Drag<Point> | null = null, lastClick = 0, lastX = 0, lastY = 0, clicks = 0;
+    let visible = true;
     let hoverFrame = 0, hoverAbort: AbortController | null = null, hoverSequence = 0;
     const stop = (active: Drag<Point>) => {
+        if (drag !== active) return;
         if (active.timer !== undefined) window.clearTimeout(active.timer);
         active.abort.abort(); host.autoScroll(0, 0); host.setSelecting(false);
+        drag = null;
         if (element.hasPointerCapture(active.id)) element.releasePointerCapture(active.id);
-        if (drag === active) drag = null;
     };
     const begin = async (active: Drag<Point>) => {
         const point = await active.origin;
@@ -62,7 +66,7 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
         host.autoScroll(edgeSpeed(x, box.left, box.right), edgeSpeed(y, box.top, box.bottom));
     };
     const down = (event: PointerEvent) => {
-        if (event.button !== 0 || event.ctrlKey || host.isLink(event.target)) return;
+        if (!visible || !event.isPrimary || event.button !== 0 || event.ctrlKey || host.isLink(event.target)) return;
         if (drag?.ended) stop(drag);
         if (drag) return;
         const touch = event.pointerType === 'touch', now = performance.now();
@@ -89,6 +93,7 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
         }
     };
     const move = (event: PointerEvent) => {
+        if (!visible) return;
         const active = drag;
         if (!active || active.id !== event.pointerId) {
             if (event.pointerType === 'touch' || hoverFrame) return;
@@ -116,9 +121,10 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
         if (active.timer !== undefined) window.clearTimeout(active.timer);
         active.ended = true; host.autoScroll(0, 0);
         if (!active.dragging && !active.held && active.granularity === 'char') {
-            if (active.shift && host.hasSelection()) {
-                void active.origin.then(point => { if (point && drag === active) host.extend(point); }).finally(() => stop(active));
-            } else { host.clear(); stop(active); }
+            void active.origin.then(point => {
+                if (!point || drag !== active) return;
+                if (active.shift && host.hasSelection()) host.extend(point); else host.clear();
+            }).finally(() => stop(active));
         } else {
             // Keep the last hit alive until it resolves; a newer gesture can
             // still cancel this one rather than publishing into another page.
@@ -133,9 +139,10 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
         }
     };
     const cancel = (event: PointerEvent) => { if (drag?.id === event.pointerId) stop(drag); };
-    const menu = (event: MouseEvent) => { event.preventDefault(); host.contextMenu(event.clientX, event.clientY, false); };
+    const lost = (event: PointerEvent) => { if (drag?.id === event.pointerId && !drag.ended) stop(drag); };
+    const menu = (event: MouseEvent) => { if (visible) { event.preventDefault(); host.contextMenu(event.clientX, event.clientY, false); } };
     const key = (event: KeyboardEvent) => {
-        if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+        if (!visible || event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
         const target = event.target as HTMLElement | null;
         if (target?.closest('input, textarea, [contenteditable="true"], [role="dialog"], [role="menu"]')) return;
         event.preventDefault(); host.contextMenu(0, 0, true);
@@ -144,15 +151,25 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
     element.addEventListener('pointerdown', down); element.addEventListener('pointermove', move);
     element.addEventListener('pointerleave', leave); element.addEventListener('keydown', key);
     element.addEventListener('pointerup', up); element.addEventListener('pointercancel', cancel);
+    element.addEventListener('lostpointercapture', lost);
     element.addEventListener('contextmenu', menu);
     return {
-        refreshPointer: () => { if (drag) update(drag); },
+        refreshPointer: () => { if (visible && drag) update(drag); },
+        setVisible(next) {
+            visible = next;
+            if (!visible) {
+                if (drag) stop(drag);
+                if (hoverFrame) cancelAnimationFrame(hoverFrame);
+                hoverFrame = 0; hoverAbort?.abort(); ++hoverSequence; element.style.cursor = '';
+            }
+        },
         dispose() {
             if (drag) stop(drag);
             if (hoverFrame) cancelAnimationFrame(hoverFrame);
             hoverAbort?.abort(); element.style.cursor = '';
             element.removeEventListener('pointerdown', down); element.removeEventListener('pointermove', move);
             element.removeEventListener('pointerup', up); element.removeEventListener('pointercancel', cancel);
+            element.removeEventListener('lostpointercapture', lost);
             element.removeEventListener('pointerleave', leave); element.removeEventListener('keydown', key);
             element.removeEventListener('contextmenu', menu);
         },

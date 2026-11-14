@@ -50,9 +50,13 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
     notices.push(...sheetRepair.notices);
     if (sheetRepair.readOnlyReason) return refuse(sheetRepair.readOnlyReason);
     const mediaById = new Map<string, MediaEntry>(), duplicateMedia = new Set<number>();
-    const sameMap = (a: ReadonlyMap<string, string> | undefined, b: ReadonlyMap<string, string> | undefined) => {
+    let mediaWork = 0;
+    const sameMap = async (a: ReadonlyMap<string, string> | undefined, b: ReadonlyMap<string, string> | undefined) => {
         if ((a?.size ?? 0) !== (b?.size ?? 0)) return false;
-        if (a) for (const [key, value] of a) if (b?.get(key) !== value) return false;
+        if (a) for (const [key, value] of a) {
+            if ((mediaWork++ & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
+            if (b?.get(key) !== value) return false;
+        }
         return true;
     };
     for (let i = 0; i < sourceMedia.length; i++) {
@@ -62,7 +66,7 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
         // Only identical records collapse; conflicting metadata has no lossless winner.
         if (entry.mime !== first.mime || entry.bytes !== first.bytes || entry.w !== first.w || entry.h !== first.h
             || entry.duration !== first.duration || entry.animated !== first.animated || entry.name !== first.name || entry.file !== first.file
-            || !sameMap(entry.ext?.fields, first.ext?.fields) || !sameMap(entry.ext?.raw, first.ext?.raw)) {
+            || !(await sameMap(entry.ext?.fields, first.ext?.fields)) || !(await sameMap(entry.ext?.raw, first.ext?.raw))) {
             return refuse('Conflicting duplicate media records require original-byte recovery');
         }
         duplicateMedia.add(i);

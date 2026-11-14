@@ -54,6 +54,12 @@ function scaleFor(item: PaintItem, scale: number): number {
     return Math.max(Number.MIN_VALUE, scale * Math.hypot(a, b, c, d));
 }
 
+function sameToken(a: PaintFrame, b: PaintFrame): boolean {
+    const x = a.token, y = b.token;
+    return x.vaultEpoch === y.vaultEpoch && x.documentId === y.documentId
+        && x.bytesGeneration === y.bytesGeneration && x.session === y.session;
+}
+
 function releaseSnapshot(s: Snapshot): void {
     if (s.disposed) return;
     s.disposed = true;
@@ -139,7 +145,7 @@ export function createCanvasPaintAdapter(
         } else {
             const itemScale = scaleFor(item, s.scale);
             const key = `${item.kind}:${item.geometryKey}:${item.kind === 'ink' ? itemScale : ''}`;
-            const cached = s.geometry.get(key) ?? presented?.geometry.get(key);
+            const cached = s.geometry.get(key) ?? (presented && sameToken(s.frame, presented.frame) ? presented.geometry.get(key) : undefined);
             if (cached) {
                 if (!s.geometry.has(key)) { s.geometry.set(key, cached); s.bytes += cached.bytes; }
                 s.paths.set(item, cached.prepared);
@@ -163,6 +169,7 @@ export function createCanvasPaintAdapter(
                 if (staged) { releaseSnapshot(staged); staged = null; }
                 return;
             }
+            if (presented && !sameToken(presented.frame, frame)) { releaseSnapshot(presented); presented = null; }
             if (staged && (staged.frame !== frame || staged.scale !== scale)) { releaseSnapshot(staged); staged = null; }
             if (!staged && (!presented || presented.frame !== frame || presented.scale !== scale)) staged = start(frame, scale);
             const s = staged;

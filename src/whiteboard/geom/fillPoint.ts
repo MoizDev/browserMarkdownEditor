@@ -1,10 +1,13 @@
 import { dyadic, dyadicMultiply, dyadicSubtract } from './numeric';
 import { exactAffinePoint } from './exactAffine';
+import type { ExactPoint } from './homogeneous';
 import type { Affine } from '../../platform/types';
 import type { Dyadic } from './numeric';
 import type { PathOp, Vec2 } from './path';
 
-export interface FillPointLimits { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly maxCommands?: number; readonly localToWorld?: Affine }
+export interface FillPointLimits { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly maxCommands?: number; readonly localToWorld?: Affine;
+    /** Exact unit-weight dyadic query, for a transformed source point without rounding. */
+    readonly exactPoint?: ExactPoint }
 export type FillPointStep = { readonly status: 'pending' | 'inside' | 'outside' } | { readonly status: 'uncertain'; readonly reason: string };
 type DPoint = { readonly x: Dyadic; readonly y: Dyadic };
 type Curve = { readonly p: readonly [DPoint, DPoint, DPoint, DPoint]; readonly depth: number };
@@ -40,7 +43,9 @@ export function createFillPointJob(paths: readonly (readonly PathOp[])[], point:
         maxWork = limits.maxWork ?? 5000000, maxCommands = limits.maxCommands ?? 1000000;
     if (!Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1 || !Number.isSafeInteger(maxCommands) || maxCommands < 1) throw new RangeError('Invalid fill point limits');
-    const origin = { x: dyadic(point.x), y: dyadic(point.y) };
+    if (limits.exactPoint && (limits.exactPoint.w.n !== 1n || limits.exactPoint.w.e !== 0)) throw new RangeError('Fill point requires unit homogeneous weight');
+    const origin = limits.exactPoint ? { x: limits.exactPoint.x, y: limits.exactPoint.y } : { x: dyadic(point.x), y: dyadic(point.y) };
+    valid(origin.x); valid(origin.y);
     const translate = (p: Vec2): DPoint => {
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) throw new RangeError('Invalid fill path coordinate');
         const mapped = limits.localToWorld ? exactAffinePoint(limits.localToWorld, p) : { x: dyadic(p.x), y: dyadic(p.y) };

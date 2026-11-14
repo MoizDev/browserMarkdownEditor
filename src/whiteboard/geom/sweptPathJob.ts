@@ -8,7 +8,7 @@ import type { PathPickOptions } from './pick';
 import type { RegionQuery } from './types';
 
 export type SweptPathResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
-export interface SweptPathLimits { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number }
+export interface SweptPathLimits { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly probeInterior?: boolean }
 type Sweep = Extract<RegionQuery, { kind: 'swept' }>;
 type Pair = Readonly<{ path: CertifiedCurve; sweep: CertifiedCurve; radius: Interval }>;
 const PENDING: SweptPathResult = Object.freeze({ status: 'pending' });
@@ -66,7 +66,7 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Swept path work limit exhausted' });
-                if (options.interiorPaths?.length && fillIndex < query.points.length) {
+                if (limits.probeInterior !== false && options.interiorPaths?.length && fillIndex < query.points.length) {
                     if (!fill) fill = createFillPointJob(options.interiorPaths, query.points[fillIndex], 'nonzero',
                         { localToWorld: matrix, maxCommands: options.maxSegments });
                     const state = fill.step({ deadline: budget.deadline, maxWork: 1 });

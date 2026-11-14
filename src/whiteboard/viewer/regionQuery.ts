@@ -2,8 +2,9 @@ import type { Affine, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import { worldPose } from '../change/coordinates';
 import { compose, inverse } from '../geom/affine';
-import { regionPath, type PathPickOptions } from '../geom/pick';
+import type { PathPickOptions } from '../geom/pick';
 import { createSweptPathJob } from '../geom/sweptPathJob';
+import { createPolygonPathJob } from '../geom/polygonPathJob';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import { orient2d } from '../geom/predicates';
@@ -188,8 +189,8 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     const connector = prepared.connector, worldQuery = { ...localQuery, localToSurface: worldToCss } as RegionQuery;
                     const pathOptions = { strokeRadiusLocal: node.width / 2, marginCss: 0, errorCss: 0.01, maxSegments: 8192 };
                     const pathHit = async (paths: readonly (readonly PathOp[])[], region: RegionQuery, pathOptions: PathPickOptions) => {
-                        if (region.kind !== 'swept') return regionPath(paths, region, pathOptions).hit;
-                        const job = createSweptPathJob(paths, region, pathOptions);
+                        const job = region.kind === 'swept' ? createSweptPathJob(paths, region, pathOptions)
+                            : createPolygonPathJob(paths, region, pathOptions);
                         try {
                             for (;;) {
                                 check(); const state = job.step({ deadline: performance.now() + 3, maxWork: 128 });

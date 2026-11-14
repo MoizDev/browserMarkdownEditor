@@ -29,7 +29,9 @@ export async function pngWithClipboardDensity(png: Blob, pixelsPerWorldUnit: num
     let offset = 33, count = 0, ended = false;
     while (offset + 12 <= png.size) {
         if (++count > 100_000) throw new RangeError('PNG capture contains too many chunks');
-        if ((count & 255) === 0) reserve();
+        if ((count & 255) === 0) {
+            reserve(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted();
+        }
         const next = new Uint8Array(await png.slice(offset, offset + 8).arrayBuffer()); signal.throwIfAborted();
         const length = new DataView(next.buffer).getUint32(0), type = String.fromCharCode(...next.subarray(4, 8));
         if (length > png.size - offset - 12 || type === 'IHDR') throw new Error('Invalid PNG capture chunk');

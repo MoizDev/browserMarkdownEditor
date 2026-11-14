@@ -3,23 +3,27 @@ import type { PageTextReply, PdfTextDetail } from '../worker/protocol';
 import type { PdfPoolTextSource } from './poolReader';
 import { validatePdfTextReply } from './validate';
 import { exactPdfTextGeometry } from './exactGeometry';
+import { getPdfFontEpoch, subscribePdfFontEpoch } from '../fonts/profiles';
 
 /** The session's retained pool lease is the only engine-facing text source. */
 export function pdfPoolTextSource(document: PdfPoolDocument): PdfPoolTextSource {
     const docKey = document.docKey;
     const request = async (page: number, detail: PdfTextDetail, priority: 0 | 1 | 2 | 3, signal: AbortSignal): Promise<PageTextReply> => {
         if (document.closed || signal.aborted) throw new DOMException('PDF text operation cancelled', 'AbortError');
+        const epoch = getPdfFontEpoch(docKey);
         const reply = await document.text(page, detail, { priority, signal });
         if (document.closed || signal.aborted) throw new DOMException('PDF text operation cancelled', 'AbortError');
         if (reply.docKey !== docKey || reply.page !== page || reply.schema !== 2) throw new Error('The PDF text worker returned a stale page.');
         const geometry = detail === 'text' ? undefined : await exactPdfTextGeometry(document, page, priority, signal);
         await validatePdfTextReply(reply, geometry, detail, signal);
-        if (signal.aborted || document.closed || document.docKey !== docKey) throw new DOMException('PDF text operation cancelled', 'AbortError');
+        if (signal.aborted || document.closed || document.docKey !== docKey || getPdfFontEpoch(docKey) !== epoch) throw new DOMException('PDF text operation cancelled', 'AbortError');
         return reply;
     };
     return {
         generation: document.token.bytesGeneration,
-        cacheKey: `pdfium-page-v1:${docKey}`,
+        get cacheKey() { return `pdfium-page-v1:schema-2:${docKey}:font:${getPdfFontEpoch(docKey)}`; },
+        fontEpoch: () => getPdfFontEpoch(docKey),
+        subscribeFontEpoch: listener => subscribePdfFontEpoch(docKey, listener),
         pageCount: document.info.pageCount,
         async text(page, priority, signal) {
             const reply = await request(page, 'text', priority, signal);

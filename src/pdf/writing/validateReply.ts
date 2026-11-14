@@ -18,7 +18,7 @@ function matching(value: unknown, pattern: RegExp): string {
 }
 function outputBytes(value: unknown): ArrayBuffer {
     if (!(value instanceof ArrayBuffer) || value.byteLength < 1 || value.byteLength > MAX_FILE) invalidPdfReply();
-    return value.slice(0);
+    return value; // Transferred non-shared bytes are already owned by the privileged host.
 }
 function fingerprint(value: unknown): string { return matching(value, HASH); }
 function exact(actual: unknown, expected: unknown): void { if (actual !== expected) invalidPdfReply(); }

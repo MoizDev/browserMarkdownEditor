@@ -10,6 +10,7 @@ import { compositeEmphasis } from '../emphasis/composite';
 import { planEmphasisProbeGeometry } from '../emphasis/profile';
 import { compilePdfEngine } from './compileEngine';
 import { PdfBlobSource } from './rangeSource';
+import { pdfWorkerOwnedMemory } from './ownedMemory';
 import { runPdfRenderJob } from './renderJob';
 import { buildWorkerPageText } from './text';
 import { PDF_ENGINE_PROTOCOL, PDF_ENGINE_ROLE_VERSION, parsePdfDocKey } from './protocol';
@@ -33,6 +34,8 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
     const docs = new Map<string, OpenDoc>();
     const fonts = new Map<PdfFontId, Uint8Array>();
     let fontEpoch = 0;
+    let geometryEventAt = -Infinity;
+    let memoryEventAt = -Infinity;
     const channel = new MessageChannel();
     const yieldTurn = () => new Promise<void>(resolve => { channel.port1.onmessage = () => resolve(); channel.port2.postMessage(0); });
     const serial = (fn: (value: unknown, context: WorkerContext) => unknown | Promise<unknown>) =>
@@ -53,6 +56,12 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                     if (ids.some(id => id === null) || !ids.length) throw new PdfEngineError('NotSupported', 'A font needed by this page is unavailable');
                     context.emit('font.needed', { ids, docKey: key, ...(typeof args.page === 'number' ? { page: args.page } : {}) });
                     throw new PdfEngineError('FontPending', 'PDF fonts are being installed');
+                } finally {
+                    if (!closed && performance.now() - memoryEventAt >= 500) {
+                        memoryEventAt = performance.now();
+                        try { context.emit('worker.memory', pdfWorkerOwnedMemory(backend?.heapBytes() ?? writer?.heapBytes() ?? 0, fonts.values(), docs.values())); }
+                        catch { /* A failed native instance cannot replace the operation's actual error with telemetry. */ }
+                    }
                 }
             });
             chain = next.catch(() => {}); return next;
@@ -103,7 +112,14 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         const before = backend?.heapBytes() ?? 0;
         const result = item.doc.page(page), signature = JSON.stringify(result), previous = item.geometry.get(page);
         if (previous !== undefined && previous !== signature) throw bad('EngineBroken', 'PDF page geometry changed');
-        if (previous === undefined) { item.geometry.set(page, signature); ctx.emit('page.geometry', { docKey: key, geometry: result }); }
+        if (previous === undefined) {
+            item.geometry.set(page, signature);
+            // Status events are hints, not reply authority. Fast canonical-find
+            // extraction must not exceed C5's small-event rate budget.
+            if (performance.now() - geometryEventAt >= 500) {
+                geometryEventAt = performance.now(); ctx.emit('page.geometry', { docKey: key, geometry: result });
+            }
+        }
         item.loaded.set(page, Math.max(item.loaded.get(page) ?? 0, (backend?.heapBytes() ?? before) - before));
         for (const [index, bytes] of item.loaded) if (Math.abs(index - page) > (bytes > 64 * 1024 * 1024 ? 1 : 12)) {
             item.raw.delete(index); item.doc.releasePage(index); item.clone?.releasePage(index); item.loaded.delete(index);
@@ -203,6 +219,13 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 item.clone.releasePage(page);
                 if (JSON.stringify(item.clone.page(page)) !== JSON.stringify(g)) throw bad('EngineBroken', 'PDF emphasis clone mismatch');
                 verifyClone(raw, item.clone.text(page));
+                const cloneOff = await runPdfRenderJob(item.clone.render(req), bounds, hooks);
+                const plainPixels = new Uint8Array(off.pixels), clonePixels = new Uint8Array(cloneOff.pixels);
+                if (plainPixels.length !== clonePixels.length || off.w !== cloneOff.w || off.h !== cloneOff.h) throw bad('EngineBroken', 'PDF emphasis clone raster mismatch');
+                for (let i = 0; i < plainPixels.length; i++) {
+                    if ((i & 0x3ffff) === 0) await ctx.slice();
+                    if (plainPixels[i] !== clonePixels[i]) throw bad('EngineBroken', 'PDF emphasis clone raster mismatch');
+                }
                 const on = await runPdfRenderJob(item.clone.emphasisStroked(req, plan.objectIndexes, 0.035), bounds, hooks);
                 const composed = compositeEmphasis(new Uint8Array(off.pixels), new Uint8Array(on.pixels), plan.cells,
                     { x: -1, y: -1, width: off.w, height: off.h, pageX: 0, pageY: 0, scale: p.scale });
@@ -229,7 +252,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 if (!fonts.has(id)) { fonts.set(id, new Uint8Array(args.bytes)); fontEpoch++; }
                 return { fontEpoch };
             }),
-            'worker.stats': serial(() => ({ heapBytes: backend?.heapBytes() ?? 0, docs: docs.size, pagesLoaded: [...docs.values()].reduce((sum, item) => sum + item.loaded.size, 0), blockCacheBytes: [...docs.values()].reduce((sum, item) => sum + item.source.cachedBytes, 0) })),
+            'worker.stats': serial(() => ({ heapBytes: backend?.heapBytes() ?? writer?.heapBytes() ?? 0, docs: docs.size, pagesLoaded: [...docs.values()].reduce((sum, item) => sum + item.doc.residentPages() + (item.clone?.residentPages() ?? 0), 0), blockCacheBytes: [...docs.values()].reduce((sum, item) => sum + item.source.cachedBytes, 0) })),
         } });
-    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); void writer?.close(); channel.port1.close(); channel.port2.close(); };
+    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); fonts.clear(); backend?.close?.(); void writer?.close(); channel.port1.close(); channel.port2.close(); };
 }

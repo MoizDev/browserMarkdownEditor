@@ -12,6 +12,7 @@ export interface PdfPageQuality {
     setRegions(docKey: string, page: number, regions: PdfiumJbig2Regions): void;
     observeTile(docKey: string, page: number, tile: PageTileResult): void;
     snapshot(docKey: string, page: number): PdfPageQualitySnapshot;
+    needsRegions(docKey: string, page: number): boolean;
     clear(docKey?: string): void;
 }
 
@@ -29,6 +30,7 @@ interface PageRecord {
 /** Sampling uses only delivered tile interiors; no pixel buffer is retained. */
 export function createPdfPageQuality(): PdfPageQuality {
     const pages = new Map<string, Map<number, PageRecord>>();
+    const lru = new Map<PageRecord, { docKey: string; page: number }>();
     let pageCount = 0, samplerCount = 0;
     const validateKey = (docKey: string, page: number) => {
         if (typeof docKey !== 'string' || !docKey || docKey.length > 2048 || !Number.isSafeInteger(page) || page < 0 || page >= 100_000) {
@@ -37,12 +39,21 @@ export function createPdfPageQuality(): PdfPageQuality {
     };
     const release = (entry: PageRecord) => { samplerCount -= entry.samplers.length; entry.samplers = []; entry.profile = undefined; };
     const lookup = (docKey: string, page: number) => pages.get(docKey)?.get(page);
+    const touch = (entry: PageRecord, docKey: string, page: number) => {
+        lru.delete(entry); lru.set(entry, { docKey, page });
+    };
+    const evict = () => {
+        const oldest = lru.entries().next().value;
+        if (!oldest) return;
+        const [entry, { docKey, page }] = oldest, group = pages.get(docKey)!;
+        release(entry); lru.delete(entry); group.delete(page); pageCount--;
+        if (!group.size) pages.delete(docKey);
+    };
     return {
         setRegions(docKey, page, value) {
             validateKey(docKey, page);
             if (!value || typeof value.partial !== 'boolean' || !Array.isArray(value.regions) || value.regions.length > 20_000) throw new RangeError('Invalid PDF image regions');
             let group = pages.get(docKey), entry = group?.get(page);
-            if (!entry && pageCount >= MAX_PAGES) return;
             const ids = new Set<number>(), regions: Jbig2ImageRegion[] = [];
             for (const candidate of value.regions) {
                 if (!candidate || !Number.isSafeInteger(candidate.id) || candidate.id < 0 || ids.has(candidate.id) ||
@@ -52,8 +63,13 @@ export function createPdfPageQuality(): PdfPageQuality {
                 ids.add(candidate.id);
                 if (regions.length < MAX_REGIONS) regions.push({ id: candidate.id, box: [candidate.box[0], candidate.box[1], candidate.box[2], candidate.box[3]] });
             }
+            if (!entry && pageCount >= MAX_PAGES) {
+                evict();
+                group = pages.get(docKey);
+            }
             if (!group) { group = new Map(); pages.set(docKey, group); }
             if (!entry) { entry = { regions: [], partial: false, degraded: false, samplers: [] }; group.set(page, entry); pageCount++; }
+            touch(entry, docKey, page);
             release(entry);
             entry.regions = regions;
             entry.partial = value.partial || value.regions.length > MAX_REGIONS;
@@ -62,6 +78,7 @@ export function createPdfPageQuality(): PdfPageQuality {
             validateKey(docKey, page);
             const entry = lookup(docKey, page);
             if (!entry || !entry.regions.length) return;
+            touch(entry, docKey, page);
             if (!tile || tile.docKey !== docKey || tile.page !== page || !Number.isFinite(tile.scale) || tile.scale <= 0 ||
                 (tile.variant !== 'plain' && tile.variant !== 'emphasis') || typeof tile.profileKey !== 'string' || tile.profileKey.length > 2048) {
                 throw new RangeError('Invalid PDF quality tile');
@@ -70,6 +87,7 @@ export function createPdfPageQuality(): PdfPageQuality {
                 tile.variant === 'emphasis' ? [tile.emphasis.algorithm, tile.emphasis.revision, tile.emphasis.strokeEm, tile.emphasis.locale ?? null] : null]);
             if (entry.profile !== profile) {
                 release(entry);
+                while (samplerCount + entry.regions.length > MAX_SAMPLERS && lru.size > 1) evict();
                 if (samplerCount + entry.regions.length > MAX_SAMPLERS) return;
                 entry.samplers = entry.regions.map(region => new Jbig2ImageSampler(`page:${page}:region:${region.id}`, region, tile.scale));
                 samplerCount += entry.samplers.length;
@@ -91,11 +109,12 @@ export function createPdfPageQuality(): PdfPageQuality {
             if (entry.degraded) return { state: 'degraded', complete, reason: WARNING };
             return complete ? { state: 'clean', complete: true } : { state: 'unknown', complete: false };
         },
+        needsRegions(docKey, page) { validateKey(docKey, page); return !lookup(docKey, page); },
         clear(docKey) {
-            if (docKey === undefined) { pages.clear(); pageCount = 0; samplerCount = 0; return; }
+            if (docKey === undefined) { pages.clear(); lru.clear(); pageCount = 0; samplerCount = 0; return; }
             const group = pages.get(docKey);
             if (!group) return;
-            for (const entry of group.values()) release(entry);
+            for (const entry of group.values()) { release(entry); lru.delete(entry); }
             pageCount -= group.size;
             pages.delete(docKey);
         },

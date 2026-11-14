@@ -39,9 +39,9 @@ function projected(box: OrientedBox, view: ViewState) {
 export function createSelectionHandles(options: SelectionHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let box: OrientedBox | null = null, controller: AbortController | undefined, generation = 0, disposed = false;
-    let svg: SVGSVGElement | undefined;
+    let svg: SVGSVGElement | undefined, hitCamera: ViewState['camera'] | null = null;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
-    const clear = () => { box = null; svg?.remove(); svg = undefined; options.invalidate(); };
+    const clear = () => { box = null; svg?.remove(); svg = undefined; hitCamera = null; options.invalidate(); };
     const refresh = () => {
         const turn = ++generation; controller?.abort(); controller = new AbortController(); const signal = controller.signal;
         clear(); if (!current()) return;
@@ -55,13 +55,22 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             const scope = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { signal, current: active, cooperate: options.cooperate });
             try {
                 if (!active()) return;
-                const rotations: number[] = [], pending = [...roots];
+                const pending = [...roots]; let visited = 0, reference: number | undefined, mixed = false;
                 while (pending.length) {
+                    if (!active()) return;
                     const node = pending.pop()!;
                     if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
-                    else rotations.push(worldPose(doc, node.id).rotation);
+                    else {
+                        const angle = worldPose(doc, node.id).rotation;
+                        if (reference === undefined) reference = angle;
+                        else if (commonResizeRotation([reference, angle]) === null) mixed = true;
+                    }
+                    if (++visited % 128 === 0) {
+                        await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                        if (!active()) return;
+                    }
                 }
-                const rotation = commonResizeRotation(rotations) ?? 0, c = Math.cos(rotation), s = Math.sin(rotation);
+                const rotation = mixed ? 0 : reference ?? 0, c = Math.cos(rotation), s = Math.sin(rotation);
                 const target = inverse([c, s, -s, c, 0, 0], 1e12); if (!target) throw new Error('Selection frame is not invertible');
                 let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
                 for (const root of roots) {
@@ -79,15 +88,15 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
     return {
         refresh,
         contains(world: Vec2): boolean {
-            if (!current() || !box || !Number.isFinite(world.x) || !Number.isFinite(world.y)) return false;
+            if (!current() || !box || !hitCamera || !Number.isFinite(world.x) || !Number.isFinite(world.y)) return false;
             const dx = world.x - box.origin.x, dy = world.y - box.origin.y, c = Math.cos(box.rotation), s = Math.sin(box.rotation);
-            const x = c * dx + s * dy, y = -s * dx + c * dy, margin = 8 / options.camera().camera.z;
+            const x = c * dx + s * dy, y = -s * dx + c * dy, margin = 8 / hitCamera.z;
             return Number.isFinite(margin) && x >= -margin && x <= box.width + margin && y >= -margin && y <= box.height + margin;
         },
         hit(surface: Vec2, coarse = false): SelectionHandleHit | null {
-            if (!current() || !box || !Number.isFinite(surface.x) || !Number.isFinite(surface.y)) return null;
+            if (!current() || !box || !hitCamera || !Number.isFinite(surface.x) || !Number.isFinite(surface.y)) return null;
             // Default, calibration cut by owner: resize precedes the outward rotation hotspot.
-            const geometry = projected(box, options.camera()), radius = coarse ? 14 : 6;
+            const geometry = projected(box, { ...options.camera(), camera: hitCamera }), radius = coarse ? 14 : 6;
             for (let i = 0; i < handles.length; i++) if (Math.hypot(surface.x - geometry.positions[i].x, surface.y - geometry.positions[i].y) <= radius)
                 return { kind: 'resize', handle: handles[i] };
             if (Math.hypot(surface.x - geometry.rotate.x, surface.y - geometry.rotate.y) <= (coarse ? 10 : 3.5))
@@ -95,7 +104,8 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             return null;
         },
         write(frame: ScheduledFrame) {
-            if (!current() || !box) { svg?.remove(); svg = undefined; return; }
+            if (!current() || !box) { svg?.remove(); svg = undefined; hitCamera = null; return; }
+            hitCamera = { ...frame.view.camera };
             if (!svg) {
                 svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
                 svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
@@ -115,6 +125,6 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             }
         },
         hide() { generation++; controller?.abort(); clear(); },
-        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); stopSelection(); stopSession(); svg?.remove(); svg = undefined; box = null; },
+        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); stopSelection(); stopSession(); svg?.remove(); svg = undefined; box = null; hitCamera = null; },
     };
 }

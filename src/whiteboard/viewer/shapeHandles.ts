@@ -57,9 +57,12 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let handles: readonly Handle[] = [], selected: NodeId | null = null, generation = 0, disposed = false;
     let controller: AbortController | undefined, svg: SVGSVGElement | undefined;
+    let rendered: readonly Handle[] | null = null, renderedCount = 0, renderedCamera = '';
+    let hitCamera: ViewState['camera'] | null = null;
     let controlPending: AbortController | undefined, headBusy = false;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
-    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; options.invalidate(); };
+    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined;
+        rendered = null; renderedCount = 0; renderedCamera = ''; hitCamera = null; options.invalidate(); };
     const refresh = () => {
         const turn = ++generation; controller?.abort(); controller = new AbortController(); const signal = controller.signal;
         clear(); if (!current()) return;
@@ -81,6 +84,10 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                         const world = (p: Vec2) => ({ x: pose.x + c * p.x - s * p.y, y: pose.y + s * p.x + c * p.y });
                         for (let index = 0; index < actual.points.length; index++) {
                             next.push({ hit: { kind: 'polyline-vertex', index }, point: world(actual.points[index]) });
+                            if ((index & 127) === 127) {
+                                await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                                if (!active()) return;
+                            }
                         }
                         const path = polylinePath({ ...node, points: actual.points });
                         for (let index = 1; index < path.length; index++) {
@@ -91,6 +98,10 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                                 : { x: (a.x + 3 * segment.c1.x + 3 * segment.c2.x + segment.p.x) / 8,
                                     y: (a.y + 3 * segment.c1.y + 3 * segment.c2.y + segment.p.y) / 8 };
                             next.push({ hit: { kind: 'polyline-midpoint', index }, point: world(p) });
+                            if ((index & 127) === 127) {
+                                await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                                if (!active()) return;
+                            }
                         }
                     } finally { actual.release(); }
                 } else {
@@ -123,9 +134,10 @@ export function createShapeHandles(options: ShapeHandleOptions) {
         refresh,
         hit(surface: Vec2, coarse = false): ShapeHandleHit | null {
             if (!current() || ![surface.x, surface.y].every(Number.isFinite)) return null;
-            const view = options.view(), radius = coarse ? 16 : 7;
-            for (const handle of handles) {
-                const p = worldToSurface(handle.point, view.camera);
+            const camera = hitCamera, radius = coarse ? 16 : 7;
+            if (!camera || rendered !== handles) return null;
+            for (let index = 0; index < renderedCount; index++) {
+                const handle = handles[index], p = worldToSurface(handle.point, camera);
                 if (Math.hypot(surface.x - p.x, surface.y - p.y) <= radius) return handle.hit;
             }
             return null;
@@ -187,20 +199,32 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             return true;
         },
         write(frame: ScheduledFrame) {
-            if (!current() || !handles.length) { svg?.remove(); svg = undefined; return; }
+            if (!current() || !handles.length) { svg?.remove(); svg = undefined; rendered = null; renderedCount = 0; hitCamera = null; return; }
             if (!svg) {
                 svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
                 svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
             }
-            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'), parts: string[] = [];
-            for (const handle of handles) {
-                const p = worldToSurface(handle.point, frame.view.camera), r = handle.hit.kind === 'connector-control' || handle.hit.kind === 'polyline-midpoint' ? 3 : 5;
-                parts.push(`M ${p.x - r} ${p.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`);
+            const camera = frame.view.camera, key = `${camera.x}:${camera.y}:${camera.z}`;
+            if (rendered !== handles || renderedCamera !== key) {
+                svg.replaceChildren(); rendered = handles; renderedCount = 0; renderedCamera = key; hitCamera = { ...camera };
             }
-            path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');
-            path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5'); svg.replaceChildren(path);
+            // A large imported polyline cannot rebuild thousands of SVG commands in one frame.
+            const limit = Math.min(handles.length, renderedCount + 1024);
+            while (renderedCount < limit) {
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'), parts: string[] = [];
+                const end = Math.min(limit, renderedCount + 256);
+                while (renderedCount < end) {
+                    const handle = handles[renderedCount++], p = worldToSurface(handle.point, camera);
+                    const r = handle.hit.kind === 'connector-control' || handle.hit.kind === 'polyline-midpoint' ? 3 : 5;
+                    parts.push(`M ${p.x - r} ${p.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`);
+                }
+                path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');
+                path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5'); svg.append(path);
+            }
+            if (renderedCount < handles.length) options.invalidate();
         },
         hide() { generation++; controller?.abort(); controlPending?.abort(); clear(); },
-        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); controlPending?.abort(); controlPending = undefined; stopSelection(); stopSession(); svg?.remove(); svg = undefined; handles = []; selected = null; },
+        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); controlPending?.abort(); controlPending = undefined; stopSelection(); stopSession(); svg?.remove(); svg = undefined; handles = []; selected = null;
+            rendered = null; renderedCount = 0; hitCamera = null; },
     };
 }

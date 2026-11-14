@@ -4,6 +4,8 @@ import type { Fill } from '../model/styles';
 import type { TextPaint } from '../text/paint';
 import { cubicBounds } from './bounds';
 import type { Box } from './bounds';
+import { ContourClipper, hatchLines, reflectHatch } from './clip';
+import type { HatchLine } from './clip';
 import { figureOutline, figureSemanticBounds, realiseFigureContour } from './figures';
 import type { PathOp, Vec2 } from './path';
 import { pointPath, regionPath } from './pick';
@@ -31,6 +33,16 @@ export interface FigureGeometryOptions {
     readonly label: PositionedFigureText | null;
 }
 export type FigureGeometry = KindGeometry<FigurePaintPath, PositionedFigureText, FigureAttachmentSurface>;
+
+/** Restrict hatch work to a visible local region; export can enumerate regions in tiles. */
+export function* figureHatch(geometry: FigureGeometry, node: Readonly<FigureNode>, bounds: Rect,
+    angle: number, spacing: number, phase: number, maxLines: number, maxSegments: number): Generator<HatchLine> {
+    if (!geometry.attachments) throw new RangeError('Figure outline is unavailable');
+    const clipped = new ContourClipper([geometry.attachments.outline], maxSegments);
+    const orientation = reflectHatch(angle, phase, node.w, node.h + node.growY, node.flipX, node.flipY);
+    yield* hatchLines(clipped, bounds, orientation.angle, spacing, orientation.phase, maxLines);
+}
+
 export function figureSceneBounds(geometry: FigureGeometry): Readonly<{ ink: Box; hit: Box }> {
     const box = (r: Rect): Box => [r.x, r.y, r.x + r.width, r.y + r.height];
     return { ink: box(geometry.inkBoundsLocal), hit: box(geometry.selectBoundsLocal) };

@@ -74,7 +74,7 @@ export interface PdfPaneProps {
     content: string;
     onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
     /** Writes to disk immediately; used as the canvas hands over to the viewer. */
-    onFlushNow: (path: string, content: string) => void;
+    onFlushNow: (path: string, content: string) => Promise<void>;
     onPreparePrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean }>;
     /** This PDF is a notebook's export — open that notebook instead. Takes the
      *  PDF's own path too, so App can put its tab back into reading mode. */
@@ -728,6 +728,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         snapshot={isDirty ? content || editableSource.snapshot : editableSource.snapshot}
                         onContentChange={onContentChange}
                         onFlushNow={onFlushNow}
+                        onSaveError={reading?.onNotify}
                         onFlushStart={() => setFlushing(true)}
                     />
                 </Suspense>

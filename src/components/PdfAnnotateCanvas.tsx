@@ -45,7 +45,7 @@ interface PdfAnnotateCanvasProps {
     /** Path-explicit: a debounced save can land after a tab switch. */
     onContentChange: (path: string, content: string) => void;
     /** Same, but writes to disk immediately — used when the canvas is going away. */
-    onFlushNow: (path: string, content: string) => void;
+    onFlushNow: (path: string, content: string) => Promise<void>;
     /**
      * Called synchronously as the canvas unmounts with strokes still to write.
      * Exporting them takes a moment, and until it does the tab isn't marked
@@ -53,6 +53,7 @@ interface PdfAnnotateCanvasProps {
      * was BEFORE those strokes.
      */
     onFlushStart: () => void;
+    onSaveError?: (message: string) => void;
 }
 
 /**
@@ -84,19 +85,10 @@ const ANNOTATE_COLOR_SCHEME = 'light';
  */
 const RASTER_ONLY_SHAPES = new Set(['text', 'note', 'image', 'video', 'bookmark', 'embed']);
 
-/**
- * Deliberately far longer than DrawingPane's 400ms.
- *
- * A drawing's save is a JSON.stringify. A PDF's save rasterizes every annotated
- * page and then rebuilds the entire document — tens to hundreds of milliseconds
- * on the main thread, which is the same thread the pen is drawing on. At 400ms
- * an ordinary pause to think fires a full export, so the next stroke stutters.
- *
- * 1.5s idle means the export lands between thoughts rather than between strokes.
- * The app's own 1s save debounce then follows, so a stroke reaches disk ~2.5s
- * after you stop — still well inside the "close the tab and it's saved" flush.
- */
-const SERIALIZE_DEBOUNCE_MS = 1500;
+// Export only after the pen is lifted; the prepared revision bypasses the
+// ordinary note debounce and enters the versioned save funnel immediately.
+const SERIALIZE_DEBOUNCE_MS = 250;
+const MAX_PENDING_MS = 2000;
 
 /* ── Keeping the backdrop sharp when you zoom in ──────────────────────────
  *
@@ -199,7 +191,7 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
-export default function PdfAnnotateCanvas({ documentId, filePath, original, session, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
+export default function PdfAnnotateCanvas({ documentId, filePath, original, session, snapshot, onContentChange, onFlushNow, onFlushStart, onSaveError, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
     // Geometry only. The canvas mounts as soon as this lands; the page images
     // stream in afterwards through pageImagesRef.
     const [pages, setPages] = useState<PdfPageSize[] | null>(null);
@@ -226,6 +218,8 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
     useEffect(() => { onFlushNowRef.current = onFlushNow; }, [onFlushNow]);
     const onFlushStartRef = useRef(onFlushStart);
     useEffect(() => { onFlushStartRef.current = onFlushStart; }, [onFlushStart]);
+    const onSaveErrorRef = useRef(onSaveError);
+    useEffect(() => { onSaveErrorRef.current = onSaveError; }, [onSaveError]);
 
     // Parsed once, on mount. `snapshot` churns as saves round-trip, but tldraw
     // owns the document from mount on, so re-reading it would be pointless work
@@ -598,8 +592,13 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
          *        switch, tab close). The viewer re-reads the file the instant it
          *        appears, so the write cannot sit in a debounce queue.
          */
+        let revision = 0;
+        let firstPending = 0;
+        const activePointers = new Set<number>();
         const flush = async (immediate = false) => {
             serializeTimerRef.current = null;
+            const capturedRevision = revision;
+            const stagedCache = new Map(overlayCacheRef.current);
             // Cleared up front, not after: a stroke drawn while this is exporting
             // must re-arm the flag rather than be swallowed by it.
             hasUnsavedRef.current = false;
@@ -646,7 +645,7 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
                 if (cached?.signature === signature) { overlays.push(cached.overlay); continue; }
 
                 if (!onThisPage.length) {
-                    overlayCacheRef.current.set(i, { signature, overlay: undefined });
+                    stagedCache.set(i, { signature, overlay: undefined });
                     overlays.push(undefined);
                     continue;
                 }
@@ -689,7 +688,7 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
                     }
 
                     const result = isEmptyOverlay(overlay) ? undefined : overlay;
-                    overlayCacheRef.current.set(i, { signature, overlay: result });
+                    stagedCache.set(i, { signature, overlay: result });
                     overlays.push(result);
                 } catch (err) {
                     // A new editable snapshot with an old/missing overlay is a
@@ -699,10 +698,14 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
                 }
             }
 
-            // Hand the binary to the save path, then report the snapshot as this
-            // tab's content — that marks it dirty and triggers the write.
+            // The live exporter may have crossed a later edit while awaiting
+            // SVG/image work. Never publish a mixed snapshot and overlay, nor
+            // poison the unchanged-page cache with that partial export.
+            if (capturedRevision !== revision) { hasUnsavedRef.current = true; return; }
+            overlayCacheRef.current = stagedCache;
+            firstPending = 0;
             setPdfRenderData(filePath, { original, overlays });
-            if (immediate) onFlushNowRef.current(filePath, json);
+            if (immediate) await onFlushNowRef.current(filePath, json);
             else onContentChangeRef.current(filePath, json);
         };
 
@@ -721,10 +724,11 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
                 unregisterPending = undefined;
             }
         };
-        const runFlush = (immediate = false): Promise<void> => {
+        const runFlush = (immediate = true): Promise<void> => {
             if (pendingFlush) return pendingFlush.then(() => hasUnsavedRef.current ? runFlush(immediate) : undefined);
             const run = flush(immediate).catch(error => {
                 hasUnsavedRef.current = true;
+                onSaveErrorRef.current?.('Could not export PDF annotations. The PDF was not changed; keep the tab open and retry saving.');
                 throw error;
             }).finally(() => {
                 if (pendingFlush === run) {
@@ -738,10 +742,10 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
         };
         const flushPending = async () => {
             if (serializeTimerRef.current) { clearTimeout(serializeTimerRef.current); serializeTimerRef.current = null; }
-            if (hasUnsavedRef.current) await runFlush();
-            else if (pendingFlush) await pendingFlush;
+            if (pendingFlush) await pendingFlush;
+            while (hasUnsavedRef.current) await runFlush();
         };
-        const flushInBackground = (immediate = false) => {
+        const flushInBackground = (immediate = true) => {
             // Coordinator callers get the rejection; timers/unmount have no
             // caller to await them and must not create an unhandled rejection.
             void runFlush(immediate).catch(error => console.error('Could not save PDF annotations:', error));
@@ -866,10 +870,31 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
            colour was clicked would stall the pen for nothing. The pen is
            captured by the next stroke's flush instead, which is the moment it
            first matters. */
-        const markUnsaved = () => {
-            hasUnsavedRef.current = true;
+        const schedule = () => {
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
-            serializeTimerRef.current = setTimeout(() => flushInBackground(), SERIALIZE_DEBOUNCE_MS);
+            serializeTimerRef.current = null;
+            if (activePointers.size || !hasUnsavedRef.current) return;
+            const delay = firstPending && performance.now() - firstPending >= MAX_PENDING_MS ? 0 : SERIALIZE_DEBOUNCE_MS;
+            serializeTimerRef.current = setTimeout(() => flushInBackground(), delay);
+        };
+        const pointerDown = (event: PointerEvent) => {
+            if (event.target instanceof Node && canvasWrapRef.current?.contains(event.target)) {
+                activePointers.add(event.pointerId);
+                if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
+                serializeTimerRef.current = null;
+            }
+        };
+        const pointerEnd = (event: PointerEvent) => { activePointers.delete(event.pointerId); schedule(); };
+        const pointerBlur = () => { activePointers.clear(); schedule(); };
+        window.addEventListener('pointerdown', pointerDown, true);
+        window.addEventListener('pointerup', pointerEnd, true);
+        window.addEventListener('pointercancel', pointerEnd, true);
+        window.addEventListener('blur', pointerBlur);
+        const markUnsaved = () => {
+            revision++;
+            hasUnsavedRef.current = true;
+            if (!firstPending) firstPending = performance.now();
+            schedule();
             reportPending();
         };
         // store.listen delivers on a later frame: an immediate flush/mode
@@ -884,6 +909,10 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
 
         return () => {
             unregisterView();
+            window.removeEventListener('pointerdown', pointerDown, true);
+            window.removeEventListener('pointerup', pointerEnd, true);
+            window.removeEventListener('pointercancel', pointerEnd, true);
+            window.removeEventListener('blur', pointerBlur);
             stopDirty.forEach(stop => stop());
             disposePen();
             disposeInvert();

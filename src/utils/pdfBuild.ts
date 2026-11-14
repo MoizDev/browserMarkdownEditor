@@ -16,6 +16,7 @@ import type { VectorOp } from './pdfVector';
 import { PDF_WRITE_MARK_PLACEHOLDER, sealPdfWriteMark } from './pdfWriteMark';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
 import { rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree';
+import { artifactHash, immutableArtifact } from './pdfWriteArtifacts';
 
 /**
  * pdf-lib's own pacing, switched off — for every load and save in the worker.
@@ -188,11 +189,18 @@ export async function buildAnnotatedPdf(
 
         // The Form's bounding box clips the page-local display list. Both kinds
         // of ink use the very same inverse viewport when the Form is placed.
-        const ink = await PDFDocument.create();
-        const inkPage = ink.addPage([geometry.width, geometry.height]);
-        if (overlay.raster?.length) stampRaster(inkPage, await ink.embedPng(overlay.raster.slice()));
-        if (overlay.vector?.length) stampVector(inkPage, overlay.vector);
-        const embedded = await doc.embedPage(inkPage);
+        const rasterHash = overlay.raster?.length ? await artifactHash(overlay.raster) : '';
+        const inkKey = await artifactHash(new TextEncoder().encode(JSON.stringify([
+            'ink-form-v1', geometry.width, geometry.height, rasterHash, overlay.vector ?? [],
+        ])));
+        const inkBytes = await immutableArtifact(`page:${inkKey}`, async () => {
+            const ink = await PDFDocument.create();
+            const inkPage = ink.addPage([geometry.width, geometry.height]);
+            if (overlay.raster?.length) stampRaster(inkPage, await ink.embedPng(overlay.raster));
+            if (overlay.vector?.length) stampVector(inkPage, overlay.vector);
+            return ink.save(SAVE_WITHOUT_TICKS);
+        });
+        const [embedded] = await doc.embedPdf(inkBytes, [0]);
         const page = pages[i];
         // pdf-lib normalizes inherited resources in place. Fork both the outer
         // dictionary and its mutable subdictionaries before adding the Form.

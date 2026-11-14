@@ -5,18 +5,29 @@ import type { ReferenceMeasurer } from './measure';
 import type { CaretIndex, CaretLine, CaretPosition, CaretStop, FaceTable, TextCluster, TextLayoutRequest, TextPaint } from './paint';
 
 interface CachedLine { readonly line: CaretLine; readonly start: number; readonly top: number; readonly index: number }
+const CARET_CACHE_BYTES = 16 * 1024 * 1024;
+const lineBytes = (line: CaretLine) => 256 + line.stops.length * 176 + line.clusters.length * 128;
 /** Unchanged wrapped lines retain their prefix measurements across text revisions. */
 export class CaretLineCache {
     private readonly entries = new Map<string, CachedLine>();
+    private bytes = 0;
     get(key: string): CachedLine | undefined {
         const hit = this.entries.get(key);
         if (hit) { this.entries.delete(key); this.entries.set(key, hit); }
         return hit;
     }
     set(key: string, line: CachedLine): void {
-        this.entries.set(key, line);
-        if (this.entries.size > 4096) this.entries.delete(this.entries.keys().next().value!);
+        const size = lineBytes(line.line) + key.length * 2;
+        const old = this.entries.get(key);
+        if (old) { this.entries.delete(key); this.bytes -= lineBytes(old.line) + key.length * 2; }
+        if (size > CARET_CACHE_BYTES) return;
+        while (this.entries.size && (this.entries.size >= 4096 || this.bytes + size > CARET_CACHE_BYTES)) {
+            const oldest = this.entries.keys().next().value!, value = this.entries.get(oldest)!;
+            this.entries.delete(oldest); this.bytes -= lineBytes(value.line) + oldest.length * 2;
+        }
+        this.entries.set(key, line); this.bytes += size;
     }
+    clear(): void { this.entries.clear(); this.bytes = 0; }
 }
 
 /** Prefix measurements use the same face and reference-size canvas as the paint. */
@@ -25,10 +36,10 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
     const buildLine = (lineIndex: number): CaretLine => {
         const line = paint.lines[lineIndex];
         const content = projectionSlice(request.text, line.src[0], line.src[1]);
-        const key = JSON.stringify([paint.fontEpoch, content, line.x, line.bottom - line.top, line.direction,
+        const key = content.length <= 8192 ? JSON.stringify([paint.fontEpoch, content, line.x, line.bottom - line.top, line.direction,
             line.fragments.map(fragment => [fragment.text, fragment.x, fragment.width, fragment.rtl, table.faces[fragment.face].css,
-                table.faces[fragment.face].size, fragment.src[0] - line.src[0], fragment.src[1] - line.src[0]])]);
-        const previous = cache?.get(key);
+                table.faces[fragment.face].size, fragment.src[0] - line.src[0], fragment.src[1] - line.src[0]])]) : null;
+        const previous = key === null ? undefined : cache?.get(key);
         if (previous) {
             const shiftOffset = line.src[0] - previous.start, shiftY = line.top - previous.top;
             if (!shiftOffset && !shiftY && lineIndex === previous.index) return previous.line;
@@ -80,13 +91,27 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
         stops.sort((a, b) => a.x - b.x || a.offset - b.offset);
         clusters.sort((a, b) => a.bounds.x - b.bounds.x);
         const result = { top: line.top, bottom: line.bottom, stops, clusters };
-        cache?.set(key, { line: result, start: line.src[0], top: line.top, index: lineIndex });
+        if (key !== null) cache?.set(key, { line: result, start: line.src[0], top: line.top, index: lineIndex });
         return result;
     };
+    const logicalStops = new Map<number, { offsets: readonly number[]; byOffset: ReadonlyMap<number, readonly CaretStop[]> }>();
     const built = new Map<number, CaretLine>();
+    let builtBytes = 0, oversized: { index: number; line: CaretLine } | undefined;
     const getLine = (index: number): CaretLine => {
-        let line = built.get(index);
-        if (!line) { line = buildLine(index); built.set(index, line); }
+        const cached = built.get(index);
+        if (cached) { built.delete(index); built.set(index, cached); return cached; }
+        if (oversized?.index === index) return oversized.line;
+        const line = buildLine(index), size = lineBytes(line);
+        if (size > CARET_CACHE_BYTES) {
+            if (oversized) logicalStops.delete(oversized.index);
+            oversized = { index, line };
+        } else {
+            while (built.size && builtBytes + size > CARET_CACHE_BYTES) {
+                const oldest = built.keys().next().value!, removed = built.get(oldest)!;
+                built.delete(oldest); builtBytes -= lineBytes(removed); logicalStops.delete(oldest);
+            }
+            built.set(index, line); builtBytes += size;
+        }
         return line;
     };
     const lines: CaretLine[] = paint.lines.map((line, index) => ({
@@ -112,7 +137,6 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
         while (lo < hi) { const mid = (lo + hi) >>> 1; if (paint.lines[mid].src[1] < offset) lo = mid + 1; else hi = mid; }
         return lo;
     };
-    const logicalStops = new Map<number, { offsets: readonly number[]; byOffset: ReadonlyMap<number, readonly CaretStop[]> }>();
     const stopsByOffset = (index: number) => {
         let cached = logicalStops.get(index);
         if (cached) return cached;

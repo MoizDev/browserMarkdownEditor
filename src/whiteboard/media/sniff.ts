@@ -31,6 +31,6 @@ export function sniffMedia(bytes: Uint8Array): MediaMime | null {
     if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return 'video/webm';
     // SVG classification is confirmed by the isolated XML profile, not DOMParser here.
     const prefix = new TextDecoder('utf-8').decode(bytes.subarray(0, 64)).replace(/^\uFEFF/, '').trimStart();
-    if (/^(?:<\?xml\s|<svg(?:\s|>|\/))/.test(prefix)) return 'image/svg+xml';
+    if (/^(?:<\?xml\s|<!--|<svg(?:\s|>|\/))/.test(prefix)) return 'image/svg+xml';
     return null;
 }

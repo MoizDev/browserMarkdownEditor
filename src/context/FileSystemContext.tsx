@@ -1653,7 +1653,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         for (const name of names) {
             try {
                 const file = await (await dir.getFileHandle(name)).getFile();
-                if (await hashBytes(await file.arrayBuffer()) === request.hash) return { name, blob: file as Blob };
+                if (file.size <= 10 * 1024 * 1024 && await fingerprintSnapshot(file, request.signal) === request.hash) return { name, blob: file as Blob };
             } catch (error) {
                 if (!(error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'TypeMismatchError'))) throw error;
             }
@@ -1681,7 +1681,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
             await boardAssetGuard(request, activation);
             if (!/^[a-z0-9]{1,8}$/.test(request.extension)) throw new Error('Invalid board media extension');
-            if (await hashBytes(await request.blob.arrayBuffer()) !== request.hash) throw new Error('Board media hash mismatch');
+            if (request.blob.size > 10 * 1024 * 1024) throw new RangeError('Board media exceeds 10 MiB');
+            if (await fingerprintSnapshot(request.blob, request.signal) !== request.hash) throw new Error('Board media hash mismatch');
             await boardAssetGuard(request, activation);
             const dir = await request.parent.getDirectoryHandle(ASSETS_DIR, { create: true });
             const existing = await findBoardAsset(dir, request);
@@ -1700,7 +1701,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 } catch (error) { await write.abort().catch(() => {}); throw error; }
                 const prepared = await temporary.getFile();
                 tempVersion = prepared;
-                if (await hashBytes(await prepared.arrayBuffer()) !== request.hash) throw new Error('Board media staging failed');
+                if (await fingerprintSnapshot(prepared, request.signal) !== request.hash) throw new Error('Board media staging failed');
                 const name = await freeEntryName(dir, `${request.hash}.${request.extension}`);
                 await boardAssetGuard(request, activation);
                 const target = await dir.getFileHandle(name, { create: true });
@@ -1719,7 +1720,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     const current = await dir.getFileHandle(temporaryName);
                     const file = await current.getFile();
                     if (await current.isSameEntry(temporary) && file.lastModified === tempVersion.lastModified && file.size === tempVersion.size
-                        && await hashBytes(await file.arrayBuffer()) === await hashBytes(await tempVersion.arrayBuffer())) {
+                        && await fingerprintSnapshot(file) === await fingerprintSnapshot(tempVersion)) {
                         await dir.removeEntry(temporaryName);
                     }
                 } catch { /* a failed cleanup leaves recoverable staging bytes */ }
@@ -1728,6 +1729,64 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         boardAssetQueueRef.current = job.then(() => {}, () => {});
         return job;
     }, [boardAssetGuard, findBoardAsset, withMutation]);
+
+    const restoreConversionCopy = useCallback((request: BoardAssetAccess, item: TrashItem) => {
+        const activation = vaultActivationRef.current;
+        const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
+            await boardAssetGuard(request, activation);
+            if (item.kind !== 'file' || item.origin !== 'trashed') throw new Error('Not a conversion backup');
+            const sourcePath = await request.root.resolve(item.handle);
+            if (!sourcePath?.includes(TRASH_DIR)) throw new Error('Backup is not in this vault’s Trash');
+            const source = await item.parentHandle.getFileHandle(item.name);
+            if (!await source.isSameEntry(item.handle)) throw new Error('Backup changed');
+            const file = await source.getFile();
+            if (await fingerprintSnapshot(file, request.signal) !== request.hash) throw new Error('Backup no longer matches');
+            await boardAssetGuard(request, activation);
+            const name = await freeEntryName(request.parent, item.name);
+            await boardAssetGuard(request, activation);
+            const target = await request.parent.getFileHandle(name, { create: true });
+            const output = await target.createWritable();
+            try {
+                await output.write(file);
+                await boardAssetGuard(request, activation);
+                await output.close();
+            } catch (error) { await output.abort().catch(() => {}); throw error; }
+            await boardAssetGuard(request, activation);
+            const parentPath = await request.root.resolve(request.parent);
+            if (parentPath) await patchTreeDirs(request.root, [parentPath.join('/')]);
+            return name;
+        }));
+        boardAssetQueueRef.current = job.then(() => {}, () => {});
+        return job;
+    }, [boardAssetGuard, withMutation, patchTreeDirs]);
+
+    const copyTrashFile = useCallback((item: TrashItem, root: FileSystemDirectoryHandle, isCurrent: () => boolean) => {
+        const activation = vaultActivationRef.current;
+        const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
+            const check = () => {
+                if (rootHandleRef.current !== root || activation !== vaultActivationRef.current || !isCurrent()) throw new DOMException('Vault changed', 'AbortError');
+            };
+            check();
+            if (item.kind !== 'file' || item.origin !== 'trashed') throw new Error('Not a trashed file');
+            const sourcePath = await root.resolve(item.handle);
+            const targetPath = await root.resolve(item.restoreDirHandle);
+            if (!sourcePath?.includes(TRASH_DIR) || targetPath === null) throw new Error('Trash item is outside this vault');
+            const source = await item.parentHandle.getFileHandle(item.name);
+            if (!await source.isSameEntry(item.handle)) throw new Error('Trash item changed');
+            const file = await source.getFile();
+            const name = await freeEntryName(item.restoreDirHandle, item.name);
+            check();
+            const target = await item.restoreDirHandle.getFileHandle(name, { create: true });
+            const output = await target.createWritable();
+            try { await output.write(file); check(); await output.close(); }
+            catch (error) { await output.abort().catch(() => {}); throw error; }
+            check();
+            await patchTreeDirs(root, [targetPath.join('/')]);
+            return name;
+        }));
+        boardAssetQueueRef.current = job.then(() => {}, () => {});
+        return job;
+    }, [withMutation, patchTreeDirs]);
 
     /**
      * Move an asset out of a folder's `.Assets` and into its `.Garbage` — what
@@ -2751,6 +2810,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepCopyInGarbage,
         readBoardAsset,
         putBoardAsset,
+        restoreConversionCopy,
+        copyTrashFile,
     }), [
         rootHandle,
         requestIndexPermission,
@@ -2801,6 +2862,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepCopyInGarbage,
         readBoardAsset,
         putBoardAsset,
+        restoreConversionCopy,
+        copyTrashFile,
     ]);
 
     return (

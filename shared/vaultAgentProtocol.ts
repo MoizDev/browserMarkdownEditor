@@ -53,6 +53,8 @@ export const SELF_UPDATE_VERSION = '0.1.3';
  *  it on its own; MIN_HELPER_VERSION stays put, because the CHAT needs nothing
  *  new and raising it would lock every older helper out of the chat too. */
 export const TERMINAL_VERSION = '0.2.0';
+/** First helper advertising the additive canvas_shapes paging schema. */
+export const CANVAS_PAGING_VERSION = '0.2.2';
 export const RELEASE_ASSETS = {
     macos: 'VaultAgent.pkg',
     windows: 'VaultAgent-Setup.exe',

@@ -23,24 +23,27 @@ export function createRasterTileRenderer(capture: RasterTileCapture): RenderExpo
   return async (tile, signal) => {
     signal?.throwIfAborted()
     const canvas = document.createElement('canvas')
-    canvas.width = tile.width
-    canvas.height = tile.height
+    const apron = 2
+    canvas.width = tile.width + 2 * apron
+    canvas.height = tile.height + 2 * apron
     try {
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       if (!ctx) throw new Error('Canvas 2D is unavailable')
       if (background) {
         ctx.fillStyle = background
-        ctx.fillRect(0, 0, tile.width, tile.height)
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
       }
-      ctx.setTransform(scale, 0, 0, scale, -world.x * scale - tile.x, -world.y * scale - tile.y)
+      ctx.setTransform(scale, 0, 0, scale, -world.x * scale - tile.x + apron, -world.y * scale - tile.y + apron)
+      let count = 0
       for (const band of [frame.underlay, frame.content]) {
         for (const item of band) {
+          if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
           signal?.throwIfAborted()
           paintItem2d(ctx, item, resources)
         }
       }
       signal?.throwIfAborted()
-      return new Uint8Array(ctx.getImageData(0, 0, tile.width, tile.height).data.buffer)
+      return new Uint8Array(ctx.getImageData(apron, apron, tile.width, tile.height).data.buffer)
     } finally {
       // Release the backing store before the next band allocates a tile.
       canvas.width = 0

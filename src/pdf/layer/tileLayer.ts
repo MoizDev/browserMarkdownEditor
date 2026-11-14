@@ -1,5 +1,8 @@
-import { pageAt, renderTokenKey, tileKeyString } from '../../platform/render';
-import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, Rect, TextureHandle, ViewState } from '../../platform/render';
+import { pageAt, pagePresentation, tileKeyString } from '../../platform/render';
+import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, MirrorView, Rect, TextureHandle, ViewState } from '../../platform/render';
+import type { PdfSessionMirrors } from './tileMirror';
+import { covers, intersects } from './coverage';
+import { PdfTileCache } from './tileCache';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 
@@ -7,6 +10,21 @@ import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
  * every returned bitmap transfers to this layer, including cancelled replies. */
 export interface PdfTileProducer {
     render(request: PdfTileRequest, signal: AbortSignal): Promise<ImageBitmap>;
+}
+
+export interface PdfLayerMirror {
+    readonly store: PdfSessionMirrors;
+    view(view: ViewState): MirrorView | null;
+}
+
+interface MirrorJob {
+    readonly key: string;
+    readonly view: MirrorView;
+    readonly entries: readonly Entry[];
+    readonly ids: string[];
+    readonly lowIds: Set<string>;
+    index: number;
+    pending: boolean;
 }
 
 interface Entry {
@@ -19,39 +37,20 @@ interface Entry {
     used: number;
 }
 
+function contentFamily(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): string {
+    const { vaultEpoch, documentId, session } = input.token;
+    return JSON.stringify([vaultEpoch, documentId, session, input.source, input.variant, input.geometryDigest]);
+}
+
 function rect(request: PdfTileRequest): Rect {
     const c = request.tile.clip;
     return { x: c.left, y: c.top, width: c.right - c.left, height: c.bottom - c.top };
 }
 
-function intersects(a: Readonly<Rect>, b: Readonly<Rect>): boolean {
-    return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
-}
-
-/** Exact rectangle union, not a bounding-box guess across missing tile holes. */
-function covers(target: Readonly<Rect>, boxes: readonly Rect[]): boolean {
-    const cuts = [target.x, target.x + target.width];
-    for (const box of boxes) {
-        if (!intersects(box, target)) continue;
-        cuts.push(Math.max(target.x, box.x), Math.min(target.x + target.width, box.x + box.width));
-    }
-    cuts.sort((a, b) => a - b);
-    for (let i = 1; i < cuts.length; i++) {
-        if (cuts[i] <= cuts[i - 1]) continue;
-        const x = (cuts[i] + cuts[i - 1]) / 2;
-        const intervals = boxes.filter(box => box.x <= x && box.x + box.width >= x)
-            .map(box => [Math.max(target.y, box.y), Math.min(target.y + target.height, box.y + box.height)] as const)
-            .filter(([top, bottom]) => bottom > top).sort((a, b) => a[0] - b[0]);
-        let end = target.y;
-        for (const [top, bottom] of intervals) { if (top > end + 1e-7) break; end = Math.max(end, bottom); }
-        if (end < target.y + target.height - 1e-7) return false;
-    }
-    return true;
-}
-
-function project(box: Readonly<Rect>, view: ViewState): Rect {
+function project(box: Readonly<Rect>, page: Readonly<Rect>, view: ViewState): Rect {
     const scale = view.camera.z * view.viewport.dpr;
-    return { x: (box.x - view.camera.x) * scale, y: (box.y - view.camera.y) * scale,
+    const offset = pagePresentation(page, view).restOffsetDevice;
+    return { x: (box.x - view.camera.x) * scale + offset.x, y: (box.y - view.camera.y) * scale + offset.y,
         width: box.width * scale, height: box.height * scale };
 }
 
@@ -61,7 +60,7 @@ function project(box: Readonly<Rect>, view: ViewState): Rect {
  * come from the shared host. Waiting for a worker alone is not frame work.
  */
 export class PdfTileLayer implements Layer {
-    private readonly entries = new Map<string, Entry>();
+    private readonly entries = new PdfTileCache<Entry>();
     private readonly failed = new Set<string>();
     private readonly retiring = new Set<Entry>();
     private desired = new Set<string>();
@@ -72,11 +71,14 @@ export class PdfTileLayer implements Layer {
     private disposed = false;
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
+    private mirrorJob: MirrorJob | null = null;
+    private mirrorKey = '';
 
     constructor(private readonly host: LayerHost, private readonly producer: PdfTileProducer,
         private readonly demand: (view: ViewState) => Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
         private readonly isCurrent: () => boolean,
-        private readonly onError: (error: unknown, request: PdfTileRequest) => void) {}
+        private readonly onError: (error: unknown, request: PdfTileRequest) => void,
+        private readonly mirror?: PdfLayerMirror) {}
 
     prepare(view: ViewState, budget: FrameBudget): void {
         this.pendingFrame = false;
@@ -99,7 +101,7 @@ export class PdfTileLayer implements Layer {
             }
         }
         const input = this.demand(view);
-        const identity = JSON.stringify([renderTokenKey(input.token), input.source, input.variant]);
+        const identity = contentFamily(input);
         if (identity !== this.contentIdentity) {
             for (const [key, entry] of this.entries) this.remove(key, entry);
             this.failed.clear();
@@ -144,7 +146,7 @@ export class PdfTileLayer implements Layer {
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);
             if (!lease) {
-                this.evictUnneeded(input.viewport);
+                this.evictUnneeded(input.viewport, bytes);
                 lease = this.host.allocator.cpu.reserve(bytes);
             }
             if (!lease) continue;
@@ -172,12 +174,13 @@ export class PdfTileLayer implements Layer {
                 this.host.invalidate('pdf-tile-finished');
             });
         }
+        this.prepareMirror(view, input, planned.requests, budget);
     }
 
     coverage(view: ViewState, gpu: boolean): { complete: boolean; sharp: boolean } {
         if (this.disposed || !this.isCurrent()) return { complete: false, sharp: false };
         const input = this.demand(view);
-        if (JSON.stringify([renderTokenKey(input.token), input.source, input.variant]) !== this.contentIdentity) {
+        if (contentFamily(input) !== this.contentIdentity) {
             return { complete: false, sharp: false };
         }
         const device = gpu ? this.host.device() : null;
@@ -206,16 +209,17 @@ export class PdfTileLayer implements Layer {
         if (this.disposed || !this.isCurrent()) return;
         const texture = this.frameTexture;
         if (texture && texture.device === this.host.device()) for (const page of this.visiblePages(view)) {
-            const destination = project(page, view);
+            const destination = project(page, page, view);
             this.host.drawTexturedQuad(pass, texture.handle, { x: 0, y: 0, width: 1, height: 1 },
                 { x: destination.x - 1, y: destination.y - 1, width: destination.width + 2, height: destination.height + 2 },
                 { opacity: 1, sampling: 'nearest' });
             this.host.drawTexturedQuad(pass, texture.handle, { x: 1, y: 0, width: 1, height: 1 },
                 destination, { opacity: 1, sampling: 'nearest' });
         }
+        const stack = this.demand(view).stack;
         for (const entry of this.drawable(view)) {
             if (!entry.texture || entry.device !== this.host.device()) continue;
-            const { source, destination } = this.quad(entry.request, view);
+            const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(pass, entry.texture, source, destination, { opacity: 1, sampling: 'linear' });
         }
     }
@@ -223,13 +227,14 @@ export class PdfTileLayer implements Layer {
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         if (this.disposed || !this.isCurrent()) return;
         for (const page of this.visiblePages(view)) {
-            const box = project(page, view);
+            const box = project(page, page, view);
             ctx.fillStyle = '#bebebe'; ctx.fillRect(box.x - 1, box.y - 1, box.width + 2, box.height + 2);
             ctx.fillStyle = '#fff'; ctx.fillRect(box.x, box.y, box.width, box.height);
         }
+        const stack = this.demand(view).stack;
         for (const entry of this.drawable(view)) {
             if (!entry.bitmap) continue;
-            const { source, destination } = this.quad(entry.request, view);
+            const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination, { opacity: 1, sampling: 'linear' });
         }
     }
@@ -242,6 +247,7 @@ export class PdfTileLayer implements Layer {
             entry.texture = undefined; entry.device = undefined;
         }
         this.pendingFrame = false;
+        if (reason === 'hidden') this.hide();
     }
 
     /** Explicit retry is the only way a failed tile is requested again. */
@@ -249,7 +255,7 @@ export class PdfTileLayer implements Layer {
 
     /** Called by the pane on hide after the session has published its mirror. */
     hide(): void {
-        this.releaseGpu('hidden');
+        this.mirrorJob = null;
         for (const [key, entry] of this.entries) this.remove(key, entry);
         this.desired.clear();
     }
@@ -265,7 +271,87 @@ export class PdfTileLayer implements Layer {
     }
     revision(): number { return this.contentRevision; }
     needsFrame(): boolean { return this.pendingFrame; }
-    dispose(): void { if (!this.disposed) { this.disposed = true; this.hide(); this.failed.clear(); } }
+    dispose(): void { if (!this.disposed) { this.disposed = true; this.mirrorJob = null; this.hide(); this.failed.clear(); } }
+
+    private prepareMirror(view: ViewState, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
+        requests: readonly PdfTileRequest[], budget: FrameBudget): void {
+        const mirror = this.mirror;
+        const snapshot = mirror?.view(view);
+        if (!mirror || !snapshot || input.moving || this.disposed) { this.mirrorJob = null; return; }
+        const key = JSON.stringify([snapshot.token, snapshot.sourceRole, snapshot.contentRevision, snapshot.colourVersion,
+            snapshot.geometryDigest, snapshot.nominalDpr, snapshot.view.camera, snapshot.view.viewport]);
+        if (key === this.mirrorKey) return;
+        if (this.mirrorJob?.key !== key) {
+            const exact = requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport));
+            const entries = exact.map(request => this.entries.get(tileKeyString(request.key)));
+            if (!entries.length || entries.some(entry => !entry?.bitmap)) { this.mirrorJob = null; return; }
+            const low = requests.filter(request => request.level === 'low' && intersects(rect(request), input.viewport))
+                .map(request => this.entries.get(tileKeyString(request.key)))
+                .filter((entry): entry is Entry => !!entry?.bitmap);
+            this.mirrorJob = { key, view: snapshot, entries: [...low, ...entries as Entry[]], ids: [],
+                lowIds: new Set(), index: 0, pending: false };
+        }
+        const job = this.mirrorJob;
+        if (!job || job.pending || budget.shouldYield()) return;
+        if (job.index === job.entries.length) {
+            const mirrors = mirror.store.mirrors;
+            mirrors.commitFrame(job.view, job.ids, true, job.lowIds);
+            const borrow = mirrors.borrow(job.view, performance.now());
+            const sharp = borrow.sharpEligible(job.view);
+            borrow.release();
+            if (sharp) {
+                mirrors.retainViewport(new Set(job.ids));
+                this.mirrorKey = job.key;
+            }
+            this.mirrorJob = null;
+            return;
+        }
+        const entry = job.entries[job.index];
+        const bitmap = entry.bitmap;
+        if (!bitmap || this.entries.get(tileKeyString(entry.request.key)) !== entry) { this.mirrorJob = null; return; }
+        const bounds = rect(entry.request), viewport = input.viewport;
+        const left = Math.max(bounds.x, viewport.x), top = Math.max(bounds.y, viewport.y);
+        const right = Math.min(bounds.x + bounds.width, viewport.x + viewport.width);
+        const bottom = Math.min(bounds.y + bounds.height, viewport.y + viewport.height);
+        const scale = entry.request.scale.scale, edges = entry.request.tile.edges;
+        const sx = Math.max(0, Math.floor(1 + (left - edges.left) * scale) - 1);
+        const sy = Math.max(0, Math.floor(1 + (top - edges.top) * scale) - 1);
+        const ex = Math.min(bitmap.width, Math.ceil(1 + (right - edges.left) * scale) + 1);
+        const ey = Math.min(bitmap.height, Math.ceil(1 + (bottom - edges.top) * scale) + 1);
+        const width = ex - sx, height = ey - sy;
+        if (width <= 0 || height <= 0) { this.mirrorJob = null; return; }
+        const lease = this.host.allocator.cpu.reserve(width * height * 4);
+        if (!lease) return;
+        job.pending = true;
+        // One cropped allocation per preparation slice; an obsolete view cannot publish (design §6.4:649).
+        void createImageBitmap(bitmap, sx, sy, width, height).then(copy => {
+            if (this.mirrorJob !== job || this.disposed || !this.isCurrent()) {
+                copy.close(); this.host.allocator.cpu.release(lease); return;
+            }
+            const world = { x: left, y: top, width: right - left, height: bottom - top };
+            const page = input.stack.rects[entry.request.page];
+            const source = { x: 1 + (left - edges.left) * scale - sx, y: 1 + (top - edges.top) * scale - sy,
+                width: world.width * scale, height: world.height * scale };
+            let id: string | null;
+            try {
+                id = mirror.store.publish({ token: job.view.token, key: entry.request.key,
+                    geometryDigest: job.view.geometryDigest, tier: entry.request.level === 'low' ? 'low' : 'exact', neededByCurrentFrame: true,
+                    pixels: { bitmap: copy, world, source, page }, lease });
+            } catch (error) {
+                copy.close(); this.host.allocator.cpu.release(lease); this.mirrorJob = null;
+                this.onError(error, entry.request); return;
+            }
+            if (!id) { copy.close(); this.host.allocator.cpu.release(lease); this.mirrorJob = null; return; }
+            job.ids.push(id);
+            if (entry.request.level === 'low') job.lowIds.add(id);
+            job.index++;
+            job.pending = false;
+            this.host.invalidate('pdf-mirror-arrived');
+        }, error => {
+            this.host.allocator.cpu.release(lease);
+            if (this.mirrorJob === job) { this.mirrorJob = null; this.onError(error, entry.request); }
+        });
+    }
 
     private covered(page: number, area: Readonly<Rect>, device: GfxDevice | null): boolean {
         const boxes: Rect[] = [];
@@ -288,23 +374,28 @@ export class PdfTileLayer implements Layer {
 
     private drawable(view: ViewState): Entry[] {
         const input = this.demand(view);
-        if (JSON.stringify([renderTokenKey(input.token), input.source, input.variant]) !== this.contentIdentity) return [];
+        if (contentFamily(input) !== this.contentIdentity) return [];
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
         return [...this.entries.values()].filter(entry => entry.bitmap && intersects(rect(entry.request), viewport))
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);
     }
 
-    private quad(request: PdfTileRequest, view: ViewState): { source: Rect; destination: Rect } {
+    private quad(request: PdfTileRequest, page: Readonly<Rect>, view: ViewState): { source: Rect; destination: Rect } {
         const bounds = rect(request), edges = request.tile.edges, scale = request.scale.scale;
         return { source: { x: 1 + (bounds.x - edges.left) * scale, y: 1 + (bounds.y - edges.top) * scale,
-            width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, view) };
+            width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, page, view) };
     }
 
-    private evictUnneeded(viewport: Readonly<Rect>): void {
-        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key) &&
-            !intersects(rect(entry.request), viewport))
-            .sort((a, b) => a[1].used - b[1].used);
-        for (const [key, entry] of candidates) this.remove(key, entry);
+    private evictUnneeded(viewport: Readonly<Rect>, neededBytes: number): void {
+        const candidates = this.entries.evictable(this.desired, viewport, entry => rect(entry.request), entry => !!entry.bitmap);
+        candidates.sort((a, b) => Number(a[1].request.level === 'low') - Number(b[1].request.level === 'low') ||
+            a[1].used - b[1].used);
+        let freed = 0;
+        for (const [key, entry] of candidates) {
+            freed += entry.lease.bytes;
+            this.remove(key, entry);
+            if (freed >= neededBytes) break;
+        }
     }
 
     private remove(key: string, entry: Entry): void {

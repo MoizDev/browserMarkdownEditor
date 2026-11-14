@@ -198,7 +198,7 @@ export class MemoryGovernor {
     private workerHeapBytes = 0;
     private sourceBytes = 0;
 
-    constructor(deviceMemory: unknown) {
+    constructor(deviceMemory: unknown, private readonly onPressureChange?: () => void) {
         // Chromium reports rounded/capped hints (historically at 8 GiB), not installed RAM (§6.2:607).
         const hint = typeof deviceMemory === 'number' && Number.isFinite(deviceMemory) && deviceMemory > 0 ? deviceMemory : 0;
         this.deviceClass = hint >= POLICY.deviceMemoryHighGiB ? 'high' :
@@ -476,7 +476,12 @@ export class MemoryGovernor {
             this.trimPool(pool, Math.max(0, Math.min(this.target[pool] - bytes,
                 Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio))));
             this.trimHiddenMirrors(kind === 'mirror' && cache.activity.hiddenAt !== null ? bytes : 0);
-            if (!allowed()) { this.degrade(); return null; }
+            if (!allowed()) {
+                this.lastTrouble = 'allocation';
+                this.degrade();
+                this.onPressureChange?.();
+                return null;
+            }
         }
         if (!Number.isSafeInteger(this.nextLease)) throw new MemoryAdmissionError('invalid-input');
         const lease = Object.freeze({ id: this.nextLease++, bytes });
@@ -486,6 +491,7 @@ export class MemoryGovernor {
         this.charged[pool] += bytes;
         // Context overhead reduces the next surface/cache plan before any device is created.
         if (kind === 'context' || kind === 'program') this.plan();
+        if (this.charged[pool] > this.target[pool] * POLICY.memorySoftPressureRatio) this.onPressureChange?.();
         return lease;
     }
 
@@ -533,6 +539,7 @@ export class MemoryGovernor {
         this.charged[cache.registration.pool] -= record.bytes;
         if (cache.closed && !cache.leaseCount) this.caches.delete(cache.registration.id);
         if (!this.trimming && ['context', 'program'].includes(cache.registration.kind)) this.plan();
+        if (this.state !== 'normal') this.onPressureChange?.();
     }
 
     private hiddenMirrorBytes(): number {

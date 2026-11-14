@@ -16,6 +16,7 @@ export interface LegacyShape {
     readonly opacity: number;
     readonly meta: LegacyObject;
     readonly props: LegacyObject;
+    readonly source: LegacyObject;
 }
 export function readShape(record: LegacyObject, report: ReportBuilder): LegacyShape {
     const { id, type, parentId, index, x, y, rotation, isLocked, opacity } = record;
@@ -31,7 +32,7 @@ export function readShape(record: LegacyObject, report: ReportBuilder): LegacySh
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) report.repair(id, 'Opacity clamped');
     return { id, type, parentId, index, x: positionValid ? x : 0, y: positionValid ? y : 0,
         rotation: Number.isFinite(rotation) ? rotation : 0, locked: isLocked,
-        opacity: Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1, meta, props };
+        opacity: Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1, meta, props, source: record };
 }
 
 export function shapeBase(shape: LegacyShape, page: number): NodeBase {

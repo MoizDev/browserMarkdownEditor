@@ -25,6 +25,7 @@ export interface Modifiers {
   readonly shift: boolean
   readonly alt: boolean
   readonly accel: boolean
+  readonly control: boolean
 }
 
 export type GestureKind = 'ink' | 'erase' | 'laser' | 'node-edit' | 'pan' | 'pinch' | 'zoom-brush' | 'marquee'
@@ -35,6 +36,8 @@ export interface GestureOwner {
   readonly pointerIds: ReadonlySet<number>
   readonly kind: GestureKind
   update(samples: readonly RealSample[], modifiers: Modifiers): void
+  suspend?(): void
+  discard?(): void
   finish(reason: FinishReason): void
   cancel(reason: CancelReason): void
 }

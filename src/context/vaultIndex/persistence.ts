@@ -6,6 +6,13 @@ export const INDEX_EXTRACTOR = 2;
 export const INDEX_DATABASE = `bme-vault-index-v${INDEX_SCHEMA}`;
 export type IndexLayout = StoredGraphLayout;
 
+const forgotten = new Set<string>();
+const forgetChannel = new BroadcastChannel('bme-index-layout');
+forgetChannel.addEventListener('message', event => {
+    const message = event.data as { vaultId?: unknown; forget?: unknown };
+    if (message.forget && typeof message.vaultId === 'string') forgotten.add(message.vaultId);
+});
+
 let database: Promise<IDBDatabase> | undefined;
 export function openIndexDatabase(): Promise<IDBDatabase> {
     if (database) return database;
@@ -46,6 +53,7 @@ export function requestResult<T>(request: IDBRequest<T>): Promise<T> {
 }
 
 export async function forgetIndex(vaultKey: string): Promise<void> {
+    forgotten.add(vaultKey);
     try {
         const channel = new BroadcastChannel('bme-index-layout');
         channel.postMessage({ vaultId: vaultKey, forget: true });
@@ -73,6 +81,7 @@ function validLayout(value: unknown): value is IndexLayout {
 
 /** Layout is disposable; a missing, old or corrupt value simply starts a new layout. */
 export async function loadLayout(vaultKey: string): Promise<IndexLayout | undefined> {
+    if (forgotten.has(vaultKey)) return undefined;
     try {
         const db = await openIndexDatabase();
         const value: unknown = await requestResult(db.transaction('layouts').objectStore('layouts').get(vaultKey));
@@ -85,13 +94,13 @@ export async function loadLayout(vaultKey: string): Promise<IndexLayout | undefi
 
 /** A second window never writes the shared index while the first holds its lock. */
 export async function saveLayout(vaultKey: string, layout: IndexLayout): Promise<void> {
-    if (!vaultKey || !validLayout(layout)) return;
+    if (!vaultKey || forgotten.has(vaultKey) || !validLayout(layout)) return;
     try {
         const channel = new BroadcastChannel('bme-index-layout');
         channel.postMessage({ vaultId: vaultKey, layout });
         channel.close();
         await navigator.locks.request(`bme-index:${vaultKey}`, { ifAvailable: true }, async lock => {
-            if (!lock) return;
+            if (!lock || forgotten.has(vaultKey)) return;
             const db = await openIndexDatabase();
             const transaction = db.transaction('layouts', 'readwrite');
             transaction.objectStore('layouts').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR, layout }, vaultKey);

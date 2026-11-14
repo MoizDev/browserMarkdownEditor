@@ -66,6 +66,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const compositorRef: { current: PaneCompositor | null } = { current: null };
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
+    let sampledCamera = { ...camera.camera };
     let lastInputAt = performance.now();
     let pendingInputAt: number | null = null;
     let healthyInputAt: number | null = null;
@@ -311,7 +312,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             if (now - pendingInputAt <= RENDER_CONSTANTS.stalledFenceMs) healthyInputAt = now;
                             pendingInputAt = null;
                         }
-                        camera.setCamera(options.readCamera());
+                        const next = options.readCamera();
+                        if (next.x !== sampledCamera.x || next.y !== sampledCamera.y || next.z !== sampledCamera.z) camera.setCamera(next);
+                        sampledCamera = { ...next };
                     },
                     isInteracting: options.isInteracting,
                     snapshotScene: (view: ViewState) => {
@@ -347,6 +350,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const encoding = drawing.encode(frame);
                         if (!encoding && !(drawing === compositor && options.session.mirrors)) return null;
                         const revision = options.revision();
+                        const sourceCamera = sampledCamera;
                         return {
                             discard: () => { lifecycle?.discardFrame(frame.frameId); encoding?.discard(); },
                             submit: () => {
@@ -378,7 +382,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 const liveCamera = options.readCamera();
                                 const geometry = observer.current;
                                 if (!complete || !current || !sameFrame(current, frame.token) || options.revision() !== revision ||
-                                    (!frame.view.moving && (liveCamera.x !== frame.view.camera.x || liveCamera.y !== frame.view.camera.y || liveCamera.z !== frame.view.camera.z)) ||
+                                    (liveCamera.x !== sourceCamera.x || liveCamera.y !== sourceCamera.y || liveCamera.z !== sourceCamera.z) ||
                                     geometry?.generation !== activeMetrics().current?.tags.geometryGeneration) return null;
                                 if (drawing === compositor) {
                                     lifecycle?.note2DPresented(frame.token, revision);

@@ -16,7 +16,7 @@ export interface MediaRestorePorts {
     referenced(): Iterable<MediaEntry>;
     isCurrent(revision: number): boolean;
     restore(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
-    updateFile(id: MediaId, expected: string | null, next: string | null, revision: number): boolean;
+    updateFiles(changes: readonly { id: MediaId; expected: string | null; next: string | null }[], revision: number): boolean;
 }
 export interface BoardBuildPorts {
     pinMedia(revision: number): PinnedMediaRestore;

@@ -239,15 +239,15 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
         if (!sourceRunCount) { runs.push({ text: '', marks: {} }); repaired = true; }
         if (runs.length > chars + blocks.length + 1 && runs.some(run => run.text.length === 0 && (run.tail !== undefined || run.marks.x !== undefined)))
             fail('Rich run expansion exceeds text plus blocks', values[3], true);
-        const start = values[4] === undefined ? undefined : number(values[4]);
-        if (start !== undefined && kind !== 'ol') { unknown = true; repaired = true; }
+        const start = values[4] === undefined || values[4].kind === 'null' ? undefined : number(values[4]);
         const extra = blockTuple.tail;
+        if (start !== undefined && kind !== 'ol' && extra === undefined) { unknown = true; repaired = true; }
         let current: Run[] = [], first = true;
         const flush = () => {
             if (blocks.length >= FORMAT_LIMITS.richTextBlocks) fail('Rich text block count exceeds limit', sourceBlock, true);
             blocks.push({ kind: kind as Block['kind'], level, dir: dir as Block['dir'],
                 runs: current.length ? current : [{ text: '', marks: {} }],
-                ...(first && start !== undefined && kind === 'ol' ? { start } : {}), ...(first && extra !== undefined ? { tail: extra } : {}) });
+                ...(first && start !== undefined && (kind === 'ol' || extra !== undefined) ? { start } : {}), ...(first && extra !== undefined ? { tail: extra } : {}) });
             current = []; first = false;
         };
         for (const run of runs) {

@@ -74,7 +74,9 @@ function richText(value: RichText): unknown {
         });
         const items: unknown[] = [block.kind, block.level, block.dir, runs];
         if (block.start !== undefined) items.push(block.start);
-        else if (block.tail !== undefined && compactRaw(block.tail) !== '[]') refuseWrite('invalid', 'A block tail needs an explicit source start slot');
+        // A removed list start still needs its slot: null denotes absence without
+        // shifting any future tuple fields into the known start position.
+        else if (block.tail !== undefined && compactRaw(block.tail) !== '[]') items.push(null);
         return tupleValue(items, block.tail);
     });
     return objectValue([['b', blocks]]);

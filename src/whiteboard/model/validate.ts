@@ -162,7 +162,7 @@ function richText(value: unknown): value is RichText {
         if (!object(block) || !closed(block, KEYS.block)
             || !known(block.kind, BLOCK_KINDS) || !integer(block.level, 0, 7)
             || (block.kind === 'p' && block.level !== 0) || !known(block.dir, VALUES.dir)
-            || (block.start !== undefined && (block.kind !== 'ol' || !number(block.start)))
+            || (block.start !== undefined && ((block.kind !== 'ol' && block.tail === undefined) || !number(block.start)))
             || (block.tail !== undefined && !rawArray(block.tail))
             || !Array.isArray(block.runs) || block.runs.length === 0) return false;
         for (let r = 0; r < block.runs.length; r++) {

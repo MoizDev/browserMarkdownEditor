@@ -32,7 +32,9 @@ export interface LegacyAcquisitionOptions {
 export type LegacyBoardAcquisition =
     | { readonly status: 'read-only'; readonly original: Blob; readonly legacyReport: ImportReport;
         readonly conversionPending: true; dispose(): void }
-    | { readonly status: 'editable'; readonly original: Blob; readonly originalSha256: string;
+    | { readonly status: 'editable'; readonly original: Blob;
+        /** Hash of the supplied legacy JSON, NOT an enclosing PDF's disk baseline. */
+        readonly originalSha256: string;
         /** Serializer offsets and native prime MUST use these bytes, not original legacy JSON. */
         readonly bytes: Blob; readonly native: Extract<NativeBoardAcquisition, { status: 'editable' }>;
         readonly legacyReport: ImportReport; readonly media: ReadonlyMap<MediaId, Blob>;

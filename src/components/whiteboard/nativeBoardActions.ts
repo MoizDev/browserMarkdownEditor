@@ -1,0 +1,43 @@
+import { surfaceToWorld } from '../../platform/render/camera';
+import type { MainAction } from './chrome/mainMenu';
+import type { NativeCommandOperation } from './nativeCommandSource';
+import type { NativeEditingCapabilities } from './nativeEditingCapabilities';
+import type { createNativeCameraOperations } from './nativeCameraOperations';
+import type { NativeViewLease } from './nativeViewLease';
+
+/** Actions delegate to the current input, camera and App-minted source capabilities. */
+export function createNativeBoardActions(options: {
+    readonly lease: NativeViewLease;
+    readonly capabilities: NativeEditingCapabilities;
+    readonly camera: ReturnType<typeof createNativeCameraOperations>;
+    readonly shortcutsAvailable: () => boolean;
+    readonly openShortcuts: () => void;
+}): Omit<Record<MainAction, NativeCommandOperation>, 'unlockAll'> {
+    const { lease, capabilities, camera } = options;
+    return { ...camera,
+        uploadMedia: {
+            state: () => lease.editing?.getImporter() ? { enabled: true } : { enabled: false, reason: 'The board input is not attached' },
+            run() {
+                const importer = lease.editing?.getImporter();
+                if (!importer) throw new Error('The board input is not attached');
+                const viewport = lease.camera.viewport;
+                importer.open(surfaceToWorld({ x: viewport.width / 2, y: viewport.height / 2 }, lease.camera.camera));
+            },
+        },
+        exportPng: {
+            state: () => lease.editing?.getBinding() ? { enabled: true } : { enabled: false, reason: 'The board input is not attached' },
+            run() { const binding = lease.editing?.getBinding(); if (!binding) throw new Error('The board input is not attached'); return binding.commands.exportPng('menu'); },
+        },
+        exportSvg: {
+            state: () => lease.editing?.getBinding() ? { enabled: true } : { enabled: false, reason: 'The board input is not attached' },
+            run() { const binding = lease.editing?.getBinding(); if (!binding) throw new Error('The board input is not attached'); return binding.commands.exportSvg('menu'); },
+        },
+        insertEmbed: capabilities.insertEmbed,
+        convertToBookmark: capabilities.convertToBookmark,
+        convertToEmbed: capabilities.convertToEmbed,
+        keyboardShortcuts: {
+            state: () => options.shortcutsAvailable() ? { enabled: true } : { enabled: false, reason: 'Board shortcuts are not attached' },
+            run: options.openShortcuts,
+        },
+    };
+}

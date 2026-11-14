@@ -1,4 +1,4 @@
-import { parseJson, type JsonSpan } from '../format/jsonRead';
+import { parseJson, parseJsonIncremental, type JsonSpan } from '../format/jsonRead';
 import type { RawJson } from '../model/json';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { normalizeRichTextSteps, type Block, type Marks, type RichText, type Run } from './richText';
@@ -12,18 +12,24 @@ function record(value: unknown): RecordValue | null {
     return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as RecordValue : null;
 }
 function children(value: RecordValue): readonly unknown[] { return Array.isArray(value.content) ? value.content : []; }
-function raw(value: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): RawJson {
+type ImportWork = { readonly kind: 'raw'; readonly span: JsonSpan } | { readonly kind: 'parse'; readonly text: string };
+type ImportSteps<T> = Generator<ImportWork | void, T, RawJson | undefined>;
+function requireRaw(value: RawJson | undefined): RawJson {
+    if (value === undefined) throw new Error('Missing rich import raw result');
+    return value;
+}
+function* raw(value: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): ImportSteps<RawJson> {
     if (typeof value === 'object' && value !== null) {
         const original = originals?.get(value);
         if (original !== undefined) {
-            const encoded = typeof original === 'string' ? original : original.raw();
+            const encoded = typeof original === 'string' ? original : requireRaw(yield { kind: 'raw', span: original });
             if (encoded.length > MAX_TEXT_LENGTH * 4) throw new RangeError('Unsupported rich data exceeds preservation limit');
             return encoded;
         }
     }
     const encoded = JSON.stringify(value);
     if (encoded === undefined || encoded.length > MAX_TEXT_LENGTH * 4) throw new RangeError('Unsupported rich data exceeds preservation limit');
-    return parseJson(encoded).raw();
+    return requireRaw(yield { kind: 'parse', text: encoded });
 }
 function validLink(value: unknown): value is string {
     if (typeof value !== 'string' || value.length > 2048 || /\p{Cc}/u.test(value)) return false;
@@ -33,7 +39,7 @@ function validLink(value: unknown): value is string {
     } catch { return false; }
 }
 /** Data-only ProseMirror mapping; unrepresentable input must keep its legacy source read-only. */
-function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): Generator<void, RichImportResult> {
+function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): ImportSteps<RichImportResult> {
     const repairs: string[] = [], unrepresentable: string[] = [], blocks: Block[] = [];
     let visited = 0, work = 0, total = 0, replaced = 0, controls = 0, preservedFields = 0, preservedBytes = 0;
     const fail = (message: string): never => { throw new Error(message); };
@@ -59,7 +65,7 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
     };
     // A known legacy node can also carry fields from a newer schema. Keep those
     // fields as an opaque zero-width mark, without copying its whole subtree.
-    const unknownFields = function* (object: RecordValue, keep: (key: string, value: unknown) => boolean): Generator<void, string | null> {
+    const unknownFields = function* (object: RecordValue, keep: (key: string, value: unknown) => boolean): ImportSteps<string | null> {
         const original = originals?.get(object);
         const fields: string[] = [];
         let size = 2;
@@ -75,7 +81,10 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
                 if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
                 let start = previous;
                 while (start < span.start && /[\s,]/.test(original.source[start])) start++;
-                if (keep(key, object[key])) add(original.source.slice(start, span.start) + span.raw());
+                if (keep(key, object[key])) {
+                    const encoded = requireRaw(yield { kind: 'raw', span });
+                    add(original.source.slice(start, span.start) + encoded);
+                }
                 previous = span.end;
             }
         } else {
@@ -83,12 +92,15 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
                 if ((++work & 255) === 0) yield;
                 if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
                 if (!Object.hasOwn(object, key)) fail('Inherited rich node fields cannot be preserved');
-                if (keep(key, object[key])) add(`${JSON.stringify(key)}:${raw(object[key], originals)}`);
+                if (keep(key, object[key])) {
+                    const encoded = yield* raw(object[key], originals);
+                    add(`${JSON.stringify(key)}:${encoded}`);
+                }
             }
         }
         return fields.length ? `{${fields.join(',')}}` : null;
     };
-    const extras = function* (node: RecordValue, fields: readonly string[], attributes: (key: string, value: unknown) => boolean): Generator<void, RawJson | undefined> {
+    const extras = function* (node: RecordValue, fields: readonly string[], attributes: (key: string, value: unknown) => boolean): ImportSteps<RawJson | undefined> {
         const unknown = yield* unknownFields(node, (key, value) => {
             if (key === 'attrs') return value !== undefined && value !== null && !record(value);
             if (key === 'content' && fields.includes(key)) return !Array.isArray(value);
@@ -100,7 +112,7 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
         const data = `[{"type":"legacy-node-fields","nodeType":${JSON.stringify(node.type ?? null)}${unknown ? `,"fields":${unknown}` : ''}${unknownAttrs ? `,"attrs":${unknownAttrs}` : ''}}]`;
         if (data.length > MAX_TEXT_LENGTH * 4 - preservedBytes) fail('Unsupported rich node fields exceed preservation limit');
         preservedFields++;
-        return accountOpaque(parseJson(data).raw());
+        return accountOpaque(requireRaw(yield { kind: 'parse', text: data }));
     };
     const attach = (index: number, data: RawJson | undefined) => {
         if (data === undefined) return;
@@ -109,7 +121,7 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
     };
     const directionAttribute = (key: string, value: unknown) => key === 'dir' && (value === 'auto' || value === 'ltr' || value === 'rtl');
     const noAttributes = () => false;
-    const marks = function* (value: unknown): Generator<void, Marks> {
+    const marks = function* (value: unknown): ImportSteps<Marks> {
         const result: { b?: true; i?: true; u?: true; s?: true; code?: true; hl?: true; link?: string; x?: RawJson } = {};
         const extra: unknown[] = [];
         if (value === undefined) return result;
@@ -153,12 +165,12 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
             for (const item of extra) {
                 if ((++work & 255) === 0) yield;
                 if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
-                const encoded = raw(item, originals);
+                const encoded = yield* raw(item, originals);
                 size += encoded.length + (values.length ? 1 : 0);
                 if (size > MAX_TEXT_LENGTH * 4 - preservedBytes) fail('Unsupported rich marks exceed preservation limit');
                 values.push(encoded);
             }
-            result.x = accountOpaque(parseJson(`[${values.join(',')}]`).raw());
+            result.x = accountOpaque(requireRaw(yield { kind: 'parse', text: `[${values.join(',')}]` }));
             repairs.push('Preserved unsupported inline marks');
         }
         return result;
@@ -180,7 +192,7 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
         }
         return parts.join('');
     };
-    const inline = function* (source: readonly unknown[], kind: Block['kind'], level: number, dir: Block['dir'], start: number | undefined, depth: number): Generator<void, void> {
+    const inline = function* (source: readonly unknown[], kind: Block['kind'], level: number, dir: Block['dir'], start: number | undefined, depth: number): ImportSteps<void> {
         let runs: Run[] = [];
         let first = true;
         const flush = () => {
@@ -211,7 +223,8 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
                 yield* append('\u2028', {});
             } else {
                 const value = yield* collect(item, depth + 1);
-                yield* append(value, { x: accountOpaque(raw(item, originals)) });
+                const encoded = yield* raw(item, originals);
+                yield* append(value, { x: accountOpaque(encoded) });
                 repairs.push('Preserved an unsupported inline node');
             }
         }
@@ -222,14 +235,14 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
         return dir === 'ltr' || dir === 'rtl' ? dir : 'auto';
     };
     const withFields = function* (node: RecordValue, fields: readonly string[], attributes: (key: string, value: unknown) => boolean,
-        emit: () => Generator<void, void>): Generator<void, void> {
+        emit: () => ImportSteps<void>): ImportSteps<void> {
         const data = yield* extras(node, fields, attributes);
         const first = blocks.length;
         yield* emit();
         if (data !== undefined && first === blocks.length) yield* inline([], 'p', 0, 'auto', undefined, 0);
         attach(first, data);
     };
-    const visit = function* (value: unknown, depth: number, list: 'ul' | 'ol' | null = null, level = 0, start?: number): Generator<void, void> {
+    const visit = function* (value: unknown, depth: number, list: 'ul' | 'ol' | null = null, level = 0, start?: number): ImportSteps<void> {
         account(depth);
         if ((visited & 255) === 0) yield;
         const node = record(value);
@@ -279,7 +292,10 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
             case 'text': case 'hardBreak': yield* inline([node], list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1); return;
             default: {
                 const mark = { type: 'unsupported', node };
-                if (originals) originals.set(mark, parseJson(`{"type":"unsupported","node":${raw(node, originals)}}`).raw());
+                if (originals) {
+                    const encoded = yield* raw(node, originals);
+                    originals.set(mark, requireRaw(yield { kind: 'parse', text: `{"type":"unsupported","node":${encoded}}` }));
+                }
                 const content = yield* collect(node, depth + 1);
                 yield* inline([{ type: 'text', text: content, marks: [mark] }], 'p', 0, direction(node), undefined, depth + 1);
                 repairs.push('Preserved an unsupported block node');
@@ -303,21 +319,49 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
     }
 }
 
-function finish(steps: Generator<void, RichImportResult>): RichImportResult {
-    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+function finish(steps: ImportSteps<RichImportResult>): RichImportResult {
+    let value: RawJson | undefined, failure: unknown, failed = false;
+    for (;;) {
+        const step = failed ? steps.throw(failure) : steps.next(value);
+        failed = false; value = undefined;
+        if (step.done) return step.value;
+        if (step.value) try {
+            value = step.value.kind === 'raw' ? step.value.span.raw() : parseJson(step.value.text).raw();
+        } catch (error) { failure = error; failed = true; }
+    }
 }
-async function finishCooperative(steps: Generator<void, RichImportResult>, options: PlainTextOptions): Promise<RichImportResult> {
+async function finishCooperative(steps: ImportSteps<RichImportResult>, options: PlainTextOptions): Promise<RichImportResult> {
     const budget = options.sliceMilliseconds ?? 3;
     if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich import time slice');
-    let started = performance.now();
+    let started = performance.now(), value: RawJson | undefined, failure: unknown, failed = false;
+    const cooperate = async () => {
+        options.signal?.throwIfAborted();
+        if (performance.now() - started < budget) return;
+        try { await options.cooperate(); }
+        catch (error) { throw new RichImportSchedulerError(error); }
+        options.signal?.throwIfAborted();
+        started = performance.now();
+    };
     for (;;) {
         options.signal?.throwIfAborted();
-        const step = steps.next();
+        const step = failed ? steps.throw(failure) : steps.next(value);
+        failed = false; value = undefined;
         if (step.done) return step.value;
-        if (performance.now() - started >= budget) {
-            await options.cooperate();
-            options.signal?.throwIfAborted();
-            started = performance.now();
+        if (step.value) {
+            try {
+                if (step.value.kind === 'raw') value = await step.value.span.rawIncremental(cooperate);
+                else {
+                    const span = await parseJsonIncremental(step.value.text, cooperate);
+                    value = await span.rawIncremental(cooperate);
+                }
+            } catch (error) {
+                options.signal?.throwIfAborted();
+                if (error instanceof RichImportSchedulerError) throw error.original;
+                failure = error; failed = true;
+            }
+        } else {
+            try { await cooperate(); }
+            catch (error) { if (error instanceof RichImportSchedulerError) throw error.original; throw error; }
         }
     }
 }
@@ -331,7 +375,7 @@ export function convertLegacyRichTextCooperative(input: unknown, options: PlainT
     return finishCooperative(convertSteps(input, originals), options);
 }
 
-function* spanSteps(root: JsonSpan): Generator<void, RichImportResult> {
+function* spanSteps(root: JsonSpan): ImportSteps<RichImportResult> {
     try {
         const originals = new WeakMap<object, RawJson | JsonSpan>(), pending: JsonSpan[] = [root];
         let scheduled = 1, work = 0;

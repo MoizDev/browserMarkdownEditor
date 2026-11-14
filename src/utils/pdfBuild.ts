@@ -176,17 +176,11 @@ export async function buildAnnotatedPdf(
         const overlay = overlays[i];
         if (!overlay) continue;
 
-        // Raster first, then vector. A page needs both only when it mixes ink
-        // with a shape that has no path form (a text label, a pasted image), and
-        // in that mix the ink is what the reader expects to be on top.
-        if (overlay.raster?.length) {
-            // This copy STAYS. The ownership + non-mutation argument above was
-            // established for load() and attach() by reading their code; pdf-lib's
-            // PNG decode path has not been audited the same way, and an overlay is
-            // small next to the document. Don't drop it without doing that reading.
-            stampRaster(pages[i], await doc.embedPng(overlay.raster.slice()));
+        for (const layer of overlay.layers ?? [overlay]) {
+            // Keep sheet order, including a later sheet's bitmap over earlier ink.
+            if (layer.raster?.length) stampRaster(pages[i], await doc.embedPng(layer.raster.slice()));
+            if (layer.vector?.length) stampVector(pages[i], layer.vector);
         }
-        if (overlay.vector?.length) stampVector(pages[i], overlay.vector);
     }
 
     doc.attach(original, ORIGINAL_ATTACHMENT, {
@@ -272,8 +266,10 @@ export async function buildNotebookPdf(
         // identity, so the two canvases share one stamping path.
         const overlay = overlays[i];
         if (!overlay) continue;
-        if (overlay.raster?.length) stampRaster(page, await doc.embedPng(overlay.raster.slice()));
-        if (overlay.vector?.length) stampVector(page, overlay.vector);
+        for (const layer of overlay.layers ?? [overlay]) {
+            if (layer.raster?.length) stampRaster(page, await doc.embedPng(layer.raster.slice()));
+            if (layer.vector?.length) stampVector(page, layer.vector);
+        }
     }
 
     if (source) {

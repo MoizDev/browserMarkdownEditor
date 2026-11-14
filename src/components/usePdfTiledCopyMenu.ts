@@ -137,7 +137,12 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
         let available = 0;
         for (let page = first; page <= last && available < 20_000; page++) {
             const text = pages.get(page) ?? peekText(current.reader, page);
-            if (text !== undefined) { pages.set(page, text); available += text.length; }
+            if (text !== undefined) {
+                pages.set(page, text);
+                const from = !selection.wholeDocument && page === first ? Math.max(0, Math.min(text.length, range.start.offset)) : 0;
+                const to = !selection.wholeDocument && page === last ? Math.max(from, Math.min(text.length, range.end.offset)) : text.length;
+                available += to - from;
+            }
         }
         return cachedSelectionText(selection, count, pages);
     }, []);

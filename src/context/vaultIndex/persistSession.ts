@@ -74,7 +74,10 @@ export class PersistSession {
     private layout: unknown;
     mark(path: string, record: FileRecord | null, text?: string): void {
         if (this.closed) return;
-        this.dirty.set(path, { record, text: record && record.size <= 4 * 1024 * 1024 ? text : undefined });
+        const previous = this.dirty.get(path);
+        const version = previous?.textVersion ?? previous?.record;
+        const kept = record && version?.mtime === record.mtime && version.size === record.size ? previous?.text : undefined;
+        this.dirty.set(path, { record, text: record && record.size <= 4 * 1024 * 1024 ? text ?? kept : undefined });
         this.schedule();
     }
     markText(path: string, mtime: number, size: number, text: string): void {

@@ -100,17 +100,17 @@ export default defineConfig([
     },
   },
   {
-    // C-17a/C-17c: every key the app writes goes through utils/storage.ts, which
-    // mirrors it to IndexedDB so settings survive another window's
-    // localStorage.clear() (an origin reset). Warn until each owner has moved its
-    // writers (C-17b); C-17c makes it an error.
+    // A raw localStorage write bypasses the IndexedDB recovery mirror, so another
+    // window's origin reset could erase it. Tab-only sessionStorage also goes through
+    // storage.ts, but stays out of that mirror: terminal IDs must not cross tabs.
     files: ['src/**/*.{ts,tsx}'],
     ignores: ['src/utils/storage.ts'],
     rules: {
-      'no-restricted-properties': ['warn',
-        { object: 'localStorage', property: 'setItem', message: 'Use utils/storage.ts so settings survive an origin reset' },
-        { object: 'localStorage', property: 'removeItem', message: 'Use utils/storage.ts so settings survive an origin reset' },
-        { object: 'localStorage', property: 'clear', message: 'Use utils/storage.ts so settings survive an origin reset' },
+      'no-restricted-properties': ['error',
+        ...['localStorage', 'sessionStorage'].flatMap(object =>
+          ['setItem', 'removeItem', 'clear'].map(property => ({
+            object, property, message: 'Use utils/storage.ts for browser storage mutations',
+          }))),
       ],
     },
   },
@@ -210,24 +210,17 @@ export default defineConfig([
       ]],
       // G-INV-22. Baseline (contracts R1-18): the two note-text sinks AGENTS.md
       // names, the constant icon strings of three editor widgets, and the EPUB
-      // frame's srcdoc. Core turns the icon sinks into DOM builders; then they go.
+      // shared contained-frame srcdoc. Core turns the icon sinks into DOM builders; then they go.
       'bme/html-sinks': ['error', [
         { file: 'src/editor/tableWidget.ts', names: ['innerHTML'], rhs: 'any' },
         { file: 'src/editor/mermaidWidget.ts', names: ['innerHTML'], rhs: 'any' },
         { file: 'src/editor/headingFold.ts', names: ['innerHTML'], rhs: 'constant' },
         { file: 'src/editor/imageWidget.ts', names: ['innerHTML'], rhs: 'constant' },
         { file: 'src/editor/copyCodeWidget.ts', names: ['innerHTML'], rhs: 'constant' },
-        { file: 'src/epub/bridge.ts', names: ['srcdoc'], rhs: 'constant', identifiers: ['frameHTML'] },
+        { file: 'src/platform/containedFrame.ts', names: ['srcdoc'], rhs: 'constant', identifiers: ['frameHTML'] },
       ]],
-      // G-INV-FS. Baseline: the files that call the File System Access API
-      // outside src/context/ today (invariants §1 item 2). It may only shrink.
-      'bme/fs-access': ['error', [
-        'src/App.tsx',
-        'src/utils/agentHost.ts',
-        'src/utils/entryNames.ts',
-        'src/utils/recentVaults.ts',
-        'src/utils/vaultAgentStore.ts',
-      ]],
+      // G-INV-FS: all File System Access calls stay in src/context/.
+      'bme/fs-access': ['error', []],
     },
   },
 ])

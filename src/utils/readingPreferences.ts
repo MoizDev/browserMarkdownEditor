@@ -1,4 +1,5 @@
 import type { ReadingTypography } from '../types/reading';
+import { writeJSON } from './storage';
 export interface ReadingPreferences {v:1;emphasis:{enabled:boolean;algorithm:'latin-prefix-v1'};typography:ReadingTypography}
 const DEFAULT:ReadingPreferences={v:1,emphasis:{enabled:false,algorithm:'latin-prefix-v1'},typography:{family:'serif',size:18,leading:1.6,measure:'comfortable',margins:'medium',theme:'follow-app'}};
 const object=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&!Array.isArray(x);
@@ -17,7 +18,19 @@ export const getReadingPreferences=()=>state;
 export const subscribeReadingPreferences=(listener:()=>void)=>{listeners.add(listener);return ()=>{listeners.delete(listener)}};
 let persistenceFailed=false;
 export const readingPersistenceUnavailable=()=>persistenceFailed;
-function publish(value:unknown,persist=true){const next=validate(value);if(JSON.stringify(state)===JSON.stringify(next))return;state=freeze(next);if(persist)try{localStorage.setItem('readingPreferences',JSON.stringify(next));persistenceFailed=false}catch{if(!persistenceFailed&&typeof window!=='undefined')window.dispatchEvent(new Event('reading-persistence-unavailable'));persistenceFailed=true}listeners.forEach(f=>f())}
+function publish(value:unknown,persist=true){
+ const next=validate(value);
+ if(JSON.stringify(state)===JSON.stringify(next))return;
+ state=freeze(next);
+ if(persist){
+  // Mirrored writers report failure rather than throw; keep the reader's
+  // existing warning and live preference even when storage is unavailable.
+  const failed=!writeJSON('readingPreferences',next);
+  if(failed&&!persistenceFailed&&typeof window!=='undefined')window.dispatchEvent(new Event('reading-persistence-unavailable'));
+  persistenceFailed=failed;
+ }
+ listeners.forEach(f=>f());
+}
 export const setWordEmphasis=(enabled:boolean)=>publish({...state,emphasis:{enabled,algorithm:'latin-prefix-v1'}});
 export const updateReadingTypography=(patch:Partial<ReadingTypography>)=>publish({...state,typography:{...state.typography,...patch}});
 export const resetReadingPreferences=()=>publish(DEFAULT);

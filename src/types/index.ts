@@ -414,9 +414,32 @@ export type AssetUrlResolver = (fileName: string) => Promise<string | null>;
  * and EditorPane (EditorPane.jsx:20).
  * ───────────────────────────────────────────────────────────────────────── */
 
+export interface BoardAssetAccess {
+  root: FileSystemDirectoryHandle;
+  parent: FileSystemDirectoryHandle;
+  owner: FileSystemFileHandle;
+  hash: string;
+  preferredName?: string | null;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+}
+
+export interface VaultHandleIO {
+  file: (handle: FileSystemFileHandle) => Promise<File>;
+  fileIn: (dir: FileSystemDirectoryHandle, name: string, create?: boolean) => Promise<FileSystemFileHandle>;
+  dirIn: (dir: FileSystemDirectoryHandle, name: string, create?: boolean) => Promise<FileSystemDirectoryHandle>;
+  entries: (dir: FileSystemDirectoryHandle) => AsyncIterableIterator<[string, FileSystemFileHandle | FileSystemDirectoryHandle]>;
+  remove: (dir: FileSystemDirectoryHandle, name: string) => Promise<void>;
+  relativeTo: (dir: FileSystemDirectoryHandle, handle: FileSystemHandle) => Promise<string[] | null>;
+}
+
 export interface FileSystemContextValue {
+  handleIO: VaultHandleIO;
+  ensureVaultId: (root: FileSystemDirectoryHandle, writeFile: (handle: FileSystemFileHandle, text: string) => Promise<unknown>) => Promise<string | null>;
   // ── state ──
   rootHandle: FileSystemDirectoryHandle | null;          // FileSystemContext.jsx:70
+  /** Synchronous ownership token; A→B→A has three distinct activations. */
+  getVaultActivation: () => number;
   fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
   isLoading: boolean;                                     // FileSystemContext.jsx:72
   previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73
@@ -431,6 +454,10 @@ export interface FileSystemContextValue {
   currentVaultId: string | null;
 
   // ── actions ──
+  resolveVaultDir: (root: FileSystemDirectoryHandle, path: string) => Promise<FileSystemDirectoryHandle>;
+  resolveVaultFile: (root: FileSystemDirectoryHandle, path: string) => Promise<{ handle: FileSystemFileHandle; parentHandle: FileSystemDirectoryHandle }>;
+  vaultDirExists: (root: FileSystemDirectoryHandle, path: string) => Promise<boolean>;
+  nameTaken: (dir: FileSystemDirectoryHandle, name: string) => Promise<boolean>;
   /** Open the OS folder picker and switch to what comes back. Reports its
    *  outcome like the other two raisers — "Open folder…" is a menu row, and a
    *  refused picker has to be able to say so. A cancelled pick is 'ok'. */
@@ -462,11 +489,14 @@ export interface FileSystemContextValue {
   createFolder: (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => Promise<FileSystemDirectoryHandle>; // :176
   getAssetUrl: (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<string | null>; // :188
   saveAsset: (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<void>; // :218
-  /** Move an asset out of a folder's .Assets and into its .Garbage, once no
-   *  note in that folder refers to it any more. Returns whether it moved. */
-  retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  /** Board media are content-addressed but retain their actual collision-free leaf name. */
+  readBoardAsset: (request: BoardAssetAccess) => Promise<{ name: string; blob: Blob } | null>;
+  putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
+  /** Move an asset into the folder's .Garbage only while its activation and
+   *  reference proof remain valid, including after the copy. */
+  retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   /** The inverse, for when the reference comes back (undo, cut-and-paste). */
-  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
   /** Preserve supplied bytes in this folder's `.Garbage`, never touching the
@@ -496,6 +526,8 @@ export interface FileSystemContextValue {
   /** readFile, plus the DiskVersion of exactly the bytes read. */
   readFileVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ text: string; version: DiskVersion }>;
   readBytesVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ bytes: Uint8Array; version: DiskVersion }>;
+  inspectExportTarget: (dir: FileSystemDirectoryHandle, name: string) => Promise<DiskVersion | null>;
+  writeNotebookExport: (dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null, isCurrent: () => boolean) => Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' | 'cancelled' }>;
   /** `{lastModified, size}` without reading the bytes; null if the file is gone. */
   statFile: (fileHandle: FileSystemFileHandle) => Promise<DiskStat | null>;
   /** THE document write: writes only if the file still is `expected` (equal

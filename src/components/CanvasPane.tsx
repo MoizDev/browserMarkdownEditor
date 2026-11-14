@@ -12,10 +12,11 @@
 // them, and the "not yet shown" gate that keeps a restored session from
 // building five editors to show one.
 
-import React, { Suspense, lazy, useEffect, useRef } from 'react';
+import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 import { isNotebookFile } from '../utils/fileTypes';
+import { routeEngines } from '../utils/engineRouting';
 import type { ActiveFile, ContentChangeOptions, DiskAction, Theme } from '../types';
 
 // tldraw is a heavy dependency (canvas engine + its own UI); loading it lazily
@@ -55,6 +56,7 @@ export interface CanvasPaneProps {
 
 function CanvasPane({ file, documentId, isVisible, slotIndex, slotLeft, slotWidth, onFocusPane, registerKeyboardTarget, content, onContentChange, onConfirm, theme, disk, onDiskAction }: CanvasPaneProps) {
     const activated = useActivated(isVisible);
+    const [routes] = useState(routeEngines);
     const rootRef = useRef<HTMLDivElement>(null);
 
     // tldraw's own container is what its shortcuts listen on, and it carries a
@@ -82,10 +84,12 @@ function CanvasPane({ file, documentId, isVisible, slotIndex, slotLeft, slotWidt
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the canvas and undo everything this float is for. */}
             <div className="canvas-pane-body">
-                {activated && (
+                {activated && routes.canvas[isNotebook ? 'notebook' : 'drawing'].engine !== 'tldraw' && <div role="status">The selected whiteboard engine is unavailable.</div>}
+                {activated && routes.canvas[isNotebook ? 'notebook' : 'drawing'].engine === 'tldraw' && (
                     <Suspense fallback={<div className="drawing-pane drawing-pane-loading">{label}</div>}>
                         {isNotebook ? (
                             <NotebookPane
+                                isVisible={isVisible}
                                 documentId={documentId}
                                 filePath={file.path}
                                 content={content}
@@ -94,6 +98,7 @@ function CanvasPane({ file, documentId, isVisible, slotIndex, slotLeft, slotWidt
                             />
                         ) : (
                             <DrawingPane
+                                isVisible={isVisible}
                                 documentId={documentId}
                                 filePath={file.path}
                                 content={content}

@@ -1,0 +1,162 @@
+{
+  "IBMPlexMono-Bold.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 516,
+    "underlinePosition": -100,
+    "underlineThickness": 100,
+    "strikePosition": 309,
+    "strikeThickness": 100
+  },
+  "IBMPlexMono-BoldItalic.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 516,
+    "underlinePosition": -100,
+    "underlineThickness": 100,
+    "strikePosition": 309,
+    "strikeThickness": 100
+  },
+  "IBMPlexMono-Medium.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 516,
+    "underlinePosition": -123,
+    "underlineThickness": 77,
+    "strikePosition": 309,
+    "strikeThickness": 77
+  },
+  "IBMPlexMono-MediumItalic.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 516,
+    "underlinePosition": -123,
+    "underlineThickness": 77,
+    "strikePosition": 309,
+    "strikeThickness": 77
+  },
+  "IBMPlexSans-Bold.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 525,
+    "underlinePosition": -66,
+    "underlineThickness": 100,
+    "strikePosition": 315,
+    "strikeThickness": 100
+  },
+  "IBMPlexSans-BoldItalic.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 525,
+    "underlinePosition": -66,
+    "underlineThickness": 100,
+    "strikePosition": 315,
+    "strikeThickness": 100
+  },
+  "IBMPlexSans-Medium.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 520,
+    "underlinePosition": -83,
+    "underlineThickness": 77,
+    "strikePosition": 312,
+    "strikeThickness": 77
+  },
+  "IBMPlexSans-MediumItalic.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 520,
+    "underlinePosition": -83,
+    "underlineThickness": 77,
+    "strikePosition": 312,
+    "strikeThickness": 77
+  },
+  "IBMPlexSerif-Bold.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 524,
+    "underlinePosition": -51,
+    "underlineThickness": 62,
+    "strikePosition": 314,
+    "strikeThickness": 62
+  },
+  "IBMPlexSerif-BoldItalic.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 524,
+    "underlinePosition": -51,
+    "underlineThickness": 62,
+    "strikePosition": 314,
+    "strikeThickness": 62
+  },
+  "IBMPlexSerif-Medium.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 520,
+    "underlinePosition": -66,
+    "underlineThickness": 52,
+    "strikePosition": 312,
+    "strikeThickness": 52
+  },
+  "IBMPlexSerif-MediumItalic.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1025,
+    "descent": 275,
+    "xHeight": 520,
+    "underlinePosition": -66,
+    "underlineThickness": 52,
+    "strikePosition": 312,
+    "strikeThickness": 52
+  },
+  "Shantell_Sans-Informal_Bold.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1020,
+    "descent": 320,
+    "xHeight": 509,
+    "underlinePosition": -121,
+    "underlineThickness": 112,
+    "strikePosition": 300,
+    "strikeThickness": 92
+  },
+  "Shantell_Sans-Informal_Bold_Italic.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1020,
+    "descent": 320,
+    "xHeight": 509,
+    "underlinePosition": -121,
+    "underlineThickness": 112,
+    "strikePosition": 300,
+    "strikeThickness": 92
+  },
+  "Shantell_Sans-Informal_Regular.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1020,
+    "descent": 320,
+    "xHeight": 491,
+    "underlinePosition": -109,
+    "underlineThickness": 73,
+    "strikePosition": 270,
+    "strikeThickness": 68
+  },
+  "Shantell_Sans-Informal_Regular_Italic.woff2": {
+    "unitsPerEm": 1000,
+    "ascent": 1020,
+    "descent": 320,
+    "xHeight": 491,
+    "underlinePosition": -109,
+    "underlineThickness": 73,
+    "strikePosition": 270,
+    "strikeThickness": 68
+  }
+}

@@ -7,12 +7,14 @@
 // It lives apart from pdfAnnotation.ts for that reason alone — the two halves
 // are one feature.
 
-import { PDFDocument, ParseSpeeds, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFName, PDFString, ParseSpeeds, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
 import type { PDFPage, PDFImage } from 'pdf-lib';
 import { NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT, type NotebookSource } from './pdfFormat';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from './paper';
 import type { PageOverlay } from './pdfOverlay';
 import type { VectorOp } from './pdfVector';
+import { PDF_WRITE_MARK_PLACEHOLDER, sealPdfWriteMark } from './pdfWriteMark';
+import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
 
 /**
  * pdf-lib's own pacing, switched off — for every load and save in the worker.
@@ -150,6 +152,8 @@ export async function buildAnnotatedPdf(
     snapshot: string,
     overlays: Array<PageOverlay | undefined> = [],
 ): Promise<Uint8Array> {
+    const refusal = pdfSnapshotRefusal(snapshot);
+    if (refusal) throw new PdfBuildRefused(refusal);
     // No defensive copy of `original`, on two independent grounds:
     //
     //  1. OWNERSHIP. This module is reached ONLY from pdfBuild.worker.ts (and
@@ -194,7 +198,20 @@ export async function buildAnnotatedPdf(
         description: 'tldraw snapshot: the editable form of the annotations stamped on the pages.',
     });
 
-    return doc.save(SAVE_WITHOUT_TICKS);
+    // Flush deferred attachments/images BEFORE allocating the mark: pdf-lib
+    // writes raw streams by object number, so our newest stream follows any
+    // earlier literal marker text in the pristine source. Keep other apps'
+    // PieceInfo entries; this private stream is not an editable-format marker.
+    await doc.flush();
+    const existing = doc.catalog.lookup(PDFName.of('PieceInfo'));
+    if (existing !== undefined && !(existing instanceof PDFDict)) throw new Error('The PDF PieceInfo dictionary could not be preserved. Nothing was saved.');
+    const pieces = existing ? existing.clone() : doc.context.obj({});
+    const mark = doc.context.register(doc.context.stream(PDF_WRITE_MARK_PLACEHOLDER));
+    pieces.set(PDFName.of('VaultWriteMark'), doc.context.obj({
+        LastModified: PDFString.fromDate(new Date()), Private: mark,
+    }));
+    doc.catalog.set(PDFName.of('PieceInfo'), pieces);
+    return sealPdfWriteMark(await doc.save(SAVE_WITHOUT_TICKS));
 }
 
 /* ── Notebooks ──────────────────────────────────────────────────────────── */

@@ -1,5 +1,5 @@
 import type { NotebookPaper } from '../../utils/paper';
-import type { NodePropKey } from '../change/ops';
+import type { BoardKey, NodePropKey } from '../change/ops';
 import type { UiBlock } from './styles';
 
 // R-W23: raw entries name exactly one native record token. The encoder and CH-1
@@ -28,3 +28,13 @@ export const PAPER_FILE_FIELDS = {
     size: ['size'], orientation: ['orientation'], ruling: ['ruling'], spacing: ['spacing'],
     margin: ['margin'], pageCount: ['pages'],
 } as const satisfies Record<keyof NotebookPaper, readonly [string, ...string[]]>;
+
+export const BOARD_FILE_FIELDS = {
+    'host.paper': Object.values(PAPER_FILE_FIELDS).flat(),
+    'host.pdf': ['pdf'],
+    'ui.tool': PEN_FILE_FIELDS.tool,
+    'ui.next': PEN_FILE_FIELDS.next,
+    'ui.penWidth': PEN_FILE_FIELDS.penWidth,
+    'view.grid': ['grid'], 'view.focusMode': ['focusMode'], 'view.toolLock': ['toolLock'],
+    'view.transparent': ['transparent'], 'view.debugMode': ['debugMode'],
+} as const satisfies Record<BoardKey, readonly string[]>;

@@ -19,9 +19,10 @@ import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
 import type { ActiveFile, ContentChangeOptions, DiskAction, OpenTab, GraphData, GraphNode, TabLayout, Theme, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
 
-// Same reasoning as the drawing canvas: pdf.js + pdf-lib only load once a PDF
-// is actually opened.
-const PdfPane = lazy(() => import('./PdfPane'));
+// Read the same resolved component idle prefetch filled, not a second lazy payload.
+import { getPdfPaneModuleSnapshot, loadPdfPane, subscribePdfPaneModule } from './pdfPaneModule';
+import type { PdfPaneComponent } from './pdfPaneModule';
+import { useActivated } from './floatingSlot';
 
 /**
  * One PDF tab's reading binding, built once per document rather than once per
@@ -41,7 +42,7 @@ const PdfPane = lazy(() => import('./PdfPane'));
 const PdfPaneHost = React.memo(function PdfPaneHost({
     reading, tab, emphasisEnabled, typography, onEmphasisChange, onTypographyChange,
     registerKeyboardTarget, ...rest
-}: Omit<React.ComponentProps<typeof PdfPane>, 'reading'> & {
+}: Omit<React.ComponentProps<PdfPaneComponent>, 'reading'> & {
     reading: ReaderIntegration;
     tab: OpenTab;
     emphasisEnabled: boolean;
@@ -50,6 +51,18 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
     onTypographyChange: PdfReadingBinding['onTypographyChange'];
     registerKeyboardTarget: PdfReadingBinding['registerKeyboardTarget'];
 }) {
+    const activated = useActivated(rest.isVisible);
+    const module = useSyncExternalStore(subscribePdfPaneModule, getPdfPaneModuleSnapshot);
+    // A float must stay in its column during a cold restore (and divider drag),
+    // not cover the note beside it. Keep this off props so host memo still holds.
+    const loadingStyle = React.useMemo<React.CSSProperties | undefined>(() => rest.isVisible ? {
+        left: `calc(var(--pane-x-${rest.slotIndex ?? 0}) * 1%)`,
+        width: `calc(var(--pane-w-${rest.slotIndex ?? 0}) * 1%)`,
+        right: 'auto',
+    } : undefined, [rest.isVisible, rest.slotIndex]);
+    useEffect(() => {
+        if (activated && module.status === 'unloaded') void loadPdfPane().catch(() => {});
+    }, [activated, module.status]);
     const identity = reading.identityForTab(tab);
     const path = tab.file.path;
     const binding = React.useMemo<PdfReadingBinding>(() => ({
@@ -61,7 +74,23 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
         initialRecord: readPdfTextViewState(identity.vaultId, path),
         emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget,
     }), [reading, identity, path, emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget]);
-    return <PdfPane reading={binding} {...rest} />;
+    if (!activated) return null;
+    if (module.status !== 'ready') return (
+        <div
+            className={`pdf-pane pdf-pane-message${rest.isVisible ? '' : ' pdf-pane-hidden'}`}
+            style={loadingStyle}
+            role={module.status === 'error' ? 'alert' : 'status'}
+            onPointerDownCapture={() => { if (rest.isVisible) rest.onFocusPane(rest.file.path); }}
+        >
+            {module.status === 'error' ? <>
+                <span>The PDF reader could not be loaded.</span>
+                {module.reloadRequired && <span>Reload the app to try loading it again.</span>}
+                <button className="pdf-pane-action" onClick={() => { void loadPdfPane({ retry: true }).catch(() => {}); }}>Retry</button>
+            </> : 'Loading PDF…'}
+        </div>
+    );
+    const LoadedPdfPane = module.Component;
+    return <LoadedPdfPane reading={binding} {...rest} />;
 });
 // Whiteboards and notebooks float over their column for the same reason PDFs
 // do, and through the same geometry — see components/floatingSlot.ts.
@@ -1059,22 +1088,8 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                 // means "this document is some column's showing tab".
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
-                // The placeholder has to stand in the SAME column as the pane it
-                // is standing in for: bare `.pdf-pane` is full width and sits
-                // above the pane headers, so on the restore path — the one that
-                // can put a PDF straight into a column beside another — it
-                // covered the notes beside it until the lazy chunk arrived.
-                // Through the same variables as the pane itself, so it lines up
-                // even mid-drag.
-                const fallbackStyle = visible
-                    ? {
-                        left: `calc(var(--pane-x-${slot!.index}) * 1%)`,
-                        width: `calc(var(--pane-w-${slot!.index}) * 1%)`,
-                        right: 'auto' as const,
-                    }
-                    : undefined;
                 return (
-                    <Suspense
+                    <React.Fragment
                         // Same key as a pane (see paneKey): matched by path
                         // alone, the pane of an overwritten PDF was handed to
                         // the file that replaced it and went on showing the old
@@ -1083,11 +1098,6 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                         // diskRev: a reload from disk remounts it on the new
                         // file (App.reloadFromDisk).
                         key={`${paneKey(tab)}|${tab.diskRev ?? 0}`}
-                        fallback={visible ? (
-                            <div className="pdf-pane pdf-pane-message" style={fallbackStyle}>
-                                Loading PDF…
-                            </div>
-                        ) : null}
                     >
                         <PdfPaneHost
                             reading={reading}
@@ -1114,7 +1124,7 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                             disk={tab.disk}
                             onDiskAction={onDiskAction}
                         />
-                    </Suspense>
+                    </React.Fragment>
                 );
             })}
 

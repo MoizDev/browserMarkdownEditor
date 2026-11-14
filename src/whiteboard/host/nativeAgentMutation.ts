@@ -11,7 +11,19 @@ import type { JobOptions } from '../security/admission';
 import { createLiveAgentBackend } from './agentProjection';
 import type { BoardRuntime } from './runtime';
 
-/** What the App owner supplies for one source. None of it is read from the DOM. */
+/** What the App owner supplies for one source. None of it is read from the DOM.
+ *
+ * Contract (Core integrates against this exactly):
+ * - `isCurrent()` is true only while this App owner, its board session and its disk baseline are the live
+ *   ones. It is consulted before the scene is awaited, after it, immediately before the writer commits, and
+ *   by every read. Once it returns false it must never return true again for this facade.
+ * - `writeBlock()` returns a human-readable reason when the source must not be written (locked, emergency
+ *   read-only, baseline conflict), or null when writing is allowed. It is consulted on the same schedule as
+ *   `isCurrent()`, so a block raised during preflight refuses the batch before any writer begins.
+ * - `sheet()` and `page()` are App source metadata. They are read at job start and fenced on every check,
+ *   so a sheet or page change during preflight aborts the batch rather than writing to a stale target.
+ * - `retire()` on the facade must be called before the App releases the session. It aborts and awaits
+ *   only facade-owned work; the document's canonical job authority keeps serving everything else. */
 export interface NativeAgentSource {
     /** The App's source identity: this owner, document and disk baseline are still the live ones. */
     isCurrent(): boolean;

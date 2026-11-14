@@ -16,8 +16,8 @@ export interface PointRefusal { code: PointErrorCode; reason: string; offset?: n
 export type PointResult<T> = { ok: true; value: T; } | { ok: false; error: PointRefusal; };
 
 export interface SegmentRuns {
-    readonly starts: Uint32Array;
-    readonly kinds: Uint8Array; // 0 freehand, 1 straight; first start is 0
+    readonly starts: Uint32Array; // R-W31: run at s controls OUTGOING spans i→i+1 from i=s.
+    readonly kinds: Uint8Array; // 0 freehand, 1 straight; first start 0 has the first span's kind.
 }
 export interface PointChannel { readonly id: number; readonly data: Uint8Array; }
 export interface PointSamples {
@@ -35,6 +35,21 @@ export interface DecodedPoints extends PointSamples {
 }
 export interface EncodedPoints { readonly pts: string; readonly count: number; readonly k: number; }
 
+export interface PointHeader {
+    readonly count: number;
+    readonly k: number;
+    readonly hasPressure: boolean;
+    readonly runCount: number; // 0 = channel 3 absent; otherwise the exact explicit run count (R-W29).
+}
+export interface PointInspectionHeader extends PointHeader {
+    readonly localBounds: readonly [number, number, number, number]; // R-W39: point min/max after /2^k, before node transforms.
+    readonly maxPressure: number | null;
+}
+export interface PointInspection {
+    readonly header: PointInspectionHeader;
+    readonly hasUnknownChannels: boolean;
+}
+
 class Refusal extends Error {
     constructor(readonly detail: PointRefusal) { super(detail.reason); }
 }
@@ -51,12 +66,15 @@ function result<T>(work: () => T): PointResult<T> {
     }
 }
 
-export function pointExponent(zMax: number): PointResult<number> {
+export function pointExponent(zMax: number, sx = 1, sy = 1): PointResult<number> {
     return result(() => {
-        if (!Number.isFinite(zMax) || zMax <= 0) refuse('input', 'Maximum zoom must be finite and positive');
-        const k = Math.max(7, Math.ceil(Math.log2(6 * Math.SQRT2 * zMax)));
-        if (k > POINT_LIMITS.exponent) refuse('limit', 'Maximum zoom needs an exponent above 20');
-        return k;
+        if (!Number.isFinite(zMax) || zMax <= 0 || !Number.isFinite(sx) || !Number.isFinite(sy) || sx === 0 || sy === 0) {
+            refuse('input', 'Zoom and stroke scales must be finite, positive zoom and nonzero scales');
+        }
+        // R-W36: stroke-local quantization must account for its transform. Summing logarithms
+        // avoids overflowing the product before the specified exponent-20 cap is applied.
+        const needed = Math.ceil(Math.log2(6 * Math.SQRT2) + Math.log2(zMax) + Math.log2(Math.max(Math.abs(sx), Math.abs(sy), 1)));
+        return Math.min(POINT_LIMITS.exponent, Math.max(7, needed));
     });
 }
 
@@ -229,91 +247,120 @@ export function encodePoints(samples: PointSamples, k = 7): PointResult<EncodedP
     });
 }
 
-export function decodePoints(pts: string): PointResult<DecodedPoints> {
-    return result(() => {
-        const bytes = base64Bytes(pts);
-        const cursor = new Cursor(bytes);
-        if (cursor.byte() !== 1) refuse('version', 'Unsupported point payload version', 0);
-        const count = cursor.varint();
-        if (count < 1 || count > POINT_LIMITS.count) refuse('limit', 'Point count must be 1…1,000,000');
-        const known = new Map<number, Cursor>();
-        const channelStart = cursor.offset;
-        while (cursor.offset < cursor.end) {
-            const id = cursor.varint(), length = cursor.varint();
-            if (length > cursor.end - cursor.offset) refuse('truncated', 'Channel extends past payload', cursor.offset);
-            const end = cursor.offset + length;
-            if (id >= 1 && id <= 3) {
-                if (known.has(id)) refuse('channel', 'Duplicate known point channel', cursor.offset);
-                known.set(id, new Cursor(bytes, cursor.offset, end));
-            }
-            cursor.offset = end;
+interface PayloadRead { readonly inspection: PointInspection; readonly decoded?: DecodedPoints; }
+function readPayload(pts: string, materialize: true): PayloadRead & { readonly decoded: DecodedPoints; };
+function readPayload(pts: string, materialize: false): PayloadRead;
+function readPayload(pts: string, materialize: boolean): PayloadRead {
+    const bytes = base64Bytes(pts);
+    const cursor = new Cursor(bytes);
+    if (cursor.byte() !== 1) refuse('version', 'Unsupported point payload version', 0);
+    const count = cursor.varint();
+    if (count < 1 || count > POINT_LIMITS.count) refuse('limit', 'Point count must be 1…1,000,000');
+    const known = new Map<number, Cursor>();
+    const channelStart = cursor.offset;
+    let hasUnknownChannels = false;
+    while (cursor.offset < cursor.end) {
+        const id = cursor.varint(), length = cursor.varint();
+        if (length > cursor.end - cursor.offset) refuse('truncated', 'Channel extends past payload', cursor.offset);
+        const end = cursor.offset + length;
+        if (id >= 1 && id <= 3) {
+            if (known.has(id)) refuse('channel', 'Duplicate known point channel', cursor.offset);
+            known.set(id, new Cursor(bytes, cursor.offset, end));
+        } else {
+            hasUnknownChannels = true;
         }
-        // Future channels are skipped without an object per block. A hostile payload can contain
-        // millions of empty blocks; preserving them eagerly would expand a small string into a heap.
-        const unknownChannels: Iterable<PointChannel> = {
-            *[Symbol.iterator]() {
-                const scan = new Cursor(bytes, channelStart);
-                while (scan.offset < scan.end) {
-                    const id = scan.varint(), length = scan.varint();
-                    const end = scan.offset + length;
-                    if (id < 1 || id > 3) yield { id, data: bytes.subarray(scan.offset, end) };
-                    scan.offset = end;
-                }
-            },
-        };
-        const coords = known.get(1);
-        if (!coords) refuse('channel', 'Coordinate channel is required');
-        // Counts are untrusted. Refuse a tiny block claiming a million points before allocating arrays.
-        if (coords.end - coords.offset < 1 + 2 * count || coords.end - coords.offset > 1 + 16 * count) refuse('channel', 'Coordinate block length cannot match point count');
-        const k = coords.byte();
-        if (k > POINT_LIMITS.exponent) refuse('coordinate', 'Point exponent exceeds 20');
-        const scale = 2 ** k;
-        const xy = new Float64Array(2 * count);
-        let x = 0, y = 0, dx = 0, dy = 0;
+        cursor.offset = end;
+    }
+    const coords = known.get(1);
+    if (!coords) refuse('channel', 'Coordinate channel is required');
+    // Counts are untrusted. Refuse a tiny block claiming a million points before allocating arrays.
+    if (coords.end - coords.offset < 1 + 2 * count || coords.end - coords.offset > 1 + 16 * count) refuse('channel', 'Coordinate block length cannot match point count');
+    const k = coords.byte();
+    if (k > POINT_LIMITS.exponent) refuse('coordinate', 'Point exponent exceeds 20');
+    const scale = 2 ** k;
+    const xy = materialize ? new Float64Array(2 * count) : null;
+    let x = 0, y = 0, dx = 0, dy = 0;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < count; i++) {
+        const ex = unzigzag(coords.varint()), ey = unzigzag(coords.varint());
+        if (Math.abs(ex) > POINT_LIMITS.quantized || Math.abs(ey) > POINT_LIMITS.quantized) refuse('coordinate', 'Point difference exceeds ±2^50');
+        if (i === 0) { x = ex; y = ey; } else {
+            dx = i === 1 ? ex : dx + ex; dy = i === 1 ? ey : dy + ey;
+            x += dx; y += dy;
+        }
+        if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || Math.abs(x) > POINT_LIMITS.quantized
+            || Math.abs(y) > POINT_LIMITS.quantized || Math.abs(x / scale) > POINT_LIMITS.world
+            || Math.abs(y / scale) > POINT_LIMITS.world) refuse('coordinate', 'Decoded coordinate is outside the supported range');
+        const worldX = x / scale, worldY = y / scale;
+        minX = Math.min(minX, worldX); minY = Math.min(minY, worldY);
+        maxX = Math.max(maxX, worldX); maxY = Math.max(maxY, worldY);
+        if (xy) { xy[2 * i] = worldX; xy[2 * i + 1] = worldY; }
+    }
+    coords.done();
+    const pressureBlock = known.get(2);
+    let pressure: Float64Array | null = null;
+    let maxPressureQuanta = 0;
+    if (pressureBlock) {
+        const length = pressureBlock.end - pressureBlock.offset;
+        if (length < count || length > 8 * count) refuse('channel', 'Pressure block length cannot match point count');
+        if (materialize) pressure = new Float64Array(count);
+        let q = 0;
         for (let i = 0; i < count; i++) {
-            const ex = unzigzag(coords.varint()), ey = unzigzag(coords.varint());
-            if (Math.abs(ex) > POINT_LIMITS.quantized || Math.abs(ey) > POINT_LIMITS.quantized) refuse('coordinate', 'Point difference exceeds ±2^50');
-            if (i === 0) { x = ex; y = ey; } else {
-                dx = i === 1 ? ex : dx + ex; dy = i === 1 ? ey : dy + ey;
-                x += dx; y += dy;
-            }
-            if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || Math.abs(x) > POINT_LIMITS.quantized
-                || Math.abs(y) > POINT_LIMITS.quantized || Math.abs(x / scale) > POINT_LIMITS.world
-                || Math.abs(y / scale) > POINT_LIMITS.world) refuse('coordinate', 'Decoded coordinate is outside the supported range');
-            xy[2 * i] = x / scale; xy[2 * i + 1] = y / scale;
+            const value = pressureBlock.varint();
+            q = i === 0 ? value : q + unzigzag(value);
+            if (!Number.isSafeInteger(q) || q < 0 || q > POINT_LIMITS.pressureQuanta) refuse('pressure', 'Decoded pressure is outside 0…16');
+            maxPressureQuanta = Math.max(maxPressureQuanta, q);
+            if (pressure) pressure[i] = q / POINT_LIMITS.pressureQuantum;
         }
-        coords.done();
-        const pressureBlock = known.get(2);
-        let pressure: Float64Array | null = null;
-        if (pressureBlock) {
-            const length = pressureBlock.end - pressureBlock.offset;
-            if (length < count || length > 8 * count) refuse('channel', 'Pressure block length cannot match point count');
-            pressure = new Float64Array(count);
-            let q = 0;
-            for (let i = 0; i < count; i++) {
-                const value = pressureBlock.varint();
-                q = i === 0 ? value : q + unzigzag(value);
-                if (!Number.isSafeInteger(q) || q < 0 || q > POINT_LIMITS.pressureQuanta) refuse('pressure', 'Decoded pressure is outside 0…16');
-                pressure[i] = q / POINT_LIMITS.pressureQuantum;
-            }
-            pressureBlock.done();
+        pressureBlock.done();
+    }
+    const runBlock = known.get(3);
+    let runs: SegmentRuns | null = null;
+    let runCount = 0;
+    if (runBlock) {
+        runCount = runBlock.varint();
+        if (runCount < 1 || runCount > count || runBlock.end - runBlock.offset < 2 * runCount) refuse('runs', 'Invalid segment run count');
+        const starts = materialize ? new Uint32Array(runCount) : null;
+        const kinds = materialize ? new Uint8Array(runCount) : null;
+        let start = 0;
+        for (let i = 0; i < runCount; i++) {
+            const delta = runBlock.varint(), kind = runBlock.byte();
+            start += delta;
+            if ((i === 0 ? start !== 0 : delta === 0) || !Number.isSafeInteger(start) || start >= count || kind > 1) refuse('runs', 'Invalid segment start or kind');
+            if (starts && kinds) { starts[i] = start; kinds[i] = kind; }
         }
-        const runBlock = known.get(3);
-        let runs: SegmentRuns | null = null;
-        if (runBlock) {
-            const runCount = runBlock.varint();
-            if (runCount < 1 || runCount > count || runBlock.end - runBlock.offset < 2 * runCount) refuse('runs', 'Invalid segment run count');
-            const starts = new Uint32Array(runCount), kinds = new Uint8Array(runCount);
-            let start = 0;
-            for (let i = 0; i < runCount; i++) {
-                const delta = runBlock.varint(), kind = runBlock.byte();
-                start += delta;
-                if ((i === 0 ? start !== 0 : delta === 0) || !Number.isSafeInteger(start) || start >= count || kind > 1) refuse('runs', 'Invalid segment start or kind');
-                starts[i] = start; kinds[i] = kind;
+        runBlock.done();
+        if (starts && kinds) runs = { starts, kinds };
+    }
+    const inspection: PointInspection = {
+        header: {
+            count, k, hasPressure: pressureBlock !== undefined, runCount,
+            localBounds: [minX, minY, maxX - minX, maxY - minY],
+            maxPressure: pressureBlock === undefined ? null : maxPressureQuanta / POINT_LIMITS.pressureQuantum,
+        }, hasUnknownChannels
+    };
+    if (!materialize) return { inspection };
+    // No per-channel expansion at load, and no backing-byte lease for a decoded payload that
+    // has no unknown channels. Unknown blocks are exposed lazily only to materializing callers.
+    const unknownChannels: Iterable<PointChannel> = hasUnknownChannels ? {
+        *[Symbol.iterator]() {
+            const scan = new Cursor(bytes, channelStart);
+            while (scan.offset < scan.end) {
+                const id = scan.varint(), length = scan.varint();
+                const end = scan.offset + length;
+                if (id < 1 || id > 3) yield { id, data: bytes.subarray(scan.offset, end) };
+                scan.offset = end;
             }
-            runBlock.done();
-            runs = { starts, kinds };
-        }
-        return { xy, count, k, pressure, runs, unknownChannels };
-    });
+        },
+    } : [];
+    return { inspection, decoded: { xy: xy!, count, k, pressure, runs, unknownChannels } };
+}
+
+export function inspectPoints(pts: string): PointResult<PointInspection> {
+    // R-W28: all numeric/length checks share the decoder's walk; no coordinate, pressure or run
+    // arrays are created. The lazy store can trust admission without eagerly retaining samples.
+    return result(() => readPayload(pts, false).inspection);
+}
+export function decodePoints(pts: string): PointResult<DecodedPoints> {
+    return result(() => readPayload(pts, true).decoded);
 }

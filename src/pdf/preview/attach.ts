@@ -56,7 +56,7 @@ export function createPdfPreview(options: PreviewOptions): PdfPreview {
             return layer;
         },
         revision: () => scene?.revision ?? 0,
-        critical: layer => layer.needsFrame(),
+        critical: (layer, view) => layer instanceof PreviewBitmapLayer && layer.hasGpuWork(view),
         coverage: (_layer, frame, backend) => scene?.coverage(frame.view, backend !== 'canvas2d') ?? { complete: false, sharp: false },
     };
     const revision = () => String(scene?.revision ?? 0);

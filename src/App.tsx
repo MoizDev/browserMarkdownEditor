@@ -991,7 +991,7 @@ export default function App() {
 
   // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
-  const sessionReportRef = useRef<(documentId: string, source: ContentSource) => void>(() => {});
+  const sessionReportRef = useRef<(documentId: string, source: ContentSource, options?: ContentChangeOptions) => void>(() => {});
   const bytesGenerationsRef = useRef(new Map<string, number>());
   const bufferPathIdsRef = useRef(new Map<string, string>());
   const [documentBuffers] = useState(() => createDocumentBuffers(path => bufferPathIdsRef.current.get(path)));
@@ -1001,7 +1001,7 @@ export default function App() {
   }, [documentBuffers]);
   const [documentSessions] = useState(() => createDocumentSessions({
     bufferState: id => documentBuffers.get(id),
-    reportChange: (id, source) => sessionReportRef.current(id, source),
+    reportChange: (id, source, options) => sessionReportRef.current(id, source, options),
   }));
   useEffect(() => installSessionIdentity(documentSessions), [documentSessions]);
   const bumpBytesGeneration = useCallback((id: string) => {
@@ -2745,9 +2745,9 @@ export default function App() {
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, ...(typeof content === 'string' ? { content } : {}), dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     scheduleSave(path);
   }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, reportRevision, scheduleSave]);
-  sessionReportRef.current = (id, source) => {
+  sessionReportRef.current = (id, source, options) => {
     const tab = tabsRef.current.find(t => t.id === id);
-    if (tab) updateTabContent(tab.file.path, source);
+    if (tab) updateTabContent(tab.file.path, source, options);
   };
 
   const updateAgentTabContent = useCallback((path: string, content: string) => {

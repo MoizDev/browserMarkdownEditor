@@ -19,11 +19,15 @@ import { prepareBoardAttachmentSurfaceNow } from '../render/attachmentSurfaces';
 // Provenance: staged-change world pose and shared connector attachment/geometry
 // contracts; independent composition, no third-party source.
 export type ConnectorLabelLayout = ConnectorLabelPaint;
+export interface BoardChangeGeometry extends ChangeGeometry {
+    /** 'unroutable': an elbow connector has no valid candidate on the prepared layout (document-model §9.2). */
+    elbowRoute(doc: BoardDoc, node: Readonly<ConnectorNode>): 'ready' | 'unroutable';
+}
 export function createBoardChangeGeometry(options: {
     local: (doc: BoardDoc, node: Readonly<Node>) => LocalGeometryBounds | undefined;
     vector: (doc: BoardDoc, node: Readonly<Node>) => BoardVectorGeometry | undefined;
     connectorText?: (doc: BoardDoc, node: Readonly<ConnectorNode>, anchor: Vec2, length: number) => ConnectorLabelLayout | undefined;
-}): ChangeGeometry {
+}): BoardChangeGeometry {
     const unavailable = (id: string, detail: string): never => { throw new ApplyFailed('geometry-unavailable', `Geometry unavailable for ${id}: ${detail}`); };
     const matrix = (doc: BoardDoc, id: NodeId): Affine => {
         const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -103,6 +107,18 @@ export function createBoardChangeGeometry(options: {
         return drainPolylinePoints(line, doc, surfaces, POLYLINE_TOLERANCE_WORLD);
     };
     return {
+        // Post-layout admission (document-model §9.2): 'unroutable' means the elbow provider found no valid
+        // candidate on the prepared layout. A missing layout still throws, so admission fails closed.
+        elbowRoute(doc, node) {
+            const current = doc.nodes.get(node.id);
+            if (!current || current.kind !== 'connector') return unavailable(node.id, 'connector is missing');
+            if (current.route !== 'elbow') return 'ready';
+            const result = resolveConnectorGeometryNow({ key: `admit:${node.id}:${doc.rev}`, node: current,
+                localToWorld: matrix(doc, current.id), resolveTarget: id => surface(doc, id), label: null,
+                toleranceWorld: .01, maxPieces: 65_536 });
+            if (result.status === 'pending') return unavailable(node.id, `connector ${result.reason} is pending`);
+            return result.status === 'unroutable' ? 'unroutable' : 'ready';
+        },
         resolvedPolylineTip(doc, node, terminal) {
             const current = doc.nodes.get(node.id);
             if (!current || current.kind !== 'polyline') return unavailable(node.id, 'polyline is missing');

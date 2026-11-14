@@ -311,9 +311,12 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                         widthModel: real ? { id: 'pressure-linear-v1', rMin: 0, rMax: element.strokeWidth / 2 } : { id: 'uniform' },
                         geomVersion: CURVE_VERSION, fairTol: 0, closed: element.closed === true, width: element.strokeWidth, color: stroke, dash }));
                 } else if (points.length > 2) {
-                    if (element.startBinding || element.endBinding) throw new Error('Excalidraw multi-point bound lines require a binding-capable polyline seam');
-                    nodes.push(createPolyline({ ...base, points, spline: 'line', color: stroke, dash,
-                        size: sizeFor(element.strokeWidth, [2, 3.5, 5, 10]), width: element.strokeWidth }));
+                    const line = createPolyline({ ...base, points, spline: 'line', color: stroke, dash,
+                        size: sizeFor(element.strokeWidth, [2, 3.5, 5, 10]), width: element.strokeWidth });
+                    // Endpoint bindings belong to the native polyline, not a guessed connector replacement.
+                    nodes.push({ ...line, startAttach: null, endAttach: null } as typeof line);
+                    if (element.startBinding && typeof element.startBinding === 'object' && !Array.isArray(element.startBinding)) bindings.push({ id, terminal: 'start', source: element.startBinding as Record<string, unknown> });
+                    if (element.endBinding && typeof element.endBinding === 'object' && !Array.isArray(element.endBinding)) bindings.push({ id, terminal: 'end', source: element.endBinding as Record<string, unknown> });
                 } else {
                     const headStart = arrowhead(element.startArrowhead), headEnd = arrowhead(element.endArrowhead);
                     if (!headStart || !headEnd) { skipped++; ids.delete(sourceId); continue; }
@@ -339,14 +342,17 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
         const actualDraftDoc = createBoardDoc({ kind: 'whiteboard', sheets: [{ id: options.sheet, name: 'External clipboard', order: 'a0', ext: null }],
             nodes: retainedNodes, media: media.values(), host: { kind: 'whiteboard' }, ui: UI_DEFAULTS, view: VIEW_DEFAULTS,
             preserved: { version: NATIVE_VERSION, fields: new Map(), records: [], end: null }, preservedMediaRefs: new Map() });
-        const replacements = new Map<NodeId, ConnectorNode>();
+        const replacements = new Map<NodeId, Node>();
         for (const binding of bindings) {
             check();
             const connector = replacements.get(binding.id) ?? actualDraftDoc.nodes.get(binding.id);
             const targetSource = binding.source.elementId, targetId = typeof targetSource === 'string' ? ids.get(targetSource) : undefined;
             const targetNode = targetId ? actualDraftDoc.nodes.get(targetId) : undefined;
-            if (!connector || connector.kind !== 'connector' || !targetNode || targetNode.id === connector.id) continue;
-            const endpoint = connector[binding.terminal], other = connector[binding.terminal === 'start' ? 'end' : 'start'];
+            if (!connector || connector.kind !== 'connector' && connector.kind !== 'polyline' || !targetNode || targetNode.id === connector.id) continue;
+            const endpoint = connector.kind === 'connector' ? connector[binding.terminal]
+                : connector.points[binding.terminal === 'start' ? 0 : connector.points.length - 1];
+            const other = connector.kind === 'connector' ? connector[binding.terminal === 'start' ? 'end' : 'start']
+                : connector.points[binding.terminal === 'start' ? 1 : connector.points.length - 2];
             const c = Math.cos(connector.rotation), s = Math.sin(connector.rotation);
             const world = (point: { x: number; y: number }) => ({ x: connector.x + c * point.x - s * point.y, y: connector.y + s * point.x + c * point.y });
             const fixed = binding.source.fixedPoint;
@@ -360,7 +366,10 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
             check();
             if (!attachment || attachment.target !== targetNode.id || !attachment.anchor || !finite(attachment.anchor.x, 0, 1) || !finite(attachment.anchor.y, 0, 1)
                 || typeof attachment.exact !== 'boolean' || typeof attachment.precise !== 'boolean' || !['none', 'center', 'edge-point', 'edge'].includes(attachment.snap)) throw new TypeError('Invalid resolved Excalidraw attachment');
-            replacements.set(connector.id, { ...connector, [binding.terminal]: { ...endpoint, attach: { ...attachment, anchor: { ...attachment.anchor } } } });
+            const attached = { ...attachment, anchor: { ...attachment.anchor } };
+            replacements.set(connector.id, connector.kind === 'connector'
+                ? { ...connector, [binding.terminal]: { ...endpoint, attach: attached } }
+                : { ...connector, [binding.terminal === 'start' ? 'startAttach' : 'endAttach']: attached });
         }
         const output = retainedNodes.map(node => replacements.get(node.id) ?? node);
         check();

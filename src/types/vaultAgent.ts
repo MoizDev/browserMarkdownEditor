@@ -91,11 +91,12 @@ export type HostFailure = 'taken' | 'missing' | 'no-parent' | 'invalid' | 'stale
 export type HostResult = { ok: true } | { ok: false; reason: HostFailure; message?: string };
 
 export interface ClosedPdfAgentPage { page: number; text: string; quality?: 'partial'; warnings?: readonly string[] }
+export type ClosedPdfEmphasis = { kind: 'active' | 'inactive' | 'unavailable' | 'unknown'; reason?: string };
 export interface ClosedPdfAgentAccess {
     read(path: string, bytes: Uint8Array, first: number, maxPages: number, maxChars: number,
         signal: AbortSignal): Promise<{ pageCount: number; pages: ClosedPdfAgentPage[] }>;
     render(path: string, bytes: Uint8Array, page: number, maxSide: number,
-        signal: AbortSignal): Promise<{ pageCount: number; png: Blob | null }>;
+        signal: AbortSignal): Promise<{ pageCount: number; png: Blob | null; emphasis?: ClosedPdfEmphasis }>;
 }
 
 /**

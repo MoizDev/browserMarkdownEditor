@@ -3,6 +3,7 @@ import type { PdfiumJbig2Regions } from '../engine/pdfium/imageRegions.types';
 import type { MainMessage, WorkerMessage } from '../../platform/workers/envelope';
 import type { PdfFontId } from '../fonts/catalogue';
 import type { PdfInkInspection } from '../writing/inkInspection.types';
+import type { PdfLegacyInspection } from '../writing/legacyInkInspection.types';
 import type { BackendInfo, DocInfo, EngineLimits, PageComplexity, RawOutlineNode, RawPdfLink, DeviceRect, PdfEngineRole } from '../engine/types';
 import type { FigureTag, Schema2PageText, LineTable } from '../text/types';
 import type { TileEmphasisArgs, PageProbeArgs, PageProbeResult } from '../emphasis/types';
@@ -113,6 +114,7 @@ export interface PdfEngineOps {
     'doc.outline': { args: { docKey: PdfDocKey }; result: RawOutlineNode[] };
     'doc.attachment': { args: { docKey: PdfDocKey; index: number; maxBytes: number }; result: ArrayBuffer };
     'doc.inspectInk': { args: { docKey: PdfDocKey }; result: PdfInkInspection };
+    'doc.inspectLegacyInk': { args: { docKey: PdfDocKey }; result: PdfLegacyInspection };
     'doc.inspectNotebook': { args: { docKey: PdfDocKey; expectedPath: string }; result: { path: string; pageCount: number } };
     'doc.inkMedia': { args: { docKey: PdfDocKey; name: string; outerFingerprint: string }; result: Blob };
     'font.provide': { args: { id: PdfFontId; bytes: ArrayBuffer }; result: { fontEpoch: number } };

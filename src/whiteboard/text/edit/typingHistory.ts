@@ -35,6 +35,7 @@ export class TypingHistory {
         if (kind === 'composition') this.close();
     }
 
+    invalidateRule(): void { this.rule = null; }
     mark(): number { return this.history.mark(); }
     remember(mark: number, before: EditSelection): void { this.rule = { mark, before }; }
     undoTransformation(): boolean {

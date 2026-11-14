@@ -30,6 +30,7 @@ export interface BoardCreationContext {
     readonly render: ReturnType<typeof createBoardRenderServices>;
     readonly kind: CreationKind;
     readonly camera: CameraController;
+    readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     registerPending(cancel: () => void): () => void;
     readonly figure?: FigureShape;
     readonly preview: { show(nodes: readonly Node[]): void; showOps(ops: readonly Op[]): void; clear(): void };
@@ -53,6 +54,7 @@ class CreationGesture implements GestureOwner {
     private readonly parent: ParentId;
     private readonly page: number;
     private readonly parentPose: { x: number; y: number; rotation: number };
+    private readonly downSurface: { x: number; y: number };
     private readonly base: { id: Node['id']; parent: ParentId; order: string; page: number; x: number; y: number; ext: null };
     private readonly style;
     private fontEpoch: number | undefined;
@@ -67,9 +69,10 @@ class CreationGesture implements GestureOwner {
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
         this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
+        this.downSurface = context.sampleToSurface(down);
         this.revision = doc.rev; this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
         const parent = doc.nodes.get(this.parent as Node['id']);
-        if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame'))) throw new Error('Creation focus is not a live container');
+        if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame') || isLocked(doc, parent))) throw new Error('Creation focus is not an editable container');
         const stack = boardPageStack(doc.host);
         this.page = isSheetParent(doc, this.parent) && stack ? pageAt(stack, down.y) : -1;
         const origin = this.page >= 0 && stack ? pageOrigin(stack, this.page) : null;
@@ -96,7 +99,8 @@ class CreationGesture implements GestureOwner {
     private node(sample = this.sample, modifiers = this.modifiers): Node {
         const p = this.local(sample), style = this.style;
         let dx = p.x - this.base.x, dy = p.y - this.base.y;
-        const moved = Math.hypot(sample.x - this.down.x, sample.y - this.down.y) * this.context.camera.camera.z >= 4;
+        const surface = this.context.sampleToSurface(sample);
+        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= 4;
         if (modifiers.shift) {
             if (this.context.kind === 'connector' || this.context.kind === 'polyline') {
                 const length = Math.hypot(dx, dy), step = Math.PI / 12, angle = Math.round(Math.atan2(dy, dx) / step) * step;
@@ -136,10 +140,10 @@ class CreationGesture implements GestureOwner {
         }
     }
     private async snapped(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
-        const node = this.node(sample, modifiers);
+        const node = this.node(sample, modifiers), surface = this.context.sampleToSurface(sample);
         // Default: creation snapping is off unless Always Snap is inverted by the accelerator.
         if ((this.context.alwaysSnap?.() ?? false) === modifiers.accel
-            || Math.hypot(sample.x - this.down.x, sample.y - this.down.y) * this.context.camera.camera.z < 4
+            || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4
             || (node.kind !== 'figure' && node.kind !== 'frame' && node.kind !== 'sticky')) {
             this.context.guides?.([]); return node;
         }

@@ -1,11 +1,22 @@
 import type { Affine, PageDisplayItem, PageDisplayList, PathCommand, Rect, Rgba } from '../../platform/types'
+import { ExportTooLarge } from './png'
+
+const SVG_LIMIT = 512 * 1024 * 1024
 
 function number(value: number): string {
   if (!Number.isFinite(value)) throw new RangeError('Non-finite SVG coordinate')
-  return String(value)
+  return String(Number(value.toFixed(4)))
 }
 function pathData(commands: readonly PathCommand[]): string {
   return commands.map(command => command[0] === 'Z' ? 'Z' : `${command[0]}${command.slice(1).map(value => number(value as number)).join(' ')}`).join(' ')
+}
+function pathLength(commands: readonly PathCommand[]): number {
+  let length = 0
+  for (const command of commands) {
+    length++
+    for (let i = 1; i < command.length; i++) length += number(command[i] as number).length + 1
+  }
+  return length
 }
 function matrix(value: Affine): string { return `matrix(${value.map(number).join(' ')})` }
 function rgb(value: Rgba): string { return `rgb(${value.slice(0, 3).map(channel => number(channel * 255)).join(' ')})` }
@@ -26,7 +37,15 @@ export function createSvgWriter(bounds: Readonly<Rect>): { append(item: PageDisp
   if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0) throw new RangeError('Invalid SVG extent')
   let nextClip = 0
   const definitions: string[] = [], body: string[] = []
-  let finished = false
+  let finished = false, written = 256
+  function estimate(item: PageDisplayItem, depth: number): number {
+    if (depth > 64) throw new RangeError('SVG group nesting exceeds 64 levels')
+    if (item.kind === 'group') return 512 + (item.clip ? pathLength(item.clip.d) : 0)
+      + item.items.reduce((sum, child) => sum + estimate(child, depth + 1), 0)
+    if (item.kind === 'path') return 512 + pathLength(item.d) + (item.stroke?.dash?.length ?? 0) * 32
+    const bytes = item.kind === 'image' ? item.bytes : item.png
+    return 512 + 4 * Math.ceil(bytes.byteLength / 3)
+  }
   function emit(item: PageDisplayItem, depth: number): string {
     if (depth > 64) throw new RangeError('SVG group nesting exceeds 64 levels')
     switch (item.kind) {
@@ -51,7 +70,16 @@ export function createSvgWriter(bounds: Readonly<Rect>): { append(item: PageDisp
     }
   }
   return {
-    append(item) { if (finished) throw new Error('SVG writer is closed'); body.push(emit(item, 0)) },
+    append(item) {
+      if (finished) throw new Error('SVG writer is closed')
+      if (written + estimate(item, 0) > SVG_LIMIT) throw new ExportTooLarge(0)
+      const before = definitions.length
+      const part = emit(item, 0)
+      written += part.length
+      for (let i = before; i < definitions.length; i++) written += definitions[i].length
+      if (written > SVG_LIMIT) throw new ExportTooLarge(0)
+      body.push(part)
+    },
     finish() {
       if (finished) throw new Error('SVG writer is closed')
       finished = true

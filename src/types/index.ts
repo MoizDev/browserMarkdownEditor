@@ -548,7 +548,7 @@ export interface FileSystemContextValue {
    *  `(conflict 2)`, …), never over anything, re-making deleted parent folders.
    *  `vaultRoot`: the document's vault, when it may no longer be the open one
    *  (a vault switch). Resolves to the copy's path. */
-  writeConflictCopy: (filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
+  writeConflictCopy: (filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null, guard?: () => boolean) => Promise<string>;
   /** A new, collision-free copy only; never grants a write to the source. */
   writeDistinctCopy: (parent: FileSystemDirectoryHandle, parentPath: string, name: string, data: Blob, isCurrent: () => boolean) => Promise<{
     path: string; name: string; handle: FileSystemFileHandle; version: DiskVersion;

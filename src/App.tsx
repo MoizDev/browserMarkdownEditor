@@ -2739,13 +2739,13 @@ export default function App() {
    * would be the silent loss this whole mechanism exists to prevent.
    */
   const keepClosingEdits = useCallback(async (
-    root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array | Blob,
+    root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array | Blob, guard?: () => boolean,
   ) => {
     try {
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path, caller: 'closing-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
       }
-      const copy = await writeConflictCopyRef.current(path, data, root);
+      const copy = await writeConflictCopyRef.current(path, data, root, guard);
       // A dialog, not the status line: the tab is gone, and the edits are now in
       // a file the reader did not ask for — they must hear where.
       void tellRef.current({
@@ -2902,7 +2902,7 @@ export default function App() {
         assertPdfWriteAuthority();
         if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall)) return 'failed';
         if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return 'failed';
-        if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed';
+        if (!await keepClosingEdits(rootAtCall, path, file.name, data, isPdf ? pdfWriteAllowed : undefined)) return 'failed';
         return held === 'conflict' ? 'changed' : 'deleted';
       } catch (error) {
         if (error instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(error.message); return 'skipped'; }
@@ -2976,7 +2976,7 @@ export default function App() {
         if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return closing ? 'failed' : 'skipped';
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
-          if (closing) { assertPdfWriteAuthority(); if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed'; }
+          if (closing) { assertPdfWriteAuthority(); if (!await keepClosingEdits(rootAtCall, path, file.name, data, isPdf ? pdfWriteAllowed : undefined)) return 'failed'; }
           else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return result.status;
         }

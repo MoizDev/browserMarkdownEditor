@@ -2575,7 +2575,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * along with the file are made again: the copy holds edits that exist
      * nowhere else (measured: closing such a tab lost them).
      */
-    const writeConflictCopy = useCallback((filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null) => withMutation(async () => {
+    const writeConflictCopy = useCallback((filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null,
+        guard?: () => boolean) => withMutation(async () => {
         const root = vaultRoot ?? rootHandleRef.current;
         if (!root) throw new Error('No vault open');
         const parentPath = parentVaultPath(filePath);
@@ -2587,6 +2588,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             copyName = conflictName(name, n);
             if (!(await entryExists(dir, copyName))) break;
         }
+        if (guard && !guard()) throw new DOMException('Copy source is no longer authorized', 'AbortError');
+        // Once creation starts, finish the immutable copy rather than leave an empty file.
         const handle = await dir.getFileHandle(copyName, { create: true });
         await writeAllBytes(handle, data instanceof Blob ? data : toBytes(data));
         // Only the tree on screen is patched: a copy left in the vault being

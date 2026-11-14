@@ -14,6 +14,7 @@ export interface PenPanelProps {
     readonly indicatorOutline: string;
     readonly sliderPosition: number;
     readonly widthLabel: string;
+    readonly mixedWidthLabel?: string;
     readonly hideLabel: string;
     readonly showLabel: string;
     readonly collapsed: boolean;
@@ -50,6 +51,7 @@ export function PenPanel(props: PenPanelProps) {
                 </button>)}
             </div>
             <input type="range" min={0} max={1} step={0.001} value={props.sliderPosition} aria-label={props.widthLabel}
+                aria-valuetext={props.mixedWidthLabel}
                 data-tooltip={props.widthLabel} disabled={props.disabled}
                 onPointerDown={() => { dragging.current = true; props.beginWidth(); }}
                 onPointerUp={finish} onPointerCancel={finish} onBlur={finish}

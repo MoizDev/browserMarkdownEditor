@@ -58,7 +58,7 @@ third-party code included (normally "none") · date.
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
-| `agent/shapes.ts` | w-p | F-AGENT-001, WB-D11, WB-D12, C8 | integration §9 | Agent specification, C8, public model interfaces; authoritative geometry supplied by shared projection; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/shapes.ts` | w-p | F-AGENT-001, WB-D11, WB-D12, C8 | integration §9 | Agent specification, public model and disk revision interfaces; authoritative geometry supplied by shared projection; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/transaction.ts` | w-p | F-AGENT-002/003/004/005/012/013, C8 | integration §9; change and history §3 | Agent specification and shared session queue/agent batch runner; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/validate.ts` | w-p | F-AGENT-002/012/013/015, C8 | integration §9 | Agent specification and public model style vocabulary; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/create.ts` | w-p | F-AGENT-002/012/013, C8 | integration §9, document-model §§3–4 | Agent spec and public model/change/page APIs; no tldraw or old canvas source | none | 2026-11-13 |
@@ -284,8 +284,8 @@ third-party code included (normally "none") · date.
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
-| `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design and Intl.Segmenter grapheme boundaries; no tldraw source | none | 2026-11-13 |
-| `text/edit/host.ts` | w-i | T-4, F-TEXT-006/016/018, WB-D15, E-TXT-2/10/12/15/21/22 | text §§5.1–5.3, 5.6, 5.10 | Design, browser EditContext and textarea APIs, grapheme-safe updates and IME formats, fallback selection, refused-input resync and app-menu forwarding | none | 2026-11-13 |
+| `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design, windowed rich projection and Intl.Segmenter grapheme boundaries; no tldraw source | none | 2026-11-13 |
+| `text/edit/host.ts` | w-i | T-4, F-TEXT-006/016/018, WB-D15, E-TXT-2/10/12/15/21/22 | text §§5.1–5.3, 5.6, 5.10 | Design, browser EditContext and textarea APIs, windowed projection, grapheme-safe updates and IME formats, fallback selection and app-menu forwarding | none | 2026-11-13 |
 | `text/edit/session.ts` | w-i | T-4, F-TEXT-003/006/011/015/016/018, WB-D15/16/26, E-TXT-1/2/4/5/10/12/15/21 | text §§5.1–5.7, 5.9–5.10; clipboard §3 | Design, TX-2/TX-3 and HistoryController public types; empty deletion, accelerator links, edge-scroll lifecycle, typing/cut/paste snapshots and IME chrome | none | 2026-11-13 |
 | `text/edit/controller.ts` | w-i | T-5, F-TEXT-011/012/015/016, WB-D26 | text §§4–5; change-and-history §4.3 | Design, public change operations and history-marked input transformations, explicit burst completion | none | 2026-11-13 |
 | `text/edit/typingHistory.ts` | w-i | F-TEXT-005/011/016, H-5 | text §§5.4/5.7; change-and-history §4.3 | Design and w-n HistoryController; time and adjacency burst boundaries, IME, rule savepoints and owned-step tokens | none | 2026-11-13 |

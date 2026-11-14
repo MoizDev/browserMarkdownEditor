@@ -2,8 +2,9 @@ import { exactAffinePoint } from './exactAffine';
 import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
 import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
-import { add, interval, multiply, sqrtInterval } from './numeric';
-import { isUniformDistanceMatrix, splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
+import { add, interval } from './numeric';
+import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { classifyCertifiedClipBox, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
     type CertifiedClipBox, type PointClipContour } from './clippedPointPathJob';
 import { lowerCurvePairDistance, upperIntervalPairDistance } from './sweptPathJob';
@@ -31,13 +32,10 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
         || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1 || options.frames.length > 64 || options.exclusions.length > 64) throw new RangeError('Invalid clipped sweep');
     let finished: ClippedSweepResult | undefined, cancelled = false, spent = 0, nodes = 0, commands = 0, uncertain = false;
-    if (options.strokeRadiusLocal && !isUniformDistanceMatrix(query.localToSurface)) finished = { status: 'uncertain', reason: 'Nonuniform clipped stroke transform' };
     if (options.exclusions.length > 1) finished = { status: 'uncertain', reason: 'Multiple even-odd exclusions require a partition' };
-    const squared = options.strokeRadiusLocal ? add(multiply(interval(query.localToSurface[0]), interval(query.localToSurface[0])),
-        multiply(interval(query.localToSurface[1]), interval(query.localToSurface[1]))) : interval(0);
-    if (!Number.isFinite(squared.hi)) finished = { status: 'uncertain', reason: 'Clipped stroke scale overflows' };
-    const scale = Number.isFinite(squared.hi) ? sqrtInterval({ lo: Math.max(0, squared.lo), hi: squared.hi }) : interval(0);
-    const radius = multiply(interval(options.strokeRadiusLocal), scale), threshold = add(radius, interval(query.radiusCss));
+    const stroke = strokeRadiusBounds(query.localToSurface, options.strokeRadiusLocal);
+    if (!stroke) finished = { status: 'uncertain', reason: 'Clipped stroke scale overflows' };
+    const radius = stroke ?? interval(0), threshold = add(radius, interval(query.radiusCss));
     if (![radius.lo, radius.hi, threshold.lo, threshold.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Clipped sweep radius overflows' };
     const frames = options.frames.map(preparePointClip), exclusions = options.exclusions.map(preparePointClip);
     const allowed = (box: CertifiedClipBox) => frames.every(region => classifyCertifiedClipBox(box, region) === 'inside')

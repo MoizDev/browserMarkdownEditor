@@ -5,7 +5,8 @@ import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
 import type { ExactCurvePoint } from './cubicRootCertificate';
 import { createFillPointJob } from './fillPoint';
 import { add, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
-import { isUniformDistanceMatrix, splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
+import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
+import { strokeRadiusBounds } from './strokeRadiusBounds';
 import type { PathOp } from './path';
 import type { PathPickOptions } from './pick';
 import type { RegionQuery } from './types';
@@ -46,11 +47,9 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
         || !Number.isSafeInteger(maxNodes) || maxNodes < 1 || !Number.isSafeInteger(maxWork) || maxWork < 1)
         throw new RangeError('Invalid swept path job');
     let finished: SweptPathResult | undefined, cancelled = false, spent = 0, nodes = 0, commands = 0, fillIndex = 0;
-    if (options.strokeRadiusLocal && !isUniformDistanceMatrix(matrix)) finished = { status: 'uncertain', reason: 'Nonuniform stroke transform requires an anisotropic distance certificate' };
-    const squared = options.strokeRadiusLocal ? add(square(matrix[0]), square(matrix[1])) : interval(0);
-    if (!Number.isFinite(squared.hi)) finished = { status: 'uncertain', reason: 'Swept path transform scale overflows' };
-    const scale = Number.isFinite(squared.hi) ? sqrtInterval({ lo: Math.max(0, squared.lo), hi: squared.hi }) : interval(0);
-    const strokeRadius = add(multiply(interval(options.strokeRadiusLocal), scale), interval(query.radiusCss)), fillRadius = interval(query.radiusCss);
+    const stroke = strokeRadiusBounds(matrix, options.strokeRadiusLocal);
+    if (!stroke) finished = { status: 'uncertain', reason: 'Swept path transform scale overflows' };
+    const strokeRadius = add(stroke ?? interval(0), interval(query.radiusCss)), fillRadius = interval(query.radiusCss);
     if (![strokeRadius.lo, strokeRadius.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Swept path radius overflows' };
     const point = (p: { readonly x: number; readonly y: number }): BoundsPoint => {
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) throw new RangeError('Invalid sweep point');

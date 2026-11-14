@@ -1,10 +1,11 @@
-import type { Affine } from '../../platform/types';
 import { exactAffinePoint } from './exactAffine';
 import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
 import { createCurveDiskCertificate } from './curveDiskCertificate';
 import type { ExactCurvePoint } from './cubicRootCertificate';
 import { createFillPointJob } from './fillPoint';
-import { add, dyadic, dyadicMultiply, dyadicSubtract, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
+import { add, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
+import { strokeRadiusBounds } from './strokeRadiusBounds';
+export { isUniformDistanceMatrix } from './strokeRadiusBounds';
 import type { PathOp, Vec2 } from './path';
 import type { PathPickOptions } from './pick';
 import type { PointQuery } from './types';
@@ -23,14 +24,6 @@ export type BoundsPoint = Readonly<{ x: Interval; y: Interval }>;
 export type CertifiedCurve = Readonly<{ points: readonly [BoundsPoint, BoundsPoint] | readonly [BoundsPoint, BoundsPoint, BoundsPoint, BoundsPoint]; depth: number }>;
 type Curve = CertifiedCurve;
 const PENDING: PointPathJobResult = Object.freeze({ status: 'pending' });
-const opposite = (value: { readonly n: bigint; readonly e: number }) => ({ n: -value.n, e: value.e });
-function addDyadic(a: ReturnType<typeof dyadic>, b: ReturnType<typeof dyadic>) { return dyadicSubtract(a, opposite(b)); }
-export function isUniformDistanceMatrix(matrix: Affine): boolean {
-    const [a, b, c, d] = matrix.map(dyadic), aa = dyadicMultiply(a, a), bb = dyadicMultiply(b, b);
-    const cc = dyadicMultiply(c, c), dd = dyadicMultiply(d, d);
-    return dyadicSubtract(addDyadic(aa, bb), addDyadic(cc, dd)).n === 0n
-        && addDyadic(dyadicMultiply(a, c), dyadicMultiply(b, d)).n === 0n;
-}
 function middle(a: BoundsPoint, b: BoundsPoint): BoundsPoint {
     const half = interval(0.5);
     return { x: add(multiply(a.x, half), multiply(b.x, half)), y: add(multiply(a.y, half), multiply(b.y, half)) };
@@ -73,11 +66,9 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
         || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid point path job');
     let finished: PointPathJobResult | undefined, cancelled = false, spent = 0, nodes = 0, commands = 0;
-    if (options.strokeRadiusLocal && !isUniformDistanceMatrix(matrix)) finished = { status: 'uncertain', reason: 'Nonuniform stroke transform requires an anisotropic distance certificate' };
-    const scaleSquared = options.strokeRadiusLocal ? add(square(matrix[0]), square(matrix[1])) : interval(0);
-    if (!Number.isFinite(scaleSquared.hi)) finished = { status: 'uncertain', reason: 'Point path transform scale overflows' };
-    const scale = Number.isFinite(scaleSquared.hi) ? sqrtInterval({ lo: Math.max(0, scaleSquared.lo), hi: scaleSquared.hi }) : interval(0);
-    const radius = add(multiply(interval(options.strokeRadiusLocal), scale), interval(margin));
+    const stroke = strokeRadiusBounds(matrix, options.strokeRadiusLocal);
+    if (!stroke) finished = { status: 'uncertain', reason: 'Point path transform scale overflows' };
+    const radius = add(stroke ?? interval(0), interval(margin));
     if (![radius.lo, radius.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Point path radius overflows' };
     const fill = options.interiorPaths?.length
         ? createFillPointJob(options.interiorPaths, query.point, 'nonzero', { localToWorld: matrix, maxCommands: options.maxSegments }) : undefined;

@@ -3,8 +3,9 @@ import { exactAffinePoint } from './exactAffine';
 import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
 import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
-import { add, interval, multiply, sqrtInterval } from './numeric';
-import { isUniformDistanceMatrix, splitCertifiedCurve, upperPointIntervalDistance, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
+import { interval } from './numeric';
+import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { splitCertifiedCurve, upperPointIntervalDistance, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { classifyCertifiedClipBox, clipBoxStrictlyInside, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
     type CertifiedClipBox, type PointClipContour } from './clippedPointPathJob';
 import type { PathOp } from './path';
@@ -34,13 +35,10 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
         throw new RangeError('Invalid clipped polygon path');
     let finished: ClippedPolygonResult | undefined, cancelled = false, spent = 0, nodes = 0, commands = 0, pathIndex = 0, commandIndex = 0;
     let uncertain = false, visible = false;
-    if (options.strokeRadiusLocal && !isUniformDistanceMatrix(query.localToSurface)) finished = { status: 'uncertain', reason: 'Nonuniform clipped stroke transform' };
     if (options.exclusions.length > 1) finished = { status: 'uncertain', reason: 'Multiple even-odd exclusions require a partition' };
-    const squared = options.strokeRadiusLocal ? add(multiply(interval(query.localToSurface[0]), interval(query.localToSurface[0])),
-        multiply(interval(query.localToSurface[1]), interval(query.localToSurface[1]))) : interval(0);
-    if (!Number.isFinite(squared.hi)) finished = { status: 'uncertain', reason: 'Clipped polygon stroke scale overflows' };
-    const scale = Number.isFinite(squared.hi) ? sqrtInterval({ lo: Math.max(0, squared.lo), hi: squared.hi }) : interval(0);
-    const radius = multiply(interval(options.strokeRadiusLocal), scale);
+    const stroke = strokeRadiusBounds(query.localToSurface, options.strokeRadiusLocal);
+    if (!stroke) finished = { status: 'uncertain', reason: 'Clipped polygon stroke scale overflows' };
+    const radius = stroke ?? interval(0);
     if (![radius.lo, radius.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Clipped polygon stroke radius overflows' };
     const polygonPath: PathOp[] = query.points.map((p, i) => ({ op: i ? 'L' : 'M', p: { x: p.x, y: p.y } }));
     polygonPath.push({ op: 'Z' });

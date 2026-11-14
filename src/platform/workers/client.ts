@@ -76,6 +76,7 @@ class Client implements WorkerClient {
     private spawningAt = 0;
     private respawnAt = 0;
     private crashes: number[] = [];
+    private restartAttempts = 0;
     private pumping = false;
     private pumpAgain = false;
     private poison = new Map<string, number>();
@@ -239,8 +240,12 @@ class Client implements WorkerClient {
 
     private cancel(job: Job, name: 'Cancelled' | 'Deadline', message: string): void {
         if (job.phase === 'settled') return;
+        const terminate = name === 'Deadline' && job.phase !== 'queued' && job.options.terminateOnDeadline === true && !!this.connection;
         if (job.phase !== 'queued') this.control({ v: 1, cancel: job.id });
+        // Do not pump a newly admitted job onto the incarnation we are about to terminate.
+        if (terminate) this.state = 'recycling';
         this.settle(job, this.error(name, message));
+        if (terminate) void this.recycle('posted request deadline', { lazy: true }).catch(() => {});
     }
 
     // The only promise-settling site. Sent cancelled jobs stay in connection.sent until their one
@@ -474,11 +479,16 @@ class Client implements WorkerClient {
         }
         this.retainQueued();
         const time = now();
-        this.crashes = this.crashes.filter(t => time - t < 60000);
+        const policy = this.spec.restartPolicy;
+        const windowMs = policy?.windowMs ?? 60000;
+        const maxFailures = policy?.maxFailures ?? 4;
+        this.crashes = this.crashes.filter(t => time - t < windowMs);
         this.crashes.push(time);
-        if (this.crashes.length >= 4) { this.fail(`Four worker crashes in 60 seconds: ${reason}`); return; }
+        if (this.crashes.length >= maxFailures) { this.fail(`${maxFailures} worker crashes in ${windowMs}ms: ${reason}`); return; }
+        const delays = policy?.delaysMs.length ? policy.delaysMs : backoff;
+        const attempt = policy ? this.restartAttempts++ : this.crashes.length - 1;
         this.state = 'backoff';
-        this.respawnAt = time + backoff[this.crashes.length - 1];
+        this.respawnAt = time + delays[Math.min(attempt, delays.length - 1)];
         if (this.respawnAt === time) this.spawn();
         else this.syncClock();
     }
@@ -506,6 +516,7 @@ class Client implements WorkerClient {
         if (this.state !== 'failed') return;
         this.failure = undefined;
         this.crashes = [];
+        this.restartAttempts = 0;
         this.poison.clear();
         this.state = 'idle';
         this.spawn();

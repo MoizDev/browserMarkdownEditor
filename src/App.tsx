@@ -1,6 +1,13 @@
 import { runReaderHostCommand } from './utils/documentReading';
+import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
+import { createDocumentSessions } from './utils/documentSessions';
+import { installSessionIdentity } from './utils/sessionIdentity';
 import { watchForNewVersion } from './utils/versionPoll';
-import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface } from './utils/documentReading';
+import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
+import { getSessionIdentity } from './utils/sessionIdentity';
+import type { NativeCanvasReady } from './types/reading';
+import { conversionDigestFromText, registerConversionRestore } from './utils/conversionRestore';
+import { fingerprintSnapshot } from './utils/snapshotFingerprint';
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
 import { flushSync } from 'react-dom';
@@ -10,7 +17,7 @@ import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
 import type { IndexProgress } from './context/vaultIndex/useIndexGraph';
-import { setIndexProgress } from './utils/indexProgress';
+import { setIndexProgress, setIndexUnavailable } from './utils/indexProgress';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { subscribeRenderStatus } from './utils/renderStatus';
@@ -39,7 +46,7 @@ import { createRecoveryFunnel } from './utils/recoveryFunnel';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
-import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
+import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNativeDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -415,6 +422,8 @@ export default function App() {
     keepCopyInGarbage,
     listTrash,
     restoreFromTrash,
+    restoreConversionCopy,
+    copyTrashFile,
     deleteFromTrash,
     emptyTrash,
     moveFile,
@@ -480,7 +489,7 @@ export default function App() {
   const [graphState, setGraph] = useState<{ activation: number; data: GraphData }>(() => ({ activation: getVaultActivation(), data: EMPTY_GRAPH }));
   const graph = graphState.activation === getVaultActivation() ? graphState.data : EMPTY_GRAPH;
   const [graphFreshness, setGraphFreshness] = useState<{ activation: number; stale: boolean } | null>(null);
-  useLayoutEffect(() => { setIndexProgress(null); }, [searchActivation]);
+  useLayoutEffect(() => { setIndexProgress(null); setIndexUnavailable(false); }, [searchActivation]);
   const reportGraphFreshness = useCallback((stale: boolean) => {
     if (getVaultActivation() === searchActivation) setGraphFreshness({ activation: searchActivation, stale });
   }, [getVaultActivation, searchActivation]);
@@ -498,14 +507,20 @@ export default function App() {
   const [indexProblem, setIndexProblem] = useState<{ activation: number; kind: string } | null>(null);
   const reportIndexProblem = useCallback((value: unknown) => {
     const problem = value as { kind?: string } | null;
-    setIndexProblem({ activation: getVaultActivation(), kind: problem?.kind ?? 'unavailable' });
+    const kind = problem?.kind ?? 'unavailable';
+    if (kind === 'unavailable') setIndexUnavailable(true);
+    setIndexProblem({ activation: getVaultActivation(), kind });
   }, [getVaultActivation]);
+  const [indexStartupActivation, setIndexStartupActivation] = useState<number | null>(null);
+  const indexRestoreSettled = useCallback(() => {
+    if (getVaultActivation() === searchActivation) setIndexStartupActivation(searchActivation);
+  }, [getVaultActivation, searchActivation]);
   const reportIndexTimes = useCallback((changes: [string, number, number][], complete: boolean) => {
     stampIndexedFileTimes(changes);
     if (complete) markIndexTimesReady();
   }, []);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
-    getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
+    getActivation: getVaultActivation, autoStart: indexStartupActivation === searchActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
     publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem, onTimes: reportIndexTimes });
   const retryIndex = useCallback(async () => {
     const owner = indexGraphRef.current;
@@ -513,7 +528,7 @@ export default function App() {
     if (indexProblem.kind === 'permission' && !await requestIndexPermission(owner.root, owner.activation)) return;
     try {
       await owner.regrant();
-      if (indexGraphRef.current === owner) setIndexProblem(null);
+      if (indexGraphRef.current === owner) { setIndexProblem(null); setIndexUnavailable(false); }
     } catch { /* Keep Retry available. */ }
   }, [indexGraphRef, indexProblem, getVaultActivation, requestIndexPermission]);
 
@@ -970,6 +985,20 @@ export default function App() {
 
   // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
+  const sessionReportRef = useRef<(documentId: string, source: ContentSource) => void>(() => {});
+  const bytesGenerationsRef = useRef(new Map<string, number>());
+  const [documentBuffers] = useState(() => createDocumentBuffers(path => tabsRef.current.find(tab => tab.file.path === path)?.id));
+  const [documentSessions] = useState(() => createDocumentSessions({
+    bufferState: id => documentBuffers.get(id),
+    reportChange: (id, source) => sessionReportRef.current(id, source),
+  }));
+  useEffect(() => installSessionIdentity(documentSessions), [documentSessions]);
+  const bumpBytesGeneration = useCallback((id: string) => {
+    const generation = (bytesGenerationsRef.current.get(id) ?? 0) + 1;
+    bytesGenerationsRef.current.set(id, generation);
+    const session = documentSessions.get(id);
+    if (session) session.bytesGeneration = generation;
+  }, [documentSessions]);
   const invalidReaderTokens = useRef(new Set<string>());
   const layoutRef = useRef<TabLayout>(layout);
   const activeTabPathRef = useRef<string | null>(activeTabPath);
@@ -1010,7 +1039,49 @@ export default function App() {
   }, [announce]);
   // A binary host acquires in its passive effect. Publish the new tab first;
   // lazy dev imports hid this parent/child effect ordering race in production.
-  useLayoutEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  useLayoutEffect(() => {
+    tabsRef.current = tabs;
+    for (const tab of tabs) documentBuffers.open(tab.id, tab.content, canReadTabText(tab));
+    // A PDF reader has no editable engine until Annotate is entered, but its
+    // tiled resources still belong to the document, not the mounted pane.
+    for (const path of visiblePaths(layout)) {
+      const tab = tabs.find(t => t.file.path === path);
+      if (!tab || tab.readError || tab.representation.loadedKind !== 'pdf' || tab.mode !== 'read') continue;
+      documentSessions.ensure(tab.id, 'pdf-reader', bytesGenerationsRef.current.get(tab.id) ?? 0, () => ({
+        hasPendingEdits: () => false,
+        checkpoint: () => documentBuffers.get(tab.id)?.source ?? '',
+        acknowledge: () => {},
+        onChange: () => () => {},
+      }));
+    }
+  }, [tabs, layout, documentBuffers, documentSessions]);
+  const nativePoliciesRef = useRef(new Map<string, { session: number; generation: number; activation: number; emergencyReadOnly: boolean }>());
+  const onNativeCanvasReady = useCallback<NativeCanvasReady>(acquisition => {
+    const { owner, vaultActivation, bytesGeneration, kind } = acquisition;
+    const live = () => {
+      const identity = getSessionIdentity(owner.documentId);
+      return getVaultActivation() === vaultActivation && identity?.serial === owner.session && identity.bytesGeneration === bytesGeneration;
+    };
+    const tab = tabsRef.current.find(t => t.id === owner.documentId);
+    if (!live() || !tab || tab.readError || tab.representation.status !== 'ready') return null;
+    if (kind === 'pdfInk' ? tab.representation.loadedKind !== 'pdf'
+      : kind === 'notebook' ? !isNotebookFile(tab.file.name)
+        : !isCanvasFile(tab.file.name) || isNotebookFile(tab.file.name)) return null;
+    const prior = nativePoliciesRef.current.get(owner.documentId);
+    const emergencyReadOnly = prior && prior.session === owner.session && prior.generation === bytesGeneration && prior.activation === vaultActivation
+      ? prior.emergencyReadOnly : !!withNativeCanvasPolicy(tab.representation, kind).emergencyReadOnly;
+    nativePoliciesRef.current.set(owner.documentId, { session: owner.session, generation: bytesGeneration, activation: vaultActivation, emergencyReadOnly });
+    const digest = acquisition.legacyOriginalSha256;
+    const legacyOriginalSha256 = digest && /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
+    setTabs(previous => previous.map(current => current.id === owner.documentId && live()
+      ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
+      : current));
+    return { emergencyReadOnly };
+  }, [getVaultActivation]);
+  useEffect(() => {
+    const open = new Set(tabs.map(tab => tab.id));
+    for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);
+  }, [tabs]);
   useEffect(() => {
     layoutRef.current = layout;
     visiblePathsRef.current = visiblePaths(layout);
@@ -1056,6 +1127,15 @@ export default function App() {
    * Replace update it synchronously beside their own tab fix-ups.
    */
   const restorePendingRef = useRef<PendingRestore | null>(null);
+  useEffect(() => {
+    if (!rootHandle) return;
+    // A failed vault-id write can prevent any restore claim; do not leave that
+    // vault without an index forever. A restore already reading owns its release.
+    const timer = setTimeout(() => {
+      if (sessionRootRef.current !== rootHandle && !restoringRef.current) indexRestoreSettled();
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [rootHandle, indexRestoreSettled]);
   /**
    * Every rename, move, trash and bin Replace still RUNNING, from its first
    * filesystem call to the end of its tab fix-up. Each is copy → removeEntry →
@@ -1436,7 +1516,8 @@ export default function App() {
       }
       const revision = assetReferenceRevisionRef.current;
       const proofTabs = tabsRef.current;
-      const proofContents = new Map(proofTabs.map(tab => [tab.file.path, latestContentRef.current.get(tab.file.path) ?? tab.content]));
+      const proofContents = new Map(proofTabs.map(tab => [tab.file.path, canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? latestContentRef.current.get(tab.file.path) ?? tab.content : undefined]));
+      const proofRevisions = new Map(proofTabs.map(tab => [tab.id, documentBuffers.revisionForDocument(tab.id)?.revision]));
       const unsavedBoards = new Map(boards.map(board => [board.path, unsavedBoardContentRef.current.get(board.path)]));
       // Dirty-only save acknowledgements do not change a reference proof.
       // Opening/closing a tab or changing its readable buffer does.
@@ -1444,9 +1525,10 @@ export default function App() {
         && boards.every(board => unsavedBoardContentRef.current.get(board.path) === unsavedBoards.get(board.path))
         && tabsRef.current.length === proofTabs.length && tabsRef.current.every((tab, i) => {
           const old = proofTabs[i];
-          return tab.id === old.id && tab.file.path === old.file.path && tab.content === old.content
+          return tab.id === old.id && tab.file.path === old.file.path
             && tab.readError === old.readError && tab.representation === old.representation
-            && (latestContentRef.current.get(tab.file.path) ?? tab.content) === proofContents.get(tab.file.path)
+            && documentBuffers.revisionForDocument(tab.id)?.revision === proofRevisions.get(tab.id)
+            && (canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? latestContentRef.current.get(tab.file.path) ?? tab.content : undefined) === proofContents.get(tab.file.path)
             && (!isCanvasFile(tab.file.name) || !getView(tab.file.path)?.hasPendingEdits?.());
         });
       let retired = false;
@@ -1456,7 +1538,7 @@ export default function App() {
         return retired ? 'retired' : 'kept';
       };
       const own = proofTabs.find(tab => tab.file.path === path);
-      const ownText = own ? (canReadTabText(own) ? proofContents.get(path) ?? own.content : null) : job.text;
+      const ownText = own ? proofContents.get(path) ?? null : job.text;
       const candidates = treeFiles.filter(f =>
         f.path !== path && isTextFile(f.name) && f.path.startsWith(under));
       const neighbours = [
@@ -1467,7 +1549,7 @@ export default function App() {
       // newer unsaved buffer also counts, but must not erase that disk proof.
       const notes = [async () => job.text, async () => ownText, ...neighbours.map(note => async () => {
         const open = proofTabs.find(t => t.file.path === note.path);
-        if (open) return canReadTabText(open) ? proofContents.get(note.path) ?? open.content : null;
+        if (open) return proofContents.get(note.path) ?? null;
         if (isCanvasFile(note.name)) {
           try { return (await handleIO.file(note.handle)).stream(); } catch { return null; }
         }
@@ -1481,7 +1563,9 @@ export default function App() {
         const open = proofTabs.find(t => t.file.path === board.path);
         if (open) {
           if (!canReadTabText(open)) return { ok: false as const, reason: 'unreadable' as const };
-          return resolveBoardMedia({ source: new TextEncoder().encode(proofContents.get(board.path) ?? open.content) }, assetNames, boardMediaRefs);
+          const text = proofContents.get(board.path);
+          if (text === undefined) return { ok: false as const, reason: 'unreadable' as const };
+          return resolveBoardMedia({ source: new TextEncoder().encode(text) }, assetNames, boardMediaRefs);
         }
         const unsaved = unsavedBoards.get(board.path);
         if (unsaved !== undefined) return resolveBoardMedia({ source: new TextEncoder().encode(unsaved) }, assetNames, boardMediaRefs);
@@ -1540,7 +1624,7 @@ export default function App() {
       console.error('Could not reconcile assets for', path, err);
       return 'failed';
     }
-  }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation]);
+  }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation, documentBuffers]);
 
   // Read through a ref to keep the captured IO callback current: it
   // keeps flushTab — and every timer and listener downstream of it — stable.
@@ -1939,6 +2023,58 @@ export default function App() {
   const notebookExportInFlightRef = useRef(false);
   const trashInFlightRef = useRef<boolean>(false);
 
+  const restoreBeforeConversion = useCallback(async (node: FileTreeNode) => {
+    if (trashInFlightRef.current || node.kind !== 'file' || !node.parentHandle || !rootHandle) return;
+    trashInFlightRef.current = true;
+    const activation = getVaultActivation();
+    const controller = new AbortController();
+    const pdfTab = isPdfFile(node.name) ? tabsRef.current.find(t => t.file.path === node.path) : undefined;
+    const current = () => getVaultActivation() === activation && (!pdfTab || (pdfTab.representation.nativeCanvasKind === 'pdfInk'
+      && pdfTab.representation.nativeCanvasSession !== undefined && getSessionIdentity(pdfTab.id)?.serial === pdfTab.representation.nativeCanvasSession
+      && tabsRef.current.some(t => t.id === pdfTab.id && t.file.path === node.path && t.representation.generation === pdfTab.representation.generation && t.representation.legacyOriginalSha256 === pdfTab.representation.legacyOriginalSha256)));
+    try {
+      await reconcileQueueRef.current;
+      if (isPdfFile(node.name) && (!pdfTab || !current())) { notify('Open the converted PDF annotation view first to locate its pre-conversion copy.'); return; }
+      const source = pdfTab ? null : await readFileVersioned(node.handle);
+      const digest = pdfTab ? pdfTab.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
+      if (!digest || !/^[a-f0-9]{64}$/.test(digest)) {
+        notify('No pre-conversion copy is recorded for this file. For a converted PDF, open its annotation view first.');
+        return;
+      }
+      const items = await listTrash();
+      const queue = [...items];
+      let match: TrashItem | undefined;
+      let unreadable = false;
+      for (let i = 0; i < queue.length && current(); i++) {
+        const item = queue[i];
+        if (item.kind === 'directory') { if (item.children) queue.push(...item.children); continue; }
+        if (item.origin !== 'trashed') continue;
+        try {
+          const file = await handleIO.file(item.handle as FileSystemFileHandle);
+          if (await fingerprintSnapshot(file, controller.signal) === digest) { match = item; break; }
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') throw error;
+          unreadable = true;
+        }
+      }
+      if (!current()) return;
+      if (!match) { notify(unreadable ? 'Some Trash files could not be read; the pre-conversion copy could not be located.' : 'The pre-conversion copy is no longer available in Trash.'); return; }
+      if (source && (await readFileVersioned(node.handle)).version.hash !== source.version.hash) {
+        notify('The converted file changed; try restoring again.'); return;
+      }
+      const name = await restoreConversionCopy({ root: rootHandle, parent: node.parentHandle, owner: node.handle,
+        hash: digest, signal: controller.signal, isCurrent: current }, match);
+      if (current()) announce(`Restored a copy as "${name}". The converted file and Trash backup are unchanged.`);
+    } catch (error) {
+      console.error('Could not restore pre-conversion copy:', error);
+      if (current()) notify('Could not restore the pre-conversion copy. Nothing was replaced.');
+    } finally {
+      controller.abort();
+      trashInFlightRef.current = false;
+    }
+  }, [announce, getVaultActivation, handleIO, listTrash, notify, readFileVersioned, restoreConversionCopy, rootHandle]);
+  useEffect(() => registerConversionRestore(node => { void restoreBeforeConversion(node); }), [restoreBeforeConversion]);
+
   // Shared destination transaction for a staged notebook PDF. The source owner
   // is pinned before rendering; no worker receives a filesystem handle.
   const commitNotebookPdf = useCallback(async (file: ActiveFile, bytes: Uint8Array, sourceId: string, isCurrent: () => boolean): Promise<boolean> => {
@@ -2263,13 +2399,14 @@ export default function App() {
     // that '' would erase a note the app merely failed to read.
     const pendingRevision = pendingRevisionsRef.current.get(tab.id);
     const pending = !!pendingRevision && pendingRevision.revision > pendingRevision.saved;
-    if (!canFlushTab(tab) && !(pending && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
+    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path)))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !pending && !force) return 'skipped';
     // A drain reports into the synchronous funnel before React commits its tab.
     const snapshot = contentOf(path) ?? tab.content;
     if (isCanvasFile(tab.file.name)) unsavedBoardContentRef.current.set(path, snapshot);
     const revision = pendingRevision?.revision ?? 0;
+    const bufferRevision = documentBuffers.get(tab.id)?.revision;
     const existingWrite = pendingWritesRef.current.get(tab.id);
     if (pending && existingWrite?.revision === revision) return existingWrite.promise;
     if (__BME_BENCH__) {
@@ -2391,6 +2528,7 @@ export default function App() {
         // By id: a rename mid-write moved the document, not the write.
         const currentRevision = pendingRevisionsRef.current.get(id);
         if (currentRevision && revision > currentRevision.saved) currentRevision.saved = revision;
+        if (bufferRevision !== undefined) documentBuffers.markSaved(id, bufferRevision);
         const current = !currentRevision || currentRevision.revision === revision;
         setTabs(prev => prev.map(t =>
           t.id === id && current && t.content === snapshot ? { ...t, dirty: false } : t));
@@ -2440,7 +2578,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [clearSaveTimer, contentOf, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
+  }, [clearSaveTimer, contentOf, documentBuffers, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -2479,6 +2617,8 @@ export default function App() {
     }
     if (!accepted) return;
     assetReferenceRevisionRef.current++;
+    documentBuffers.open(target.id, target.content, canReadTabText(target));
+    documentBuffers.report(target.id, content, !!options?.fromDisk);
     latestContentRef.current.set(path, content);
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
@@ -2490,7 +2630,7 @@ export default function App() {
     notifySearchChanges();
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     scheduleSave(path);
-  }, [reportRevision, scheduleSave]);
+  }, [documentBuffers, reportRevision, scheduleSave]);
 
   const updateAgentTabContent = useCallback((path: string, content: string) => {
     if (__BME_BENCH__) {
@@ -2513,11 +2653,9 @@ export default function App() {
   const flushTabNow = useCallback(async (path: string, content: string) => {
     const target = tabsRef.current.find(t => t.file.path === path);
     if (!target || !canUpdateTabContent(target, 'annotation')) return;
-    latestContentRef.current.set(path, content);
-    reportRevision(target.id);
-    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
+    updateTabContent(path, content);
     await flushTab(path, true, false, undefined, false, true);
-  }, [flushTab, reportRevision]);
+  }, [flushTab, updateTabContent]);
 
   const checkpointRef = useRef<Promise<void> | null>(null);
   const checkpointAgainRef = useRef(false);
@@ -2544,8 +2682,8 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = subscribePending(syncExitGuard);
     syncExitGuard();
-    const visibility = () => { if (document.visibilityState === 'hidden') { recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
-    const pagehide = () => { recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); };
+    const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
+    const pagehide = () => { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', pagehide);
     return () => {
@@ -2673,7 +2811,7 @@ export default function App() {
           setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return;
         }
-        if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
+        if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) { setBaseline(id, result.version); bumpBytesGeneration(id); }
         if (tabsRef.current.some(t => t.id === id)) publishPdfRotation(id, preview, expected?.hash, result.version.hash);
         recordFileWritten(path, result.version.lastModified);
         // The parked original predates the rotation, and the next annotation
@@ -2704,7 +2842,7 @@ export default function App() {
       if (chains.get(id) === chained) chains.delete(id);
       endPdfRotation(path);
     }
-  }, [readFileBytes, setDiskState]);
+  }, [readFileBytes, setDiskState, bumpBytesGeneration]);
 
   const pdfDeparturesRef = useRef(new Set<string>());
   const preparePdfDeparture = useCallback(async (paths: readonly string[], trashOwned = false): Promise<boolean> => {
@@ -3237,8 +3375,8 @@ export default function App() {
   const searchBuffers = useCallback(() => tabsRef.current.flatMap(tab => {
     const revision = pendingRevisionsRef.current.get(tab.id);
     if (!revision || revision.revision <= revision.saved || !canReadTabText(tab) || isCanvasFile(tab.file.name)) return [];
-    const text = getView(tab.file.path)?.getText?.() ?? contentOf(tab.file.path) ?? tab.content;
-    return [{ path: tab.file.path, revision: revision.revision, text }];
+    const text = contentOf(tab.file.path);
+    return text === undefined ? [] : [{ path: tab.file.path, revision: revision.revision, text }];
   }), [contentOf]);
   const searchController = useMemo<SearchController>(() => ({
     subscribe: subscribeSearchChanges,
@@ -3248,7 +3386,13 @@ export default function App() {
       if (owner.activation !== activation || activation !== getVaultActivation()) throw new DOMException('Vault changed', 'AbortError');
       return owner.client.searchSidebar(query, searchBuffers(), onBatch, signal);
     },
-    retry() { indexGraphRef.current?.client.retry(); },
+    retry() {
+      const owner = indexGraphRef.current;
+      if (!owner || owner.activation !== getVaultActivation()) return;
+      setIndexUnavailable(false);
+      setIndexProblem(previous => previous?.kind === 'unavailable' ? null : previous);
+      owner.client.retry();
+    },
   }), [getVaultActivation, indexGraphRef, searchBuffers]);
   const searchAgent = useCallback(async (config: { query: string; regex: boolean; caseSensitive: boolean; scope: string; maxResults: number }, signal?: AbortSignal) => {
     const activation = getVaultActivation();
@@ -3297,7 +3441,10 @@ export default function App() {
     // that has not landed). That is why the switch effect re-points the id ref
     // at the vault being LEFT rather than leaving it on the last claim; see
     // there for what went wrong when it did not.
-    if (!fileTree || fileTree.length === 0) return;
+    if (!fileTree || fileTree.length === 0) {
+      if (rootHandle && !isLoading) indexRestoreSettled();
+      return;
+    }
     // Both halves must have moved on: see sessionRootRef's note above. Equal on
     // either one means this commit is mid-switch (openVaultHandle commits the
     // tree before recordVault sets the id) or this vault has already been
@@ -3385,7 +3532,7 @@ export default function App() {
     // tabs for one document — restoreLayout dedupes the layout, not the tabs.
     const paths = stored ? [...new Set(stored.paths)] : [];
     if (linkedNode && !paths.includes(linkedNode.path)) paths.push(linkedNode.path);
-    if (paths.length === 0) return;
+    if (paths.length === 0) { indexRestoreSettled(); return; }
 
     // Persistence stays shut from here until the merge is dispatched — see
     // restoringRef. Released in `finally` too, so no exit leaves it shut.
@@ -3652,9 +3799,10 @@ export default function App() {
         // this lands in the merge's batch, so the writer sees the note active
         // and nothing pending in one commit — no flash of the bare vault.
         if (linkedNode) setPendingLinkFile(null);
+        indexRestoreSettled();
       }
     })();
-  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile]);
+  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile, isLoading, indexRestoreSettled]);
 
   // A vault taken off the recent list (the minus in the vault menu) mints a new
   // id if it is ever opened again, so its stored session would be unreachable
@@ -3762,15 +3910,20 @@ export default function App() {
     setSaveStatus('');
   }, []);
 
+  const createInFlightRef = useRef(false);
   const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath = '') => {
     if (isEpubFile(name) || isPdfFile(name)) { void tell({title:'Import an existing document',body:'EPUB and PDF documents must be imported as original binary files.',confirmLabel:'OK'}); return; }
-    const where = parentPath || parentHandle?.name || 'this folder';
+    if (!parentHandle || !rootHandleRef.current || createInFlightRef.current) return;
+    createInFlightRef.current = true;
+    const where = parentPath || parentHandle.name || 'this folder';
+    const root = rootHandleRef.current;
     try {
       // Nothing here overwrites a file by accident — the rule the rest of the
       // app keeps with freeEntryName, kept here with a refusal instead,
       // because the user named this file and silently getting "note (1).md"
-      // is not what they asked for either.
-      if (parentHandle && await nameTaken(parentHandle, name)) {
+      // is not what they asked for either. Native drawings use the unique-name
+      // creation path below instead.
+      if (!isNativeDrawingFile(name) && await nameTaken(parentHandle, name)) {
         await tell({
           title: 'That name is taken',
           confirmLabel: 'OK',
@@ -3781,16 +3934,28 @@ export default function App() {
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path: joinVaultPath(parentPath, name), caller: 'create' }); } catch { /* Measurement must not interrupt a write. */ }
       }
-      const newFileHandle = await createFile(parentHandle!, name);
-      // Auto-open the newly created file straight into edit mode. Build the path
-      // to match buildFileTree's convention (vault-root-relative, no vault-name
-      // prefix) so the tab dedups / highlights / restores correctly.
+      // An empty native drawing is the format's defined new-board state. Use
+      // the import path's freeEntryName (files AND folders) rather than the
+      // truncating createFile primitive, and carry its actual name forward.
+      let createdName = name;
+      let newFileHandle: FileSystemFileHandle | null;
+      if (isNativeDrawingFile(name)) {
+        const created = await importFiles([new File([], name)], parentHandle);
+        if (!created.length || !root) throw new Error('Could not create the drawing.');
+        createdName = created[0];
+        ({ handle: newFileHandle } = await resolveVaultFile(root, joinVaultPath(parentPath, createdName)));
+      } else {
+        newFileHandle = await createFile(parentHandle, name);
+      }
+      // A vault switch during creation must not open the old folder's file in
+      // the new workspace, even if the path exists in both.
+      if (root !== rootHandleRef.current) return;
       if (newFileHandle) {
-        const newPath = joinVaultPath(parentPath, name);
+        const newPath = joinVaultPath(parentPath, createdName);
         const newNode: FileTreeFileNode = {
-          name,
+          name: createdName,
           handle: newFileHandle,
-          parentHandle: parentHandle!,
+          parentHandle,
           kind: 'file',
           path: newPath,
         };
@@ -3806,8 +3971,10 @@ export default function App() {
         confirmLabel: 'OK',
         body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
       });
+    } finally {
+      createInFlightRef.current = false;
     }
-  }, [createFile, handleFileClick, tell, nameTaken]);
+  }, [createFile, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
 
   /**
    * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab
@@ -4247,6 +4414,21 @@ export default function App() {
   }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture]);
 
   /** Erase one trashed item. One of the app's two points of no return. */
+  const handleTrashCopy = useCallback(async (item: TrashItem) => {
+    if (!rootHandle || trashInFlightRef.current) return;
+    trashInFlightRef.current = true;
+    const activation = getVaultActivation();
+    const current = () => getVaultActivation() === activation;
+    try {
+      await reconcileQueueRef.current;
+      const name = await copyTrashFile(item, rootHandle, current);
+      if (current()) announce(`Restored a copy as "${name}". The Trash original remains.`);
+    } catch (error) {
+      console.error('Could not copy from Trash:', error);
+      if (current()) notify('Could not restore the copy. Nothing was replaced.');
+    } finally { trashInFlightRef.current = false; }
+  }, [announce, copyTrashFile, getVaultActivation, notify, rootHandle]);
+
   const handleTrashDelete = useCallback(async (item: TrashItem) => {
     if (trashInFlightRef.current) return false;
     trashInFlightRef.current = true;
@@ -4394,7 +4576,8 @@ export default function App() {
     // Every open document this move carries…
     const moving = tabsRef.current
       .filter(t => (isFolder ? t.file.path.startsWith(prefix) : t.file.path === fromPath))
-      .map(t => ({ from: t.file.path, to: to(t.file.path), dirty: t.dirty, doc: t }));
+      .map(t => ({ from: t.file.path, to: to(t.file.path), dirty: t.dirty, doc: t,
+        revisionAtMoveStart: documentBuffers.revisionForDocument(t.id)?.revision }));
 
     // …and every open document it OVERWRITES. renameFile/moveFile deliberately
     // land on a taken name, and for a folder that is a MERGE: each file inside
@@ -4423,7 +4606,7 @@ export default function App() {
       }
     }
 
-    for (const { from, to: dest, doc } of moving) {
+    for (const { from, to: dest, doc, revisionAtMoveStart } of moving) {
       try {
         await getReadingSurface({vaultId:vaultIdAtMove,vaultEpoch:readerEpochRef.current.epoch,documentId:doc.id,byteGeneration:doc.representation.generation})?.captureReading?.().catch(()=>{});
         if(rootHandleRef.current!==rootHandle)return [];
@@ -4446,12 +4629,16 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           const live = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
           if (!live) break;
-          needsSave = live.dirty || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from) || (contentOf(from) ?? live.content) !== doc.content;
+          needsSave = live.dirty || documentBuffers.isDirty(doc.id) || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from)
+            || documentBuffers.revisionForDocument(doc.id)?.revision !== revisionAtMoveStart;
           if (!changedKind || !needsSave) break;
           await getView(from)?.flushPending?.();
           if (rootHandleRef.current !== rootHandle) return [];
           if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) break;
-          const text = contentOf(from) ?? live.content;
+          const captured = documentBuffers.snapshotOf(from);
+          const text = typeof captured?.data === 'string' ? captured.data : contentOf(from);
+          if (text === undefined) throw Error('Pending source edits cannot be preserved. Keep this tab open.');
+          const textRevision = captured?.revision;
           let data: string | Uint8Array = text;
           if (live.representation.loadedKind === 'pdf') {
             const pdf = getPdfRenderData(from);
@@ -4466,7 +4653,7 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           const latest = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
           if (!latest) break;
-          if ((contentOf(from) ?? latest.content) === text && !getView(from)?.hasPendingEdits?.()) break;
+          if (documentBuffers.revisionForDocument(doc.id)?.revision === textRevision && !getView(from)?.hasPendingEdits?.()) break;
         }
         if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
         // A destination opened during retargeting must not share this path or
@@ -4519,9 +4706,12 @@ export default function App() {
         notifyRef.current(`Could not finish following “${from}”. Your editor is still open: ${describeReadError(err)}`);
       }
     }
-    if (vaultIdAtMove) await recoveryJournal.retarget(vaultIdAtMove, fromPath, newPath, isFolder).catch(error => console.error('Could not move recovery records:', error));
+    if (vaultIdAtMove) {
+      try { await recoveryEvent({ type: 'retarget', vaultId: vaultIdAtMove, from: fromPath, to: newPath, folder: isFolder }); }
+      catch (error) { console.error('Could not move recovery records:', error); }
+    }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryJournal]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -4557,8 +4747,11 @@ export default function App() {
     const sources = node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path];
     const destinations = sources.map(path => node.kind === 'directory' ? newPath + path.slice(node.path.length) : newPath).filter(path => path !== node.path);
     if (!await preparePdfDeparture(destinations)) return false;
-    const success = await renameFile(node, newName);
-    if (!success) return false;
+    const cancelIndexMoves = indexGraphRef.noteMoves([{ from: node.path, to: newPath }]);
+    let success: boolean;
+    try { success = await renameFile(node, newName); }
+    catch (error) { cancelIndexMoves(); throw error; }
+    if (!success) { cancelIndexMoves(); return false; }
     requeueAssetsAffected(node.path);
     requeueAssetsAffected(newPath);
     retargetExpanded(node, newPath);
@@ -4573,7 +4766,11 @@ export default function App() {
     const sources = sourceNode.kind === 'directory' ? collectFiles(sourceNode.children).map(f => f.path) : [sourceNode.path];
     const destinations = sources.map(path => sourceNode.kind === 'directory' ? newPath + path.slice(sourceNode.path.length) : newPath).filter(path => path !== sourceNode.path);
     if (!await preparePdfDeparture(destinations)) return false;
-    const success = await moveFile(sourceNode, targetDirHandle);
+    const cancelIndexMoves = indexGraphRef.noteMoves([{ from: sourceNode.path, to: newPath }]);
+    let success: boolean;
+    try { success = await moveFile(sourceNode, targetDirHandle); }
+    catch (error) { cancelIndexMoves(); throw error; }
+    if (!success) cancelIndexMoves();
     if (success) {
       requeueAssetsAffected(sourceNode.path);
       requeueAssetsAffected(newPath);
@@ -4632,6 +4829,7 @@ export default function App() {
     const { id, file } = tab;
     const path = file.path;
     if (isEpubFile(file.name) || isPdfFile(file.name)) invalidReaderTokens.current.add(`${id}|${tab.representation.generation}`);
+    bumpBytesGeneration(id);
     clearSaveTimer(path);
     setBaseline(id, version);
     diskStateRef.current.delete(id);
@@ -4642,6 +4840,8 @@ export default function App() {
       // The parked original would otherwise be rebuilt over the new file by
       // the next annotation save.
       if (isPdfFile(file.name)) clearPdfRenderData(path);
+      documentBuffers.open(id, tab.content, canReadTabText(tab));
+      documentBuffers.report(id, text, true);
       latestContentRef.current.set(path, text);
       setTabs(prev => prev.map(t => (t.id === id
         ? { ...t, content: text, dirty: false, disk: undefined, pdfRebuild: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) }
@@ -4660,7 +4860,7 @@ export default function App() {
     // The asset diff's baseline is the file as it now is.
     rememberAssetRefs(file, text);
     setTabs(prev => prev.map(t => (t.id === id && (t.dirty || t.disk) ? { ...t, dirty: false, disk: undefined } : t)));
-  }, [clearSaveTimer, editorStates, updateTabContent, rememberAssetRefs, syncExitGuard]);
+  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, editorStates, updateTabContent, rememberAssetRefs, syncExitGuard]);
 
   /**
    * Follow a rename/move made on disk: open documents, expanded folders, icons,
@@ -4876,6 +5076,7 @@ export default function App() {
 
   // Every batch of outside changes, after the context has patched the tree.
   useEffect(() => subscribeVaultChanges(batch => {
+    indexGraphRef.noteMoves(batch.moved);
     assetReferenceRevisionRef.current++;
     if (batch.rescan) requeueAllAssets();
     else for (const changed of [...batch.modified, ...batch.appeared, ...batch.disappeared, ...batch.moved.flatMap(m => [m.from, m.to])]) requeueAssetsAffected(changed);
@@ -4997,6 +5198,7 @@ export default function App() {
       if (action === 'save') {
         await drain(id);
         const savedRevision = pendingRevisionsRef.current.get(id)?.revision ?? 0;
+        const dataRevision = documentBuffers.revisionForDocument(id)?.revision;
         const data = await mine();
         if (data === null) {
           void tell({ title: 'Nothing to save', confirmLabel: 'OK', body: <>This PDF has no annotations of yours to write back. Close the tab, or put <strong>{file.name}</strong> back from wherever it went.</> });
@@ -5020,14 +5222,15 @@ export default function App() {
         diskStateRef.current.delete(id);
         const pendingRevision = pendingRevisionsRef.current.get(id);
         if (pendingRevision && savedRevision > pendingRevision.saved) pendingRevision.saved = savedRevision;
+        if (dataRevision !== undefined) documentBuffers.markSaved(id, dataRevision);
         syncExitGuard();
-        clearSaveTimer(path);
+        if (dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision) clearSaveTimer(path);
         recordFileWritten(path, result.version.lastModified);
         notifySearchChanges();
         setTabs(prev => prev.map(t => (t.id === id ? {
           ...t,
           file: { ...t.file, handle: result.handle, parentHandle },
-          dirty: typeof data === 'string' && t.content !== data ? t.dirty : false,
+          dirty: dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision ? false : t.dirty,
           disk: undefined,
         } : t)));
         if (graphAtCall && graphAtCall === indexGraphRef.current && graphAtCall.activation === getVaultActivation()) {
@@ -5102,7 +5305,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes
@@ -5194,6 +5397,7 @@ export default function App() {
       createFile,
       createFolder,
       nameTaken,
+      contentOf,
       updateTabContent: __BME_BENCH__ ? updateAgentTabContent : updateTabContent,
       afterWrite: (file, before, after, version) => {
         // The tail of flushTab, for a file written with no tab to flush.
@@ -5464,11 +5668,14 @@ export default function App() {
   const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) => {
     const root = rootHandleRef.current;
     if (!root || currentVaultIdRef.current !== entry.vaultId) throw new Error('Return to the original vault first.');
+    const vault = recentVaults.find(item => item.id === entry.vaultId);
+    const relative = vault && await handleIO.relativeTo(root, vault.handle);
+    if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
     const data = entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
     if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
     const copy = await writeConflictCopy(entry.path, data, root);
     announce(`Recovered changes were saved as “${copy}”.`);
-  }, [writeConflictCopy, announce]);
+  }, [writeConflictCopy, announce, recentVaults, handleIO]);
 
   // The welcome screen can report a refused open too; returning before the
   // workspace's host used to hide the app notice on exactly that path.
@@ -5646,6 +5853,8 @@ export default function App() {
           </Suspense>
         ) : (
           <EditorPane
+            contentOf={contentOf}
+            documentBuffers={documentBuffers}
             closingDocumentIds={closingDocumentIds}
             reading={readerIntegration}
             tabs={tabs}
@@ -5667,6 +5876,7 @@ export default function App() {
             onPaneForward={paneForward}
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
+            onNativeCanvasReady={onNativeCanvasReady}
             onDiskAction={handleDiskAction}
             onAnnotationPreflight={onAnnotationPreflight}
             onFlushNow={flushTabNow}
@@ -5751,6 +5961,7 @@ export default function App() {
         <TrashPanel
           onClose={() => setShowTrash(false)}
           onCrawl={listTrash}
+          onCopy={handleTrashCopy}
           onRestore={handleTrashRestore}
           onDelete={handleTrashDelete}
           onEmpty={handleTrashEmpty}

@@ -45,7 +45,7 @@ export class PersistSession {
                     return values.map((value, i) => ({ ...value, path: (keys[i] as string[])[1], rev: 0 }));
                 }
             }
-        } catch (error) { this.problem('corrupt', String(error)); }
+        } catch (error) { this.problem('corrupt', String(error)); this.reset = true; }
         this.startWriter();
         return [];
     }
@@ -65,8 +65,9 @@ export class PersistSession {
         void navigator.locks.request(`bme-index:${this.vaultId}`, { signal: this.abort.signal }, async () => {
             if (this.closed) return;
             this.held = true;
+            const released = new Promise<void>(resolve => { this.release = resolve; });
             await this.flush();
-            await new Promise<void>(resolve => { this.release = resolve; });
+            await released;
             await this.flush();
             this.held = false;
         }).catch(() => {});
@@ -74,7 +75,10 @@ export class PersistSession {
     private layout: unknown;
     mark(path: string, record: FileRecord | null, text?: string): void {
         if (this.closed) return;
-        this.dirty.set(path, { record, text });
+        const previous = this.dirty.get(path);
+        const version = previous?.textVersion ?? previous?.record;
+        const kept = record && version?.mtime === record.mtime && version.size === record.size ? previous?.text : undefined;
+        this.dirty.set(path, { record, text: record && record.size <= 4 * 1024 * 1024 ? text ?? kept : undefined });
         this.schedule();
     }
     markText(path: string, mtime: number, size: number, text: string): void {
@@ -112,18 +116,40 @@ export class PersistSession {
                     }
                 }
                 if (layout) tx.objectStore('layouts').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR, layout }, this.vaultId);
-                tx.objectStore('vaults').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR, lastSweepAt: Date.now(), recordCount: entries.length }, this.vaultId);
+                const count = notes.count(range(this.vaultId));
+                count.onsuccess = () => tx.objectStore('vaults').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR,
+                    lastSweepAt: Date.now(), recordCount: count.result }, this.vaultId);
                 await transactionDone(tx);
             } catch (error) {
-                this.problem(error instanceof DOMException && error.name === 'QuotaExceededError' ? 'quota' : 'corrupt', String(error));
+                const quota = error instanceof DOMException && error.name === 'QuotaExceededError';
+                this.problem(quota ? 'quota' : 'corrupt', String(error));
                 for (const [path, change] of entries) if (!this.dirty.has(path)) this.dirty.set(path, change);
-                this.reset ||= reset;
+                this.reset ||= reset || quota;
+                if (quota) {
+                    // Deletion frees cache space and is independent of vault saves.
+                    try {
+                        const db = await openIndexDatabase();
+                        const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts'], 'readwrite');
+                        tx.objectStore('vaults').delete(this.vaultId);
+                        tx.objectStore('notes').delete(range(this.vaultId));
+                        tx.objectStore('texts').delete(range(this.vaultId));
+                        tx.objectStore('layouts').delete(this.vaultId);
+                        await transactionDone(tx);
+                    } catch { /* The in-memory index remains usable. */ }
+                }
             }
         };
         this.flushing = this.flushing.then(run, run);
         return this.flushing;
     }
     async readText(path: string, mtime: number, size: number): Promise<string | undefined> {
+        if (this.closed) return undefined;
+        const pending = this.dirty.get(path);
+        if (pending) {
+            const version = pending.textVersion ?? pending.record;
+            return version?.mtime === mtime && version.size === size ? pending.text : undefined;
+        }
+        if (this.reset) return undefined;
         try {
             const db = await openIndexDatabase();
             const value = await requestResult(db.transaction('texts').objectStore('texts').get([this.vaultId, path])) as TextSnapshot | undefined;

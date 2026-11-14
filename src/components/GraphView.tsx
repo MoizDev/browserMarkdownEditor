@@ -659,7 +659,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 <span className="graph-stats">
                     {noteCount} note{noteCount === 1 ? '' : 's'} · {links.length} link{links.length === 1 ? '' : 's'}
                 </span>
-                {updating && <span className="graph-stats" role="status">Updating…</span>}
+                {updating && <span className="graph-stats" role="status" data-tooltip="Refreshing the vault index">Updating…</span>}
                 <button className="graph-reset-btn" onClick={resetView} data-tooltip="Reset view">Reset view</button>
             </div>
             <div

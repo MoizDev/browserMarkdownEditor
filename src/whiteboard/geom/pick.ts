@@ -97,7 +97,10 @@ export function regionPath(paths: readonly (readonly PathOp[])[], query: RegionQ
     }
     let tolerance = errorCss;
     for (let refinement = 0; refinement < 24; refinement++, tolerance /= 2) {
-        const lines = segments(paths, scale ? tolerance / scale : tolerance, maxSegments, scale === 0);
+        const strokeLines = segments(paths, scale ? tolerance / scale : tolerance, maxSegments, scale === 0);
+        const interiorLines = segments(options.interiorPaths ?? [], scale ? tolerance / scale : tolerance, maxSegments, scale === 0);
+        const lines = [...strokeLines.map(line => ({ ...line, radius })), ...interiorLines.map(line => ({ ...line, radius: 0 }))];
+        if (lines.length > maxSegments) throw new RangeError('Path picking exceeds its segment budget');
         let uncertain = false, intersectsBoundary = false, anyInside = false, allInside = lines.length > 0;
         for (const line of lines) {
             if (polygon) {
@@ -107,7 +110,7 @@ export function regionPath(paths: readonly (readonly PathOp[])[], query: RegionQ
                 allInside &&= a !== 0 && b !== 0;
             }
             for (const edge of edges) {
-                if (line.exact && radius === 0 && margin === 0 && segmentIntersection(transformPoint(query.localToSurface, line.a), transformPoint(query.localToSurface, line.b), edge.a, edge.b).kind !== 'none') {
+                if (line.exact && line.radius === 0 && margin === 0 && segmentIntersection(transformPoint(query.localToSurface, line.a), transformPoint(query.localToSurface, line.b), edge.a, edge.b).kind !== 'none') {
                     intersectsBoundary = true;
                     continue;
                 }
@@ -118,7 +121,7 @@ export function regionPath(paths: readonly (readonly PathOp[])[], query: RegionQ
                 const rotated: Affine = [ux * m[0] + uy * m[1], -uy * m[0] + ux * m[1], ux * m[2] + uy * m[3], -uy * m[2] + ux * m[3], ux * m[4] + uy * m[5], -uy * m[4] + ux * m[5]];
                 const midX = edge.a.x / 2 + edge.b.x / 2, midY = edge.a.y / 2 + edge.b.y / 2;
                 const distance = new ConvexDistance(rotated, ux * midX + uy * midY, -uy * midX + ux * midY, tolerance / 8);
-                distance.run(line.a.x, line.a.y, radius, line.b.x, line.b.y, radius, length / 2, 0);
+                distance.run(line.a.x, line.a.y, line.radius, line.b.x, line.b.y, line.radius, length / 2, 0);
                 if ((line.exact && distance.inside) || distance.upper + tolerance <= margin) intersectsBoundary = true;
                 else if (distance.lower - tolerance <= margin) uncertain = true;
             }

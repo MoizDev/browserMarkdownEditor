@@ -28,12 +28,13 @@ export class TouchArbiter {
   private pendingPair: [number, number] | null = null
   private pan: { id: number; point: Point } | null = null
 
-  constructor(private readonly camera: CameraController, private readonly actions: TouchActions) {}
+  constructor(private readonly camera: CameraController, private readonly actions: TouchActions, initialPenMode = false) { this.mode = initialPenMode }
   get penMode(): boolean { return this.mode }
-  exitPenMode(): void { if (this.mode) { this.mode = false; this.actions.penModeChanged(false) } }
+  setPenMode(enabled: boolean): void { if (this.mode !== enabled) { this.mode = enabled; this.actions.penModeChanged(enabled) } }
+  exitPenMode(): void { this.setPenMode(false) }
   penHover(time: number): void { this.hoverTime = time }
   penDown(id: number, directTouchDevice: boolean): void {
-    if (directTouchDevice && !this.mode) { this.mode = true; this.actions.penModeChanged(true) }
+    if (directTouchDevice) this.setPenMode(true)
     if (!this.pens.size) {
       this.actions.cancelTouchPreview()
       if (this.pinch || this.pan) this.actions.endTouchCamera()

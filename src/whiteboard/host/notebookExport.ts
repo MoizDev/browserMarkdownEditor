@@ -18,6 +18,27 @@ export interface NotebookExportSnapshot {
     readSheetPage(sheet: SheetId, page: number, signal: AbortSignal): Promise<PageDisplayList>;
 }
 
+async function contentOnPage(snapshot: NotebookExportSnapshot, sheets: readonly SheetId[], page: number, signal: AbortSignal): Promise<PageDisplayList> {
+    const displayList: PageDisplayList = { page, items: [] };
+    for (const sheet of sheets) {
+        signal.throwIfAborted();
+        const list = await snapshot.readSheetPage(sheet, page, signal);
+        signal.throwIfAborted();
+        if (list.page !== page) throw new Error('Notebook export returned the wrong physical page');
+        for (const item of list.items) displayList.items.push(item);
+    }
+    return displayList;
+}
+
+/** Thumbnail consumers ask for one page, not the entire notebook. */
+export async function notebookThumbnailPage(snapshot: NotebookExportSnapshot, page: number, signal: AbortSignal): Promise<NotebookExportPage> {
+    const paper = { ...snapshot.paper };
+    if (!Number.isInteger(page) || page < 0 || page >= paper.pageCount) throw new RangeError('Invalid notebook page');
+    const { width, height } = paperPageSize(paper);
+    const displayList = await contentOnPage(snapshot, [...snapshot.sheets], page, signal);
+    return { width, height, paper: notebookPaperList(paper, page), displayList };
+}
+
 /** Build print-light, page-local output in physical-page and logical-sheet order. */
 export async function notebookExportPages(snapshot: NotebookExportSnapshot, signal: AbortSignal): Promise<NotebookExportPage[]> {
     const paper = { ...snapshot.paper };
@@ -28,13 +49,7 @@ export async function notebookExportPages(snapshot: NotebookExportSnapshot, sign
     const paperItems = notebookPaperList(paper, 0).items;
     for (let page = 0; page < paper.pageCount; page++) {
         signal.throwIfAborted();
-        const displayList: PageDisplayList = { page, items: [] };
-        for (const sheet of sheets) {
-            const list = await snapshot.readSheetPage(sheet, page, signal);
-            signal.throwIfAborted();
-            if (list.page !== page) throw new Error('Notebook export returned the wrong physical page');
-            for (const item of list.items) displayList.items.push(item);
-        }
+        const displayList = await contentOnPage(snapshot, sheets, page, signal);
         pages.push({ width, height, paper: { page, items: paperItems }, displayList });
     }
     return pages;

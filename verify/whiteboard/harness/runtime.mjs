@@ -95,17 +95,18 @@ export async function launchRuntime(options = {}) {
   const { chromium, version: driverVersion, packagePath: driverPackage } = playwright();
   const portAt = process.argv.indexOf('--port');
   const baseURL = options.baseURL || process.env.BASE_URL || `http://localhost:${portAt >= 0 ? process.argv[portAt + 1] : '6520'}/`;
-  const attached=!!options.connectOverCDP;
+  const attached=false;
+  if (options.connectOverCDP) throw Error('HARNESS_NOT_RUN: physical/CDP transport is outside the pinned local W-B2 gate; use a separately verified device harness');
   if (options.channel) throw Error('HARNESS_BROWSER_ASSERT: use the pinned CfT executable, not a browser channel');
   const executablePath = fs.realpathSync(path.resolve('/Users/adham/Developer/bme-impl/scratch/browsers', browserPin.version, browserPin.executable));
   if (options.executablePath && fs.realpathSync(options.executablePath) !== executablePath) throw Error('HARNESS_BROWSER_ASSERT: wrong CfT path');
-  const browser = attached?await chromium.connectOverCDP(options.connectOverCDP):await chromium.launch({ headless: !(options.headed || process.argv.includes('--headed')), executablePath });
+  const browser = await chromium.launch({ headless: !(options.headed || process.argv.includes('--headed')), executablePath });
   let context;
   try {
     if (browser.version() !== browserPin.version) throw Error(`HARNESS_BROWSER_ASSERT: ${browser.version()}, expected ${browserPin.version}`);
-    // Remote H-mode keeps physical viewport/DPR/input unless the operator explicitly overrides.
-    // Always use an isolated context: never silently seed the person's existing browser profile.
-    context = await browser.newContext(attached?{viewport:options.viewport??null,...(options.deviceScaleFactor===undefined?{}:{deviceScaleFactor:options.deviceScaleFactor}),permissions:['clipboard-read','clipboard-write']}:{ viewport: options.viewport || { width: 1440, height: 1000 }, deviceScaleFactor: options.deviceScaleFactor ?? 1, permissions: ['clipboard-read','clipboard-write'], hasTouch: true });
+    // Never reuse a person's existing profile; this package owns and closes
+    // its local pinned browser. Physical-device transport is not claimed here.
+    context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 1000 }, deviceScaleFactor: options.deviceScaleFactor ?? 1, permissions: ['clipboard-read','clipboard-write'], hasTouch: true });
     const page = await context.newPage();
     const network = [], responses = [], nativeReceipts = [], responseObjects = new Map(), errors = [], consoleMessages = [];
     await page.exposeBinding('__harnessReceipt',(_,r)=>nativeReceipts.push(r));

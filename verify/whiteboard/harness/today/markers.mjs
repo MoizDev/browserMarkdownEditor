@@ -13,6 +13,8 @@ export async function prepareConsistentMarker(h, { mode, expectedBuild }) {
   if (!entries.length || entries.length > 1024) throw Error('MUTATION_ASSERT: module inventory outside the explicit bound');
   const expected = expectedBuild.markerCounts?.[mode];
   if (!expected || !Object.keys(expected).length) throw Error(`MUTATION_ASSERT: no independently built ${mode} replacement inventory`);
+  const loaded = await h.page.evaluate(() => performance.getEntriesByType('resource').map(entry => entry.name));
+  if (entries.some(([file]) => loaded.includes(new URL(`/${file}`, h.baseURL).href))) throw Error('MUTATION_ASSERT: marker faults must be prepared before app scripts are loaded');
   const targets = [], observed = {};
   let cursor = 0;
   await Promise.all(Array.from({ length: 4 }, async () => {

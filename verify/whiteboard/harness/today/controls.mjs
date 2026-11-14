@@ -155,7 +155,9 @@ export function fieldControls(h) {
         if (!before.backdrops.length || before.backdrops.some(page => page.locked !== true)) fail('session.backdrops[].locked', 'paged fixture must start with locked structural pages');
         const area = await root().boundingBox();
         await h.page.mouse.click(area.x + area.width * .78, area.y + area.height * .45, { button: 'right' });
+        await h.page.getByRole('menuitem', { name: 'Edit', exact: true }).hover();
         const unlock = h.page.getByRole('menuitem', { name: /^Unlock all(?:\s|$)/ });
+        await unlock.waitFor({ state: 'visible' });
         if (await unlock.count() !== 1 || !await unlock.isEnabled()) fail('session.backdrops[].locked', 'no real enabled Unlock all control');
         await unlock.click();
         await frames(h.page, 3);

@@ -1,10 +1,11 @@
 diff --git a/src/components/canvasPen.ts b/src/components/canvasPen.ts
 --- a/src/components/canvasPen.ts
 +++ b/src/components/canvasPen.ts
-@@ -16,2 +16,3 @@
+@@ -16,3 +16,4 @@
  import { TightDrawShapeUtil } from './tightDrawShape';
  import PenDevPanel from './PenDevPanel';
 +import B39PinnedToolbar from './B39PinnedToolbar';
+ 
 @@ -77,3 +78,4 @@
  export const CANVAS_COMPONENTS = {
 +    Toolbar: B39PinnedToolbar,

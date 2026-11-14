@@ -31,8 +31,9 @@ including re-exports, to ensure no reference module/legacy decoder is reached. A
 - Installed Playwright **1.63.0** is asserted from this worktree's package, never npx.
 - Browser: exact CfT **157.0.8103.39**, launched by the physical path under
   `/Users/adham/Developer/bme-impl/scratch/browsers/`. No `channel` fallback. Actual path/version enter
-  identity; post-launch failures close the owned context/browser. CDP is explicit, isolated and must
-  match the pin; it is not physical-device fidelity proof.
+  identity; post-launch failures close the owned context/browser. The planning CDP/installed-browser
+  transport is explicitly NOT RUN here: matching a remote version cannot prove its executable path.
+  Physical-device and pinned-picture-image transport need their separately verified harness.
 - Named OPFS vault, permissions granted on every descendant; seed only after navigation. The pinned
   browser survives native handle restore. Native IDB is default; the old dev shim is opt-in and its
   loss is explicit. `theme:null` avoids setup reseeding when observing storage destruction.

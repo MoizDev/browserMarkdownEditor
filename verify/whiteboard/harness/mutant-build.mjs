@@ -9,8 +9,13 @@ const LOCK = '/Users/adham/Developer/bme-impl/scratch/bin/bme-lock';
 const modulePath = fileURLToPath(import.meta.url);
 const sha = value => createHash('sha256').update(value).digest('hex');
 const inside = (parent, child) => child === parent || child.startsWith(parent + path.sep);
+const cleanEnv = () => {
+  const env = { ...process.env };
+  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[key];
+  return env;
+};
 const command = (file, args, options = {}) => new Promise((done, reject) => {
-  const child = spawn(file, args, { stdio: 'inherit', ...options });
+  const child = spawn(file, args, { stdio: 'inherit', env: cleanEnv(), ...options });
   child.on('error', reject);
   child.on('exit', code => code === 0 ? done() : reject(Error(`${file} exited ${code}; build before acquiring a run grant`)));
 });
@@ -37,7 +42,7 @@ async function perform(jobPath) {
   const tree = path.join(directory, 'source'), outDir = path.join(directory, 'dist');
   await fs.mkdir(tree);
   const archivePath = path.join(directory, 'source.tar');
-  const archive = execFileSync('git', ['archive', '--format=tar', sourceCommit], { cwd: source, maxBuffer: 256 * 1024 * 1024 });
+  const archive = execFileSync('git', ['archive', '--format=tar', sourceCommit], { cwd: source, env: cleanEnv(), maxBuffer: 256 * 1024 * 1024 });
   await fs.writeFile(archivePath, archive);
   execFileSync('tar', ['-xf', archivePath, '-C', tree]);
   await fs.cp(path.join(source, 'node_modules'), path.join(tree, 'node_modules'), { recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true });
@@ -59,8 +64,8 @@ async function perform(jobPath) {
   if (patch) {
     const patchPath = path.join(directory, 'mutation.patch');
     await fs.writeFile(patchPath, patch);
-    execFileSync('git', ['apply', '--check', patchPath], { cwd: tree, stdio: 'inherit' });
-    execFileSync('git', ['apply', patchPath], { cwd: tree, stdio: 'inherit' });
+    execFileSync('git', ['apply', '--check', patchPath], { cwd: tree, env: cleanEnv(), stdio: 'inherit' });
+    execFileSync('git', ['apply', patchPath], { cwd: tree, env: cleanEnv(), stdio: 'inherit' });
   }
   const record = { ...identity, sourceCommit, patchSha256 };
   const config = path.join(directory, 'vite.config.mjs');

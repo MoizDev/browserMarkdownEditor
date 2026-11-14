@@ -279,6 +279,7 @@ export function probeHelpers(h) {
   const { page } = h;
   const settled = new Set();
   const read = async (path, operation) => {
+    if (typeof path !== 'string' || !path || path.startsWith('/') || path.split('/').includes('..')) throw Error('PROBE_PATH_ASSERT: a vault-relative canvas path is required');
     // Readiness is checked through public DOM before touching the provider.
     if (!await page.locator('.tl-container .tl-canvas').count()) throw Error(`PROBE_NOT_MOUNTED ${path}: no mounted canvas`);
     const evidence = await assertProbeVersion(h);

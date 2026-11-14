@@ -34,6 +34,45 @@ export function path2d(commands: Iterable<Readonly<PathCommand>>, origin: PathOr
 
 type WorkState = 'pending' | 'complete' | 'cancelled';
 
+/** Clip and ordinary geometry can also be arbitrarily large; append one command per unit. */
+export class Path2dJob {
+    private path: Path2D | null = new Path2D();
+    private commands: readonly PathCommand[] | null;
+    private offset = 0;
+    private state: WorkState = 'pending';
+    readonly origin: PathOrigin2d;
+
+    constructor(commands: readonly PathCommand[], origin: PathOrigin2d = ZERO_ORIGIN) {
+        if (!origin.every(Number.isFinite)) throw new RangeError('Path origin must be finite');
+        this.origin = Object.freeze([origin[0], origin[1]] as const);
+        this.commands = commands;
+    }
+
+    get result(): Path2D | null { return this.state === 'complete' ? this.path : null; }
+    get commandCount(): number { return this.offset; }
+
+    step(maxWork: number): WorkState {
+        if (this.state !== 'pending') return this.state;
+        if (!Number.isSafeInteger(maxWork) || maxWork <= 0) throw new RangeError('Invalid path work slice');
+        try {
+            const commands = this.commands!;
+            const end = Math.min(commands.length, this.offset + maxWork);
+            while (this.offset < end) appendPath2d(this.path!, commands[this.offset++], this.origin);
+            if (this.offset === commands.length) { this.commands = null; this.state = 'complete'; }
+            return this.state;
+        } catch (error) {
+            this.cancel();
+            throw error;
+        }
+    }
+
+    cancel(): void {
+        this.state = 'cancelled';
+        this.commands = null;
+        this.path = null;
+    }
+}
+
 /** A partially appended path must never replace the previous complete stroke (rendering §2/§11).
  * The shared outline job counts cap refinement and empty primitives too, not just emitted commands.
  */

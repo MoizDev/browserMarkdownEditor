@@ -117,7 +117,7 @@ function frozenIsolation(snapshot: CaptureSnapshot): readonly IsolationReservati
 interface CaptureScope {
     readonly signal: AbortSignal;
     check(): void;
-    link(signal: AbortSignal, code: 'aborted' | 'disposed'): void;
+    link(signal: AbortSignal, code: 'aborted' | 'disposed'): () => void;
     dispose(): void;
 }
 
@@ -133,11 +133,13 @@ function scope(deadlineMs: number): CaptureScope {
         },
         link: (signal, code) => {
             const abort = () => controller.abort(new CaptureError(code));
+            const unlink = () => signal.removeEventListener('abort', abort);
             if (signal.aborted) abort();
             else {
                 signal.addEventListener('abort', abort, { once: true });
-                detach.push(() => signal.removeEventListener('abort', abort));
+                detach.push(unlink);
             }
+            return unlink;
         },
         dispose: () => { clearTimeout(timer); detach.forEach(remove => remove()); },
     };
@@ -192,6 +194,14 @@ function hasCode(error: unknown, code: string): boolean {
  */
 export class PaneCapturer {
     private readonly lifetime = new AbortController();
+    private readonly pending = new Set<Promise<void>>();
+
+    private trackRetirement(): () => void {
+        let finish = () => {};
+        const retired = new Promise<void>(resolve => { finish = resolve; });
+        this.pending.add(retired);
+        return () => { this.pending.delete(retired); finish(); };
+    }
 
     constructor(private readonly options: PaneCapturerOptions) {
         if (!options.paneId) throw new CaptureError('invalid-input');
@@ -224,7 +234,7 @@ export class PaneCapturer {
             active.check();
             // Retain exactly once, synchronously, before waiting for the shared global slot.
             snapshot = this.options.snapshot(request);
-            active.link(snapshot.signal, 'disposed'); active.check();
+            const unlinkSnapshot = active.link(snapshot.signal, 'disposed'); active.check();
             if (!snapshot.prepareTile) throw new CaptureError('incomplete');
             const selected = new Set(request.layers);
             if (snapshot.layers.length !== selected.size || snapshot.layers.some(layer => !selected.delete(layer.id)) || selected.size) {
@@ -233,9 +243,12 @@ export class PaneCapturer {
             const lease = snapshot, operation = active;
             const layers = Object.freeze(lease.layers.map(layer => Object.freeze({ id: layer.id, draw2d: layer.draw2d.bind(layer) })));
             let started = false, released = false;
+            const retire = this.trackRetirement();
             const release = async () => {
                 if (released) return; released = true;
-                try { await lease.release(); } finally { operation.dispose(); }
+                // Owned release revokes the snapshot signal, not the already-finished pixels.
+                unlinkSnapshot();
+                try { await lease.release(); } finally { operation.dispose(); retire(); }
             };
             return this.options.queue.run(this.options.paneId, operation.signal, async () => {
                 started = true;
@@ -265,7 +278,7 @@ export class PaneCapturer {
             operation.check();
             // No await before the session has retained ONE revision and selected render plan.
             snapshot = this.options.snapshot(request);
-            operation.link(snapshot.signal, 'disposed');
+            const unlinkSnapshot = operation.link(snapshot.signal, 'disposed');
             operation.check();
             const selected = new Set(request.layers);
             if (snapshot.layers.length !== selected.size || snapshot.layers.some(layer => !selected.delete(layer.id)) || selected.size) {
@@ -276,10 +289,13 @@ export class PaneCapturer {
                 id: layer.id, draw2d: layer.draw2d.bind(layer), drawGpu: layer.drawGpu?.bind(layer),
             })));
             let started = false, released = false;
+            const retire = this.trackRetirement();
             const release = async () => {
                 if (released) return;
                 released = true;
-                try { await lease.release(); } finally { active.dispose(); }
+                // Keep caller/lifetime/deadline cancellation until native cleanup really retires.
+                unlinkSnapshot();
+                try { await lease.release(); } finally { active.dispose(); retire(); }
             };
             return this.options.queue.run(this.options.paneId, active.signal, async () => {
                 started = true;
@@ -296,7 +312,12 @@ export class PaneCapturer {
         }
     }
 
-    dispose(): void { this.lifetime.abort(new CaptureError('disposed')); }
+    async dispose(): Promise<void> {
+        this.lifetime.abort(new CaptureError('disposed'));
+        // Caller abort settles promptly in CaptureQueue; only real source/native retirement
+        // ends allocator ownership. No new capture can enter after the lifetime abort.
+        await Promise.allSettled([...this.pending]);
+    }
 
     private async prepare(request: CaptureRequest, snapshot: CaptureSnapshot, route: '2d' | 'gpu', active: CaptureScope): Promise<void> {
         active.check();

@@ -30,6 +30,10 @@ type Job = {
     permit?: CpuPermit;
     admission?: object;
     abort?: () => void;
+    retired: boolean;
+    replyProcessing: boolean;
+    retirement: Promise<void>;
+    resolveRetired(): void;
     resolve(value: unknown): void;
     reject(error: WorkerHostError): void;
 };
@@ -96,10 +100,13 @@ class Client implements WorkerClient {
         let resolve!: (value: unknown) => void;
         let reject!: (error: WorkerHostError) => void;
         const promise = new Promise<T>((yes, no) => { resolve = value => yes(value as T); reject = no; });
+        let resolveRetired!: () => void;
+        const retirement = new Promise<void>(resolve => { resolveRetired = resolve; });
         const job: Job = {
             id: ++this.nextId, op, args, options: { ...options }, phase: 'queued',
             deadline: options.deadlineMs === undefined ? undefined : asked + options.deadlineMs,
             started: 0, heard: 0, paused: false, admitted: false, bootstrap, resolve, reject,
+            retired: false, replyProcessing: false, retirement, resolveRetired,
         };
         this.pending.set(job.id, job);
         if (__BME_BENCH__) { job.perfAsked = asked; this.record(job, 'request'); }
@@ -198,6 +205,8 @@ class Client implements WorkerClient {
         } finally { this.pumping = false; this.syncClock(); }
     }
 
+    whenRetired = (promise: Promise<unknown>): Promise<void> => this.promises.get(promise)?.retirement ?? Promise.resolve();
+
     reprioritise = (promise: Promise<unknown>, priority: Priority): void => {
         const job = this.promises.get(promise);
         if (!job || job.phase === 'settled' || !isPriority(priority)) return;
@@ -244,12 +253,20 @@ class Client implements WorkerClient {
         job.options.signal = undefined;
         job.options.transfer = undefined;
         job.abort = undefined;
-        this.release(job);
+        if (!job.replyProcessing && this.connection?.sent.get(job.id) !== job) this.retire(job);
         if (error) job.reject(error);
         else job.resolve(result);
         job.resolve = () => {};
         job.reject = () => {};
         this.syncClock();
+    }
+
+    private retire(job: Job): void {
+        if (job.retired) return;
+        job.retired = true;
+        this.release(job);
+        job.resolveRetired();
+        job.resolveRetired = () => {};
     }
 
     private release(job: Job): void {
@@ -369,12 +386,15 @@ class Client implements WorkerClient {
             this.crash(connection, 'Unknown or duplicate worker reply');
             return;
         }
+        job.replyProcessing = true;
         connection.sent.delete(data.id);
-        if (job.phase !== 'settled') this.expired(job);
-        if (job.phase === 'settled') {
-            if (data.ok) this.discard(job.op, data.result);
-        } else if (data.ok) this.settle(job, undefined, data.result);
-        else this.settle(job, new WorkerHostError(data.error.name, data.error.message));
+        try {
+            if (job.phase !== 'settled') this.expired(job);
+            if (job.phase === 'settled') {
+                if (data.ok) this.discard(job.op, data.result);
+            } else if (data.ok) this.settle(job, undefined, data.result);
+            else this.settle(job, new WorkerHostError(data.error.name, data.error.message));
+        } finally { job.replyProcessing = false; this.retire(job); }
         this.pump();
         this.syncClock();
     }
@@ -492,6 +512,7 @@ class Client implements WorkerClient {
         connection.detach();
         try { connection.terminate(); } catch { /* A removed contained frame may already be gone. */ }
         workerStopped(connection.endpoint);
+        for (const job of connection.sent.values()) this.retire(job);
         connection.sent.clear();
     }
 

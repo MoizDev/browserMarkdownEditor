@@ -60,6 +60,9 @@ export async function renderCaptureExport(request: CaptureRequest, snapshot: Cap
                 const ctx = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
                 if (!ctx || ctx.isContextLost()) throw new CaptureError('render-failed');
                 captureIsolation2d(ctx, memory);
+                ctx.beginPath();
+                ctx.rect(apron - tile.x, apron - tile.y, request.worldRect.width * scale, request.worldRect.height * scale);
+                ctx.clip();
                 for (const layer of layers) {
                     current(); ctx.save();
                     try { layer.draw2d(ctx, part.view); } finally { ctx.restore(); }

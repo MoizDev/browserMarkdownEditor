@@ -4,6 +4,7 @@ export type { AttachPlatformPane, PlatformLayerDefinition, PlatformPane, Platfor
 export type { CompositorCaptureOptions, CompositorLayer, CompositorLayerGroup, LayerCoverage, LayerHost, TexturedQuadOptions } from './compositor.types';
 export type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } from './types';
 export type { DamageRecord, DamageTags } from './damage';
+export type { CaptureExportOptions, CaptureExportRenderer, CaptureExportTile, CapturePngEncoder } from './captureExport';
 export { DamageAccumulator } from './damage';
 export type { PageStack } from './pageStack';
 export type { ByteLease, GfxDevice, GpuPass, TextureHandle, UniformSlice } from './gfx/api';

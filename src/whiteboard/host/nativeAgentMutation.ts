@@ -1,5 +1,5 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
-import type { AgentAdapterHost } from '../agent/adapter';
+import { createBoardAgentAdapter, type AgentAdapterHost } from '../agent/adapter';
 import { AgentApplyReadOnly } from '../agent/errors';
 import { createAgentProjection } from '../agent/projection';
 import type { ShapePage, ShapeQuery } from '../agent/shapes';
@@ -26,11 +26,11 @@ export interface NativeAgentMutation {
     shapes(query: ShapeQuery, options: JobOptions): Promise<ShapePage>;
     /** Whole-batch, all-or-nothing: one C2 transaction read back through the canonical adapter. */
     apply(ops: CanvasOp[], options: JobOptions & { readonly expectedRevision?: number }): Promise<AgentApplyResult>;
-    /** Revokes every queued and running job, then waits for their actual settlement. Release the source only after this resolves. */
+    /** Aborts and awaits only this facade's own work. The canonical runtime jobs and document stay live. */
     retire(): Promise<void>;
 }
 
-/** Ids a batch names that exist now. Preflight warms their exact geometry before any writer begins. */
+/** Ids a batch names that exist now. Preflight pins their exact geometry before any writer begins. */
 function referencedIds(ops: readonly CanvasOp[], doc: BoardDoc): NodeId[] {
     const found = new Set<NodeId>();
     const visit = (value: unknown, depth: number): void => {
@@ -53,10 +53,12 @@ function referencedIds(ops: readonly CanvasOp[], doc: BoardDoc): NodeId[] {
  * in the same batch are seen exactly as the writer will see them. */
 export function createNativeAgentMutation(options: { readonly runtime: BoardRuntime; readonly source: NativeAgentSource }): NativeAgentMutation {
     const { runtime, source } = options;
-    let retired = false;
+    // The facade's own cancellation. It never touches runtime.jobs, which also serves clipboard, media and the document.
+    const facade = new AbortController();
+    const tracked = new Set<Promise<unknown>>();
     // Staged reads are synchronous inside one writer; cancellation is observed at the job boundaries.
     const syncSignal = new AbortController().signal;
-    const live = () => !retired && source.isCurrent();
+    const live = () => !facade.signal.aborted && source.isCurrent();
     const projection = () => {
         const reader = createStagedGeometryReader(runtime.render, runtime.session.doc, syncSignal);
         return createAgentProjection(runtime.session.doc, { worldBox: node => reader.worldBox(node),
@@ -69,45 +71,65 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
         sheet: () => source.sheet(),
         page: () => source.page(),
         isCurrent: live,
-        readOnlyReason: () => retired ? 'Board source has ended' : source.writeBlock(),
+        readOnlyReason: () => facade.signal.aborted ? 'Board source has ended' : source.writeBlock(),
         // Admission is synchronous and inside the one writer; the batch releases the lease on every outcome.
         admitSamples: builder => runtime.samples.commit(builder),
         target: (node, page) => projection().target(node, page),
         localBox: node => projection().localBox(node),
     };
-    // createLiveAgentBackend builds the one canonical adapter and writer path over this host.
-    const backend = createLiveAgentBackend(host, runtime.jobs);
+    // The live backend serves reads through the canonical job authority; the writer below reuses one job context.
+    const reads = createLiveAgentBackend(host, runtime.jobs);
+    const adapter = createBoardAgentAdapter(host);
+    // Every job this facade starts is tracked and aborted by retire(). Each job is one canonical runtime job.
+    const scoped = (job: JobOptions): { signal: AbortSignal; deadlineMs: number } => ({
+        signal: job.signal ? AbortSignal.any([job.signal, facade.signal]) : facade.signal, deadlineMs: job.deadlineMs,
+    });
+    const track = <T>(work: Promise<T>): Promise<T> => {
+        tracked.add(work);
+        const settled = () => { tracked.delete(work); };
+        void work.then(settled, settled);
+        return work;
+    };
     return {
-        shapes: (query, job) => backend.shapes(query, job),
-        async apply(ops, job) {
-            if (!Array.isArray(ops) || ops.length < 1 || ops.length > 200) throw new RangeError('Expected 1 to 200 canvas operations');
-            if (!live()) throw new DOMException('Board source has ended', 'AbortError');
-            // Preflight outside the writer: wait for the scene, then warm and pin the exact inputs this batch names,
-            // and load the agent's font face. Nothing awaits between this and the synchronous writer's commit.
-            await runtime.ready.catch(() => { /* A disposed runtime is refused by the job check below. */ });
-            await runtime.jobs.run(async context => {
+        shapes: (query, job) => track(reads.shapes(query, scoped(job))),
+        apply(ops, job) {
+            if (!Array.isArray(ops) || ops.length < 1 || ops.length > 200) return Promise.reject(new RangeError('Expected 1 to 200 canvas operations'));
+            if (!live()) return Promise.reject(new DOMException('Board source has ended', 'AbortError'));
+            // One canonical job runs the whole write: readiness, pins, font warm-up and the writer. Nothing queues between them.
+            return track(runtime.jobs.run(async context => {
                 runtime.jobs.assertContext(context);
+                await runtime.ready;
+                runtime.jobs.assertContext(context);
+                const block = source.writeBlock();
                 if (!live()) throw new DOMException('Board source has ended', 'AbortError');
-                const reason = source.writeBlock();
-                if (reason !== null) throw new AgentApplyReadOnly(reason);
-                const doc = runtime.session.doc;
-                const lease = await runtime.render.pinChangeGeometry(referencedIds(ops, doc), context.signal, doc, live);
+                if (block !== null) throw new AgentApplyReadOnly(block);
+                const doc = runtime.session.doc, revision = doc.rev;
+                const sheet = source.sheet(), page = source.page();
+                const fence = () => {
+                    try { runtime.jobs.assertContext(context); } catch { return false; }
+                    return live() && runtime.session.doc === doc && doc.rev === revision && source.sheet() === sheet && source.page() === page;
+                };
+                // Pins outlive the writer's synchronous commit: they are released only after the adapter settles.
+                const pin = await runtime.render.pinChangeGeometry(referencedIds(ops, doc), context.signal, doc, fence);
                 try {
-                    runtime.jobs.assertContext(context);
-                    if (!await runtime.render.text.fonts.load({ family: 'draw', bold: false, italic: false })) {
-                        throw new Error('Required board font could not be loaded');
+                    // Every face the layout can request for the staged text, not only the agent's default family.
+                    for (const face of runtime.render.text.faces.faces) {
+                        if (!await runtime.render.text.fonts.load(face.key)) throw new Error('Required board font could not be loaded');
+                        runtime.jobs.assertContext(context);
+                        if (!fence()) throw new DOMException('Board changed during preflight', 'AbortError');
                     }
-                } finally { lease.release(); }
-                runtime.jobs.assertContext(context);
-                if (!live()) throw new DOMException('Board source has ended', 'AbortError');
-            }, job);
-            return backend.apply(ops, job);
+                    if (!fence()) throw new DOMException('Board changed during preflight', 'AbortError');
+                    const reason = source.writeBlock();
+                    if (reason !== null) throw new AgentApplyReadOnly(reason);
+                    return await adapter.apply(structuredClone(ops), { signal: context.signal, isCurrent: fence });
+                } finally { pin.release(); }
+            }, scoped(job)));
         },
         async retire() {
-            if (retired) return;
-            retired = true;
-            runtime.jobs.dispose();
-            await runtime.jobs.drain();
+            if (facade.signal.aborted) { await Promise.allSettled([...tracked]); return; }
+            facade.abort(new DOMException('Board source has ended', 'AbortError'));
+            // Settles only this facade's own promises; the runtime's job authority keeps serving the document.
+            while (tracked.size) await Promise.allSettled([...tracked]);
         },
     };
 }

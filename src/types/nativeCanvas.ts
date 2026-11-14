@@ -4,6 +4,7 @@ import type { JournalCapture } from '../utils/recoveryFunnel';
 import type { ClipboardCache } from '../utils/clipboardCache';
 import type { TrashItem } from './index';
 import type { EmbedContainmentApproval, EmbedContainmentFactory, EmbedFrameManifest } from '../platform/embedContainment.types';
+import type { NativeEditingCapabilityFactory } from '../components/whiteboard/nativeEditingCapabilities';
 
 export interface NativeCanvasIdentity {
     readonly documentId: string;
@@ -29,6 +30,7 @@ export interface NativeEmbedHost {
 export interface NativeCanvasHost {
     readonly clipboard: ClipboardCache;
     readonly embeds: NativeEmbedHost;
+    readonly createEditingCapabilities: NativeEditingCapabilityFactory;
     identity(documentId: string): NativeCanvasIdentity | undefined;
     /** The current outer-file generation, even when a native session retains its source generation. */
     outerIdentity(documentId: string): NativeCanvasIdentity | undefined;

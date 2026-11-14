@@ -66,6 +66,7 @@ export class PdfTileLayer implements Layer {
     private readonly retiring = new Set<Entry>();
     private desired = new Set<string>();
     private sequence = 0;
+    private contentRevision = 0;
     private pendingFrame = false;
     private frameTexture: { device: GfxDevice; handle: TextureHandle } | null = null;
     private disposed = false;
@@ -159,6 +160,7 @@ export class PdfTileLayer implements Layer {
                     return;
                 }
                 entry.bitmap = bitmap;
+                this.contentRevision++;
                 this.host.invalidate('pdf-tile-arrived');
             }, error => {
                 const current = this.entries.get(key) === entry;
@@ -261,6 +263,7 @@ export class PdfTileLayer implements Layer {
         for (const entry of this.retiring) cpuBytes += entry.lease.bytes;
         return { gpuBytes, cpuBytes };
     }
+    revision(): number { return this.contentRevision; }
     needsFrame(): boolean { return this.pendingFrame; }
     dispose(): void { if (!this.disposed) { this.disposed = true; this.hide(); this.failed.clear(); } }
 
@@ -310,6 +313,7 @@ export class PdfTileLayer implements Layer {
         entry.controller.abort();
         if (entry.texture && entry.device) entry.device.destroy(entry.texture);
         if (entry.bitmap) {
+            this.contentRevision++;
             entry.bitmap.close();
             this.host.allocator.cpu.release(entry.lease);
         } else {

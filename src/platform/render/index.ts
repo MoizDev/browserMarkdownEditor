@@ -12,4 +12,6 @@ export { createPlatformMirrors } from './createPlatformMirrors';
 export { renderTokenKey, createTileGrid, intersectingTiles, makeTileKey, tileKeyString, exactScale, movingScale, lowCoveragePlan } from './tiles/geometry';
 export { tilePrefetchRegion } from './tiles/demand';
 export { pageStack, pageAt } from './pageStack';
+export { cameraForPagedPosition, pagedPosition, fitWidthZ, pagedConstraint } from './camera';
+export type { PagedPosition, ViewportInsets, ZoomLimits, CameraConstraint } from './camera';
 export { attachPlatformPane } from './attachPlatformPane';

@@ -1450,7 +1450,7 @@ export default function App() {
       console.error('Failed to read file:', err);
       return false;
     }
-  }, [readFileVersioned, rememberAssetRefs, seedPdfBaseline]);
+  }, [handleIO, readFileVersioned, rememberAssetRefs, seedPdfBaseline]);
 
   /**
    * Hand a notebook's exported PDF back to its notebook.
@@ -1597,7 +1597,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [rootHandle, fileTree]);
+  }, [rootHandle, fileTree, handleIO]);
 
   /** The migration above runs before `writeEntryStyles` is declared, and a
    *  hoisted reference is the only way to reach it from there. */
@@ -1687,7 +1687,7 @@ export default function App() {
     });
     entryStyleWritesRef.current = write;
     return write;
-  }, [notify, rootHandle, writeFile]);
+  }, [notify, rootHandle, writeFile, handleIO]);
   useEffect(() => { writeEntryStylesRef.current = writeEntryStyles; }, [writeEntryStyles]);
 
   /** Stable for the app's life: FileExplorer and TreeNode are both memoized. */
@@ -1775,7 +1775,7 @@ export default function App() {
       console.error('Could not export the notebook:', err);
       notify(`Could not export "${file.name}".`);
     }
-  }, [ask, createFile, notify, tell, writeFileBytes]);
+  }, [ask, createFile, notify, tell, writeFileBytes, nameTaken]);
 
   // The graph and the click share one canonical resolver revision. Read it
   // through an App-lifetime ref: the wikilink handler is baked into cached
@@ -1828,7 +1828,7 @@ export default function App() {
     } catch (err) {
       console.error('Failed to build link graph:', err);
     }
-  }, [fileTree]);
+  }, [fileTree, handleIO]);
 
   // AT IDLE, not the moment a tree lands. The first build reads every note in
   // the vault (nothing is cached yet) — measured at 1,000 reads and 2.6MB on a
@@ -3091,7 +3091,7 @@ export default function App() {
         if (linkedNode) setPendingLinkFile(null);
       }
     })();
-  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation]);
+  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile]);
 
   // A vault taken off the recent list (the minus in the vault menu) mints a new
   // id if it is ever opened again, so its stored session would be unreachable
@@ -3244,7 +3244,7 @@ export default function App() {
         body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
       });
     }
-  }, [createFile, handleFileClick, tell]);
+  }, [createFile, handleFileClick, tell, nameTaken]);
 
   /**
    * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab
@@ -3320,7 +3320,7 @@ export default function App() {
         body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
       });
     }
-  }, [createFolder, tell]);
+  }, [createFolder, tell, nameTaken]);
 
   /**
    * Open a folder in the tree as the vault — the file tree's "Open as Vault"
@@ -3936,7 +3936,7 @@ export default function App() {
       }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -4080,7 +4080,7 @@ export default function App() {
       moved = await retargetPaths(from, isFolder, to, sources, true);
     });
     return moved;
-  }, [resolveFileHandle, trackVaultMove, retargetExpandedPaths, retargetPaths]);
+  }, [resolveFileHandle, trackVaultMove, retargetExpandedPaths, retargetPaths, resolveVaultDir, vaultDirExists]);
 
   /**
    * Re-verify open documents against the disk — those `scope` names (or that
@@ -4430,7 +4430,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes
@@ -4480,7 +4480,7 @@ export default function App() {
     let alive = true;
     void ensureVaultId(rootHandle, writeFileRef.current).then(id => { if (alive) setSettingsVaultId(id); });
     return () => { alive = false; };
-  }, [showSettings, rootHandle]);
+  }, [showSettings, rootHandle, ensureVaultId]);
   useEffect(() => {
     setTerminalStartSource(async () => {
       const root = rootHandleRef.current;
@@ -4496,7 +4496,7 @@ export default function App() {
       const dir = file && !file.isHelp ? parentVaultPath(file.path) : '';
       return { vaultId: vaultIdRef.current.id, dir };
     });
-  }, []);
+  }, [ensureVaultId]);
 
   const agentDepsRef = useRef<AgentHostDeps | null>(null);
   useLayoutEffect(() => {

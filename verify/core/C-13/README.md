@@ -1,5 +1,15 @@
 # C-13 — real-app fence bounds, copy and diagram gate
 
+## Current implementation bar (charter §0)
+
+The implementation phase no longer waits for review proof. Keep all existing scripts, patches and
+captures below, but defer additional mutant builds, identity rebuilds, pixel-proof replays and the
+partial-parse companion to the later review phase. The package's final sanity run reuses the
+production semantic driver with `--theme=dark` and `--theme=light` (no `--reference`), then inspects
+both sets of images; typecheck/lint must be clean. Existing checks are not relaxed.
+
+The older commands below document what exists and what is owed, not extra merge conditions.
+
 `reproduce.mjs <url> <output>` ports the four original E01 cases, but uses the pinned Chrome for
 Testing157.0.8103.39, Playwright1.63.0, the real permitted clipboard, real tree navigation, and a
 rendered EOF heading instead of imported view/grammar probes. It failed on the unfixed production

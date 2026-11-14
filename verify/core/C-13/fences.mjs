@@ -12,12 +12,13 @@ const args = Object.fromEntries(process.argv.slice(2).map(arg => {
     return [arg.slice(2, split), arg.slice(split + 1)];
 }));
 const companion = args.companion === 'true';
+const theme = args.theme || 'dark';
 const cases = companion ? [partialFixture()] : fixtures;
 const output = args.out || '/Users/adham/Developer/bme-impl/scratch/c-d/C-13/table';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const report = { scope: companion ? 'benchmark companion: initially partial parse' : 'production primary',
     url: args.url, browser: null, playwright: createRequire(import.meta.url)('playwright/package.json').version,
-    dpr: 1, rows: [], failures: [], pageErrors: [], scripts: [], changes: [], losses: [
+    dpr: 1, theme, rows: [], failures: [], pageErrors: [], scripts: [], changes: [], losses: [
         'No new timing budget is claimed; the companion observes parse coverage only.',
         'Copy preserves source bytes between marker rows, including container prefixes.',
     ] };
@@ -139,6 +140,11 @@ try {
     assert.equal(await page.evaluate(() => window.__c13Writes), cases.length, 'write observer seed positive control');
     report.setupComplete = true;
     await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
+    assert.ok(theme === 'light' || theme === 'dark', 'supported app theme');
+    if (await page.evaluate(() => document.documentElement.dataset.theme || 'dark') !== theme) {
+        await page.getByRole('button', { name: `Switch to ${theme} mode`, exact: true }).click();
+    }
+    await page.waitForFunction(value => (document.documentElement.dataset.theme || 'dark') === value, theme);
     for (const item of cases) {
         const row = { name: item.name, expected: { closed: item.closed, diagram: item.diagram, code: item.code },
             sourceSha256: sha256(item.source), control: item.control };

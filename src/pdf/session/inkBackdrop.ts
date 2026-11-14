@@ -4,7 +4,7 @@ import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capt
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { awaitSessionDisposals, getSessionIdentity } from '../../utils/sessionIdentity';
 import { assertPdfCaptureAllowed, assertPdfRenderAllowed, tiledPdfCapabilities } from '../../utils/pdfCapabilities';
-import { getPdfFontEpoch, subscribePdfFontEpoch } from '../fonts/profiles';
+import { getPdfFontEpoch, pdfVariantRevision, subscribePdfFontEpoch } from '../fonts/profiles';
 import { pdfMirrorRevision, pdfVersionTransitionOwner } from './versionOwner';
 import type { PdfVersionBridge } from '../layer/versionBridge';
 import { pdfPageLayerDefinition } from '../layer/definition';

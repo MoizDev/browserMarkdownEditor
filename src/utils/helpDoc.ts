@@ -54,6 +54,8 @@ The left sidebar displays your vault's folder structure. You can click on any no
 
 **Auto-reveal current file** is an on/off switch, off to begin with. While it is on (its button stays shaded), whatever you switch to in the editor is found in the tree for you: the folders it is in open, and its row scrolls into view. It acts when you change notes (and when you turn it on, or come back to Files from Search) — never on its own after that, so a folder you close yourself stays closed.
 
+Tab to the file tree and use the **Up** and **Down** arrows to move between rows. **Right** opens a folder or moves into it; **Left** closes it or moves to its parent. **Enter** or **Space** opens a file or toggles a folder.
+
 **Expand all** opens every folder in the vault, at every depth. Once any folder is open the same button becomes **Collapse all**, which closes them all again.
 
 Notes are listed under the name you gave them, without the \`.md\` — \`Recipes.md\` on disk reads **Recipes** here, and in its tab. Everything else keeps its extension, so a PDF, a whiteboard and a notebook still say what they are. Hover a row to see its full path, extension and all. Renaming a note shows you the full \`.md\` name again, with just the part before the dot selected, so the extension is there to keep or change deliberately.

@@ -672,8 +672,16 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         // what the reader sees minus the chrome, and never inverted (that is a
         // CSS filter; the canvases hold the real page).
         async capture(maxSide) {
-            const el = scrollRef.current;
-            if (!el) return null;
+            const el = scrollRef.current, L = layoutRef.current;
+            if (!el || !L) return null;
+            const gen = docGenRef.current, dpr = canvasDpr(), preference = emphasisRef.current;
+            const top = el.scrollTop, left = el.scrollLeft;
+            // Resume/zoom stand-ins may stay on screen, but are not current
+            // pixels for a tool. A later request can capture the finished view.
+            for (const i of visiblePageIndices()) {
+                const next: RenderTarget = { emphasis: preference, scale: L.scale, dpr, ...pageRegion(L, el, i, dpr) };
+                if (!satisfies(pageStatesRef.current.get(i)?.rendered, next)) return null;
+            }
             const view = el.getBoundingClientRect();
             if (!(view.width > 0 && view.height > 0) || !(maxSide > 0)) return null;
             const scale = Math.min(canvasDpr(), maxSide / Math.max(view.width, view.height));
@@ -718,7 +726,8 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             const png = await new Promise<Blob | null>(resolve => out.toBlob(resolve, 'image/png'));
             out.width = 0;
             out.height = 0;
-            return png;
+            return docGenRef.current === gen && layoutRef.current === L && canvasDpr() === dpr
+                && emphasisRef.current === preference && el.scrollTop === top && el.scrollLeft === left ? png : null;
         },
         async pdfText(pages) {
             const doc = docStateRef.current?.doc;
@@ -737,21 +746,27 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             const ds = docStateRef.current;
             const dims = ds?.dims[pageNumber - 1];
             if (!ds || !dims || !(maxSide > 0)) return null;
+            const gen = docGenRef.current;
             const lease = await session.acquirePage(pageNumber - 1, 'agent');
+            let canvas: HTMLCanvasElement | undefined;
             try {
                 const page = lease.page;
                 const viewport = page.getViewport({ scale: maxSide / Math.max(dims.w, dims.h) });
-                const canvas = document.createElement('canvas');
+                canvas = document.createElement('canvas');
                 canvas.width = Math.max(1, Math.ceil(viewport.width));
                 canvas.height = Math.max(1, Math.ceil(viewport.height));
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return null;
                 await page.render({ canvas, canvasContext: ctx, viewport }).promise;
-                const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+                const output = canvas;
+                const png = await new Promise<Blob | null>(resolve => output.toBlob(resolve, 'image/png'));
                 canvas.width = 0;
                 canvas.height = 0;
-                return png;
-            } finally { lease.release(); }
+                return docGenRef.current === gen && docStateRef.current === ds ? png : null;
+            } finally {
+                if (canvas) { canvas.width = 0; canvas.height = 0; }
+                lease.release();
+            }
         },
     }), [filePath, visiblePageIndices, session]);
 

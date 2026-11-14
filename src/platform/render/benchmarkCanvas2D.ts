@@ -13,34 +13,38 @@ import type { ScheduledFrame } from './scheduler';
 type Domain = { readonly rects: readonly Readonly<RectI>[]; readonly vector: boolean };
 type Kind = 'current' | 'standin' | 'none';
 export const managers = new WeakMap<object, BenchmarkCanvas2D>();
+export const retiringManagers = new WeakMap<object, Set<BenchmarkCanvas2D>>();
 export const coverageKinds = new WeakMap<object, Kind>();
+export const scaleRatios = new WeakMap<object, number>();
 interface Witness {
     readonly canvas: HTMLCanvasElement;
     readonly context: CanvasRenderingContext2D;
     readonly lease: ByteLease;
     invalid: boolean;
+    minRatio: number;
 }
 
 /** Detached benchmark-only evidence; failure never changes the colour drawing path. */
 export class BenchmarkCanvas2D {
     private readonly shadows = new Map<CanvasRenderingContext2D, Witness>();
-    private readonly pending = new Map<string, PerfTag[]>();
+    private readonly pending = new Map<string, { tag: PerfTag; ratio: number }[]>();
     private outstanding = 0;
     private disposed = false;
     private readonly counter;
 
     private readonly allocators: { working: MemoryAllocator; cpu: MemoryAllocator };
 
-    constructor(options: { paneId: string; working: MemoryAllocator; cpu: MemoryAllocator }) {
+    constructor(private readonly options: { paneId: string; working: MemoryAllocator; cpu: MemoryAllocator; onDrained?: () => void }) {
         this.allocators = { working: measurementAllocator(options.paneId, 'gpu', options.working),
             cpu: measurementAllocator(options.paneId, 'cpu', options.cpu) };
         this.counter = createCoverageCounter({ memory: this.allocators.cpu,
             onCount: result => {
-                const tag = this.retire(result.frame);
-                if (tag) recordCoverageFrame({ ...tag, outside: result.outside, hole: result.hole,
-                    standin: result.standin, current: result.current, invalid: result.invalid, countMs: result.countMs });
+                const entry = this.retire(result.frame);
+                if (entry) recordCoverageFrame({ ...entry.tag, outside: result.outside, hole: result.hole,
+                    standin: result.standin, current: result.current, invalid: result.invalid, countMs: result.countMs,
+                    standInRatio: result.standin ? entry.ratio : 1 });
             },
-            onDrop: (frame, reason) => { const tag = this.retire(frame); if (tag) recordCoverageDrop(tag, reason); },
+            onDrop: (frame, reason) => { const entry = this.retire(frame); if (entry) recordCoverageDrop(entry.tag, reason); },
         });
     }
 
@@ -57,7 +61,7 @@ export class BenchmarkCanvas2D {
             canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
             const context = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
             if (!context || context.isContextLost()) throw new Error('Witness context unavailable');
-            const witness: Witness = { canvas, context, lease, invalid: false };
+            const witness: Witness = { canvas, context, lease, invalid: false, minRatio: 1 };
             const virtual = benchmarkDeviceContext(native, origin, imageCallback, context, () => { witness.invalid = true; });
             this.shadows.set(native, witness);
             return virtual;
@@ -75,6 +79,7 @@ export class BenchmarkCanvas2D {
             const width = witness.canvas.width;
             witness.canvas.width = width;
             witness.invalid = witness.context.isContextLost();
+            witness.minRatio = 1;
         } catch { witness.invalid = true; }
     }
 
@@ -107,17 +112,19 @@ export class BenchmarkCanvas2D {
         try { witness.context.restore(); } catch { witness.invalid = true; }
     }
 
-    mark(native: CanvasRenderingContext2D, destRect: Readonly<RectI>, kind: Kind, effectiveAlpha: number): void {
+    mark(native: CanvasRenderingContext2D, destRect: Readonly<RectI>, kind: Kind, effectiveAlpha: number, ratio = 1): void {
         const witness = this.shadows.get(native);
         if (!witness || witness.invalid || kind === 'none' || effectiveAlpha <= 0) return;
         try {
-            if (!Number.isFinite(effectiveAlpha) || ![destRect.x, destRect.y, destRect.width, destRect.height].every(Number.isFinite)) throw new Error('Invalid mark');
+            if (!Number.isFinite(effectiveAlpha) || !Number.isFinite(ratio) || ratio < 0 ||
+                ![destRect.x, destRect.y, destRect.width, destRect.height].every(Number.isFinite)) throw new Error('Invalid mark');
             const ctx = witness.context;
             ctx.save();
             try {
                 ctx.setTransform(native.getTransform()); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
                 ctx.fillStyle = kind === 'current' ? '#ff0000' : '#00ff00';
                 ctx.fillRect(destRect.x, destRect.y, destRect.width, destRect.height);
+                if (kind === 'standin') witness.minRatio = Math.min(witness.minRatio, ratio);
             } finally { ctx.restore(); }
         } catch { witness.invalid = true; }
     }
@@ -133,6 +140,7 @@ export class BenchmarkCanvas2D {
                 ctx.resetTransform(); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.imageSmoothingEnabled = false;
                 ctx.drawImage(src.canvas, sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
                     destRect.x, destRect.y, destRect.width, destRect.height);
+                dst.minRatio = Math.min(dst.minRatio, src.minRatio);
             } finally { ctx.restore(); }
         } catch { dst.invalid = true; }
     }
@@ -159,18 +167,17 @@ export class BenchmarkCanvas2D {
             if (!bytes || !Number.isSafeInteger(bytes)) { recordCoverageDrop(tag, 'invalid'); return; }
             lease = this.allocators.cpu.reserve(bytes);
             if (!lease) { recordCoverageDrop(tag, 'memory'); return; }
-            const staging = lease;
+            const staging = lease, ratio = witness.minRatio;
             this.outstanding++;
             const capture = createImageBitmap(witness.canvas);
             void capture.then(bitmap => {
                 this.allocators.cpu.release(staging);
-                if (this.disposed) { bitmap.close(); this.outstanding--; recordCoverageDrop(tag, 'disposed'); return; }
                 const key = this.key(tag), queue = this.pending.get(key) ?? [];
-                queue.push(tag); this.pending.set(key, queue);
+                queue.push({ tag, ratio }); this.pending.set(key, queue);
                 this.counter.count(bitmap, tag, 'rgb');
-            }, () => { this.allocators.cpu.release(staging); this.outstanding--; recordCoverageDrop(tag, 'error'); });
+            }, () => { this.allocators.cpu.release(staging); recordCoverageDrop(tag, 'error'); this.finishOutstanding(); });
         } catch {
-            if (lease) { this.allocators.cpu.release(lease); this.outstanding--; }
+            if (lease) { this.allocators.cpu.release(lease); this.finishOutstanding(); }
             witness.invalid = true; recordCoverageDrop(tag, 'error');
         }
     }
@@ -182,21 +189,26 @@ export class BenchmarkCanvas2D {
         try { witness.canvas.width = 0; witness.canvas.height = 0; }
         finally { this.allocators.working.release(witness.lease); }
     }
+    get drained(): boolean { return this.outstanding === 0; }
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
-        this.counter.dispose();
         for (const native of this.shadows.keys()) this.close(native);
+        if (this.drained) { this.counter.dispose(); this.options.onDrained?.(); }
+    }
+    private finishOutstanding(): void {
+        this.outstanding--;
+        if (this.disposed && this.drained) { this.counter.dispose(); this.options.onDrained?.(); }
     }
     private key(frame: CoverageFrameTag): string {
         const t = frame.token;
         return JSON.stringify([frame.frameId, frame.cameraEpoch, frame.sceneRevision, t.vaultEpoch, t.documentId,
             t.bytesGeneration, t.session, t.viewLease, t.deviceGeneration]);
     }
-    private retire(frame: CoverageFrameTag): PerfTag | undefined {
+    private retire(frame: CoverageFrameTag): { tag: PerfTag; ratio: number } | undefined {
         const key = this.key(frame), queue = this.pending.get(key), tag = queue?.shift();
         if (queue && !queue.length) this.pending.delete(key);
-        if (tag) this.outstanding--;
+        if (tag) this.finishOutstanding();
         return tag;
     }
 }

@@ -44,6 +44,7 @@ export interface PlatformPaneOptions<T extends object> {
         readonly mirrors: MirrorSet<T> | null;
         checkpoint(): void;
         captureRegion?(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
+        captureBlob?(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<Blob>;
     };
     readonly layers: readonly PlatformLayerDefinition[];
     readonly initialVisible: boolean;
@@ -86,5 +87,6 @@ export interface PlatformPane {
     animateZoom(targetZ: number, anchor?: Point): void;
     cancelMotion(): void;
     captureRegion(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
+    captureBlob(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<Blob>;
     dispose(): void;
 }

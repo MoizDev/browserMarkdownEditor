@@ -56,6 +56,8 @@ export interface TexturedQuadOptions {
     readonly sampling: 'nearest' | 'linear';
     /** Classification of the pixels actually drawn; omitted means no coverage. */
     readonly coverage?: 'current' | 'standin' | 'none';
+    /** Benchmark-only executed source resolution relative to the demanded raster scale. */
+    readonly standInRatio?: number;
 }
 
 /** Peak simultaneous inventory, declared during Layer.prepare. Masks share the target pool;

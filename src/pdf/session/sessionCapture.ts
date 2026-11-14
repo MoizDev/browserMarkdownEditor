@@ -15,7 +15,7 @@ import type { PdfTiledDocumentSession } from './documentSession';
 
 const slot = Symbol('PDF session capturer');
 const MAX_SIDE = 1568, MAX_REGION_AXIS = 10_000_000, MAX_CAPTURE_PAGES = 1024;
-export type PdfSessionCapturer = ReturnType<typeof createPlatformCapturer> & {
+export type PdfSessionCapturer = Pick<ReturnType<typeof createPlatformCapturer>, 'captureRegion' | 'dispose'> & {
     capturePageWithInfo(page: number, maxSide: number, signal?: AbortSignal): Promise<{
         bitmap: ImageBitmap; emphasis: PdfEmphasisCapability; check(): void; release(): void;
     }>;

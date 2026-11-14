@@ -30,7 +30,7 @@ export interface BoardRuntimeViewSink {
 export type BoardRuntimeOptions = Omit<BoardSessionFactoryOptions, 'selection' | 'notices' | 'sceneChanged'
     | 'historySnapshot' | 'restoreHistorySelection' | 'revealTouched' | 'finishGesture' | 'finishComposition'
     | 'beforeHistoryReplay' | 'historyLimitReached'> & {
-        readonly scene: Omit<SessionSceneOptions, 'doc' | 'invalidate' | 'onError' | 'signal'>;
+        readonly scene: Omit<SessionSceneOptions, 'doc' | 'invalidate' | 'onError' | 'signal' | 'retainRenderer'>;
         readonly render: ReturnType<typeof createBoardRenderServices>;
         onHistoryLimit(): void;
     };
@@ -147,7 +147,8 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             controller.signal.throwIfAborted();
             const revision = options.doc.rev;
             try {
-                const created = await SessionScene.create({ ...options.scene, doc: options.doc, invalidate, onError: report, signal: controller.signal });
+                const created = await SessionScene.create({ ...options.scene, retainRenderer: options.render.retainRenderer,
+                    doc: options.doc, invalidate, onError: report, signal: controller.signal });
                 if (disposed) { created.dispose(); throw new DOMException('Board runtime disposed', 'AbortError'); }
                 if (options.doc.rev !== revision) { created.dispose(); continue; }
                 scene = created; invalidate(); return created;

@@ -2,7 +2,7 @@ import type { Vec2 } from './path';
 import type { Affine } from '../../platform/types';
 import { exactAffinePoint } from './exactAffine';
 import { orient2d } from './predicates';
-import { nextUp, add, multiply, interval, sqrtInterval } from './numeric';
+import { nextUp, add, multiply, interval, sqrtInterval, dyadicSubtract, dyadicMultiply } from './numeric';
 import { exactPoint, exactLineBetween, exactIntersection, exactSide, sameExactPoint, exactPointIntervals,
     type ExactPoint, type ExactLine } from './homogeneous';
 
@@ -12,8 +12,9 @@ export type ConvexClipResult =
     | { readonly status: 'uncertain'; readonly reason: string };
 export type ConvexClipPolygon = readonly Vec2[] | { readonly points: readonly Vec2[]; readonly localToWorld: Affine };
 interface Vertex { readonly point: ExactPoint; readonly incoming: ExactLine }
-const MAX_INPUT_VERTICES = 256;
-const MAX_ENVELOPE_VERTICES = 1024;
+const MAX_INPUT_VERTICES = 32768;
+const MAX_ENVELOPE_VERTICES = MAX_INPUT_VERTICES * 4;
+const MAX_CLIP_OPERANDS = 65;
 function* normalized(input: ConvexClipPolygon): Generator<void, ExactPoint[]> {
     const source = 'points' in input ? input.points : input;
     if (source.length < 3 || source.length > MAX_INPUT_VERTICES) throw new RangeError('Invalid convex clip vertex count');
@@ -25,25 +26,47 @@ function* normalized(input: ConvexClipPolygon): Generator<void, ExactPoint[]> {
     }
     if (points.length > 1 && sameExactPoint(points[0], points.at(-1)!)) points.pop();
     if (points.length < 3) return [];
-    let winding = 0;
+    let winding = 0, forwardWraps = 0, backwardWraps = 0, backtrack = false;
     for (let i = 0; i < points.length; i++) {
-        const line = exactLineBetween(points[i], points[(i + 1) % points.length]);
-        for (const point of points) {
-            const turn = exactSide(line, point);
-            if (turn && winding && turn !== winding) throw new RangeError('Clip polygon must be convex and simple');
-            if (turn) winding = turn;
-            yield;
+        const a = points[i], b = points[(i + 1) % points.length], c = points[(i + 2) % points.length];
+        const turn = exactSide(exactLineBetween(a, b), c);
+        if (turn && winding && turn !== winding) throw new RangeError('Clip polygon must be convex and simple');
+        if (turn) winding = turn;
+        // Unit-weight exact affine inputs: uniform turns plus one direction
+        // winding reject star loops without scanning all vertex/edge pairs.
+        const ax = dyadicSubtract(b.x, a.x), ay = dyadicSubtract(b.y, a.y), bx = dyadicSubtract(c.x, b.x), by = dyadicSubtract(c.y, b.y);
+        const halfA = ay.n > 0n || (ay.n === 0n && ax.n >= 0n) ? 0 : 1;
+        const halfB = by.n > 0n || (by.n === 0n && bx.n >= 0n) ? 0 : 1;
+        if (turn > 0 && halfA === 1 && halfB === 0) forwardWraps++;
+        if (turn < 0 && halfA === 0 && halfB === 1) backwardWraps++;
+        if (!turn) {
+            const y = dyadicMultiply(ay, by), dot = dyadicSubtract(dyadicMultiply(ax, bx), { n: -y.n, e: y.e });
+            if (dot.n <= 0n) backtrack = true;
         }
+        yield;
     }
     if (!winding) return [];
+    if (backtrack || (winding > 0 ? forwardWraps : backwardWraps) !== 1) throw new RangeError('Clip polygon must have one convex winding');
     if (winding < 0) points.reverse();
     return points;
 }
 function* hull(input: readonly Vec2[]): Generator<void, Vec2[]> {
     if (input.length > MAX_ENVELOPE_VERTICES) throw new RangeError('Convex envelope exceeds its frame ancestry budget');
-    // The bound is four outward corners for at most 256 exact intersection
-    // vertices. Sorting this fixed-size set is not a document-sized operation.
-    const points = input.slice().sort((a, b) => a.x - b.x || a.y - b.y), unique: Vec2[] = [];
+    let points: Vec2[] = [], buffer = new Array<Vec2>(input.length);
+    for (const point of input) { points.push(point); yield; }
+    const compare = (a: Vec2, b: Vec2) => a.x - b.x || a.y - b.y;
+    for (let width = 1; width < points.length; width *= 2) {
+        for (let start = 0; start < points.length; start += width * 2) {
+            const middle = Math.min(points.length, start + width), end = Math.min(points.length, start + width * 2);
+            let left = start, right = middle;
+            for (let out = start; out < end; out++) {
+                buffer[out] = right >= end || (left < middle && compare(points[left], points[right]) <= 0) ? points[left++] : points[right++];
+                yield;
+            }
+        }
+        [points, buffer] = [buffer, points];
+    }
+    const unique: Vec2[] = [];
     for (const p of points) { if (!unique.length || p.x !== unique.at(-1)!.x || p.y !== unique.at(-1)!.y) unique.push(p); yield; }
     const half = function* (reverse: boolean): Generator<void, Vec2[]> {
         const result: Vec2[] = [];
@@ -57,7 +80,7 @@ function* hull(input: readonly Vec2[]): Generator<void, Vec2[]> {
     return [...(yield* half(false)), ...(yield* half(true))];
 }
 function* clipSteps(polygons: readonly ConvexClipPolygon[], tolerance: number): Generator<void, ConvexClipResult> {
-    if (!Number.isFinite(tolerance) || tolerance <= 0 || !polygons.length || polygons.length > 64) throw new RangeError('Invalid convex clip budget');
+    if (!Number.isFinite(tolerance) || tolerance <= 0 || !polygons.length || polygons.length > MAX_CLIP_OPERANDS) throw new RangeError('Invalid convex clip budget');
     let vertices: Vertex[] = [], initialized = false;
     const lines: ExactLine[] = [];
     for (const input of polygons) {
@@ -147,7 +170,7 @@ function* clipSteps(polygons: readonly ConvexClipPolygon[], tolerance: number): 
 }
 export function createConvexClipJob(polygons: readonly ConvexClipPolygon[], toleranceWorld: number) {
     const sourcePoints = (p: ConvexClipPolygon) => 'points' in p ? p.points : p;
-    if (!polygons.length || polygons.length > 64 || polygons.some(p => sourcePoints(p).length < 3)
+    if (!polygons.length || polygons.length > MAX_CLIP_OPERANDS || polygons.some(p => sourcePoints(p).length < 3)
         || polygons.reduce((sum, p) => sum + sourcePoints(p).length, 0) > MAX_INPUT_VERTICES) throw new RangeError('Invalid convex clip input budget');
     const copy = (m: Affine): Affine => [m[0], m[1], m[2], m[3], m[4], m[5]];
     const inputs = polygons.map(p => 'points' in p

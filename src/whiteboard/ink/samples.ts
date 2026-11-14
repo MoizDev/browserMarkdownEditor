@@ -369,6 +369,13 @@ export class SampleStore implements SampleStoreReader {
             nativeBounds, maxPressure: header.maxPressure
         });
     }
+    /** Share only sealed backing, never the source's mutable lease counters or cache slot.
+     * Both stores account the full backing conservatively; releasing either cannot clear the other. */
+    importImmutable(source: SampleStore, ref: SampleRef): SampleLease {
+        if (!(source instanceof SampleStore)) throw new TypeError('Sample import requires the owning SampleStore');
+        const original = source.record(ref);
+        return this.add({ ...original, ref: sampleRef(), owners: 0 });
+    }
     private add(record: SampleRecord): SampleLease {
         // Both admission paths hand the creator one lease, never an unowned/staging ref. Allocate
         // it before registering the record, so a failed lease allocation cannot orphan a record.

@@ -234,6 +234,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             // A journal append may start another session-owned build while draining.
             do {
                 while (outstanding.size) await Promise.allSettled([...outstanding]);
+                await scheduler.drain();
                 await journal.drain();
             } while (outstanding.size);
         },

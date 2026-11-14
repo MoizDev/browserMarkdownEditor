@@ -24,6 +24,8 @@ export interface SaveScheduler {
     pageHide(): void;
     /** Hidden documents journal immediately; a gesture keeps its normal flush hold. */
     hidden(): void;
+    /** Wait for captured journal callbacks, including those queued behind an append. */
+    drain(): Promise<void>;
     dispose(): void;
 }
 
@@ -137,6 +139,14 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
         },
         pageHide() { journal(); },
         hidden() { journal(); },
+        async drain() {
+            for (;;) {
+                drainJournal();
+                const work = journalWork;
+                if (!work) return;
+                await work;
+            }
+        },
         dispose() {
             if (disposed) return;
             disposed = true;

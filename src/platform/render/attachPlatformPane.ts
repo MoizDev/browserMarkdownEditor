@@ -534,6 +534,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (!selected?.captureRegion) return Promise.reject(new Error('Pane capture is unavailable'));
             return selected.captureRegion(worldRect, maxSidePx, captureOptions);
         },
+        captureBlob(worldRect, maxSidePx, captureOptions) {
+            if (disposed || !options.session.captureBlob) return Promise.reject(new Error('Pane capture is unavailable'));
+            return options.session.captureBlob(worldRect, maxSidePx, captureOptions);
+        },
         dispose() {
             if (disposed) return;
             setVisible(false);

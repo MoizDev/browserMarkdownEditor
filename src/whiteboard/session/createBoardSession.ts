@@ -87,8 +87,9 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             contentRevision = doc.rev;
             cachedSource = undefined;
             for (const id of applied.touched.media) refreshMedia(id);
-            journal.record(applied, contentRevision);
-            scheduler.markDirty();
+            try { journal.record(applied, contentRevision); }
+            catch (error) { options.onFailure(error); }
+            finally { scheduler.markDirty(); }
         },
         change: applied => channel.record(applied),
         reportError: options.onFailure,

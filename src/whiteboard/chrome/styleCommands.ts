@@ -25,10 +25,16 @@ function selectedNodes(doc: BoardDoc, selected: readonly NodeId[]): Node[] {
     return result;
 }
 
-function apply(session: BoardSession, label: string, ops: readonly Op[]): void {
+function apply(session: BoardSession, label: string, ops: readonly Op[], grouped = false): void {
     if (!ops.length || session.isReadOnly) return;
-    const receipt = session.apply({ origin: 'tool', label, ops });
-    receipt.release();
+    const ownGroup = !grouped && ops.some(op => op.t === 'set');
+    if (ownGroup) session.history.open(label);
+    try {
+        const receipt = session.apply({ origin: 'tool', label, ops });
+        receipt.release();
+    } finally {
+        if (ownGroup) session.history.close();
+    }
 }
 
 /** A slider drag opens one fresh history group; next-tool defaults remain history-silent. */
@@ -216,7 +222,7 @@ export class BoardStyleCommands {
                 if (node.width !== width) ops.push({ t: 'set', id: node.id, key: 'width', value: width });
             }
         }
-        apply(this.session, 'Change pen width', ops);
+        apply(this.session, 'Change pen width', ops, this.widthGesture);
     }
 
     endWidth(): void {

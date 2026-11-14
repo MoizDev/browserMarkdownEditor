@@ -166,7 +166,12 @@ function runSteps<T>(steps: Generator<void, T>): T {
     for (;;) { const step = steps.next(); if (step.done) return step.value; }
 }
 async function runStepsIncremental<T>(steps: Generator<void, T>, cooperate: () => Promise<void>): Promise<T> {
-    for (;;) { const step = steps.next(); if (step.done) return step.value; await cooperate(); }
+    let started = performance.now();
+    for (;;) {
+        const step = steps.next();
+        if (step.done) return step.value;
+        if (performance.now() - started >= 3) { await cooperate(); started = performance.now(); }
+    }
 }
 function base64Text(bytes: Uint8Array): string {
     const parts: string[] = [];

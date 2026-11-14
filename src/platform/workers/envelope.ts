@@ -30,6 +30,8 @@ export interface ContainedPort {
 export interface RequestOptions {
     priority: Priority;
     deadlineMs?: number;
+    /** Recycle only when a posted job reaches its deadline, not when waiting in the queue. */
+    terminateOnDeadline?: boolean;
     signal?: AbortSignal;
     transfer?: Transferable[];
     cpu?: 'governed' | 'light';

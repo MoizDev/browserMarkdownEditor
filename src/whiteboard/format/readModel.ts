@@ -281,7 +281,8 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
         }
         const keep = () => { raw.set(key, span.raw()); };
         if (key === 'pts') {
-            const pts = span.string(FORMAT_LIMITS.pointsChars);
+            const pts = context.options.cooperate
+                ? await span.stringIncremental(FORMAT_LIMITS.pointsChars, context.options.cooperate) : span.string(FORMAT_LIMITS.pointsChars);
             const inspected = context.options.cooperate
                 ? await inspectPointsIncremental(pts, context.options.cooperate) : inspectPoints(pts);
             if (!inspected.ok) {

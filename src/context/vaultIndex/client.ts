@@ -24,6 +24,8 @@ export class VaultIndexClient {
     private tree: IndexTreeFile[] = [];
     private treeGen = 0;
     private graphGen = 0;
+    private graphEpoch = 0;
+    get publicationEpoch(): number { return this.graphEpoch; }
     private disposed = false;
     private queue: Promise<void> = Promise.resolve();
     private sweeping?: Promise<void>;
@@ -45,6 +47,7 @@ export class VaultIndexClient {
                 this.started = true;
                 const session = this.session;
                 this.graphGen = 0;
+                this.graphEpoch++;
                 await bootstrap.request('open', { session }, control);
                 await this.sendTree(bootstrap, this.treeGen, this.tree);
                 for (const [path, value] of this.overlays) await bootstrap.request('overlay', { session, path, rev: value.rev, text: value.text }, control);
@@ -74,6 +77,9 @@ export class VaultIndexClient {
         this.worker.on('problem', value => { if (currentEvent(value)) this.onProblem(value); });
         this.worker.on('status', value => { if (currentEvent(value)) onStatus?.(value); });
         this.stopForeground = observeForegroundReads(active => { void this.foregroundIO(active).catch(() => {}); });
+    }
+    acceptsGraph(graphGen: number, treeGen: number, epoch: number): boolean {
+        return !this.disposed && epoch === this.publicationEpoch && graphGen === this.graphGen && treeGen === this.treeGen;
     }
     private async sendTree(worker: WorkerClient, treeGen: number, files: readonly IndexTreeFile[]): Promise<void> {
         const session = this.session;
@@ -128,9 +134,19 @@ export class VaultIndexClient {
             let start = 0, treeGen = this.treeGen;
             while (!this.disposed) {
                 this.sweepAgain = false;
-                const batch = await this.worker.request<{ next: number; treeGen: number; done: boolean } | null>(
-                    'sweepBatch', { session: this.session, start, treeGen, reason }, background);
-                if (!batch) return;
+                let batch: { next: number; treeGen: number; done: boolean } | null;
+                try {
+                    batch = await this.worker.request<typeof batch>(
+                        'sweepBatch', { session: this.session, start, treeGen, reason }, background);
+                } catch (error) {
+                    // A newer request must not inherit the failure of the one it superseded.
+                    if (this.sweepAgain && !this.disposed) { start = 0; treeGen = this.treeGen; continue; }
+                    throw error;
+                }
+                if (!batch) {
+                    if (this.sweepAgain && !this.disposed) { start = 0; treeGen = this.treeGen; continue; }
+                    return;
+                }
                 if (this.sweepAgain) { start = 0; treeGen = this.treeGen; continue; }
                 if (batch.done) return;
                 start = batch.next;

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
 import type { GraphNode, GraphLink, OpenNodeHandler, Theme } from '../types';
 import { perfRoot } from '../utils/perfHooks';
 import { GraphLayoutClient } from './graphLayoutClient';
+import { getGraphLayout, putGraphLayout } from '../utils/graphLayoutStore';
 
 /**
  * GraphView — an Obsidian-style "Neural Brain" graph of the vault.
@@ -61,6 +62,9 @@ interface GraphViewProps {
     activeFilePath: string | null;
     onOpenNode: OpenNodeHandler;
     theme: Theme;
+    indexing: boolean;
+    updating: boolean;
+    vaultKey: string;
 }
 
 interface GraphMeasurement {
@@ -92,7 +96,7 @@ interface GraphColors {
     ring: string;
 }
 
-export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme }: GraphViewProps) {
+export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme, indexing, updating, vaultKey }: GraphViewProps) {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -185,15 +189,19 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     );
 
     useEffect(() => {
-        const layout = new GraphLayoutClient();
+        const layout = new GraphLayoutClient(getGraphLayout(vaultKey));
         layoutRef.current = layout;
-        return () => { layoutRef.current = null; layout.dispose(); };
-    }, []);
+        return () => {
+            layoutRef.current = null;
+            if (layout.ids.length) putGraphLayout(vaultKey, layout.snapshot());
+            layout.dispose();
+        };
+    }, [vaultKey]);
 
     // Survivors retain their worker momentum on topology updates.
     useEffect(() => {
         const layout = layoutRef.current;
-        if (!layout) return;
+        if (!layout || (!nodes.length && (indexing || updating))) return;
         layout.update(nodes.map(node => node.id), links);
         positionVersion.current++;
         dirtyRef.current = true;
@@ -211,7 +219,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 }
             } catch { /* Measurement failures must not enter the app's path. */ }
         }
-    }, [nodes, links]);
+    }, [nodes, links, indexing, updating, vaultKey]);
 
     useEffect(() => {
         // App applies data-theme in its own effect, after this child's effect.
@@ -443,6 +451,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     if (index !== undefined) { layout.x[index] = current.x; layout.y[index] = current.y; }
                 }
                 working = frame.working || !!current;
+                if (!working) putGraphLayout(vaultKey, layout.snapshot());
                 if (frame.moved) {
                     positionVersion.current++;
                     if (autoFitRef.current) fit();
@@ -472,7 +481,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             rafRef.current = 0;
             ro.disconnect();
         };
-    }, [nodes, links, adjacency, maxDegree]);
+    }, [nodes, links, adjacency, maxDegree, vaultKey]);
 
     // ── Pointer interaction ────────────────────────────────────────────────
     const screenToWorld = (clientX: number, clientY: number) => {
@@ -614,10 +623,10 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         return (
             <div className="graph-view">
                 <div className="graph-empty">
-                    <p className="graph-empty-title">No notes to graph yet</p>
-                    <p className="graph-empty-hint">
+                    <p className="graph-empty-title">{indexing || updating ? 'Indexing your notes…' : 'No notes to graph yet'}</p>
+                    {!indexing && !updating && <p className="graph-empty-hint">
                         Create some <code>.md</code> notes and connect them with <code>[[wikilinks]]</code>.
-                    </p>
+                    </p>}
                 </div>
             </div>
         );
@@ -630,6 +639,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 <span className="graph-stats">
                     {noteCount} note{noteCount === 1 ? '' : 's'} · {links.length} link{links.length === 1 ? '' : 's'}
                 </span>
+                {updating && <span className="graph-stats" role="status">Updating…</span>}
                 <button className="graph-reset-btn" onClick={resetView} data-tooltip="Reset view">Reset view</button>
             </div>
             <div

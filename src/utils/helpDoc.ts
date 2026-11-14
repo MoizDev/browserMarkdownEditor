@@ -50,7 +50,7 @@ In **Settings → About**, the third-party notices link lists the software inclu
 
 When a newer app version is available, a notice offers **Reload**. Save your edits and resolve any disk conflicts first; the app will not reload from the notice while a document still has unsaved changes.
 
-In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
+In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. **Indexing your notes…** means the graph is being built; **Updating…** marks a graph while its index catches up. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
 
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
@@ -521,7 +521,9 @@ saying it is read-only; drawing and saving change nothing in it. You can still
 read, select, copy and find in it, and open its Text. Choose **Retry** if an
 attachment could not be read; otherwise open it in a version of the app that wrote
 it, or recover the annotations first. Never delete attachments from your only copy
-just to make the note go away. Existing attachments are retained when you save;
+just to make the note go away. If one PDF page cannot be rendered, its notice offers
+Retry while the other pages remain available. Very long PDFs initially use estimated
+page sizes; those estimates adjust as you visit pages. Existing attachments are retained when you save;
 if different attachments have the same name, a notice gives the recovered names
 used to keep both. If attachment repair or its verification fails, nothing is written.
 

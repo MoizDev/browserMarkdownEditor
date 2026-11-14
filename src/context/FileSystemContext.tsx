@@ -8,6 +8,7 @@ import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault, setVaultPinned, withVaultPaths } from './recentVaults';
 import { ensureVaultId } from './agentVault';
 import { requestPersistentStorage } from '../utils/storagePersistence';
+import { forgetRecoveryVault } from '../utils/recoveryJournal';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
@@ -803,7 +804,15 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, []);
     const commitRoot = useCallback((handle: FileSystemDirectoryHandle | null) => {
         // A→B→A is not the original activation, even if a handle is reused.
-        if (rootHandleRef.current !== handle) vaultActivationRef.current++;
+        if (rootHandleRef.current !== handle) {
+            vaultActivationRef.current++;
+            // A new index must never adopt the outgoing tree while its walk is pending.
+            // The ticket fence also rejects an old A walk after returning to A.
+            treePublishedRef.current = ++treeTicketRef.current;
+            fileTreeRef.current = [];
+            treeOwnerRef.current = null;
+            setFileTree([]);
+        }
         rootHandleRef.current = handle;
         setRootHandle(handle);
     }, []);
@@ -1160,6 +1169,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const forgetRecentVault = useCallback(async (id: string) => {
         try {
             await publishVaults(await forgetVault(id), rootHandleRef.current);
+            try { await forgetRecoveryVault(id); }
+            catch (error) { console.warn('Could not remove forgotten vault recovery records:', error); }
             return true;
         } catch (err) {
             console.warn('Could not drop the vault from the recent list:', err);

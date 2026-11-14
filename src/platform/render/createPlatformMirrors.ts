@@ -4,7 +4,7 @@ import { getPlatformRuntime } from './platformRuntime';
 
 export interface PlatformSessionSlots {
     getSlot<T>(key: symbol): T | undefined;
-    setSlot<T>(key: symbol, value: T, dispose?: () => void): void;
+    setSlot<T>(key: symbol, value: T, dispose?: (value: T) => void): void;
 }
 
 export type PlatformMirrorOptions<T extends object> = Omit<MirrorSetOptions<T>, 'governor' | 'createdAt'> & {
@@ -28,7 +28,7 @@ export function createPlatformMirrors<T extends object>(options: PlatformMirrorO
     }
     const { session, ...settings } = options;
     const mirrors = new MirrorSet({ ...settings, createdAt: options.createdAt ?? performance.now(), governor: getPlatformRuntime().governor });
-    try { session.setSlot(mirrorsSlot, mirrors, () => mirrors.releaseSession()); }
+    try { session.setSlot(mirrorsSlot, mirrors, value => value.releaseSession()); }
     catch (error) { mirrors.releaseSession(); throw error; }
     return mirrors;
 }

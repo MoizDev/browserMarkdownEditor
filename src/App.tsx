@@ -9,6 +9,7 @@ import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
+import type { IndexProgress } from './context/vaultIndex/useIndexGraph';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { subscribeRenderStatus } from './utils/renderStatus';
@@ -192,7 +193,7 @@ function describeReadError(err: unknown): string {
 /**
  * Structural equality for two link graphs.
  *
- * buildGraph is deterministic for a given vault — nodes follow the file list and
+ * The index graph is deterministic for a given vault — nodes follow the file list and
  * links follow document order — so an element-wise walk is exact, and it lets a
  * rebuild that found nothing new keep the previous object identity instead of
  * cascading a re-render (and a graph re-simulation) through the app.
@@ -246,7 +247,7 @@ interface AppDialog extends DialogRequest {
 /**
  * Is this graph the same one we already handed out?
  *
- * `rebuildGraph` keeps the PREVIOUS GraphData object when the answer is yes, and
+ * `publishIndexGraph` keeps the PREVIOUS GraphData object when the answer is yes, and
  * that identity is load-bearing: a fresh object propagates into GraphView's
  * effects, which re-seed the simulation (alpha = 1) and tear down and rebuild
  * the RAF loop and the ResizeObserver. Without this, an unrelated tab
@@ -469,14 +470,25 @@ export default function App() {
   const [mainView, setMainView] = useState<MainView>('editor');
 
   // The link graph powering the Neural Brain view and backlinks panel
-  const [graphState, setGraphState] = useState<{ activation: number; value: GraphData }>(() => ({ activation: searchActivation, value: EMPTY_GRAPH }));
-  const graph = graphState.activation === searchActivation ? graphState.value : EMPTY_GRAPH;
-  const publishIndexGraph = useCallback((next: GraphData | null) => {
-    if (getVaultActivation() !== searchActivation) return;
-    const value = next ?? EMPTY_GRAPH;
-    setGraphState(previous => previous.activation === searchActivation && sameGraph(previous.value, value)
-      ? previous : { activation: searchActivation, value });
+  const [graphState, setGraph] = useState<{ activation: number; data: GraphData }>(() => ({ activation: getVaultActivation(), data: EMPTY_GRAPH }));
+  const graph = graphState.activation === getVaultActivation() ? graphState.data : EMPTY_GRAPH;
+  const [graphFreshness, setGraphFreshness] = useState<{ activation: number; stale: boolean } | null>(null);
+  const [indexProgressState, setIndexProgressState] = useState<{ activation: number; value: IndexProgress } | null>(null);
+  const indexProgress = indexProgressState?.activation === searchActivation ? indexProgressState.value : null;
+  const reportGraphFreshness = useCallback((stale: boolean) => {
+    if (getVaultActivation() === searchActivation) setGraphFreshness({ activation: searchActivation, stale });
   }, [getVaultActivation, searchActivation]);
+  const reportIndexProgress = useCallback((value: IndexProgress) => {
+    if (getVaultActivation() === searchActivation) setIndexProgressState({ activation: searchActivation, value });
+  }, [getVaultActivation, searchActivation]);
+  const publishIndexGraph = useCallback((next: GraphData | null, activation: number, current: () => boolean) => {
+    const value = next ?? EMPTY_GRAPH;
+    if (getVaultActivation() !== activation || !current()) return;
+    // A reply can be superseded between receipt and React executing its updater.
+    setGraph(previous => getVaultActivation() !== activation || !current() ? previous
+      : previous.activation === activation && sameGraph(previous.data, value) ? previous
+        : { activation, data: value });
+  }, [getVaultActivation]);
   const [indexProblem, setIndexProblem] = useState<{ activation: number; kind: string } | null>(null);
   const reportIndexProblem = useCallback((value: unknown) => {
     const problem = value as { kind?: string } | null;
@@ -488,7 +500,7 @@ export default function App() {
   }, []);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
     getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
-    publish: publishIndexGraph, onProblem: reportIndexProblem, onTimes: reportIndexTimes });
+    publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem, onTimes: reportIndexTimes });
   const retryIndex = useCallback(async () => {
     const owner = indexGraphRef.current;
     if (!owner || !indexProblem || owner.activation !== indexProblem.activation || owner.activation !== getVaultActivation()) return;
@@ -5530,7 +5542,11 @@ export default function App() {
         {mainView === 'graph' ? (
           <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView
-            key={searchActivation}
+            key={`${searchActivation}:${sessionRootRef.current === rootHandle && sessionVaultIdRef.current === currentVaultId ? currentVaultId : ''}`}
+            vaultKey={sessionRootRef.current === rootHandle && sessionVaultIdRef.current === currentVaultId && currentVaultId
+              ? `vault:${currentVaultId}` : `activation:${searchActivation}`}
+            indexing={graphFreshness?.activation !== searchActivation}
+            updating={(graphFreshness?.activation === searchActivation && graphFreshness.stale) || indexProgress?.phase === 'sweeping'}
             nodes={graph.nodes}
             links={graph.links}
             activeFilePath={activeFile?.path || null}

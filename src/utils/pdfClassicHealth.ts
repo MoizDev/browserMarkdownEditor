@@ -1,3 +1,17 @@
+export type PdfOpenFailure = 'invalid' | 'password' | 'unsupported-security' | 'resource-limit' | 'worker-crash' | 'cancelled' | 'file-error';
+
+/** Translate backend names, not arbitrary document text, into safe feature states. */
+export function pdfOpenFailure(error: unknown): { kind: PdfOpenFailure; message: string } {
+    const name = error instanceof Error ? error.name : '';
+    if (name === 'AbortError' || name === 'AbortException') return { kind: 'cancelled', message: 'Opening the PDF was cancelled.' };
+    if (name === 'PasswordException' || name === 'PasswordRequired') return { kind: 'password', message: 'This PDF needs a password before it can be opened.' };
+    if (name === 'UnsupportedSecurity') return { kind: 'unsupported-security', message: 'This PDF uses an unsupported security method.' };
+    if (name === 'ResourceLimit' || name === 'RangeError' || name === 'OutOfMemoryError') return { kind: 'resource-limit', message: 'This PDF exceeds the available rendering resources.' };
+    if (name === 'WorkerDied' || name === 'EngineBroken' || error instanceof ClassicPdfError && classicPdfFailureIsFatal(error.diagnostic)) return { kind: 'worker-crash', message: 'The PDF renderer stopped. Try again to reopen it.' };
+    if (name === 'InvalidPDFException' || name === 'InvalidPdf' || name === 'PageError') return { kind: 'invalid', message: 'This PDF is invalid or damaged and could not be opened.' };
+    return { kind: 'file-error', message: 'This PDF could not be opened. It may be damaged or unavailable.' };
+}
+
 export type ClassicPdfFailureCode = 'image-decode-failed' | 'asset-load-failed' | 'worker-startup-failed' | 'worker-failed' | 'message-contract-failed' | 'render-failed' | 'render-delayed';
 export interface ClassicPdfDiagnostic {
     code: ClassicPdfFailureCode;

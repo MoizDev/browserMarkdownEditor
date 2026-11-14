@@ -92,6 +92,14 @@ export interface WriterOperations {
         args: { revision: number; displayListSchema: 1; pages: GeneratedPage[]; notebookSource: { path: string }; writeId: string };
         result: Omit<StagedWriterResult, 'sourceFingerprint' | 'verification'> & { verification: { pageCount: number; attachmentCount: number } };
     };
+    'writer.prepareUnsignedCopy': {
+        args: { source: Blob };
+        result: { bytes: ArrayBuffer; originalSha: string; attachmentName: string };
+    };
+    'writer.verifyUnsignedCopy': {
+        args: { source: Blob; bytes: ArrayBuffer; attachmentName: string };
+        result: { bytes: ArrayBuffer; originalSha: string; outputSha: string };
+    };
     'writer.verifyNotebookOutput': {
         args: { bytes: ArrayBuffer; notebookSource: { path: string } };
         result: { bytes: ArrayBuffer; sha256: string; path: string; geometries: PageGeometry[] };

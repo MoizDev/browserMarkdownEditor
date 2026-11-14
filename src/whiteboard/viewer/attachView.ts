@@ -12,7 +12,7 @@ import { DEFAULT_BOARD_PALETTES } from '../render/palette';
 import { BoundsQuality } from '../scene/bounds';
 import type { SceneSpatial } from '../scene/types';
 import { createViewerAccessibility } from './accessibility';
-import type { AttachView, ViewerInteractionPorts, ViewerSnapshot, ViewerViewParams } from './types';
+import type { AttachView, ViewerInteractionPorts, ViewerPaintPresentation, ViewerSnapshot, ViewerViewParams } from './types';
 
 /** Attaches view resources only. The admitted model, scene, selection/history and
  * journal belong to the exact App-owned runtime and survive this view's disposal. */
@@ -23,7 +23,7 @@ export const attachView: AttachView = options => {
     const runtime = acquiredRuntime;
     let view: ViewerViewParams = { ...options.view }, disposed = false, failed: Error | null = null;
     let paintJob: AbortController | null = null, revealJob: AbortController | null = null, request = 0;
-    let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame } | null = null;
+    let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame; context?: ViewerPaintPresentation } | null = null;
     let interaction: ViewerInteractionPorts | null = null;
     let interactionLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
@@ -81,9 +81,9 @@ export const attachView: AttachView = options => {
                 requestPaint();
             }
         },
-        onPresented(revision, token, frame) {
-            drawnFrame = { sceneRevision: revision, token, frame };
-            interaction?.presented?.(revision, token, frame);
+        onPresented(revision, token, frame, context) {
+            drawnFrame = { sceneRevision: revision, token, frame, context };
+            interaction?.presented?.(revision, token, frame, context);
         },
     });
     const accessibility = createViewerAccessibility({ token: options.token, session: options.session, selection: runtime.selection, scene,
@@ -205,7 +205,7 @@ export const attachView: AttachView = options => {
         bindInteractions(ports) {
             if (disposed) throw new Error('Board view is disposed');
             interaction?.finishGesture(); interaction?.finishComposition(); interaction = ports;
-            if (drawnFrame) ports.presented?.(drawnFrame.sceneRevision, drawnFrame.token, drawnFrame.frame);
+            if (drawnFrame) ports.presented?.(drawnFrame.sceneRevision, drawnFrame.token, drawnFrame.frame, drawnFrame.context);
             return () => { if (interaction === ports) { ports.finishGesture(); ports.finishComposition(); interaction = null; } };
         },
         readyPaintFrame: () => {

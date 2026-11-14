@@ -16,22 +16,26 @@ import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
 import PageControls, { type PageControlsHandle } from './PageControls';
 import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView } from './pagedCanvas';
-import * as pdfjs from 'pdfjs-dist';
-import type { PDFDocumentLoadingTask } from 'pdfjs-dist';
+import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
 import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
-import { pdfWorker } from '../utils/pdfWorker';
+import { openClassicPdf, loadClassicPdf, closeClassicPdf, classicPdfHealth } from '../utils/pdfClassicOpen';
+import { createClassicPdfHealth, type ClassicPdfHealth } from '../utils/pdfClassicHealth';
 import { pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import './PdfNativeEmphasis.css';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
+import { registerPending } from '../utils/unloadCoordinator';
 import {
     captureRegion, createCanvasAgentOps, dominantPage, pagesInView, selectedAgentShapeIds, summarizeShapes,
     type CanvasPageModel,
 } from './canvasAgentOps';
 
 interface PdfAnnotateCanvasProps {
+    /** OpenTab.id from reading.identity, never the mutable file path. */
+    documentId?: string;
     emphasisEnabled?: boolean;
     onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;
+    onRenderHealth?(health: ClassicPdfHealth): void;
     filePath: string;
     /** Pristine original PDF bytes (never the stamped ones — see pdfAnnotation.ts). */
     original: Uint8Array;
@@ -148,7 +152,7 @@ function refreshPageAsset(editor: Editor | null, index: number): void {
     });
 }
 
-async function pageText(doc: pdfjs.PDFDocumentProxy, pageNumber: number): Promise<string> {
+async function pageText(doc: PDFDocumentProxy, pageNumber: number): Promise<string> {
     const page = await doc.getPage(pageNumber);
     try {
         const content = await page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
@@ -193,11 +197,27 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
-export default function PdfAnnotateCanvas({ filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult }: PdfAnnotateCanvasProps) {
+export default function PdfAnnotateCanvas({ documentId, filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
     // Geometry only. The canvas mounts as soon as this lands; the page images
     // stream in afterwards through pageImagesRef.
     const [pages, setPages] = useState<PdfPageSize[] | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [renderHealth, setRenderHealth] = useState(createClassicPdfHealth);
+    const onRenderHealthRef = useRef(onRenderHealth);
+    onRenderHealthRef.current = onRenderHealth;
+    const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
+    const failedPages = useMemo<ReadonlySet<number>>(() => {
+        const failed = new Set<number>();
+        for (const issue of renderDiagnostics) {
+            if (!issue.incomplete) continue;
+            if (issue.pageIndex !== undefined) failed.add(issue.pageIndex);
+            else {
+                for (let index = 0; index < (pages?.length ?? 0); index++) failed.add(index);
+                break;
+            }
+        }
+        return failed;
+    }, [renderDiagnostics, pages]);
     const onContentChangeRef = useRef(onContentChange);
     useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
     const onFlushNowRef = useRef(onFlushNow);
@@ -239,10 +259,13 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
      *  agent asks for page text and closed with the canvas. `PdfPageSource`
      *  keeps its own document private, and page text is the one thing this
      *  canvas has no other way to give: its pages are pictures. */
-    const textDocRef = useRef<PDFDocumentLoadingTask | null>(null);
+    const textDocRef = useRef<Promise<PDFDocumentLoadingTask> | null>(null);
     useEffect(() => () => {
-        void textDocRef.current?.destroy();
+        // Startup can finish after this pane is gone; the saved promise still
+        // owns that late task and closes it without waiting for a dead port.
+        const pending = textDocRef.current;
         textDocRef.current = null;
+        void pending?.then(task => closeClassicPdf(task)).catch(() => {});
     }, [original]);
 
     /** Every page's box on the canvas — the same layout the save path maps
@@ -301,7 +324,13 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
 
         (async () => {
             try {
-                source = await openPdfPages(original);
+                source = await openPdfPages(original, health => {
+                    if (cancelled) return;
+                    // Two StrictMode acquisitions can overlap: follow this
+                    // source's health, never a byte-keyed instance it can close.
+                    setRenderHealth(health);
+                    onRenderHealthRef.current?.(health);
+                });
                 if (cancelled) { await source.close(); return; }
 
                 // Geometry is enough to lay out and mount the canvas — no need to
@@ -654,10 +683,10 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                     overlayCacheRef.current.set(i, { signature, overlay: result });
                     overlays.push(result);
                 } catch (err) {
-                    console.error(`Could not export annotations for page ${i + 1}:`, err);
-                    // Reuse the last good overlay rather than dropping this page's
-                    // annotations out of the file on a transient export failure.
-                    overlays.push(cached?.overlay);
+                    // A new editable snapshot with an old/missing overlay is a
+                    // silent partial PDF save. Keep the old file, then retry the
+                    // complete hand-over instead of reporting stale ink as saved.
+                    throw new Error(`Could not export annotations for page ${i + 1}.`, { cause: err });
                 }
             }
 
@@ -671,11 +700,42 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         // The export is async (~150 ms a page), so "nothing pending" also needs
         // no export in flight: its strokes reach the save funnel only at its end.
         let pendingFlush: Promise<void> | null = null;
+        let unregisterPending: (() => void) | undefined;
+        const hasPendingEdits = () => hasUnsavedRef.current || pendingFlush !== null;
+        const reportPending = () => {
+            if (hasPendingEdits()) {
+                if (documentId && !unregisterPending) {
+                    unregisterPending = registerPending({ documentId, hasPendingEdits, flushPending });
+                }
+            } else {
+                unregisterPending?.();
+                unregisterPending = undefined;
+            }
+        };
         const runFlush = (immediate = false): Promise<void> => {
             if (pendingFlush) return pendingFlush.then(() => hasUnsavedRef.current ? runFlush(immediate) : undefined);
-            const run = flush(immediate).finally(() => { if (pendingFlush === run) pendingFlush = null; });
+            const run = flush(immediate).catch(error => {
+                hasUnsavedRef.current = true;
+                throw error;
+            }).finally(() => {
+                if (pendingFlush === run) {
+                    pendingFlush = null;
+                    reportPending();
+                }
+            });
             pendingFlush = run;
+            reportPending();
             return run;
+        };
+        const flushPending = async () => {
+            if (serializeTimerRef.current) { clearTimeout(serializeTimerRef.current); serializeTimerRef.current = null; }
+            if (hasUnsavedRef.current) await runFlush();
+            else if (pendingFlush) await pendingFlush;
+        };
+        const flushInBackground = (immediate = false) => {
+            // Coordinator callers get the rejection; timers/unmount have no
+            // caller to await them and must not create an unhandled rejection.
+            void runFlush(immediate).catch(error => console.error('Could not save PDF annotations:', error));
         };
 
         // Before applyPenDefaults, whose shape handler reads the width this
@@ -722,7 +782,19 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             },
             // Pages and ink as on screen (uninverted), at no more than twice
             // the on-screen size.
-            capture: (maxSide) => captureRegion(editor, editor.getViewportPageBounds(), maxSide, editor.getZoomLevel() * 2),
+            capture: async (maxSide) => {
+                const view = editor.getViewportPageBounds();
+                const visible = pagesInView(boxes, view);
+                const source = sourceRef.current;
+                if (!source || visible.some(page => !pageImagesRef.current[page - 1]?.url)) return null;
+                const health = source.health;
+                for (const page of visible) health.assertComplete(page - 1);
+                const capture = await captureRegion(editor, view, maxSide, editor.getZoomLevel() * 2);
+                // An image failure can arrive while tldraw is composing: never
+                // hand the agent a successful raster with a missing backdrop.
+                for (const page of visible) health.assertComplete(page - 1);
+                return capture;
+            },
             // The page rendered fresh from the ORIGINAL, with this canvas's ink
             // over it — not the backdrop, which may not be rasterized yet (only
             // pages near the view are) and is a JPEG at the view's scale.
@@ -758,29 +830,26 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
                 canvas.width = 0;
                 canvas.height = 0;
+                source.health.assertComplete(page - 1);
                 return png;
             },
             pdfText: async (pageNumbers) => {
                 if (!textDocRef.current) {
-                    textDocRef.current = pdfjs.getDocument({ data: original.slice(), worker: pdfWorker() });
+                    textDocRef.current = openClassicPdf({ bytes: original, purpose: 'annotation-text' });
                 }
-                const doc = await textDocRef.current.promise;
+                const doc = await loadClassicPdf(await textDocRef.current);
                 const out: Array<{ page: number; text: string }> = [];
                 for (const n of pageNumbers) {
                     if (!Number.isInteger(n) || n < 1 || n > doc.numPages) continue;
-                    out.push({ page: n, text: await pageText(doc, n) });
+                    out.push({ page: n, text: await classicPdfHealth(doc).guard(pageText(doc, n)) });
                 }
                 return out;
             },
             // Strokes in the debounce or mid-export are edits App cannot see yet
             // (App.checkOpenDocs): reloading the PDF from disk over them would
             // lose them, so they make an outside change a conflict instead.
-            hasPendingEdits: () => hasUnsavedRef.current || pendingFlush !== null,
-            flushPending: async () => {
-                if (serializeTimerRef.current) { clearTimeout(serializeTimerRef.current); serializeTimerRef.current = null; }
-                if (hasUnsavedRef.current) await runFlush();
-                else if (pendingFlush) await pendingFlush;
-            },
+            hasPendingEdits,
+            flushPending,
         });
 
         /* Deliberately document-scope only, unlike a drawing or a notebook,
@@ -792,13 +861,14 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
         const markUnsaved = () => {
             hasUnsavedRef.current = true;
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
-            serializeTimerRef.current = setTimeout(() => { void runFlush(); }, SERIALIZE_DEBOUNCE_MS);
+            serializeTimerRef.current = setTimeout(() => flushInBackground(), SERIALIZE_DEBOUNCE_MS);
+            reportPending();
         };
         // store.listen delivers on a later frame: an immediate flush/mode
         // handoff after a shape change previously saw no pending ink. These
         // public side effects mark document changes synchronously. Remote page
         // raster refinements and session/camera records remain display-only.
-        const stopDirty = (['shape', 'asset', 'binding'] as const).flatMap(type => [
+        const stopDirty = (['shape', 'asset', 'binding', 'page', 'document'] as const).flatMap(type => [
             editor.sideEffects.registerAfterCreateHandler(type, (_record, source) => { if (source === 'user') markUnsaved(); }),
             editor.sideEffects.registerAfterChangeHandler(type, (_before, _after, source) => { if (source === 'user') markUnsaved(); }),
             editor.sideEffects.registerAfterDeleteHandler(type, (_record, source) => { if (source === 'user') markUnsaved(); }),
@@ -822,10 +892,13 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             // would rewrite the whole PDF every time the mode was toggled.
             if (hasUnsavedRef.current) {
                 onFlushStartRef.current();   // synchronous: beats the viewer's read
-                void runFlush(true);
+                flushInBackground(true);
             }
+            // An in-flight export can outlive the pane. Its finally releases
+            // the registration only after the funnel owns the complete revision.
+            reportPending();
         };
-    }, [filePath, original, pages, boxes]);
+    }, [documentId, filePath, original, pages, boxes]);
 
     const renderThumbnail = useCallback((index: number, scale: number) => {
         const source = sourceRef.current;
@@ -864,6 +937,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                     ref={thumbsRef}
                     sizes={pages}
                     renderThumbnail={renderThumbnail}
+                    failedPages={failedPages}
                     onSelect={jumpToPage}
                     initialPage={thumbsStart}
                 />

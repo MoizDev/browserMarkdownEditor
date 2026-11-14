@@ -34,12 +34,14 @@ export function pdfClassicAssets(): Plugin {
         const worker = readFileSync(join(packageRoot, 'build/pdf.worker.mjs'), 'utf8');
         const emittedWorker = readFileSync(join(packageRoot, 'build/pdf.worker.min.mjs'), 'utf8');
         const emphasis = readFileSync(join(config.root, 'src/utils/pdfNativeEmphasis.ts'), 'utf8');
+        const bootstrap = readFileSync(join(config.root, 'src/utils/pdfClassic.worker.ts'), 'utf8');
         if (version !== AUDITED_VERSION
             || !api.includes(`const version = "${version}"`)
             || !api.includes(`apiVersion: "${version}"`)
             || !worker.includes(`const workerVersion = "${version}"`)
             || !emittedWorker.includes(`pdfjsVersion = ${version}`)
-            || !emphasis.includes(`PDF_EMPHASIS_RENDERER_VERSION = '${version}'`)) {
+            || !emphasis.includes(`PDF_EMPHASIS_RENDERER_VERSION = '${version}'`)
+            || !bootstrap.includes(`CLASSIC_WORKER_API_VERSION = '${version}'`)) {
             throw new Error('Classic PDF renderer/worker/assets/emphasis versions disagree; re-audit before upgrading.');
         }
         files = [];

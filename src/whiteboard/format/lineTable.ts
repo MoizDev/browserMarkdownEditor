@@ -182,6 +182,15 @@ export class LineTable {
         return { ok: true, value: changed };
     }
 
+    /** A checkpoint fork may replace bytes, never create a record or change its revision. */
+    override(record: EncodedRecord): WriteResult<boolean> {
+        if (!identityValid(record.identity)) return writeFailure('invalid', 'Invalid override record identity');
+        const key = recordKey(record.identity), previous = this.entries.get(key);
+        if (!previous || previous.identity.category !== record.identity.category) return writeFailure('integrity', 'Override record does not exist');
+        if (this.dirty.has(key)) return writeFailure('dirty', 'Cannot override a dirty record');
+        return this.set(record, previous.revision);
+    }
+
     remove(identity: RecordIdentity): WriteResult<boolean> {
         if (!identityValid(identity)) return writeFailure('invalid', 'Invalid record identity');
         const key = recordKey(identity), previous = this.entries.get(key);

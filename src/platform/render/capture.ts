@@ -1,5 +1,5 @@
 import type { Rect, ViewState } from '../types';
-import type { GpuPass } from './gfx/api';
+import type { FrameEncoder, GpuPass } from './gfx/api';
 import type { Webgl2Owner } from './gfx/webgl2';
 import type { MemoryAllocator } from './memoryGovernor';
 import type { Layer, RenderToken } from './types';
@@ -67,7 +67,10 @@ export interface CaptureSnapshot {
     release(): void;
 }
 
-export type CaptureGpuOwner = Pick<Webgl2Owner, 'resources' | 'acquireTarget' | 'releaseTarget' | 'discardFrame'>;
+export type CaptureGpuOwner = Pick<Webgl2Owner, 'resources' | 'acquireTarget' | 'releaseTarget' | 'discardFrame'> & {
+    /** Installs the existing compositor's frame-scoped LayerHost services for this offscreen pass. */
+    readonly withCapturePass?: (encoder: FrameEncoder, pass: GpuPass, view: ViewState, paint: (scope: GpuPass) => void) => void;
+};
 
 export interface PaneCapturerOptions {
     readonly paneId: string;
@@ -223,15 +226,16 @@ export class PaneCapturer {
         try {
             active.check();
             const owner = layers.every(layer => layer.drawGpu) ? this.options.tryGpu?.(snapshot) : null;
-            if (owner) {
+            if (owner?.withCapturePass) {
                 try {
                     await this.prepare(request, snapshot, 'gpu', active);
                     return await this.drawGpu(request, layers, owner, active);
                 } catch (error) {
                     active.check();
-                    // Retry this SAME retained revision once. A GPU budget refusal also
-                    // uses the default CPU route; neither path asks the broker for a slot.
-                    if (!hasCode(error, 'lost') && !hasCode(error, 'out-of-budget')) throw error;
+                    // Hide can abort the device's view jobs without aborting this session
+                    // capture. active.check() above distinguishes a caller/session abort.
+                    // Retry the SAME retained revision on 2D, never a new context.
+                    if (!hasCode(error, 'lost') && !hasCode(error, 'aborted') && !hasCode(error, 'out-of-budget')) throw error;
                 }
             }
             await this.prepare(request, snapshot, '2d', active);
@@ -286,7 +290,10 @@ export class PaneCapturer {
                     target: target.target, viewport: { x: 0, y: 0, width, height },
                     load: { kind: 'clear', color: [0, 0, 0, 0] }, store: 'store',
                 });
-                for (const layer of layers) { active.check(); layer.drawGpu!(pass, request.view); }
+                for (const layer of layers) {
+                    active.check();
+                    owner.withCapturePass!(encoder, pass, request.view, scoped => layer.drawGpu!(scoped, request.view));
+                }
                 pass.end();
                 encoder.submit();
             } catch (error) { owner.discardFrame(encoder); throw error; }

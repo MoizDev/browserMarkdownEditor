@@ -577,7 +577,10 @@ export class FrameScheduler {
                     if (!item.platformPrepared || !this.valid(item.entry, item.frame.token)) return;
                     const encoding = item.entry.pane.encode(item.frame);
                     if (encoding) encodings.push({ work: item, encoding, done: false });
-                    else this.mark(item.entry, 'presentation-deferred');
+                    else if (item.entry.layers.some(layer => layer.needsFrame())) {
+                        // An external wait must wake the pane on arrival; polling it here spins rAF.
+                        this.mark(item.entry, 'presentation-deferred');
+                    }
                 });
             }
             // 6: publish overlays only for the exact snapshot successfully submitted by its compositor.

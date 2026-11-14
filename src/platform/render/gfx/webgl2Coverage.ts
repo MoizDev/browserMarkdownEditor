@@ -8,7 +8,7 @@ export interface CoverageFrameTag {
     readonly frameId: number;
     readonly token: FrameToken;
     readonly cameraEpoch: number;
-    readonly sceneRevision: number;
+    readonly sceneRevision: string;
 }
 export interface CoverageResultTag extends CoverageFrameTag {
     readonly width: number;

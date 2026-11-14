@@ -72,5 +72,5 @@ export function textClipboardRendition(value: RichText, from: number, to: number
             plain.push(content);
         }
     }
-    return { plain: plain.join('\n'), html: root.outerHTML, fragment };
+    return { plain: plain.join('\n'), html: new XMLSerializer().serializeToString(root), fragment };
 }

@@ -32,7 +32,8 @@ export class IndexStore {
         if (treeGen <= this.treeGen) return false;
         this.treeGen = treeGen;
         const live = new Set(files.map(file => file.path));
-        for (const path of this.records.keys()) if (!live.has(path)) this.remove(path);
+        // Bootstrap generation zero can precede the first real tree delivery.
+        if (treeGen > 0) for (const path of this.records.keys()) if (!live.has(path)) this.remove(path);
         this.files = files;
         this.byPath = new Map(files.map(file => [file.path, file]));
         return true;
@@ -63,6 +64,9 @@ export class IndexStore {
         this.files = ordered;
         this.byPath = new Map(ordered.map(file => [file.path, file]));
         return true;
+    }
+    rebuild(): void {
+        for (const file of this.files) this.remove(file.path);
     }
     reservePrime(path: string): number | undefined {
         if (!this.byPath.has(path)) return undefined;

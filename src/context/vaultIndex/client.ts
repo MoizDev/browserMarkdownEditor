@@ -215,6 +215,10 @@ export class VaultIndexClient {
             throw error;
         }
     }
+    async rebuild(): Promise<void> {
+        await this.serial(async () => { await this.worker.request('rebuild', { session: this.session }, control); });
+        await this.sweep('user');
+    }
     retry(): void {
         this.worker.reset();
         void this.sweep('user').catch(() => {});

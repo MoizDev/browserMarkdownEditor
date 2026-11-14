@@ -164,6 +164,15 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
             text: isTextFile(file.path) && !isCanvasFile(file.path) ? liveOverlays.get(file.path)?.text ?? resident.snapshot().get(file.path)?.text : undefined,
         })), { signal: context.signal, vaultToken: active, isCurrent: () => current(args.session) === active && active.store.treeGen === treeGen });
     },
+    rebuild(value) {
+        const { session } = value as SessionArgs;
+        const active = current(session);
+        if (active) {
+            active.store.rebuild();
+            searchText?.invalidate(active.store.files.map(file => file.path));
+        }
+        return null;
+    },
     fgio(value) {
         const { session, active } = value as SessionArgs & { active: number };
         current(session)?.foregroundIO(active);

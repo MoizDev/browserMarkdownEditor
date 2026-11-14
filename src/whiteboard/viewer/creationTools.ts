@@ -39,6 +39,9 @@ class CreationGesture implements GestureOwner {
     readonly pointerIds: ReadonlySet<number>;
     private readonly controller = new AbortController();
     private readonly revision: number;
+    private readonly document: BoardRuntime['session']['doc'];
+    private readonly owner: BoardRuntime['session']['owner'];
+    private readonly selection: ReturnType<BoardRuntime['selection']['getSnapshot']>;
     private readonly release: () => void;
     private readonly unregister: () => void;
     private readonly parent: ParentId;
@@ -46,6 +49,7 @@ class CreationGesture implements GestureOwner {
     private readonly parentPose: { x: number; y: number; rotation: number };
     private readonly base: { id: Node['id']; parent: ParentId; order: string; page: number; x: number; y: number; ext: null };
     private readonly style;
+    private fontEpoch: number | undefined;
     private sample: RealSample;
     private modifiers: Modifiers;
     private ended = false;
@@ -53,7 +57,7 @@ class CreationGesture implements GestureOwner {
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
         this.pointerIds = new Set([down.pointerId]); this.sample = down; this.modifiers = modifiers;
-        this.revision = doc.rev; this.parent = selection.focus;
+        this.revision = doc.rev; this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
         const parent = doc.nodes.get(this.parent as Node['id']);
         if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame'))) throw new Error('Creation focus is not a live container');
         const stack = boardPageStack(doc.host);
@@ -64,10 +68,17 @@ class CreationGesture implements GestureOwner {
         this.base = { id: newNodeId(doc), parent: this.parent, order: keyBetween(children.at(-1)?.order ?? null, null), page: this.page, x: point.x, y: point.y, ext: null };
         this.style = { ...doc.ui.next };
         this.release = context.runtime.session.beginGesture();
-        this.unregister = context.registerPending(() => this.cancel('invalidated'));
-        this.draw();
+        try { this.unregister = context.registerPending(() => this.cancel('invalidated')); }
+        catch (error) { this.release(); throw error; }
+        try { this.draw(); } catch (error) { this.cancel('invalidated'); throw error; }
     }
-    private valid(): boolean { return !this.controller.signal.aborted && this.context.current() && this.context.runtime.session.doc.rev === this.revision; }
+    private valid(): boolean {
+        const { runtime } = this.context, session = runtime.session;
+        return !this.controller.signal.aborted && this.context.current() && session.owner === this.owner
+            && session.doc === this.document && this.document.rev === this.revision && !session.isReadOnly
+            && runtime.selection.getSnapshot() === this.selection
+            && (this.fontEpoch === undefined || runtime.render.text.fonts.epoch === this.fontEpoch);
+    }
     private local(point: { x: number; y: number }) {
         const pose = this.parentPose, dx = point.x - pose.x, dy = point.y - pose.y, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
         return { x: c * dx + s * dy, y: -s * dx + c * dy };
@@ -175,6 +186,7 @@ class CreationGesture implements GestureOwner {
         }
         if ('font' in node && !await render.text.fonts.load({ family: node.font, bold: false, italic: false })) throw new Error('The creation font could not be loaded');
         if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
+        this.fontEpoch = render.text.fonts.epoch;
         const doc = runtime.session.doc, candidate = createAddedBoardDoc(doc, [node]);
         const geometry = await render.prepareForPick(node, signal, candidate);
         if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');

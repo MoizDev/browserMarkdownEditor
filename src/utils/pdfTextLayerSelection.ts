@@ -1,11 +1,10 @@
 /** One select-all keyboard route shared by the classic and tiled surfaces. */
-export function bindPdfSelectAll(root: HTMLElement, select: () => void): () => void {
+export function bindPdfSelectAll(root: HTMLElement, select: () => boolean | void): () => void {
     const onKey = (event: KeyboardEvent) => {
         if (event.defaultPrevented || (!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'a') return;
         const target = event.target;
         if (target instanceof HTMLElement && (target.closest('input, textarea, select, [role="dialog"], [role="menu"]') || target.isContentEditable)) return;
-        event.preventDefault();
-        select();
+        if (select() !== false) event.preventDefault();
     };
     root.addEventListener('keydown', onKey, true);
     return () => root.removeEventListener('keydown', onKey, true);

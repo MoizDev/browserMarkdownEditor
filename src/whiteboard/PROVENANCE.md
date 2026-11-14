@@ -43,6 +43,7 @@ third-party code included (normally "none") · date.
 | `agent/shapes.ts` | w-p | F-AGENT-001, WB-D11, WB-D12, C8 | integration §9 | Agent specification, C8, public model interfaces; authoritative geometry supplied by shared projection; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/transaction.ts` | w-p | F-AGENT-002/003/004/005/012/013, C8 | integration §9; change and history §3 | Agent specification and model/apply public interfaces; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/validate.ts` | w-p | F-AGENT-002/012/013/015, C8 | integration §9 | Agent specification and public model style vocabulary; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/create.ts` | w-p | F-AGENT-002/012/013, C8 | integration §9, document-model §§3–4 | Agent spec and public model/change/page APIs; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/errors.ts` | w-p | F-AGENT-012/013, C8 | integration §9 | Agent specification; no tldraw or old canvas source | none | 2026-11-13 |
 
 ## Formats, importer, save and agent adapter (lane w-d)
@@ -96,12 +97,26 @@ third-party code included (normally "none") · date.
 | `render/reference/paint2d.ts` | lane v-b | C2.4, C4.3; R-20; F-INK-005/006/007 | rendering §§2–5,10–13; ink §6 | Those greenfield plans; w-e's public paint stream/material/colour contract; Canvas 2D API for clips, paths, images and compositing; no tldraw source | none | 2026-11-13 |
 | `render/reference/coverage2d.ts` | lane v-b | C2.4, C4.3; F-INK-005/006/007; E-INK-7/8 | rendering §§2–5,10–13; ink §6.1 | Those greenfield plans; platform PathCommand and w-e's canonical InkCoverage/InkOutlineJob public interfaces; bounded work for ink, clips and ordinary paths, unpublished-path lifetime and double-precision origin rebasing from the design; native Path2D command methods; no tldraw source | none | 2026-11-13 |
 
+## Importer and conversion (lane w-o)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `import/segments.ts` | w-o | IMP-2, E-IMP-15 | import §3; current-format §2.3 | Documented legacy point layout and corpus facts; no old canvas or tldraw source | none | 2026-11-13 |
+| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping and recorded PDF layout contract | none | 2026-11-13 |
+| `import/report.ts` | w-o | IMP-5 | import §§1,6 | Import report and notice contract | none | 2026-11-13 |
+| `import/records/envelope.ts` | w-o | IMP-1, E-IMP-1/2 | import §§2,6; current-format §§1–3 | Observed envelopes and schema counters | none | 2026-11-13 |
+| `import/records/storeFields.ts` | w-o | IMP-1, E-IMP-4 | import §6; document-model §9.2 | JSON format and duplicate-record preservation requirement | none | 2026-11-13 |
+| `import/records/common.ts` | w-o | IMP-1, IMP-3 | import §§2–3; current-format §2 | Observed shape and backdrop layout | none | 2026-11-13 |
+| `import/records/sheets.ts` | w-o | IMP-1 | import §3; current-format §2 | Observed page and metadata fields | none | 2026-11-13 |
+| `import/records/stroke.ts` | w-o | IMP-1/2, E-IMP-15 | import §3; geometry §3.2 | Observed segment/style fields and documented width table; public sample model | none | 2026-11-13 |
+
 ## Export and whiteboard host (lane w-k)
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `export/png.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7; clipboard §2.4 | Export design; PNG chunk layout, sRGB and pHYs; browser CompressionStream; independent CRC arithmetic and per-row PNG filter choice; no tldraw source | none | 2026-11-13 |
 | `export/tiles.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7 | Export design; bounded bands and a renderer-supplied RGBA tile; no tldraw source | none | 2026-11-13 |
+| `export/rasterTile.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; shared reference painter and capture-pinned resources, per-tile world projection; no tldraw source | none | 2026-11-13 |
 
 ## Text (lane w-n)
 
@@ -115,6 +130,7 @@ third-party code included (normally "none") · date.
 | `tools/whiteboard-unicode/generate.mjs` | lane w-n | T-1 | text §§2, 9, 13 | UCD data format; no tldraw source | none | 2026-11-13 |
 | `tools/whiteboard-unicode/data/17.0.0/*` | lane w-n | T-1 | text §§2, 9, 13 | unicode.org/Public/17.0.0/ucd; exact file hashes and Unicode License v3 notice alongside | Unicode data | 2026-11-13 |
 | `text/paint.ts` | lane w-n | T-1, T-2, T-4, T-5 | text §§3, 5.5–5.6, 6 | Design's renderer contract and caret-index geometry; shared platform/model types; no tldraw source | none | 2026-11-13 |
+| `text/measure.ts` | lane w-n | T-1, T-2 | text §§2–3, 7.2 | Canvas TextMetrics API and fixed-size draw recipe; bounded epoch-aware cache | none | 2026-11-13 |
 | `text/fonts.ts` | lane w-n | T-6 | text §7 | FontFace API; lazy per-context registration and epoch, no tldraw source | none | 2026-11-13 |
 | `text/fontMetrics.json` | lane w-n | T-6 | text §7 | Generated directly from pinned upstream WOFF2 metrics tables | font metrics | 2026-11-13 |
 | `text/fonts/*.woff2` | lane w-n | T-6 | text §7.1; IR-4 | Arrow Type Shantell Sans 1.011 release ZIP matches tagged tree; IBM Plex Sans/Serif/Mono 1.1.0 tags; exact per-file URLs, tags and SHA-256 in `tools/whiteboard-fonts/manifest.json` and G-TXT-FONTPIN | upstream unmodified fonts, SIL OFL 1.1, Plex Reserved Font Name | 2026-11-13 |

@@ -36,7 +36,7 @@ export class PicturePlayback {
     dispose(): void {
         if (this.closed) return;
         this.closed = true; this.values.clear();
-        for (const listener of this.listeners) listener();
-        this.listeners.clear();
+        const listeners = [...this.listeners]; this.listeners.clear();
+        for (const listener of listeners) listener();
     }
 }

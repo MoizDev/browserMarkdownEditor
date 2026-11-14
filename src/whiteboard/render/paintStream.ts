@@ -21,6 +21,8 @@ export interface PaintBase {
     // A backend's rebased path composes Translate(path.origin) AFTER this affine, exactly once.
     readonly localToWorld: Affine;
     readonly clips: readonly PaintClip[]; // Root-to-leaf intersection, each in its OWN transform.
+    /** Conservative world allocation envelope from realised canonical geometry, never stored file b. */
+    readonly allocationBounds?: Readonly<Rect>;
 }
 export interface PaintPathItem extends PaintBase {
     readonly kind: 'path';
@@ -60,6 +62,7 @@ export type PaintItem = PaintPathItem | PaintInkItem | PaintImageItem | PaintTex
 // into inherited transforms/clips/colour alpha, never an isolated group-opacity operation.
 // Effect-only rasters occupy their actual position in content, not a separate topmost pass.
 export interface PaintNode {
+    readonly allocationBounds?: Readonly<Rect>;
     readonly underlay?: readonly PaintItem[];
     readonly content: readonly PaintItem[];
 }

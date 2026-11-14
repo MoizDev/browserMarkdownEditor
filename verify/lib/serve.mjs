@@ -5,6 +5,7 @@ import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildIdentity } from './identity.mjs';
+import { currentGrants } from './resources.mjs';
 
 const lock = '/Users/adham/Developer/bme-impl/scratch/bin/bme-lock';
 const howto = '/Users/adham/Developer/bme-impl/scratch/HOWTO.md';
@@ -14,16 +15,7 @@ let signalsInstalled = false;
 
 async function preparationGrants() {
     await access(howto);
-    const state = JSON.parse(await readFile(join(process.env.BME_LOCK_DIR ?? '/Users/adham/Developer/bme-impl/scratch/locks', 'state.json'), 'utf8'));
-    const ancestors = new Set();
-    let pid = process.pid;
-    for (let depth = 0; pid > 0 && depth < 64; depth++) {
-        ancestors.add(pid);
-        const parent = Number(execFileSync('/bin/ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim());
-        if (!parent || parent === pid) break;
-        pid = parent;
-    }
-    const grants = new Set(state.holders.filter(holder => ancestors.has(holder.pid)).map(holder => holder.cls));
+    const grants = await currentGrants();
     // With a 6-unit VM, four runs waiting for nested builds can fill the whole
     // pool forever. Preparation and browser execution must be separate phases.
     if (grants.has('run') || grants.has('bench')) throw new Error('Refusing to build or prepare under a run/bench grant; use --prepare under build first, then serveApp({build:false}) under run');

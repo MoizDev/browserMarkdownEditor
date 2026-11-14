@@ -8,7 +8,10 @@ description: How to actually verify a change in this repo — there is no test s
 **There are no code-based tests in this repo** — no unit tests, no suites, no test script.
 `npm run typecheck` and `npm run lint` are the static gates; everything behavioural, the helper
 included, is verified by Playwright driving the running app in headless Chromium. A change is not
-verified because it typechecks.
+verified because it typechecks. During implementation, charter §0 is the merge bar: clean typecheck
+and lint plus one normal real-app headless run, screenshot looked at (both themes if the change
+draws). Reviews, mutant/harness-fault proofs, identity/witness re-runs and qualified timing gates
+are deferred; keep existing arms but do not run them as merge conditions.
 
 **The driver is pinned:** import `chromium` from the repo's **playwright@1.63.0** dev dependency,
 never the npx cache. **The browser is pinned separately** in `verify/browser-pin.json`: Chrome for
@@ -144,6 +147,29 @@ copy AFTER preparation (`BME_DEV_DRIFT_PATH=src/App.tsx|index.html|vite.config.t
 real Git history change); `--init-mutant` removes guards and hides FSA constructors ONLY in
 subframes, confirms that fault applied, and must fail the no-pageerror assertion. No scratch
 patch ever edits the worktree's source.
+
+## Workers: functional-only target counters
+
+`verify/lib/targets.mjs` instruments dedicated workers paused at startup through raw flat CDP,
+using the same closure-free wrappers as the main window. Pass an OWN-range debuggingPort to
+openBrowser/instrumentTargets; it binds127.0.0.1, never uses a remote-origin wildcard and closes
+with the browser. Never install paused-target counters under a bench grant. Frames are explicitly
+recorded/resumed but not counted until V-01b part2; unexpected service/shared workers fail.
+
+**Measured CfT157.0.8103.39 fact:** a dedicated MODULE worker (the app's pdf.js worker), auto-attached
+with waitForDebuggerOnStart/flatten, emits executionContextCreated(id1) after Runtime.enable;
+Runtime.evaluate('location.href',contextId1) BEFORE resume crashes its renderer. 1+1 and name controls
+complete the same PDF save without crashing. **Never touch WorkerLocation before resume: take
+worker URLs from TargetInfo.** Any other new pre-resume native getter needs the same isolated
+control first. Minimal sequence/evidence is in `verify/lib/TARGETS.md`; retained diagnostic arms
+belong to the deferred review phase, not implementation merge conditions.
+
+File handles can work even when their constructors were unavailable in the prelude. The runtime
+hooks returned/received native prototypes BEFORE the app gets the handle; inspect capability
+transition records rather than assuming global-constructor presence. Actual builder/archive FSA
+counts are0 (bytes/Blob supplied); postMessage/Blob.arrayBuffer witness work. The planted OPFS-read
+worker is labelled a control of the instrument, never an app gate. Logical termination does not
+prove CPU cessation immediately: allow terminate()+2s (Chromium forcible delay, c-c measurement).
 
 ## Read the colour off the element the TEXT NODE hangs off
 

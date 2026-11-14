@@ -68,7 +68,7 @@ export function paintConnector(node: ConnectorNode, geometry: ConnectorGeometry,
     if (geometry.label) {
         matrix(geometry.label.localToWorld);
         content.push({ ...base('label'), localToWorld: geometry.label.localToWorld, kind: 'text',
-            paint: geometry.label.paint, faces, material: textPaintMaterial(geometry.label.paint, palette, context.opacity) });
+            paint: geometry.label.paint, faces: geometry.label.paint.faceTable ?? faces, material: textPaintMaterial(geometry.label.paint, palette, context.opacity) });
     }
     return { content };
 }

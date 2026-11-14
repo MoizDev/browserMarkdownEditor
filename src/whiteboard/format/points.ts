@@ -136,7 +136,7 @@ class Cursor {
 }
 
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-function base64Bytes(text: string): Uint8Array {
+function* base64Steps(text: string): Generator<void, Uint8Array> {
     if (typeof text !== 'string' || text.length === 0 || text.length % 4 !== 0) refuse('base64', 'Expected padded standard base64');
     if (text.length > POINT_LIMITS.encodedChars) refuse('limit', 'Point string exceeds 48 MiB');
     const padding = text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0;
@@ -146,14 +146,27 @@ function base64Bytes(text: string): Uint8Array {
         if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 47)) {
             refuse('base64', 'Invalid base64 character', i);
         }
+        if ((i & 4095) === 4095) yield;
     }
     if ((padding === 2 && ALPHABET.indexOf(text[end - 1]) % 16 !== 0)
         || (padding === 1 && ALPHABET.indexOf(text[end - 1]) % 4 !== 0)) refuse('base64', 'Non-zero base64 padding bits');
-    let binary: string;
-    try { binary = atob(text); } catch { return refuse('base64', 'Malformed base64'); }
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const bytes = new Uint8Array(text.length / 4 * 3 - padding);
+    let offset = 0;
+    // Each atob call is bounded too: one 48 MiB call cannot cooperate with the governor.
+    for (let start = 0; start < text.length; start += 4096) {
+        let binary: string;
+        try { binary = atob(text.slice(start, Math.min(start + 4096, text.length))); }
+        catch { return refuse('base64', 'Malformed base64'); }
+        for (let i = 0; i < binary.length; i++) bytes[offset++] = binary.charCodeAt(i);
+        yield;
+    }
     return bytes;
+}
+function runSteps<T>(steps: Generator<void, T>): T {
+    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+}
+async function runStepsIncremental<T>(steps: Generator<void, T>, cooperate: () => Promise<void>): Promise<T> {
+    for (;;) { const step = steps.next(); if (step.done) return step.value; await cooperate(); }
 }
 function base64Text(bytes: Uint8Array): string {
     const parts: string[] = [];
@@ -248,10 +261,8 @@ export function encodePoints(samples: PointSamples, k = 7): PointResult<EncodedP
 }
 
 interface PayloadRead { readonly inspection: PointInspection; readonly decoded?: DecodedPoints; }
-function readPayload(pts: string, materialize: true): PayloadRead & { readonly decoded: DecodedPoints; };
-function readPayload(pts: string, materialize: false): PayloadRead;
-function readPayload(pts: string, materialize: boolean): PayloadRead {
-    const bytes = base64Bytes(pts);
+function* readPayloadSteps(pts: string, materialize: boolean): Generator<void, PayloadRead> {
+    const bytes = yield* base64Steps(pts);
     const cursor = new Cursor(bytes);
     if (cursor.byte() !== 1) refuse('version', 'Unsupported point payload version', 0);
     const count = cursor.varint();
@@ -259,6 +270,7 @@ function readPayload(pts: string, materialize: boolean): PayloadRead {
     const known = new Map<number, Cursor>();
     const channelStart = cursor.offset;
     let hasUnknownChannels = false;
+    let channelCount = 0;
     while (cursor.offset < cursor.end) {
         const id = cursor.varint(), length = cursor.varint();
         if (length > cursor.end - cursor.offset) refuse('truncated', 'Channel extends past payload', cursor.offset);
@@ -270,6 +282,7 @@ function readPayload(pts: string, materialize: boolean): PayloadRead {
             hasUnknownChannels = true;
         }
         cursor.offset = end;
+        if ((++channelCount & 255) === 0) yield;
     }
     const coords = known.get(1);
     if (!coords) refuse('channel', 'Coordinate channel is required');
@@ -295,6 +308,7 @@ function readPayload(pts: string, materialize: boolean): PayloadRead {
         minX = Math.min(minX, worldX); minY = Math.min(minY, worldY);
         maxX = Math.max(maxX, worldX); maxY = Math.max(maxY, worldY);
         if (xy) { xy[2 * i] = worldX; xy[2 * i + 1] = worldY; }
+        if ((i & 511) === 511) yield;
     }
     coords.done();
     const pressureBlock = known.get(2);
@@ -311,6 +325,7 @@ function readPayload(pts: string, materialize: boolean): PayloadRead {
             if (!Number.isSafeInteger(q) || q < 0 || q > POINT_LIMITS.pressureQuanta) refuse('pressure', 'Decoded pressure is outside 0…16');
             maxPressureQuanta = Math.max(maxPressureQuanta, q);
             if (pressure) pressure[i] = q / POINT_LIMITS.pressureQuantum;
+            if ((i & 511) === 511) yield;
         }
         pressureBlock.done();
     }
@@ -328,6 +343,7 @@ function readPayload(pts: string, materialize: boolean): PayloadRead {
             start += delta;
             if ((i === 0 ? start !== 0 : delta === 0) || !Number.isSafeInteger(start) || start >= count || kind > 1) refuse('runs', 'Invalid segment start or kind');
             if (starts && kinds) { starts[i] = start; kinds[i] = kind; }
+            if ((i & 511) === 511) yield;
         }
         runBlock.done();
         if (starts && kinds) runs = { starts, kinds };
@@ -359,8 +375,21 @@ function readPayload(pts: string, materialize: boolean): PayloadRead {
 export function inspectPoints(pts: string): PointResult<PointInspection> {
     // R-W28: all numeric/length checks share the decoder's walk; no coordinate, pressure or run
     // arrays are created. The lazy store can trust admission without eagerly retaining samples.
-    return result(() => readPayload(pts, false).inspection);
+    return result(() => runSteps(readPayloadSteps(pts, false)).inspection);
 }
 export function decodePoints(pts: string): PointResult<DecodedPoints> {
-    return result(() => readPayload(pts, true).decoded);
+    return result(() => runSteps(readPayloadSteps(pts, true)).decoded!);
+}
+async function incrementalResult<T>(work: () => Promise<T>): Promise<PointResult<T>> {
+    try { return { ok: true, value: await work() }; } catch (error) {
+        if (error instanceof Refusal) return { ok: false, error: error.detail };
+        if (error instanceof RangeError) return { ok: false, error: { code: 'allocation', reason: 'The point payload could not be allocated or encoded' } };
+        throw error;
+    }
+}
+export function inspectPointsIncremental(pts: string, cooperate: () => Promise<void>): Promise<PointResult<PointInspection>> {
+    return incrementalResult(async () => (await runStepsIncremental(readPayloadSteps(pts, false), cooperate)).inspection);
+}
+export function decodePointsIncremental(pts: string, cooperate: () => Promise<void>): Promise<PointResult<DecodedPoints>> {
+    return incrementalResult(async () => (await runStepsIncremental(readPayloadSteps(pts, true), cooperate)).decoded!);
 }

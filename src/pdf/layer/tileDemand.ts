@@ -21,6 +21,8 @@ export interface PdfDemandInput {
     readonly token: RenderToken;
     readonly source: 'outer' | 'original';
     readonly variant: 'plain' | 'emphasis';
+    /** Stable full page-geometry identity, including rotations and UserUnit (contracts C1.3). */
+    readonly geometryDigest: string;
     readonly stack: Readonly<PageStack>;
     readonly viewport: Readonly<Rect>;
     readonly rasterScale: number;
@@ -28,6 +30,7 @@ export interface PdfDemandInput {
     readonly nominalDpr: number;
     readonly moving: boolean;
     readonly previousMotionScale?: TileScale;
+    readonly motionScaleOverride?: TileScale;
     readonly velocity: Readonly<{ x: number; y: number }>;
     readonly direction: Readonly<{ x: number; y: number }>;
     /** True only when current, drawable pixels cover this entire page-local region. */
@@ -54,7 +57,7 @@ function intersection(a: Readonly<Rect>, b: Readonly<Rect>): Rect | null {
 export function planPdfTileDemand(input: PdfDemandInput): PdfDemandSet {
     const { stack, viewport } = input;
     if (!stack.rects.length || viewport.width <= 0 || viewport.height <= 0) return { requests: [] };
-    const motionScale = input.moving ? movingScale(input.rasterScale, input.previousMotionScale) : undefined;
+    const motionScale = input.moving ? input.motionScaleOverride ?? movingScale(input.rasterScale, input.previousMotionScale) : undefined;
     const scale = motionScale ?? exactScale(input.rasterScale);
     const prefetch = tilePrefetchRegion(viewport, input.velocity, false, input.direction);
     const lowRegion = tilePrefetchRegion(viewport, input.velocity, true, input.direction);

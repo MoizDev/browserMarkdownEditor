@@ -928,15 +928,14 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 inverted: getPdfInverted(),
             };
         },
-        // The page canvases on screen, cropped to the scroll box, as one PNG —
-        // what the reader sees minus the chrome, and never inverted (that is a
-        // CSS filter; the canvases hold the real page).
+        // The screen's canvases are unfiltered bitmaps; apply their display-only
+        // filter once when composing the cropped view.
         async capture(maxSide) {
             const el = scrollRef.current, L = layoutRef.current;
             if (!el || !L) return null;
             const visible = visiblePageIndices();
             if (!visible.length) return null;
-            const gen = docGenRef.current, dpr = canvasDpr(), preference = emphasisRef.current;
+            const gen = docGenRef.current, dpr = canvasDpr(), preference = emphasisRef.current, invert = getPdfInverted();
             const top = el.scrollTop, left = el.scrollLeft;
             // Resume/zoom stand-ins may stay on screen, but are not current
             // pixels for a tool. A later request can capture the finished view.
@@ -970,7 +969,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 // The paper first: a page still rasterizing is white, as on screen.
                 const pr = clip(pageEl.getBoundingClientRect());
                 if (!pr) continue;
-                ctx.fillStyle = '#ffffff';
+                ctx.fillStyle = invert ? '#000000' : '#ffffff';
                 ctx.fillRect((pr.left - view.left) * scale, (pr.top - view.top) * scale, (pr.right - pr.left) * scale, (pr.bottom - pr.top) * scale);
                 if (canvas.width === 0) continue;
                 // The bitmap may be a band of the page (pageRegion), so map
@@ -980,18 +979,21 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 if (!ir || cr.width <= 0 || cr.height <= 0) continue;
                 const kx = canvas.width / cr.width;
                 const ky = canvas.height / cr.height;
+                ctx.save();
+                if (invert) ctx.filter = 'invert(1) hue-rotate(180deg)';
                 ctx.drawImage(
                     canvas,
                     (ir.left - cr.left) * kx, (ir.top - cr.top) * ky, (ir.right - ir.left) * kx, (ir.bottom - ir.top) * ky,
                     (ir.left - view.left) * scale, (ir.top - view.top) * scale, (ir.right - ir.left) * scale, (ir.bottom - ir.top) * scale,
                 );
+                ctx.restore();
             }
             const png = await new Promise<Blob | null>(resolve => out.toBlob(resolve, 'image/png'));
             out.width = 0;
             out.height = 0;
             for (const i of visible) session.health.assertComplete(i);
             return docGenRef.current === gen && layoutRef.current === L && canvasDpr() === dpr
-                && emphasisRef.current === preference && el.scrollTop === top && el.scrollLeft === left ? png : null;
+                && emphasisRef.current === preference && getPdfInverted() === invert && el.scrollTop === top && el.scrollLeft === left ? png : null;
         },
         async pdfText(pages) {
             const doc = docStateRef.current?.doc;
@@ -1018,7 +1020,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 const page = lease.page;
                 const actual = page.getViewport({ scale: 1 });
                 if (![actual.width, actual.height, maxSide].every(Number.isFinite) || actual.width <= 0 || actual.height <= 0) return null;
-                const viewport = page.getViewport({ scale: Math.min(maxSide, 4096) / Math.max(actual.width, actual.height) });
+                const viewport = page.getViewport({ scale: Math.min(maxSide, 1568) / Math.max(actual.width, actual.height) });
                 canvas = document.createElement('canvas');
                 canvas.width = Math.max(1, Math.ceil(viewport.width));
                 canvas.height = Math.max(1, Math.ceil(viewport.height));
@@ -1033,7 +1035,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 canvas.width = 0;
                 canvas.height = 0;
                 session.health.assertComplete(pageNumber - 1);
-                return docGenRef.current === gen && docStateRef.current === ds ? png : null;
+                return docGenRef.current === gen && docStateRef.current?.gen === ds.gen ? png : null;
             } finally {
                 if (task) { task.cancel(); await task.promise.catch(() => {}); }
                 if (canvas) { canvas.width = 0; canvas.height = 0; }

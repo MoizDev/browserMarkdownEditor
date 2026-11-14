@@ -11,6 +11,12 @@ Columns: module path · author (lane) · spec ids implemented · design document
 consulted while writing (tldraw files read, if any, and the fact taken; literature; packages) ·
 third-party code included (normally "none") · date.
 
+## Chrome and style controls (lane w-j)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `chrome/penWidth.ts` | w-j | F-STYLE-006/008, R-2 | integration §6; geometry §3.2 | Style specification endpoints and w-h's public StyleGeometryMetrics; no tldraw or old canvas source | none | 2026-11-13 |
+
 ## Model, changes, history and text (lane w-c)
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |

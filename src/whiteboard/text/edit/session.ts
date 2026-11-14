@@ -27,6 +27,7 @@ export interface EditSessionServices extends EditTransactions {
     inList(offset: number): boolean;
     undoTransformation(): boolean;
     changed(selection: EditSelection): void;
+    reportError(error: unknown): void;
     autoScroll(x: number, y: number): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
@@ -106,7 +107,8 @@ export class TextEditSession {
 
     private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): void {
         this.lastActivity = performance.now();
-        this.selection = this.controller.replace(change, kind, this.selection);
+        try { this.selection = this.controller.replace(change, kind, this.selection); }
+        catch (error) { this.services.reportError(error); return; }
         this.affinity = undefined;
         this.goalX = undefined;
         this.services.changed(this.selection);
@@ -178,8 +180,11 @@ export class TextEditSession {
             command: command => {
                 const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', italic: 'i', underline: 'u', strike: 's', code: 'code', highlight: 'hl' };
                 const mark = marks[command];
-                if (mark) { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); this.host.sync(); }
-                else this.services.command(command, this.selection);
+                if (mark) {
+                    try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); }
+                    catch (error) { this.services.reportError(error); }
+                    this.host.sync();
+                } else this.services.command(command, this.selection);
             },
             inList: () => this.services.inList(this.selection.focus),
             undoTransformation: () => this.services.undoTransformation(),
@@ -238,12 +243,15 @@ export class TextEditSession {
         const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
         const next = { anchor: from + length, focus: from + length };
         this.services.typing('boundary', this.selection, next);
-        this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
+        try { this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] }); }
+        catch (error) { this.services.reportError(error); return; }
         this.select(next);
     }
 
     applyLink(url: string, selection: EditSelection): boolean {
-        const applied = this.controller.applyLink(url, selection);
+        let applied: boolean;
+        try { applied = this.controller.applyLink(url, selection); }
+        catch (error) { this.services.reportError(error); return false; }
         if (applied) { this.selection = selection; this.services.changed(selection); this.host.focus(); }
         return applied;
     }

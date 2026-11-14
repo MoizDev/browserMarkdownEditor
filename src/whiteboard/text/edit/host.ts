@@ -137,14 +137,20 @@ export class EditHost {
             this.window = { start, end: start + value.length, text: value };
             this.pending = this.compositionChange(value, change.selection);
             this.callbacks.composition(this.pending);
-        } else { this.callbacks.change(change); this.window = { ...this.window, text: this.window.text.slice(0, event.updateRangeStart) + event.text + this.window.text.slice(event.updateRangeEnd) }; this.sync(); }
+        } else {
+            try { this.callbacks.change(change); }
+            finally {
+                this.window = { ...this.window, text: this.window.text.slice(0, event.updateRangeStart) + event.text + this.window.text.slice(event.updateRangeEnd) };
+                this.sync();
+            }
+        }
     }
 
     private onFallbackInput(element: HTMLTextAreaElement): void {
         const value = element.value;
         const change = difference(this.window, value, { anchor: this.window.start + element.selectionStart, focus: this.window.start + element.selectionEnd });
         if (this.composing) { this.pending = change; this.callbacks.composition(change); }
-        else { this.callbacks.change(change); this.sync(); }
+        else { try { this.callbacks.change(change); } finally { this.sync(); } }
     }
 
     private startComposition(): void {

@@ -29,9 +29,12 @@ export interface ConnectorControlPreview {
 }
 const clamp = (value: number) => Math.max(0, Math.min(1, value));
 function nearestSegment(point: Vec2, a: Vec2, b: Vec2): { t: number; distance: number; length: number } {
-    const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
-    const t = length ? clamp(((point.x - a.x) * dx + (point.y - a.y) * dy) / (length * length)) : 0;
-    return { t, distance: Math.hypot(point.x - a.x - dx * t, point.y - a.y - dy * t), length };
+    const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy), px = point.x - a.x, py = point.y - a.y;
+    if (![length, px, py].every(Number.isFinite)) throw new RangeError('Connector projection overflows');
+    const t = length ? clamp((px * (dx / length) + py * (dy / length)) / length) : 0;
+    const distance = Math.hypot(px - dx * t, py - dy * t);
+    if (!Number.isFinite(t) || !Number.isFinite(distance)) throw new RangeError('Connector projection overflows');
+    return { t, distance, length };
 }
 function bodyParameter(body: ConnectorBody, point: Vec2): number {
     if (body.kind === 'line') return nearestSegment(point, body.start, body.end).t;
@@ -41,6 +44,7 @@ function bodyParameter(body: ConnectorBody, point: Vec2): number {
     return Math.hypot(point.x - body.start.x, point.y - body.start.y) <= Math.hypot(point.x - body.end.x, point.y - body.end.y) ? 0 : 1;
 }
 export function connectorLabelFraction(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, point: Vec2): number {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new RangeError('Invalid connector label point');
     if (node.route === 'elbow') {
         const points: Vec2[] = [geometry.start.tipWorld];
         for (const op of geometry.body) if (op.op === 'M' || op.op === 'L') {
@@ -91,7 +95,12 @@ export async function prepareConnectorControl(options: ConnectorControlOptions):
         check(); epoch = runtime.render.text.fonts.epoch;
         const prepared = await runtime.render.prepareForPick(node, signal, doc); check();
         if (!prepared.connector) throw new Error('Connector geometry is unavailable');
-        const ops: NodeSetOp[] = [controlValue(node, prepared.connector, options.control, options.point)];
+        const control = controlValue(node, prepared.connector, options.control, options.point);
+        const ops: NodeSetOp[] = Object.is(Reflect.get(node, control.key), control.value) ? [] : [control];
+        if (!ops.length) {
+            const release = () => { if (!released) { released = true; source.release(); } };
+            return Object.freeze({ ops: Object.freeze(ops), doc, commit() { try { check(); } finally { release(); } }, release });
+        }
         const project = (changes: readonly NodeSetOp[]) => projectBoardGeometrySets(doc, changes, { signal, current, cooperate: options.cooperate });
         const candidate = await project(ops); check();
         const staged = await acquireBoardGeometryScope(runtime, [node.id], { doc: candidate, signal, current, cooperate: options.cooperate });
@@ -108,7 +117,7 @@ export async function prepareConnectorControl(options: ConnectorControlOptions):
             const held = final, frozen = Object.freeze(ops.map(op => Object.freeze(op)));
             const release = () => { if (!released) { released = true; try { held.release(); } finally { source.release(); } } };
             return Object.freeze({ ops: frozen, doc: resultDoc,
-                commit() { try { check(); const applied = session.apply({ origin: 'tool', label: 'Edit connector', ops: frozen }); applied.release(); } finally { release(); } }, release });
+                commit() { try { check(); if (frozen.length) { const applied = session.apply({ origin: 'tool', label: 'Edit connector', ops: frozen }); applied.release(); } } finally { release(); } }, release });
         } finally { staged.release(); }
     } catch (error) { try { final?.release(); } finally { source.release(); } throw error; }
 }

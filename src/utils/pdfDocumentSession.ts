@@ -250,6 +250,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
                 if (leases) await new Promise<void>(resolve => { finish = resolve; });
                 const loaded = await pendingTask?.catch(() => undefined);
                 if (loaded) await closeClassicPdf(loaded, health.stalled);
+                for (const entry of pages.values()) if (entry.page) forgetPdfEmphasisPlan(entry.page);
                 pages.clear();
             })();
             return disposal;

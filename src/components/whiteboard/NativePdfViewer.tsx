@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import type { ActiveFile, Theme } from '../../types';
 import { createNativeViewLease, type NativePdfBackdrop, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
+import { useNativeClipboard } from './useNativeClipboard';
 import './NativeCanvasEntry.css';
 
 const VIEW_REASON = 'PDF annotation tools are unavailable in this view.';
@@ -13,7 +14,7 @@ export interface NativePdfViewerSource {
         readonly source: { createBackdrop(options: {
             readOnly: boolean; isVisible(): boolean; isFocused(): boolean; emphasisEnabled(): boolean;
             onError(error: unknown): void; onUpdating?(updating: boolean): void; signal?: AbortSignal;
-        }): Promise<NativePdfBackdrop> };
+        }): Promise<Omit<NativePdfBackdrop, 'assertCaptureCurrent'>> };
         readonly status: 'ready' | 'rebinding' | 'read-only' | 'failed';
         readonly reason?: string;
     };
@@ -70,8 +71,12 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
                     if (!alive || abort.signal.aborted) { backdrop.dispose(); return; }
                     if (sourceState.getSnapshot().source !== source) { backdrop.dispose(); continue; }
                     const current = latest.current;
+                    const paired: NativePdfBackdrop = { ...backdrop, assertCaptureCurrent() {
+                        const state = sourceState.getSnapshot();
+                        if (state.status !== 'ready' || state.source !== source || !host.isCurrent(latest.current.identity)) throw new Error('PDF backdrop source is updating');
+                    } };
                     try {
-                        view = createNativeViewLease({ board, host, identity: current.identity, pdfBackdrop: backdrop, readPdfMedia,
+                        view = createNativeViewLease({ board, host, identity: current.identity, pdfBackdrop: paired, readPdfMedia,
                             parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
                             limits: { min, max }, insets: { left, right, top, bottom }, onError: report, onNotice: message => latest.current.onNotice(message) });
                     } catch (cause) { backdrop.dispose(); throw cause; }
@@ -99,7 +104,11 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
             onError: report, onUpdating: value => { if (alive && sequence.current === generation) setUpdating(value); }, signal: abort.signal,
         }).then(backdrop => {
             if (!alive || abort.signal.aborted || sourceState.getSnapshot().source !== source || !host.isCurrent(latest.current.identity)) { backdrop.dispose(); return; }
-            try { lease.replaceBackdrop(backdrop); adopted = true; installed.current = source; setLoading(false); }
+            const paired: NativePdfBackdrop = { ...backdrop, assertCaptureCurrent() {
+                const state = sourceState.getSnapshot();
+                if (state.status !== 'ready' || state.source !== source || !host.isCurrent(latest.current.identity)) throw new Error('PDF backdrop source is updating');
+            } };
+            try { lease.replaceBackdrop(paired); adopted = true; installed.current = source; setLoading(false); }
             catch (cause) { backdrop.dispose(); report(cause); }
         }, cause => { if (alive && !abort.signal.aborted) report(cause); });
         return () => { alive = false; if (!adopted) abort.abort(); };
@@ -119,11 +128,16 @@ function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, c
 }) {
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
+    const latest = useRef(props);
+    useLayoutEffect(() => { latest.current = props; }, [props]);
+    const theme = useCallback(() => latest.current.theme, []);
+    const notice = useCallback((message: string) => latest.current.onNotice(message), []);
+    const viewer = useNativeClipboard(lease, props.host, props.identity, theme, notice);
     const pages = lease.runtime.session.doc.host.kind === 'pdf-ink' ? lease.runtime.session.doc.host.pages.length : 0;
     return <div style={{ position: 'relative', width: '100%', height: '100%' }}>
         <ViewerHost name={props.file.name} documentId={props.identity.documentId} vaultEpoch={props.identity.vaultActivation}
             isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
-            view={lease.view} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
+            view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
             readOnly readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
             chrome={<div className="native-canvas-navigation" role="toolbar" aria-label="PDF navigation">
                 <label>Page <input type="number" min={1} max={pages} value={navigation.page + 1} onChange={event => {

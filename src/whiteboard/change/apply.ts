@@ -37,6 +37,7 @@ export interface ApplyController {
     readonly isReadOnly: boolean;
     readonly failure: ApplyFailed | null;
     apply(transaction: Transaction): Applied;
+    preflight(transaction: Transaction): { readonly ops: readonly Op[]; release(): void };
     begin(origin: TransactionOrigin, label: string): TxBuilder;
     /** Exact, validated rollback of latest committed receipts, newest first. */
     revert(receipts: readonly Applied[]): Applied;
@@ -385,6 +386,8 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
     let readOnly = false, failure: ApplyFailed | null = null;
     let faultSamples: ReceiptSamples | undefined;
     let allowRevert = false, expectedRevision = doc.rev;
+    let preflighting = false;
+    let preflightResult: { readonly ops: readonly Op[]; release(): void } | undefined;
     let logicalHead: WeakRef<Applied> | undefined;
     const links = new WeakMap<Applied, WeakRef<Applied> | null>();
     const report = (error: ApplyFailed) => {
@@ -421,6 +424,15 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                 if (error instanceof ApplyRefused || error instanceof ApplyFailed) throw error;
                 throw new ApplyFailed('apply', 'The board transaction failed', false, error);
             }
+        },
+        preflight(transaction) {
+            guard();
+            preflighting = true;
+            try {
+                const result = controller.apply(transaction);
+                result.release();
+                return preflightResult!;
+            } finally { preflighting = false; preflightResult = undefined; }
         },
         begin(origin, label) {
             guard();
@@ -593,6 +605,26 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                         try { restoreRevision?.write(); }
                         catch (restoreError) { return fail(restoreError, true); }
                         return fail(error, error instanceof ModelInvariantError || (revisionStarted && !(error instanceof ApplyRefused)));
+                    }
+                    if (preflighting) {
+                        const leases: SampleLease[] = [];
+                        try {
+                            for (const ref of applied.sampleRefs) leases.push(samples.retain(ref));
+                            restoreRevision!.write();
+                            rollback(0, false);
+                            close();
+                            let active = true;
+                            preflightResult = { ops: applied.forward, release() {
+                                if (!active) return;
+                                active = false;
+                                for (const lease of leases) lease.release();
+                            } };
+                            return applied;
+                        } catch (error) {
+                            for (const lease of leases) lease.release();
+                            if (!closed) return fail(error, true);
+                            throw error;
+                        }
                     }
                     // R-W27 COMMIT POINT: successful end of commit check. No
                     // consumer exception can roll back this published version.

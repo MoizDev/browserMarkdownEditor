@@ -354,7 +354,10 @@ The bar across the top of a notebook is its paper:
 Choose **⋯ → Export to PDF** in the notebook pane (or use its download button) to
 write a PDF beside the notebook — \`Assignment 3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
 drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
-the pages are ordinary PDF pages that anything can open.
+the pages are ordinary PDF pages that anything can open. Native notebooks can
+also export from their read-only viewer: every logical sheet is included on the
+physical pages, in order. If preserved content cannot be rendered faithfully,
+the export stops rather than silently leaving that artwork out.
 
 The notebook stays the original you keep writing in. Exporting again uses the
 same PDF name rather than leaving a pile of copies. An existing PDF is kept in
@@ -395,8 +398,22 @@ otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
 Native drawings and notebooks currently open in a **read-only viewer**: you can
 pan the canvas, select a sheet when there is more than one, use the page box to
-jump through a notebook, zoom with − / +, and invert the view. These controls
-change the view only; drawing and editing are not available there.
+jump through a notebook, zoom with − / +, and invert the view. **Thumbnails**
+opens a notebook's page strip; click a preview to jump to that page. A drawing's
+**Minimap** shows its artwork and your current viewport. Click or drag in it to
+navigate; with the minimap focused, arrow keys move a quarter viewport (a full
+viewport with Shift), and Home / End go to the artwork's upper-left / lower-right.
+An empty board has no invented overview.
+
+With the canvas focused, **Cmd/Ctrl+A** selects the current sheet's items for
+copying. Right-click for **Copy**, **Copy as PNG / SVG / board data**, or image
+exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
+artwork, not a screenshot of the controls. SVG is copied as text; board data is
+native JSON records, with media referenced by hash rather than a portable asset
+bundle. Context-menu image exports use the selection, or the whole sheet when
+nothing is selected. These operations
+and navigation do not edit the source; drawing, Cut and Paste remain unavailable
+in this native viewer.
 
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you

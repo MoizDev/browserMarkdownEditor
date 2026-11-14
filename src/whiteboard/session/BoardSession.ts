@@ -1,4 +1,4 @@
-import type { Applied, TouchedSet, Transaction, TransactionOrigin, TxBuilder } from '../change/ops';
+import type { Applied, Op, TouchedSet, Transaction, TransactionOrigin, TxBuilder } from '../change/ops';
 import type { BoardDoc } from '../model/doc';
 import type { SampleStoreReader } from '../model/samples';
 import type { SessionGestureQueue } from './gestureQueue';
@@ -51,6 +51,7 @@ export interface BoardSession extends Pick<SessionGestureQueue, 'enqueueAfterGes
     readonly history: BoardHistory;
     readonly isReadOnly: boolean; // Admission safety OR apply's D-10 seal; save must honor it too.
     apply(transaction: Transaction): Applied;
+    preflight(transaction: Transaction): { readonly ops: readonly Op[]; release(): void };
     begin(origin: TransactionOrigin, label: string): TxBuilder;
     subscribe(listener: (notice: ChangeNotice) => void): () => void;
     hasPendingEdits(): boolean;

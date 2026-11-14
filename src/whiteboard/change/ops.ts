@@ -150,7 +150,7 @@ export const NODE_OP_POLICIES = {
     align: TEXT, valign: TEXT, label: TEXT, labelScale: LAYOUT, flipX: GEOMETRY, flipY: GEOMETRY,
     url: NODE, text: TEXT, autoSize: TEXT, scale: LAYOUT, fit: LAYOUT, route: GEOMETRY, start: GEOMETRY,
     end: GEOMETRY, bend: GEOMETRY, elbowMid: GEOMETRY, headStart: GEOMETRY, headEnd: GEOMETRY,
-    labelAt: TEXT, points: GEOMETRY, spline: GEOMETRY, name: TEXT, media: NODE, crop: GEOMETRY,
+    labelAt: TEXT, points: GEOMETRY, startAttach: GEOMETRY, endAttach: GEOMETRY, spline: GEOMETRY, name: TEXT, media: NODE, crop: GEOMETRY,
     alt: NODE, inverted: NODE, playing: NODE, time: NODE, autoplay: NODE, preview: TEXT,
 } as const satisfies Record<NodePropKey, OpPolicy>;
 export const BOARD_OP_POLICIES = {

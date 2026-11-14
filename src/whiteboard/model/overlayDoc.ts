@@ -5,7 +5,7 @@ import type { BoardDoc } from './doc';
 import { nodeMediaForApply } from './applyOnly';
 import type { NodeId, ParentId, SheetId } from './ids';
 import type { MediaEntry, MediaId } from './media';
-import type { Node } from './nodes';
+import { attachedTargets, type Node } from './nodes';
 import { compareOrder } from './orderKey';
 
 // Provenance: staged geometry, ordered child indexes and immutable session
@@ -90,7 +90,7 @@ export function createAddedBoardDoc(base: BoardDoc, additions: readonly Node[], 
         if (!sheet) throw new Error('Candidate ancestry is invalid');
         add(sheetDeltas, sheet, node.id);
         if (base.kind !== 'whiteboard' && base.sheets.has(node.parent as SheetId)) add(pageDeltas, node.page, node.id);
-        if (node.kind === 'connector') for (const end of [node.start, node.end]) if (end.attach) add(attached, end.attach.target, node.id);
+        for (const target of attachedTargets(node)) add(attached, target, node.id);
         for (const id of nodeMediaForApply(node)) add(refs, id, node.id);
     }
     const children = new Map<ParentId, readonly Node[]>();
@@ -219,9 +219,8 @@ export async function projectBoardGeometrySets(base: BoardDoc, ops: readonly Nod
                 add(pageChanges.removed, old.page, id); add(pageChanges.added, node.page, id);
             }
         }
-        if (old.kind === 'connector' && node.kind === 'connector') {
-            const previous = new Set([old.start.attach?.target, old.end.attach?.target].filter((target): target is NodeId => target !== undefined));
-            const next = new Set([node.start.attach?.target, node.end.attach?.target].filter((target): target is NodeId => target !== undefined));
+        if (old.kind === 'connector' || old.kind === 'polyline') {
+            const previous = new Set(attachedTargets(old)), next = new Set(attachedTargets(node));
             for (const target of previous) if (!next.has(target)) {
                 if (!attachmentSources.has(target)) attachmentSources.set(target, base.attachedTo.get(target)); add(attachmentChanges.removed, target, id);
             }

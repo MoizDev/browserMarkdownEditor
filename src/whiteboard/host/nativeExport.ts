@@ -5,6 +5,8 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { Rect } from '../../platform/types';
 import { createExportImageResolver } from '../export/exportImage';
 import { createBoardCaptureSnapshot } from '../export/runtimeSnapshot';
+import { encodeTiledPngInWorker } from '../export/pngWorkerClient';
+import { checkPngSize } from '../export/png';
 import { exportFileName, resolveExportScope, type ExportRoute } from '../export/scope';
 import { streamRasterPng } from '../export/streamRaster';
 import { streamSvg } from '../export/streamSvg';
@@ -30,6 +32,7 @@ export interface NativeExportOptions {
     readonly transparent: boolean;
     readonly signal: AbortSignal;
     current(): boolean;
+    notice(message: string): void;
     onError(error: unknown): void;
     /** Only the document-owned PDF source facade can supply this lease. */
     retainPdfSource?(): PdfInkSourceLease;
@@ -183,11 +186,15 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         const background = scope.includeBackdrop ? undefined : transparent ? undefined :
             DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background;
         const sheetName = meta.sheetOrder.length > 1 ? sheet.name : null;
+        const longest = Math.max(scope.bounds.width, scope.bounds.height);
+        const pngScale = route === 'copy' && longest * 2 > 8192 ? (8192 - 1e-9) / longest : 2;
         const pdfLayers = pdfBackdrop?.layers.map(layer => layer.id) ?? [];
         const pdfCapturer = (includeBoard: boolean) => {
             const backdrop = pdfBackdrop, pdfSource = pdfLease?.source;
             if (!backdrop || !pdfSource) throw new Error('The PDF backdrop source is unavailable');
             return createPlatformCapturer({ paneId: `native-export:${token.documentId}:${++serial}`, owner: token,
+                encodePngTiles: (width, height, render, encodeOptions) => encodeTiledPngInWorker(width, height, render,
+                    { session: `export:${token.session}:${revision}`, epoch: token.vaultEpoch, revision }, encodeOptions),
                 snapshot(request, memory) {
                     const children: Array<{ snapshot: CaptureSnapshot; request: CaptureRequest }> = [];
                     const controller = new AbortController();
@@ -220,27 +227,42 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                                 }
                                 return result;
                             },
-                            release() {
+                            async prepareTile(tile, captureSignal) {
+                                let result: 'exact' | 'standin' | 'incomplete' = 'exact';
+                                for (const child of children) {
+                                    const part = { ...tile, layers: child.request.layers };
+                                    const status = child.snapshot.prepareTile
+                                        ? await child.snapshot.prepareTile(part, captureSignal)
+                                        : await child.snapshot.prepare(part, '2d', captureSignal);
+                                    if (status === 'incomplete') return status;
+                                    if (status === 'standin') result = status;
+                                }
+                                return result;
+                            },
+                            async release() {
                                 if (closed) return; closed = true; controller.abort();
                                 try {
                                     for (const child of children) {
-                                        try { child.snapshot.release(); } catch (error) { try { options.onError(error); } catch { /* Release the other captures. */ } }
+                                        try { await child.snapshot.release(); } catch (error) { try { options.onError(error); } catch { /* Release the other captures. */ } }
                                     }
                                 } finally { active--; if (released) cleanup(); }
                             } };
                     } catch (error) {
                         controller.abort();
-                        for (const child of children) { try { child.snapshot.release(); } catch { /* Preserve the original failure. */ } }
+                        for (const child of children) { try { void Promise.resolve(child.snapshot.release()).catch(() => {}); } catch { /* Preserve the original failure. */ } }
                         throw error;
                     }
                 },
             });
         };
         const pdfPng = async (captureSignal: AbortSignal) => {
+            const scale = (longest * pngScale) / longest;
+            checkPngSize(Math.max(1, Math.ceil(scope.bounds.width * scale)), Math.max(1, Math.ceil(scope.bounds.height * scale)), route === 'copy');
             const capturer = pdfCapturer(true);
             try {
-                return await capturer.captureBlob(scope.bounds, Math.max(scope.bounds.width, scope.bounds.height) * 2,
-                    { layers: [...pdfLayers, 'board-underlay', 'board-content'], theme: 'light', inverted: false, signal: captureSignal });
+                return await capturer.captureExportBlob(scope.bounds, longest * pngScale,
+                    { layers: [...pdfLayers, 'board-underlay', 'board-content'], theme: 'light', inverted: false, signal: captureSignal,
+                        clipboard: route === 'copy', pixelsPerWorldUnit: scale });
             } finally { capturer.dispose(); }
         };
         const pdfSvg = async (captureSignal: AbortSignal) => {
@@ -265,7 +287,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             try {
                 for (let index = 0; index < pages.length; index++) {
                     captureSignal.throwIfAborted();
-                    const page = pages[index], blob = await capturer.captureBlob(page, Math.max(page.width, page.height) * 2,
+                    const page = pages[index], blob = await capturer.captureExportBlob(page, Math.max(page.width, page.height) * 2,
                         { layers: pdfLayers, theme: 'light', inverted: false, signal: captureSignal });
                     captureSignal.throwIfAborted();
                     reserve(blob.size);
@@ -298,7 +320,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 const pageSource: PaintNodeSource = { token: source.token, sceneRevision: source.sceneRevision,
                     nodeCount: pageItems.length + source.nodeCount, isCurrent: () => source.isCurrent(),
                     readNode(index) { return index < pageItems.length ? { underlay: [pageItems[index]], content: [] } : source.readNode(index - pageItems.length); } };
-                return await streamSvg(pageSource, scope.bounds, 2, createExportImageResolver(token, pdfImages,
+                return await streamSvg(pageSource, scope.bounds, 1, createExportImageResolver(token, pdfImages,
                     (key, readSignal) => { readSignal.throwIfAborted(); const blob = pageBlobs.get(key); return blob ? Promise.resolve(blob) : readImage(key, readSignal); }, captureSignal), captureSignal);
             } finally {
                 capturer.dispose();
@@ -315,11 +337,13 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         signal.addEventListener('abort', release, { once: true });
         if (signal.aborted) { release(); throw stale(); }
         return {
-            png: requestSignal => run(requestSignal, combined => pdfBackdrop ? pdfPng(combined) :
-                streamRasterPng(source, capturedImages, scope.bounds, 2, combined,
-                    { background: background && colourCss(background), clipboard: route === 'copy' })),
+            png: requestSignal => run(requestSignal, combined => {
+                if (route === 'copy' && pngScale < 2) options.notice('The copied PNG was scaled down to fit the clipboard size limit.');
+                return pdfBackdrop ? pdfPng(combined) : streamRasterPng(source, capturedImages, scope.bounds, pngScale, combined,
+                    { background: background && colourCss(background), clipboard: route === 'copy' });
+            }),
             svg: requestSignal => run(requestSignal, combined => pdfBackdrop ? pdfSvg(combined) :
-                streamSvg(source, scope.bounds, 2, createExportImageResolver(token, capturedImages, readImage, combined), combined, background)),
+                streamSvg(source, scope.bounds, 1, createExportImageResolver(token, capturedImages, readImage, combined), combined, background)),
             filename: extension => exportFileName(boardName, sheetName, scope.kind, extension, timestamp),
             release,
         };

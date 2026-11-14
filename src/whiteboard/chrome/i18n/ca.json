@@ -377,6 +377,7 @@
     "paper.deleteContents": "Aquesta pàgina conté {items}.",
     "paper.deleteConfirm": "Suprimeix la pàgina",
     "paper.cancel": "Cancel·la",
-    "paper.keepProtected": "El contingut bloquejat es mantindrà."
+    "paper.keepProtected": "El contingut bloquejat es mantindrà.",
+    "chrome.readOnly": "Aquest tauler és només de lectura."
   }
 }

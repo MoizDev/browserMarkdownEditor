@@ -377,6 +377,7 @@
     "paper.deleteContents": "Ta strona zawiera {items}.",
     "paper.deleteConfirm": "Usuń stronę",
     "paper.cancel": "Anuluj",
-    "paper.keepProtected": "Zablokowana zawartość zostanie zachowana."
+    "paper.keepProtected": "Zablokowana zawartość zostanie zachowana.",
+    "chrome.readOnly": "Ta tablica jest tylko do odczytu."
   }
 }

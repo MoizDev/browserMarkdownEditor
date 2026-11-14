@@ -1,4 +1,5 @@
 import type { TouchedSet } from '../change/ops';
+import type { ExtBag } from '../model/json';
 import { encodeEnd } from './encode';
 import { FORMAT_LIMITS, RECORD_ORDER } from './schema';
 import { recordKey, utf8Length, writeFailure } from './writeTypes';
@@ -100,6 +101,7 @@ export class LineTable {
     private epoch = 0;
     private savedEpoch = -1;
     private assembly: { blob: Blob; revision: number; } | null = null;
+    private end: { ext: ExtBag | null; count: number; text: string; bytes: number; } | null = null;
 
     get revision(): number { return this.epoch; }
     get needsSave(): boolean { return this.dirty.size > 0 || this.epoch !== this.savedEpoch; }
@@ -195,24 +197,34 @@ export class LineTable {
         return { ok: true, value: encoded };
     }
 
-    assemble(expected: RecordIntegrity): WriteResult<LineAssembly> {
+    assemble(expected: RecordIntegrity, endExt: ExtBag | null = null): WriteResult<LineAssembly> {
         if (this.dirty.size) return writeFailure('dirty', 'Records still need encoding; the board remains dirty');
         const integrity = this.keyDigest.snapshot();
         if (this.entries.size !== expected.count || !sameIntegrity(integrity, expected)) {
             return writeFailure('integrity', 'Record count or revision-key digest does not match the session');
         }
         if (!this.header) return writeFailure('header', 'The native header is missing');
+        // R-W30: the end record's unknown fields come from the model too. Cache by immutable
+        // owner and count, but never reuse an assembly whose footer bytes changed.
+        if (!this.end || this.end.ext !== endExt || this.end.count !== expected.count) {
+            const encoded = encodeEnd(expected.count, endExt);
+            if (!encoded.ok) return encoded;
+            const size = utf8Length(encoded.value, FORMAT_LIMITS.recordBytes);
+            if (!size.ok) return size;
+            const changed = this.end !== null && this.end.text !== encoded.value;
+            if (changed && !Number.isSafeInteger(this.epoch + 1)) return writeFailure('limit', 'Line-table content revision overflow');
+            this.end = { ext: endExt, count: expected.count, text: encoded.value, bytes: size.value };
+            if (changed) this.epoch++;
+        }
         if (this.assembly?.revision === this.epoch) {
             return { ok: true, value: { kind: 'unchanged', blob: this.assembly.blob, revision: this.epoch, integrity } };
         }
-        const end = encodeEnd(expected.count);
-        if (!end.ok) return end;
-        const bytes = this.header.bytes + 1 + this.lineBytes + 2 * expected.count + end.value.length + 4;
+        const bytes = this.header.bytes + 1 + this.lineBytes + 2 * expected.count + this.end.bytes + 4;
         if (bytes > FORMAT_LIMITS.fileBytes) return writeFailure('limit', 'Native board exceeds 1 GiB');
         if (!this.ordered) this.ordered = [...this.entries.values()].sort(compare);
         const parts: BlobPart[] = [this.header.text, '\n'];
         for (const entry of this.ordered) parts.push(entry.text, ',\n');
-        parts.push(end.value, '\n]}\n');
+        parts.push(this.end.text, '\n]}\n');
         let blob: Blob;
         try { blob = new Blob(parts, { type: 'application/json' }); } catch (error) {
             if (error instanceof RangeError) return writeFailure('allocation', 'The assembled board could not be allocated');

@@ -195,6 +195,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     prepareGpu: preparation => candidate.prepare(preparation),
                     onSurfaceZeroed: canvas => candidate.zeroed(canvas),
                     onGpuReady: grant => candidate.ready(grant),
+                    onCapabilityFailure: () => runtime.observeCapabilityFailure(options.paneId),
                     onCpuFallback: reason => {
                         gpu = null;
                         cpuPresented = false;

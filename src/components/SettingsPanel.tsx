@@ -1,4 +1,5 @@
 import WordEmphasisToggle from './WordEmphasisToggle';
+import { BoardDictionarySetting } from './BoardDictionarySetting';
 import { resetReadingPreferences } from '../utils/readingPreferences';
 import React, { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import { DEFAULT_RECENT_VAULT_LIMIT, MAX_STORED_VAULTS } from '../utils/recentVaults';
@@ -267,6 +268,8 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                             />
                         </div>
                     </div>
+
+                    <BoardDictionarySetting />
 
                     <h4 className="settings-section">Vault</h4>
 

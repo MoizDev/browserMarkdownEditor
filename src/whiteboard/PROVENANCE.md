@@ -289,12 +289,12 @@ third-party code included (normally "none") · date.
 | `geom/rotationPlacement.types.ts` | lane w-g | GE-4 | geometry §6.3 | Design; local-centre and page-aware rotation placement service contract | none | 2026-11-13 |
 | `geom/rotationPlacement.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.3 | Design; selection-centre rotation mapped through shared parent/page pose | none | 2026-11-13 |
 | `geom/rotationPlan.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.1–6.3 | Design; angle unwrapping, selection-centre rotation and one-transaction placement | none | 2026-11-13 |
-| `geom/resizePlan.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; oriented frame, mapped centres and per-kind transaction planning | none | 2026-11-13 |
+| `geom/resizePlan.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; oriented frame, mapped centres, explicit selection scope and per-kind transaction planning | none | 2026-11-13 |
 | `geom/resizeKinds.ts` | lane w-g | GE-4; F-XFORM-007/009/010/014 | geometry §6.4–6.5 | Design; per-kind property operations, unchanged ink width, crop-aware picture reflection and injected layout; opaque guard | none | 2026-11-13 |
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |
 | `geom/arrange.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7; arrange spec | Design; world bounds, equal edge gaps, stable shelf pack with max-capacity tree | none | 2026-11-13 |
 | `geom/arrangement.types.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7 | Design; selection bounds, resize and shared page geometry service contracts | none | 2026-11-13 |
-| `geom/arrangement.ts` | lane w-g | GE-4; F-ARR-006/007/009/010 | geometry §6.6–6.7 | Design; roots-only world placement compiled into one ordinary transaction | none | 2026-11-13 |
+| `geom/arrangement.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7 | Design; roots-only world placement and stretch compiled into one ordinary transaction | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 | `ink/pick.ts` | lane w-g | GE-3 | geometry §5.2; ink §6.2 | Export existing w-e affine capsule-distance primitive for shared path picking | none | 2026-11-13 |

@@ -118,7 +118,10 @@ export class VaultIndexSession {
     }
     private start(): Promise<void> {
         if (this.runner) return this.runner;
-        const run = this.run();
+        const run = this.run().catch(error => {
+            if (this.guard.current()) { this.fullPass = true; this.requestedGeneration++; }
+            throw error;
+        });
         this.runner = run;
         void run.finally(() => { if (this.runner === run) this.runner = null; }).catch(() => {});
         return run;

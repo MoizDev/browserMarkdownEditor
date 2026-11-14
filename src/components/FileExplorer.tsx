@@ -23,8 +23,7 @@ import { collectFiles } from '../utils/tree';
 import { createSortCache, isTimeSort, sortTree, TREE_SORT_ORDERS, type TreeSortOrder } from '../utils/treeSort';
 import { getFileTimes, getFileTimesVersion, statFileTimes, subscribeFileTimes } from '../utils/fileTimes';
 import { readJSON, writeJSON } from '../utils/storage';
-import { createVaultTextCache } from '../utils/vaultSearch';
-import type { VaultTextCache } from '../utils/vaultSearch';
+import type { VaultIndexSession } from '../utils/vaultIndexSession';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 import { orderListFor, type EntryOrder, type IconNode } from '../utils/entryStyle';
 
@@ -67,6 +66,7 @@ const REVEAL_FRAMES = 10;
 interface FileExplorerProps {
     readSnapshot: (handle: FileSystemFileHandle) => Promise<File>;
     rootHandle: FileSystemDirectoryHandle | null;
+    searchIndex: VaultIndexSession;
     fileTree: FileTreeNode[];
     onFileClick: (node: FileTreeNode) => void;
     onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath?: string) => void | Promise<void>;
@@ -102,6 +102,7 @@ interface FileExplorerProps {
 function FileExplorer({
     readSnapshot,
     rootHandle,
+    searchIndex,
     fileTree,
     onFileClick,
     onCreateFile,
@@ -258,16 +259,6 @@ function FileExplorer({
         const unsubscribe = subscribeActiveFile(reveal);
         return () => { unsubscribe(); cancelAnimationFrame(frame); };
     }, [autoReveal, searchOpen, filePathSet, onExpandPaths]);
-
-    // The indexed vault text lives here (not in SearchPanel) so reopening
-    // search doesn't re-read unchanged files.
-    const searchCacheRef = useRef<VaultTextCache | null>(null);
-    const searchCache = (searchCacheRef.current ??= createVaultTextCache());
-
-    // A different vault may reuse paths — never serve the old vault's text.
-    useEffect(() => {
-        searchCache.clear();
-    }, [searchCache, rootHandle]);
 
     useEffect(() => {
         if (creatingInRoot && inputRef.current) {
@@ -676,8 +667,7 @@ function FileExplorer({
             {searchOpen ? (
                 <SearchPanel
                     fileTree={fileTree}
-                    readSnapshot={readSnapshot}
-                    cache={searchCache}
+                    cache={searchIndex}
                     getOpenTabContent={getOpenTabContent}
                     onOpenResult={handleSearchResult}
                     onClose={onCloseSearch}

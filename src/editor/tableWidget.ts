@@ -170,7 +170,8 @@ const CELL_PARSER = document.createElement('div');
 
 /** Inline-code spans, found with the SAME regex renderInlineMarkdown uses, so
  *  the two agree on what is code and a `$` inside backticks stays literal.
- *  (findMathRegions takes the unexported CharRange[]; this shape satisfies it.) */
+ *  Both regex and Lezer code spans are sorted/disjoint: findMathRegions now
+ *  binary-searches them instead of scanning every span for each formula. */
 function inlineCodeRanges(text: string): { from: number; to: number }[] {
     const out: { from: number; to: number }[] = [];
     const re = /`(.+?)`/g;

@@ -8,6 +8,7 @@ import type { EditorState, Extension, Range, Transaction } from '@codemirror/sta
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
 import { analyzeDoc, mathSkipsRange, overlapsMath, latexSourceDecorations } from './latexSource';
+import { containsRange, firstRangeEndingAfter, overlapsRange } from './rangeSearch';
 import { parseListMarker } from './lists';
 import type { ListMarker } from './lists';
 import { CopyCodeWidget } from './copyCodeWidget';
@@ -308,7 +309,6 @@ interface LivePreview {
     imageSelected: boolean;
     tables: readonly { from: number; to: number }[];
     tableSelected: boolean;
-    prose: ReadingProjection;
 }
 
 /**
@@ -342,10 +342,6 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     const { state } = view;
     const decorations: Range<Decoration>[] = [];
     const atoms: Range<AtomicRange>[] = [];
-    const blocks: Utf16Range[] = [];
-    const strong: Utf16Range[] = [];
-    const html: Utf16Range[] = [];
-    const htmlOpen: { name: string; from: number; blockFrom: number; blockTo: number }[] = [];
 
     // Math is located BEFORE the markdown pass so formula innards can be
     // exempted from markdown styling — "[x](y)" inside an equation is LaTeX,
@@ -364,7 +360,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // no note could print the syntax it was documenting. The table pass keeps
     // its own CONTAINMENT test: a different question, and it says so where it
     // asks it.
-    const intersectsCode = (a: number, b: number) => codeRanges.some(r => a < r.to && b > r.from);
+    const intersectsCode = (a: number, b: number) => overlapsRange(codeRanges, a, b);
 
     syntaxTree(state).iterate({
         enter(node) {
@@ -377,34 +373,6 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
             // Binary-searched, since this runs for every node of the tree —
             // see mathSkipsRange, which headingFold shares.
             if (mathSkipsRange(analysis, from, to)) return false;
-
-            // Eligibility travels with the existing syntax/decorations pass.
-            // Paragraphs exclude headings, code blocks and HTML blocks by shape.
-            if (name === 'Paragraph') blocks.push({ from, to });
-            if (name === 'StrongEmphasis') strong.push({ from, to });
-            if (name === 'HTMLBlock' || name === 'Comment' || name === 'Image') html.push({ from, to });
-            if (name === 'HTMLTag') {
-                html.push({ from, to });
-                // Raw HTML is not prose, including a paired tag's contents.
-                // Use the tags already found by Lezer, never a second document
-                // regex (and never turn their attributes into rendered DOM).
-                const tagText = doc.slice(from, to), tag = /^<\s*(\/?)\s*([a-z][a-z0-9:-]*)/i.exec(tagText);
-                let block = node.node.parent;
-                while (block && block.name !== 'Paragraph') block = block.parent;
-                if (tag && block) {
-                    const tagName = tag[2].toLowerCase();
-                    if (tag[1]) {
-                        for (let i = htmlOpen.length - 1; i >= 0; i--) {
-                            const open = htmlOpen[i];
-                            if (open.name === tagName && open.blockFrom === block.from) {
-                                html.push({ from: open.from, to }); htmlOpen.splice(i, 1); break;
-                            }
-                        }
-                    } else if (!/\/\s*>$/.test(tagText) && !HTML_VOID.has(tagName)) {
-                        htmlOpen.push({ name: tagName, from, blockFrom: block.from, blockTo: block.to });
-                    }
-                }
-            }
 
             // === HEADINGS ===
             // ATXHeading1 through ATXHeading6
@@ -1005,7 +973,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         // lines — so an intersection test would reject any table with one
         // `code` span in one cell. A fence contains the whole table; an inline
         // span inside a cell never can.
-        if (codeRanges.some(r => r.from <= span.from && r.to >= span.to)) continue;
+        if (containsRange(codeRanges, span.from, span.to)) continue;
         // No math guard, deliberately: overlapsMath is an intersection too, so
         // it would reject any table containing $x$, and a containment version
         // could only fire for a table wholly inside a math region, which cannot
@@ -1022,7 +990,6 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         tables.push(span);
     }
 
-    for (const open of htmlOpen) html.push({ from: open.from, to: open.blockTo });
     return {
         deco: Decoration.set(decorations, true),
         // SORTED: images and tables are each a left-to-right pass, but tables
@@ -1034,25 +1001,18 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         imageSelected,
         tables,
         tableSelected,
-        prose: {
-            doc, blocks,
-            hidden: mergeProjectionRanges(decorations.filter(r => r.value === HIDE).map(r => ({ from: r.from, to: r.to }))),
-            barriers: mergeProjectionRanges([...codeRanges, ...mathRegions, ...html,
-                ...decorations.filter(r => r.from < r.to && r.value.spec.widget && r.value !== HIDE)
-                    .map(r => ({ from: r.from, to: r.to }))]),
-            strong: mergeProjectionRanges(strong),
-        },
     };
 }
 
 interface ReadingProjection {
-    doc: string;
     blocks: readonly Utf16Range[];
     hidden: readonly Utf16Range[];
     barriers: readonly Utf16Range[];
     strong: readonly Utf16Range[];
 }
-const readingProjection = Facet.define<ReadingProjection, ReadingProjection | null>({
+// Only the existing decoration set crosses the field boundary. Projection
+// arrays/string used to be built on every keystroke, even with emphasis Off.
+const readingDecorations = Facet.define<DecorationSet, DecorationSet | null>({
     combine: values => values[values.length - 1] ?? null,
 });
 function mergeProjectionRanges(input: readonly Utf16Range[]): Utf16Range[] {
@@ -1065,23 +1025,84 @@ function mergeProjectionRanges(input: readonly Utf16Range[]): Utf16Range[] {
     }
     return out;
 }
-function firstProjectionRange(ranges: readonly Utf16Range[], from: number): number {
-    let lo = 0, hi = ranges.length;
-    while (lo < hi) {
-        const mid = (lo + hi) >>> 1;
-        if (ranges[mid].to <= from) lo = mid + 1;
-        else hi = mid;
+function buildReadingProjection(state: EditorState, decorations: DecorationSet, from: number, to: number): ReadingProjection {
+    const tree = syntaxTree(state), analysis = analyzeDoc(state);
+    for (;;) {
+        const blocks: Utf16Range[] = [], strong: Utf16Range[] = [], html: Utf16Range[] = [];
+        const hidden: Utf16Range[] = [], barriers: Utf16Range[] = [];
+        const htmlOpen: { name: string; from: number; blockFrom: number; blockTo: number }[] = [];
+        let nextFrom = from, nextTo = to;
+        const extend = (range: Utf16Range) => {
+            nextFrom = Math.min(nextFrom, range.from);
+            nextTo = Math.max(nextTo, range.to);
+        };
+        tree.iterate({
+            from, to,
+            enter(node) {
+                const { name, from: a, to: z } = node;
+                if (z <= from || a >= to || mathSkipsRange(analysis, a, z)) return false;
+                if (name === 'Paragraph') {
+                    blocks.push({ from: a, to: z }); extend({ from: a, to: z });
+                }
+                if (name === 'StrongEmphasis') strong.push({ from: a, to: z });
+                if (name === 'HTMLBlock' || name === 'Comment' || name === 'Image') html.push({ from: a, to: z });
+                if (name === 'HTMLTag') {
+                    html.push({ from: a, to: z });
+                    // Pair across the whole paragraph, even when an opening tag
+                    // precedes the requested chunk. Raw HTML never becomes DOM.
+                    const text = state.sliceDoc(a, z), tag = /^<\s*(\/?)\s*([a-z][a-z0-9:-]*)/i.exec(text);
+                    let block = node.node.parent;
+                    while (block && block.name !== 'Paragraph') block = block.parent;
+                    if (tag && block) {
+                        const name = tag[2].toLowerCase();
+                        if (tag[1]) {
+                            for (let i = htmlOpen.length - 1; i >= 0; i--) {
+                                const open = htmlOpen[i];
+                                if (open.name === name && open.blockFrom === block.from) {
+                                    html.push({ from: open.from, to: z }); htmlOpen.splice(i, 1); break;
+                                }
+                            }
+                        } else if (!/\/\s*>$/.test(text) && !HTML_VOID.has(name)) {
+                            htmlOpen.push({ name, from: a, blockFrom: block.from, blockTo: block.to });
+                        }
+                    }
+                }
+                // These read-mode render branches do not descend. In particular,
+                // strong/HTML inside strikethrough was never projection metadata.
+                if (name === 'Strikethrough' || name === 'InlineCode' || name === 'FencedCode'
+                    || name === 'Autolink' || name === 'URL' || name === 'HorizontalRule' || name === 'EmphasisMark') return false;
+            },
+        });
+        for (const open of htmlOpen) html.push({ from: open.from, to: open.blockTo });
+        decorations.between(from, to, (a, z, value) => {
+            if (a >= to || z <= from || a >= z) return;
+            if (value === HIDE) { hidden.push({ from: a, to: z }); extend({ from: a, to: z }); }
+            else if (value.spec.widget) { barriers.push({ from: a, to: z }); extend({ from: a, to: z }); }
+        });
+        for (const ranges of [analysis.codeRanges, analysis.mathRegions]) {
+            for (let i = firstRangeEndingAfter(ranges, from); i < ranges.length && ranges[i].from < to; i++) {
+                barriers.push(ranges[i]); extend(ranges[i]);
+            }
+        }
+        for (const range of html) { barriers.push(range); extend(range); }
+        // Query full intersecting extents until the metadata window closes.
+        // Only metadata expands: prose text/fragments stay in the <=16K window.
+        if (nextFrom === from && nextTo === to) {
+            return { blocks, hidden: mergeProjectionRanges(hidden), barriers: mergeProjectionRanges(barriers),
+                strong: mergeProjectionRanges(strong) };
+        }
+        from = nextFrom; to = nextTo;
     }
-    return lo;
 }
+
 export interface ReadingProseRun { run: EmphasisRun; fragments: readonly SourceFragment[] }
 
 /** Visible source window -> real rendered prose. No second document scan.
  * Hidden formatting is deleted from the projection, objects are hard run
  * boundaries, and authored strong ranges remain whole-word exclusions. */
 export function readingProseRuns(state: EditorState, from: number, to: number): readonly ReadingProseRun[] {
-    const meta = state.facet(readingProjection);
-    if (!meta || from >= to) return [];
+    const decorations = state.facet(readingDecorations);
+    if (!decorations || from >= to) return [];
     const frontier = Math.min(syntaxTree(state).length, state.doc.length);
     // The adapter requests <=8K windows. Extend to real whitespace (up to
     // 4K each way), dropping an oversized edge token rather than prefixing a
@@ -1089,16 +1110,21 @@ export function readingProseRuns(state: EditorState, from: number, to: number): 
     from = Math.max(0, Math.min(from, frontier));
     to = Math.min(frontier, to, from + 8192);
     const startLimit = Math.max(0, from - 4096), endLimit = Math.min(frontier, to + 4096);
-    while (from > startLimit && !/\s/u.test(meta.doc[from - 1])) from--;
-    if (from === startLimit && from > 0 && !/\s/u.test(meta.doc[from - 1])) {
-        while (from < to && !/\s/u.test(meta.doc[from])) from++;
+    const sourceFrom = Math.max(0, startLimit - 1);
+    const source = state.sliceDoc(sourceFrom, Math.min(frontier, endLimit + 1));
+    const charAt = (pos: number) => source.charAt(pos - sourceFrom);
+    while (from > startLimit && !/\s/u.test(charAt(from - 1))) from--;
+    if (from === startLimit && from > 0 && !/\s/u.test(charAt(from - 1))) {
+        while (from < to && !/\s/u.test(charAt(from))) from++;
     }
-    while (to < endLimit && !/\s/u.test(meta.doc[to])) to++;
-    if (to === endLimit && to < frontier && !/\s/u.test(meta.doc[to])) {
-        while (to > from && !/\s/u.test(meta.doc[to - 1])) to--;
+    while (to < endLimit && !/\s/u.test(charAt(to))) to++;
+    if (to === endLimit && to < frontier && !/\s/u.test(charAt(to))) {
+        while (to > from && !/\s/u.test(charAt(to - 1))) to--;
     }
+    if (from >= to) return [];
+    const meta = buildReadingProjection(state, decorations, from, to);
     const result: ReadingProseRun[] = [];
-    for (let b = firstProjectionRange(meta.blocks, from); b < meta.blocks.length && meta.blocks[b].from < to; b++) {
+    for (let b = firstRangeEndingAfter(meta.blocks, from); b < meta.blocks.length && meta.blocks[b].from < to; b++) {
         const block = meta.blocks[b];
         // Do not style a paragraph whose final word is still beyond the parser.
         const end = Math.min(block.to, to);
@@ -1108,20 +1134,20 @@ export function readingProseRuns(state: EditorState, from: number, to: number): 
             if (a >= z) return;
             const fragments: SourceFragment[] = [];
             let text = '', p = a;
-            for (let i = firstProjectionRange(meta.hidden, a); i < meta.hidden.length && meta.hidden[i].from < z; i++) {
+            for (let i = firstRangeEndingAfter(meta.hidden, a); i < meta.hidden.length && meta.hidden[i].from < z; i++) {
                 const h = meta.hidden[i], until = Math.min(h.from, z);
                 if (p < until) {
                     fragments.push({ runFrom: text.length, runTo: text.length + until - p, sourceFrom: p, sourceTo: until });
-                    text += meta.doc.slice(p, until);
+                    text += source.slice(p - sourceFrom, until - sourceFrom);
                 }
                 p = Math.max(p, h.to);
             }
             if (p < z) {
                 fragments.push({ runFrom: text.length, runTo: text.length + z - p, sourceFrom: p, sourceTo: z });
-                text += meta.doc.slice(p, z);
+                text += source.slice(p - sourceFrom, z - sourceFrom);
             }
             const exclusions: Utf16Range[] = [];
-            for (let i = firstProjectionRange(meta.strong, a); i < meta.strong.length && meta.strong[i].from < z; i++) {
+            for (let i = firstRangeEndingAfter(meta.strong, a); i < meta.strong.length && meta.strong[i].from < z; i++) {
                 const strong = meta.strong[i];
                 for (const f of fragments) {
                     const x = Math.max(f.sourceFrom, strong.from), y = Math.min(f.sourceTo, strong.to);
@@ -1130,7 +1156,7 @@ export function readingProseRuns(state: EditorState, from: number, to: number): 
             }
             if (text) result.push({ run: { text, exclusions }, fragments });
         };
-        for (let i = firstProjectionRange(barriers, cursor); i < barriers.length && barriers[i].from < end; i++) {
+        for (let i = firstRangeEndingAfter(barriers, cursor); i < barriers.length && barriers[i].from < end; i++) {
             project(cursor, Math.min(end, barriers[i].from));
             cursor = Math.max(cursor, barriers[i].to);
         }
@@ -1178,7 +1204,9 @@ export function createLivePreviewPlugin(
             // In read mode, decorations are a pure function of the document — every
             // selection-dependent branch in buildDecorations is gated behind
             // editorMode !== 'read' — so skip rebuilds from selection-only changes.
-            if (tr.docChanged || treeAdvanced || (tr.selection && editorMode !== 'read')) {
+            // Restating the same selection cannot change a construct's reveal state.
+            const selectionChanged = editorMode !== 'read' && !tr.state.selection.eq(tr.startState.selection);
+            if (tr.docChanged || treeAdvanced || selectionChanged) {
                 const viewShim = { state: tr.state };
                 if (__BME_BENCH__) {
                     return measureEditorRender(tr.state, false, () => buildDecorations(viewShim, imageCtx, editorMode));
@@ -1186,9 +1214,9 @@ export function createLivePreviewPlugin(
                 return buildDecorations(viewShim, imageCtx, editorMode);
             }
             if (tr.state.facet(readingEmphasisFacet) !== tr.startState.facet(readingEmphasisFacet)) {
-                // Preference-only changes reuse the document projection and all
-                // image/math/link decorations. Only table widgets consume this
-                // option in their identity; rewalking a book here defeats the
+                // Preference-only changes reuse all image/math/link decorations.
+                // Only table widgets consume this option in their identity;
+                // rewalking a book here defeats the
                 // visible-window emphasis adapter even though its cache hits.
                 if (!decorations.tables.length) return decorations;
                 let deco = decorations.deco;
@@ -1211,7 +1239,7 @@ export function createLivePreviewPlugin(
         },
         provide(field: StateField<LivePreview>) {
             return [
-                readingProjection.from(field, value => value.prose),
+                readingDecorations.from(field, value => value.deco),
                 EditorView.decorations.from(field, value => value.deco),
                 // Makes each rendered image one indivisible step for the cursor:
                 // arrow keys move over it rather than into it, a drag-selection
@@ -1396,7 +1424,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         if (columns === 0 || /^\|[\s:|-]+\|\s*$/.test(line.text)) return false;
         if (line.number < state.doc.lines && state.doc.line(line.number + 1).text.startsWith('|')) return false;
         if (tableLayoutAt(state.doc, pos)) return false;
-        if (analyzeDoc(state).codeRanges.some(r => r.from <= line.from && r.to >= line.to)) return false;
+        if (containsRange(analyzeDoc(state).codeRanges, line.from, line.to)) return false;
 
         const insert = '\n|' + ` ${delimiterCellText(null)} |`.repeat(columns) + '\n' + blankRowText(columns);
         view.dispatch({ changes: { from: line.to, insert }, userEvent: 'input' });

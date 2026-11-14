@@ -1,4 +1,4 @@
-import type { RichText } from '../text/richText';
+import type { Block, RichText } from '../text/richText';
 
 // R-W18/R-W21: temporary O(existing runs), allocation-free projection lookup.
 // TX-2 replaces these scans with its cached lengths/offsets; TX-1 adds the owed
@@ -19,6 +19,37 @@ export function scanText(text: RichText | null, offset = -1): number {
         }
     }
     return offset < 0 ? position : NaN;
+}
+
+export function blockTextLength(block: Block): number {
+    let length = 0;
+    for (let i = 0; i < block.runs.length; i++) length += block.runs[i].text.length;
+    return length;
+}
+
+export function isBlockRange(text: RichText | null, from: number, to: number): boolean {
+    if (text === null) return from === 0 && to === 0;
+    let position = 0;
+    let starts = false;
+    for (let i = 0; i < text.blocks.length; i++) {
+        if (position === from) starts = true;
+        position += blockTextLength(text.blocks[i]);
+        if (position === to && starts) return true;
+        position++;
+    }
+    return false;
+}
+
+export function spliceBlockCount(text: RichText | null, from: number, to: number, inserted: number): number {
+    if (text === null) return inserted;
+    let position = 0;
+    let removed = 0;
+    for (let i = 0; i + 1 < text.blocks.length; i++) {
+        position += blockTextLength(text.blocks[i]);
+        if (position >= from && position < to) removed++;
+        position++;
+    }
+    return text.blocks.length - removed + inserted - 1;
 }
 
 export function isSurrogateBoundary(text: RichText | null, offset: number): boolean {

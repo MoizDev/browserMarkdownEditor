@@ -1,38 +1,21 @@
 // Entirely authored; proposed licence CC0-1.0 awaits the owner's approval.
 // Entirely authored fixture content. No external document, font program or app code.
-import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { parseArgs as sharedArgs } from '../../lib/cli.mjs';
+import { sha256, jsonBytes, fixtureWriter } from '../../lib/output.mjs';
+export { sha256, jsonBytes, fixtureWriter };
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
 export const SEED = 0x50444631;
-export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 export const literal = text => `(${text.replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)')})`;
-// Temporary common helpers until verify/fixtures/lib lands; other generators
-// import this one stand-in, and will switch to the shared names at that merge.
+// Preserve the published CLI's --key=value spelling while using the shared parser.
 export function parseArgs(argv, extra = []) {
-    const options = {};
-    for (let i = 0; i < argv.length; i++) {
-        const [key, inline] = argv[i].split('=');
-        if (!['--out', '--seed', ...extra].includes(key) || options[key.slice(2)] !== undefined) throw new Error(`Unknown or repeated option: ${key}`);
-        const value = inline ?? argv[++i];
-        if (value === undefined || value.startsWith('--')) throw new Error(`Missing value for ${key}`);
-        options[key.slice(2)] = value;
-    }
-    if (!options.out || !/^\d+$/u.test(options.seed ?? '') || Number(options.seed) > 0xffffffff) throw new Error('Required: --out <fresh-directory> --seed <uint32>');
-    options.seed = Number(options.seed);
-    return options;
+    return sharedArgs(argv.flatMap(value => value.startsWith('--') && value.includes('=')
+        ? [value.slice(0, value.indexOf('=')), value.slice(value.indexOf('=') + 1)] : [value]), extra.map(value => value.replace(/^--/u, '')));
 }
-export const jsonBytes = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
-export const fixtureWriter = out => async (file, content) => {
-    if (!/^[a-z0-9][a-z0-9.-]*$/u.test(file) || file.includes('..')) throw new Error('Unsafe output name');
-    await mkdir(out, { recursive: true });
-    await writeFile(resolve(out, file), content, { flag: 'wx' });
-    const entry = { file, sha256: sha256(content), bytes: Buffer.byteLength(content) };
-    console.log(JSON.stringify(entry));
-    return entry;
-};
+// Xorshift32 is frozen fixture CONTENT: replacing it with the shared Mulberry32
+// would change every existing PDF/oracle. Generic CLI/hash/output now use lib/.
 export function seededRandom(seed = SEED) {
     let state = seed >>> 0;
     return () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return (state >>> 0) / 2 ** 32; };

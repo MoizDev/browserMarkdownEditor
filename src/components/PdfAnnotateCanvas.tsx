@@ -19,10 +19,10 @@ import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
 import PageControls, { type PageControlsHandle } from './PageControls';
 import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView } from './pagedCanvas';
-import * as pdfjs from 'pdfjs-dist';
-import type { PDFDocumentLoadingTask } from 'pdfjs-dist';
+import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
 import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
-import { pdfWorker } from '../utils/pdfWorker';
+import { openClassicPdf, loadClassicPdf, closeClassicPdf, classicPdfHealth } from '../utils/pdfClassicOpen';
+import { createClassicPdfHealth, type ClassicPdfHealth } from '../utils/pdfClassicHealth';
 import { pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import './PdfNativeEmphasis.css';
@@ -38,6 +38,7 @@ interface PdfAnnotateCanvasProps {
     documentId?: string;
     emphasisEnabled?: boolean;
     onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;
+    onRenderHealth?(health: ClassicPdfHealth): void;
     filePath: string;
     /** Pristine original PDF bytes (never the stamped ones — see pdfAnnotation.ts). */
     original: Uint8Array;
@@ -154,7 +155,7 @@ function refreshPageAsset(editor: Editor | null, index: number): void {
     });
 }
 
-async function pageText(doc: pdfjs.PDFDocumentProxy, pageNumber: number): Promise<string> {
+async function pageText(doc: PDFDocumentProxy, pageNumber: number): Promise<string> {
     const page = await doc.getPage(pageNumber);
     try {
         const content = await page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
@@ -209,11 +210,27 @@ export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
     return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <LegacyPdfAnnotateCanvas {...props} />;
 }
 
-function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult }: PdfAnnotateCanvasProps) {
+function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
     // Geometry only. The canvas mounts as soon as this lands; the page images
     // stream in afterwards through pageImagesRef.
     const [pages, setPages] = useState<PdfPageSize[] | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [renderHealth, setRenderHealth] = useState(createClassicPdfHealth);
+    const onRenderHealthRef = useRef(onRenderHealth);
+    onRenderHealthRef.current = onRenderHealth;
+    const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
+    const failedPages = useMemo<ReadonlySet<number>>(() => {
+        const failed = new Set<number>();
+        for (const issue of renderDiagnostics) {
+            if (!issue.incomplete) continue;
+            if (issue.pageIndex !== undefined) failed.add(issue.pageIndex);
+            else {
+                for (let index = 0; index < (pages?.length ?? 0); index++) failed.add(index);
+                break;
+            }
+        }
+        return failed;
+    }, [renderDiagnostics, pages]);
     const onContentChangeRef = useRef(onContentChange);
     useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
     const onFlushNowRef = useRef(onFlushNow);
@@ -255,10 +272,13 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
      *  agent asks for page text and closed with the canvas. `PdfPageSource`
      *  keeps its own document private, and page text is the one thing this
      *  canvas has no other way to give: its pages are pictures. */
-    const textDocRef = useRef<PDFDocumentLoadingTask | null>(null);
+    const textDocRef = useRef<Promise<PDFDocumentLoadingTask> | null>(null);
     useEffect(() => () => {
-        void textDocRef.current?.destroy();
+        // Startup can finish after this pane is gone; the saved promise still
+        // owns that late task and closes it without waiting for a dead port.
+        const pending = textDocRef.current;
         textDocRef.current = null;
+        void pending?.then(task => closeClassicPdf(task)).catch(() => {});
     }, [original]);
 
     /** Every page's box on the canvas — the same layout the save path maps
@@ -317,7 +337,13 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
 
         (async () => {
             try {
-                source = await openPdfPages(original);
+                source = await openPdfPages(original, health => {
+                    if (cancelled) return;
+                    // Two StrictMode acquisitions can overlap: follow this
+                    // source's health, never a byte-keyed instance it can close.
+                    setRenderHealth(health);
+                    onRenderHealthRef.current?.(health);
+                });
                 if (cancelled) { await source.close(); return; }
 
                 // Geometry is enough to lay out and mount the canvas — no need to
@@ -769,7 +795,19 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             },
             // Pages and ink as on screen (uninverted), at no more than twice
             // the on-screen size.
-            capture: (maxSide) => captureRegion(editor, editor.getViewportPageBounds(), maxSide, editor.getZoomLevel() * 2),
+            capture: async (maxSide) => {
+                const view = editor.getViewportPageBounds();
+                const visible = pagesInView(boxes, view);
+                const source = sourceRef.current;
+                if (!source || visible.some(page => !pageImagesRef.current[page - 1]?.url)) return null;
+                const health = source.health;
+                for (const page of visible) health.assertComplete(page - 1);
+                const capture = await captureRegion(editor, view, maxSide, editor.getZoomLevel() * 2);
+                // An image failure can arrive while tldraw is composing: never
+                // hand the agent a successful raster with a missing backdrop.
+                for (const page of visible) health.assertComplete(page - 1);
+                return capture;
+            },
             // The page rendered fresh from the ORIGINAL, with this canvas's ink
             // over it — not the backdrop, which may not be rasterized yet (only
             // pages near the view are) and is a JPEG at the view's scale.
@@ -805,17 +843,18 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
                 const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
                 canvas.width = 0;
                 canvas.height = 0;
+                source.health.assertComplete(page - 1);
                 return png;
             },
             pdfText: async (pageNumbers) => {
                 if (!textDocRef.current) {
-                    textDocRef.current = pdfjs.getDocument({ data: original.slice(), worker: pdfWorker() });
+                    textDocRef.current = openClassicPdf({ bytes: original, purpose: 'annotation-text' });
                 }
-                const doc = await textDocRef.current.promise;
+                const doc = await loadClassicPdf(await textDocRef.current);
                 const out: Array<{ page: number; text: string }> = [];
                 for (const n of pageNumbers) {
                     if (!Number.isInteger(n) || n < 1 || n > doc.numPages) continue;
-                    out.push({ page: n, text: await pageText(doc, n) });
+                    out.push({ page: n, text: await classicPdfHealth(doc).guard(pageText(doc, n)) });
                 }
                 return out;
             },
@@ -911,6 +950,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
                     ref={thumbsRef}
                     sizes={pages}
                     renderThumbnail={renderThumbnail}
+                    failedPages={failedPages}
                     onSelect={jumpToPage}
                     initialPage={thumbsStart}
                 />

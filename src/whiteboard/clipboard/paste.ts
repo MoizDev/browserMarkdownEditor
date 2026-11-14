@@ -1,0 +1,144 @@
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
+import type { BoardRuntime } from '../host/runtime';
+import type { BoardClipboardAcquisition } from '../host/clipboardAcquisition';
+import { decodeLegacyClipboard, type LegacyClipboardDecodeLease } from '../host/legacyClipboard';
+import { readExcalidrawClipboard } from '../host/excalidrawClipboard';
+import { inspectMedia } from '../media/inspect';
+import type { MediaIngestor } from '../media/ingest';
+import type { MediaEntry } from '../model/media';
+import { newSheetId, type NodeId } from '../model/ids';
+import type { Attachment } from '../model/nodes';
+import type { BoardDoc } from '../model/doc';
+import type { BoardJobIdentity } from '../workers/protocol';
+import type { JobContext } from '../security/admission';
+import { classifyClipboard, type ClipboardClassifierHost } from './classify';
+import type { ClipboardCopy } from './copy';
+import { convertExcalidrawShapes, finalizeExcalidrawDraft, type ExcalidrawBindingRequest, type FinalExcalidrawDraft } from './excalidraw';
+import type { ClipboardHtmlFrameHost } from './htmlFrameHost';
+import { pasteClipboardHtmlInJob } from './htmlPaste';
+import { insertNativeClipboard } from './insertNative';
+import { pasteClipboardMediaInJob } from './mediaPaste';
+import { planBoardClipboardPlacement } from './placement';
+import { prepareBoardClipboardMediaInJob } from './prepareMedia';
+import { pastePrivateClipboardInJob } from './privatePaste';
+import { pasteClipboardTextInJob } from './textPaste';
+import type { ClipboardInput, ClipboardIntent, ClipboardTarget } from './types';
+
+// Provenance: clipboard classification order, C5 external-source admission and
+// one session job; independent composition, no upstream engine source.
+export type ExternalClipboardSource =
+    | { readonly kind: 'native-records'; readonly bytes: Blob }
+    | { readonly kind: 'legacy'; readonly decoded: LegacyClipboardDecodeLease }
+    | { readonly kind: 'excalidraw'; readonly draft: FinalExcalidrawDraft };
+export interface ExternalClipboardAdmission {
+    readonly acquisition: BoardClipboardAcquisition;
+    /** Actual canonical geometry of the admitted external source, in source world coordinates. */
+    readonly bounds: Readonly<{ x: number; y: number; w: number; h: number }>;
+}
+export interface BoardClipboardPasteHost {
+    readonly runtime: BoardRuntime;
+    readonly memory: MemoryAllocator;
+    readonly classifier: ClipboardClassifierHost;
+    readonly html: ClipboardHtmlFrameHost;
+    readonly ingestor: MediaIngestor;
+    readonly cache?: ClipboardCopy;
+    readonly receivingBoardId: string;
+    readonly cameraZoom: number;
+    current(target: Readonly<ClipboardTarget>): boolean;
+    readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
+    storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    /** Must encode actual source records and run native C5 before returning. */
+    admitExternal(source: ExternalClipboardSource, context: JobContext, identity: BoardJobIdentity): Promise<ExternalClipboardAdmission>;
+    resolveBinding(request: ExcalidrawBindingRequest, context: { readonly actualDraftDoc: BoardDoc; readonly signal: AbortSignal }): Promise<Attachment>;
+    notice(message: string): void;
+    noticeRefused(items: readonly { readonly name: string; readonly reason: string }[]): void;
+    cooperate?(): Promise<void>;
+}
+function copyInput(input: ClipboardInput): ClipboardInput {
+    return Object.freeze({ html: input.html, text: input.text, svg: input.svg, uriList: input.uriList,
+        files: Object.freeze(input.files.map(file => ({ name: file.name, directory: file.directory, blob: new Blob([file.blob], { type: file.blob.type }) }))),
+        privatePng: input.privatePng ? new Blob([input.privatePng], { type: input.privatePng.type }) : null });
+}
+/** One job covers classification, conversion, all media storage and the single transaction. */
+export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: ClipboardInput, target: Readonly<ClipboardTarget>,
+    intent: ClipboardIntent, signal?: AbortSignal): Promise<readonly NodeId[]> {
+    const copied = copyInput(input), captured = Object.freeze({ ...target, viewport: Object.freeze({ ...target.viewport }),
+        pointer: target.pointer ? Object.freeze({ ...target.pointer }) : null });
+    const runtime = host.runtime, session = runtime.session, doc = session.doc, revision = doc.rev;
+    return runtime.jobs.run(async context => {
+        const check = () => {
+            runtime.jobs.assertContext(context); context.assertCurrent();
+            if (!host.current(captured) || runtime.session !== session || session.doc !== doc || doc.rev !== revision || session.isReadOnly) {
+                throw new DOMException('Clipboard target became stale', 'AbortError');
+            }
+        };
+        const identity: BoardJobIdentity = Object.freeze({ session: context.job.session, epoch: context.job.vaultEpoch, revision });
+        const current = (value: BoardJobIdentity) => value.session === identity.session && value.epoch === identity.epoch && value.revision === revision
+            && runtime.jobs.isCurrent(context.job) && host.current(captured) && session.doc === doc && doc.rev === revision;
+        check();
+        const classification = await classifyClipboard(copied, intent, host.classifier, context.signal); check();
+        const base = { runtime, target: captured, intent, current: host.current, receivingBoardId: host.receivingBoardId,
+            cameraZoom: host.cameraZoom, cooperate: host.cooperate };
+        if (classification.kind === 'private') return pastePrivateClipboardInJob({ ...base, memory: host.memory, encoded: classification.encoded,
+            plain: copied.text ?? '', cache: host.cache, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
+        if (classification.kind === 'text' || classification.kind === 'url') {
+            const id = await pasteClipboardTextInJob({ ...base, content: classification.kind === 'text'
+                ? { kind: 'plain', text: classification.text } : { kind: 'url', url: classification.url }, signal: context.signal }, context);
+            return id ? [id as NodeId] : [];
+        }
+        if (classification.kind === 'html') return pasteClipboardHtmlInJob({ ...base, memory: host.memory, frame: host.html,
+            html: classification.html, storeMedia: host.storeMedia, noticeRefused: host.noticeRefused }, context);
+        if (classification.kind === 'files' || classification.kind === 'private-png' || classification.kind === 'svg') {
+            const files = classification.kind === 'files' ? classification.files : classification.kind === 'svg'
+                ? [{ blob: new Blob([classification.text], { type: 'image/svg+xml' }), name: 'clipboard.svg', directory: false }] : [];
+            return pasteClipboardMediaInJob({ runtime, ingestor: host.ingestor, target: captured, intent, files,
+                privatePng: classification.kind === 'private-png' ? classification.blob : null,
+                current: host.current, noticeRefused: host.noticeRefused }, context);
+        }
+        if (classification.kind === 'empty') { host.notice('The clipboard has no supported content.'); return []; }
+        let legacy: LegacyClipboardDecodeLease | undefined, draft: FinalExcalidrawDraft | undefined;
+        let acquisition: BoardClipboardAcquisition | undefined;
+        try {
+            let external: ExternalClipboardSource;
+            if (classification.kind === 'native-records') external = { kind: 'native-records', bytes: new Blob([classification.text], { type: 'application/json' }) };
+            else if (classification.kind === 'legacy') {
+                legacy = await decodeLegacyClipboard({ envelope: new Blob([classification.envelope], { type: 'application/json' }),
+                    identity, memory: host.memory, isCurrent: current, signal: context.signal }); check();
+                external = { kind: 'legacy', decoded: legacy };
+            } else {
+                const wire = await readExcalidrawClipboard({ bytes: new Blob([classification.text], { type: 'application/json' }),
+                    identity, memory: host.memory, isCurrent: current, signal: context.signal });
+                try {
+                    check();
+                    const sheet = newSheetId(doc), cooperate = host.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+                    const shapes = await convertExcalidrawShapes(wire.elements, { sheet, signal: context.signal, cooperate }); check();
+                    draft = await finalizeExcalidrawDraft(shapes, { elements: wire.elements, files: wire.files, sheet, signal: context.signal,
+                        current: () => current(identity), cooperate, resolveBinding: host.resolveBinding,
+                        inspectImage: (file, imageSignal) => inspectMedia(file.blob, { memory: host.memory, identity, isCurrent: current, signal: imageSignal }) });
+                    check();
+                } finally { wire.release(); }
+                if (draft.skipped) host.notice(`${draft.skipped} unsupported or unavailable clipboard item(s) were skipped.`);
+                if (!draft.nodes.length) return [];
+                external = { kind: 'excalidraw', draft };
+            }
+            const admitted = await host.admitExternal(external, context, identity);
+            acquisition = admitted.acquisition; check();
+            let containsFrame = false, visited = 0;
+            for (const node of acquisition.load.doc.nodes.values()) {
+                if (node.kind === 'frame') { containsFrame = true; break; }
+                if ((++visited & 255) === 0) { await (host.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); }
+            }
+            const placement = planBoardClipboardPlacement({ receivingBoardId: host.receivingBoardId, target: captured, doc,
+                source: { from: null, bounds: admitted.bounds }, containsFrame, cameraZoom: host.cameraZoom, intent });
+            const media = await prepareBoardClipboardMediaInJob({ runtime, acquisition, memory: host.memory, signal: context.signal,
+                current: () => current(identity), readBlob: (entry, mediaSignal) => {
+                    const blob = draft?.blobs.get(entry.id); return blob ? Promise.resolve(blob) : host.readBlob(entry, mediaSignal);
+                }, storeMedia: host.storeMedia, cooperate: host.cooperate }, context);
+            try {
+                check(); const owned = acquisition; acquisition = undefined;
+                return await insertNativeClipboard({ runtime, acquisition: owned, media, placement, target: captured,
+                    current: host.current, signal: context.signal, cooperate: host.cooperate });
+            } finally { media.release(); }
+        } finally { acquisition?.dispose(); draft?.release(); legacy?.release(); }
+    }, { signal, deadlineMs: 120_000 });
+}

@@ -24,7 +24,7 @@ export interface PrivateClipboardPasteOptions {
     readonly intent: ClipboardIntent;
     readonly receivingBoardId: string;
     readonly cameraZoom: number;
-    readonly cache?: ClipboardCopy;
+    readonly cache?: Pick<ClipboardCopy, 'match'>;
     current(target: Readonly<ClipboardTarget>): boolean;
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;

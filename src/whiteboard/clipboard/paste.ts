@@ -74,7 +74,7 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
     intent: ClipboardIntent, signal?: AbortSignal): Promise<readonly NodeId[]> {
     const copied = copyInput(input), captured = Object.freeze({ ...target, viewport: Object.freeze({ ...target.viewport }),
         pointer: target.pointer ? Object.freeze({ ...target.pointer }) : null });
-    const runtime = host.runtime, session = runtime.session, doc = session.doc;
+    const runtime = host.runtime, session = runtime.session, doc = session.doc, cachePin = host.cache?.pin();
     const bytes = copied.files.reduce((sum, file) => sum + (file.directory ? 0 : Math.min(file.blob.size, SECURITY_LIMITS.mediaBytes)), 0)
         + (copied.privatePng ? Math.min(copied.privatePng.size, SECURITY_LIMITS.mediaBytes) : 0);
     const deadlineMs = Math.min(600_000, Math.max(120_000, Math.ceil(bytes / (100 * 1024 * 1024)) * 30_000));
@@ -96,7 +96,7 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
             cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment ?? { appOrigin: host.classifier.appOrigin },
             embedManifest: host.embedManifest, noticeMissing, cooperate: host.cooperate };
         if (classification.kind === 'private') return pastePrivateClipboardInJob({ ...base, memory: host.memory, encoded: classification.encoded,
-            plain: copied.text ?? '', cache: host.cache, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
+            plain: copied.text ?? '', cache: cachePin ?? undefined, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
         if (classification.kind === 'text' || classification.kind === 'url') {
             const id = await pasteClipboardTextInJob({ ...base, content: classification.kind === 'text'
                 ? { kind: 'plain', text: classification.text } : { kind: 'url', url: classification.url }, signal: context.signal }, context);
@@ -158,5 +158,5 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
                 return inserted;
             } finally { media.release(); }
         } finally { acquisition?.dispose(); draft?.release(); wire?.release(); legacy?.release(); }
-    }, { signal, deadlineMs });
+    }, { signal, deadlineMs }).finally(() => cachePin?.release());
 }

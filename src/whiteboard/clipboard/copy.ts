@@ -14,6 +14,10 @@ export interface CachedClipboard {
     /** Source bytes remain behind their original session-owned media leases. */
     readMedia?(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
 }
+export interface ClipboardCachePin {
+    match(encoded: string, plain: string): CachedClipboard | null;
+    release(): void;
+}
 export interface ClipboardCopyHost {
     readonly runtime: BoardRuntime;
     /** Shared session allocator; cache leases can outlive the originating pane. */
@@ -109,6 +113,27 @@ export class ClipboardCopy {
         const entry = windowWritten;
         if (this.disposed || !entry || entry.envelope.encoded !== encoded || (entry.envelope.cacheOnly && entry.envelope.plain !== plain)) return null;
         return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly, readMedia: entry.readMedia };
+    }
+
+    /** Pin the current window cache when a paste is queued, before a later copy can replace it. */
+    pin(): ClipboardCachePin | null {
+        const entry = windowWritten;
+        if (this.disposed || !entry) return null;
+        entry.held.count++;
+        let active = true;
+        return {
+            match(encoded, plain) {
+                if (!active || entry.envelope.encoded !== encoded || entry.envelope.cacheOnly && entry.envelope.plain !== plain) return null;
+                return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly,
+                    async readMedia(id, signal) {
+                        if (!active) throw new DOMException('Clipboard cache pin ended', 'AbortError');
+                        entry.held.count++;
+                        try { return await entry.readMedia(id, signal); }
+                        finally { release(entry.held); }
+                    } };
+            },
+            release() { if (active) { active = false; release(entry.held); } },
+        };
     }
 
     /** The event path captures the current selection synchronously; it never waits for a warm cache. */

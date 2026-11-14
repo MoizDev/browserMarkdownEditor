@@ -261,9 +261,10 @@ function hostFailure(r: Extract<HostResult, { ok: false }>, verb: string, path: 
     }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+/** A timed-out open-view read is also aborted, so it stops consuming the shared PDF pool. */
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string, abort?: AbortController): Promise<T> {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new ToolError(`${what} timed out`)), ms);
+        const timer = setTimeout(() => { abort?.abort(); reject(new ToolError(`${what} timed out`)); }, ms);
         promise.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
     });
 }
@@ -447,6 +448,14 @@ async function readText(a: Args, ctx: Ctx, path: string): Promise<ToolExecution>
     return ok(body.join('\n'));
 }
 
+/** Aborted by the run's own cancellation; a view read adds its timeout on top. */
+function viewReadController(ctx: Ctx): AbortController {
+    const controller = new AbortController();
+    if (ctx.signal?.aborted) controller.abort();
+    else ctx.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+    return controller;
+}
+
 async function withClosedPdfDeadline<T>(ctx: Ctx, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     ctx.ensureLive();
     const controller = new AbortController();
@@ -492,7 +501,8 @@ async function readPdf(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> 
         // rather than extracting fifty pages to keep three.
         for (let p = first; p <= pageCount && pages.length < maxPages;) {
             const batch = Array.from({ length: Math.min(5, maxPages - pages.length, pageCount - p + 1) }, (_, i) => p + i);
-            const got = await withTimeout(view.pdfText(batch), REPORTER_TIMEOUT_MS, 'extracting the PDF text');
+            const controller = viewReadController(ctx);
+            const got = await withTimeout(view.pdfText(batch, controller.signal), REPORTER_TIMEOUT_MS, 'extracting the PDF text', controller);
             let full = false;
             for (const g of got.sort((x, y) => x.page - y.page)) {
                 const size = g.text.length + pdfExtractionWarning(g).length + 1;

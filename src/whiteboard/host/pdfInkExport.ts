@@ -3,13 +3,6 @@ import type { SheetId } from '../model/ids';
 import type { IncrementalPdfPage } from '../export/incrementalPdf';
 import type { EmittedInk } from '../../pdf/writing/protocol';
 
-export interface PdfInkPage {
-    readonly sourcePage: number;
-    readonly width: number;
-    readonly height: number;
-    readonly displayList: PageDisplayList;
-}
-
 /** The source is revision-pinned; the reader returns page-local, clipped print-light ink. */
 export interface PdfInkSnapshot {
     readonly pages: readonly PageGeometry[];
@@ -58,36 +51,4 @@ export async function emitStreamingPdfInk(snapshot: PdfInkSnapshot, revision: nu
         complete = true;
         return result;
     } finally { if (!complete) await output.cancel(); }
-}
-
-/** Preserve logical-sheet compositing order on each original physical PDF page. */
-export async function pdfInkPages(snapshot: PdfInkSnapshot, signal: AbortSignal): Promise<PdfInkPage[]> {
-    const pages = [...snapshot.pages], sheets = [...snapshot.sheets];
-    const output: PdfInkPage[] = [];
-    for (let i = 0; i < pages.length; i++) {
-        signal.throwIfAborted();
-        const geometry = pages[i];
-        if (geometry.index !== i || !Number.isFinite(geometry.width) || !Number.isFinite(geometry.height)
-            || geometry.width <= 0 || geometry.height <= 0) throw new Error('Invalid PDF page geometry');
-        const displayList: PageDisplayList = { page: i, items: [] };
-        for (const sheet of sheets) {
-            const list = await snapshot.readSheetPage(sheet, i, signal);
-            signal.throwIfAborted();
-            if (list.page !== i) throw new Error('PDF ink export returned the wrong physical page');
-            for (const item of list.items) displayList.items.push(item);
-        }
-        output.push({ sourcePage: i, width: geometry.width, height: geometry.height, displayList });
-    }
-    return output;
-}
-
-/** The PDF domain owns the writer; the host loads it only for a save. */
-export async function emitPdfInk<T>(
-    snapshot: PdfInkSnapshot,
-    writer: (pages: PdfInkPage[], options: { signal: AbortSignal }) => Promise<T>,
-    signal: AbortSignal,
-): Promise<T> {
-    const pages = await pdfInkPages(snapshot, signal);
-    signal.throwIfAborted();
-    return writer(pages, { signal });
 }

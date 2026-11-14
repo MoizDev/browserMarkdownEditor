@@ -99,6 +99,12 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
             if (end !== node.end) set('end', end);
         }
         if (node.kind === 'polyline') {
+            for (const key of ['startAttach', 'endAttach'] as const) {
+                const value = node[key];
+                if (!value) continue;
+                const x = clamp(value.anchor.x, 0, 1, .5), y = clamp(value.anchor.y, 0, 1, .5);
+                if (x !== value.anchor.x || y !== value.anchor.y) set(key, { ...value, anchor: { x, y } });
+            }
             const points: Point[] = [];
             let modified = false;
             for (const point of node.points) {

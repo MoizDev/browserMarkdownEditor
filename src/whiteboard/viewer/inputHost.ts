@@ -6,7 +6,7 @@ import type { Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import { attachBoardInput, type BoardInputMode, type BoardInputServices, type BoardInputView, type BoardWetLayer } from '../input/attach';
 import { MappingHistory } from '../input/pointer';
-import type { InputToken } from '../input/tool';
+import type { InputToken, RealSample } from '../input/tool';
 import type { BoardSession } from '../session/BoardSession';
 import type { ViewerEngine, ViewerInteractionPorts } from './types';
 import { createBoardWetLayer } from './wetLayer';
@@ -68,21 +68,27 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     };
     const stopInteraction = options.engine.bindInteractions(interaction);
     const stopAttachment = () => { const stop = attached; attached = null; if (stop) safe(stop); contacts.clear(); flush = null; };
+    const clientToSurface = (x: number, y: number): Point => {
+        if (!binding) throw new Error('Input surface is not attached');
+        const box = binding.surface.getBoundingClientRect(), viewport = options.viewport();
+        if (box.width <= 0 || box.height <= 0 || viewport.width <= 0 || viewport.height <= 0) throw new RangeError('Input surface has no viewport');
+        return { x: (x - box.left) * viewport.width / box.width, y: (y - box.top) * viewport.height / box.height };
+    };
+    const sampleToSurface = (sample: RealSample): Point => {
+        if (sample.source === 'keyboard') return worldToSurface(sample, options.camera.camera);
+        const client = mappings.unmap(sample.time, sample);
+        return clientToSurface(client.x, client.y);
+    };
     const connect = () => {
         if (!binding || attached || !enabled || !current()) return;
         const { surface, overlay } = binding;
-        const clientToSurface = (x: number, y: number): Point => {
-            const box = surface.getBoundingClientRect(), viewport = options.viewport();
-            if (box.width <= 0 || box.height <= 0 || viewport.width <= 0 || viewport.height <= 0) throw new RangeError('Input surface has no viewport');
-            return { x: (x - box.left) * viewport.width / box.width, y: (y - box.top) * viewport.height / box.height };
-        };
         const services = options.services(surface, overlay, wet);
         const view: BoardInputView = {
             surface, camera: options.camera, wet, token: inputToken, mappings, a11y: options.a11y, paged: options.paged,
             visible: () => enabled && current(), current: value => value.vaultEpoch === inputToken.vaultEpoch && value.tabId === inputToken.tabId
                 && value.sessionGeneration === inputToken.sessionGeneration && value.viewGeneration === inputToken.viewGeneration && current(),
             bindFlush(callback) { flush = callback; return () => { if (flush === callback) flush = null; }; },
-            sampleToSurface: sample => worldToSurface(sample, options.camera.camera), clientToSurface,
+            sampleToSurface, clientToSurface,
             predictionMapping() {
                 const camera = { ...options.camera.camera }, viewport = { ...options.viewport() }, rect = surface.getBoundingClientRect();
                 if (rect.width <= 0 || rect.height <= 0 || viewport.width <= 0 || viewport.height <= 0) throw new RangeError('Input surface has no prediction viewport');
@@ -115,7 +121,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         return () => { if (removed) return; removed = true; if (binding?.surface === surface && binding.overlay === overlay) { stopAttachment(); binding = null; } };
     };
     return {
-        attachInput,
+        attachInput, mappings, sampleToSurface, clientToSurface,
         layers: wet.layers,
         schedule(callback: () => void) {
             if (disposed) return () => {};

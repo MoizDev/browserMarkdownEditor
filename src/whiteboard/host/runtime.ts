@@ -7,6 +7,7 @@ import { createBoardToolState } from '../input/boardTools';
 import type { ToolState } from '../input/gesture';
 import { TOOLS } from '../model/styles';
 import { SampleStore } from '../ink/samples';
+import { createJobAuthority, type JobAuthority } from '../security/admission';
 import { SessionScene } from '../scene/sessionScene';
 import type { SessionSceneOptions } from '../scene/sessionScene';
 import { createBoardSession } from '../session/createBoardSession';
@@ -38,6 +39,7 @@ export interface BoardRuntime {
     readonly selection: SelectionState;
     readonly tools: ToolState;
     readonly samples: SampleStore;
+    readonly jobs: JobAuthority;
     readonly media: BoardSessionFactoryOptions['media'];
     readonly render: ReturnType<typeof createBoardRenderServices>;
     readonly encoder: BoardSessionFactoryOptions['encoder'];
@@ -66,6 +68,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     const first = options.doc.sheetOrder[0];
     if (!first) throw new Error('A board runtime needs a sheet');
     if (options.scene.token.documentId !== options.owner.documentId || options.scene.token.session !== options.owner.session) throw new Error('Scene token does not match board session');
+    const jobs = createJobAuthority(`${options.owner.documentId}:${options.owner.session}`, options.scene.token.vaultEpoch, options.owner.session);
     const selection = new SelectionState(first.id), tools = createBoardToolState(options.doc.ui, options.doc.view.toolLock);
     const attached = new Set<Registration>(), controller = new AbortController();
     let scene: SessionScene | null = null, disposed = false, pendingReveal: Set<NodeId> | undefined;
@@ -157,7 +160,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     })();
     void ready.catch(() => {});
     const runtime: BoardRuntime = {
-        session, selection, tools, samples, media: options.media, render: options.render, encoder: options.encoder, ready,
+        session, selection, tools, samples, jobs, media: options.media, render: options.render, encoder: options.encoder, ready,
         get scene() { return scene; },
         bindView(sink) {
             if (disposed) throw new Error('Board runtime disposed');
@@ -168,7 +171,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         flushFrame(frameId) { if (!disposed) { notices.visibilityChanged(); flushReveal(); notices.flushFrame(frameId); } },
         dispose() {
             if (disposed) return;
-            disposed = true; controller.abort(); stopSelection(); stopTools();
+            disposed = true; jobs.dispose(); controller.abort(); stopSelection(); stopTools();
             for (const entry of attached) views.delete(entry);
             attached.clear(); notices.visibilityChanged(); pendingReveal = undefined;
             runtimes.delete(session);

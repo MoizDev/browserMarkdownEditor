@@ -59,6 +59,7 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
     const ownedPrime: SerializerPrime = {
         ...prime,
         ...(prime.lines ? { lines: prime.lines.map(line => ({ ...line, identity: { ...line.identity } })) } : {}),
+        ...(prime.overrides ? { overrides: prime.overrides.map(change => ({ identity: { ...change.identity }, revision: change.revision, bytes: change.bytes.slice() })) } : {}),
     };
     const root: Root = { prime: ownedPrime, header: prime.header };
     let current: Revision = { root, parent: null, delta: null, revision: prime.revision, header: prime.header };

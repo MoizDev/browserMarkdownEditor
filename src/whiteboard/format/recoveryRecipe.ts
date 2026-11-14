@@ -53,8 +53,19 @@ export async function materializeBoardRecoveryRecipe(payload: unknown, signal: A
             lines.push({ identity: identity(line.identity), offset, length, revision: revision(line.revision) });
         }
     }
+    let overrides: SerializerChange[] | undefined;
+    if (source.overrides !== undefined) {
+        if (!Array.isArray(source.overrides)) throw new TypeError('Invalid recovery baseline overrides');
+        overrides = [];
+        for (const value of source.overrides) {
+            signal.throwIfAborted();
+            const change = record(value);
+            if (!(change.bytes instanceof Uint8Array) || revision(change.revision) !== baseRevision) throw new TypeError('Invalid recovery baseline override');
+            overrides.push({ identity: identity(change.identity), revision: baseRevision, bytes: change.bytes.slice() });
+        }
+    }
     const prime: SerializerPrime = { revision: baseRevision, baseline, header: source.header,
-        ...(lines ? { lines } : { index: blob(source.index) }) };
+        ...(lines ? { lines } : { index: blob(source.index) }), ...(overrides ? { overrides } : {}) };
     // A baseline alone is not evidence of the unsaved revision.
     if (recipe.delta === null || recipe.delta === undefined) throw new TypeError('Dirty board recovery requires a cumulative delta');
     const rawDelta = record(recipe.delta), nextRevision = revision(rawDelta.revision);

@@ -75,6 +75,11 @@ async function prime(input: SerializerPrime, context: WorkerContext): Promise<Se
             take(table.set({ identity: line.identity, text }, line.revision));
             if ((index++ & 127) === 127) await context.slice();
         }
+        for (const change of input.overrides ?? []) {
+            if (change.revision !== input.revision || !(change.bytes instanceof Uint8Array)) return writeFailure('invalid', 'Invalid baseline override');
+            take(table.set({ identity: change.identity, text: decoder.decode(change.bytes) }, change.revision));
+            if ((index++ & 127) === 127) await context.slice();
+        }
         // Publish atomically: a failed or cancelled prime cannot erase a usable history.
         await context.slice();
         revisions.clear();

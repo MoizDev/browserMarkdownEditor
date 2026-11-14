@@ -71,6 +71,20 @@ export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementC
         if (node.kind === 'text' && op.w !== undefined && op.h === undefined) {
             candidate = { ...node, w: op.w, autoSize: false };
             ops.push({ t: 'set', id: node.id, key: 'w', value: op.w }, { t: 'set', id: node.id, key: 'autoSize', value: false });
+        } else if (node.kind === 'stroke' || node.kind === 'polyline') {
+            if ((op.w !== undefined && oldBox.w <= 0) || (op.h !== undefined && oldBox.h <= 0))
+                throw new AgentOpRefused('a zero-extent axis cannot be resized');
+            const sx = op.w === undefined ? 1 : op.w / oldBox.w, sy = op.h === undefined ? 1 : op.h / oldBox.h;
+            if (node.kind === 'stroke') {
+                candidate = { ...node, sx: node.sx * sx, sy: node.sy * sy };
+                if (op.w !== undefined) ops.push({ t: 'set', id: node.id, key: 'sx', value: candidate.sx });
+                if (op.h !== undefined) ops.push({ t: 'set', id: node.id, key: 'sy', value: candidate.sy });
+            } else {
+                const points = node.points.map(point => ({ x: oldBox.x + (point.x - oldBox.x) * sx,
+                    y: oldBox.y + (point.y - oldBox.y) * sy }));
+                candidate = { ...node, points };
+                ops.push({ t: 'set', id: node.id, key: 'points', value: points });
+            }
         } else {
             if (!isBox(node)) throw new AgentOpRefused('this shape cannot be resized by the agent');
             candidate = { ...node, w: op.w ?? node.w, h: op.h ?? node.h };
@@ -79,6 +93,10 @@ export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementC
         }
     }
     const newBox = context.localBox(candidate);
+    if ((op.w !== undefined && Math.abs(newBox.w - op.w) > 0.01)
+        || (op.h !== undefined && Math.abs(newBox.h - op.h) > 0.01)) {
+        throw new AgentOpRefused('requested size cannot be represented exactly');
+    }
     const parent = parentTransform(context, node, target.page);
     const rotation = op.rotation === undefined ? node.rotation : normalize((op.rotation % 360) * Math.PI / 180 - parent.angle);
     if (op.rotation !== undefined) ops.push({ t: 'set', id: node.id, key: 'rotation', value: rotation });

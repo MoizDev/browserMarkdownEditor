@@ -295,6 +295,15 @@
     "shortcuts.select.neighbour.ArrowLeft": "اختر اليسار",
     "shortcuts.nudge.ArrowRight": "ادفع لليمين",
     "shortcuts.nudge.coarse.ArrowRight": "ادفع إلى اليمين أبعد",
-    "shortcuts.select.neighbour.ArrowRight": "اختر الحق"
+    "shortcuts.select.neighbour.ArrowRight": "اختر الحق",
+    "chrome.debugOverlay": "تراكب التصحيح",
+    "chrome.debugTool": "أداة",
+    "chrome.debugSelection": "التحديد",
+    "chrome.debugSheet": "ورقة",
+    "chrome.debugZoom": "تكبير",
+    "chrome.debugFrameTime": "وقت الإطار",
+    "chrome.debugNodes": "العقد",
+    "chrome.debugVisibleNodes": "العقد المرئية",
+    "chrome.debugBackend": "تقديم الخلفية"
   }
 }

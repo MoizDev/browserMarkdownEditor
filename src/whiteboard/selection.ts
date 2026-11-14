@@ -26,8 +26,16 @@ export class SelectionState {
     }
     setSheet(sheet: SheetId): void { this.publish(sheet, sheet, [], null); }
     setFocus(focus: ParentId): void { this.publish(this.snapshot.sheet, focus, [], null); }
+    setScope(focus: ParentId, ids: readonly NodeId[], active: NodeId | null = ids[ids.length - 1] ?? null): void { this.publish(this.snapshot.sheet, focus, ids, active); }
     replace(ids: readonly NodeId[], active: NodeId | null = ids[ids.length - 1] ?? null): void { this.publish(this.snapshot.sheet, this.snapshot.focus, ids, active); }
     clear(): void { this.replace([]); }
+    reconcile(doc: BoardDoc): void {
+        const { sheet, selected, active } = this.snapshot;
+        if (!doc.sheets.has(sheet)) { this.clear(); return; }
+        const focus = this.snapshot.focus === sheet || sheetOf(doc, this.snapshot.focus) === sheet ? this.snapshot.focus : sheet;
+        const eligible = selected.filter(id => selectableAtFocus(doc, id, focus, sheet) === id);
+        this.publish(sheet, focus, eligible, active !== null && eligible.includes(active) ? active : eligible[eligible.length - 1] ?? null);
+    }
     toggle(id: NodeId): void {
         const ids = this.snapshot.selected;
         if (ids.includes(id)) {
@@ -54,4 +62,35 @@ export function selectableAtFocus(doc: BoardDoc, id: NodeId, focus: ParentId, sh
 export function selectAllAtFocus(doc: BoardDoc, sheet: SheetId, focus: ParentId): readonly NodeId[] {
     if (sheetOf(doc, focus) !== sheet && focus !== sheet) return [];
     return childrenOf(doc, focus).filter(node => selectableAtFocus(doc, node.id, focus, sheet) === node.id).map(node => node.id);
+}
+
+export function enterGroup(doc: BoardDoc, selection: SelectionState, group: NodeId, child: NodeId): boolean {
+    const state = selection.getSnapshot(), node = doc.nodes.get(group);
+    if (!node || node.kind !== 'group' || selectableAtFocus(doc, group, state.focus, state.sheet) !== group) return false;
+    const resolved = selectableAtFocus(doc, child, group, state.sheet);
+    if (!resolved || resolved === group) return false;
+    selection.setScope(group, [resolved]);
+    return true;
+}
+export function selectFirstChild(doc: BoardDoc, selection: SelectionState): boolean {
+    const state = selection.getSnapshot(), id = state.active, node = id ? doc.nodes.get(id) : undefined;
+    if (!node || node.kind !== 'group') return false;
+    const child = childrenOf(doc, node.id).find(item => selectableAtFocus(doc, item.id, node.id, state.sheet) === item.id);
+    if (!child) return false;
+    selection.setScope(node.id, [child.id]);
+    return true;
+}
+export function selectParent(doc: BoardDoc, selection: SelectionState): boolean {
+    const state = selection.getSnapshot(), focus = doc.nodes.get(state.focus as NodeId);
+    if (!focus || focus.kind !== 'group') return false;
+    const parentFocus = focus.parent;
+    if (selectableAtFocus(doc, focus.id, parentFocus, state.sheet) !== focus.id) return false;
+    selection.setScope(parentFocus, [focus.id]);
+    return true;
+}
+export function escapeSelection(doc: BoardDoc, selection: SelectionState): void {
+    const state = selection.getSnapshot();
+    if (state.selected.length) { selection.clear(); return; }
+    const focus = doc.nodes.get(state.focus as NodeId);
+    if (focus) selection.setFocus(focus.parent);
 }

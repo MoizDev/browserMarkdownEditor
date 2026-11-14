@@ -6,7 +6,7 @@ import { canReadTabText,readingCapabilities,getReadingSurface,subscribeReadingSu
 import type { ReaderIntegration } from '../types/reading';
 import EpubReaderHost from './EpubReaderHost';
 import WordEmphasisToggle from './WordEmphasisToggle';
-import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { Compartment, EditorState } from '@codemirror/state';
 import type { ChangeDesc, Extension } from '@codemirror/state';
@@ -682,6 +682,19 @@ function DocumentPane({
 
     const viewRef = useRef<EditorView | null>(null);
     const detachViewRef = useRef<(() => void) | undefined>(undefined);
+    const destroyView = useCallback(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        cancelReadingConfiguration(view);
+        cancelWordReadingAnchor(view);
+        detachViewRef.current?.();
+        detachViewRef.current = undefined;
+        view.destroy();
+        viewRef.current = null;
+    }, []);
+    // TeX read mode swaps the container without unmounting this pane. A ref's
+    // transient null on an ordinary re-render must not destroy the live view.
+    useLayoutEffect(() => { if (texReading) destroyView(); }, [texReading, destroyView]);
     /** True only while setEditorContainer builds the view — see there. */
     const buildingViewRef = useRef(false);
 
@@ -1133,14 +1146,7 @@ function DocumentPane({
 
     // Detach the view; the App-owned session retains the document state.
     useEffect(() => () => {
-        const view = viewRef.current;
-        if (view) {
-            cancelReadingConfiguration(view); cancelWordReadingAnchor(view);
-            detachViewRef.current?.();
-            detachViewRef.current = undefined;
-            view.destroy();
-            viewRef.current = null;
-        }
+        destroyView();
         // Scrolling and then switching tabs inside the debounce must not lose
         // where the reader was — write it now rather than drop it. Keyed by
         // path, so this finds the timer the handler actually armed even when
@@ -1149,7 +1155,7 @@ function DocumentPane({
         const currentPath = markdownSessions.pathOf(documentId);
         if (currentPath !== undefined) { flushScroll(currentPath); flushFolds(currentPath); }
         if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
-    }, [documentId, markdownSessions]);
+    }, [documentId, markdownSessions, destroyView]);
 
     /* ── Live settings → the open view ────────────────────────────────────
        The three effects below carry a CHANGE of setting into a view that is

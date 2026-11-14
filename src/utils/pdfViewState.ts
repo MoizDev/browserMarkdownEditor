@@ -10,7 +10,7 @@
 // Imports nothing heavy: both the reader and the annotate chunk load it, and it
 // must not drag pdf.js or tldraw into the other.
 
-import { flushRecord, readRecord, scopedKey } from './storage';
+import { flushRecord, readRecord, scopedKey, writeStoredValue } from './storage';
 
 const POSITIONS_KEY = 'pdfViewPositions';
 const THUMBNAILS_KEY = 'pdfThumbnailsOpen';
@@ -72,9 +72,7 @@ export function readThumbnailsOpen(): boolean {
 }
 
 export function writeThumbnailsOpen(open: boolean): void {
-    try {
-        localStorage.setItem(THUMBNAILS_KEY, String(open));
-    } catch { /* the toggle still works for this session */ }
+    writeStoredValue(THUMBNAILS_KEY, String(open));
 }
 
 /* ── Inverted pages ──────────────────────────────────────────────────────── */
@@ -106,9 +104,7 @@ export function getPdfInverted(): boolean {
 export function setPdfInverted(next: boolean): void {
     if (next === inverted) return;
     inverted = next;
-    try {
-        localStorage.setItem(INVERT_KEY, String(next));
-    } catch { /* still applies for this session */ }
+    writeStoredValue(INVERT_KEY, String(next));
     for (const listener of invertListeners) listener();
 }
 

@@ -21,6 +21,8 @@ export class SearchResidency {
     private files: IndexFile[] = [];
     private runner: Promise<void> | undefined;
     private requested = new Set<string>();
+    private interested = new Set<string>();
+    private started = false;
     private fullStat = false;
     private disposed = false;
 
@@ -40,9 +42,13 @@ export class SearchResidency {
         this.fullStat = true;
     }
     invalidate(paths: readonly string[]) {
-        for (const path of paths) { this.advance(path); this.sources.delete(path); this.entries.delete(path); }
+        for (const path of paths) {
+            this.advance(path); this.sources.delete(path); this.entries.delete(path);
+            if (this.interested.has(path)) this.requested.add(path);
+        }
     }
     prime(path: string, mtime: number, size: number, text: string) {
+        if (!this.started) return;
         this.advance(path);
         this.sources.set(path, { revision: this.rev(path), stat: { mtime, size, bytes: async () => new TextEncoder().encode(text).buffer } });
         this.entries.set(path, { mtime, size, text: size <= FILE_LIMIT ? text.replace(/\r\n?/g, '\n') : undefined });
@@ -50,6 +56,8 @@ export class SearchResidency {
     }
     dispose() { this.disposed = true; this.entries.clear(); this.sources.clear(); this.requested.clear(); }
     snapshot(): ReadonlyMap<string, TextEntry> { return this.entries; }
+    // Stat completion order must not decide the global source-byte budget:
+    // reserve synchronously in the provider's canonical tree order.
     private admit() {
         const accepted = new Set<string>();
         let bytes = 0;
@@ -62,7 +70,8 @@ export class SearchResidency {
         return accepted;
     }
     async ensure(paths: readonly string[], onProgress?: () => Promise<void>): Promise<void> {
-        for (const path of paths) this.requested.add(path);
+        this.started = true;
+        for (const path of paths) { this.interested.add(path); this.requested.add(path); }
         if (this.runner) { await this.runner; if (this.fullStat || paths.some(path => this.requested.has(path))) return this.ensure(paths, onProgress); return; }
         const run = this.run(onProgress);
         this.runner = run;
@@ -84,7 +93,7 @@ export class SearchResidency {
                     if (this.valid(file.path, rev) && treeGen === this.treeGen) this.sources.set(file.path, { stat, revision: rev });
                 } catch { /* Transient IO failures are not cached. */ }
             });
-            if (treeGen !== this.treeGen) continue;
+            if (treeGen !== this.treeGen) { for (const path of wanted) this.requested.add(path); continue; }
             const admitted = this.admit();
             for (const file of eligible) {
                 if (!wanted.has(file.path) || !admitted.has(file.path)) continue;

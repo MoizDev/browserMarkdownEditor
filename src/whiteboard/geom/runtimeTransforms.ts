@@ -123,7 +123,8 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
             const staged = await acquireBoardGeometryScope(runtime, roots.map(root => root.node.id), { doc: candidate, signal: request, current: active, cooperate: options.cooperate });
             let published = false;
             try {
-                assert(); const final: NodeSetOp[] = initial.filter(op => protectedIds.has(op.id));
+                assert(); const final: NodeSetOp[] = initial.filter(op => protectedIds.has(op.id)
+                    && !Object.is(Reflect.get(doc.nodes.get(op.id)!, op.key), op.value));
                 for (const root of roots) {
                     const b = staged.logicalBounds(root.node.id), center = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
                     const geometry: ChangeGeometry = { resolvedTip: runtime.render.changeGeometry.resolvedTip,

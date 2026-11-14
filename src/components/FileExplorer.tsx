@@ -167,7 +167,7 @@ function FileExplorer({
        explorer of a user sorting by name. The custom order is subscribed the
        same way, only while Custom is chosen: `.appearance.json` also changes
        with every icon pick. */
-    const sortCacheRef = useRef(createSortCache());
+    const [sortCache] = useState(createSortCache);
     const timesVersion = useSyncExternalStore(
         subscribeFileTimes,
         useCallback(() => (isTimeSort(sortOrder) ? getFileTimesVersion() : 0), [sortOrder]),
@@ -178,8 +178,8 @@ function FileExplorer({
     );
     const displayTree = useMemo(() => {
         void timesVersion; // the times map is mutable; its version is the dependency
-        return sortTree(fileTree, sortOrder, getFileTimes(), sortCacheRef.current, customOrder);
-    }, [fileTree, sortOrder, timesVersion, customOrder]);
+        return sortTree(fileTree, sortOrder, getFileTimes(), sortCache, customOrder);
+    }, [fileTree, sortOrder, timesVersion, customOrder, sortCache]);
 
     /** What a Custom-order drag measures against — only built under Custom, and
      *  once per display tree, not per `dragover`. */

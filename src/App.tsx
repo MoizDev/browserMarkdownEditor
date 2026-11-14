@@ -2949,7 +2949,7 @@ export default function App() {
             try {
               await reconcileQueueRef.current;
               const stillCurrent = () => {
-                if (!nativeCanvasHost.isCurrent(conversionIdentity) || rootHandleRef.current !== rootAtCall
+                if (!nativeCanvasHost.isCurrent(conversionIdentity) || !pdfWriteAllowed() || rootHandleRef.current !== rootAtCall
                   || documentSessions.get(id) !== sessionAtCall
                   || !tabsRef.current.some(t => t.id === id && t.file.path === path && t.file.handle === handle)
                   || getBaseline(id)?.hash !== expected.hash || diskStateRef.current.has(id)

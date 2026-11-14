@@ -60,6 +60,7 @@ function glyphPath(entry: FontEntry, id: number): GlyphPath {
 
 /** The captured layout decides lines and faces; shaping may fall back but never reflows the fragment. */
 export async function shapeTextFragment(fragment: PaintFragment, face: Face, baseline: number, context: WorkerContext): Promise<PathCommand[] | null> {
+    if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
     if (fragment.systemFallback || !face.loaded) return null;
     try {
         const [hb, entry] = await Promise.all([import('harfbuzzjs'), outlineFont(face, context.signal)]);
@@ -107,6 +108,7 @@ export async function shapeTextFragment(fragment: PaintFragment, face: Face, bas
         return commands.length || !/\S/u.test(fragment.text) ? commands : null;
     } catch {
         context.signal.throwIfAborted();
+        if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
         return null;
     }
 }

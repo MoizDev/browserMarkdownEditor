@@ -10,6 +10,7 @@ const rectangle = (value: unknown): boolean => object(value) && finite(value.x) 
 /** The worker never treats a malformed display list or a different face generation as drawable text. */
 export async function validOutlineRequest(value: unknown, context: WorkerContext): Promise<boolean> {
     context.signal.throwIfAborted();
+    if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
     if (!object(value) || !object(value.paint) || !object(value.faces) || !object(value.material)
         || !finite(value.pageScale) || value.pageScale <= 0 || !Array.isArray(value.localToWorld)
         || value.localToWorld.length !== 6 || ![0, 1, 2, 3, 4, 5].every(index => finite((value.localToWorld as unknown[])[index]))) return false;
@@ -46,5 +47,6 @@ export async function validOutlineRequest(value: unknown, context: WorkerContext
         }
     }
     context.signal.throwIfAborted();
+    if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
     return glyphs === material.glyphs.length;
 }

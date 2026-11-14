@@ -31,6 +31,7 @@ function maxStretch(matrix: Affine): number {
 export async function* rasterTextFragment(fragment: PaintFragment, face: Face, baseline: number, lineTop: number, lineBottom: number,
     localToWorld: Affine, color: Rgba, pageScale: number, blend: 'normal' | 'multiply', fonts: BoardFonts, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
     context.signal.throwIfAborted();
+    if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
     if (face.loaded && !await awaitOutlineResource(fonts.load(face.key), context.signal, 30_000, 'Export canvas font'))
         throw new Error('Export canvas font could not be loaded');
     context.signal.throwIfAborted();
@@ -51,6 +52,7 @@ export async function* rasterTextFragment(fragment: PaintFragment, face: Face, b
         || !Number.isSafeInteger(pixelWidth) || !Number.isSafeInteger(pixelHeight)) throw new RangeError('Text raster geometry is out of range');
     for (let py = 0; py < pixelHeight; py += TILE_SIDE) for (let px = 0; px < pixelWidth; px += TILE_SIDE) {
         context.signal.throwIfAborted();
+        if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
         const tileWidth = Math.min(TILE_SIDE, pixelWidth - px), tileHeight = Math.min(TILE_SIDE, pixelHeight - py);
         const canvas = new OffscreenCanvas(tileWidth, tileHeight), draw = canvas.getContext('2d');
         if (!draw) throw new Error('Export canvas is unavailable');

@@ -1,5 +1,7 @@
 import type { CaretIndex, CaretPosition, CaretStop, TextPaint } from '../paint';
 import { sliceRichText, type Block, type RichFragment } from '../richText';
+import { graphemeBoundaries, isGraphemeBoundary } from '../graphemes';
+import { mapTextSelection } from '../rangeMap';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
@@ -66,10 +68,12 @@ export class TextEditSession {
     private compositionSelection: EditSelection | null = null;
     private compositionRange: { from: number; to: number } | null = null;
     private closed = false;
+    private lastText: string;
 
     constructor(container: HTMLElement, label: string, private readonly id: NodeId, private readonly key: 'text' | 'label', selection: EditSelection,
         private readonly services: EditSessionServices, private readonly mac: boolean, forceFallback = false) {
         this.selection = selection;
+        this.lastText = services.plainText();
         this.typingHistory = new TypingHistory(services.history, next => this.restoreSelection(next));
         this.controller = new TextEditController(id, key, {
             apply: transaction => services.apply(transaction), readText: () => services.readText(),
@@ -159,7 +163,7 @@ export class TextEditSession {
 
     private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): void {
         this.resetBlink();
-        try { this.selection = this.controller.replace(change, kind, this.selection); }
+        try { this.selection = this.controller.replace(change, kind, this.selection); this.lastText = this.services.plainText(); }
         catch (error) { this.services.reportError(error); return; }
         this.affinity = undefined;
         this.goalX = undefined;
@@ -238,7 +242,7 @@ export class TextEditSession {
                     catch (error) { this.services.reportError(error); }
                     this.host.sync();
                 } else if (command === 'enter') {
-                    try { this.selection = this.controller.enter(this.selection); this.services.changed(this.selection); }
+                    try { this.selection = this.controller.enter(this.selection); this.lastText = this.services.plainText(); this.services.changed(this.selection); }
                     catch (error) { this.services.reportError(error); }
                     this.resetBlink();
                     this.host.sync();
@@ -262,7 +266,11 @@ export class TextEditSession {
                 }
             },
             inList: () => this.services.inList(this.selection.focus),
-            undoTransformation: () => this.typingHistory.undoTransformation(),
+            undoTransformation: () => {
+                const undone = this.typingHistory.undoTransformation();
+                if (undone) this.lastText = this.services.plainText();
+                return undone;
+            },
         }, this.mac);
     }
 
@@ -271,6 +279,7 @@ export class TextEditSession {
         if (!this.services.alive()) { this.close(false); return; }
         if (this.blinkReduced !== this.services.reducedMotion()) this.resetBlink();
         this.host.sync();
+        this.lastText = this.services.plainText();
         const layout = this.services.layout();
         const { a, b, c, d, e, f } = layout.localToClient;
         const container = this.host.element.parentElement?.getBoundingClientRect();
@@ -308,7 +317,32 @@ export class TextEditSession {
         return { selection, caret, composition, handles };
     }
 
-    externalChange(): void { this.typingHistory.close(); this.sync(); }
+    externalChange(): void {
+        this.typingHistory.close();
+        const before = this.lastText, after = this.services.plainText();
+        if (before !== after) {
+            let from = 0, oldEnd = before.length, newEnd = after.length;
+            while (from < oldEnd && from < newEnd && before[from] === after[from]) from++;
+            while (oldEnd > from && newEnd > from && before[oldEnd - 1] === after[newEnd - 1]) { oldEnd--; newEnd--; }
+            while (from > 0 && (!isGraphemeBoundary(before, from) || !isGraphemeBoundary(after, from))) from--;
+            while ((oldEnd < before.length || newEnd < after.length)
+                && (!isGraphemeBoundary(before, oldEnd) || !isGraphemeBoundary(after, newEnd))) {
+                oldEnd = Math.min(before.length, oldEnd + 1); newEnd = Math.min(after.length, newEnd + 1);
+            }
+            const mapped = mapTextSelection(this.selection, { from, to: oldEnd, insertedLength: newEnd - from });
+            const boundaries = graphemeBoundaries(after);
+            const clamp = (offset: number) => {
+                let lo = 0, hi = boundaries.length;
+                while (lo + 1 < hi) { const mid = (lo + hi) >>> 1; if (boundaries[mid] <= offset) lo = mid; else hi = mid; }
+                return boundaries[lo];
+            };
+            this.selection = { anchor: clamp(mapped.anchor), focus: clamp(mapped.focus) };
+            this.services.setSelection(this.selection);
+            this.services.changed(this.selection);
+        }
+        this.lastText = after;
+        this.sync();
+    }
     getSelection(): EditSelection { return this.selection; }
     /** Local boxes share the same caret index as selection and IME geometry. */
     rangeRects(from: number, to: number): readonly Rect[] { return this.services.layout().caret.selection(from, to); }
@@ -340,6 +374,7 @@ export class TextEditSession {
         this.services.history.open('Paste text');
         try {
             this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
+            this.lastText = this.services.plainText();
             this.select(next);
         } catch (error) { this.services.reportError(error); }
         finally { this.services.history.close(); }

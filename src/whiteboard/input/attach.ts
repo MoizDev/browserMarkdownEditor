@@ -76,7 +76,14 @@ export interface BoardInputServices {
 const attached = new WeakMap<HTMLElement, Detach>()
 const gestureOwner = new WeakMap<BoardSession, symbol>()
 const syncingSessions = new WeakSet<BoardSession>()
-const sessionPenMode = new WeakMap<BoardSession, { enabled: boolean; listeners: Set<(enabled: boolean) => void> }>()
+interface SessionPenMode {
+  enabled: boolean
+  listeners: Set<(enabled: boolean) => void>
+  contacts: Map<symbol, Map<number, number>>
+  contactListeners: Set<(id: number, down: boolean, direct: boolean, time: number) => void>
+  nextContact: number
+}
+const sessionPenMode = new WeakMap<BoardSession, SessionPenMode>()
 
 // View generations own listeners only. The session owns history, gesture queue and
 // tool choice; replacing a view first flushes its prefix, then installs a new one.
@@ -85,7 +92,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const owner = Symbol('board-input-view')
   let live = true
   let penMode = sessionPenMode.get(session)
-  if (!penMode) { penMode = { enabled: false, listeners: new Set() }; sessionPenMode.set(session, penMode) }
+  if (!penMode) { penMode = { enabled: false, listeners: new Set(), contacts: new Map(), contactListeners: new Set(), nextContact: 0 }; sessionPenMode.set(session, penMode) }
   const sharedPenMode = penMode
   const current = () => live && view.visible() && view.current(view.token)
   const editable = () => mode === 'edit' && !session.isReadOnly
@@ -239,12 +246,27 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const onPenMode = (enabled: boolean) => { touch.setPenMode(enabled); services.penModeChanged?.(enabled) }
   sharedPenMode.listeners.add(onPenMode)
   services.penModeChanged?.(touch.penMode)
+  const onPenContact = (id: number, down: boolean, direct: boolean, time: number) => {
+    if (down) touch.penDown(id, direct); else touch.penUp(id, time)
+  }
+  sharedPenMode.contactListeners.add(onPenContact)
+  const ownPens = new Map<number, number>()
+  sharedPenMode.contacts.set(owner, ownPens)
+  // A new view also observes pen contacts already held in another pane of the same session.
+  for (const [other, contacts] of sharedPenMode.contacts) if (other !== owner)
+    for (const id of contacts.values()) touch.penDown(id, false)
+  const broadcastPen = (id: number, down: boolean, direct: boolean, time: number) => {
+    for (const listener of sharedPenMode.contactListeners) listener(id, down, direct, time)
+  }
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.clientToSurface(event.clientX, event.clientY), id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
     services.textInput?.cancelPending()
     if (!current()) return
-    if (event.pointerType === 'pen') touch.penDown(event.pointerId, services.isDirectPen(event))
+    if (event.pointerType === 'pen' && !ownPens.has(event.pointerId)) {
+      const id = ++sharedPenMode.nextContact
+      ownPens.set(event.pointerId, id); broadcastPen(id, true, services.isDirectPen(event), event.timeStamp)
+    }
     else if (event.pointerType === 'touch') {
       touchAdmission.set(event.pointerId, touch.touchDown(contact(event)))
       try { view.surface.setPointerCapture(event.pointerId) } catch { /* A later cancel ends the contact. */ }
@@ -257,7 +279,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover(event.timeStamp)
   }
   const up = (event: PointerEvent) => {
-    if (event.pointerType === 'pen') touch.penUp(event.pointerId, event.timeStamp)
+    if (event.pointerType === 'pen') {
+      const id = ownPens.get(event.pointerId)
+      if (id !== undefined) { ownPens.delete(event.pointerId); broadcastPen(id, false, false, event.timeStamp) }
+    }
     else if (event.pointerType === 'touch') { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId) }
   }
   // Deferred text hits must also stop before non-tool keys, touch navigation and wheel changes.
@@ -449,6 +474,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('pointerup', up, true)
     view.surface.removeEventListener('pointercancel', up, true)
     view.surface.removeEventListener('lostpointercapture', up, true)
+    for (const id of ownPens.values()) broadcastPen(id, false, false, performance.now())
+    ownPens.clear(); sharedPenMode.contacts.delete(owner); sharedPenMode.contactListeners.delete(onPenContact)
     sharedPenMode.listeners.delete(onPenMode)
     stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopSession(); stopMirror()
     try { stopWet() } finally { handover.dispose() }

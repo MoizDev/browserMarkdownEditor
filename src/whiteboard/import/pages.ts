@@ -48,8 +48,9 @@ export function notebookPages(width: number, height: number, count: number): rea
 }
 
 export interface LegacyWorldBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
-export function preparePageMapper(pages: readonly LegacyPageMapping[], bounds: (shape: LegacyShape) => LegacyWorldBounds):
-    (shape: LegacyShape) => { readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd: boolean } {
+export function preparePageMapper<T extends { readonly id: string; readonly x: number; readonly y: number }>(
+    pages: readonly LegacyPageMapping[], bounds: (shape: T) => LegacyWorldBounds):
+    (shape: T) => { readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd: boolean } {
     return shape => {
         const box = bounds(shape);
         if (![box.x, box.y, box.w, box.h].every(Number.isFinite) || box.w < 0 || box.h < 0) {

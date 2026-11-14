@@ -12,6 +12,7 @@ import { createGpuPaintAdapter } from './gpuPaintAdapter';
 import { createDensePaintAdapter } from './densePlan';
 import { DensityController } from './density';
 import { FilteredInk, LiveNodeUnion } from './nodeSets';
+import type { ViewerPaintPresentation } from './paintPresentation';
 
 /** Both paths execute the same prepared paint; the platform alone selects/recovers the device. */
 export const BOARD_BACKEND_PREFERENCE = 'auto' as const;
@@ -24,7 +25,7 @@ export interface BoardLayersOptions {
     readonly omitNodes?: (frame: PaintFrame) => ReadonlySet<string> | null;
     readonly liveNodeIds?: () => ReadonlySet<string> | undefined;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
-    readonly onPresented?: (revision: number, token: RenderToken, frame: PaintFrame) => void;
+    readonly onPresented?: (revision: number, token: RenderToken, frame: PaintFrame, context?: ViewerPaintPresentation) => void;
 }
 interface Estimate {
     readonly frame: PaintFrame;
@@ -44,6 +45,33 @@ interface Estimate {
 function sameToken(a: RenderToken, b: RenderToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId
         && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
+}
+function copyView(view: ViewState): ViewState {
+    return Object.freeze({ ...view, camera: Object.freeze({ ...view.camera }), viewport: Object.freeze({ ...view.viewport }) });
+}
+function sameView(a: ViewState | null | undefined, b: ViewState): boolean {
+    return !!a && a.epoch === b.epoch && a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
+        && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height && a.viewport.dpr === b.viewport.dpr;
+}
+class OmittedSnapshot implements ReadonlySet<string> {
+    readonly [Symbol.toStringTag] = 'OmittedSnapshot';
+    private readonly valuesSet: Set<string>;
+    constructor(source: ReadonlySet<string>) { this.valuesSet = new Set(source); }
+    get size(): number { return this.valuesSet.size; }
+    has(id: string): boolean { return this.valuesSet.has(id); }
+    values(): SetIterator<string> { return this.valuesSet.values(); }
+    keys(): SetIterator<string> { return this.values(); }
+    entries(): SetIterator<[string, string]> { return this.valuesSet.entries(); }
+    [Symbol.iterator](): SetIterator<string> { return this.values(); }
+    forEach(callback: (value: string, value2: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
+        for (const value of this.valuesSet) callback.call(thisArg, value, value, this);
+    }
+}
+function sameOmission(a: ReadonlySet<string> | null, b: ReadonlySet<string> | null): boolean {
+    if (a === b) return true;
+    if (!a || !b || a.size !== b.size) return false;
+    for (const id of a) if (!b.has(id)) return false;
+    return true;
 }
 function addBytes(state: Estimate, bytes: number): void {
     const next = state.bytes + bytes;
@@ -110,7 +138,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
     let presented: PaintFrame | null = null, presentedOmit: ReadonlySet<string> | null = null, presentedInk: ReadonlySet<string> | null = null;
     let ackFrame: PaintFrame | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
-    type Drawn = { frame: PaintFrame; omit: ReadonlySet<string> | null; ink: ReadonlySet<string> };
+    let ackToken: RenderToken | null = null, ackContext: ViewerPaintPresentation | null = null;
+    let presentedContext: ViewerPaintPresentation | null = null;
+    type Drawn = { frame: PaintFrame; omit: ReadonlySet<string> | null; ink: ReadonlySet<string>; context: ViewerPaintPresentation };
     const drawn = new Map<PaintBand, Drawn>();
     let drawSource: PaintFrame | null = null, prepareToken: RenderToken | null = null;
     let drawTokens = new WeakMap<RenderToken, Map<PaintBand, Drawn>>();
@@ -172,9 +202,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         dense?.release(reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
         estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); drawSource = null; prepareToken = null;
-        ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; presentedInk = null;
+        ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
-            deferredClear = true; collectRetired(); presented = null;
+            deferredClear = true; collectRetired(); presented = null; presentedContext = null;
             density.reset(); useDense = false;
         }
     };
@@ -264,21 +294,26 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     };
     const acknowledge = (band: PaintBand, revision: number, token: RenderToken) => {
         const drawnBand = drawTokens.get(token)?.get(band), frame = drawnBand?.frame, omit = drawnBand?.omit ?? null, ink = drawnBand?.ink;
-        if (!frame || !ink || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
-        if (ackFrame !== frame || ackOmit !== omit || ackInk !== ink) { ackFrame = frame; ackOmit = omit; ackInk = ink; ackMask = 0; }
+        if (!drawnBand || !frame || !ink || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
+        const context = drawnBand.context;
+        if (ackFrame !== frame || ackOmit !== omit || ackInk !== ink || ackToken !== token
+            || !sameView(ackContext?.view, context.view) || !sameOmission(ackContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
+            ackFrame = frame; ackOmit = omit; ackInk = ink; ackToken = token; ackContext = context; ackMask = 0;
+        }
         ackMask |= band === 'underlay' ? 1 : 2;
         if (ackMask !== 3) return;
-        if (presented === frame && presentedOmit === omit && presentedInk === ink) {
-            ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; drawTokens.delete(token); return;
+        if (presented === frame && presentedOmit === omit && presentedInk === ink && sameView(presentedContext?.view, context.view)
+            && sameOmission(presentedContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
+            ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token); return;
         }
         try {
             options.frames.presented(frame);
-            const previous = presented; presented = frame; presentedOmit = omit; presentedInk = ink;
-            ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; drawTokens.delete(token);
+            const previous = presented; presented = frame; presentedOmit = omit; presentedInk = ink; presentedContext = context;
+            ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token);
             if (previous && previous !== frame && !retainedByDense().has(previous)) {
                 options.frames.retire(previous); releaseFrame(previous); known.delete(previous);
             }
-            options.onPresented?.(revision, token, presentedFrame(inkFrame(frame, ink), omit));
+            options.onPresented?.(revision, token, presentedFrame(inkFrame(frame, ink), context.omittedNodeIds), context);
         } catch (error) { report(error); }
     };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
@@ -293,15 +328,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const frame = gpu?.readyFrame();
                     if (!frame) return;
                     const omit = options.omitNodes?.(frame) ?? null;
-                    recordDraw(band, { frame, omit, ink: gpu!.readyInkNodeIds() ?? frame.inkNodeIds });
+                    const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
+                    const context = Object.freeze({ view: copyView(view), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null });
                     gpu!.drawGpu(pass, view, band, omit ?? undefined);
+                    recordDraw(band, { frame, omit, ink, context });
                 },
                 draw2d(ctx, view) {
                     const frame = adapter?.readyFrame();
                     if (!frame) return;
                     const omit = options.omitNodes?.(frame) ?? null;
-                    recordDraw(band, { frame, omit, ink: adapter!.borrowPrepared()?.frame.inkNodeIds ?? frame.inkNodeIds });
+                    const ink = adapter!.borrowPrepared()?.frame.inkNodeIds ?? frame.inkNodeIds;
+                    const context = Object.freeze({ view: copyView(view), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null });
                     adapter!.draw2d(ctx, view, band, omit ?? undefined);
+                    recordDraw(band, { frame, omit, ink, context });
                 },
                 releaseGpu(reason) { clearResources(reason); },
                 memory() {

@@ -470,8 +470,11 @@ export class FrameScheduler {
                     // backing/clip state; camera and DOM remain on the old frame if it fails.
                     const reportedAnchor = entry.pane.resizeAnchor?.();
                     const anchor = reportedAnchor ? { world: { ...reportedAnchor.world }, surface: { ...reportedAnchor.surface } } : undefined;
+                    const previousGeometry = entry.pane.metrics.current?.tags.geometryGeneration;
                     const result = entry.pane.commitMetrics(frameId);
-                    if (result?.kind === 'ready') entry.pane.camera.setViewport(result.metrics.viewport, anchor);
+                    if (result?.kind === 'ready') {
+                        entry.pane.camera.setViewport(result.metrics.viewport, anchor, result.tags.geometryGeneration !== previousGeometry);
+                    }
                     const token = this.token(entry);
                     const metrics = entry.pane.metrics.current;
                     entry.renderable = !!token && result?.kind !== 'failed' && metrics?.kind === 'ready' && metrics.tags.deviceGeneration === token.deviceGeneration;

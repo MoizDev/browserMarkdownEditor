@@ -74,7 +74,7 @@ export function mediaChanges(before: ReadonlySet<string>, after: ReadonlySet<str
 } {
     return {
         added: new Set([...after].filter(name => !before.has(name))),
-        removed: new Set([...before].filter(name => !after.has(name)),
+        removed: new Set([...before].filter(name => !after.has(name))),
     };
 }
 

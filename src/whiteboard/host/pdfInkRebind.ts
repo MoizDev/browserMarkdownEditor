@@ -1,0 +1,128 @@
+import type { rebindPdfInkSource } from '../../pdf/session/inkHost';
+import type { PdfEditableInkSource, PdfInkAcquisition } from '../../pdf/session/inkAcquisition.types';
+import type { RenderToken } from '../../platform/render/types';
+import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
+import type { createPdfInkBuildCapture } from './pdfInkBuildCapture';
+import type { createPdfInkSourceOwner } from './pdfInkSourceOwner';
+
+export interface PdfInkRebindOptions {
+    readonly host: NativeCanvasHost;
+    readonly documentId: string;
+    readonly admittedIdentity: NativeCanvasIdentity;
+    readonly initialSource: PdfEditableInkSource;
+    readonly sources: ReturnType<typeof createPdfInkSourceOwner>;
+    readonly writtenContext: ReturnType<typeof createPdfInkBuildCapture>['writtenContext'];
+    readonly rebind: typeof rebindPdfInkSource;
+    onError(error: unknown): void;
+    /** Must revoke authoritative write policy while preserving the live session and undo. */
+    onReadOnly(reason: string): void;
+}
+
+export interface PdfInkRebindSnapshot {
+    readonly source: PdfEditableInkSource;
+    readonly status: 'ready' | 'rebinding' | 'read-only' | 'failed';
+    readonly reason?: string;
+}
+
+const tokenOf = (id: NativeCanvasIdentity): RenderToken => ({ documentId: id.documentId, session: id.session,
+    vaultEpoch: id.vaultActivation, bytesGeneration: id.bytesGeneration });
+const sameToken = (a: RenderToken, b: RenderToken) => a.documentId === b.documentId && a.session === b.session &&
+    a.vaultEpoch === b.vaultEpoch && a.bytesGeneration === b.bytesGeneration;
+const stale = () => new DOMException('PDF rebind is no longer current', 'AbortError');
+
+/** The owner retains resources; this store only publishes the inspected backdrop version. */
+export function createPdfInkRebind(options: PdfInkRebindOptions) {
+    const { host, documentId, admittedIdentity, initialSource, sources } = options;
+    if (admittedIdentity.kind !== 'pdfInk' || admittedIdentity.documentId !== documentId ||
+        !sameToken(tokenOf(admittedIdentity), initialSource.source.token) || !host.isCurrent(admittedIdentity) || !initialSource.isCurrent()) {
+        throw new Error('The PDF ink source does not match the admitted owner');
+    }
+    let snapshot: PdfInkRebindSnapshot = Object.freeze({ source: initialSource, status: 'ready' });
+    let disposed = false, serial = 0, tail: Promise<void> = Promise.resolve(), pending: AbortController | undefined;
+    const failures: unknown[] = [], listeners = new Set<() => void>();
+    const report = (error: unknown) => { failures.push(error); try { options.onError(error); } catch { /* drain retains the original error. */ } };
+    const publish = (next: PdfInkRebindSnapshot) => {
+        snapshot = Object.freeze(next);
+        for (const listener of [...listeners]) { try { listener(); } catch (error) { report(error); } }
+    };
+    const liveOwner = () => !disposed && host.isCurrent(admittedIdentity);
+    const matches = (target: NativeCanvasIdentity, attempt: number) => {
+        const outer = host.outerIdentity(documentId);
+        return liveOwner() && attempt === serial && !!outer && outer.kind === 'pdfInk' &&
+            sameToken(tokenOf(target), tokenOf(outer)) && host.isCurrent(target);
+    };
+    const release = async (source: PdfInkAcquisition) => { await source.release(); };
+    return {
+        getSnapshot: () => snapshot,
+        subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+        afterWritten(revision: number, value: unknown): Promise<void> {
+            const attempt = ++serial;
+            pending?.abort();
+            let context: ReturnType<PdfInkRebindOptions['writtenContext']>, target: NativeCanvasIdentity;
+            try {
+                context = options.writtenContext(revision, value);
+                const outer = host.outerIdentity(documentId);
+                if (!outer || !liveOwner() || outer.kind !== 'pdfInk' || outer.documentId !== documentId ||
+                    outer.session !== admittedIdentity.session || outer.vaultActivation !== admittedIdentity.vaultActivation ||
+                    !host.isCurrent(outer) || context.revision !== revision ||
+                    context.source.token.documentId !== documentId || context.source.token.session !== admittedIdentity.session ||
+                    context.source.token.vaultEpoch !== admittedIdentity.vaultActivation ||
+                    context.source.token.bytesGeneration > outer.bytesGeneration ||
+                    context.source.pristineFingerprint !== initialSource.source.pristineFingerprint) throw stale();
+                target = { ...outer };
+            } catch (error) {
+                report(error);
+                if (!disposed) {
+                    const reason = 'The saved PDF could not be safely rebound; editing is paused.';
+                    publish({ source: snapshot.source, status: 'failed', reason });
+                    try { options.onReadOnly(reason); } catch (failure) { report(failure); }
+                }
+                return Promise.reject(error);
+            }
+            publish({ source: snapshot.source, status: 'rebinding' });
+            const job = tail.then(async () => {
+                if (!matches(target, attempt)) return;
+                const controller = new AbortController(); pending = controller;
+                let acquired: PdfInkAcquisition | undefined;
+                try {
+                    const outer = await host.acquireBytes(target, controller.signal);
+                    if (!matches(target, attempt)) return;
+                    acquired = await options.rebind({ outer, token: tokenOf(target), signal: controller.signal,
+                        isCurrent: liveOwner }, { pristineFingerprint: context.source.pristineFingerprint, writeId: context.writeId });
+                    if (!matches(target, attempt)) return;
+                    if (acquired.kind === 'read-only') {
+                        const reason = acquired.reason;
+                        await release(acquired); acquired = undefined;
+                        if (!matches(target, attempt)) return;
+                        publish({ source: snapshot.source, status: 'read-only', reason });
+                        options.onReadOnly(reason);
+                        return;
+                    }
+                    if (!sameToken(acquired.source.token, tokenOf(target))) throw new Error('PDF rebind returned a different outer generation');
+                    sources.replace(acquired, tokenOf(target));
+                    const accepted = acquired; acquired = undefined;
+                    publish({ source: accepted, status: 'ready' });
+                } finally {
+                    if (pending === controller) pending = undefined;
+                    if (acquired) await release(acquired);
+                }
+            });
+            const tracked = job.catch(error => {
+                if (attempt !== serial || disposed) {
+                    if (error instanceof DOMException && error.name === 'AbortError') return;
+                    report(error);
+                    throw error;
+                }
+                report(error);
+                const reason = 'The saved PDF could not be safely rebound; editing is paused.';
+                publish({ source: snapshot.source, status: 'failed', reason });
+                try { options.onReadOnly(reason); } catch (failure) { report(failure); }
+                throw error;
+            });
+            tail = tracked.catch(() => {});
+            return tracked;
+        },
+        dispose() { if (!disposed) { disposed = true; serial++; pending?.abort(); listeners.clear(); } },
+        async drain() { await tail; await sources.drain(); if (failures.length) throw new AggregateError([...failures], 'PDF ink rebind failed'); },
+    };
+}

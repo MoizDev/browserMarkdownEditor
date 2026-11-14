@@ -71,8 +71,7 @@ export class BoardSpellClient {
             this.dictionaryBarrier = Promise.resolve();
         }
         if (this.ready) return this.ready;
-        let host!: WorkerClient;
-        host = createWorkerClient({
+        const host: WorkerClient = createWorkerClient({
             name: this.name,
             protocol: 1,
             spawn: () => new Worker(new URL('./spell.worker.ts', import.meta.url), { type: 'module' }),

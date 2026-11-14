@@ -2324,10 +2324,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      */
     const writeFileVersioned = useCallback(async (
         fileHandle: FileSystemFileHandle,
-        data: string | Uint8Array,
+        data: string | Uint8Array | Blob,
         expected: DiskVersion | null,
     ): Promise<VersionedWriteResult> => {
-        const bytes = toBytes(data);
+        const bytes = data instanceof Blob ? data : toBytes(data);
         try {
             const stat = await statOf(fileHandle);
             if (!stat) return { status: 'deleted' };
@@ -2340,14 +2340,22 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 }
             }
 
-            await writeAllBytes(fileHandle, bytes);
+            if (bytes instanceof Blob) {
+                const writable = await fileHandle.createWritable();
+                await writable.write(bytes);
+                await writable.close();
+            } else await writeAllBytes(fileHandle, bytes);
         } catch (err) {
             // Vanished between the stat and the swap (or mid-read): still not ours
             // to recreate.
             if (isGone(err)) return { status: 'deleted' };
             throw err;
         }
-        return { status: 'written', version: await versionAfterWrite(fileHandle, bytes) };
+        if (!(bytes instanceof Blob)) return { status: 'written', version: await versionAfterWrite(fileHandle, bytes) };
+        const hash = bytes.size > 32 * 1024 * 1024 ? await fingerprintSnapshot(bytes) : await hashBytes(await bytes.arrayBuffer());
+        let stat: DiskStat | null = null;
+        try { stat = await statOf(fileHandle); } catch { /* force the next check to hash */ }
+        return { status: 'written', version: { lastModified: stat?.lastModified ?? 0, size: stat?.size ?? bytes.size, hash } };
     }, []);
 
     const inspectExportTarget = useCallback(async (dir: FileSystemDirectoryHandle, name: string): Promise<DiskVersion | null> => {

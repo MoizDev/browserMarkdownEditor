@@ -252,7 +252,7 @@ function PdfEditingAttached({ props, context, updating }: { props: NativePdfView
         setInverted: context.setInverted, zoom: navigation.zoom });
     return <PdfAttachedFrame props={props} lease={lease} viewer={lease.view} onFocus={onFocus} register={register}
         inverted={context.inverted} setInverted={context.setInverted} cover={cover} reason={source.reason}
-        readOnly={props.board.isReadOnly || !props.host.canWrite(props.identity)} editingChrome={chrome} />;
+        readOnly={!context.editable} editingChrome={chrome} />;
 }
 
 export default function NativePdfViewer(props: NativePdfViewerProps) {

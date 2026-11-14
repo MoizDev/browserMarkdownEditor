@@ -196,6 +196,7 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                 drawRange(next, end);
             }
         },
+        cancel(paints: readonly AnalyticInkPaint[]): void { if (building?.paints === paints) dropBuild(); },
         retire,
         release,
         dispose(): void { if (!disposed) { disposed = true; release(); } },

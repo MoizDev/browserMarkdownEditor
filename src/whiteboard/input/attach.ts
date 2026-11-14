@@ -52,6 +52,7 @@ export interface BoardInputServices {
   hover?(event: PointerEvent): void
   contextMenu?(event: MouseEvent): void
   linkAt?(sample: RealSample): (() => void) | null
+  continueInk?(sample: RealSample): ((endpoint: RealSample) => boolean) | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   clearLatches(): void
@@ -166,6 +167,18 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (mode === 'view' || choice.id === 'hand') return { tool: hand, context: undefined }
       if (!editable()) return null
       completeTool = true
+      if (choice.id === 'pen' && modifiers.shift) {
+        const commit = services.continueInk?.(sample)
+        if (commit) {
+          const continuation: Tool<unknown> = { id: 'continue-ink', begin: () => {
+            let endpoint = sample
+            return { kind: 'node-edit', pointerIds: new Set([sample.pointerId]),
+              update: samples => { if (samples.length) endpoint = samples[samples.length - 1] },
+              finish: reason => { if (reason === 'up') commit(endpoint) }, cancel: () => {}, }
+          } }
+          return { tool: continuation, context: undefined }
+        }
+      }
       if (choice.id === 'pen' || choice.id === 'highlighter') return { tool: ink(choice.id), context: undefined }
       return services.resolveTool(choice, sample, modifiers, event)
     },

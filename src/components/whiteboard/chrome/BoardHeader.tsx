@@ -9,14 +9,13 @@ export interface BoardHeaderProps {
     readonly locale: string;
     readonly direction: 'ltr' | 'rtl';
     readonly menuLabel: string;
-    readonly menuEntries: ContextMenuEntry[];
-    readonly onMenuOpen?: (anchor: HTMLButtonElement) => void;
+    readonly menuEntries: ContextMenuEntry[] | ((anchor: HTMLButtonElement) => ContextMenuEntry[]);
     readonly sheetName: string;
     readonly openSheets: (anchor: HTMLButtonElement) => void;
     readonly actionsLabel: string;
 }
 
-export function BoardHeader({ commands, locale, direction, menuLabel, menuEntries, onMenuOpen, sheetName, openSheets, actionsLabel }: BoardHeaderProps) {
+export function BoardHeader({ commands, locale, direction, menuLabel, menuEntries, sheetName, openSheets, actionsLabel }: BoardHeaderProps) {
     const [actionsOpen, setActionsOpen] = useState(false);
     const actionButton = useRef<HTMLButtonElement>(null);
     const actions = useRef<HTMLDivElement>(null);
@@ -51,9 +50,9 @@ export function BoardHeader({ commands, locale, direction, menuLabel, menuEntrie
             <button type="button" className="board-chrome-tool" aria-label={menuLabel} data-tooltip={menuLabel}
                 onClick={event => {
                     const anchor = event.currentTarget;
-                    onMenuOpen?.(anchor);
                     const rect = anchor.getBoundingClientRect();
-                    openContextMenu({ x: rect.left, y: rect.bottom, entries: menuEntries,
+                    openContextMenu({ x: rect.left, y: rect.bottom,
+                        entries: typeof menuEntries === 'function' ? menuEntries(anchor) : menuEntries,
                         label: menuLabel, lang: locale, dir: direction, opener: anchor, anchor });
                 }}>{menuLabel}</button>
             <button type="button" className="board-chrome-tool" onClick={event => openSheets(event.currentTarget)}>{sheetName}</button>

@@ -3,6 +3,7 @@ import type { ByteSource, NativeReadResult, ReadDraft } from '../format/readType
 import { SampleStore } from '../ink/samples';
 import type { BoardDoc, BoardKind } from '../model/doc';
 import type { SampleLease } from '../model/samples';
+import { listAgentSheets, type AgentGeometry, type ShapePage, type ShapeQuery } from './shapes';
 
 export interface ClosedBoard {
     readonly doc: BoardDoc;
@@ -60,4 +61,30 @@ export async function readClosedBoard(source: ByteSource, options: ClosedBoardOp
         dispose();
         throw error;
     }
+}
+
+export interface ClosedShapeOptions extends ClosedBoardOptions {
+    readonly query?: ShapeQuery;
+    /** App-owned monotonic generation of the exact disk baseline, not doc.rev. */
+    readonly diskRevision: number;
+    isCurrent(): boolean;
+    /** Same authoritative, offscreen-capable projection used by live sessions. */
+    project(doc: BoardDoc, samples: SampleStore): Promise<{ readonly geometry: AgentGeometry; dispose(): void }>;
+}
+
+export async function readClosedShapePage(source: ByteSource, options: ClosedShapeOptions): Promise<ShapePage | null> {
+    const guard = () => {
+        if (options.signal?.aborted || !options.isCurrent()) throw new Error('Board read cancelled or superseded');
+    };
+    guard();
+    const read = await readClosedBoard(source, options);
+    if (read.format !== 'native') { guard(); return null; }
+    try {
+        guard();
+        const projection = await options.project(read.board.doc, read.board.samples);
+        try {
+            guard();
+            return listAgentSheets(read.board.doc, projection.geometry, options.query, options.diskRevision);
+        } finally { projection.dispose(); }
+    } finally { read.board.dispose(); }
 }

@@ -99,7 +99,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const pendingContinuations = new Set<() => void>()
   const cancelContinuations = (): boolean => {
     const pending = [...pendingContinuations]
-    for (const cancel of pending) cancel()
+    for (const cancel of pending) {
+      try { cancel() } catch (error) { try { services.error(error) } catch { /* Keep cancelling the remaining work. */ } }
+    }
     return pending.length > 0
   }
   const physicalSurface = (sample: RealSample) => sampleSurface(sample, view.sampleToSurface)

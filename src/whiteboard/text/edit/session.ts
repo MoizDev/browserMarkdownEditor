@@ -252,10 +252,18 @@ export class TextEditSession {
 
     externalChange(): void { this.typingHistory.close(); this.sync(); }
     getSelection(): EditSelection { return this.selection; }
+    selectAll(): void { this.select({ anchor: 0, focus: this.services.plainText().length }); }
     restoreSelection(selection: EditSelection): void { this.select(selection); this.sync(); }
 
     copySelection(): RichFragment {
         return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
+    }
+
+    deleteSelection(): void {
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        if (from === to) return;
+        this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary');
+        this.host.sync();
     }
 
     replaceSelection(fragment: RichFragment): void {

@@ -1,15 +1,12 @@
 import type { PlatformLayerDefinition, PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
-import type { PageGeometry, Rect } from '../../platform/types';
+import type { Rect } from '../../platform/types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
-import { paperPageSize } from '../../utils/paper';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
-import { createNotebookPaperLayer, type NotebookPaperSnapshot } from '../../whiteboard/host/notebookPaperLayer';
 import { createBoardHostImages } from '../../whiteboard/media/hostImages';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import type { MediaId } from '../../whiteboard/model/media';
-import { DEFAULT_BOARD_PALETTES } from '../../whiteboard/render/palette';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { attachView } from '../../whiteboard/viewer/attachView';
 import { createBoardNavigationHost } from '../../whiteboard/viewer/navigationHost';
@@ -80,21 +77,6 @@ export function createNativeViewLease(options: {
         if (key !== viewportKey) { viewportKey = key; cameraOwner.resize(viewport); }
         return camera.viewport;
     };
-    let paperSnapshot: NotebookPaperSnapshot | undefined;
-    const paper = board.doc.kind === 'notebook' ? createNotebookPaperLayer({
-        read() {
-            const docHost = board.doc.host;
-            if (docHost.kind !== 'notebook') throw new Error('Notebook host changed kind');
-            if (!paperSnapshot || paperSnapshot.host.paper !== docHost.paper) {
-                const size = paperPageSize(docHost.paper);
-                const pages: PageGeometry[] = Array.from({ length: docHost.paper.pageCount }, (_, index) => ({ index,
-                    ...size, rotate: 0, userUnit: 1, toUserSpace: [1, 0, 0, -1, 0, size.height] }));
-                paperSnapshot = { revision: board.doc.rev, host: docHost, pages };
-            }
-            return paperSnapshot;
-        },
-        palette: () => DEFAULT_BOARD_PALETTES.light, onError: options.onError,
-    }) : undefined;
     const images = createBoardHostImages({ identity: { session: `${identity.documentId}:${identity.session}`,
         epoch: identity.vaultActivation, revision: board.doc.rev }, token, media: runtime.media,
         current: () => current() && parameters.visible,
@@ -113,7 +95,9 @@ export function createNativeViewLease(options: {
             return found.blob;
         }, onError: options.onError });
     const viewParameters = (): ViewerViewParams => ({ ...parameters, sheetId: runtime.selection.getSnapshot().sheet,
-        ...(backdrop ? { backdrops: backdrop.layers, pages: backdrop.pages } : paper ? { backdrops: [paper] } : {}) });
+        // attachView owns the notebook's actual paper layer; adding another one
+        // here gives the compositor two definitions with the same layer id.
+        ...(backdrop ? { backdrops: backdrop.layers, pages: backdrop.pages } : {}) });
     let viewer: ReturnType<typeof attachView>;
     const reveal = (rect: Rect) => { camera.bringIntoView(rect, 24); cameraOwner.changed(); };
     try {

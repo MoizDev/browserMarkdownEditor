@@ -4,6 +4,7 @@ import type { ActiveFile, Theme } from '../../types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { NativeCanvasReady } from '../../types/reading';
 import type { AttachCanvasSession } from '../../utils/canvasSessionBridge';
+import { pdfEngineAvailableInBuild } from '../../utils/pdfEngineAvailability';
 import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime';
 import { registerNativeNotebookExporter } from '../../whiteboard/host/registerNativeNotebookExporter';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
@@ -124,8 +125,22 @@ export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
         try {
             registerNativeNotebookExporter({ board, host: nativeCanvasHost, identity, onError,
                 writer: revision => {
+                    const native = pdfEngineAvailableInBuild();
                     let build: ReturnType<typeof import('../../pdf/writing/notebookClient').createNativeNotebookPdfBuild> | undefined;
+                    let classic: Promise<Uint8Array> | undefined;
                     return async (input, options) => {
+                        // P1-ship is owner-supplied: a build with no PDF engine still
+                        // exports generated pages through the existing display writer.
+                        // An eligible native engine failing integrity never takes this path.
+                        if (!native) {
+                            options.signal?.throwIfAborted();
+                            const pending = classic ??= import('../../pdf/writing/client').then(module => {
+                                options.signal?.throwIfAborted();
+                                return module.buildDisplayPdf(input, options);
+                            });
+                            try { return await pending; }
+                            catch (cause) { if (classic === pending) classic = undefined; throw cause; }
+                        }
                         if (!build) {
                             const { createNativeNotebookPdfBuild } = await import('../../pdf/writing/notebookClient');
                             options.signal?.throwIfAborted();

@@ -2,7 +2,8 @@ import type { Affine } from '../../platform/types';
 import { INK_COARSE_MARGIN_CSS, INK_FINE_MARGIN_CSS, type InkPickQuery } from '../ink/pick';
 import type { InkCoverage } from '../ink/outline';
 import { exactAffinePoint } from './exactAffine';
-import { exactPoint, exactPointIntervals } from './homogeneous';
+import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
+import { exactPointOnSegment } from './exactSegments';
 import { add, dyadic, dyadicMultiply, dyadicSubtract, interval, subtract } from './numeric';
 import { classifyCertifiedClipBox, type CertifiedClipRegion } from './clippedPointPathJob';
 import { upperPointIntervalDistance } from './pointPathJob';
@@ -43,10 +44,10 @@ export function createClippedInkWitnessJob(coverage: InkCoverage, matrix: Affine
     }
     const calculate = function* (): Generator<void, InkWitnessResult> {
         let samples = 0;
-        let polygon: PathOp[] | undefined;
+        let polygon: PathOp[] | undefined, polygonVertices: ExactPoint[] | undefined;
         if (query.kind === 'region' && query.region.kind === 'polygon') {
-            polygon = [];
-            for (const point of query.region.points) { polygon.push({ op: polygon.length ? 'L' : 'M', p: point }); yield; }
+            polygon = []; polygonVertices = [];
+            for (const point of query.region.points) { polygon.push({ op: polygon.length ? 'L' : 'M', p: point }); polygonVertices.push(exactPoint(point)); yield; }
             polygon.push({ op: 'Z' });
         }
         for (const disc of discs) {
@@ -70,6 +71,12 @@ export function createClippedInkWitnessJob(coverage: InkCoverage, matrix: Affine
                             const result = fill.step({ deadline: performance.now() + 3, maxWork: 1 });
                             if (result.status === 'pending') { yield; continue; }
                             if (result.status === 'inside') return { status: 'hit' };
+                            if (result.status === 'uncertain') {
+                                for (let i = 0; i < polygonVertices!.length; i++) {
+                                    if (exactPointOnSegment(exact, polygonVertices![i], polygonVertices![(i + 1) % polygonVertices!.length])) return { status: 'hit' };
+                                    yield;
+                                }
+                            }
                             break;
                         }
                     } else {

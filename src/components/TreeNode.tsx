@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BookOpen, ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool, Notebook } from './icons';
-import { isDrawingFile, isEpubFile, isNotebookFile, noteDisplayName } from '../utils/fileTypes';
+import { isCanvasFile, isEpubFile, isNotebookFile, noteDisplayName } from '../utils/fileTypes';
 import {
     clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor, requestCreate,
     subscribeCreateRequest, type CreateKind,
@@ -411,7 +411,7 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                     {style?.icon && customIconNodes ? <LucideGlyph nodes={customIconNodes} size={14} />
                         : isEpubFile(node.name) ? <BookOpen size={14} />
                             : isNotebookFile(node.name) ? <Notebook size={14} />
-                            : isDrawingFile(node.name) ? <PenTool size={14} />
+                            : isCanvasFile(node.name) ? <PenTool size={14} />
                                 : <FileText size={14} />}
                 </span>
                 {isRenaming ? (

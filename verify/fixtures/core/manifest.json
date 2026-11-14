@@ -1,0 +1,169 @@
+{
+  "schema": 1,
+  "stream": "core",
+  "fixtures": [
+    {
+      "invocation": "core/notes",
+      "id": "core/notes/.Assets/checker.png",
+      "file": ".Assets/checker.png",
+      "sha256": "9912019a2013253a862ee5f7517f057042b78ff162a838c0647e225e20af435d",
+      "bytes": 115,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Every rendered Markdown construct, save-path mixed note, authored checker asset",
+      "gates": [
+        "V-05",
+        "X-FUNNEL",
+        "TB-ED"
+      ],
+      "generator": "verify/fixtures/core/generators/notes.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": []
+    },
+    {
+      "invocation": "core/notes",
+      "id": "core/notes/Every construct.md",
+      "file": "Every construct.md",
+      "sha256": "aac211004020efbf8f16ad367c2a085b80edd247e3602ac1c6b06499a4b21bf1",
+      "bytes": 1785,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Every rendered Markdown construct, save-path mixed note, authored checker asset",
+      "gates": [
+        "V-05",
+        "X-FUNNEL",
+        "TB-ED"
+      ],
+      "generator": "verify/fixtures/core/generators/notes.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": []
+    },
+    {
+      "invocation": "core/notes",
+      "id": "core/notes/Mixed 10000.md",
+      "file": "Mixed 10000.md",
+      "sha256": "8a11b8a3acdc8cde04fa4f1f90811c1af40d115104a5c326ad0db975f0d9cdb7",
+      "bytes": 294279,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Every rendered Markdown construct, save-path mixed note, authored checker asset",
+      "gates": [
+        "V-05",
+        "X-FUNNEL",
+        "TB-ED"
+      ],
+      "generator": "verify/fixtures/core/generators/notes.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": []
+    },
+    {
+      "invocation": "core/vault-100",
+      "id": "core/vault-100/vault-100.json",
+      "file": "vault-100.json",
+      "sha256": "10adc8e8c60f27b33e7d38898007a7eb5a2e01e33cc06f292b978f9ba5b94959",
+      "bytes": 38188,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "100 Markdown notes with seeded links, aliases, embeds, tags, folders and per-folder images",
+      "gates": [
+        "V-05",
+        "X-START",
+        "X-SESSION",
+        "X-FUNNEL"
+      ],
+      "generator": "verify/fixtures/core/generators/vault.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--notes",
+        "100"
+      ]
+    },
+    {
+      "invocation": "core/vault-1000",
+      "id": "core/vault-1000/vault-1000.json",
+      "file": "vault-1000.json",
+      "sha256": "15ae45babc6fa565c1fa0c0a9f5f3253e20206a7ab63607d5635d934f733aa91",
+      "bytes": 320784,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "1000 Markdown notes with seeded links, aliases, embeds, tags, folders and per-folder images",
+      "gates": [
+        "V-05",
+        "X-START",
+        "X-SESSION",
+        "X-FUNNEL"
+      ],
+      "generator": "verify/fixtures/core/generators/vault.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--notes",
+        "1000"
+      ]
+    },
+    {
+      "invocation": "core/vault-2000",
+      "id": "core/vault-2000/vault-2000.json",
+      "file": "vault-2000.json",
+      "sha256": "312678896830c0051789b76a1c43d51ae621a3de13cbb04760878eed2edf70c4",
+      "bytes": 637778,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "2000 Markdown notes with seeded links, aliases, embeds, tags, folders and per-folder images",
+      "gates": [
+        "V-05",
+        "X-START",
+        "X-SESSION",
+        "X-FUNNEL"
+      ],
+      "generator": "verify/fixtures/core/generators/vault.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--notes",
+        "2000"
+      ]
+    },
+    {
+      "invocation": "core/vault-5000",
+      "id": "core/vault-5000/vault-5000.json",
+      "file": "vault-5000.json",
+      "sha256": "d930d2bec9d39457efb69d4d683dc091efe3fe638dfb268c5cc0887dbd50cf61",
+      "bytes": 1588778,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "5000 Markdown notes with seeded links, aliases, embeds, tags, folders and per-folder images",
+      "gates": [
+        "V-05",
+        "X-START",
+        "X-SESSION",
+        "X-FUNNEL"
+      ],
+      "generator": "verify/fixtures/core/generators/vault.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--notes",
+        "5000"
+      ]
+    }
+  ]
+}

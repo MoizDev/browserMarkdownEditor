@@ -3,7 +3,7 @@ import type { Op, TouchedSet, TransactionOrigin } from '../change/ops';
 import type { RichText } from '../text/richText';
 import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from './doc';
 import { isValidId, type NodeId, type ParentId, type SheetId } from './ids';
-import { MEDIA_MIMES, type MediaId } from './media';
+import { isSafeMediaFile, MEDIA_MIMES, type MediaId } from './media';
 import type { Node, NodeKind } from './nodes';
 import { isValidKey } from './orderKey';
 import type { SampleStoreReader } from './samples';
@@ -65,6 +65,7 @@ const KEYS = {
     sheet: ['id', 'name', 'order', 'ext'], recordDelete: ['t', 'op', 'id'],
     sheetSet: ['t', 'op', 'id', 'key', 'value'], board: ['t', 'key', 'value'], mediaAdd: ['t', 'op', 'entry'],
     ext: ['t', 'target', 'id', 'value'], mediaDrop: ['t', 'op', 'id', 'restoreMissing'],
+    mediaFile: ['t', 'op', 'id', 'file'],
 } as const;
 const VALUES = {
     dir: ['auto', 'ltr', 'rtl'], snap: ['none', 'center', 'edge-point', 'edge'],
@@ -436,6 +437,11 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                     default: return refuse('schema', opIndex, null, 'Unknown board property');
                 }
             case 'media':
+                if (op.op === 'set-file') {
+                    if (!closed(op, KEYS.mediaFile) || typeof op.id !== 'string' || !MEDIA_HASH.test(op.id)
+                        || !isSafeMediaFile(op.file)) return refuse('V-9', opIndex, null, 'Media filename must be a bounded safe .Assets leaf or null');
+                    return doc.media.has(op.id as MediaId) ? OK : refuse('V-9', opIndex, null, 'Media does not exist');
+                }
                 if (op.op === 'add') {
                     if (!closed(op, KEYS.mediaAdd) || !mediaEntry(op.entry)) return refuse('V-9', opIndex, null, 'Invalid media entry');
                     if (doc.media.has((op.entry as { id: MediaId }).id)) return refuse('V-9', opIndex, null, 'Media id is already used');

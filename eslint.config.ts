@@ -100,17 +100,17 @@ export default defineConfig([
     },
   },
   {
-    // C-17a/C-17c: every key the app writes goes through utils/storage.ts, which
-    // mirrors it to IndexedDB so settings survive another window's
-    // localStorage.clear() (an origin reset). Warn until each owner has moved its
-    // writers (C-17b); C-17c makes it an error.
+    // A raw localStorage write bypasses the IndexedDB recovery mirror, so another
+    // window's origin reset could erase it. Tab-only sessionStorage also goes through
+    // storage.ts, but stays out of that mirror: terminal IDs must not cross tabs.
     files: ['src/**/*.{ts,tsx}'],
     ignores: ['src/utils/storage.ts'],
     rules: {
-      'no-restricted-properties': ['warn',
-        { object: 'localStorage', property: 'setItem', message: 'Use utils/storage.ts so settings survive an origin reset' },
-        { object: 'localStorage', property: 'removeItem', message: 'Use utils/storage.ts so settings survive an origin reset' },
-        { object: 'localStorage', property: 'clear', message: 'Use utils/storage.ts so settings survive an origin reset' },
+      'no-restricted-properties': ['error',
+        ...['localStorage', 'sessionStorage'].flatMap(object =>
+          ['setItem', 'removeItem', 'clear'].map(property => ({
+            object, property, message: 'Use utils/storage.ts for browser storage mutations',
+          }))),
       ],
     },
   },

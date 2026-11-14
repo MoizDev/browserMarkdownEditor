@@ -10,8 +10,10 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
 
 ## The decoration field
 
-- It's a **StateField, not a ViewPlugin** — a StateField may `replace` ranges spanning line breaks,
-  which block math / images / tables / fenced code all need. Its value is
+- It's a **module-singleton StateField outside the compartment**, not a ViewPlugin: a StateField
+  may `replace` ranges spanning line breaks. Mode comes from `EditorView.editable`; the compartment
+  carries the per-pane `imageContextFacet` and keymaps. A context-only change replaces only image
+  widgets; an unchanged cached-state adoption needs no full render. Its value is
   `{deco, atoms, imageSelected, tables, tableSelected}`: the decorations to draw plus what the two
   object models need — the atomic ranges, which of the two kinds is the current selection, and where
   the rendered tables are, so the table entry keymap and the caret-adoption rule can find one beside

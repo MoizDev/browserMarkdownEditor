@@ -98,9 +98,10 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
                         throw new Error('The PDF backdrop no longer matches its source.');
                     }
                     const current = latest.current;
-                    const paired: NativePdfBackdrop = { ...backdrop, assertCaptureCurrent() {
-                        if (!currentSource(source)) throw new Error('PDF backdrop source is updating');
-                    } };
+                    const paired: NativePdfBackdrop & { readonly sourceToken: typeof source.source.token; isCurrentSource(): boolean } = {
+                        ...backdrop, sourceToken: source.source.token, isCurrentSource: () => currentSource(source),
+                        assertCaptureCurrent() { if (!currentSource(source)) throw new Error('PDF backdrop source is updating'); },
+                    };
                     try {
                         view = createNativeViewLease({ board, host, identity: current.identity, pdfBackdrop: paired, readPdfMedia,
                             parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
@@ -130,9 +131,10 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
             onError: report, onUpdating: value => { if (alive && sequence.current === generation) setUpdating(value); }, signal: abort.signal,
         }).then(backdrop => {
             if (!alive || abort.signal.aborted || !currentSource(source)) { backdrop.dispose(); return; }
-            const paired: NativePdfBackdrop = { ...backdrop, assertCaptureCurrent() {
-                if (!currentSource(source)) throw new Error('PDF backdrop source is updating');
-            } };
+            const paired: NativePdfBackdrop & { readonly sourceToken: typeof source.source.token; isCurrentSource(): boolean } = {
+                ...backdrop, sourceToken: source.source.token, isCurrentSource: () => currentSource(source),
+                assertCaptureCurrent() { if (!currentSource(source)) throw new Error('PDF backdrop source is updating'); },
+            };
             try { lease.replaceBackdrop(paired); adopted = true; installed.current = source; setLoading(false); }
             catch (cause) { backdrop.dispose(); report(cause); }
         }, cause => { if (alive && !abort.signal.aborted) report(cause); });

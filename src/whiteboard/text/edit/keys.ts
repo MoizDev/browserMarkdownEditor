@@ -36,7 +36,7 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
     const text = () => cachedText ??= services.text();
     const lower = event.key.toLowerCase();
     if (mod && !event.altKey && lower === 'a') {
-        consume(event); services.setSelection({ anchor: 0, focus: text().length }); return true;
+        consume(event); services.command('select-all'); return true;
     }
     // Ordinary clipboard chords must reach the browser's synchronous copy/cut/paste events.
     if (mod && !event.altKey && !event.shiftKey && (lower === 'c' || lower === 'x' || lower === 'v')) return false;

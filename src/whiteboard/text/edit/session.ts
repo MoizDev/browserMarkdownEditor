@@ -214,6 +214,51 @@ export class TextEditSession {
         return stop.offset;
     }
 
+    /** The keyboard and Core's text menu use the same controller and transaction path. */
+    command(name: string): boolean {
+        if (this.closed || !this.services.alive() || this.host.isComposing || this.compositionSelection || this.compositionRange) return false;
+        if (name === 'select-all') return this.selectAll();
+        const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', b: 'b', italic: 'i', i: 'i', underline: 'u', u: 'u',
+            strike: 's', s: 's', code: 'code', highlight: 'hl', hl: 'hl' };
+        const mark = Object.hasOwn(marks, name) ? marks[name] : undefined;
+        if (mark) {
+            try {
+                this.controller.toggleMark(mark, this.selection);
+                this.services.changed(this.selection); this.services.announce(`${name} formatting changed`);
+                this.host.sync(); return true;
+            } catch (error) { this.services.reportError(error); return false; }
+        }
+        if (name === 'enter') {
+            try {
+                this.selection = this.controller.enter(this.selection); this.lastText = this.services.plainText();
+                this.affinity = undefined; this.goalX = undefined; this.services.changed(this.selection);
+                this.resetBlink(); this.host.sync(); return true;
+            } catch (error) { this.services.reportError(error); return false; }
+        }
+        if (/^heading-[0-6]$/.test(name) || name === 'ordered-list' || name === 'bullet-list' || name === 'indent' || name === 'outdent') {
+            const kind: Block['kind'] | 'indent' | 'outdent' = name === 'ordered-list' ? 'ol' : name === 'bullet-list' ? 'ul'
+                : name === 'indent' || name === 'outdent' ? name : name === 'heading-0' ? 'p' : `h${name.slice(-1)}` as Block['kind'];
+            this.typingHistory.close();
+            let opened = false;
+            try {
+                this.services.history.open('Format text blocks'); opened = true;
+                const result = this.services.blocks(this.selection, kind);
+                this.services.apply(result.transaction); this.selection = result.selection;
+                this.services.setSelection(result.selection); this.services.changed(result.selection);
+                this.services.announce('Text block formatting changed'); return true;
+            } catch (error) { this.services.reportError(error); return false; }
+            finally {
+                try { if (opened) this.services.history.close(); } catch (error) { this.services.reportError(error); }
+                try { this.host.sync(); } catch (error) { this.services.reportError(error); }
+            }
+        }
+        if (!['undo', 'redo', 'finish', 'link', 'paste-plain', 'paste-inverted', 'paste-plain-inverted'].includes(name)) return false;
+        try {
+            if (name === 'undo' || name === 'redo' || name === 'finish') this.typingHistory.close();
+            this.services.command(name, this.selection); return true;
+        } catch (error) { this.services.reportError(error); return false; }
+    }
+
     private keydown(event: KeyboardEvent): void {
         if (!event.isComposing && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
             event.preventDefault(); event.stopPropagation();
@@ -238,40 +283,7 @@ export class TextEditSession {
                 this.goalX = undefined;
                 return stop.offset;
             },
-            command: command => {
-                const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', italic: 'i', underline: 'u', strike: 's', code: 'code', highlight: 'hl' };
-                const mark = marks[command];
-                if (mark) {
-                    try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); this.services.announce(`${command} formatting changed`); }
-                    catch (error) { this.services.reportError(error); }
-                    this.host.sync();
-                } else if (command === 'enter') {
-                    try {
-                        this.selection = this.controller.enter(this.selection); this.lastText = this.services.plainText();
-                        this.affinity = undefined; this.goalX = undefined; this.services.changed(this.selection);
-                    }
-                    catch (error) { this.services.reportError(error); }
-                    this.resetBlink();
-                    this.host.sync();
-                } else if (command.startsWith('heading-') || command === 'ordered-list' || command === 'bullet-list' || command === 'indent' || command === 'outdent') {
-                    const kind: Block['kind'] | 'indent' | 'outdent' = command === 'ordered-list' ? 'ol' : command === 'bullet-list' ? 'ul'
-                        : command === 'indent' || command === 'outdent' ? command : command === 'heading-0' ? 'p' : `h${command.slice(-1)}` as Block['kind'];
-                    this.typingHistory.close();
-                    this.services.history.open('Format text blocks');
-                    try {
-                        const result = this.services.blocks(this.selection, kind);
-                        this.services.apply(result.transaction);
-                        this.selection = result.selection;
-                        this.services.setSelection(result.selection);
-                        this.services.changed(result.selection);
-                        this.services.announce('Text block formatting changed');
-                    } catch (error) { this.services.reportError(error); }
-                    finally { this.services.history.close(); this.host.sync(); }
-                } else {
-                    if (command === 'undo' || command === 'redo' || command === 'finish') this.typingHistory.close();
-                    this.services.command(command, this.selection);
-                }
-            },
+            command: command => { this.command(command); },
             inList: () => this.services.inList(this.selection.focus),
             undoTransformation: () => {
                 const undone = this.typingHistory.undoTransformation();
@@ -359,7 +371,11 @@ export class TextEditSession {
         const layout = this.services.layout(), local = point(layout.clientToLocal, x, y);
         return layout.caret.hitTest(local.x, local.y).offset;
     }
-    selectAll(): void { this.select({ anchor: 0, focus: this.services.plainText().length }); }
+    selectAll(): boolean {
+        if (this.closed || !this.services.alive() || this.host.isComposing || this.compositionSelection || this.compositionRange) return false;
+        this.select({ anchor: 0, focus: projectionLength(this.services.readText()) });
+        return true;
+    }
     restoreSelection(selection: EditSelection): void { this.select(selection); this.sync(); }
 
     copySelection(): RichFragment {

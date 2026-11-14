@@ -450,6 +450,21 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const selection = manager.current.editor.getSelection(); return { node: active, anchor: selection.anchor, head: selection.focus };
     };
     return { manager, input, editText, writeOverlays, captureText,
+        command(id: string): boolean {
+            const editor = manager.current?.editor;
+            if (!current() || !editor || !active || !doc.nodes.has(active) || session.isReadOnly) return false;
+            const handled = editor.command(id);
+            if (handled && manager.current?.editor === editor && current()
+                && id !== 'link' && id !== 'finish' && !id.startsWith('paste-')) editor.focus();
+            return handled;
+        },
+        selectAll(): boolean {
+            const editor = manager.current?.editor;
+            if (!current() || !editor || !active || !doc.nodes.has(active)) return false;
+            const handled = editor.selectAll();
+            if (handled && manager.current?.editor === editor && current()) editor.focus();
+            return handled;
+        },
         clipboardContext() {
             const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
             return editor && node && text ? { node, revision: doc.rev, selection: { ...editor.getSelection() }, text } : null;

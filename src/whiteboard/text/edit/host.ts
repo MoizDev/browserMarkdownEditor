@@ -225,6 +225,7 @@ export class EditHost {
     }
 
     get textOffsetBase(): number { return this.window.start; }
+    get isComposing(): boolean { return this.composing; }
 
     updateBounds(control: DOMRect, selection: DOMRect): void {
         this.context?.updateControlBounds(control);

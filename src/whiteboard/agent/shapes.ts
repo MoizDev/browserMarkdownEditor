@@ -82,11 +82,17 @@ export function listAgentShapes(doc: BoardDoc, sheet: SheetId, geometry: AgentGe
     const changed = revision !== undefined && revision !== doc.rev;
     const offset = changed ? 0 : requestedOffset;
     const shapes: ShapeSummary[] = [];
-    let total = 0;
+    let total = 0, chars = 0, budgetExhausted = false;
     forEachNodeInZOrder(doc, sheet, node => {
         const nodePage = doc.kind === 'whiteboard' ? undefined : geometry.page(node);
         if (page !== undefined && nodePage !== page) return;
-        if (total >= offset && shapes.length < limit) shapes.push(summarize(node, geometry, nodePage));
+        if (total >= offset && shapes.length < limit && !budgetExhausted) {
+            const summary = summarize(node, geometry, nodePage);
+            const size = JSON.stringify(summary).length + 1;
+            // Keep room for the envelope and tool text while never skipping an item.
+            if (chars + size > 58_500) budgetExhausted = true;
+            else { shapes.push(summary); chars += size; }
+        }
         total++;
     });
     const nextOffset = offset + shapes.length;

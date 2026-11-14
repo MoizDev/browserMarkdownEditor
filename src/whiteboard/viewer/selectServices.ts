@@ -11,6 +11,7 @@ import type { EraserContext } from '../input/basicTools';
 import type { SweptSelectionCursor, SweepPoint, SweepQueueServices } from '../input/sweepQueue';
 import type { NodeId } from '../model/ids';
 import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
+import { leafResizeHandleGesture, rotationHandleGesture } from '../input/transformGestures';
 import type { createBoardRenderServices } from '../render/services';
 import { TransformGesture } from '../tools/transform';
 import { translationDriver } from '../tools/transformDrivers';
@@ -20,6 +21,7 @@ import type { createBoardRegionQuery } from './regionQuery';
 import { createBoardAttachmentResolver } from './attachments';
 import { createShapeHandles } from './shapeHandles';
 import { createStickyHandles } from './stickyHandles';
+import { createSelectionHandles } from './selectionHandles';
 
 // Provenance: SelectGesture, swept selection, geometry preparation, transaction
 // and shared frame contracts; independent host composition, no third-party source.
@@ -70,6 +72,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
     const stickyHandles = createStickyHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
         invalidate: requestFrame, edit: options.editSticky, error: report });
+    const selectionHandles = createSelectionHandles({ runtime, overlay: options.overlay, camera: options.camera, current: mutable, visible: mutable,
+        invalidate: requestFrame, error: report });
     const check = (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
@@ -166,7 +170,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
-        shapeHandles.write(frame); stickyHandles.write(frame);
+        selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame);
         if (!regionPreview) { svg?.remove(); svg = null; shape = null; return; }
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -192,7 +196,17 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const surface = toSurface(sample), coarse = sample.source === 'touch';
         const shapeHit = shapeHandles.hit(surface, coarse);
         if (shapeHit) return shapeHandles.begin(shapeHit, sample, modifiers);
-        const direction = stickyHandles.hit(surface, coarse); if (!direction) return null;
+        const direction = stickyHandles.hit(surface, coarse);
+        if (!direction) {
+            const hit = selectionHandles.hit(surface, coarse); if (!hit) return null;
+            const ids = [...runtime.selection.getSnapshot().selected], host = {
+                hold: () => session.beginGesture(), registerPending, current: mutable,
+                show: (ops: readonly Op[]) => options.preview.showOps(ops), clear: () => options.preview.clear(), error: report,
+            };
+            if (hit.kind === 'rotate') return rotationHandleGesture(sample, modifiers,
+                { runtime, ids, centre: hit.centre, orientation: hit.orientation, current: mutable }, host);
+            return leafResizeHandleGesture(sample, modifiers, { runtime, ids, handle: hit.handle, current: mutable }, host);
+        }
         const release = session.beginGesture(), pointerIds = new Set([sample.pointerId]), down = surface;
         let ended = false, cancelled = false, cleaned = false, unregister: (() => void) | undefined;
         const cleanup = () => { if (cleaned) return; cleaned = true; unregister?.(); unregister = undefined; release(); };
@@ -211,6 +225,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         };
     };
     return { select, eraser, beginHandle, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); svg = null; shape = null; },
+        dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); svg = null; shape = null; },
     };
 }

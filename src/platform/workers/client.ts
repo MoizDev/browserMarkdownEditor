@@ -1,7 +1,7 @@
 import { now, watchClock } from './clock';
 import { assertPayload, isPriority, isWorkerMessage, WorkerHostError } from './envelope';
 import { cpuGovernor } from './governor';
-import { workerStopped } from './lifecycle';
+import { reportWorkerOwnedBytes, workerStopped } from './lifecycle';
 import type { ClientState, ContainedPort, CpuPermit, MainMessage, Priority, RequestOptions, WorkerClient, WorkerMessage, WorkerSpec } from './envelope';
 
 const clients = new Map<string, Client>();
@@ -388,8 +388,17 @@ class Client implements WorkerClient {
             }
             return;
         }
+        if (message.event === 'mem') {
+            const bytes = (message.data as { heapBytes?: unknown } | null)?.heapBytes;
+            if (typeof bytes === 'number' && Number.isSafeInteger(bytes) && bytes >= 0) {
+                reportWorkerOwnedBytes(connection.endpoint, bytes);
+            }
+        }
         const handlers = this.handlers.get(message.event);
-        if (!handlers) { console.debug(`${marker}: ignored unknown event ${message.event}`); return; }
+        if (!handlers) {
+            if (message.event !== 'mem') console.debug(`${marker}: ignored unknown event ${message.event}`);
+            return;
+        }
         for (const handler of [...handlers]) {
             try { handler(message.data); }
             catch (error) { console.warn(`${marker}: event listener failed`, error); }

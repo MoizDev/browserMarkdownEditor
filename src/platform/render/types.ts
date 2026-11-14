@@ -1,5 +1,6 @@
 import type { ViewState } from '../types';
 import type { GpuPass } from './gfx/api';
+import type { DamageRecord } from './damage';
 
 export type { Camera, Viewport, ViewState } from '../types';
 
@@ -27,6 +28,7 @@ export interface FrameBudget {
     frameId: number;
     token: FrameToken;
     cameraEpoch: number;
+    readonly damage?: DamageRecord;
     prepareDeadline: number;
     upload: { remainingBytes: number; deadline: number };
     shouldYield(): boolean;

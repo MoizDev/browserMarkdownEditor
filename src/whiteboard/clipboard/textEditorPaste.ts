@@ -27,7 +27,9 @@ export interface TextEditorPasteOptions {
 }
 export type TextEditorPasteResult = 'handled' | 'board';
 function captureInput(input: ClipboardInput): ClipboardInput {
-    if (!input || !Array.isArray(input.files) || input.files.length > SECURITY_LIMITS.mediaBatch) throw new TypeError('Invalid clipboard input');
+    if (!input || !Array.isArray(input.files) || input.files.length > SECURITY_LIMITS.mediaBatch
+        || input.files.some(file => !file || !(file.blob instanceof Blob) || typeof file.name !== 'string' || typeof file.directory !== 'boolean')
+        || input.privatePng !== null && !(input.privatePng instanceof Blob)) throw new TypeError('Invalid clipboard input');
     return Object.freeze({ ...input, files: Object.freeze(input.files.map(file => Object.freeze({ ...file }))) });
 }
 async function plainFragment(value: string, cooperate: () => Promise<void>): Promise<RichFragment> {
@@ -100,6 +102,9 @@ export function pasteIntoTextEditor(options: TextEditorPasteOptions, signal?: Ab
     const input = captureInput(options.input), cache = options.cache;
     const pin = cache && 'pin' in cache && typeof cache.pin === 'function' ? cache.pin() : null;
     const capturedCache = cache && 'pin' in cache ? pin ?? undefined : cache;
+    const bytes = input.files.reduce((sum, file) => sum + (file.directory ? 0 : Math.min(file.blob.size, SECURITY_LIMITS.mediaBytes)), 0)
+        + (input.privatePng ? Math.min(input.privatePng.size, SECURITY_LIMITS.mediaBytes) : 0);
+    const deadlineMs = Math.min(600_000, Math.max(120_000, Math.ceil(bytes / (100 * 1024 * 1024)) * 30_000));
     return options.runtime.jobs.run(context => pasteIntoTextEditorInJob({ ...options, input, cache: capturedCache }, context),
-        { signal, deadlineMs: 120_000 }).finally(() => pin?.release());
+        { signal, deadlineMs }).finally(() => pin?.release());
 }

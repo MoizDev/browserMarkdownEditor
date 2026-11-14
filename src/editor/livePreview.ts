@@ -1174,8 +1174,9 @@ function splicePreview(previous: LivePreview, tr: Transaction, windows: readonly
     images.sort((a, b) => a.from - b.from); tables.sort((a, b) => a.from - b.from);
     const selection = tr.state.selection.main;
     const atSelection = (spans: readonly { from: number; to: number }[]) => {
-        const i = firstRangeEndingAfter(spans, Math.max(-1, selection.from - 1));
-        const span = spans[i];
+        let lo = 0, hi = spans.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (spans[mid].from < selection.from) lo = mid + 1; else hi = mid; }
+        const span = spans[lo];
         return !!span && span.from === selection.from && span.to === selection.to;
     };
     return { deco, atoms, images, tables, imageSelected: imageCtx.editable && atSelection(images),

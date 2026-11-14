@@ -1,7 +1,7 @@
 import { sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { MediaId } from '../model/media';
-import type { Node } from '../model/nodes';
+import { attachedTargets, type Node } from '../model/nodes';
 import type { SceneRecordPin } from './recordStore';
 import type { SceneMetadata } from './snapshotDoc';
 
@@ -130,8 +130,7 @@ export function createPinnedPaintDoc(records: SceneRecordPin, metadata: SceneMet
     });
     const bySheet = lazyIndex<SheetId>(records, check, node => { const sheet = sheetOf(doc, node.id); return sheet === undefined ? [] : [sheet]; });
     const byPage = lazyIndex<number>(records, check, node => metadata.kind !== 'whiteboard' && metadata.sheets.has(node.parent as SheetId) ? [node.page] : []);
-    const attachedTo = lazyIndex<NodeId>(records, check, node => node.kind === 'connector'
-        ? [node.start.attach?.target, node.end.attach?.target].filter((id): id is NodeId => id !== undefined) : []);
+    const attachedTo = lazyIndex<NodeId>(records, check, attachedTargets);
     const mediaRefs = lazyIndex<MediaId>(records, check, node => {
         if ((node.kind === 'picture' || node.kind === 'clip') && node.media) return [node.media];
         if (node.kind === 'linkcard' && node.preview) return [node.preview.image, node.preview.favicon].filter((id): id is MediaId => !!id);

@@ -400,7 +400,7 @@ export function createNativeViewLease(options: {
             sourceToken: token,
             accessibility: viewer.accessibility, subscribe: listener => lease.subscribe(listener),
             setView(next) {
-                if (parameters.visible && !next.visible) recordViewport();
+                if (parameters.visible && (!next.visible || (parameters.focused && !next.focused))) recordViewport();
                 parameters = { ...parameters, ...next };
                 backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
                 viewer.setView(viewParameters());

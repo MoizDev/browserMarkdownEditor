@@ -1,9 +1,10 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { ClipboardHtmlFrameHost } from '../clipboard/htmlFrameHost';
+import { createClipboardHtmlFrameHost } from '../clipboard/htmlFrameHost';
 import { isLocked } from '../change/commands';
 import type { BoardRuntime } from '../host/runtime';
 import { newNodeId, type NodeId } from '../model/ids';
 import { createEmbed, createLinkcard } from '../model/nodes';
+import type { BoardJobIdentity } from '../workers/protocol';
 import type { UrlEnvironment } from '../security/urlPolicy';
 import { fetchLinkPreview } from './preview';
 import { resolveEmbedCandidate, type EmbedManifest } from './embed';
@@ -35,8 +36,7 @@ export function convertMediaCard(options: {
 /** A preview is requested only by explicit gesture and becomes inert text on commit. */
 export function fetchCardPreview(options: {
     readonly runtime: BoardRuntime; readonly id: NodeId; readonly memory: MemoryAllocator;
-    readonly frame: Pick<ClipboardHtmlFrameHost, 'metadata'>; readonly environment: UrlEnvironment;
-    readonly signal?: AbortSignal; current(): boolean;
+    readonly environment: UrlEnvironment; readonly signal?: AbortSignal; current(): boolean;
 }): Promise<void> {
     const { runtime } = options, session = runtime.session, doc = session.doc, revision = doc.rev, owner = session.owner;
     const node = doc.nodes.get(options.id);
@@ -52,8 +52,13 @@ export function fetchCardPreview(options: {
             }
         };
         check();
-        const metadata = await fetchLinkPreview({ url, environment: options.environment, memory: options.memory, frame: options.frame,
-            signal: context.signal, current: () => { try { check(); return true; } catch { return false; } } });
+        // The HTML frame belongs to this job: its identity is the job's, so a stale job cannot parse for a newer one.
+        const live = () => { try { check(); return true; } catch { return false; } };
+        const identity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision };
+        const frame = createClipboardHtmlFrameHost({ memory: options.memory, identity,
+            isCurrent: job => job.session === identity.session && job.epoch === identity.epoch && job.revision === identity.revision && live() });
+        const metadata = await fetchLinkPreview({ url, environment: options.environment, memory: options.memory, frame,
+            signal: context.signal, current: live });
         check();
         await session.enqueueAfterGesture(context.signal, () => {
             check(); session.history.open('Fetch preview');

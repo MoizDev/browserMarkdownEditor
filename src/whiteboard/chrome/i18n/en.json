@@ -178,6 +178,7 @@
     "chrome.selected.one": "{count} selected",
     "chrome.selected.other": "{count} selected",
     "chrome.nothingSelected": "Nothing selected",
+    "chrome.readOnly": "This board is read-only.",
     "shortcutGroups.tools": "Tools",
     "shortcutGroups.preferences": "Preferences",
     "shortcutGroups.edit": "Edit",

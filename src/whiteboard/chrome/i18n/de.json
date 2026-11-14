@@ -442,6 +442,7 @@
     "paper.deleteContents": "Diese Seite enthält {items}.",
     "paper.deleteConfirm": "Seite löschen",
     "paper.cancel": "Abbrechen",
-    "paper.keepProtected": "Gesperrte Inhalte bleiben erhalten."
+    "paper.keepProtected": "Gesperrte Inhalte bleiben erhalten.",
+    "chrome.readOnly": "Dieses Forum ist schreibgeschützt."
   }
 }

@@ -63,7 +63,8 @@ function validHost(acq: SourceBasis, host: HostBlock, loaded: boolean): host is 
             !acq.pages.length || acq.pages.length > 65_536 || host.pages.length !== acq.pages.length ||
             host.ext?.raw.has('pdf') || host.ext?.raw.has('pages')) return false;
         const metadata = fields(parseJson(host.pdf), ['schema', 'sourceFingerprint', 'geometryEngine', 'pages', 'writeId'], ['migration']);
-        if (metadata.has('migration')) migrationValue(metadata.get('migration')!, acq.pages);
+        const migration = metadata.has('migration') ? migrationValue(metadata.get('migration')!, acq.pages) : undefined;
+        if (acq.kind === 'legacy-conversion' && (!migration || migration.legacyOuterFingerprint !== acq.legacyOriginalSha256)) return false;
         if (metadata.get('schema')!.number() !== 1 || metadata.get('sourceFingerprint')!.string(64) !== acq.source.pristineFingerprint) return false;
         const engine = fields(metadata.get('geometryEngine')!, ['id', 'build', 'generation']), expected = acq.source.geometryEngine;
         if (engine.get('id')!.string(128) !== expected.id || engine.get('build')!.string(256) !== expected.build ||
@@ -106,6 +107,11 @@ export function createPdfInkConversionHost(acq: PdfLegacyConversionReady, previo
         pages: acq.pages.map(page => [page.width, page.height] as const), ext: null };
     if (!validHost(acq, host, false)) throw new Error('Invalid PDF conversion geometry');
     return host;
+}
+
+/** Final conversion hosts must retain the prepared source's migration identity. */
+export function validatePdfInkConversionHost(acq: PdfLegacyConversionReady, host: HostBlock): boolean {
+    return validHost(acq, host, false);
 }
 
 /** Unknown PDF-owned schema or fields cannot be preserved by this writer. */

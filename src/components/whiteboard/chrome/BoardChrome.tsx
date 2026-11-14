@@ -3,6 +3,7 @@ import { ToolStrip, type ToolChoice } from './ToolStrip';
 import { toolChoices, type ToolLabel } from './toolChoices';
 import { ZoomControls, type ZoomControlsProps } from './ZoomControls';
 import { ConnectedPenPanel, type ConnectedPenPanelProps } from './ConnectedPenPanel';
+import { DebugOverlay, type DebugOverlayProps } from './DebugOverlay';
 import './chrome.css';
 
 export interface BoardChromeProps extends BoardHeaderProps {
@@ -19,14 +20,16 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly selectTool: (choice: ToolChoice) => void;
     readonly zoomControls: ZoomControlsProps;
     readonly penPanel?: ConnectedPenPanelProps;
+    readonly debug?: DebugOverlayProps;
 }
 
 /** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ locale, direction, selectedTool, lastFigure, toolLabel, toolShortcut, toolsLabel, moreLabel,
-    readOnly, focusMode, selectTool, zoomControls, penPanel, ...header }: BoardChromeProps) {
+    readOnly, focusMode, selectTool, zoomControls, penPanel, debug, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
-    if (focusMode) return null;
-    return <div className="board-chrome-overlay" lang={locale} dir={direction}>
+    return <>
+        {debug && <DebugOverlay {...debug} />}
+        {!focusMode && <div className="board-chrome-overlay" lang={locale} dir={direction}>
         <BoardHeader {...header} locale={locale} direction={direction} />
         {penPanel && <div className="board-chrome-pen"><ConnectedPenPanel {...penPanel} /></div>}
         <div className="board-chrome-bottom">
@@ -34,5 +37,6 @@ export function BoardChrome({ locale, direction, selectedTool, lastFigure, toolL
                 toolsLabel={toolsLabel} moreLabel={moreLabel} disabled={readOnly} select={selectTool} />
             <div className="board-chrome-zoom"><ZoomControls {...zoomControls} /></div>
         </div>
-    </div>;
+    </div>}
+    </>;
 }

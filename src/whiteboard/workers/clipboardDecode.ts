@@ -126,22 +126,24 @@ export async function clipboardDecode(payload: unknown, context: WorkerContext):
         recordBytes += length; records.push(line);
     }
     const media: Record<string, string> = Object.create(null) as Record<string, string>, inline: { id: MediaId; blob: Blob }[] = [];
+    const seenMedia = new Set<string>();
     let total = 0;
     for await (const [id, item] of mediaSpan.fieldsIncremental(context.slice)) {
-        if (!/^sha256:[0-9a-f]{64}$/.test(id) || Object.hasOwn(media, id) || inline.length >= SECURITY_LIMITS.clipboardNodes) throw new TypeError('Invalid clipboard media identity');
+        if (!/^sha256:[0-9a-f]{64}$/.test(id) || seenMedia.has(id) || seenMedia.size >= SECURITY_LIMITS.clipboardNodes) throw new TypeError('Invalid clipboard media identity');
+        seenMedia.add(id);
         const encoded = await text(item, 4 * Math.ceil(SECURITY_LIMITS.mediaBytes / 3), context);
         const expected = encoded.length / 4 * 3 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
         if (!Number.isSafeInteger(expected) || expected < 0 || expected > CLIPBOARD_INLINE_LIMIT - total) throw new RangeError('Inline clipboard media exceeds its limit');
         const bytes = await inlineBlob(encoded, context);
         if (bytes.size > CLIPBOARD_INLINE_LIMIT - total) throw new RangeError('Inline clipboard media exceeds its limit');
         total += bytes.size;
-        if (await hashMedia(bytes, context.signal, context.slice) !== id) throw new Error('Clipboard media hash mismatch');
+        if (await hashMedia(bytes, context.signal, context.slice) !== id) continue;
         media[id] = encoded; inline.push({ id: id as MediaId, blob: bytes });
     }
     const marker = root.get('cacheOnly');
     if (marker && (marker.kind !== 'boolean' || marker.text() !== 'true')) throw new TypeError('Invalid cache-only marker');
     const cacheOnly = !!marker;
-    if (cacheOnly && (records.length || inline.length)) throw new TypeError('Cache-only marker cannot contain records');
+    if (cacheOnly && (records.length || seenMedia.size)) throw new TypeError('Cache-only marker cannot contain records');
     context.signal.throwIfAborted();
     return { payload: { v: 1, nonce, from: { board, sheet: sheet as SheetId, kind: kind as BoardPayload['from']['kind'] }, bounds: box, records, media }, cacheOnly, inline };
 }

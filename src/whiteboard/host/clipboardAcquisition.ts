@@ -109,7 +109,7 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
     for (const item of options.decoded.inline) {
         if (!item || typeof item.id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(item.id) || seen.has(item.id)
             || !(item.blob instanceof Blob) || (typeof File !== 'undefined' && item.blob instanceof File)
-            || item.blob.size > SECURITY_LIMITS.mediaBytes || item.blob.size > 32 * 1024 * 1024 - total) throw new TypeError('Invalid inline clipboard media');
+            || item.blob.size > SECURITY_LIMITS.mediaBytes || item.blob.size > SECURITY_LIMITS.inlineMediaBytes - total) throw new TypeError('Invalid inline clipboard media');
         total += item.blob.size; seen.add(item.id);
         inline.push(Object.freeze({ id: item.id, blob: new Blob([item.blob], { type: item.blob.type }) }));
     }

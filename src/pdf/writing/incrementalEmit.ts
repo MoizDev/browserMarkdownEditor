@@ -7,6 +7,20 @@ const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
 type Group = { chunks: string[]; used: Set<string>; matrix: Affine; transform: Affine; bounds: string; isolation?: { opacity: number; blend: 'normal' | 'multiply' } };
 type Page = { index: number; width: number; height: number };
 
+function operation(value: unknown): IncrementalOperation {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invalid PDF export operation');
+    const record = value as Record<string, unknown>;
+    const keys: Record<string, readonly string[]> = {
+        open: ['kind', 'revision', 'pageCount'], beginPage: ['kind', 'page'], beginGroup: ['kind', 'group'],
+        endGroup: ['kind'], beginPath: ['kind', 'path'], pathCommands: ['kind', 'commands'],
+        endPath: ['kind'], image: ['kind', 'item'], endPage: ['kind'], finish: ['kind'],
+    };
+    if (typeof record.kind !== 'string' || !Object.hasOwn(keys, record.kind)) throw new TypeError('Unknown PDF export operation');
+    const required = keys[record.kind], actual = Object.keys(record);
+    if (actual.length !== required.length || required.some(key => !Object.hasOwn(record, key))) throw new TypeError('Invalid PDF export operation fields');
+    return value as IncrementalOperation;
+}
+
 /** Worker-local transaction. No page or unfinished path is published independently. */
 export class IncrementalEmitter {
     private readonly resources = new Resources();
@@ -27,7 +41,8 @@ export class IncrementalEmitter {
     private current(): Group { const g = this.groups.at(-1); if (!this.page || !g) throw new Error('No active PDF page'); return g; }
     private idle(): Group { const g = this.current(); if (this.openPath) throw new Error('PDF path remains open'); return g; }
     private item(): void { if (++this.items > 1_000_000) throw new RangeError('Too many PDF items'); }
-    async run(op: IncrementalOperation): Promise<IncrementalEmittedPdf | undefined> {
+    async run(input: unknown): Promise<IncrementalEmittedPdf | undefined> {
+        const op = operation(input);
         if (this.finished) throw new Error('PDF transaction is closed');
         switch (op.kind) {
             case 'open':

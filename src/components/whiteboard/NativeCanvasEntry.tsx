@@ -7,6 +7,7 @@ import type { AttachCanvasSession } from '../../utils/canvasSessionBridge';
 import { pdfEngineAvailableInBuild } from '../../utils/pdfEngineAvailability';
 import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime';
 import { registerNativeNotebookExporter } from '../../whiteboard/host/registerNativeNotebookExporter';
+import { pinNativeSheetThumbnailBounds } from '../../whiteboard/host/sheetThumbnailBounds';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
@@ -14,10 +15,23 @@ import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
 import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
+import NativeMinimap, { type NativeMinimapThumbnail } from './NativeMinimap';
 import './NativeCanvasEntry.css';
 
 const VIEW_REASON = 'This native canvas is currently available in read-only mode.';
 const reportThumbnailError = (error: unknown) => { console.error('Notebook thumbnail unavailable:', error); };
+
+function cameraSnapshotReader(lease: NativeViewLease) {
+    let value = { camera: { ...lease.camera.camera }, viewport: { ...lease.camera.viewport } };
+    return () => {
+        const camera = lease.camera.camera, viewport = lease.camera.viewport, old = value;
+        if (old.camera.x !== camera.x || old.camera.y !== camera.y || old.camera.z !== camera.z ||
+            old.viewport.width !== viewport.width || old.viewport.height !== viewport.height || old.viewport.dpr !== viewport.dpr) {
+            value = { camera: { ...camera }, viewport: { ...viewport } };
+        }
+        return value;
+    };
+}
 
 export interface NativeCanvasEntryProps {
     readonly file: ActiveFile;
@@ -74,11 +88,50 @@ function AttachedViewer({ props, identity, lease, inverted, setInverted, notice 
     const subscribeRevision = useCallback((listener: () => void) => board.subscribe(listener), [board]);
     const getRevision = useCallback(() => board.doc.rev, [board]);
     const revision = useSyncExternalStore(subscribeRevision, getRevision, getRevision);
+    const getSceneRevision = useCallback(() => lease.runtime.scene?.ready ? lease.runtime.scene.revision : -1, [lease]);
+    const sceneRevision = useSyncExternalStore(lease.subscribe, getSceneRevision, getSceneRevision);
     const current = useCallback(() => props.nativeCanvasHost.isCurrent(identity), [props.nativeCanvasHost, identity]);
     const capturePng = useCallback((rect: Parameters<NativeViewLease['captureBlob']>[0], maxSide: number, signal: AbortSignal) =>
         lease.captureBlob(rect, maxSide, signal), [lease]);
     const jump = useCallback((page: number) => lease.jump(page), [lease]);
     const stack = board.doc.kind === 'notebook' ? boardPageStack(board.doc.host) : undefined;
+    const [minimapOpen, setMinimapOpen] = useState(false);
+    const [thumbnail, setThumbnail] = useState<NativeMinimapThumbnail | null>(null);
+    const [minimapNotice, setMinimapNotice] = useState('');
+    const fonts = lease.runtime.render.text.fonts;
+    const subscribeFonts = useCallback((listener: () => void) => fonts.subscribe(listener), [fonts]);
+    const getFontEpoch = useCallback(() => fonts.epoch, [fonts]);
+    const fontEpoch = useSyncExternalStore(subscribeFonts, getFontEpoch, getFontEpoch);
+    const cameraStore = useMemo(() => cameraSnapshotReader(lease), [lease]);
+    const cameraState = useSyncExternalStore(lease.subscribe, cameraStore, cameraStore);
+    const sheet = selected.sheet;
+    const thumbnailKey = JSON.stringify([identity.documentId, identity.session, revision, fontEpoch, sheet]);
+    const minimapCurrent = useCallback(() => current() && board.doc.rev === revision && fonts.epoch === fontEpoch &&
+        selection.getSnapshot().sheet === sheet, [current, board, revision, fonts, fontEpoch, selection, sheet]);
+    useEffect(() => {
+        setThumbnail(null); setMinimapNotice('');
+        if (!minimapOpen || !props.isVisible || board.doc.kind !== 'whiteboard' || sceneRevision !== revision || !minimapCurrent()) return;
+        const controller = new AbortController();
+        void (async () => {
+            try {
+                await lease.runtime.ready;
+                controller.signal.throwIfAborted();
+                const result = await pinNativeSheetThumbnailBounds({ runtime: lease.runtime, sheet, revision, fontEpoch,
+                    current: minimapCurrent, signal: controller.signal,
+                    capture: (rect, signal) => lease.captureBlob(rect, 512, signal) });
+                if (!controller.signal.aborted && minimapCurrent()) setThumbnail({ key: thumbnailKey, blob: result.blob, worldBounds: result.bounds, revision });
+            } catch (error) {
+                if (!controller.signal.aborted && minimapCurrent()) setMinimapNotice(error instanceof Error ? error.message : 'Minimap is unavailable.');
+            }
+        })();
+        return () => controller.abort();
+    }, [minimapOpen, props.isVisible, board, lease, sheet, revision, sceneRevision, fontEpoch, minimapCurrent, thumbnailKey]);
+    const navigateMinimap = useCallback((centre: { x: number; y: number }) => {
+        if (!minimapCurrent()) return;
+        const camera = lease.camera.camera, viewport = lease.camera.viewport;
+        lease.camera.setCamera({ x: centre.x - viewport.width / (2 * camera.z), y: centre.y - viewport.height / (2 * camera.z), z: camera.z });
+        lease.changed();
+    }, [lease, minimapCurrent]);
     const { onFocusPane, registerKeyboardTarget } = props;
     const path = props.file.path;
     const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);
@@ -88,7 +141,7 @@ function AttachedViewer({ props, identity, lease, inverted, setInverted, notice 
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
         view={lease.view} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
         readOnly readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
-        chrome={<div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
+        chrome={<><div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
             {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {
                 const sheet = sheets.find(item => item.id === event.currentTarget.value);
                 if (sheet) selection.setSheet(sheet.id);
@@ -102,10 +155,14 @@ function AttachedViewer({ props, identity, lease, inverted, setInverted, notice 
             <span>{Math.round(navigation.zoom * 100)}%</span>
             <button type="button" onClick={() => lease.zoomBy(1.2)} aria-label="Zoom in">+</button>
             <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
+            {board.doc.kind === 'whiteboard' && <button type="button" aria-pressed={minimapOpen} onClick={() => setMinimapOpen(!minimapOpen)}>Minimap</button>}
             {stack && <NativeNotebookThumbnails pages={stack.rects} revision={revision} page={navigation.page} isVisible={props.isVisible}
                 current={current} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={reportThumbnailError} />}
             {notice && <span role="status">{notice}</span>}
-        </div>} />;
+            {minimapOpen && minimapNotice && <span role="status">{minimapNotice}</span>}
+        </div>
+        {board.doc.kind === 'whiteboard' && <NativeMinimap thumbnail={thumbnail?.key === thumbnailKey ? thumbnail : null} currentCamera={cameraState.camera} viewport={cameraState.viewport}
+            isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} onNavigate={navigateMinimap} onFocus={onFocus} />}</>} />;
 }
 
 export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {

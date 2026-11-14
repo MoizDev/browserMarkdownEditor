@@ -22,7 +22,7 @@ import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidian
 import { createLivePreviewPlugin, livePreviewField } from '../editor/livePreview';
 import { docAnalysisField } from '../editor/docAnalysis';
 import { markEditorModeRender } from '../editor/editorPerf';
-import type { ImageDeleteRequest, ImageEmbedActions } from '../editor/imageWidget';
+import type { ImageEmbedActions } from '../editor/imageWidget';
 import { markdownFormatExtension } from '../editor/formatKeymap';
 import { indentSettings, listIndentKeymap } from '../editor/lists';
 import { wikiLinkAutocomplete } from '../editor/wikiLinkComplete';
@@ -493,13 +493,6 @@ function editorMenuEntries(view: EditorView, notify: (message: string) => void):
     ];
 }
 
-/** A delete request, tagged with the document it was raised against — the
- *  confirmation is the app's (EditorPane's), and with several panes on screen
- *  it has to know which one asked. */
-export interface PaneImageDelete extends ImageDeleteRequest {
-    path: string;
-}
-
 interface DocumentPaneProps {
     reading: ReaderIntegration;
     tab: OpenTab;
@@ -588,7 +581,6 @@ interface DocumentPaneProps {
     onRetryRead: (path: string) => Promise<boolean>;
     onFocusPane: (path: string) => void;
     onOpenNote: OpenNoteByNameHandler;
-    onImageDelete: (request: PaneImageDelete) => void;
     /** Say something to the reader — the app's own dialog, from App's `tell`.
      *  A refused clipboard and a refused `.md` drop use it, and it is the
      *  difference between a gesture that explains itself and a dead one.
@@ -601,9 +593,10 @@ interface DocumentPaneProps {
     onRevealHandled: () => void;
 }
 
-function TexDocument({ store, documentId, path, contentOf, initial }: { store: DocumentBufferStore; documentId: string; path: string; contentOf(path: string): string | undefined; initial: string }) {
+function TexDocument({ store, documentId, path, contentOf }: { store: DocumentBufferStore; documentId: string; path: string; contentOf(path: string): string | undefined }) {
     useDocumentRevision(store, documentId);
-    return <TexView source={contentOf(path) ?? initial} />;
+    const text = contentOf(path);
+    return text === undefined ? null : <TexView source={text} />;
 }
 
 /**
@@ -786,10 +779,12 @@ function DocumentPane({
     useEffect(() => { tabRef.current = tab; }, [tab]);
     const isHelp = !!file.isHelp;
     useEffect(() => {
-        if (isCanvas || unreadable) return;
+        if (isCanvas || unreadable || contentOf(path) === undefined) return;
         const text = () => {
             const view = viewRef.current;
-            return view ? docString(view.state.doc) : contentOf(path) ?? tabRef.current.content;
+            const current = view ? docString(view.state.doc) : contentOf(path);
+            if (current === undefined) throw new Error('Document text is unavailable.');
+            return current;
         };
         return registerView(path, {
             kind: 'markdown',
@@ -798,7 +793,7 @@ function DocumentPane({
                 const { mode: tabMode, dirty } = tabRef.current;
                 if (view) return describeMarkdown(view, tabMode, !!dirty, codeLanguage?.name);
                 // Between the pane's mount and its view (a frame at most).
-                const content = contentOf(path) ?? tabRef.current.content;
+                const content = text();
                 const state = EditorState.create({ doc: content });
                 return {
                     kind: 'markdown', mode: tabMode, text: content, lineCount: state.doc.lines,
@@ -1086,7 +1081,8 @@ function DocumentPane({
         const keyboardBefore = document.activeElement;
         buildingViewRef.current = true;
         try {
-            const initial = contentOf(path) ?? tab.content;
+            const initial = contentOf(path);
+            if (initial === undefined) return;
             const adapter = markdownSessions.ensure(documentId, owner => createMarkdownSession(owner,
                 EditorState.create({ doc: initial, extensions: history() }), () => documentBuffers.get(documentId)?.source));
             if (!adapter) return;
@@ -1512,7 +1508,7 @@ function DocumentPane({
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => e.preventDefault()}
                     >
-                        <TexDocument store={documentBuffers} documentId={tab.id} path={path} contentOf={contentOf} initial={tab.content} />
+                        <TexDocument store={documentBuffers} documentId={tab.id} path={path} contentOf={contentOf} />
                     </div>
                 )}
                 {!isCanvas && !unreadable && !texReading && (

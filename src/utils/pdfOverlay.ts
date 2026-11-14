@@ -24,9 +24,11 @@ export interface PageOverlay {
     vector?: VectorOp[];
     /** Transparent page-sized PNG for whatever could not become a path. */
     raster?: Uint8Array;
+    /** Transparent sheets, ordered from bottom to top. */
+    layers?: PageOverlay[];
 }
 
 /** True when this overlay would put nothing on the page. */
 export function isEmptyOverlay(overlay: PageOverlay | undefined): boolean {
-    return !overlay || (!overlay.vector?.length && !overlay.raster?.length);
+    return !overlay || (!overlay.vector?.length && !overlay.raster?.length && !overlay.layers?.some(layer => !isEmptyOverlay(layer)));
 }

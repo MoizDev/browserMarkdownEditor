@@ -5,6 +5,10 @@ import { compose } from '../geom/affine';
 import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
 import { pointPath } from '../geom/pick';
+import { createFillPointJob } from '../geom/fillPoint';
+import { exactAffinePoint } from '../geom/exactAffine';
+import { exactPointIntervals } from '../geom/homogeneous';
+import { segmentIntersection } from '../geom/predicates';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import type { InputKind, NarrowResult, PointQuery } from '../geom/types';
@@ -41,6 +45,24 @@ function rectPath(rect: { x: number; y: number; width: number; height: number })
 }
 const interior = (path: readonly PathOp[], query: PointQuery) => pointPath([], query,
     { interiorPaths: [path], strokeRadiusLocal: 0, marginCss: 0, errorCss: 0.01, maxSegments: 8192 }).hit;
+function exactStraightBoundary(path: readonly PathOp[], query: PointQuery): boolean {
+    const mapped = (p: Vec2): Vec2 | null => {
+        const q = exactPointIntervals(exactAffinePoint(query.localToSurface, p));
+        return q.x.lo === q.x.hi && q.y.lo === q.y.hi ? { x: q.x.lo, y: q.y.lo } : null;
+    };
+    let start: Vec2 | undefined, previous: Vec2 | undefined;
+    for (const op of path) {
+        if (op.op === 'M') { start = previous = op.p; continue; }
+        if (!previous || !start) throw new RangeError('Attachment outline must begin with M');
+        const next = op.op === 'Z' ? start : op.p;
+        if (op.op !== 'C') {
+            const a = mapped(previous), b = mapped(next);
+            if (a && b && segmentIntersection(a, b, query.point, query.point).kind !== 'none') return true;
+        }
+        previous = next;
+    }
+    return false;
+}
 function connectorPoint(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, worldToSurface: Affine,
     point: Vec2, input: InputKind): { result: NarrowResult; uncertain: boolean } {
     if (geometry.label) {
@@ -183,9 +205,19 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         const attachment = vector.attachments;
                         if (targetMode && attachment) {
                             // The boundary and interior attach; the exterior selection halo does not.
-                            result = pointPath([], query, { interiorPaths: [attachment.outline], strokeRadiusLocal: 0,
-                                marginCss: 0, errorCss: 0.01, maxSegments: 8192 });
-                            if (result.hit) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
+                            const job = createFillPointJob([attachment.outline], surface, 'nonzero',
+                                { localToWorld: localToSurface, maxCommands: 8192 });
+                            for (;;) {
+                                const state = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                if (state.status === 'pending') { await tick(); continue; }
+                                if (state.status === 'inside') result = { hit: true, distanceCss: 0, part: 'body' };
+                                else if (state.status === 'uncertain') {
+                                    result = { hit: true, distanceCss: 0, part: 'body' };
+                                    ambiguous = !exactStraightBoundary(attachment.outline, query);
+                                }
+                                break;
+                            }
+                            if (result.hit && !ambiguous) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
                         } else {
                             result = vector.point(query);
                             if (targetMode && result.hit) ambiguous = true;

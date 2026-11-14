@@ -316,6 +316,7 @@ export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> 
                 return polylineHandleGesture(sample, modifiers, { runtime, id: node.id,
                     index: replaceTiny ? node.points.length - 1 : node.points.length, insert: !replaceTiny,
                     onFinishUp: () => runtime.tools.keepToolOnce(prior.epoch), onCommit: () => runtime.tools.extendedPolyline(node.id, prior.epoch),
+                    snap: { zoom: () => context.camera.camera.z, alwaysSnap: context.alwaysSnap ?? (() => false), guides: value => context.guides?.(value) },
                     current: context.current, hold: () => session.beginGesture(), registerPending: context.registerPending,
                     show: ops => context.preview.showOps(ops), waitUntilReady: context.preview.waitUntilReady,
                     armCommit: context.preview.armCommit, finishCommit: context.preview.finishCommit, cancelCommit: context.preview.cancelCommit,

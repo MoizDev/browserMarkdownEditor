@@ -2,6 +2,7 @@ import { isLocked } from '../change/commands';
 import { poseInParent, worldPose, worldToLocal, type ChangeGeometry } from '../change/coordinates';
 import type { NodeSetOp } from '../change/ops';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
+import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { Attachment } from '../model/nodes';
@@ -15,6 +16,7 @@ export interface ConnectorEndHandleOptions {
     readonly terminal: 'start' | 'end';
     readonly current: () => boolean;
     readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
+    readonly snap: { readonly zoom: () => number; readonly alwaysSnap: () => boolean; readonly guides: (guides: readonly BoardSnapGuide[]) => void };
     readonly resolveAttachment: (point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
     readonly show: (ops: readonly NodeSetOp[]) => void;
     readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
@@ -43,7 +45,9 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
         && !session.isReadOnly && runtime.selection.getSnapshot() === selection && (font === undefined || runtime.render.text.fonts.epoch === font);
     const cleanup = () => {
         if (cleaned) return; cleaned = true;
-        try { options.clear(); } finally { try { scope?.release(); } finally { try { unregister?.(); } finally { release(); } } }
+        try { options.snap.guides([]); } finally {
+            try { options.clear(); } finally { try { scope?.release(); } finally { try { unregister?.(); } finally { release(); } } }
+        }
     };
     const cancel = () => { if (cleaned) return; ended = true; generation++; controller.abort(); request?.abort(); cleanup(); };
     try { unregister = options.registerPending(cancel); } catch (error) { release(); throw error; }
@@ -64,7 +68,14 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
                 { precise: input.shift || point.time - lastMovedAt >= 1000, exact: input.alt,
                     input: point.source === 'keyboard' ? 'mouse' : point.source });
             check();
-            const local = worldToLocal(doc, node, point), terminal = options.terminal;
+            let target = { x: point.x, y: point.y }, guides: readonly BoardSnapGuide[] = [];
+            // Binding wins over alignment; free endpoints follow the same snap inversion as selection movement.
+            if (!attachment && options.snap.alwaysSnap() !== input.accel) {
+                const snapped = await snapBoardBounds({ runtime, bounds: { ...target, width: 0, height: 0 }, selected: [node.id],
+                    zoom: options.snap.zoom(), current: active, signal: localRequest.signal, cooperate: options.cooperate });
+                check(); target = { x: target.x + snapped.delta.x, y: target.y + snapped.delta.y }; guides = snapped.guides;
+            }
+            const local = worldToLocal(doc, node, target), terminal = options.terminal;
             const ops: NodeSetOp[] = [{ t: 'set', id: node.id, key: terminal, value: { x: local.x, y: local.y, attach: attachment } }];
             const candidate = await projectBoardGeometrySets(doc, ops, { signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             preview = await acquireBoardGeometryScope(runtime, [node.id], { doc: candidate, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
@@ -77,6 +88,7 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             if (placement.y !== node.y) ops.push({ t: 'set', id: node.id, key: 'y', value: placement.y });
             const finalDoc = await projectBoardGeometrySets(doc, ops, { signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             final = await acquireBoardGeometryScope(runtime, [node.id], { doc: finalDoc, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
+            options.snap.guides(guides);
             if (commit) {
                 options.show(ops); await options.waitUntilReady(localRequest.signal); check();
                 options.armCommit();

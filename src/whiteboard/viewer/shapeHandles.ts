@@ -7,6 +7,7 @@ import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { connectorBody, connectorBodyPoint } from '../geom/connectors';
 import type { ConnectorControl } from '../geom/connectorControls';
 import type { Vec2 } from '../geom/path';
+import type { BoardSnapGuide } from '../geom/runtimeSnap';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { polylinePath } from '../geom/polylines';
 import { preparePolylineControl } from '../geom/polylineControls';
@@ -33,6 +34,8 @@ export interface ShapeHandleOptions {
     readonly current: () => boolean;
     readonly visible: () => boolean;
     readonly sampleToSurface: (sample: RealSample) => Vec2;
+    readonly alwaysSnap: () => boolean;
+    readonly guides: (guides: readonly BoardSnapGuide[]) => void;
     readonly invalidate: () => void;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
@@ -133,9 +136,10 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 show: options.show, waitUntilReady: options.waitUntilReady, armCommit: options.armCommit,
                 finishCommit: options.finishCommit, cancelCommit: options.cancelCommit,
                 clear: options.clear, error: options.error, cooperate: options.cooperate };
+            const snap = { zoom: () => options.view().camera.z, alwaysSnap: options.alwaysSnap, guides: options.guides };
             if (hit.kind === 'polyline-vertex' || hit.kind === 'polyline-midpoint') return polylineHandleGesture(sample, modifiers,
-                { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint' });
-            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal,
+                { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint', snap });
+            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, snap,
                 sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
             return connectorControlGesture(sample, modifiers, { ...common, control: hit.control });
         },

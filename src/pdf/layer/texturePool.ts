@@ -24,7 +24,13 @@ export class PdfTexturePool {
             return item;
         }
         const bytes = width * height * 4;
-        const lease: ByteLease | null = this.allocator.reserve(bytes);
+        let lease: ByteLease | null = this.allocator.reserve(bytes);
+        while (!lease && this.free.length) {
+            const oldest = this.free.shift()!;
+            this.freeBytes -= oldest.bytes;
+            oldest.device.destroy(oldest.handle);
+            lease = this.allocator.reserve(bytes);
+        }
         if (!lease) return null;
         try {
             return { device, handle: device.createTexture(width, height, 'rgba8', ['sample', 'copy-dst'], lease),

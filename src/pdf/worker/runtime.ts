@@ -48,7 +48,11 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
     let geometryEventAt = -Infinity;
     let memoryEventAt = -Infinity;
     const channel = new MessageChannel();
-    const yieldTurn = () => new Promise<void>(resolve => { channel.port1.onmessage = () => resolve(); channel.port2.postMessage(0); });
+    const turns: Array<() => void> = [];
+    // Reply validation can yield after its native serial turn has ended. A per-call
+    // onmessage replacement strands that reply when the next render yields too.
+    channel.port1.onmessage = () => { turns.shift()?.(); };
+    const yieldTurn = () => new Promise<void>(resolve => { turns.push(resolve); channel.port2.postMessage(0); });
     const serial = (fn: (value: unknown, context: WorkerContext) => unknown | Promise<unknown>) =>
         (value: unknown, context: WorkerContext) => {
             const next = chain.then(async () => {
@@ -324,5 +328,5 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
             }),
             'worker.stats': serial(() => ({ heapBytes: backend?.heapBytes() ?? writer?.heapBytes() ?? 0, docs: docs.size, pagesLoaded: [...docs.values()].reduce((sum, item) => sum + item.doc.residentPages() + (item.clone?.residentPages() ?? 0), 0), blockCacheBytes: [...docs.values()].reduce((sum, item) => sum + item.source.cachedBytes, 0) })),
         } });
-    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); inspections.clear(); inspectionBytes = 0; inspector?.dispose(); fonts.clear(); backend?.close?.(); void writer?.close(); channel.port1.close(); channel.port2.close(); };
+    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); inspections.clear(); inspectionBytes = 0; inspector?.dispose(); fonts.clear(); backend?.close?.(); void writer?.close(); channel.port1.close(); channel.port2.close(); for (const resolve of turns.splice(0)) resolve(); };
 }

@@ -86,7 +86,7 @@ async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometr
 /** The host supplies the live session's canonical geometry and actual owner guard. */
 export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAuthority): {
     shapes(query: ShapeQuery, options: JobOptions): Promise<ShapePage>;
-    apply(ops: CanvasOp[], options: JobOptions): Promise<AgentApplyResult>;
+    apply(ops: CanvasOp[], options: JobOptions & { readonly expectedRevision?: number }): Promise<AgentApplyResult>;
 } {
     const adapter = createBoardAgentAdapter(host);
     return {
@@ -112,16 +112,17 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
         apply(ops, options) {
             if (!Array.isArray(ops) || ops.length < 1 || ops.length > 200) return Promise.reject(new RangeError('Expected 1 to 200 canvas operations'));
             // The caller cannot change a queued transaction after admission begins.
-            let captured: CanvasOp[], sheet: ReturnType<AgentAdapterHost['sheet']>, page: number;
-            try { captured = structuredClone(ops); sheet = host.sheet(); page = host.page(); }
+            let captured: CanvasOp[], sheet: ReturnType<AgentAdapterHost['sheet']>, page: number, revision: number;
+            try { captured = structuredClone(ops); sheet = host.sheet(); page = host.page(); revision = options.expectedRevision ?? host.session.doc.rev; }
             catch (error) { return Promise.reject(error); }
             return authority.run(async context => {
                 authority.assertContext(context);
-                if (!host.isCurrent() || host.sheet() !== sheet || host.page() !== page) throw new DOMException('Agent target view changed', 'AbortError');
+                if (!Number.isSafeInteger(revision) || revision < 0 || !host.isCurrent() || host.session.doc.rev !== revision
+                    || host.sheet() !== sheet || host.page() !== page) throw new DOMException('Agent target view changed', 'AbortError');
                 const result = await adapter.apply(captured, {
                     signal: context.signal,
                     isCurrent: () => {
-                        try { authority.assertContext(context); return host.isCurrent() && host.sheet() === sheet && host.page() === page; }
+                        try { authority.assertContext(context); return host.isCurrent() && host.session.doc.rev === revision && host.sheet() === sheet && host.page() === page; }
                         catch { return false; }
                     },
                 });

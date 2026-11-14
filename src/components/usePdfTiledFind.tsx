@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Rect, ViewState } from '../platform/types';
 import type { PageStack } from '../platform/render';
 import { pageAt } from '../platform/render';
 import type { PdfTiledDocumentSession } from '../pdf/session/documentSession';
 import type { PdfPoolDocument } from '../pdf/pool/types';
 import { pdfPoolTextSource } from '../pdf/text/poolSource';
+import { getPdfFontEpoch, subscribePdfFontEpoch } from '../pdf/fonts/profiles';
 import { retainPdfTextReaderVisibility, sessionPdfTextReader } from '../pdf/text/sessionReader';
 import { PdfSelectionGeometryCache } from '../pdf/text/selectionCache';
 import type { PdfSelection } from '../pdf/text/selection';
@@ -52,6 +53,9 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
     const live = useRef(options), find = useRef<PdfFindBarHandle>(null);
     useLayoutEffect(() => { live.current = options; });
     const { session, document } = options;
+    const subscribeEpoch = useCallback((listener: () => void) => subscribePdfFontEpoch(document.docKey, listener), [document.docKey]);
+    const readEpoch = useCallback(() => getPdfFontEpoch(document.docKey), [document.docKey]);
+    const fontEpoch = useSyncExternalStore(subscribeEpoch, readEpoch, readEpoch);
     const readerVisibility = useRef<ReturnType<typeof retainPdfTextReaderVisibility> | undefined>(undefined);
     const [stored, setStored] = useState<FindResource | null>(null);
     const resource = stored?.session === session && stored.document === document ? stored : null;
@@ -89,6 +93,21 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
         resource.geometry.setVisible(options.isVisible);
         resource.highlights.setVisible(options.isVisible);
     }, [resource, options.isVisible]);
+    useLayoutEffect(() => {
+        if (!resource) return;
+        find.current?.cancelReveal();
+        resource.highlights.setFind([], undefined);
+        resource.highlights.setSelection(null);
+    }, [resource, fontEpoch]);
+    const engine = useMemo(() => {
+        if (!resource) return undefined;
+        // The bar uses engine identity to discard hits and restart the current query.
+        const epoch = fontEpoch, current = resource.reader.findEngine;
+        return { ...current, search: (...args: Parameters<typeof current.search>) => {
+            if (readEpoch() !== epoch) throw new DOMException('Stale PDF find', 'AbortError');
+            return current.search(...args);
+        } };
+    }, [resource, fontEpoch, readEpoch]);
     useEffect(() => { resource?.layer.setPalette(options.palette); }, [resource, options.palette]);
     useEffect(() => { resource?.highlights.setSelection(options.selection); }, [resource, options.selection]);
     const onView = useCallback((view: ViewState) => {
@@ -101,7 +120,7 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
         }
         resource.highlights.setWindow(pages, view.camera.z);
     }, [resource]);
-    const bar = resource && <PdfFindBar ref={find} engine={resource.reader.findEngine} memory={options.memory}
+    const bar = resource && <PdfFindBar ref={find} engine={engine} memory={options.memory}
         isVisible={options.isVisible} isActive={options.isFocused}
         selectedText={() => live.current.selectedText()} readingPosition={() => live.current.readingPosition()}
         atOrAfter={(hit, start, signal) => resource.highlights.atOrAfter(hit, start, signal)}

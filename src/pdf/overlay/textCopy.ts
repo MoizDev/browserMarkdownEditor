@@ -10,6 +10,9 @@ export interface PdfTextCopyHost {
     cachedText(page: number): string | undefined;
     /** Active copy is priority 1, not background indexing. */
     text(page: number, signal: AbortSignal): Promise<string>;
+    /** Rechecked before publication, including immediately before a queued clipboard write. */
+    isCurrent(): boolean;
+    fontEpoch(): number;
     notice(message: string): void;
 }
 export interface PdfTextCopyBinding {
@@ -28,6 +31,10 @@ function writeLatest(text: string, ticket: number, valid: () => boolean): Promis
     const run = writeTail.then(async () => ticket === latestCopy && valid() ? copyText(text) : undefined);
     writeTail = run.then(() => {}, () => {}).finally(() => { writes--; });
     return run;
+}
+export function beginPdfCopy(): { write(text: string, valid: () => boolean): Promise<boolean | undefined> } {
+    const ticket = ++latestCopy;
+    return { write: (text, valid) => writeLatest(text, ticket, valid) };
 }
 function sameSelection(a: PdfSelection, b: PdfSelection | null): boolean {
     return !!b && a.docKey === b.docKey && a.wholeDocument === b.wholeDocument && a.granularity === b.granularity &&
@@ -55,10 +62,11 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
         }
         return { count, pages, first, last, range };
     };
-    const gather = async (selection: PdfSelection, state: ReturnType<typeof initial>, ticket: number, format: (text: string) => string = text => text) => {
+    const gather = async (selection: PdfSelection, state: ReturnType<typeof initial>, ticket: number, fontEpoch: number, format: (text: string) => string = text => text) => {
         cancel(true);
         const controller = new AbortController(), epoch = localEpoch; pending = controller;
-        const valid = () => !disposed && epoch === localEpoch && !controller.signal.aborted && sameSelection(selection, host.selection()) && host.pageCount() === state.count;
+        const valid = () => !disposed && epoch === localEpoch && !controller.signal.aborted && host.isCurrent() && host.fontEpoch() === fontEpoch &&
+            sameSelection(selection, host.selection()) && host.pageCount() === state.count;
         const parts: string[] = [];
         let units = 0, normalizedUnits = 0, previousEndsInLF = false;
         try {
@@ -97,35 +105,38 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
     };
     const copy = async (quote?: { filename: string; path: string }) => {
         const current = host.selection();
-        if (!current || disposed) return;
-        const selection = snapshot(current), state = initial(selection), ticket = ++latestCopy;
+        if (!current || disposed || !host.isCurrent()) return;
+        const fontEpoch = host.fontEpoch(), selection = snapshot(current), state = initial(selection), ticket = ++latestCopy;
         const result = copySelection(selection, state.count, state.pages);
         const format = quote ? (text: string) => pdfSelectionQuote(text, quote.filename, quote.path, state.first, state.last) : (text: string) => text;
         if (result.kind === 'too-large') { cancel(); host.notice(result.message); return; }
         if (result.kind === 'ready') {
             cancel(true);
             const epoch = localEpoch;
-            const copied = await writeLatest(format(result.text), ticket, () => !disposed && epoch === localEpoch && sameSelection(selection, host.selection()));
-            if (copied === false) host.notice(CLIPBOARD_WRITE_BLOCKED);
+            const valid = () => !disposed && epoch === localEpoch && host.isCurrent() && host.fontEpoch() === fontEpoch && sameSelection(selection, host.selection());
+            const copied = await writeLatest(format(result.text), ticket, valid);
+            if (valid() && copied === false) host.notice(CLIPBOARD_WRITE_BLOCKED);
             return;
         }
-        await gather(selection, state, ticket, format);
+        await gather(selection, state, ticket, fontEpoch, format);
     };
     const onCopy = (event: ClipboardEvent) => {
         const target = event.target as HTMLElement | null;
         if (target?.closest('input, textarea, [contenteditable="true"]')) return;
         const current = host.selection();
         if (!current) return;
-        const selection = snapshot(current), state = initial(selection), result = copySelection(selection, state.count, state.pages), ticket = ++latestCopy;
         event.preventDefault();
+        if (!host.isCurrent()) return;
+        const fontEpoch = host.fontEpoch(), selection = snapshot(current), state = initial(selection), result = copySelection(selection, state.count, state.pages), ticket = ++latestCopy;
         if (result.kind === 'ready' && event.clipboardData) {
             cancel(true); event.clipboardData.setData('text/plain', result.text);
             // A delayed restore must not write after a vault switch or a new
             // selection, even if an earlier clipboard request was already live.
             const epoch = localEpoch;
-            if (writes) void writeLatest(result.text, ticket, () => !disposed && epoch === localEpoch && sameSelection(selection, host.selection()));
+            if (writes) void writeLatest(result.text, ticket, () => !disposed && epoch === localEpoch && host.isCurrent() &&
+                host.fontEpoch() === fontEpoch && sameSelection(selection, host.selection()));
         } else if (result.kind === 'too-large') { cancel(); host.notice(result.message); }
-        else void gather(selection, state, ticket);
+        else void gather(selection, state, ticket, fontEpoch);
     };
     element.addEventListener('copy', onCopy);
     return { copy: () => copy(), copyQuote: (filename, path) => copy({ filename, path }), cancel: () => cancel(),

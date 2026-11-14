@@ -8,6 +8,8 @@ import { PdfTileCache } from './tileCache';
 import { PdfTexturePool, type PooledTexture } from './texturePool';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
+import { pdfVariantRevision } from '../fonts/profiles';
+import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
  * every returned bitmap transfers to this layer, including cancelled replies. */
@@ -41,7 +43,7 @@ interface Entry {
 
 function contentFamily(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): string {
     const { vaultEpoch, documentId, session } = input.token;
-    return JSON.stringify([vaultEpoch, documentId, session, input.source, input.variant, input.geometryDigest]);
+    return JSON.stringify([vaultEpoch, documentId, session, input.source, pdfVariantRevision(input.variant, input.fontEpoch ?? 0), input.geometryDigest]);
 }
 
 function rect(request: PdfTileRequest): Rect {
@@ -115,6 +117,7 @@ export class PdfTileLayer implements Layer {
         this.latestView = view;
         const identity = contentFamily(input);
         if (identity !== this.contentIdentity) {
+            this.mirrorJob = null;
             for (const [key, entry] of this.entries) this.remove(key, entry);
             this.failed.clear();
             this.contentIdentity = identity;
@@ -154,6 +157,7 @@ export class PdfTileLayer implements Layer {
                             { source: existing.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
                         if (existing.texture) this.texturePool.release(existing.texture);
                         existing.texture = texture;
+                        consumePdfTileArrival(existing.bitmap);
                     } catch (error) { device.destroy(texture.handle); this.onError(error, request); }
                 }
                 continue;
@@ -172,6 +176,7 @@ export class PdfTileLayer implements Layer {
             void Promise.resolve().then(() => this.producer.render(request, entry.controller.signal)).then(bitmap => {
                 const current = !this.disposed && this.isCurrent() && this.entries.get(key) === entry && !entry.controller.signal.aborted;
                 if (!current || bitmap.width !== request.tile.textureWidth || bitmap.height !== request.tile.textureHeight) {
+                    forgetPdfTileArrival(bitmap);
                     bitmap.close();
                     if (this.entries.get(key) === entry) this.remove(key, entry);
                     this.finishRetiring(entry);
@@ -183,7 +188,7 @@ export class PdfTileLayer implements Layer {
                 this.host.invalidate('pdf-tile-arrived');
             }, error => {
                 const current = this.entries.get(key) === entry;
-                const cancelled = entry.controller.signal.aborted;
+                const cancelled = entry.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
                 if (current) this.remove(key, entry);
                 this.finishRetiring(entry);
                 if (!current) return;
@@ -275,6 +280,7 @@ export class PdfTileLayer implements Layer {
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination,
                 { opacity: 1, sampling: 'linear', coverage: entry.request.scale.scale === rasterScale ? 'current' : 'standin' });
+            consumePdfTileArrival(entry.bitmap);
         }
     }
 
@@ -454,7 +460,7 @@ export class PdfTileLayer implements Layer {
         job.pending = true;
         // One cropped allocation per preparation slice; an obsolete view cannot publish (design §6.4:649).
         void createImageBitmap(bitmap, sx, sy, width, height).then(copy => {
-            if (this.mirrorJob !== job || this.disposed || !this.isCurrent()) {
+            if (this.mirrorJob !== job || this.disposed || !this.isCurrent() || contentFamily(this.demand(view)) !== contentFamily(input)) {
                 copy.close(); this.host.allocator.cpu.release(lease); return;
             }
             const world = { x: left, y: top, width: right - left, height: bottom - top };
@@ -535,6 +541,7 @@ export class PdfTileLayer implements Layer {
         if (entry.texture) this.texturePool.release(entry.texture);
         if (entry.bitmap) {
             this.contentRevision++;
+            forgetPdfTileArrival(entry.bitmap);
             entry.bitmap.close();
             this.host.allocator.cpu.release(entry.lease);
         } else {

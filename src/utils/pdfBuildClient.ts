@@ -12,13 +12,13 @@ import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
 
 let worker: Worker | null = null;
 let nextId = 1;
-const pending = new Map<number, { resolve: (b: Uint8Array) => void; reject: (e: Error) => void }>();
+const pending = new Map<number, { resolve: (b: Uint8Array) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 const rolePending = new Map<number, { resolve: (role: PdfRole) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 const buildAliases = new WeakMap<Uint8Array, string[]>();
 export function pdfBuildAliases(bytes: Uint8Array): string[] { return buildAliases.get(bytes) ?? []; }
 
 function failWorker(error: Error) {
-    for (const entry of pending.values()) entry.reject(error);
+    for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(error); }
     pending.clear();
     for (const entry of rolePending.values()) { clearTimeout(entry.timer); entry.reject(error); }
     rolePending.clear();
@@ -45,6 +45,7 @@ function getWorker(): Worker {
         const entry = pending.get(id);
         if (!entry) return;
         pending.delete(id);
+        clearTimeout(entry.timer);
         if (refusal) entry.reject(new PdfBuildRefused(refusal));
         else if (error !== undefined || !bytes) entry.reject(new Error(error ?? 'Missing PDF build response'));
         else {
@@ -127,7 +128,9 @@ function dispatch(build: (id: number) => PdfBuildRequest, transfer: Transferable
     const id = nextId++;
     const request = build(id);
     return new Promise<Uint8Array>((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        getWorker().postMessage(request, transfer);
+        const timer = setTimeout(() => failWorker(new Error('PDF build timed out; the PDF was not changed. Retry saving.')), 120_000);
+        pending.set(id, { resolve, reject, timer });
+        try { getWorker().postMessage(request, transfer); }
+        catch (error) { failWorker(error instanceof Error ? error : new Error(String(error))); }
     });
 }

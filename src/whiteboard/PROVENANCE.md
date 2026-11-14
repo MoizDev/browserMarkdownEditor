@@ -290,7 +290,7 @@ third-party code included (normally "none") · date.
 | `geom/transformCommands.types.ts` | lane w-g | GE-4 | geometry §6.2/6.7 | Design; nudge, resize, rotation and per-kind reflection command services | none | 2026-11-13 |
 | `geom/flip.types.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; per-kind reflection and projected world-pose services | none | 2026-11-13 |
 | `geom/flip.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; reflected centres, local sign/flip properties and delegated container/binding policies | none | 2026-11-13 |
-| `geom/transformCommands.ts` | lane w-g | GE-4; F-XFORM-009/015 | geometry §6.7 | Design; ±15°/±15⁄16° rotations, 1.1 scale and centre-reflection transaction builders | none | 2026-11-13 |
+| `geom/transformCommands.ts` | lane w-g | GE-4; F-XFORM-002/003/009/015 | geometry §6.2/6.7 | Design; discrete nudges, ±15°/±15⁄16° rotations, 1.1 scale and centre-reflection transactions | none | 2026-11-13 |
 | `geom/rotationPlacement.types.ts` | lane w-g | GE-4 | geometry §6.3 | Design; local-centre and page-aware rotation placement service contract | none | 2026-11-13 |
 | `geom/rotationPlacement.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.3 | Design; selection-centre rotation mapped through shared parent/page pose | none | 2026-11-13 |
 | `geom/rotationPlan.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.1–6.3 | Design; angle unwrapping, selection-centre rotation and one-transaction placement | none | 2026-11-13 |

@@ -14,6 +14,7 @@ export async function recoverBoardJournal(payload: unknown, options: {
     doc: BoardDoc; samples: SampleStore; apply: (tx: Transaction) => Applied; signal: AbortSignal;
     cooperate?: () => Promise<void>; projectMedia?: (entry: MediaEntry) => MediaEntry;
     mediaFiles?: ReadonlyMap<string, string>; isCurrent?: () => boolean;
+    assertDiskBaseline(signal: AbortSignal): Promise<void>;
 }): Promise<void> {
     const { doc, signal } = options, initialRevision = doc.rev;
     const check = () => {
@@ -185,6 +186,8 @@ export async function recoverBoardJournal(payload: unknown, options: {
             else if (desired.host.kind === 'pdf-ink') ops.push({ t: 'ext', target: 'host', value: desired.host.ext });
             for (const sheet of doc.sheets.values()) { if (due()) await cooperate(); if (!desired.sheets.has(sheet.id)) ops.push({ t: 'sheet', op: 'delete', id: sheet.id }); }
             for (const entry of doc.media.values()) { if (due()) await cooperate(); if (!desiredMedia.has(entry.id)) ops.push({ t: 'media', op: 'drop', id: entry.id, restoreMissing: true }); }
+            check();
+            await options.assertDiskBaseline(signal);
             check();
             const receipt = options.apply({ origin: 'recovery', label: 'Recover unsaved changes', ops });
             receipt.release();

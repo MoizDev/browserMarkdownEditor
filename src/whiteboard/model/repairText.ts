@@ -145,7 +145,7 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
                         segment += text.slice(last, i); append(segment, run.tail as RawJson | undefined); await flush();
                         segment = ''; last = i + 1; changed = true;
                         if (run.tail !== undefined || marks.x !== undefined) return fail('Cannot split opaque rich run safely');
-                    } else if ((c < 32 && c !== 9) || (c >= 0xd800 && c <= 0xdfff && !(c <= 0xdbff && i + 1 < text.length && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff))) {
+                    } else if (c >= 0xd800 && c <= 0xdfff && !(c <= 0xdbff && i + 1 < text.length && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff)) {
                         segment += text.slice(last, i) + '\ufffd'; last = i + 1; changed = true; replacements++;
                     } else if (c >= 0xd800 && c <= 0xdbff) i++;
                 }
@@ -170,7 +170,7 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
                     if (NODE_FILE_FIELDS[key].some(token => node.ext?.raw.has(token))) return { nodes, changedOrdinals: new Set(), notices: [], readOnlyReason: `Repair would override preserved ${key} on ${node.id}` };
                     node = { ...node, [key]: fixed.value } as NodeRecord;
                     changed.add(i); notices.push({ code: 'rich-text', count: 1, nodeIds: [node.id] });
-                    if (fixed.replacements) notices.push({ code: 'rich-text-replaced-controls', count: fixed.replacements, nodeIds: [node.id] });
+                    if (fixed.replacements) notices.push({ code: 'rich-text-replaced-surrogates', count: fixed.replacements, nodeIds: [node.id] });
                 }
             }
             output.push(node);

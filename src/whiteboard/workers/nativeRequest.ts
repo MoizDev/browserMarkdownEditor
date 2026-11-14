@@ -19,10 +19,16 @@ export function validateNativeRequest(payload: unknown): ParseNativeRequest {
     if (pages !== undefined) {
         if (!Array.isArray(pages) || pages.length < 1 || pages.length > FORMAT_LIMITS.pdfPages) throw new TypeError('Invalid PDF pages');
         const result: (readonly [number, number])[] = [];
-        for (const page of pages) {
-            if (!Array.isArray(page) || page.length !== 2 || ![page[0], page[1]].every(value => typeof value === 'number'
-                && Number.isFinite(value) && value > 0 && value <= FORMAT_LIMITS.pdfPageSize)) throw new TypeError('Invalid PDF page dimensions');
-            result.push(Object.freeze([page[0], page[1]] as [number, number]));
+        for (let i = 0; i < pages.length; i++) {
+            const pageField = Object.getOwnPropertyDescriptor(pages, String(i));
+            const page = pageField && 'value' in pageField ? pageField.value : undefined;
+            if (!Array.isArray(page) || page.length !== 2) throw new TypeError('Invalid PDF page dimensions');
+            const width = Object.getOwnPropertyDescriptor(page, '0'), height = Object.getOwnPropertyDescriptor(page, '1');
+            if (!width || !('value' in width) || !height || !('value' in height)
+                || typeof width.value !== 'number' || !Number.isFinite(width.value) || width.value <= 0 || width.value > FORMAT_LIMITS.pdfPageSize
+                || typeof height.value !== 'number' || !Number.isFinite(height.value) || height.value <= 0 || height.value > FORMAT_LIMITS.pdfPageSize)
+                throw new TypeError('Invalid PDF page dimensions');
+            result.push(Object.freeze([width.value, height.value] as [number, number]));
         }
         copied = Object.freeze(result);
     }

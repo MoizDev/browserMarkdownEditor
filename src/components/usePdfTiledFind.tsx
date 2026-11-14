@@ -16,6 +16,8 @@ import type { PdfFindBarHandle, PdfFindStart } from './PdfFindBar';
 import type { PdfFindHit } from '../utils/pdfFind';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 
+const resourceLeases = new WeakMap<object, number>();
+
 export interface PdfTiledFindOptions {
     session: PdfTiledDocumentSession;
     document: PdfPoolDocument;
@@ -50,14 +52,16 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
             publish: rects => layer.setRects(rects),
             error: error => live.current.notify(error instanceof Error ? error.message : 'PDF text highlights are unavailable.'),
         });
-        return { reader, geometry, layer, highlights, lease: 0 };
+        return { reader, geometry, layer, highlights };
     }, [session, document]);
     // StrictMode replays effects on the same resource; a real unmount does not
     // keep its geometry or pending work after the next microtask.
     useEffect(() => {
-        const lease = ++resource.lease;
+        const lease = (resourceLeases.get(resource) ?? 0) + 1;
+        resourceLeases.set(resource, lease);
         return () => queueMicrotask(() => {
-            if (resource.lease !== lease) return;
+            if (resourceLeases.get(resource) !== lease) return;
+            resourceLeases.delete(resource);
             resource.highlights.dispose(); resource.geometry.dispose();
         });
     }, [resource]);

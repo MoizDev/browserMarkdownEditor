@@ -6,6 +6,7 @@ export interface SearchRow { path: string; nameMatch: TextRange | null; matches:
 export interface SearchBatch {
     session: IndexSession; queryId: number; overlayRevs: Record<string, number>;
     batch: SearchRow[]; done: boolean; clipped: boolean; matchCount: number; reset?: boolean;
+    scanned?: number; total?: number;
 }
 
 /** Stable app-owned access; no editor state travels through the file tree. */

@@ -10,6 +10,7 @@ import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
 import type { IndexProgress } from './context/vaultIndex/useIndexGraph';
+import { setIndexProgress } from './utils/indexProgress';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { subscribeRenderStatus } from './utils/renderStatus';
@@ -254,8 +255,9 @@ interface AppDialog extends DialogRequest {
  * that identity is load-bearing: a fresh object propagates into GraphView's
  * effects, which re-seed the simulation (alpha = 1) and tear down and rebuild
  * the RAF loop and the ResizeObserver. Without this, an unrelated tab
- * autosaving visibly re-heated the graph the user was looking at — and the
- * graph is rebuilt after EVERY save, not just on tree changes.
+ * autosaving visibly re-heated the graph the user was looking at. Only changed
+ * link facts/tree revisions request new work; equivalent worker publications
+ * must still leave the running layout alone.
  */
 function sameGraph(a: GraphData, b: GraphData): boolean {
   if (a.nodes.length !== b.nodes.length || a.links.length !== b.links.length) return false;
@@ -476,13 +478,12 @@ export default function App() {
   const [graphState, setGraph] = useState<{ activation: number; data: GraphData }>(() => ({ activation: getVaultActivation(), data: EMPTY_GRAPH }));
   const graph = graphState.activation === getVaultActivation() ? graphState.data : EMPTY_GRAPH;
   const [graphFreshness, setGraphFreshness] = useState<{ activation: number; stale: boolean } | null>(null);
-  const [indexProgressState, setIndexProgressState] = useState<{ activation: number; value: IndexProgress } | null>(null);
-  const indexProgress = indexProgressState?.activation === searchActivation ? indexProgressState.value : null;
+  useLayoutEffect(() => { setIndexProgress(null); }, [searchActivation]);
   const reportGraphFreshness = useCallback((stale: boolean) => {
     if (getVaultActivation() === searchActivation) setGraphFreshness({ activation: searchActivation, stale });
   }, [getVaultActivation, searchActivation]);
   const reportIndexProgress = useCallback((value: IndexProgress) => {
-    if (getVaultActivation() === searchActivation) setIndexProgressState({ activation: searchActivation, value });
+    if (getVaultActivation() === searchActivation) setIndexProgress(value);
   }, [getVaultActivation, searchActivation]);
   const publishIndexGraph = useCallback((next: GraphData | null, activation: number, current: () => boolean) => {
     const value = next ?? EMPTY_GRAPH;
@@ -1267,7 +1268,7 @@ export default function App() {
     pdfSeedsRef.current.set(id, seed);
     return seed;
   }, [readBytesVersioned]);
-  /** Read through a ref for the same reason writeFile and rebuildGraph are: the
+  /** Read through a ref to keep the captured IO callback current: the
    *  save helpers keep a stable identity, and a dependency here would re-arm
    *  every timer and listener they own. */
   const pdfSeedForRef = useRef(pdfSeedFor);
@@ -1524,7 +1525,7 @@ export default function App() {
     }
   }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation]);
 
-  // Read through a ref for the same reason writeFile and rebuildGraph are: it
+  // Read through a ref to keep the captured IO callback current: it
   // keeps flushTab — and every timer and listener downstream of it — stable.
   const reconcileAssetsRef = useRef(reconcileAssets);
   useEffect(() => { reconcileAssetsRef.current = reconcileAssets; }, [reconcileAssets]);
@@ -5594,7 +5595,7 @@ export default function App() {
             vaultKey={sessionRootRef.current === rootHandle && sessionVaultIdRef.current === currentVaultId && currentVaultId
               ? `vault:${currentVaultId}` : `activation:${searchActivation}`}
             indexing={graphFreshness?.activation !== searchActivation}
-            updating={(graphFreshness?.activation === searchActivation && graphFreshness.stale) || indexProgress?.phase === 'sweeping'}
+            updating={graphFreshness?.activation === searchActivation && graphFreshness.stale}
             nodes={graph.nodes}
             links={graph.links}
             activeFilePath={activeFile?.path || null}

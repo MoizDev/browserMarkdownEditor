@@ -46,6 +46,25 @@ export function projectionPosition(text: RichText, offset: number): TextProjecti
     return { block: text.blocks[lo], index: lo, start: index.starts[lo], offset: offset - index.starts[lo] };
 }
 export function projectionLength(text: RichText): number { return indexFor(text).length; }
+/** Read only intersecting blocks; newline separators are projection characters. */
+export function projectionSlice(text: RichText, from: number, to: number): string {
+    if (to < from) throw new RangeError('Reversed text slice');
+    const first = projectionPosition(text, from), last = projectionPosition(text, to);
+    const pieces: string[] = [];
+    for (let index = first.index; index <= last.index; index++) {
+        const block = text.blocks[index], low = index === first.index ? first.offset : 0;
+        const high = index === last.index ? last.offset : indexFor(text).lengths[index];
+        let position = 0;
+        for (const run of block.runs) {
+            const end = position + run.text.length;
+            if (end > low && position < high) pieces.push(run.text.slice(Math.max(0, low - position), Math.min(run.text.length, high - position)));
+            position = end;
+            if (position >= high) break;
+        }
+        if (index < last.index) pieces.push('\n');
+    }
+    return pieces.join('');
+}
 export function projectionText(text: RichText): string {
     const index = indexFor(text);
     return index.plain ??= text.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');

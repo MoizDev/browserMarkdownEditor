@@ -1,7 +1,8 @@
-import { pageAt, tileKeyString } from '../../platform/render';
+import { pageAt, pagePresentation, tileKeyString } from '../../platform/render';
 import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, MirrorView, Rect, TextureHandle, ViewState } from '../../platform/render';
 import type { PdfSessionMirrors } from './tileMirror';
 import { covers, intersects } from './coverage';
+import { PdfTileCache } from './tileCache';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 
@@ -38,7 +39,7 @@ interface Entry {
 
 function contentFamily(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): string {
     const { vaultEpoch, documentId, session } = input.token;
-    return JSON.stringify([vaultEpoch, documentId, session, input.variant, input.geometryDigest]);
+    return JSON.stringify([vaultEpoch, documentId, session, input.source, input.variant, input.geometryDigest]);
 }
 
 function rect(request: PdfTileRequest): Rect {
@@ -46,9 +47,10 @@ function rect(request: PdfTileRequest): Rect {
     return { x: c.left, y: c.top, width: c.right - c.left, height: c.bottom - c.top };
 }
 
-function project(box: Readonly<Rect>, view: ViewState): Rect {
+function project(box: Readonly<Rect>, page: Readonly<Rect>, view: ViewState): Rect {
     const scale = view.camera.z * view.viewport.dpr;
-    return { x: (box.x - view.camera.x) * scale, y: (box.y - view.camera.y) * scale,
+    const offset = pagePresentation(page, view).restOffsetDevice;
+    return { x: (box.x - view.camera.x) * scale + offset.x, y: (box.y - view.camera.y) * scale + offset.y,
         width: box.width * scale, height: box.height * scale };
 }
 
@@ -58,7 +60,7 @@ function project(box: Readonly<Rect>, view: ViewState): Rect {
  * come from the shared host. Waiting for a worker alone is not frame work.
  */
 export class PdfTileLayer implements Layer {
-    private readonly entries = new Map<string, Entry>();
+    private readonly entries = new PdfTileCache<Entry>();
     private readonly failed = new Set<string>();
     private readonly retiring = new Set<Entry>();
     private desired = new Set<string>();
@@ -69,6 +71,7 @@ export class PdfTileLayer implements Layer {
     private disposed = false;
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
+    private motionScaleAt = 0;
     private mirrorJob: MirrorJob | null = null;
     private mirrorKey = '';
 
@@ -105,9 +108,14 @@ export class PdfTileLayer implements Layer {
             this.failed.clear();
             this.contentIdentity = identity;
             this.lastMotionScale = undefined;
+            this.motionScaleAt = 0;
         }
+        const now = performance.now();
+        const holdMotionScale = input.moving && this.lastMotionScale && now - this.motionScaleAt < 50;
         const planned = planPdfTileDemand({ ...input, previousMotionScale: this.lastMotionScale,
+            motionScaleOverride: holdMotionScale ? this.lastMotionScale : undefined,
             covered: (page, area) => this.covered(page, area, device) });
+        if (input.moving && !holdMotionScale) this.motionScaleAt = now;
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
         for (const [key, entry] of this.entries) {
@@ -144,7 +152,7 @@ export class PdfTileLayer implements Layer {
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);
             if (!lease) {
-                this.evictUnneeded(input.viewport);
+                this.evictUnneeded(input.viewport, bytes);
                 lease = this.host.allocator.cpu.reserve(bytes);
             }
             if (!lease) continue;
@@ -207,16 +215,17 @@ export class PdfTileLayer implements Layer {
         if (this.disposed || !this.isCurrent()) return;
         const texture = this.frameTexture;
         if (texture && texture.device === this.host.device()) for (const page of this.visiblePages(view)) {
-            const destination = project(page, view);
+            const destination = project(page, page, view);
             this.host.drawTexturedQuad(pass, texture.handle, { x: 0, y: 0, width: 1, height: 1 },
                 { x: destination.x - 1, y: destination.y - 1, width: destination.width + 2, height: destination.height + 2 },
                 { opacity: 1, sampling: 'nearest' });
             this.host.drawTexturedQuad(pass, texture.handle, { x: 1, y: 0, width: 1, height: 1 },
                 destination, { opacity: 1, sampling: 'nearest' });
         }
+        const stack = this.demand(view).stack;
         for (const entry of this.drawable(view)) {
             if (!entry.texture || entry.device !== this.host.device()) continue;
-            const { source, destination } = this.quad(entry.request, view);
+            const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(pass, entry.texture, source, destination, { opacity: 1, sampling: 'linear' });
         }
     }
@@ -224,13 +233,14 @@ export class PdfTileLayer implements Layer {
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         if (this.disposed || !this.isCurrent()) return;
         for (const page of this.visiblePages(view)) {
-            const box = project(page, view);
+            const box = project(page, page, view);
             ctx.fillStyle = '#bebebe'; ctx.fillRect(box.x - 1, box.y - 1, box.width + 2, box.height + 2);
             ctx.fillStyle = '#fff'; ctx.fillRect(box.x, box.y, box.width, box.height);
         }
+        const stack = this.demand(view).stack;
         for (const entry of this.drawable(view)) {
             if (!entry.bitmap) continue;
-            const { source, destination } = this.quad(entry.request, view);
+            const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination, { opacity: 1, sampling: 'linear' });
         }
     }
@@ -310,10 +320,10 @@ export class PdfTileLayer implements Layer {
         const right = Math.min(bounds.x + bounds.width, viewport.x + viewport.width);
         const bottom = Math.min(bounds.y + bounds.height, viewport.y + viewport.height);
         const scale = entry.request.scale.scale, edges = entry.request.tile.edges;
-        const sx = Math.max(0, Math.floor(1 + (left - edges.left) * scale));
-        const sy = Math.max(0, Math.floor(1 + (top - edges.top) * scale));
-        const ex = Math.min(bitmap.width, Math.ceil(1 + (right - edges.left) * scale));
-        const ey = Math.min(bitmap.height, Math.ceil(1 + (bottom - edges.top) * scale));
+        const sx = Math.max(0, Math.floor(1 + (left - edges.left) * scale) - 1);
+        const sy = Math.max(0, Math.floor(1 + (top - edges.top) * scale) - 1);
+        const ex = Math.min(bitmap.width, Math.ceil(1 + (right - edges.left) * scale) + 1);
+        const ey = Math.min(bitmap.height, Math.ceil(1 + (bottom - edges.top) * scale) + 1);
         const width = ex - sx, height = ey - sy;
         if (width <= 0 || height <= 0) { this.mirrorJob = null; return; }
         const lease = this.host.allocator.cpu.reserve(width * height * 4);
@@ -325,13 +335,14 @@ export class PdfTileLayer implements Layer {
                 copy.close(); this.host.allocator.cpu.release(lease); return;
             }
             const world = { x: left, y: top, width: right - left, height: bottom - top };
+            const page = input.stack.rects[entry.request.page];
             const source = { x: 1 + (left - edges.left) * scale - sx, y: 1 + (top - edges.top) * scale - sy,
                 width: world.width * scale, height: world.height * scale };
             let id: string | null;
             try {
                 id = mirror.store.publish({ token: job.view.token, key: entry.request.key,
                     geometryDigest: job.view.geometryDigest, tier: entry.request.level === 'low' ? 'low' : 'exact', neededByCurrentFrame: true,
-                    pixels: { bitmap: copy, world, source }, lease });
+                    pixels: { bitmap: copy, world, source, page }, lease });
             } catch (error) {
                 copy.close(); this.host.allocator.cpu.release(lease); this.mirrorJob = null;
                 this.onError(error, entry.request); return;
@@ -375,17 +386,22 @@ export class PdfTileLayer implements Layer {
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);
     }
 
-    private quad(request: PdfTileRequest, view: ViewState): { source: Rect; destination: Rect } {
+    private quad(request: PdfTileRequest, page: Readonly<Rect>, view: ViewState): { source: Rect; destination: Rect } {
         const bounds = rect(request), edges = request.tile.edges, scale = request.scale.scale;
         return { source: { x: 1 + (bounds.x - edges.left) * scale, y: 1 + (bounds.y - edges.top) * scale,
-            width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, view) };
+            width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, page, view) };
     }
 
-    private evictUnneeded(viewport: Readonly<Rect>): void {
-        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key) &&
-            !intersects(rect(entry.request), viewport))
-            .sort((a, b) => a[1].used - b[1].used);
-        for (const [key, entry] of candidates) this.remove(key, entry);
+    private evictUnneeded(viewport: Readonly<Rect>, neededBytes: number): void {
+        const candidates = this.entries.evictable(this.desired, viewport, entry => rect(entry.request), entry => !!entry.bitmap);
+        candidates.sort((a, b) => Number(a[1].request.level === 'low') - Number(b[1].request.level === 'low') ||
+            a[1].used - b[1].used);
+        let freed = 0;
+        for (const [key, entry] of candidates) {
+            freed += entry.lease.bytes;
+            this.remove(key, entry);
+            if (freed >= neededBytes) break;
+        }
     }
 
     private remove(key: string, entry: Entry): void {

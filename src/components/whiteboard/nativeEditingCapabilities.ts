@@ -21,6 +21,8 @@ export interface NativeEditingCapabilityContext {
     readonly clipboard: NativeClipboardService;
     readonly signal: AbortSignal;
     current(): boolean;
+    /** App-owned source/write proof; for PDF it follows the current verified rebind. */
+    canWrite(): boolean;
     requestText(question: BoardTextQuestion): Promise<string | null>;
     notice(message: string): void;
 }

@@ -64,7 +64,7 @@ export async function renderPdfAgentPage(pool: PdfPool, options: PdfOpenOptions,
         const count = document.info.pageCount;
         if (!Number.isInteger(page) || page < 1 || page > count) return { pageCount: count, png: null };
         if (!Number.isFinite(maxSide) || maxSide <= 0) throw new RangeError('Invalid PDF image size');
-        const geometry = document.geometry(page - 1);
+        const geometry = await document.resolveGeometry(page - 1, { priority: 0, signal: combined });
         const scale = Math.min(maxSide, 1568) / Math.max(geometry.width, geometry.height);
         const bitmap = await document.renderPage(page - 1, scale, { priority: 0, variant: 'plain', profileKey: 'plain',
             maxPixels: 1568 * 1568, signal: combined });

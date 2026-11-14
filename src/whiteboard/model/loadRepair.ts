@@ -31,6 +31,14 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
     const sourceMedia = await ordered<MediaEntry>(draft.input.media ?? [], options), media: MediaEntry[] = [], notices: LoadRepairNotice[] = [], issues: ReadIssue[] = [];
     const refuse = (reason: string): LoadRepairResult => ({ status: 'read-only', projection: null, repairs: notices,
         issues: [...issues, { code: 'repair', reason, readOnly: true }] });
+    const singletonSources = new Set<string>();
+    for (let i = 0; i < draft.sources.length; i++) {
+        if ((i & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
+        const source = draft.sources[i];
+        if (!['pen', 'view', 'paper', 'host', 'end'].includes(source.category)) continue;
+        if (singletonSources.has(source.category)) return refuse(`Duplicate ${source.category} records require original-byte recovery`);
+        singletonSources.add(source.category);
+    }
     const reserved = new Set<string>();
     for (let i = 0; i < nodes.length; i++) {
         if ((i & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }

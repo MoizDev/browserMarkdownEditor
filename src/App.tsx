@@ -1516,7 +1516,7 @@ export default function App() {
     assetReferenceRevisionRef.current++;
   }, [rootHandle, fileTree, getVaultActivation]);
 
-  const assetNamesIn = useCallback(async (dir: FileSystemDirectoryHandle): Promise<Set<string>> => {
+  const assetNamesIn = useCallback(async (dir: FileSystemDirectoryHandle, activeOnly = false): Promise<Set<string>> => {
     const names = new Set<string>();
     const collect = async (parent: FileSystemDirectoryHandle, name: string) => {
       try {
@@ -1527,8 +1527,10 @@ export default function App() {
       }
     };
     await collect(dir, ASSETS_DIR);
-    try { await collect(await handleIO.dirIn(dir, TRASH_DIR), ASSETS_DIR); }
-    catch (error) { if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error; }
+    if (!activeOnly) {
+      try { await collect(await handleIO.dirIn(dir, TRASH_DIR), ASSETS_DIR); }
+      catch (error) { if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error; }
+    }
     return names;
   }, [handleIO]);
 
@@ -1618,6 +1620,7 @@ export default function App() {
         return [tab.file.path, documentBuffers.contentForDocument(tab.id)] as const;
       }));
       const proofRevisions = new Map(proofTabs.map(tab => [tab.id, documentBuffers.revisionForDocument(tab.id)?.revision]));
+      const proofMedia = new Map(proofTabs.map(tab => [tab.id, documentSessions.get(tab.id)?.adapter.mediaReferences?.()]));
       // Dirty-only save acknowledgements do not change a reference proof.
       // Opening/closing a tab or changing its readable buffer does.
       const proofCurrent = () => attached() && assetReferenceRevisionRef.current === revision
@@ -1648,12 +1651,24 @@ export default function App() {
       // newer unsaved buffer also counts, but must not erase that disk proof.
       const notes = [async () => ownFile ? await readFile(ownFile.handle).catch(() => null) : null, async () => ownText, ...neighbours.map(note => async () => {
         const open = proofTabs.find(t => t.file.path === note.path);
-        if (open) return proofContents.get(note.path) ?? null;
+        if (open) {
+          const refs = proofMedia.get(open.id);
+          return proofContents.get(note.path) ?? (refs ? refs.map(name => `[[${name}]]`).join('\n') : null);
+        }
         if (isCanvasFile(note.name)) {
           try { return (await handleIO.file(note.handle)).stream(); } catch { return null; }
         }
         return await readFile(note.handle).catch(() => null);
       })];
+      const activeAssetNames = boards.length ? await assetNamesIn(dir, true) : new Set<string>();
+      const listingKey = JSON.stringify([...activeAssetNames].sort());
+      const indexOwner = indexGraphRef.current;
+      const mediaSnapshot = indexOwner?.activation === activation ? await indexOwner.client.mediaSnapshot(folder) : undefined;
+      const indexedBoards = new Map(mediaSnapshot?.fresh && mediaSnapshot.listingKey === listingKey
+        ? mediaSnapshot.boards.map(board => [board.path, board]) : []);
+      if (indexOwner?.activation === activation && mediaSnapshot?.listingKey !== listingKey) {
+        void indexOwner.client.setFolderMediaAssets(folder, [...activeAssetNames]).catch(() => {});
+      }
       const closedVersions: Array<{ handle: FileSystemFileHandle; modified: number; size: number }> = [];
       const hashedVersions = new Map<string, { handle: FileSystemFileHandle; modified: number; size: number }>();
       // Before I4, a direct read at retirement time is the fresh answer; an
@@ -1661,6 +1676,8 @@ export default function App() {
       const boardReads = boards.map(board => async () => {
         const open = proofTabs.find(t => t.file.path === board.path);
         if (open) {
+          const refs = proofMedia.get(open.id);
+          if (refs) return { ok: true as const, names: [...refs] };
           if (!canReadTabText(open)) return { ok: false as const, reason: 'unreadable' as const };
           const text = proofContents.get(board.path);
           if (text === undefined) return { ok: false as const, reason: 'unreadable' as const };
@@ -1669,7 +1686,10 @@ export default function App() {
         if (!board.handle) return { ok: false as const, reason: 'unreadable' as const };
         try {
           const file = await handleIO.file(board.handle);
-          const refs = await resolveBoardMedia({ source: file.stream() }, assetNames, boardMediaRefs);
+          const indexed = indexedBoards.get(board.path);
+          const refs = indexed && indexed.mtime === file.lastModified && indexed.size === file.size
+            ? { ok: true as const, names: indexed.names }
+            : await resolveBoardMedia({ source: file.stream() }, assetNames, boardMediaRefs);
           closedVersions.push({ handle: board.handle, modified: file.lastModified, size: file.size });
           return refs;
         } catch { return { ok: false as const, reason: 'unreadable' as const }; }
@@ -1700,6 +1720,7 @@ export default function App() {
           if (handle.kind === 'file' && isCanvasFile(entry)) currentBoards.add(joinVaultPath(folder, entry));
         }
         if (currentBoards.size !== diskBoardPaths.size || [...currentBoards].some(boardPath => !diskBoardPaths.has(boardPath))) return abandon();
+        if (boards.length && JSON.stringify([...(await assetNamesIn(dir, true))].sort()) !== listingKey) return abandon();
         const hashed = hashedVersions.get(name);
         for (const version of hashed ? [...closedVersions, hashed] : closedVersions) {
           const current = await handleIO.file(version.handle).catch(() => null);
@@ -1726,7 +1747,7 @@ export default function App() {
       console.error('Could not reconcile assets for', path, err);
       return 'failed';
     }
-  }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation, documentBuffers]);
+  }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation, documentBuffers, documentSessions, indexGraphRef]);
 
   // Read through a ref to keep the captured IO callback current: it
   // keeps flushTab — and every timer and listener downstream of it — stable.
@@ -2498,7 +2519,8 @@ export default function App() {
     const nativeAuthorized = nativeSource && policy && !policy.emergencyReadOnly && policy.session === bufferedSource.owner.session
       && policy.activation === getVaultActivation() && policy.generation === (bytesGenerationsRef.current.get(tab.id) ?? 0)
       && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
-    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && tab.representation.status === 'ready'
+    const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
+    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && acceptedFlushable && tab.representation.status === 'ready'
       && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !pending && !force) return 'skipped';
@@ -2770,7 +2792,7 @@ export default function App() {
     if (!accepted) return;
     assetReferenceRevisionRef.current++;
     const wasDirty = documentBuffers.isDirty(target.id);
-    const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk);
+    const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk, !options?.fromDisk);
     if (!buffer) return;
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
@@ -3179,6 +3201,8 @@ export default function App() {
           setLayout(l => openTabIn(l, path));
           return;
         }
+        await drain(tab.id);
+        if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
         const result = await flushTab(path);
         const pending = documentSessions.hasPendingEdits(tab.id);
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
@@ -3471,6 +3495,8 @@ export default function App() {
   useEffect(() => registerBeforeRootChange(async () => {
     const activation = getVaultActivation();
     for (;;) {
+      await drainAll();
+      if (getVaultActivation() !== activation) throw new Error('The vault changed while saving.');
       const docs = [...tabsRef.current];
       const results = await Promise.all(docs.map(tab => flushTab(tab.file.path)));
       if (getVaultActivation() !== activation) throw new Error('The vault changed while saving.');
@@ -4799,6 +4825,12 @@ export default function App() {
         const { handle, parentHandle } = await resolveVaultFile(rootHandle, dest);
         if (rootHandleRef.current !== rootHandle) return [];
         const changedKind = classifyRequestedKind(handle.name) !== doc.representation.loadedKind;
+        if (changedKind) {
+          await drain(doc.id);
+          if (rootHandleRef.current !== rootHandle) return [];
+          if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
+          if (documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
+        }
         const sessionSource = documentSessions.checkpoint(doc.id);
         const buffered = documentBuffers.get(doc.id)?.source;
         if (sessionSource && typeof sessionSource !== 'string' && documentSessions.isLiveOwner(doc.id, sessionSource.owner)
@@ -4821,12 +4853,14 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           const live = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
           if (!live) break;
-          needsSave = live.dirty || documentBuffers.isDirty(doc.id) || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from)
+          needsSave = live.dirty || documentSessions.hasPendingEdits(doc.id) || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from)
             || documentBuffers.revisionForDocument(doc.id)?.revision !== revisionAtMoveStart;
           if (!changedKind || !needsSave) break;
+          await drain(doc.id);
           await getView(from)?.flushPending?.();
           if (rootHandleRef.current !== rootHandle) return [];
           if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) break;
+          if (documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
           const captured = documentBuffers.snapshotOf(from);
           const textRevision = captured?.revision;
           const snapshot = captured?.data ?? contentOf(from);
@@ -4848,15 +4882,18 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           const latest = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
           if (!latest) break;
-          if (documentBuffers.revisionForDocument(doc.id)?.revision === textRevision && !getView(from)?.hasPendingEdits?.()) break;
+          if (documentBuffers.revisionForDocument(doc.id)?.revision === textRevision && !getView(from)?.hasPendingEdits?.()
+            && !documentSessions.get(doc.id)?.adapter.hasPendingEdits()) break;
         }
         if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
+        if (changedKind && documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
         // A destination opened during retargeting must not share this path or
         // lose its new edits. Closing preservation uses its own loaded kind.
         if (tabsRef.current.some(t => t.file.path === dest)) {
           if (!await preparePdfDeparture([dest])) return [];
           await releaseOverwritten(dest, from, true);
         }
+        if (changedKind && documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
         moveReaderViewState({vaultId:vaultIdAtMove,vaultEpoch:0,documentId:doc.id,byteGeneration:doc.representation.generation,path:from,diskRev:doc.diskRev??0},from,dest);
         clearSaveTimer(from);          // cancel any save pending against the OLD handle
         // An annotated PDF's parked original + overlays are keyed by path; re-key
@@ -5467,6 +5504,8 @@ export default function App() {
       if (!handle) { setDiskState(id, 'deleted'); return; }
 
       if (action === 'reload') {
+        await drain(id);
+        if (documentSessions.get(id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
         const keep = await mine();
         const read = isPdf
           ? { text: '', version: (await readBytesVersioned(handle)).version }
@@ -5487,6 +5526,9 @@ export default function App() {
       // A read-only PDF has no local version to prefer. Reopen the current
       // bytes rather than leave a clean tab behind a revoked preflight.
       if (isPdf && !getPdfRenderData(path)) {
+        await drain(id);
+        const current = tabsRef.current.find(t => t.id === id);
+        if (!current || hasUnsaved(current)) throw new Error('Pending annotations cannot be reloaded yet.');
         const disk = await readBytesVersioned(handle);
         const now = tabsRef.current.find(t => t.id === id);
         if (now) reloadFromDisk(now, '', disk.version);

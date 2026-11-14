@@ -1,6 +1,7 @@
 import { createWorkerClient } from '../../platform/workers';
 import type { WorkerClient } from '../../platform/workers';
 import type { IndexGraph, IndexSession } from '../../utils/vaultIndex/types';
+import { observeForegroundReads } from './foreground';
 
 export interface IndexTreeFile { path: string; kind: string; handle: FileSystemFileHandle }
 export interface IndexTreeDelta {
@@ -15,6 +16,7 @@ const background = { priority: 3 } as const;
 /** One owner per vault activation; on worker recovery replay the latest tree. */
 export class VaultIndexClient {
     private readonly worker: WorkerClient;
+    private readonly stopForeground: () => void;
     private tree: IndexTreeFile[] = [];
     private treeGen = 0;
     private graphGen = 0;
@@ -48,6 +50,7 @@ export class VaultIndexClient {
         };
         this.worker.on('problem', value => { if (currentEvent(value)) onProblem(value); });
         this.worker.on('status', value => { if (currentEvent(value)) onStatus?.(value); });
+        this.stopForeground = observeForegroundReads(active => { void this.foregroundIO(active).catch(() => {}); });
     }
     private async sendTree(worker: WorkerClient, treeGen: number, files: readonly IndexTreeFile[]): Promise<void> {
         const session = this.session;
@@ -123,5 +126,5 @@ export class VaultIndexClient {
         this.worker.reset();
         void this.sweep('user').catch(() => {});
     }
-    dispose(): void { this.disposed = true; this.worker.dispose(); }
+    dispose(): void { this.disposed = true; this.stopForeground(); this.worker.dispose(); }
 }

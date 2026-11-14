@@ -19,6 +19,7 @@ export interface MirrorPresentation {
     readonly presented: boolean;
     readonly complete: boolean;
     readonly sharp: boolean;
+    readonly staleVersion?: boolean;
     /** Vector/procedural truth can be exact without a raster mirror. */
     readonly usedMirror: boolean;
 }

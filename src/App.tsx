@@ -5991,34 +5991,40 @@ export default function App() {
   }, []);
 
   const inspectRecovery = useCallback(async (entry: RecoveryEntry): Promise<RecoveryInspection> => {
-    if (!rootHandle || currentVaultId !== entry.vaultId || rootHandleRef.current !== rootHandle) return 'unavailable';
+    const activation = getVaultActivation();
+    const current = () => getVaultActivation() === activation && rootHandleRef.current === rootHandle && currentVaultIdRef.current === entry.vaultId;
+    if (!rootHandle || currentVaultId !== entry.vaultId || !current()) return 'unavailable';
     try {
       const vault = recentVaults.find(item => item.id === entry.vaultId);
       if (!vault) return 'unavailable';
       const relative = await handleIO.relativeTo(rootHandle, vault.handle);
-      if (!relative || relative.length !== 0 || rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+      if (!relative || relative.length !== 0 || !current()) return 'unavailable';
       const handle = await resolveFileHandle(entry.path);
-      if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+      if (!current()) return 'unavailable';
       if (!handle) return 'copy';
       const snapshot = await readFileSnapshot(handle);
       try {
         const version = await snapshot.fingerprint();
-        if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+        if (!current()) return 'unavailable';
         const copy = await materializeRecoveryCopy(entry, new AbortController().signal);
         const copyHash = copy instanceof Blob ? await fingerprintSnapshot(copy)
           : await hashBytes(typeof copy === 'string' ? new TextEncoder().encode(copy) : copy);
-        if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+        if (!current()) return 'unavailable';
         if (copyHash === version.hash) return 'equal';
         return version.hash === entry.fingerprint ? 'match' : 'copy';
       } finally { snapshot.dispose(); }
     } catch (error) { console.warn('Could not inspect recovery entry:', error); return 'unavailable'; }
-  }, [rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle, readFileSnapshot]);
+  }, [rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle, readFileSnapshot, getVaultActivation]);
 
   const recoverEntry = useCallback(async (entry: RecoveryEntry) => {
+    const activation = getVaultActivation();
+    const root = rootHandleRef.current;
     const tab = tabsRef.current.find(t => t.file.path === entry.path);
-    if (!tab || hasUnsaved(tab)) throw new Error('Open the unchanged document and save its current edits first.');
+    if (!root || currentVaultIdRef.current !== entry.vaultId || !tab || hasUnsaved(tab)) throw new Error('Open the unchanged document and save its current edits first.');
+    const current = () => getVaultActivation() === activation && rootHandleRef.current === root && currentVaultIdRef.current === entry.vaultId
+      ? tabsRef.current.find(t => t.id === tab.id && t.file.path === entry.path) : undefined;
     if (entry.copyOnly || await inspectRecovery(entry) !== 'match') throw new Error('The file changed; save these changes as a copy instead.');
-    const live = tabsRef.current.find(t => t.id === tab.id && t.file.path === entry.path);
+    const live = current();
     if (!live || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
     const adapter = recoveryAdapter(tab.id);
     if (adapter?.recover) {
@@ -6030,22 +6036,24 @@ export default function App() {
     if (recoveredText === undefined || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
     const expected = contentOf(entry.path), revision = documentBuffers.revisionForDocument(tab.id)?.revision;
     const { isolateHistory } = await import('@codemirror/commands');
-    if (expected === undefined || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
+    const latest = current();
+    if (expected === undefined || !latest || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || hasUnsaved(latest)) throw new Error('The document changed while recovery was being prepared.');
     if (!await markdownSessions.dispatch(tab.id, { changes: { from: 0, to: expected.length, insert: recoveredText }, userEvent: 'input.recover', annotations: isolateHistory.of('full') })) throw new Error('The document changed while recovery was being prepared.');
-  }, [hasUnsaved, inspectRecovery, contentOf, documentBuffers, markdownSessions]);
+  }, [hasUnsaved, inspectRecovery, contentOf, documentBuffers, markdownSessions, getVaultActivation]);
 
   const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) => {
+    const activation = getVaultActivation();
     const root = rootHandleRef.current;
     if (!root || currentVaultIdRef.current !== entry.vaultId) throw new Error('Return to the original vault first.');
     const vault = recentVaults.find(item => item.id === entry.vaultId);
     const relative = vault && await handleIO.relativeTo(root, vault.handle);
-    if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
+    if (!relative || relative.length !== 0 || getVaultActivation() !== activation || rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('Return to the original vault first.');
     const copyData = await materializeRecoveryCopy(entry, new AbortController().signal);
     const data = copyData;
-    if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
+    if (getVaultActivation() !== activation || rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
     const copy = await writeConflictCopy(entry.path, data, root);
     announce(`Recovered changes were saved as “${copy}”.`);
-  }, [writeConflictCopy, announce, recentVaults, handleIO]);
+  }, [writeConflictCopy, announce, recentVaults, handleIO, getVaultActivation]);
 
   // The welcome screen can report a refused open too; returning before the
   // workspace's host used to hide the app notice on exactly that path.

@@ -48,7 +48,12 @@ export async function copyBoardJsonFresh(options: {
                 retained.push(lease); chunks.push(chunk); bytes += size;
             } catch (error) { memory.release(lease); throw error; }
         };
-        const cooperate = async () => { await new Promise<void>(resolve => setTimeout(resolve, 0)); context.assertCurrent(); check(); };
+        let steps = 0, started = performance.now();
+        const cooperate = async () => {
+            context.assertCurrent(); check();
+            if (++steps < 128 && performance.now() - started < 3) return;
+            await new Promise<void>(resolve => setTimeout(resolve, 0)); context.assertCurrent(); check(); steps = 0; started = performance.now();
+        };
         try {
             context.assertCurrent(); check();
             if (snapshot.payload.records.length > SECURITY_LIMITS.clipboardRecords) throw new RangeError('Clipboard JSON has too many records');

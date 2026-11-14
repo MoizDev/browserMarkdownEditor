@@ -1,5 +1,5 @@
 import type { Affine, PathCommand, Rect } from '../../platform/types';
-import type { ClipNode, EmbedNode, FigureNode, FrameNode, LinkcardNode, PictureNode, StickyNode, TextNode } from '../model/nodes';
+import type { ClipNode, EmbedNode, FigureNode, FrameNode, LinkcardNode, PictureNode, PolylineNode, StickyNode, TextNode } from '../model/nodes';
 import type { InkCoverage } from '../ink/outline';
 import { InkPickJob } from '../ink/pick';
 import type { InkPickQuery } from '../ink/pick';
@@ -12,6 +12,8 @@ import { ContourClipper, hatchLines, reflectHatch } from './clip';
 import type { HatchLine } from './clip';
 import { ellipseArcPath, figureOutline, figureSemanticBounds, realiseFigureContour } from './figures';
 import type { PathOp, Vec2 } from './path';
+import { polylinePath } from './polylines';
+import type { PolylineGeometryOptions } from './polylineTypes';
 import { pointPath, regionPath } from './pick';
 import type { PathPickOptions } from './pick';
 import { styleGeometryMetrics } from './styleMetrics';
@@ -148,6 +150,12 @@ export function transformedPathBounds(ops: readonly PathOp[], matrix: Affine): R
     return pathBounds(mapped);
 }
 
+export function polylineWorldSemanticBounds(node: Readonly<PolylineNode>, matrix: Affine): Rect {
+    const bounds = transformedPathBounds(polylinePath(node), matrix);
+    if (!bounds) throw new RangeError('Polyline has no geometry');
+    return bounds;
+}
+
 export interface FigureWorldBoundsOptions {
     readonly kernelVersion: number; readonly pathError: number; readonly lengthError: number; readonly maxPieces: number;
 }
@@ -174,6 +182,34 @@ export function figureWorldSemanticBounds(node: Readonly<FigureNode>, matrix: Af
 
 function expand(rect: Rect, radius: number): Rect {
     return { x: rect.x - radius, y: rect.y - radius, width: rect.width + 2 * radius, height: rect.height + 2 * radius };
+}
+
+export type { PolylineGeometryOptions } from './polylineTypes';
+export type PolylineGeometry = KindGeometry<FigurePaintPath, never, never>;
+
+/** Polyline picks use the exact same open styled path as paint; coincident ends never imply fill. */
+export function preparePolylineGeometry(node: Readonly<PolylineNode>, options: PolylineGeometryOptions): PolylineGeometry {
+    const { lengthError, maxPieces, hitMarginCss, hitErrorCss } = options;
+    if (![node.width, lengthError, hitMarginCss, hitErrorCss].every(Number.isFinite) || node.width < 0 || lengthError <= 0
+        || hitMarginCss < 0 || hitErrorCss <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1) throw new RangeError('Invalid polyline geometry request');
+    const semantic = polylinePath(node), box = pathBounds(semantic);
+    if (!box || semantic.length > maxPieces) throw new RangeError('Polyline realization budget exhausted');
+    const style = { nodeId: node.id, kernelVersion: options.kernelVersion, width: node.width,
+        referenceWidth: styleGeometryMetrics.actualWidth('polyline', node.size, 1), boxWidth: box.width, boxHeight: box.height };
+    let path: readonly PathOp[] = semantic;
+    if (node.dash === 'draw') path = Array.from(drawPath(path, style, lengthError, maxPieces));
+    else if (node.dash === 'dashed' && node.width > 0) path = Array.from(dashPath(path,
+        new DashWalker(styleGeometryMetrics.dash(node.width).lengths), lengthError, maxPieces));
+    else if (node.dash === 'dotted' && node.width > 0) path = Array.from(dotPath(path,
+        new DotWalker(styleGeometryMetrics.dash(node.width).dotSpacing), lengthError, maxPieces));
+    else if (node.dash === 'none') path = [];
+    if (path.length > 2 * maxPieces) throw new RangeError('Polyline realization budget exhausted');
+    const painted = pathBounds(path), ink = painted ? expand(painted, node.width / 2) : { x: box.x, y: box.y, width: 0, height: 0 };
+    const pickOptions: PathPickOptions = { strokeRadiusLocal: node.width / 2, marginCss: hitMarginCss,
+        errorCss: hitErrorCss, maxSegments: maxPieces };
+    const paths: FigurePaintPath[] = path.length ? [{ ops: path, role: 'outline', fill: 'none', width: node.width }] : [];
+    return { key: options.key, boxLocal: box, inkBoundsLocal: ink, selectBoundsLocal: ink, paths, text: [], attachments: null,
+        point(query) { return pointPath([path], query, pickOptions); }, region(query) { return regionPath([path], query, pickOptions); } };
 }
 
 export interface InkGeometry {

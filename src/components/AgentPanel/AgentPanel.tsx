@@ -432,8 +432,7 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         openContextMenu({ x: e.clientX, y: e.clientY, label: 'Agent panel', opener: target, entries });
     };
 
-    // Every drop is cancelled, image or not: an uncancelled drop navigates the
-    // app away to the file, taking unsaved buffers with it.
+    // Refuse unhandled drops here, rather than letting the browser open a file.
     const onDragOver = (e: DragEvent<HTMLDivElement>) => {
         e.preventDefault();
         const hasFiles = Array.from(e.dataTransfer.types).includes('Files');

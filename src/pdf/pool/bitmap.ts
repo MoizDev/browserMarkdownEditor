@@ -7,7 +7,9 @@ export async function renderPdfPageBitmap(document: PdfPoolDocument, page: numbe
     options: PdfPageBitmapOptions): Promise<ImageBitmap> {
     options.signal?.throwIfAborted();
     if (!Number.isFinite(scale) || scale <= 0) throw new RangeError('Invalid PDF capture scale');
-    const geometry = document.geometry(page), width = Math.ceil(geometry.width * scale), height = Math.ceil(geometry.height * scale);
+    const extent = document.info.pages[page];
+    if (!extent) throw new RangeError('Invalid PDF page');
+    const width = Math.ceil(extent.width * scale), height = Math.ceil(extent.height * scale);
     const maximum = options.maxPixels ?? 16_777_216;
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 ||
         !Number.isSafeInteger(maximum) || maximum < 1 || width > 8192 || height > 8192 || width * height > maximum) {

@@ -2,7 +2,7 @@ import { attachPlatformPane } from '../../platform/render';
 import type { PlatformLayerDefinition, PlatformPane, RenderToken } from '../../platform/render';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
 import { PreviewBitmapLayer } from './bitmapLayer';
-import type { PdfPreview, PreviewBinding, PreviewSnapshot } from './contracts';
+import type { PdfPreview, PreviewBinding, PreviewSnapshot } from '../../utils/pdfPreviewTypes';
 import { PreviewScene } from './scene';
 
 interface PreviewOptions {

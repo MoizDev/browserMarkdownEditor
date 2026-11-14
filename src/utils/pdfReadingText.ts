@@ -30,7 +30,7 @@ export interface PdfTextReaderOptions {
 export interface PdfTextReader {
     readonly generation: number;
     getPageCount(signal?: AbortSignal): Promise<number>;
-    getPage(index0: number, signal?: AbortSignal, priority?: 0 | 1): Promise<PdfTextPage>;
+    getPage(index0: number, signal?: AbortSignal, priority?: 0 | 1 | 2 | 3): Promise<PdfTextPage>;
     readonly findEngine: PdfFindEngine;
     find(query: string, signal?: AbortSignal): AsyncIterable<PdfFindBatch>;
     navigate(anchor: PdfTextAnchor): Promise<PdfTextAnchor>;
@@ -213,7 +213,8 @@ export function createPdfTextReader(session: PdfDocumentSession, _identity: PdfR
             }
         } finally { active = false; }
     }
-    function getPage(index: number, callerSignal?: AbortSignal, priority: 0 | 1 = 0): Promise<PdfTextPage> {
+    function getPage(index: number, callerSignal?: AbortSignal, requestedPriority: 0 | 1 | 2 | 3 = 0): Promise<PdfTextPage> {
+        const priority: 0 | 1 = requestedPriority === 0 ? 0 : 1;
         const signal = callerSignal ? AbortSignal.any([callerSignal, visibility.signal]) : visibility.signal;
         if (lifetime.signal.aborted || signal.aborted) return Promise.reject(abort());
         const found = cache.get(index);

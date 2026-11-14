@@ -5,6 +5,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import type { NativeCanvasReady } from '../../types/reading';
 import type { AttachCanvasSession } from '../../utils/canvasSessionBridge';
 import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime';
+import { registerNativeNotebookExporter } from '../../whiteboard/host/registerNativeNotebookExporter';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
 import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
@@ -117,6 +118,14 @@ export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
         emergencyReadOnly: emergencyPolicy, emergencyReadOnlyReason: VIEW_REASON,
     }), [nativeCanvasHost, identity, attach, ready, prepare, onError, emergencyPolicy]);
     const acquired = useNativeBoardAcquisition(acquisition);
+    useEffect(() => {
+        const board = acquired?.adapter.board;
+        if (!board || identity.kind !== 'notebook') return;
+        try {
+            registerNativeNotebookExporter({ board, host: nativeCanvasHost, identity, onError,
+                writer: async (input, options) => (await import('../../pdf/writing/client')).buildDisplayPdf(input, options) });
+        } catch (cause) { onError(cause); }
+    }, [acquired, identity, nativeCanvasHost, onError]);
     if (identity.documentId !== incoming.documentId || identity.session !== incoming.session
         || identity.vaultActivation !== incoming.vaultActivation || identity.bytesGeneration !== incoming.bytesGeneration
         || identity.kind !== incoming.kind) return <div role="status">Preparing canvas…</div>;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ActiveFile, Theme } from '../../types';
 import { createNativeViewLease, type NativePdfBackdrop, type NativeViewLease } from './nativeViewLease';
+import type { HostedBoardAdapter } from './boardSessionAdapter';
 import ViewerHost from './ViewerHost';
 import { useNativeClipboard } from './useNativeClipboard';
 import './NativeCanvasEntry.css';
@@ -24,6 +25,7 @@ export interface NativePdfViewerSource {
 
 export interface NativePdfViewerProps {
     readonly board: ViewOptions['board'];
+    readonly adapter: HostedBoardAdapter<ViewOptions['board']>;
     readonly identity: ViewOptions['identity'];
     readonly host: ViewOptions['host'];
     readonly sourceState: NativePdfViewerSource;

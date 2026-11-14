@@ -107,6 +107,12 @@ names (`useFileSystem().nameTaken`) and never truncate; move REFUSES a taken tar
 `App.performTrash` without the question; canvas ops land in the live tldraw editor (`pdf-and-drawings`),
 opening a closed canvas beside the user via `openInSidePane` without moving the focus.
 
+- **Search never executes an agent-supplied regex on the UI thread.** Its worker is cancellable and
+  deadline-bounded; incomplete results say so, and the currently open buffer outranks disk text.
+- **`afterWrite` primes the vault index with the text and stat already written**, only for the vault
+  activation captured by the tool operation. A late write from a vault being left must never prime
+  the new vault's same-named path; a save must not trigger a full vault walk.
+
 ## How replies are shaped (brevity + teaching)
 
 Two layers, split by what can change mid-chat:

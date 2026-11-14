@@ -61,7 +61,7 @@ export class SearchResidency {
         this.advance(path);
         this.dirty.delete(path);
         const bytes = size <= FILE_LIMIT ? async () => new TextEncoder().encode(text).buffer : async () => new ArrayBuffer(0);
-        this.sources.set(path, { revision: this.rev(path), stat: { mtime, size, bytes } });
+        this.sources.set(path, { revision: this.rev(path), stat: { mtime, size, bytes, stream: () => new Blob([size <= FILE_LIMIT ? text : '']).stream() } });
         const normalized = size <= FILE_LIMIT ? text.replace(/\r\n?/g, '\n') : undefined;
         this.entries.set(path, { mtime, size, text: normalized });
         if (this.admit().has(path) && normalized !== undefined) this.persist(path, mtime, size, normalized);

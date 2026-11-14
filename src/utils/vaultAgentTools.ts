@@ -607,7 +607,7 @@ async function vaultRead(a: Args, ctx: Ctx): Promise<ToolExecution> {
         return ok(`EPUB · read-only · ${info.status}\n${info.locator?JSON.stringify(info.locator):'Location not available'}\nSelected canonical text:\n${info.selectedCanonicalText??'(none)'}\nVisible canonical text (bounded, not the whole book):\n${info.visibleCanonicalText}`);
     }
     if (isPdfFile(name)) return readPdf(a, ctx, path);
-    if (isCanvasFile(name)) {
+    if (isCanvasFile(name) || isNativeDrawingFile(name)) {
         const { head, lines } = await canvasShapesFromAnywhere(ctx, path, undefined);
         return ok([...head, 'Full detail and one page at a time: canvas_shapes. A picture: vault_view.', '', ...lines].join('\n'));
     }
@@ -626,7 +626,7 @@ async function pngResult(blob: Blob | null, caption: string, what: string): Prom
 
 async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.path(a.path);
-    assertSupportedCanvasFormat(path);
+    if (!getView(path)?.canvas?.shapePage) assertSupportedCanvasFormat(path);
     await requireFile(ctx, path);
     const name = baseName(path);
     const page = typeof a.page === 'number' ? a.page : undefined;
@@ -660,9 +660,8 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
         return pngResult(r.png, `${path}, page ${target} of ${r.pageCount}:`, `page ${target}`);
     }
 
-    if (isCanvasFile(name)) {
-        // A canvas can only be drawn by tldraw, which lives in its pane — so a
-        // closed one is opened beside the user (without taking focus).
+    if (isCanvasFile(name) || isNativeDrawingFile(name)) {
+        // A closed canvas opens beside the user without taking focus.
         let view = getView(path);
         if (!view?.canvas) {
             view = (await ctx.host.openCanvasForAgent(path)) ?? undefined;

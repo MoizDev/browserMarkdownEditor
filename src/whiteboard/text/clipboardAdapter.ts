@@ -72,9 +72,9 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
             };
         },
         /** ClipboardInput is sampled by Core during the event, before DataTransfer expires. */
-        /** Call at the OS gesture; the caller releases this pin if acquisition fails before paste is invoked. */
+        /** Call at the OS gesture; the caller owns and releases this pin after the whole paste. */
         capturePaste(): ClipboardCachePin | null { return options.copy.pin(); },
-        /** The pin captured at the gesture transfers to this call, including an explicit null. */
+        /** The caller lends the gesture-captured pin, including an explicit null, for this operation. */
         async paste(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal, cache: ClipboardCachePin | null): Promise<boolean> {
             let controller: AbortController | undefined;
             try {
@@ -105,7 +105,6 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                 return true;
             } finally {
                 if (pending === controller) pending = null;
-                cache?.release();
             }
         },
         cancel,
@@ -113,14 +112,13 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
     };
 }
 
-/** Pin before an asynchronous OS read; ownership transfers only once paste actually starts. */
+/** Pin before an asynchronous OS read and retain sole ownership until the paste has settled. */
 export function pasteWithCapturedClipboard(
     adapter: Pick<ReturnType<typeof createTextClipboardAdapter>, 'capturePaste' | 'paste' | 'signal'>,
     acquire: (signal: AbortSignal) => Promise<ClipboardInput>, intent: TextPasteIntent, signal: AbortSignal,
 ): Promise<boolean> {
     const captured = adapter.capturePaste(), active = AbortSignal.any([signal, adapter.signal]);
     return (async () => {
-        let transferred = false;
         try {
             active.throwIfAborted();
             const work = acquire(active);
@@ -132,9 +130,8 @@ export function pasteWithCapturedClipboard(
                 if (active.aborted) abort();
             });
             active.throwIfAborted();
-            transferred = true;
             return await adapter.paste(input, intent, signal, captured);
-        } finally { if (!transferred) captured?.release(); }
+        } finally { captured?.release(); }
     })();
 }
 

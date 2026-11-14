@@ -37,9 +37,8 @@ export async function layout(args: unknown, context: WorkerContext) {
         context.signal.throwIfAborted();
         await context.slice();
         const resolved = { ...args, fontEpoch: fonts!.epoch };
-        const paint = current.layout(resolved);
+        const { paint, measurement } = current.product(resolved);
         if (!paint.faceTable) throw new Error('Text paint has no owning face table');
-        const measurement = current.measure(resolved);
         return { paint, measurement, faces: paint.faceTable.faces };
     } finally { active.delete(context); }
 }

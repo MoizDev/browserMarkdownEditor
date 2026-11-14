@@ -266,6 +266,7 @@ export class BoardTextLayout implements TextLayoutEngine {
         }
         return result;
     }
+    product(request: TextLayoutRequest): { paint: TextPaint; measurement: TextMeasurement } { return this.build(request); }
     measure(request: TextLayoutRequest): TextMeasurement { return this.build(request).measurement; }
     layout(request: TextLayoutRequest): TextPaint { return this.build(request).paint; }
     caretIndex(request: TextLayoutRequest, paint: TextPaint) {

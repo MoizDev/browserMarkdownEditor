@@ -5,6 +5,7 @@ import type { SavedView } from '../format/encode';
 import type { HostBlock } from '../model/doc';
 import type { SampleLease } from '../model/samples';
 import { admitImportedBoard, type ImportedBoard } from './admit';
+import { basicLegacyGeometry } from './basicGeometry';
 import { repairLegacyTree, type RootMapper } from './repair';
 import { ReportBuilder, type ImportReport } from './report';
 import { repairLegacySheets } from './sheets';
@@ -42,7 +43,7 @@ export async function importLegacy(text: string, options: LegacyImportOptions): 
         }
         const preparePages: LegacyRecordOptions['preparePages'] = options.pageSource
             ? createPagePreparation(options.pageSource, (nodes, sheets) => legacyWorldBounds(nodes,
-                new Set(sheets.map(sheet => sheet.id)), options.textLayout, options.geometry))
+                new Set(sheets.map(sheet => sheet.id)), options.textLayout, basicLegacyGeometry(options.samples, options.geometry)))
             : undefined;
         draft = await readLegacyRecords(text, { ...options, preparePages });
     }

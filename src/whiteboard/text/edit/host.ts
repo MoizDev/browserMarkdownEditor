@@ -130,17 +130,19 @@ export class EditHost {
 
     private onTextUpdate(event: TextUpdate): void {
         const start = this.window.start;
-        const change = { from: start + event.updateRangeStart, to: start + event.updateRangeEnd, text: event.text,
-            selection: { anchor: start + event.selectionStart, focus: start + event.selectionEnd } };
+        const value = this.window.text.slice(0, event.updateRangeStart) + event.text + this.window.text.slice(event.updateRangeEnd);
+        const change = difference(this.window, value, { anchor: start + event.selectionStart, focus: start + event.selectionEnd });
         if (this.composing) {
-            const value = this.window.text.slice(0, event.updateRangeStart) + event.text + this.window.text.slice(event.updateRangeEnd);
             this.window = { start, end: start + value.length, text: value };
             this.pending = this.compositionChange(value, change.selection);
             this.callbacks.composition(this.pending);
         } else {
-            try { this.callbacks.change(change); }
+            try {
+                if (change.from === change.to && !change.text) this.callbacks.selection(change.selection);
+                else this.callbacks.change(change);
+            }
             finally {
-                this.window = { ...this.window, text: this.window.text.slice(0, event.updateRangeStart) + event.text + this.window.text.slice(event.updateRangeEnd) };
+                this.window = { ...this.window, text: value };
                 this.sync();
             }
         }
@@ -150,7 +152,12 @@ export class EditHost {
         const value = element.value;
         const change = difference(this.window, value, { anchor: this.window.start + element.selectionStart, focus: this.window.start + element.selectionEnd });
         if (this.composing) { this.pending = change; this.callbacks.composition(change); }
-        else { try { this.callbacks.change(change); } finally { this.sync(); } }
+        else {
+            try {
+                if (change.from === change.to && !change.text) this.callbacks.selection(change.selection);
+                else this.callbacks.change(change);
+            } finally { this.sync(); }
+        }
     }
 
     private startComposition(): void {

@@ -13,7 +13,7 @@ const pdfiumMap = JSON.parse(readFileSync(new URL('./src/pdf/engine/pdfium/expor
   rows: { exports: string[] }[];
 }
 const pdfiumNativeExports = pdfiumMap.rows.flatMap(row => row.exports)
-if (pdfiumNativeExports.length !== 136 || new Set(pdfiumNativeExports).size !== 136) throw new Error('The canonical PDFium map must declare 136 unique native exports')
+if (pdfiumNativeExports.length !== 138 || new Set(pdfiumNativeExports).size !== 138) throw new Error('The canonical PDFium map must declare 138 unique native exports')
 
 // The tooltip rule's selectors (explained where the rule is set, below). Named, because
 // a later block that sets no-restricted-syntax replaces the whole option array and must

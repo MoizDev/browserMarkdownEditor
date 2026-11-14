@@ -43,7 +43,7 @@ function record(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 function ownerOf(value: unknown): BoardJobIdentity | null {
-    if (!record(value) || typeof value.session !== 'string' || !value.session || value.session.length > 256
+    if (!record(value) || typeof value.session !== 'string' || !value.session || value.session.length > 128
         || !Number.isSafeInteger(value.epoch) || (value.epoch as number) < 0
         || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) return null;
     return { session: value.session, epoch: value.epoch as number, revision: value.revision as number };

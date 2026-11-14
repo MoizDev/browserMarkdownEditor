@@ -35,7 +35,7 @@ export function createStreamingExportTextResolver(source: PaintNodeSource, signa
       for (;;) {
         active.throwIfAborted()
         const reply = await client.request<OutlineStreamReply>('textOutline', { ...base, mode: 'nextBatch' }, owner, options, current)
-        if (reply.kind !== 'batch' || !Array.isArray(reply.items) || reply.items.length > 64 || (!reply.done && !reply.items.length))
+        if (reply.kind !== 'batch' || typeof reply.done !== 'boolean' || !Array.isArray(reply.items) || reply.items.length > 64 || (!reply.done && !reply.items.length))
           throw new TypeError('Invalid text outline stream batch')
         if (reply.done) completed = true
         for (const part of reply.items) {

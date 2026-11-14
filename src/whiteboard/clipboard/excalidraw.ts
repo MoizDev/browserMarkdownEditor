@@ -1,7 +1,7 @@
 import { SWATCHES, type Dash, type Fill, type Font, type Size, type Swatch, type TextAlign } from '../model/styles';
 import { DEFAULT_BOARD_PALETTES } from '../render/palette';
 import { newNodeId, type NodeId, type SheetId } from '../model/ids';
-import { createConnector, createFigure, createPicture, createPolyline, createStroke, createText, type Attachment, type ConnectorNode, type Node } from '../model/nodes';
+import { createConnector, createFigure, createGroup, createPicture, createPolyline, createStroke, createText, type Attachment, type ConnectorNode, type Node } from '../model/nodes';
 import { createBoardDoc, type BoardDoc } from '../model/doc';
 import { UI_DEFAULTS, VIEW_DEFAULTS } from '../model/defaults';
 import { NATIVE_VERSION } from '../format/schema';
@@ -154,7 +154,10 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
         if (typeof sourceId !== 'string' || !ids.has(sourceId)) { skipped++; continue; }
         if (element.type !== 'rectangle' && element.type !== 'ellipse' && element.type !== 'diamond') continue;
         const geometry = elementGeometry(element), stroke = colour(element.strokeColor);
-        if (!geometry || !stroke || !finite(element.strokeWidth, 0.05, 500)) { skipped++; ids.delete(sourceId); continue; }
+        const background = element.backgroundColor === 'transparent' ? null : colour(element.backgroundColor);
+        if (!geometry || !stroke || element.backgroundColor !== 'transparent' && !background || !finite(element.strokeWidth, 0.05, 500)) {
+            skipped++; ids.delete(sourceId); continue;
+        }
         let label: RichText | null = null, labelColor = stroke, font: Font = 'draw', size: Size = 's', labelScale = 1;
         let align: 'start' | 'middle' | 'end' = 'middle', valign: 'start' | 'middle' | 'end' = 'middle';
         const bound = [...(Array.isArray(element.boundElements) ? element.boundElements : []),
@@ -172,10 +175,24 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
         }
         const dash: Dash = element.roughness !== 0 ? 'draw' : element.strokeStyle === 'dashed' ? 'dashed' : element.strokeStyle === 'dotted' ? 'dotted' : 'solid';
         const fill: Fill = element.backgroundColor === 'transparent' ? 'none' : element.fillStyle === 'solid' ? 'fill' : 'pattern';
-        nodes.push(createFigure({ id: ids.get(sourceId)!, parent: options.sheet, order: orders[i], page: -1,
+        const figure = createFigure({ id: ids.get(sourceId)!, parent: options.sheet, order: orders[i], page: -1,
             x: geometry.x, y: geometry.y, rotation: geometry.rotation, opacity: geometry.opacity, ext: null,
             shape: element.type, w: geometry.w, h: geometry.h, growY: 0, color: stroke, labelColor, fill, dash, size, font,
-            align, valign, label, width: element.strokeWidth, labelScale, flipX: false, flipY: false, url: null }));
+            align, valign, label, width: element.strokeWidth, labelScale, flipX: false, flipY: false, url: null });
+        if (background && background !== stroke) {
+            // A native figure has one paint swatch. A derived group preserves a distinct
+            // source fill and outline while keeping the actual foreground binding target.
+            const groupId = newNodeId(tables); allocated.add(groupId);
+            const backgroundId = newNodeId(tables); allocated.add(backgroundId);
+            const childOrders = keysBetween(null, null, 2);
+            nodes.push(createGroup({ id: groupId, parent: options.sheet, order: orders[i], page: -1,
+                x: geometry.x, y: geometry.y, rotation: geometry.rotation, opacity: geometry.opacity, ext: null }));
+            nodes.push(createFigure({ ...figure, id: backgroundId, parent: groupId, order: childOrders[0],
+                x: 0, y: 0, rotation: 0, opacity: 1, color: background, label: null, dash: 'solid' }));
+            nodes.push(createFigure({ ...figure, parent: groupId, order: childOrders[1],
+                x: 0, y: 0, rotation: 0, opacity: 1, fill: 'none' }));
+        } else nodes.push(figure);
+        if (nodes.length > SECURITY_LIMITS.clipboardNodes) throw new RangeError('Converted Excalidraw node count exceeds limits');
         if ((i & 63) === 63) await yieldHost();
     }
     for (let i = 0; i < elements.length; i++) {
@@ -338,6 +355,7 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                     if (element.endBinding && typeof element.endBinding === 'object' && !Array.isArray(element.endBinding)) bindings.push({ id, terminal: 'end', source: element.endBinding as Record<string, unknown> });
                 }
             } else { skipped++; ids.delete(sourceId); }
+            if (nodes.length - removed.size > SECURITY_LIMITS.clipboardNodes) throw new RangeError('Converted Excalidraw node count exceeds limits');
             if ((index & 63) === 63) await yieldHost();
         }
         const retainedNodes = nodes.filter(node => !removed.has(node.id));

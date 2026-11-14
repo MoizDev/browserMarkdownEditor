@@ -38,6 +38,7 @@ import { terminalStart } from '../../utils/terminalStart';
 import { detectOs } from '../../utils/platform';
 import { setTerminalCount } from '../../utils/terminalCount';
 import { setTerminalContextActive } from '../../utils/terminalContext';
+import { removeSessionValue, writeSessionValue } from '../../utils/storage';
 import { currentFont, fontsReady, startFontDetection, subscribeFont } from './terminalFont';
 import { deriveTheme, watchTheme } from './terminalTheme';
 
@@ -820,8 +821,8 @@ class TerminalStore {
                     key: s.key, termId: s.termId, base: s.base, ordinal: s.ordinal,
                     cols: clampDim(s.term.cols, TERMINAL_MAX_COLS), rows: clampDim(s.term.rows, TERMINAL_MAX_ROWS),
                 }));
-            if (stored.length === 0) sessionStorage.removeItem(SESSIONS_KEY);
-            else sessionStorage.setItem(SESSIONS_KEY, JSON.stringify({ sessions: stored, active: this.state.activeKey }));
+            if (stored.length === 0) removeSessionValue(SESSIONS_KEY);
+            else writeSessionValue(SESSIONS_KEY, JSON.stringify({ sessions: stored, active: this.state.activeKey }));
         } catch { /* storage blocked: a reload simply starts fresh */ }
     }
 

@@ -3,7 +3,9 @@ import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous'
 import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { add, interval } from './numeric';
-import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
+import { createExactInverseDistance } from './exactInverseDistance';
+import { createAnisotropicSweepJob } from './anisotropicSweepJob';
 import { strokeSeparatedFromHull } from './strokeSupport';
 import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { classifyCertifiedClipBox, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
@@ -37,6 +39,8 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
     const stroke = strokeRadiusBounds(query.localToSurface, options.strokeRadiusLocal);
     if (!stroke) finished = { status: 'uncertain', reason: 'Clipped stroke scale overflows' };
     const radius = stroke ?? interval(0), threshold = add(radius, interval(query.radiusCss));
+    const anisotropic = !isUniformDistanceMatrix(query.localToSurface);
+    const inverseDistance = anisotropic && query.radiusCss === 0 ? createExactInverseDistance(query.localToSurface) : null;
     if (![radius.lo, radius.hi, threshold.lo, threshold.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Clipped sweep radius overflows' };
     const frames = options.frames.map(preparePointClip), exclusions = options.exclusions.map(preparePointClip);
     const allowed = (box: CertifiedClipBox) => frames.every(region => classifyCertifiedClipBox(box, region) === 'inside')
@@ -49,7 +53,8 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
     };
     let pathIndex = 0, commandIndex = 0, sweepIndex = 0, start: BoundsPoint | undefined, previous: BoundsPoint | undefined, segment: CertifiedCurve | undefined;
     let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined, segmentExact: ExactCurve | undefined;
-    let certificate: ReturnType<typeof createCurveCapsuleCertificate> | undefined, certificatePhase: 'inner' | 'outer' = 'inner', deferred: Pair | undefined;
+    let certificate: ReturnType<typeof createCurveCapsuleCertificate> | undefined, certificatePhase: 'inner' | 'outer' | 'exact' = 'inner', deferred: Pair | undefined;
+    let anisotropicJob: ReturnType<typeof createAnisotropicSweepJob> | undefined;
     const low = Math.max(0, threshold.lo), high = Math.max(0, threshold.hi), stack: Pair[] = [];
     const subdivide = (pair: Pair): boolean => {
         if (pair.path.depth >= maxDepth && pair.sweep.depth >= maxDepth) { uncertain = true; return true; }
@@ -71,16 +76,33 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped sweep work limit exhausted' });
+                if (anisotropicJob) {
+                    const result = anisotropicJob.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    anisotropicJob.cancel(); anisotropicJob = undefined;
+                    if (result.status === 'hit') return finish({ status: 'hit' });
+                    if (result.status === 'uncertain' && !subdivide(deferred!)) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
+                    deferred = undefined; continue;
+                }
                 if (certificate) {
                     const result = certificate.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
                     certificate.cancel(); certificate = undefined;
+                    if (certificatePhase === 'exact') {
+                        if (result.status === 'hit') return finish({ status: 'hit' });
+                        if (result.status === 'uncertain' && !subdivide(deferred!)) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
+                        deferred = undefined; continue;
+                    }
                     if (certificatePhase === 'inner' && result.status === 'hit') return finish({ status: 'hit' });
                     if (certificatePhase === 'inner' && result.status === 'miss' && low === high) { deferred = undefined; continue; }
                     if (certificatePhase === 'inner' && result.status === 'miss') {
                         certificatePhase = 'outer'; certificate = createCurveCapsuleCertificate(deferred!.exactPath, deferred!.exactSweep[0], deferred!.exactSweep[1], high); continue;
                     }
                     if (certificatePhase === 'outer' && result.status === 'miss') { deferred = undefined; continue; }
+                    if (anisotropic && query.radiusCss > 0) {
+                        anisotropicJob = createAnisotropicSweepJob(deferred!.exactPath, query.localToSurface, options.strokeRadiusLocal,
+                            deferred!.exactSweep[0], deferred!.exactSweep[1], query.radiusCss); continue;
+                    }
                     if (!subdivide(deferred!)) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
                     deferred = undefined; continue;
                 }
@@ -99,8 +121,16 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
                         if (distance <= query.radiusCss && allowed(certifiedIntervalPointBox(source))) return finish({ status: 'hit' });
                     }
                     if (allowed(bounds)) {
-                        deferred = pair; certificatePhase = 'inner';
-                        certificate = createCurveCapsuleCertificate(pair.exactPath, pair.exactSweep[0], pair.exactSweep[1], low); continue;
+                        deferred = pair;
+                        if (inverseDistance) {
+                            certificatePhase = 'exact';
+                            const curve = pair.exactPath.map(inverseDistance.map) as unknown as ExactCurve;
+                            certificate = createCurveCapsuleCertificate(curve, inverseDistance.map(pair.exactSweep[0]), inverseDistance.map(pair.exactSweep[1]),
+                                inverseDistance.radius(options.strokeRadiusLocal));
+                        } else {
+                            certificatePhase = 'inner'; certificate = createCurveCapsuleCertificate(pair.exactPath, pair.exactSweep[0], pair.exactSweep[1], low);
+                        }
+                        continue;
                     }
                     if (!subdivide(pair)) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
                     continue;
@@ -132,6 +162,6 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
             }
             return PENDING;
         },
-        cancel() { cancelled = true; certificate?.cancel(); certificate = undefined; deferred = undefined; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); anisotropicJob?.cancel(); certificate = undefined; anisotropicJob = undefined; deferred = undefined; stack.length = 0; },
     };
 }

@@ -5,6 +5,7 @@ import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './po
 import { lowerCurvePairDistance } from './sweptPathJob';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
 import type { Vec2 } from './path';
+import type { ExactCurvePoint } from './cubicRootCertificate';
 
 export type AnisotropicSweepResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 type Range = Readonly<{ lo: Dyadic; hi: Dyadic; depth: number }>;
@@ -26,18 +27,22 @@ function pointBounds(p: { readonly x: Dyadic; readonly y: Dyadic }): BoundsPoint
 
 /** Certified affine stroke against a closed CSS capsule. Local-disk witnesses
  * are exact; interval subdivision proves separation without a sampled stroke. */
-export function createAnisotropicSweepJob(curve: ExactCurve, matrix: Affine, localRadius: number, start: Vec2, end: Vec2, marginCss: number,
+export function createAnisotropicSweepJob(curve: ExactCurve, matrix: Affine, localRadius: number, start: Vec2 | ExactCurvePoint, end: Vec2 | ExactCurvePoint, marginCss: number,
     limits: { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number } = {}): {
         step(budget: { readonly deadline: number; readonly maxWork: number }): AnisotropicSweepResult; cancel(): void;
     } {
     const maxDepth = limits.maxDepth ?? 32, maxNodes = limits.maxNodes ?? 262144, maxWork = limits.maxWork ?? 2000000;
-    if (![...matrix, localRadius, start.x, start.y, end.x, end.y, marginCss].every(Number.isFinite) || localRadius < 0 || marginCss < 0
+    const validPoint = (p: Vec2 | ExactCurvePoint) => typeof p.x === 'number' && typeof p.y === 'number'
+        ? Number.isFinite(p.x) && Number.isFinite(p.y) : typeof p.x !== 'number' && typeof p.y !== 'number'
+            && Number.isSafeInteger(p.x.e) && Number.isSafeInteger(p.y.e);
+    if (![...matrix, localRadius, marginCss].every(Number.isFinite) || !validPoint(start) || !validPoint(end) || localRadius < 0 || marginCss < 0
         || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid anisotropic sweep job');
     const [a, b, c, d] = matrix.map(dyadic), radius = dyadic(localRadius), radiusSquared = dyadicMultiply(radius, radius);
-    const sx = dyadic(start.x), sy = dyadic(start.y), ex = dyadic(end.x), ey = dyadic(end.y), vx = dyadicSubtract(ex, sx), vy = dyadicSubtract(ey, sy);
+    const exact = (value: number | Dyadic): Dyadic => typeof value === 'number' ? dyadic(value) : value;
+    const sx = exact(start.x), sy = exact(start.y), ex = exact(end.x), ey = exact(end.y), vx = dyadicSubtract(ex, sx), vy = dyadicSubtract(ey, sy);
     const lengthSquared = norm2(vx, vy), margin = dyadic(marginCss), marginSquared = dyadicMultiply(margin, margin);
-    const sweep: readonly [BoundsPoint, BoundsPoint] = [{ x: interval(start.x), y: interval(start.y) }, { x: interval(end.x), y: interval(end.y) }];
+    const sweep: readonly [BoundsPoint, BoundsPoint] = [pointBounds({ x: sx, y: sy }), pointBounds({ x: ex, y: ey })];
     const initial: Range = { lo: opposite(radius), hi: radius, depth: localRadius ? 0 : maxDepth };
     const stack: Work[] = [{ exact: curve, curve: { points: curve.map(pointBounds) as unknown as CertifiedCurve['points'], depth: 0 }, x: initial, y: initial }];
     let finished: AnisotropicSweepResult | undefined, cancelled = false, nodes = 1, spent = 0, uncertain = false;

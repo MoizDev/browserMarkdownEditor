@@ -10,6 +10,8 @@ if (process.argv.length !== 2) throw new Error('Use environment configuration on
 const mode = process.env.BME_MODE ?? 'production';
 if (!['dev', 'production'].includes(mode)) throw new Error('BME_MODE must be dev or production');
 const port = Number(process.env.BME_PORT ?? 6404), dpr = Number(process.env.BME_DPR ?? 1), theme = process.env.BME_THEME ?? 'dark';
+const focus = process.env.BME_FOCUS ?? 'viewer', portfolioArm = process.env.BME_PORTFOLIO ?? '0', inspectQuality = process.env.BME_QUALITY ?? '0';
+if (!['viewer', 'header'].includes(focus) || !['0', '1'].includes(portfolioArm) || !['0', '1'].includes(inspectQuality)) throw new Error('Invalid focus/portfolio/quality arm');
 if (!Number.isInteger(port) || port < 6400 || port > 6419 || ![1, 2].includes(dpr) || !['dark', 'light'].includes(theme)) throw new Error('Invalid assigned port/theme/DPR');
 const root = resolve(process.env.BME_ROOT ?? '.'), scratch = resolve(process.env.BME_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/p-b/p07b1-app');
 const out = resolve(process.env.BME_OUT ?? '/Users/adham/Developer/bme-impl/scratch/p-b/p07b1-baseline');
@@ -21,6 +23,13 @@ if (!pdfRecord || !oracleRecord) throw new Error('GEN-18 PDF and independent ora
 const pdf = await readFile(resolve(fixtures, pdfRecord.file)), oracleBytes = await readFile(resolve(fixtures, oracleRecord.file));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 for (const [record, bytes] of [[pdfRecord, pdf], [oracleRecord, oracleBytes]]) if (record.sha256 !== hash(bytes) || record.bytes !== bytes.length) throw new Error(`Fixture identity mismatch: ${record.file}`);
+let portfolio, portfolioRecord;
+if (portfolioArm === '1') {
+    portfolioRecord = catalog.fixtures.find(entry => entry.id === 'GEN-25/portfolio');
+    if (!portfolioRecord) throw new Error('Portfolio fixture is not admitted');
+    portfolio = await readFile(resolve(process.env.BME_ROLE_FIXTURES ?? '/Users/adham/Developer/bme-impl/scratch/p-b/p07b2-role-fixtures', portfolioRecord.file));
+    if (hash(portfolio) !== portfolioRecord.sha256 || portfolio.length !== portfolioRecord.bytes) throw new Error('Portfolio fixture differs');
+}
 const oracle = JSON.parse(oracleBytes.toString('utf8'));
 const queries = oracle.expected.queries.filter(item => item.neverBuiltOnOpen);
 if (queries.length !== 4 || !queries.some(item => item.pages[0] === 450)) throw new Error('Expected four independent remote sentinel arms');
@@ -29,7 +38,7 @@ const chrome = resolve('/Users/adham/Developer/bme-impl/scratch/browsers', pin.v
 const driver = JSON.parse(await readFile(new URL('../../../node_modules/playwright/package.json', import.meta.url), 'utf8'));
 if (`playwright@${driver.version}` !== pin.driver) throw new Error('Driver is not pinned');
 await mkdir(out, { recursive: true });
-const result = { pass: false, phase: 'setup', identity: { fixtures: [pdfRecord, oracleRecord], browser: pin.version, driver: driver.version, mode, dpr, theme }, observations: [], errors: [],
+const result = { pass: false, phase: 'setup', identity: { fixtures: [pdfRecord, oracleRecord, ...(portfolioRecord ? [portfolioRecord] : [])], browser: pin.version, driver: driver.version, mode, dpr, theme, focus }, observations: [], errors: [],
     loss: ['Generated source only; no authorised originals or native disk.', 'R7/R8 reference timing is separate; raw-route binding disables HTTP cache.'] };
 let app, browser, page, binding;
 async function witness(value, name) {
@@ -66,7 +75,7 @@ try {
     }, theme);
     page = await context.newPage(); page.on('pageerror', error => result.errors.push(String(error)));
     await page.goto(app.url);
-    await seedVault(page, { name: 'Original find vault', files: { [pdfRecord.file]: pdf, 'Pause.md': '# Pause\n\nOriginal find is hidden.\n' } });
+    await seedVault(page, { name: 'Original find vault', files: { [pdfRecord.file]: pdf, 'Pause.md': '# Pause\n\nOriginal find is hidden.\n', ...(portfolio ? { [portfolioRecord.file]: portfolio } : {}) } });
     const seeded = await readWitness(page, { name: 'Original find vault', path: pdfRecord.file, binary: true, report: { data: result } });
     await witness(hash(seeded) === pdfRecord.sha256, 'Seeded PDF identity');
     await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
@@ -77,6 +86,11 @@ try {
     const input = page.getByRole('textbox', { name: 'Find in PDF', exact: true });
     await witness(await input.count() === 0, 'Find bar starts closed');
     await page.locator('.pdf-viewer-scroll').click({ position: { x: 25, y: 25 } });
+    if (focus === 'header') {
+        await page.getByRole('button', { name: 'More options', exact: true }).click();
+        await page.keyboard.press('Escape');
+        await witness(await page.evaluate(() => !!document.activeElement?.closest('.editor-slot-header') && !document.activeElement?.closest('.pdf-viewer') && !document.querySelector('[role="menu"]')), 'Header owns focus outside the viewer before Meta+F');
+    }
     await page.keyboard.press('Meta+f');
     await page.waitForFunction(() => window.__findKeys.length > 0);
     const key = await page.evaluate(() => { const event = window.__findKeys.at(-1); return { key: event.key.toLowerCase(), shift: event.shiftKey, prevented: event.defaultPrevented, trusted: event.isTrusted }; });
@@ -104,6 +118,37 @@ try {
     await witness(hash(after) === pdfRecord.sha256, 'Read-only find preserves PDF bytes');
     await page.evaluate(async () => { await document.fonts.ready; });
     await page.screenshot({ path: resolve(out, 'original-find.png') });
+    result.coverageWarning = await page.locator('.pdf-find-quality').textContent();
+    if (inspectQuality === '1') {
+        await page.keyboard.press('Escape');
+        await page.getByRole('button', { name: 'More options', exact: true }).click();
+        await page.getByRole('menuitemradio', { name: 'Read extracted text', exact: true }).click();
+        await page.waitForFunction(() => [...document.querySelectorAll('.pdf-reading-quality')].some(node => node.textContent.includes('Possible columns')));
+        result.qualityExplanation = await page.locator('.pdf-reading-quality').allTextContents();
+        await witness(result.qualityExplanation.some(text => text.includes('Possible columns')) && !result.qualityExplanation.some(text => text.includes('Extraction stopped')), 'Book partial-quality witness is a reading-order caveat, not a safety limit');
+        await page.screenshot({ path: resolve(out, 'quality-explanation.png') });
+    }
+    if (portfolioArm === '1') {
+        await page.locator('.tree-item').filter({ hasText: portfolioRecord.file }).click();
+        const pane = page.locator('.pdf-pane:not(.pdf-pane-hidden)');
+        await pane.locator('.pdf-viewer-scroll').click({ position: { x: 25, y: 25 } });
+        await page.keyboard.press('Meta+e');
+        await pane.locator('.pdf-role-notice').waitFor({ state: 'visible' });
+        await witness(await pane.locator('.tl-container').count() === 0, 'Portfolio Annotate is refused and remains a reader');
+        await pane.locator('.pdf-viewer-scroll').click({ position: { x: 25, y: 25 } });
+        const before = await page.evaluate(() => window.__findKeys.length);
+        await page.keyboard.press('Meta+f');
+        await witness(await page.evaluate(count => window.__findKeys.length === count + 1 && window.__findKeys.at(-1).defaultPrevented, before), 'Refused Annotate Meta+F is intercepted');
+        const field = pane.getByRole('textbox', { name: 'Find in PDF', exact: true });
+        await field.fill('OUTER MUST SURVIVE');
+        await page.waitForFunction(() => document.querySelector('.pdf-pane:not(.pdf-pane-hidden) .pdf-find-status')?.textContent === '1 of 1');
+        result.portfolio = await page.evaluate(() => ({ notice: document.querySelector('.pdf-pane:not(.pdf-pane-hidden) .pdf-role-notice')?.textContent,
+            current: [...(CSS.highlights.get('pdf-find-current') ?? [])].map(range => range.toString()), focus: document.activeElement?.getAttribute('aria-label') }));
+        await witness(result.portfolio.current.length === 1 && result.portfolio.current[0] === 'OUTER MUST SURVIVE' && result.portfolio.focus === 'Find in PDF', 'Read-only Annotate finds the outer PDF text');
+        const bytes = await readWitness(page, { name: 'Original find vault', path: portfolioRecord.file, binary: true, report: { data: result } });
+        await witness(hash(bytes) === portfolioRecord.sha256, 'Portfolio Find preserves the complete outer file');
+        await page.screenshot({ path: resolve(out, 'refused-annotate-find.png') });
+    }
     result.textRequests = await page.evaluate(() => window.__findText);
     await witness(result.errors.length === 0, 'No uncaught page errors');
     result.pass = true;

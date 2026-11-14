@@ -1,10 +1,18 @@
 import { sameInputToken, type CancelReason, type FinishReason, type GestureOwner, type InputToken, type Modifiers, type RealSample, type Tool } from './tool'
 
+export interface InkPanSuspension {
+  begin(anchor: RealSample): void
+  update(samples: readonly RealSample[]): void
+  end(): void
+}
+
 // One session owns the gesture; a replaced view cannot finish its successor's contact.
 export class InputRouter<Context> {
   private token: InputToken | null = null
   private owner: GestureOwner | null = null
   private releaseHold: (() => void) | null = null
+  private lastReal: RealSample | null = null
+  private suspended: InkPanSuspension | null = null
 
   constructor(private readonly holdGesture: () => () => void = () => () => {}) {}
 
@@ -31,13 +39,28 @@ export class InputRouter<Context> {
       if (!owner) { release(); return false }
       this.releaseHold = release
       this.owner = owner
+      this.lastReal = sample
       return true
     } catch (error) { release(); throw error }
   }
 
   update(token: InputToken, pointerId: number, samples: readonly RealSample[], modifiers: Modifiers): void {
     if (!this.isCurrent(token) || !this.owner?.pointerIds.has(pointerId)) return
-    this.owner.update(samples, modifiers)
+    if (samples.length) this.lastReal = samples[samples.length - 1]
+    if (this.suspended) this.suspended.update(samples)
+    else this.owner.update(samples, modifiers)
+  }
+
+  suspendInk(token: InputToken, pan: InkPanSuspension): boolean {
+    if (!this.isCurrent(token) || this.owner?.kind !== 'ink' || !this.lastReal || this.suspended) return false
+    pan.begin(this.lastReal)
+    this.owner.suspend?.()
+    this.suspended = pan
+    return true
+  }
+
+  resumeInk(token: InputToken): void {
+    if (this.isCurrent(token)) this.endSuspension()
   }
 
   finish(token: InputToken, pointerId: number, reason: FinishReason): void {
@@ -77,7 +100,15 @@ export class InputRouter<Context> {
     try { owner?.finish(reason) } finally { release?.() }
   }
 
+  private endSuspension(): void {
+    const pan = this.suspended
+    this.suspended = null
+    pan?.end()
+  }
+
   private takeRelease(): (() => void) | null {
+    this.endSuspension()
+    this.lastReal = null
     const release = this.releaseHold
     this.releaseHold = null
     return release

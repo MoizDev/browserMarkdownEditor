@@ -102,7 +102,10 @@ export class EditHost {
                     { anchor: this.window.start + textarea.selectionStart, focus: this.window.start + textarea.selectionEnd });
                 this.endComposition();
             });
-            this.listen(textarea, 'select', () => callbacks.selection({ anchor: this.window.start + textarea.selectionStart, focus: this.window.start + textarea.selectionEnd }));
+            this.listen(textarea, 'select', () => {
+                const backward = textarea.selectionDirection === 'backward';
+                callbacks.selection({ anchor: this.window.start + (backward ? textarea.selectionEnd : textarea.selectionStart), focus: this.window.start + (backward ? textarea.selectionStart : textarea.selectionEnd) });
+            });
         }
         this.element.className = 'wb-edit-host';
         this.element.tabIndex = -1;
@@ -134,14 +137,20 @@ export class EditHost {
             this.window = { start, end: start + value.length, text: value };
             this.pending = this.compositionChange(value, change.selection);
             this.callbacks.composition(this.pending);
-        } else { this.callbacks.change(change); this.window = { ...this.window, text: this.window.text.slice(0, event.updateRangeStart) + event.text + this.window.text.slice(event.updateRangeEnd) }; this.sync(); }
+        } else {
+            try { this.callbacks.change(change); }
+            finally {
+                this.window = { ...this.window, text: this.window.text.slice(0, event.updateRangeStart) + event.text + this.window.text.slice(event.updateRangeEnd) };
+                this.sync();
+            }
+        }
     }
 
     private onFallbackInput(element: HTMLTextAreaElement): void {
         const value = element.value;
         const change = difference(this.window, value, { anchor: this.window.start + element.selectionStart, focus: this.window.start + element.selectionEnd });
         if (this.composing) { this.pending = change; this.callbacks.composition(change); }
-        else { this.callbacks.change(change); this.sync(); }
+        else { try { this.callbacks.change(change); } finally { this.sync(); } }
     }
 
     private startComposition(): void {
@@ -170,11 +179,11 @@ export class EditHost {
         const plain = projection(text);
         const next = textWindow(plain, selection.anchor, selection.focus, this.window);
         if (this.context) {
-            this.context.updateText(0, this.window.text.length, next.text);
+            if (this.window.text !== next.text) this.context.updateText(0, this.window.text.length, next.text);
             this.context.updateSelection(Math.min(selection.anchor, selection.focus) - next.start, Math.max(selection.anchor, selection.focus) - next.start);
         } else {
             const textarea = this.element as HTMLTextAreaElement;
-            textarea.value = next.text;
+            if (textarea.value !== next.text) textarea.value = next.text;
             textarea.setSelectionRange(Math.min(selection.anchor, selection.focus) - next.start, Math.max(selection.anchor, selection.focus) - next.start, selection.anchor > selection.focus ? 'backward' : 'forward');
         }
         this.window = next;

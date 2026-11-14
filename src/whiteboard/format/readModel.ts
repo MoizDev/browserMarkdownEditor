@@ -17,7 +17,7 @@ import { COMPATIBILITY_FENCE, isCompatibilityFence } from './fence';
 import { NATIVE_FORMAT_ID } from './identity';
 import { JsonReadError, parseJson } from './jsonRead';
 import type { JsonSpan } from './jsonRead';
-import { inspectPoints } from './points';
+import { inspectPoints, inspectPointsIncremental } from './points';
 import type { PointInspection } from './points';
 import { FORMAT_LIMITS, NODE_PROPERTY_ORDER } from './schema';
 import type { Bounds } from './schema';
@@ -245,7 +245,7 @@ function bounds(fields: ReadonlyMap<string, JsonSpan>, context: ModelReadContext
     note(context, 'bounds', 'Missing or invalid bounds cache; the scene computes it when needed');
     return undefined;
 }
-function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, context: ModelReadContext): MappedRecord {
+async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, context: ModelReadContext): Promise<MappedRecord> {
     const nodeKind = required(fields, 'kind').string(FORMAT_LIMITS.idChars);
     const raw = new Map<string, RawJson>();
     const value: Record<string, unknown> = {
@@ -281,7 +281,9 @@ function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, context: Mo
         }
         const keep = () => { raw.set(key, span.raw()); };
         if (key === 'pts') {
-            const pts = span.string(FORMAT_LIMITS.pointsChars), inspected = inspectPoints(pts);
+            const pts = span.string(FORMAT_LIMITS.pointsChars);
+            const inspected = context.options.cooperate
+                ? await inspectPointsIncremental(pts, context.options.cooperate) : inspectPoints(pts);
             if (!inspected.ok) {
                 note(context, 'points', inspected.error.reason, true);
                 return {
@@ -401,7 +403,7 @@ export function readHeader(root: JsonSpan): { kind: BoardKind; version: readonly
     for (const [name, value] of fields) if (!['format', 'version', 'kind', 'document', 'fence', 'records'].includes(name)) preserved.set(name, value.raw());
     return { kind, version: [major, minor], fields: preserved, fenceValid };
 }
-export function readRecord(root: JsonSpan, kind: BoardKind, context: ModelReadContext): MappedRecord {
+export async function readRecord(root: JsonSpan, kind: BoardKind, context: ModelReadContext): Promise<MappedRecord> {
     const fields = root.fieldMap(), type = required(fields, 'type').string(128);
     switch (type) {
         case 'node': return node(root, fields, context);

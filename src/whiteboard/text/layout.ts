@@ -3,7 +3,7 @@ import { reorderBidiLine } from './bidi';
 import { BoardFonts, fontCss, fontDescriptor, fontSupports, type FontKey } from './fonts';
 import { itemizeBlock, type ItemizedBlock, type TextItem } from './itemize';
 import { ReferenceMeasurer } from './measure';
-import { makeCaretIndex } from './caretIndex';
+import { CaretLineCache, makeCaretIndex } from './caretIndex';
 import { wrapBlock } from './wrap';
 import type { Face, FaceTable, InkRef, PaintFragment, PaintLine, PaintRect, TextLayoutEngine, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
 import type { Marks } from './richText';
@@ -25,6 +25,7 @@ export class BoardTextLayout implements TextLayoutEngine {
     private readonly faceIds = new Map<string, number>();
     readonly faceTable: FaceTable = { faces: this.faces };
     private readonly layouts = new Map<string, { paint: TextPaint; measurement: TextMeasurement }>();
+    private readonly caretLines = new CaretLineCache();
     constructor(private readonly measurer: ReferenceMeasurer, private readonly fonts: BoardFonts) {}
     async prepare(request: TextLayoutRequest): Promise<void> {
         const keys = new Map<string, FontKey>();
@@ -109,7 +110,8 @@ export class BoardTextLayout implements TextLayoutEngine {
         const outerWidth = request.width === null ? null : Math.max(16, request.width);
         const available = outerWidth === null ? null : Math.max(0, outerWidth - pad.left - pad.right);
         let drafts: LineDraft[] = [];
-        let offset = 0, ordered = 0, previousList = false;
+        let offset = 0;
+        const listCounters: number[] = [];
         let appliedScale = 1;
         if (style.overflow === 'shrink' && available !== null) {
             for (const block of request.text.blocks) {
@@ -132,8 +134,14 @@ export class BoardTextLayout implements TextLayoutEngine {
             const heading = block.kind[0] === 'h';
             const baseSize = style.size * (headingScale[block.kind] ?? 1) * appliedScale;
             const isList = block.kind === 'ul' || block.kind === 'ol';
-            ordered = block.kind === 'ol' ? block.start ?? (previousList ? ordered + 1 : 1) : 0;
-            previousList = block.kind === 'ol';
+            let ordered = 0;
+            if (isList) {
+                listCounters.length = block.level + 1;
+                if (block.kind === 'ol') {
+                    ordered = block.start ?? ((listCounters[block.level] ?? 0) + 1);
+                    listCounters[block.level] = ordered;
+                } else listCounters[block.level] = 0;
+            } else listCounters.length = 0;
             const marker = block.kind === 'ul' ? '•' : block.kind === 'ol' ? `${ordered}.` : '';
             const markerFace = this.face(faceKey(style.font, {}, heading), baseSize);
             const markerWidth = marker ? this.measurer.measure(this.faces[markerFace], marker, false, request.fontEpoch).width * baseSize / 64 + baseSize * 0.35 : 0;
@@ -235,5 +243,5 @@ export class BoardTextLayout implements TextLayoutEngine {
     }
     measure(request: TextLayoutRequest): TextMeasurement { return this.build(request).measurement; }
     layout(request: TextLayoutRequest): TextPaint { return this.build(request).paint; }
-    caretIndex(request: TextLayoutRequest, paint: TextPaint) { return makeCaretIndex(request, paint, this.faceTable, this.measurer); }
+    caretIndex(request: TextLayoutRequest, paint: TextPaint) { return makeCaretIndex(request, paint, this.faceTable, this.measurer, this.caretLines); }
 }

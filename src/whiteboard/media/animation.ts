@@ -1,113 +1,113 @@
 import type { NodeId } from '../model/ids';
+import type { MediaId } from '../model/media';
 
-// Provenance: media §5 visible animation and platform wake/decode ownership;
-// independent frame scheduler, no upstream engine source.
-export interface AnimatedFrameLease {
-    readonly index: number;
-    readonly count: number;
-    readonly durationMs: number;
-    release(): void;
+export interface AnimatedPictureDemand {
+    readonly node: NodeId;
+    readonly media: MediaId;
+    readonly visibleArea: number;
+    readonly playing: boolean;
+}
+interface AnimationState {
+    media: MediaId;
+    frame: number;
+    frameCount: number;
+    durationMs: number;
+    due: number | null;
+    awaiting: boolean;
+    playing: boolean;
+    area: number;
 }
 export interface AnimationHost {
-    /** Decodes one admitted frame through the shared media residency/governor. */
-    request(id: NodeId, frame: number, signal: AbortSignal): Promise<AnimatedFrameLease>;
-    current(): boolean;
-    invalidate(id: NodeId): void;
-    wakeAt(time: number | null): void;
-    error(id: NodeId, message: string): void;
+    invalidate(): void;
+    wakeAt(deadline: number | null): void;
 }
-interface State {
-    readonly id: NodeId;
-    area: number;
-    visible: boolean;
-    playing: boolean;
-    frame: number;
-    deadline: number | null;
-    lease?: AnimatedFrameLease;
-    request?: AbortController;
-    generation: number;
-}
-export class BoardAnimationPlayback {
-    private readonly states = new Map<NodeId, State>();
+
+export function initialPicturePlaying(reducedMotion: boolean): boolean { return !reducedMotion; }
+
+// The layer's existing scheduler supplies the clock; playback never dirties the document.
+export class PictureAnimations {
+    private readonly states = new Map<NodeId, AnimationState>();
+    private active = new Set<NodeId>();
     private visible = true;
-    private disposed = false;
-    constructor(private readonly host: AnimationHost, private readonly reducedMotion: boolean) {}
-    show(id: NodeId, visible: boolean, screenArea: number): void {
-        if (!Number.isFinite(screenArea) || screenArea < 0) throw new RangeError('Invalid animation screen area');
-        if (this.disposed) return;
-        let state = this.states.get(id);
-        if (!state) { state = { id, area: 0, visible: false, playing: !this.reducedMotion, frame: 0, deadline: null, generation: 0 }; this.states.set(id, state); }
-        state.visible = visible; state.area = screenArea;
-        this.reconcile();
-    }
-    play(id: NodeId): void { const state = this.states.get(id); if (state) { state.playing = true; this.reconcile(); } }
-    pause(id: NodeId): void { const state = this.states.get(id); if (state) { state.playing = false; state.deadline = null; this.reconcile(); } }
-    frame(id: NodeId): number { return this.states.get(id)?.frame ?? 0; }
-    setVisible(visible: boolean): void {
-        if (this.disposed || this.visible === visible) return;
-        this.visible = visible; this.reconcile();
-    }
-    /** Called by the shared compositor scheduler at the requested deadline. */
-    tick(now: number): void {
+    constructor(private readonly host: AnimationHost) {}
+
+    update(demands: readonly AnimatedPictureDemand[], now: number): void {
         if (!Number.isFinite(now)) throw new RangeError('Invalid animation clock');
-        if (this.disposed || !this.visible || !this.host.current()) { this.reconcile(); return; }
-        const active = this.active();
-        for (const state of active) {
-            if (!state.playing || !state.lease || state.request || state.deadline === null || state.deadline > now) continue;
-            this.request(state, (state.frame + 1) % state.lease.count);
+        const present = new Set<NodeId>();
+        for (const item of demands) {
+            present.add(item.node);
+            let state = this.states.get(item.node);
+            if (!state || state.media !== item.media) {
+                state = { media: item.media, frame: 0, frameCount: 1, durationMs: 0, due: null,
+                    awaiting: true, playing: item.playing, area: 0 };
+                this.states.set(item.node, state);
+            }
+            state.playing = item.playing;
+            state.area = Number.isFinite(item.visibleArea) ? Math.max(0, item.visibleArea) : 0;
         }
+        for (const node of this.states.keys()) if (!present.has(node)) this.states.delete(node);
+        this.reselect(now);
+    }
+
+    frame(node: NodeId): number { return this.states.get(node)?.frame ?? 0; }
+
+    decoded(media: MediaId, frame: number, durationMs: number, frameCount: number, now: number): void {
+        if (!Number.isFinite(now) || !Number.isFinite(durationMs) || durationMs < 0 || !Number.isSafeInteger(frameCount) || frameCount < 1) return;
+        let changed = false;
+        for (const [node, state] of this.states) {
+            if (state.media !== media || state.frame !== frame) continue;
+            const wasAwaiting = state.awaiting;
+            state.frameCount = frameCount;
+            state.durationMs = Math.max(10, durationMs);
+            state.awaiting = false;
+            if (this.active.has(node) && frameCount > 1 && (wasAwaiting || state.due === null)) state.due = now + state.durationMs;
+            if (wasAwaiting) changed = true;
+        }
+        if (changed) { this.host.invalidate(); this.schedule(); }
+    }
+
+    tick(now: number): void {
+        if (!this.visible || !Number.isFinite(now)) return;
+        let changed = false;
+        for (const node of this.active) {
+            const state = this.states.get(node)!;
+            if (state.awaiting || state.due === null || now < state.due || state.frameCount < 2) continue;
+            state.frame = (state.frame + 1) % state.frameCount;
+            state.awaiting = true;
+            state.due = null;
+            changed = true;
+        }
+        if (changed) this.host.invalidate();
         this.schedule();
     }
-    remove(id: NodeId): void { const state = this.states.get(id); if (state) { this.drop(state); this.states.delete(id); this.reconcile(); } }
-    dispose(): void {
-        if (this.disposed) return;
-        this.disposed = true;
-        for (const state of this.states.values()) this.drop(state);
-        this.states.clear(); this.host.wakeAt(null);
+
+    setVisible(visible: boolean, now: number): void {
+        this.visible = visible;
+        if (!visible) for (const state of this.states.values()) { state.awaiting = true; state.due = null; }
+        this.reselect(now);
     }
-    private active(): Set<State> {
-        if (!this.visible || this.disposed || !this.host.current()) return new Set();
-        return new Set([...this.states.values()].filter(state => state.visible && state.playing).sort((a, b) => b.area - a.area).slice(0, 8));
-    }
-    private reconcile(): void {
-        const active = this.active();
-        for (const state of this.states.values()) {
-            if (!this.visible || !state.visible || this.disposed || !this.host.current()) { this.drop(state); continue; }
-            if (!active.has(state)) {
-                state.request?.abort(); state.request = undefined; state.generation++; state.deadline = null;
-                continue;
-            }
-            if (!state.lease && !state.request) this.request(state, state.frame);
-            else if (state.lease && state.deadline === null) state.deadline = performance.now() + Math.max(10, state.lease.durationMs);
+
+    clear(): void { this.states.clear(); this.active.clear(); this.host.wakeAt(null); }
+
+    private reselect(now: number): void {
+        const next = new Set(this.visible ? [...this.states.entries()]
+            .filter(([, state]) => state.playing && state.area > 0)
+            .sort((a, b) => b[1].area - a[1].area || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+            .slice(0, 8).map(([node]) => node) : []);
+        for (const [node, state] of this.states) {
+            if (!next.has(node)) state.due = null;
+            else if (!this.active.has(node) && !state.awaiting && state.frameCount > 1) state.due = now + state.durationMs;
         }
+        this.active = next;
         this.schedule();
     }
-    private request(state: State, index: number): void {
-        const controller = new AbortController(), generation = ++state.generation;
-        state.request = controller; state.deadline = null;
-        void this.host.request(state.id, index, controller.signal).then(lease => {
-            if (controller.signal.aborted || this.disposed || !this.visible || !state.visible || !state.playing
-                || !this.host.current() || state.generation !== generation) { lease.release(); return; }
-            if (!Number.isSafeInteger(lease.index) || lease.index !== index || !Number.isSafeInteger(lease.count) || lease.count < 1
-                || lease.index >= lease.count || !Number.isFinite(lease.durationMs) || lease.durationMs < 0) {
-                lease.release(); throw new TypeError('Invalid animation frame');
-            }
-            state.request = undefined; state.lease?.release(); state.lease = lease; state.frame = index;
-            state.deadline = performance.now() + Math.max(10, lease.durationMs);
-            this.host.invalidate(state.id); this.schedule();
-        }).catch(error => {
-            if (state.generation !== generation || controller.signal.aborted || this.disposed) return;
-            state.request = undefined; state.playing = false; state.deadline = null;
-            this.host.error(state.id, error instanceof Error ? error.message : 'Animation could not be decoded'); this.schedule();
-        });
-    }
-    private drop(state: State): void {
-        state.generation++; state.request?.abort(); state.request = undefined;
-        state.lease?.release(); state.lease = undefined; state.deadline = null;
-    }
+
     private schedule(): void {
-        let deadline = Infinity;
-        for (const state of this.active()) if (state.deadline !== null) deadline = Math.min(deadline, state.deadline);
-        this.host.wakeAt(Number.isFinite(deadline) ? deadline : null);
+        let earliest = Infinity;
+        for (const node of this.active) {
+            const due = this.states.get(node)?.due;
+            if (due !== null && due !== undefined) earliest = Math.min(earliest, due);
+        }
+        this.host.wakeAt(Number.isFinite(earliest) ? earliest : null);
     }
 }

@@ -2,7 +2,7 @@ import { runReaderHostCommand } from './utils/documentReading';
 import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions } from './utils/documentSessions';
 import { createCanvasSessionBridge } from './utils/canvasSessionBridge';
-import { installSessionIdentity } from './utils/sessionIdentity';
+import { installSessionIdentity, prepareBytesChange } from './utils/sessionIdentity';
 import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
 import { getSessionIdentity } from './utils/sessionIdentity';
@@ -999,6 +999,7 @@ export default function App() {
   useEffect(() => installSessionIdentity(documentSessions), [documentSessions]);
   const bumpBytesGeneration = useCallback((id: string) => {
     const generation = (bytesGenerationsRef.current.get(id) ?? 0) + 1;
+    prepareBytesChange(id, generation);
     bytesGenerationsRef.current.set(id, generation);
     const session = documentSessions.get(id);
     if (session) session.bytesGeneration = generation;

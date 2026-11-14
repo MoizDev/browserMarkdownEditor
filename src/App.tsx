@@ -395,6 +395,8 @@ export default function App() {
     readFileVersioned,
     readFileSnapshot,
     readBytesVersioned,
+    inspectExportTarget,
+    writeNotebookExport,
     statFile,
     writeFileVersioned,
     writeConflictCopy,
@@ -1615,23 +1617,27 @@ export default function App() {
     if (next !== current) void writeEntryStyles(next);
   }, [writeEntryStyles]);
 
-  /** PDF names this session has exported. Re-exporting must not ask about a
-   *  file that is this notebook's own previous export. */
-  const exportedNotebooksRef = useRef<Set<string>>(new Set());
+  const exportedNotebooksRef = useRef(new Map<string, DiskVersion>());
+  const notebookExportInFlightRef = useRef(false);
+  const trashInFlightRef = useRef<boolean>(false);
 
   /**
    * Write the open notebook out as a PDF beside it.
    *
    * The notebook stays the editable original and the PDF is an OUTPUT, so
-   * re-exporting overwrites the same name rather than piling up "(1)" copies —
-   * that name is derived from the notebook's, so it can only ever land on this
-   * notebook's own export. It is the one deliberate exception to the app's
-   * never-overwrite rule, and it is why the confirm below exists: a PDF of that
-   * name that ISN'T ours is a file we would be destroying.
+   * re-exporting uses the same name rather than piling up copies. A previous
+   * target is preserved in Trash, and a changed or unfamiliar target needs
+   * confirmation before it can be replaced.
    */
   const handleExportNotebook = useCallback(async (file: ActiveFile) => {
-    if (!file.parentHandle) return;
+    if (!file.parentHandle || notebookExportInFlightRef.current || trashInFlightRef.current) return;
     const targetName = notebookPdfName(file.name);
+    const vault = currentVaultIdRef.current;
+    const root = rootHandleRef.current;
+    if (!vault || !root) { notify('The vault is not ready for export.'); return; }
+    const parentPath = parentVaultPath(file.path);
+    const targetPath = joinVaultPath(parentPath, targetName);
+    const key = JSON.stringify([vault, file.path, targetPath]);
 
     const exporter = getNotebookExporter(file.path);
     if (!exporter) {
@@ -1639,38 +1645,34 @@ export default function App() {
       return;
     }
 
+    notebookExportInFlightRef.current = true;
+    trashInFlightRef.current = true;
     try {
       const exported = await exporter();
       if (!exported) { notify(`Open "${file.name}" before exporting it.`); return; }
-
-      // Only ask when there is something to lose, and only once: after the
-      // first export the file at that name is one of ours.
-      if (!exportedNotebooksRef.current.has(targetName)
-          && await nameTaken(file.parentHandle, targetName)) {
-        const replace = await ask({
-          title: `Replace "${targetName}"?`,
-          body: `A PDF of that name is already in this folder. Exporting will overwrite it.`,
-          confirmLabel: 'Replace',
-          danger: true,
-        });
-        if (!replace) return;
-      }
-
       const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
       const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, {
         path: file.path,
         exportedAt: Date.now(),
       });
-      // createFile refreshes the tree, so the PDF shows up in the sidebar.
-      if (__BME_BENCH__) {
-        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export:create' }); } catch { /* Measurement must not interrupt a write. */ }
+      if (rootHandleRef.current !== root || currentVaultIdRef.current !== vault) return;
+      const observed = await inspectExportTarget(file.parentHandle, targetName);
+      const trusted = exportedNotebooksRef.current.get(key);
+      if (observed && (!trusted || observed.hash !== trusted.hash || !sameStat(observed, trusted))) {
+        const replace = await ask({
+          title: `Replace "${targetName}"?`,
+          body: 'A PDF of that name is already in this folder. Its existing contents will be kept in Trash.',
+          confirmLabel: 'Replace', danger: true,
+        });
+        if (!replace) return;
       }
-      const handle = await createFile(file.parentHandle, targetName);
-      if (__BME_BENCH__) {
-        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export' }); } catch { /* Measurement must not interrupt a write. */ }
+      if (rootHandleRef.current !== root || currentVaultIdRef.current !== vault) return;
+      const result = await writeNotebookExport(file.parentHandle, parentPath, targetName, bytes, observed);
+      if (result.status !== 'written') {
+        notify(`"${targetName}" changed while exporting. Export again to review it.`);
+        return;
       }
-      await writeFileBytes(handle, bytes);
-      exportedNotebooksRef.current.add(targetName);
+      exportedNotebooksRef.current.set(key, result.version);
       void tell({
         title: 'Exported to PDF',
         confirmLabel: 'OK',
@@ -1680,8 +1682,11 @@ export default function App() {
     } catch (err) {
       console.error('Could not export the notebook:', err);
       notify(`Could not export "${file.name}".`);
+    } finally {
+      notebookExportInFlightRef.current = false;
+      trashInFlightRef.current = false;
     }
-  }, [ask, createFile, notify, tell, writeFileBytes]);
+  }, [ask, inspectExportTarget, notify, tell, writeNotebookExport]);
 
   // The graph and the click share one canonical resolver revision. Read it
   // through an App-lifetime ref: the wikilink handler is baked into cached
@@ -3286,7 +3291,6 @@ export default function App() {
    * the same fact: unlike every other deletion in this app, trashing a folder is
    * a copy of arbitrary size, and it runs for as long as that takes. See below.
    */
-  const trashInFlightRef = useRef<boolean>(false);
 
   /**
    * The move itself, with no question in front of it — shared by the reader's

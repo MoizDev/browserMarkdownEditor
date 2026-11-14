@@ -64,6 +64,8 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         released = true;
         controller.abort();
         options.signal?.removeEventListener('abort', onAbort);
+        // These are this inspection's independent pool.open leases. The pool
+        // keeps App's reader source alive until its separate last lease closes.
         releasePromise = Promise.allSettled([original?.close(), outer?.close()]).then(() => {});
         return releasePromise;
     };

@@ -28,7 +28,7 @@ export interface PathFillTriangles {
     readonly bounds: Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
 }
 
-function flattenContours(commands: readonly PathCommand[], tolerance: number, maxEdges: number): Vec2[][] | null {
+export function flattenContours(commands: readonly PathCommand[], tolerance: number, maxEdges: number): Vec2[][] | null {
     if (!(tolerance > 0) || !Number.isFinite(tolerance)) throw new RangeError('Invalid path flattening tolerance');
     const contours: Vec2[][] = [];
     let current: Vec2[] | null = null;

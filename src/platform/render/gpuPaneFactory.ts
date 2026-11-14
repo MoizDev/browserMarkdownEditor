@@ -1,5 +1,4 @@
-import type { PaneCompositor, LayerHost } from './compositor.types';
-import type { MemoryAllocator } from './memoryGovernor';
+import type { PaneCompositor } from './compositor.types';
 import type { Webgl2Owner, Webgl2Services } from './gfx/webgl2';
 import type { GpuPreparation, ResizeSurface } from './surfaceBroker.types';
 
@@ -10,8 +9,8 @@ export interface GpuPaneFactoryOptions {
     /** Bound to this preparation; rejects before/after its current broker grant. Never the raw owner callback. */
     readonly resizeSurface: ResizeSurface;
     readonly invalidate: (reason: string) => void;
-    /** Backing reservation is supplied by the runtime, not an unbounded native resize. */
-    readonly surface: MemoryAllocator;
+    readonly onError: (error: unknown) => void;
+    readonly onDeferred: () => void;
 }
 
 /** Qualification has finished, but the displayed canvas may still be the frozen 2D bridge.
@@ -20,7 +19,6 @@ export interface GpuPaneFactoryOptions {
 export interface PreparedGpuPane {
     readonly owner: Webgl2Owner;
     readonly compositor: PaneCompositor;
-    readonly host: Pick<LayerHost, 'uniforms' | 'drawTexturedQuad'>;
 }
 
 export type GpuPaneFactory = (options: GpuPaneFactoryOptions) => Promise<PreparedGpuPane>;

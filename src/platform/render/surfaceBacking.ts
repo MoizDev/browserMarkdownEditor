@@ -1,6 +1,7 @@
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import type { ByteLease } from './gfx/api';
 import type { MemoryAllocator, MemoryCacheHandle, MemoryGovernor, MemorySessionOwner } from './memoryGovernor';
+import type { ResizeSurface, SurfaceResizeResult } from './surfaceBroker.types';
 
 export interface SurfaceBackingOptions {
     readonly governor: MemoryGovernor;
@@ -24,6 +25,7 @@ export class SurfaceBacking implements MemoryAllocator {
     private closed = false;
 
     constructor(private readonly options: SurfaceBackingOptions) {
+        if (options.canvas.width || options.canvas.height) throw new Error('A backing must start at zero size');
         this.displayed = options.displayed;
         const common = { paneId: options.paneId, owner: options.owner, hiddenAt: null, lastVisibleAt: options.now, lastUsedAt: options.now };
         const bytes = () => options.canvas.width * options.canvas.height * POLICY.surfaceReserveBytesPerPixel;
@@ -51,6 +53,31 @@ export class SurfaceBacking implements MemoryAllocator {
         if (!this.leases.has(lease)) throw new Error('Foreign surface lease');
         this.options.governor.releaseLease(lease);
         this.leases.delete(lease);
+    }
+
+    /** Reserve the incremental peak before asking the browser for the new backing. A failed
+     * resize keeps its charge until the caller zeros the actual canvas, never pretending it freed.
+     */
+    resize(width: number, height: number, resizeSurface: ResizeSurface): SurfaceResizeResult | null {
+        if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 0 || height < 0) throw new RangeError('Invalid backing size');
+        const requested = width * height * POLICY.surfaceReserveBytesPerPixel;
+        if (!Number.isSafeInteger(requested)) throw new RangeError('Backing size exceeds safe accounting');
+        const held = [...this.leases].reduce((sum, lease) => sum + lease.bytes, 0);
+        if (requested > held && !this.reserve(requested - held)) return null;
+        const result = resizeSurface(width, height);
+        if (result.complete && result.width === width && result.height === height) {
+            let spare = [...this.leases].reduce((sum, lease) => sum + lease.bytes, 0) - requested;
+            for (const lease of this.leases) {
+                if (lease.bytes <= spare) { this.release(lease); spare -= lease.bytes; }
+            }
+        }
+        return result;
+    }
+
+    /** The caller has synchronously zeroed the actual canvas, not merely requested cleanup. */
+    releaseZeroed(): void {
+        if (this.options.canvas.width || this.options.canvas.height) throw new Error('Canvas backing is still live');
+        for (const lease of this.leases) this.release(lease);
     }
 
     /** Called only after the selected old canvas has released its actual backing. */

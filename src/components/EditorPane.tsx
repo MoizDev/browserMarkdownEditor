@@ -137,6 +137,7 @@ interface EditorPaneProps {
     /** Resolve a document's DiskBar — its file changed or vanished on disk
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
+    onAnnotationPreflight: NonNullable<React.ComponentProps<typeof PdfPane>['onAnnotationPreflight']>;
     /** Buffer content and write it immediately, skipping the save debounce. */
     onFlushNow: (path: string, content: string) => void;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */
@@ -305,7 +306,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onFlushNow, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onAnnotationPreflight, onFlushNow, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -1122,6 +1123,9 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                             onRotate={onRotatePdf}
                             isDirty={tab.dirty}
                             disk={tab.disk}
+                            pdfRebuild={tab.pdfRebuild}
+                            pdfRebuildApproval={tab.pdfRebuild?.approved ? tab.pdfRebuild : undefined}
+                            onAnnotationPreflight={onAnnotationPreflight}
                             onDiskAction={onDiskAction}
                         />
                     </React.Fragment>

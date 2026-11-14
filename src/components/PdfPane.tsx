@@ -18,7 +18,7 @@ import { peekPdfFindMemory, retainPdfFindMemory } from '../utils/pdfFindHighligh
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
-import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode } from '../types';
+import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, PdfRebuildNotice } from '../types';
 import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity } from '../types/reading';
 import type { DiskVersion } from '../utils/diskVersion';
 import { registerReadingSurface } from '../utils/documentReading';
@@ -86,6 +86,7 @@ export interface PdfPaneProps {
     /** App owns the baseline and held choice, bound to the FULL reader token.
      *  When supplied, this callback also owns initial-edit baseline adoption. */
     onAnnotationPreflight?: (identity: ReaderIdentity, value: PdfAnnotationPreflight) => void;
+    pdfRebuild?: PdfRebuildNotice;
     /** Only after App has kept that exact outer generation in Trash. The exact
      *  role's rebuild capability must also have been explicitly granted. */
     pdfRebuildApproval?: { generation: string };
@@ -113,7 +114,7 @@ interface PdfSource {
  */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval }: PdfPaneProps) {
+function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     const root = useRef<HTMLDivElement>(null), viewerActions = useRef<PdfViewerHandle>(null);
     const findVault = reading?.identity.vaultId, findEpoch = reading?.identity.vaultEpoch, findDocument = reading?.identity.documentId;
@@ -130,7 +131,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const pageDigest = useRef<string | undefined>(undefined);
     const restoredRecord = useRef(false);
     const [roleRetry, setRoleRetry] = useState(0);
-    const annotateEntry = useMemo(() => ({ mode, handle: file.handle, path: file.path, attempt: roleRetry }), [mode, file.handle, file.path, roleRetry]);
+    const readerIdentity = reading?.identity;
+    const annotateEntry = useMemo(() => ({ mode, handle: file.handle, path: file.path, attempt: roleRetry, readerIdentity }), [mode, file.handle, file.path, roleRetry, readerIdentity]);
     const currentEntry = useRef(annotateEntry);
     useLayoutEffect(() => { currentEntry.current = annotateEntry; }, [annotateEntry]);
     const [loadedSource, setSource] = useState<PdfSource | null>(null);
@@ -140,14 +142,14 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const source = loadedSource && loadedSource.entry === annotateEntry && loadedSource.handle === file.handle && loadedSource.path === file.path ? loadedSource.role : null;
     const foreignHeld = source?.kind === 'annotated' && source.writeMark.kind === 'foreign' &&
         (!source.generation || pdfRebuildApproval?.generation !== source.generation || !canRebuildAnnotatedPdf(source.original));
-    const editableSource = source && isEditablePdfRole(source) && !foreignHeld ? source : null;
-    // Before App's DiskBar seam is present, fail visibly read-only as well as
-    // refusing the write capability. Once there is a bar, it is the ONE choice.
+    const editableSource = source && isEditablePdfRole(source) && !foreignHeld && canRebuildAnnotatedPdf(source.original) ? source : null;
+    // The outer pages remain readable on refusal. DiskBar owns the choice;
+    // don't put a competing action over the page.
     const foreignNotice = !foreignHeld ? undefined : source.writeMark.kind === 'foreign' && source.writeMark.reason === 'mismatch'
         ? 'This PDF was changed by another program after this app saved it. Annotate is read-only so rebuilding its pages does not discard those changes. You can still read the PDF.'
         : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
-    const roleNotice = source && pdfRoleNotice(source) || (!disk ? foreignNotice : undefined);
-    const readOnly = mode === 'edit' && (!!roleNotice || foreignHeld);
+    const roleNotice = source && pdfRoleNotice(source) || (!disk && !pdfRebuild ? foreignNotice : undefined);
+    const readOnly = mode === 'edit' && (!!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
     const generation = useRef(0);
     const returnEpoch = useRef(0);
@@ -405,7 +407,9 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 if (cancelled) return;
                 const b = binding.current;
                 displayedVersion.current = version;
-                b?.onReaderVersion(b.identity, version);
+                // A read-only foreign view must not move the write baseline
+                // after App captured it for the keep-copy choice.
+                if (!writeState.current.isDirty && !writeState.current.disk) b?.onReaderVersion(b.identity, version);
                 if (!restoredRecord.current) {
                     restoredRecord.current = true;
                     const record = b?.initialRecord;
@@ -584,8 +588,13 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             // Tab can enter another pane's page/find field without a pointer.
             // Its header commands must then belong to that same document.
             onFocusCapture={() => { if (isVisible && !isFocused) onFocusPane(file.path); }}
+            onKeyDown={event => {
+                if (!event.defaultPrevented && event.key === 'Escape' && !disk && pdfRebuild?.state === 'foreign') {
+                    event.preventDefault(); void onDiskAction(file.path, 'keep-pdf');
+                }
+            }}
         >
-            {disk && <DiskBar name={file.name} state={disk} path={file.path} onAction={onDiskAction} />}
+            {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} path={file.path} onAction={onDiskAction} />}
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the viewer and lose the reading position. */}
             <div className="pdf-pane-body">{body}</div>

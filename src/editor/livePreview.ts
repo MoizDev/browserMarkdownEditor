@@ -536,9 +536,18 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
 
             // === FENCED CODE BLOCKS ===
             if (name === 'FencedCode') {
-                const startLine = state.doc.lineAt(from);
-                const endLine = state.doc.lineAt(to);
-                const closed = endLine.number > startLine.number && endLine.text.trim().startsWith('```');
+                const opening = node.node.firstChild;
+                const last = node.node.lastChild;
+                if (opening?.name !== 'CodeMark') return false;
+                // A shorter/mismatched run or trailing garbage is CodeText,
+                // even when its source starts with three fence characters.
+                // Two direct child lookups keep that decision with the parser,
+                // without a new scan on every caret move.
+                const closing = last?.name === 'CodeMark' && last.from > opening.to ? last : null;
+                const startLine = state.doc.lineAt(opening.from);
+                const endLine = state.doc.lineAt(closing?.from ?? to);
+                if (opening.to > startLine.to) return false;
+                const closed = closing !== null && endLine.number > startLine.number && closing.to <= endLine.to;
 
                 const firstContent = startLine.number + 1;
                 const lastContent = closed ? endLine.number - 1 : endLine.number;
@@ -547,7 +556,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                     : '';
 
                 // === MERMAID DIAGRAMS ===
-                // A closed ```mermaid block renders as a diagram widget while
+                // A closed mermaid fence renders as a diagram widget while
                 // the cursor is elsewhere; editing anywhere in it falls back
                 // to the ordinary code panel so the source stays editable.
                 const lang = startLine.text.trim().match(/^(?:`{3,}|~{3,})\s*(\S*)/)?.[1]?.toLowerCase() ?? '';
@@ -561,7 +570,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
 
                 // Copy button, pinned to the panel's top-right. The fence row
                 // hosts it in every state (hidden = padding row, revealed =
-                // the ``` line), so it never displaces code text.
+                // the source fence line), so it never displaces code text.
                 decorations.push(
                     Decoration.widget({ widget: new CopyCodeWidget(code), side: -1 }).range(startLine.from)
                 );
@@ -576,15 +585,13 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                     decorations.push(CODEBLOCK_LINE[bits].range(line.from));
                 }
 
-                // Editing anywhere in the block reveals the ``` fences (like a
-                // heading's `#`), but the panel above stays put.
+                // Editing anywhere in the block reveals its fence markers (like
+                // a heading's `#`), but the panel above stays put.
                 if (editorMode !== 'read' && cursorOnLine(state, from, to)) return;
 
-                // Hide the fence lines outright: the opening one (e.g.
-                // ```javascript) and — only if the block is closed — the last.
-                if (startLine.text.trim().startsWith('```')) {
-                    decorations.push(HIDE.range(startLine.from, startLine.to));
-                }
+                // Both marker types hide their whole row, including info text.
+                // The final content row of an unclosed fence must stay visible.
+                decorations.push(HIDE.range(startLine.from, startLine.to));
                 if (closed) {
                     decorations.push(HIDE.range(endLine.from, endLine.to));
                 }

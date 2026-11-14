@@ -10,7 +10,8 @@ export interface PdfTextInputHost<Point> {
     begin(point: Point, granularity: PdfSelectionGranularity, extend: boolean): void;
     extend(point: Point): void;
     clear(): void;
-    contextMenu(clientX: number, clientY: number): void;
+    /** For keyboard invocation, the host anchors at the selection end or current page. */
+    contextMenu(clientX: number, clientY: number, keyboard: boolean): void;
     /** CSS pixels per second; zero on either axis stops that axis. */
     autoScroll(x: number, y: number): void;
 }
@@ -132,8 +133,16 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
         }
     };
     const cancel = (event: PointerEvent) => { if (drag?.id === event.pointerId) stop(drag); };
-    const menu = (event: MouseEvent) => { event.preventDefault(); host.contextMenu(event.clientX, event.clientY); };
+    const menu = (event: MouseEvent) => { event.preventDefault(); host.contextMenu(event.clientX, event.clientY, false); };
+    const key = (event: KeyboardEvent) => {
+        if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('input, textarea, [contenteditable="true"], [role="dialog"], [role="menu"]')) return;
+        event.preventDefault(); host.contextMenu(0, 0, true);
+    };
+    const leave = () => { if (!drag) { if (hoverFrame) cancelAnimationFrame(hoverFrame); hoverFrame = 0; hoverAbort?.abort(); ++hoverSequence; element.style.cursor = ''; } };
     element.addEventListener('pointerdown', down); element.addEventListener('pointermove', move);
+    element.addEventListener('pointerleave', leave); element.addEventListener('keydown', key);
     element.addEventListener('pointerup', up); element.addEventListener('pointercancel', cancel);
     element.addEventListener('contextmenu', menu);
     return {
@@ -144,6 +153,7 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
             hoverAbort?.abort(); element.style.cursor = '';
             element.removeEventListener('pointerdown', down); element.removeEventListener('pointermove', move);
             element.removeEventListener('pointerup', up); element.removeEventListener('pointercancel', cancel);
+            element.removeEventListener('pointerleave', leave); element.removeEventListener('keydown', key);
             element.removeEventListener('contextmenu', menu);
         },
     };

@@ -69,7 +69,7 @@ function updateCodeRanges(previous: readonly CharRange[], tree: Tree, tr: Transa
 function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     const state = tr.state, tree = syntaxTree(state);
     if (!tr.docChanged && tree === previous.tree) return previous;
-    const treeChanged = treeDelta(previous.tree, tree, tr.changes, state.doc);
+    const treeChanged = treeDelta(previous.tree, tree, tr.changes, state.doc, tr.startState.doc);
     const codeRanges = updateCodeRanges(previous.codeRanges, tree, tr, treeChanged);
     const lines = tr.docChanged ? updateLineScans(previous.lines, tr.changes, tr.startState.doc, state.doc) : previous.lines;
     const pairs = updateBlockPairs(previous.blockPairs, tr.startState.doc, state.doc, tr.changes, lines.mathTokens, codeRanges);

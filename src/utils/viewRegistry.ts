@@ -137,6 +137,8 @@ export interface CanvasApplyResult {
     created: string[];
     updated: string[];
     deleted: string[];
+    /** Authoritative post-commit projection of updated shapes that still exist. */
+    updatedShapes?: readonly ShapeSummary[];
     /** One message per op that was skipped, e.g. "op 3: no shape shape:abc". */
     errors: string[];
 }

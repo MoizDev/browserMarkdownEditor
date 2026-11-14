@@ -407,7 +407,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (pointer.interrupt('undo') || cancelled || continuationCancelled) return true
         if (editable()) { services.history.undo(); return true }
       }
-      if (id === 'redo' && editable()) { services.history.redo(); return true }
+      if (id === 'redo' && editable()) {
+        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+        if (cursor.active && router.activeOwner) { cursor.escape(); return true }
+        if (pointer.interrupt('flush') || cancelled || continuationCancelled) return true
+        services.history.redo(); return true
+      }
       if (id === 'edit.start' && editable() && services.textInput?.enter()) return true
       if (id.startsWith('style.')) flush()
       if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); return true }

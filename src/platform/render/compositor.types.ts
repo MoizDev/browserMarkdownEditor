@@ -1,6 +1,6 @@
 import type { Rect, Rgba, ViewState } from '../types';
 import type { PagePresentation } from './camera';
-import type { Backend, GfxDevice, GpuPass, RectI, TextureHandle, UniformSlice } from './gfx/api';
+import type { Backend, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
 import type { MemoryAllocator, MemoryGovernor } from './memoryGovernor';
 import type { BorrowedMirror, MirrorView } from './mirrorSet';
 import type { Pane2DPresenter } from './paneLifecycle';
@@ -26,6 +26,8 @@ export interface CompositorIsolation {
 export interface LayerCoverage {
     readonly complete: boolean;
     readonly sharp: boolean;
+    /** Complete old-version coverage is a visible bridge, never current/exact data. */
+    readonly staleVersion?: boolean;
 }
 
 /** Backdrop → ink/highlighter → opaque live stroke → chrome (C2.1:234–249).
@@ -51,6 +53,29 @@ export interface TexturedQuadOptions {
     readonly sampling: 'nearest' | 'linear';
 }
 
+/** Peak simultaneous inventory, declared during Layer.prepare. Masks share the target pool;
+ * any multiply declaration adds one backdrop target. No declaration allocates or renews a budget.
+ */
+export type IsolationPaintOptions = Readonly<Pick<CompositorIsolation, 'opacity' | 'blend'>>;
+
+export interface IsolationReservation {
+    readonly depth: number;
+    readonly maskDepth: number;
+    readonly bounds: Readonly<RectI>;
+    readonly stencil?: boolean;
+    readonly samples?: Samples;
+    readonly format?: TextureFormat;
+    readonly multiply?: boolean;
+    /** Peak externally acquired prepass targets, in addition to internal group/mask depth. */
+    readonly targets?: {
+        readonly count: number;
+        readonly bounds: Readonly<RectI>;
+        readonly stencil?: boolean;
+        readonly samples?: Samples;
+        readonly format?: TextureFormat;
+    };
+}
+
 /** Platform construction services; streams never import a broker or native GL context (C4.3).
  * Resource creation/upload is prepare-only. CPU document/mirror ownership stays with the session.
  */
@@ -61,6 +86,8 @@ export interface LayerHost {
     invalidate(reason: string): void;
     wakeAt(deadlineMs: number | null): void;
     readonly allocator: LayerAllocators;
+    reserveIsolation(reservation: IsolationReservation): void;
+    paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
     paintWorld(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void;
     paintPage(ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void): void;
     /** DrawGpu-only packing into the active encoder's fenced ring, never a layer-owned ring. */
@@ -73,6 +100,8 @@ export interface LayerHost {
 export interface CompositorResources {
     readonly owner: object;
     readonly device: GfxDevice | null;
+    reserveIsolation(reservation: IsolationReservation): void;
+    paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
     /** Throws outside active GPU encoding; never returns a fictitious slice. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
@@ -136,8 +165,10 @@ export interface PaneCompositor {
     setMetrics(metrics: ReadySurfaceMetrics): void;
     /** O(1) config snapshot, called with the same view handed to every layer. */
     snapshot(view: ViewState): void;
-    /** Platform target/ring admission before any layer prepares; never draws. */
-    prepareFrame(view: ViewState, budget: FrameBudget): void;
+    /** Begin platform preparation before layers; the original frozen frame is shared everywhere. */
+    prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
+    /** Admit declared peak inventory after all Layer.prepare calls, under the SAME budget/deadline. */
+    finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
     encode(frame: ScheduledFrame): ScheduledEncoding | null;
     coverage(frame: ScheduledFrame): CompositorCoverage;
     page(view: ViewState, index: number): CompositorPage | null;

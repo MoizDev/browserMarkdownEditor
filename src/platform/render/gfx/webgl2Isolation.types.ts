@@ -12,6 +12,7 @@ export interface IsolationReservation {
 
 /** Platform-only device admission, always called before a draw callback. */
 export interface GpuIsolationAdmission {
+    readonly frameResourcesReady: boolean;
     prepareFrameResources(): void;
     admitIsolation(plan: readonly IsolationReservation[]): boolean;
 }

@@ -1,13 +1,11 @@
 // Entirely authored diagnostic outlines and text; proposed CC0-1.0 awaits the owner.
 // No font program, artwork, app module or system font is read by this generator.
-import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
+import { parseArgs } from '../../lib/cli.mjs';
+import { fixtureWriter, jsonBytes, sha256 } from '../../lib/output.mjs';
 
-export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-export const jsonBytes = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
 export const literal = text => `(${text.replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)')})`;
 export const utf16 = text => {
     const bytes = Buffer.from(text, 'utf16le');
@@ -15,30 +13,6 @@ export const utf16 = text => {
     return bytes.toString('hex');
 };
 export const unicodeString = text => `<feff${utf16(text)}>`;
-
-// One stand-in for cli/output until the shared fixture helpers merge into impl/pdf.
-export function parseArgs(argv) {
-    const options = {};
-    for (let i = 0; i < argv.length; i++) {
-        const [key, inline] = argv[i].split('=');
-        if (!['--out', '--seed'].includes(key) || options[key.slice(2)] !== undefined) throw new Error(`Unknown or repeated option: ${key}`);
-        const value = inline ?? argv[++i];
-        if (value === undefined || value.startsWith('--')) throw new Error(`Missing value: ${key}`);
-        options[key.slice(2)] = value;
-    }
-    if (!options.out || !/^\d+$/u.test(options.seed ?? '') || Number(options.seed) > 0xffffffff) throw new Error('Required: --out <fresh-directory> --seed <uint32>');
-    return { out: options.out, seed: Number(options.seed) };
-}
-export function fixtureWriter(out) {
-    return async (file, bytes) => {
-        if (!/^[a-z0-9][a-z0-9.-]*$/u.test(file) || file.includes('..')) throw new Error('Unsafe output name');
-        await mkdir(out, { recursive: true });
-        await writeFile(resolve(out, file), bytes, { flag: 'wx' });
-        const entry = { file, sha256: sha256(bytes), bytes: Buffer.byteLength(bytes) };
-        console.log(JSON.stringify(entry));
-        return entry;
-    };
-}
 
 /** A fixed authored object graph serializer, not a PDF parser or a rasterizer. */
 export function pdfBuilder(identity) {

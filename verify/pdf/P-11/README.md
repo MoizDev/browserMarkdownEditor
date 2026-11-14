@@ -26,11 +26,10 @@ for any failed assertion. The final argument can instead be `R3a`, `R3b` or `R3c
 Unknown modes/gates are refused before browser launch; every requested named gate must execute
 exactly once in every required case. A setup error is **not** a killed mutant.
 
-Until V-01a is integrated, set `VERIFY_IDENTITY_MODULE` to the scratch export of
-`527faea:verify/lib/identity.mjs` and `VERIFY_TOOLBOX_COMMIT=527faea` (p-lead's approved interim).
-`verify/pdf/lib/identityToolbox.mjs` refuses any byte difference from that committed file and records
-its full commit and SHA-256. After integration, leave both unset for the default in-tree relative
-module. This adapter adds no alternative identity implementation.
+V-01a is integrated: `verify/pdf/lib/identityToolbox.mjs` uses only the in-tree
+`verify/lib/identity.mjs`, verifies its committed bytes and records its full commit and SHA-256.
+There is no scratch-copy override or alternative identity implementation. Historical reports
+retain the approved unmodified 527faea provenance they actually used.
 
 The shared `buildIdentity` helper derives the source commit, clean-tree state, named patch hash and
 emitted-file hashes from `BUILD_WORKTREE` and `BUILD_DIST`; there is no caller-supplied commit label.

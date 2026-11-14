@@ -34,14 +34,15 @@ export class TouchArbiter {
   exitPenMode(): void { this.setPenMode(false) }
   penHover(time: number): void { this.hoverTime = time }
   penDown(id: number, directTouchDevice: boolean): void {
-    if (directTouchDevice) this.setPenMode(true)
-    if (!this.pens.size) {
-      this.actions.cancelTouchPreview()
-      if (this.pinch || this.pan) this.actions.endTouchCamera()
-      this.pinch = null; this.pendingPair = null; this.pan = null
-      for (const touch of this.touches.values()) touch.eligible = false
-    }
+    const first = !this.pens.size, hadCamera = !!(this.pinch || this.pendingPair || this.pan)
     this.pens.add(id)
+    try {
+      if (first) {
+        this.pinch = null; this.pendingPair = null; this.pan = null
+        for (const touch of this.touches.values()) touch.eligible = false
+        try { this.actions.cancelTouchPreview() } finally { if (hadCamera) this.actions.endTouchCamera() }
+      }
+    } finally { if (directTouchDevice) this.setPenMode(true) }
   }
   penUp(id: number, time: number): void { if (this.pens.delete(id) && !this.pens.size) this.lastPenUp = time }
 

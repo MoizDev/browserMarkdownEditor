@@ -208,7 +208,7 @@ export function pdfSessionCapturer(session: PdfTiledDocumentSession, stack: Read
                 if (!claimed) lease.release();
             }
         },
-        dispose() { if (disposed) return; disposed = true; underlying.dispose(); },
+        dispose() { disposed = true; return underlying.dispose(); },
     };
     try { session.setSlot(slot, capturer, () => capturer.dispose()); }
     catch (error) { capturer.dispose(); throw error; }

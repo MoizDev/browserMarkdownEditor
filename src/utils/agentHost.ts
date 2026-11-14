@@ -243,6 +243,16 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             return readNativeCanvasShapePage({ deps, path, handle: found?.handle, query,
                 guard: { signal: guard.signal, isCurrent: current } });
         },
+        async nativeCanvasView(path, guard) {
+            const deps = getDeps();
+            // A closed drawing has no session to read; it still opens through openCanvasForAgent.
+            if (!deps.root || !isNativeDrawingFile(path) || !openTabAt(deps, path)) return null;
+            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
+            guard.signal?.throwIfAborted();
+            if (!current()) throw new DOMException('Canvas view source changed', 'AbortError');
+            const { readNativeCanvasView } = await import('./nativeCanvasAgentRead');
+            return readNativeCanvasView({ deps, path, guard: { signal: guard.signal, isCurrent: current } });
+        },
         async canvasApplyNative(path, ops, guard) {
             const deps = getDeps();
             if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path))) return null;

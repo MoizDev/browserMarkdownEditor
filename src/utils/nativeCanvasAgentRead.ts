@@ -1,7 +1,8 @@
 import type { AgentHostDeps } from './agentHost';
-import type { VaultToolHost } from '../types/vaultAgent';
+import type { NativeCanvasView, VaultToolHost } from '../types/vaultAgent';
 import { isNativeDrawingFile, isNotebookFile, isPdfFile } from './fileTypes';
 import { createNativeAgentReader } from '../whiteboard/host/nativeAgentRead';
+import { readNativeAgentViewport } from '../whiteboard/host/nativeAgentView';
 import { readClosedAgentProjection } from '../whiteboard/host/agentProjection';
 import type { PdfInkAcquisition } from '../pdf/session/inkAcquisition.types';
 
@@ -59,6 +60,40 @@ export async function readNativeCanvasShapePage(options: {
         // Native refusals throw without reparsing, changing kind or constructing blank content.
         return result.kind === 'other' ? null : result.page;
     } finally { await lease.release(); }
+}
+
+/** An open native drawing's view with no mounted pane. The caller has established that the tab is open natively. */
+export async function readNativeCanvasView(options: {
+    readonly deps: AgentHostDeps;
+    readonly path: string;
+    readonly guard: Parameters<NonNullable<VaultToolHost['nativeCanvasView']>>[1];
+}): Promise<NativeCanvasView> {
+    const { deps, path, guard } = options;
+    const signal = guard.signal ?? new AbortController().signal;
+    const check = () => {
+        signal.throwIfAborted();
+        if (!guard.isCurrent()) throw new DOMException('Canvas view source changed', 'AbortError');
+    };
+    check();
+    if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
+    const source = await deps.ensureNativeAgentRuntime(path, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
+    check();
+    if (!source.isCurrent()) throw new DOMException('Canvas session changed', 'AbortError');
+    const isCurrent = () => guard.isCurrent() && source.isCurrent();
+    const reader = createNativeAgentReader({ runtime: source.runtime,
+        readMedia: (entry, mediaSignal) => source.readMedia(entry, mediaSignal),
+        isCurrent, notice: deps.notify, onError: error => console.error('Native canvas view failed:', error) });
+    const job = { signal, deadlineMs: 30_000 };
+    // Read the recorded state before describing: a never-viewed board has no camera and its view is the whole sheet.
+    const wholeSheet = !readNativeAgentViewport(source.runtime);
+    const info = await reader.describe(job);
+    check();
+    if (info.kind !== 'drawing') throw new Error('The open native canvas is not a drawing');
+    return { info, wholeSheet, capture: async (maxSide, captureSignal) => {
+        const requestSignal = captureSignal ? AbortSignal.any([signal, captureSignal]) : signal;
+        const { x, y, w, h } = info.viewport;
+        return reader.capture({ x, y, width: w, height: h }, maxSide, { signal: requestSignal, deadlineMs: 30_000 });
+    } };
 }
 
 /** A closed PDF's ink board comes from the admitted outer PDF (never a pane, legacy JSON or a blank fallback).

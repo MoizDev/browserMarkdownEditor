@@ -224,7 +224,9 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             const captured = checkpoints.get(revision);
             if (!captured?.checkpoint.product()) return;
             savedRevision = revision;
-            journal.acknowledge(revision, captured.checkpoint.baseline());
+            // The durable write still needs serializer/PDF acknowledgement if journalling fails.
+            try { journal.acknowledge(revision, captured.checkpoint.baseline()); }
+            catch (error) { reportPendingError(error); }
             scheduler.setJournalPending(savedRevision < contentRevision);
             void track(captured.checkpoint.written().then(() => options.afterWritten?.(revision, captured.context))).catch(reportPendingError);
             for (const key of checkpoints.keys()) if (key <= revision) checkpoints.delete(key);

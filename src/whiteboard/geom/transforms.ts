@@ -19,16 +19,19 @@ function world(box: OrientedBox, x: number, y: number): Vec2 {
 export function resizeBox(start: OrientedBox, handle: ResizeHandle, down: Vec2, pointer: Vec2,
     modifiers: ResizeModifiers, forceAspect = false): ResizePreview {
     if (![start.origin.x, start.origin.y, start.width, start.height, start.rotation, down.x, down.y, pointer.x, pointer.y].every(Number.isFinite)
-        || start.width <= 0 || start.height <= 0 || (!handle.x && !handle.y)) throw new RangeError('Invalid resize snapshot');
+        || start.width < 0 || start.height < 0 || (!start.width && !start.height) || (!handle.x && !handle.y)) throw new RangeError('Invalid resize snapshot');
     const c = Math.cos(start.rotation), s = Math.sin(start.rotation), dx = pointer.x - down.x, dy = pointer.y - down.y;
     const localX = c * dx + s * dy, localY = -s * dx + c * dy, factor = modifiers.alt ? 2 : 1;
-    let width = handle.x ? start.width + factor * handle.x * localX : start.width;
-    let height = handle.y ? start.height + factor * handle.y * localY : start.height;
+    let width = handle.x && start.width ? start.width + factor * handle.x * localX : start.width;
+    let height = handle.y && start.height ? start.height + factor * handle.y * localY : start.height;
+    let scaleX = start.width ? width / start.width : 1, scaleY = start.height ? height / start.height : 1;
     if (modifiers.shift || forceAspect) {
-        const sx = width / start.width, sy = height / start.height;
-        const scale = handle.x && handle.y ? Math.max(Math.abs(sx), Math.abs(sy)) : handle.x ? Math.abs(sx) : Math.abs(sy);
-        width = start.width * scale * (handle.x && sx < 0 ? -1 : 1);
-        height = start.height * scale * (handle.y && sy < 0 ? -1 : 1);
+        const horizontal = !!handle.x && start.width > 0, vertical = !!handle.y && start.height > 0;
+        const scale = horizontal && vertical ? Math.max(Math.abs(scaleX), Math.abs(scaleY))
+            : horizontal ? Math.abs(scaleX) : vertical ? Math.abs(scaleY) : 1;
+        scaleX = scale * (handle.x && scaleX < 0 ? -1 : 1);
+        scaleY = scale * (handle.y && scaleY < 0 ? -1 : 1);
+        width = start.width * scaleX; height = start.height * scaleY;
     }
     const axis = (extent: number, original: number, h: number): readonly [number, number, number] => {
         if (modifiers.alt || h === 0) return [(original - extent) / 2, (original + extent) / 2, original / 2];
@@ -38,7 +41,7 @@ export function resizeBox(start: OrientedBox, handle: ResizeHandle, down: Vec2, 
     const origin = world(start, Math.min(x0, x1), Math.min(y0, y1));
     if (![width, height, x0, x1, y0, y1, origin.x, origin.y].every(Number.isFinite)) throw new RangeError('Resize geometry overflows');
     return { box: { origin, width: Math.abs(width), height: Math.abs(height), rotation: start.rotation },
-        scaleX: width / start.width, scaleY: height / start.height, signedWidth: width, signedHeight: height, anchor: world(start, ax, ay) };
+        scaleX, scaleY, signedWidth: width, signedHeight: height, anchor: world(start, ax, ay) };
 }
 export function parentLocalDelta(worldDelta: Vec2, parentRotation: number): Vec2 {
     if (![worldDelta.x, worldDelta.y, parentRotation].every(Number.isFinite)) throw new RangeError('Invalid translation');

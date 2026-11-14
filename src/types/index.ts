@@ -411,14 +411,17 @@ export type AssetUrlResolver = (fileName: string) => Promise<string | null>;
  * and EditorPane (EditorPane.jsx:20).
  * ───────────────────────────────────────────────────────────────────────── */
 
-export interface BoardAssetAccess {
+export interface BoardOwnerAccess {
   root: FileSystemDirectoryHandle;
   parent: FileSystemDirectoryHandle;
   owner: FileSystemFileHandle;
-  hash: string;
-  preferredName?: string | null;
   signal: AbortSignal;
   isCurrent: () => boolean;
+}
+
+export interface BoardAssetAccess extends BoardOwnerAccess {
+  hash: string;
+  preferredName?: string | null;
 }
 
 export interface VaultHandleIO {
@@ -428,6 +431,7 @@ export interface VaultHandleIO {
   entries: (dir: FileSystemDirectoryHandle) => AsyncIterableIterator<[string, FileSystemFileHandle | FileSystemDirectoryHandle]>;
   remove: (dir: FileSystemDirectoryHandle, name: string) => Promise<void>;
   relativeTo: (dir: FileSystemDirectoryHandle, handle: FileSystemHandle) => Promise<string[] | null>;
+  sameEntry: (a: FileSystemHandle, b: FileSystemHandle) => Promise<boolean>;
 }
 
 export interface FileSystemContextValue {
@@ -454,6 +458,8 @@ export interface FileSystemContextValue {
   // ── actions ──
   resolveVaultDir: (root: FileSystemDirectoryHandle, path: string) => Promise<FileSystemDirectoryHandle>;
   resolveVaultFile: (root: FileSystemDirectoryHandle, path: string) => Promise<{ handle: FileSystemFileHandle; parentHandle: FileSystemDirectoryHandle }>;
+  /** Resolve the path again; a retained handle alone may refer to a moved entry. */
+  verifyVaultFileIdentity: (root: FileSystemDirectoryHandle, path: string, handle: FileSystemFileHandle) => Promise<boolean>;
   vaultDirExists: (root: FileSystemDirectoryHandle, path: string) => Promise<boolean>;
   nameTaken: (dir: FileSystemDirectoryHandle, name: string) => Promise<boolean>;
   /** Open the OS folder picker and switch to what comes back. Reports its
@@ -489,6 +495,8 @@ export interface FileSystemContextValue {
   saveAsset: (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<void>; // :218
   /** Board media are content-addressed but retain their actual collision-free leaf name. */
   readBoardAsset: (request: BoardAssetAccess) => Promise<{ name: string; blob: Blob } | null>;
+  /** Read one local legacy reference relative to the current board's actual folder. */
+  readLegacyBoardAsset: (request: BoardOwnerAccess & { src: string }) => Promise<Blob | null>;
   putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
   /** Preserve exact original bytes in the owning folder's Trash without changing the source. */
   keepConversionBackup: (request: BoardAssetAccess & { blob: Blob }) => Promise<TrashItem>;
@@ -543,7 +551,11 @@ export interface FileSystemContextValue {
    *  `(conflict 2)`, …), never over anything, re-making deleted parent folders.
    *  `vaultRoot`: the document's vault, when it may no longer be the open one
    *  (a vault switch). Resolves to the copy's path. */
-  writeConflictCopy: (filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
+  writeConflictCopy: (filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null, guard?: () => boolean) => Promise<string>;
+  /** A new, collision-free copy only; never grants a write to the source. */
+  writeDistinctCopy: (parent: FileSystemDirectoryHandle, parentPath: string, name: string, data: Blob, isCurrent: () => boolean) => Promise<{
+    path: string; name: string; handle: FileSystemFileHandle; version: DiskVersion;
+  }>;
   /** Re-create a file deleted outside the app (and any missing parent folders)
    *  only if nothing is at `filePath` now. */
   recreateFile: (filePath: string, data: string | Uint8Array | Blob) => Promise<

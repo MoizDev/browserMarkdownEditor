@@ -1,5 +1,6 @@
 import { AuthoringSamples } from './canonicalize';
 import type { OmissionCertificate } from './canonicalize';
+import { createOmissionCertificate } from './omission';
 import type { SampleBuilder, SampleBuilderOptions, SampleSequence, SegmentKind } from './samples';
 
 export const CURVE_VERSION = 1;
@@ -192,7 +193,7 @@ export class LocalCurveBuilder {
     constructor(options: SampleBuilderOptions, captureDeviceScale: number,
         fairingToleranceWorld?: number, certificate?: OmissionCertificate) {
         this.parameters = curveParameters(options.declaredMaxScale, fairingToleranceWorld, options.maxDpr ?? 3);
-        this.samples = new AuthoringSamples(options, captureDeviceScale, certificate,
+        this.samples = new AuthoringSamples(options, captureDeviceScale, certificate ?? createOmissionCertificate(this.parameters),
             (before, after, first, count) => packingDisplacement(before, after, first, count, this.parameters));
     }
     append(x: number, y: number, pressure: number | undefined, incomingKind: SegmentKind = 'freehand', pins = 0): void {

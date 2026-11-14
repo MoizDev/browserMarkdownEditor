@@ -22,6 +22,8 @@ export interface BoardPaintBoundsOptions {
     readonly cooperate?: () => Promise<void>;
     readonly toleranceWorld?: number;
     readonly includeInvisible?: boolean;
+    /** Called only after this same certified pass found nonempty paint for an item. */
+    readonly onPaintedItem?: (item: PaintItem, sourceIndex: number) => void;
 }
 export interface BoardPaintBounds { readonly bounds: Box | null; readonly errorWorld: number }
 type ClipRegion = readonly ClippedTubeClip[];
@@ -188,8 +190,11 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
     };
     const clipPoints = (clip: ClippedTubeClip, side: 'inner' | 'outer'): readonly Vec2[] => 'inner' in clip ? clip[side] : clip;
     const visible = (color: Rgba | undefined) => !!color && (options.includeInvisible || color[3] > 0);
-    let bounds: Box | null = null, errorWorld = 0;
-    const accept = (value: BoardPaintBounds) => { if (value.bounds) bounds = union(bounds, value.bounds); errorWorld = Math.max(errorWorld, value.errorWorld); };
+    let bounds: Box | null = null, errorWorld = 0, itemPainted = false;
+    const accept = (value: BoardPaintBounds) => {
+        if (value.bounds) { bounds = union(bounds, value.bounds); itemPainted = true; }
+        errorWorld = Math.max(errorWorld, value.errorWorld);
+    };
     const tube = function* (curve: TubeCurve, radius: number | readonly [number, number], matrix: Affine, clip: ClippedTubeClip): Generator<void, BoardPaintBounds> {
         const lease = reserve((clipPoints(clip, 'inner').length + clipPoints(clip, 'outer').length) * 4096 + 512 * 1024);
         try {
@@ -298,18 +303,20 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
             for (const curve of curves(path, false)) { accept(yield* tube(curve, stroke.width / 2, item.localToWorld, clip)); yield* checkpoint(); }
         }
     };
-    const measureItem = function* (item: PaintItem): Generator<void, void> {
+    const measureItem = function* (item: PaintItem, index: number): Generator<void, void> {
+        itemPainted = false;
         const region = yield* clipEnvelope(item.clips);
         if (region === 'empty') return;
         if (region === null) yield* measureItemInClip(item, null);
         else for (const piece of region) { yield* measureItemInClip(item, piece); yield* checkpoint(); }
+        if (itemPainted) options.onPaintedItem?.(item, index);
     };
     try {
         current();
         for (let index = 0; index < source.nodeCount; index++) {
             const node = source.readNode(index);
-            for (const item of node.underlay ?? []) { yield* measureItem(item); yield* checkpoint(); }
-            for (const item of node.content) { yield* measureItem(item); yield* checkpoint(); }
+            for (const item of node.underlay ?? []) { yield* measureItem(item, index); yield* checkpoint(); }
+            for (const item of node.content) { yield* measureItem(item, index); yield* checkpoint(); }
         }
         current(); return { bounds, errorWorld };
     } finally {

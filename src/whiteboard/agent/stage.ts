@@ -39,7 +39,7 @@ export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentO
     const base = { doc: host.doc, sheet: host.sheet, currentPage: host.currentPage, builder: context.builder };
     if (op.op === 'create') {
         if (op.type === 'arrow' || op.type === 'draw') {
-            const created = stageInkCreate(op, { ...base, admit: samples => host.admitSamples(samples),
+            const created = stageInkCreate(op, { ...base, admit: samples => { const lease = host.admitSamples(samples); context.keep(lease); return lease; },
                 target: (reference, page) => {
                     const id = context.resolve(reference), node = host.doc.nodes.get(id);
                     if (!node || sheetOf(host.doc, id) !== host.sheet) throw new AgentOpRefused('target is not on the current sheet');

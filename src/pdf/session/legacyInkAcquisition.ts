@@ -8,6 +8,7 @@ import type { WriterSource } from '../writing/protocol';
 import { typedPdfWriter } from '../writing/writerClient';
 import { getSharedPdfPool } from './startup';
 import { createPdfInkBackdrop } from './inkBackdrop';
+import { createPdfInkPreviewHost } from './inkPreviewHost';
 import type { PdfLegacyInkAcquisition, PdfLegacyInkAcquisitionOptions, PdfLegacyConversionReady, PdfLegacyPrepareOptions } from './legacyInkAcquisition.types';
 
 const prepared = new WeakSet<PdfLegacyConversionReady>();
@@ -63,7 +64,7 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
         const inspected = await outer.request('doc.inspectLegacyInk', {}, { priority: 0, signal: lifetime }); guard();
         if (inspected.kind === 'not-legacy') { await release(); if (!callerCurrent()) throw stale(); return { kind: 'not-legacy', release }; }
         if (inspected.kind === 'read-only') return await refused(`PDF conversion is read-only: ${inspected.reason}.`);
-        if (!memoryBlob(inspected.pristine) || !memoryBlob(inspected.snapshot) || inspected.snapshot.size > 32 * 1024 * 1024 ||
+        if (inspected.writeSafety?.kind !== 'safe' || !memoryBlob(inspected.pristine) || !memoryBlob(inspected.snapshot) || inspected.snapshot.size > 32 * 1024 * 1024 ||
             !/^[0-9a-f]{64}$/.test(inspected.outerFingerprint) || !/^[0-9a-f]{64}$/.test(inspected.pristineFingerprint) ||
             inspected.writeMark.kind === 'verified' && inspected.writeMark.writeId !== undefined) return await refused('The legacy PDF source could not be verified.');
         const outerHash = await hash(options.outer, guard), pristineHash = await hash(inspected.pristine, guard);
@@ -75,7 +76,8 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
         original = openedOriginal; guard();
         if (original.source !== 'original' || original.docKey !== pdfDocKey({ ...token, source: 'original' })) throw new Error('Invalid original PDF lease');
         const originalInspection = await original.request('doc.inspectInk', {}, { priority: 0, signal: lifetime }); guard();
-        if (originalInspection.kind !== 'plain' || originalInspection.outerFingerprint !== pristineHash || originalInspection.pristineFingerprint !== pristineHash) {
+        if (originalInspection.kind !== 'plain' || originalInspection.writeSafety?.kind !== 'safe' ||
+            originalInspection.outerFingerprint !== pristineHash || originalInspection.pristineFingerprint !== pristineHash) {
             return await refused('The retained pristine PDF does not match the inspected source.');
         }
         const originalPolicy = policy(original); if (originalPolicy) return await refused(originalPolicy);
@@ -90,7 +92,7 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
         const geometryEngine = pool.geometryEngine; guard();
         const source: WriterSource = Object.freeze({ token, docKey: original.docKey, pristine: inspected.pristine, pristineFingerprint: pristineHash,
             outer: options.outer, outerFingerprint: outerHash, formatId: NATIVE_FORMAT_ID, geometryEngine });
-        const frozenPages = Object.freeze(pages), mark = Object.freeze({ ...inspected.writeMark });
+        const frozenPages = Object.freeze(pages), mark = Object.freeze({ ...inspected.writeMark }), writeSafety = Object.freeze({ ...inspected.writeSafety });
         let preparation: Promise<PdfLegacyConversionReady> | undefined;
         const prepare = (admission: PdfLegacyPrepareOptions): Promise<PdfLegacyConversionReady> => {
             guard(); admission.assertRenderable(); guard();
@@ -108,7 +110,7 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
                     typeof backup.sourcePath !== 'string' || !backup.sourcePath.split('/').includes('.Garbage') || backup.size !== options.outer.size) {
                     throw new Error('A real legacy PDF conversion backup is required');
                 }
-                const result = { kind: 'legacy-conversion' as const, source, snapshot: inspected.snapshot, pages: frozenPages, writeMark: mark,
+                const result = { kind: 'legacy-conversion' as const, source, snapshot: inspected.snapshot, pages: frozenPages, writeMark: mark, writeSafety,
                     legacyOriginalSha256: outerHash, backup, isCurrent: current, release,
                     async openWriter(signal?: AbortSignal) {
                         check(); const requestSignal = AbortSignal.any([lifetime, ...(signal ? [signal] : [])]); requestSignal.throwIfAborted();
@@ -128,8 +130,9 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
             void ready.catch(() => { if (preparation === ready) preparation = undefined; });
             return ready;
         };
-        return { kind: 'conversion-required', snapshot: inspected.snapshot, pages: frozenPages, writeMark: mark,
-            legacyOriginalSha256: outerHash, prepare, isCurrent: current, release };
+        return { kind: 'conversion-required', snapshot: inspected.snapshot, pages: frozenPages, writeMark: mark, writeSafety,
+            legacyOriginalSha256: outerHash, createPreviewHost: () => createPdfInkPreviewHost({ pristineFingerprint: source.pristineFingerprint,
+                geometryEngine: source.geometryEngine, pages: frozenPages, isCurrent: current }), prepare, isCurrent: current, release };
     } catch {
         const wasCurrent = current(); await release(); if (!wasCurrent || !callerCurrent()) throw stale();
         return { kind: 'read-only', reason: 'The legacy PDF source could not be safely acquired.', release };

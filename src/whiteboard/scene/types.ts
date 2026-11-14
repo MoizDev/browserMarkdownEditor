@@ -7,9 +7,14 @@ import type { Node } from '../model/nodes';
 import type { SceneMetadata } from './snapshotDoc';
 import type { SpatialCursor } from '../pick';
 import type { PaintNodeSource } from '../render/paintStream';
+import type { PaintNodeOrder } from '../render/paintOrder';
 import type { BoundsQuality, Box } from './bounds';
 import type { NearestVisitor, QueryBuffer, QueryRequest, SpatialQuery } from './query';
 
+export interface SceneOccupiedBounds {
+    readonly revision: number;
+    readonly bounds: Box;
+}
 export interface SceneBounds {
     readonly revision: number;
     readonly quality: BoundsQuality;
@@ -28,6 +33,16 @@ export interface ScenePaintRequest {
     readonly world?: Readonly<Rect>;
     readonly theme: 'light' | 'dark';
     readonly includeWet?: boolean;
+    /** Frozen world-to-device scale; absent for non-raster callers without a capture scale. */
+    readonly deviceScale?: number;
+    readonly sensitiveNodes?: ReadonlySet<NodeId>;
+    readonly allowInkLod?: boolean;
+}
+
+export interface ScenePaintBinding {
+    readonly token: RenderToken;
+    readonly preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => Promise<PaintNodeSource>;
+    readonly retainRenderer?: () => { release(): void };
 }
 
 /** Pin is synchronous. Its canonical values/geometry/sample leases never follow later edits.
@@ -38,6 +53,9 @@ export interface SceneSnapshot {
     readonly token: RenderToken;
     readonly revision: number;
     readonly layout: Readonly<PageStack> | null;
+    readonly nodeCount: number;
+    /** Null means empty or not conservatively known; nodeCount distinguishes an empty pin. */
+    readonly occupiedBounds: SceneOccupiedBounds | null;
     worldBounds(id: NodeId): SceneBounds | null;
     /** Pinned immutable row and metadata reads; neither scans the document. */
     readNodeNow(id: NodeId): Node | undefined;
@@ -45,7 +63,7 @@ export interface SceneSnapshot {
     /** Immutable read side owned by this pin; never a mutation authority. */
     readDocument(signal?: AbortSignal): Promise<BoardDoc>;
     paintSource(request: ScenePaintRequest, signal?: AbortSignal): Promise<PaintNodeSource>;
-    release(): void;
+    release(): void | Promise<void>;
 }
 export interface SceneSpatial {
     readonly revision: number;
@@ -55,6 +73,8 @@ export interface SceneSpatial {
     query(options: SceneQueryOptions, output?: QueryBuffer, visitor?: NearestVisitor): SpatialQuery;
     /** Adapter for GE-3 pick: resume(deadline/maxVisits, visit(ref)), same generation guards. */
     spatialCursor(options: SceneQueryOptions): SpatialCursor;
+    /** Future snapshots only; the host supplies an actual replacement-source binding. */
+    setPaintBinding?(binding: ScenePaintBinding): void;
     /** Includes swept tests: pass the conservative swept world AABB, then exact narrow phase. */
     pin(): SceneSnapshot;
 }

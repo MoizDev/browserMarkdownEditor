@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
 import { getSessionIdentity } from '../utils/sessionIdentity';
 import { getPdfFontEpoch, subscribePdfFontEpoch } from '../pdf/fonts/profiles';
@@ -43,6 +43,7 @@ export interface PdfTiledCopyMenuOptions {
 /** Copy and menu share canonical text, cancellation and the pane's selection. */
 export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
     const live = useRef(options), binding = useRef<PdfTextCopyBinding | null>(null), menuTask = useRef<AbortController | null>(null);
+    const [status, setStatus] = useState<{ owner: object; document: PdfPoolDocument; message: string | null } | null>(null);
     const staleGeometry = useRef(new WeakSet<PdfSelectionGeometryCache>()), staleReaders = useRef(new WeakSet<PdfTextReader>());
     useLayoutEffect(() => { live.current = options; });
     const { element, document, geometry, selection } = options;
@@ -70,6 +71,8 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
     useLayoutEffect(() => {
         if (!element || !geometry) return;
         const source = pdfPoolTextSource(document), token = { ...document.token }, key = document.docKey;
+        const owner = {};
+        setStatus({ owner, document, message: null });
         const isCurrent = () => {
             const current = live.current, identity = getSessionIdentity(token.documentId);
             return current.isVisible && current.element === element && current.document === document && current.selection === selection &&
@@ -84,6 +87,10 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
                 (live.current.reader && !staleReaders.current.has(live.current.reader) ? peekText(live.current.reader, page) : undefined),
             text: async (page, signal) => (await source.text(page, 1, signal)).text,
             isCurrent, fontEpoch: () => getPdfFontEpoch(key),
+            status: (message: string | null) => {
+                const next = message !== null && isCurrent() ? message : null;
+                setStatus(previous => previous?.owner === owner ? { ...previous, message: next } : previous);
+            },
             notice: message => { if (isCurrent()) live.current.notice(message); },
         });
         binding.current = copy;
@@ -91,6 +98,7 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
         return () => {
             menuTask.current?.abort(); menuTask.current = null;
             unsubscribe(); copy.dispose();
+            setStatus(previous => previous?.owner === owner ? null : previous);
             if (binding.current === copy) binding.current = null;
             if (getContextMenu()?.opener === element && getContextMenu()?.label === 'PDF text') closeContextMenu();
         };
@@ -206,5 +214,6 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
         }
         return cachedSelectionText(selection, count, pages);
     }, []);
-    return { openMenu, cancelCopy, selectedText };
+    const copyStatus = options.isVisible && status?.document === options.document ? status.message : null;
+    return { openMenu, cancelCopy, selectedText, copyStatus };
 }

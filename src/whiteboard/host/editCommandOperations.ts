@@ -17,9 +17,10 @@ export function createEditCommandOperations(options: {
     readonly runtime: BoardRuntime;
     readonly current: () => boolean;
     readonly frameName: () => string;
+    readonly zoom: () => number;
 }) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
-    const commands = createBoardSelectionCommands({ runtime, current: options.current });
+    const commands = createBoardSelectionCommands({ runtime, current: options.current, zoom: options.zoom });
     const unavailable = (allowReadOnly = false): State | undefined => {
         if (!options.current()) return disabled('Board session has ended');
         if (!allowReadOnly && session.isReadOnly) return disabled(session.readOnlyReason ?? 'Board is read-only');

@@ -11,7 +11,7 @@ import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import { focusWordCounts, subscribeWordCounts, type WordCounts } from '../utils/wordCountStore';
-import { isPdfFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile } from '../utils/fileTypes';
+import { isPdfFile, isCanvasFile, isCodeFile, isNotebookFile } from '../utils/fileTypes';
 import type { DocumentBufferStore } from '../utils/documentBuffers';
 import type { NativeCanvasHost } from '../types/nativeCanvas';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
@@ -145,6 +145,7 @@ interface EditorPaneProps {
     /** Buffer content and write it immediately, skipping the save debounce. */
     onFlushNow: (path: string, content: string) => Promise<void>;
     onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
+    onUnsignedPdfCopy: NonNullable<React.ComponentProps<PdfPaneComponent>['onUnsignedPdfCopy']>;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */
     onRotatePdf: (path: string, delta: number, pageIndex?: number) => void;
     /** Read an unreadable tab's file again (OpenTab.readError); resolves true
@@ -292,7 +293,7 @@ interface PaneResize {
  * PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, contentOf, documentBuffers, nativeCanvasHost, markdownSessions, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, contentOf, documentBuffers, nativeCanvasHost, markdownSessions, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onUnsignedPdfCopy, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -1058,6 +1059,9 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             onTypographyChange={updateReadingTypography}
                             registerKeyboardTarget={registerKeyboardTarget}
                             file={tab.file}
+                            theme={theme}
+                            nativeCanvasHost={nativeCanvasHost}
+                            onToggleMode={onToggleMode}
                             isVisible={visible}
                             retainClosing={closingDocumentIds.has(tab.id)}
                             isFocused={tab.file.path === focusedPath}
@@ -1072,6 +1076,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             attachCanvasSession={attachCanvasSession}
                             onFlushNow={onFlushNow}
                             onPreparePrint={onPreparePdfPrint}
+                            onUnsignedPdfCopy={onUnsignedPdfCopy}
                             onOpenNotebookSource={onOpenNotebookSource}
                             onRotate={onRotatePdf}
                             isDirty={tab.dirty}
@@ -1093,7 +1098,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 out: their slot draws the retry message, and a float would cover
                 it. */}
             {tabs.filter(t => !t.file.isHelp && !t.readError
-                && (isDrawingFile(t.file.name) || isNotebookFile(t.file.name))).map(tab => {
+                && (t.representation.loadedKind === 'drawing' || t.representation.loadedKind === 'notebook')).map(tab => {
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
                 const data = documentBuffers.snapshotForDocument(tab.id)?.data;

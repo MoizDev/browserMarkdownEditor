@@ -28,7 +28,7 @@ export function validatePdfEngineInit(value: unknown, expected: EngineInitArgs):
 }
 
 export function validatePdfLegacyInspection(value: unknown): PdfResult<'doc.inspectLegacyInk'> {
-    const o = record(value, ['kind', 'reason', 'pristine', 'pristineFingerprint', 'outerFingerprint', 'snapshot', 'writeMark']);
+    const o = record(value, ['kind', 'reason', 'pristine', 'pristineFingerprint', 'outerFingerprint', 'snapshot', 'writeMark', 'writeSafety']);
     if (o.kind === 'not-legacy') { record(value, ['kind']); return { kind: 'not-legacy' }; }
     if (o.kind === 'read-only') {
         record(value, ['kind', 'reason']);
@@ -37,7 +37,10 @@ export function validatePdfLegacyInspection(value: unknown): PdfResult<'doc.insp
         return { kind: 'read-only', reason: o.reason as typeof reasons[number] };
     }
     if (o.kind !== 'legacy') invalidPdfReply();
-    record(value, ['kind', 'pristine', 'pristineFingerprint', 'outerFingerprint', 'snapshot', 'writeMark']);
+    record(value, ['kind', 'pristine', 'pristineFingerprint', 'outerFingerprint', 'snapshot', 'writeMark', 'writeSafety']);
+    const safety = record(o.writeSafety, ['kind']);
+    if (safety.kind !== 'safe') invalidPdfReply();
+    const writeSafety = { kind: 'safe' as const };
     const fingerprint = (input: unknown) => { const result = text(input, 64); if (!/^[0-9a-f]{64}$/.test(result)) invalidPdfReply(); return result; };
     const copy = (input: unknown, max: number) => {
         if (!(input instanceof Blob) || typeof File !== 'undefined' && input instanceof File || input.size < 1 || input.size > max) invalidPdfReply();
@@ -49,11 +52,11 @@ export function validatePdfLegacyInspection(value: unknown): PdfResult<'doc.insp
     const outerFingerprint = fingerprint(o.outerFingerprint), pristineFingerprint = fingerprint(o.pristineFingerprint);
     if (mark.kind === 'missing' || mark.kind === 'verified') {
         record(o.writeMark, ['kind']);
-        writeMark = { kind: 'legacy', pristine, snapshot, outerFingerprint, pristineFingerprint, writeMark: { kind: mark.kind } };
+        writeMark = { kind: 'legacy', pristine, snapshot, outerFingerprint, pristineFingerprint, writeSafety, writeMark: { kind: mark.kind } };
     } else if (mark.kind === 'foreign') {
         record(o.writeMark, ['kind', 'reason']);
         if (mark.reason !== 'mismatch' && mark.reason !== 'unsupported' && mark.reason !== 'malformed') invalidPdfReply();
-        writeMark = { kind: 'legacy', pristine, snapshot, outerFingerprint, pristineFingerprint, writeMark: { kind: 'foreign', reason: mark.reason } };
+        writeMark = { kind: 'legacy', pristine, snapshot, outerFingerprint, pristineFingerprint, writeSafety, writeMark: { kind: 'foreign', reason: mark.reason } };
     } else return invalidPdfReply();
     return writeMark;
 }

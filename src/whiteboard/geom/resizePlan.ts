@@ -13,6 +13,7 @@ export class ResizePlan {
     readonly startBox: OrientedBox;
     private readonly snapshots: readonly ResizeTargetSnapshot[];
     private readonly mixed: boolean;
+    private readonly forceAspect: boolean;
     private cancelled = false;
     constructor(nodes: readonly Readonly<Node>[], private readonly down: Vec2, private readonly handle: ResizeHandle,
         private readonly services: ResizePlanServices, private readonly scopeOverride?: 'single' | 'multi') {
@@ -25,6 +26,9 @@ export class ResizePlan {
         const rotations = this.snapshots.flatMap(target => target.relevantRotations.length ? target.relevantRotations : [target.worldRotation]);
         const common = commonResizeRotation(rotations);
         this.mixed = common === null;
+        // Default, calibration cut by owner: one aspect-locked participant locks the whole selection.
+        this.forceAspect = this.mixed || this.snapshots.some(target => target.forceAspect || target.node.kind === 'clip'
+            || target.node.kind === 'sticky' || (target.node.kind === 'text' && !!handle.x && !!handle.y));
         const rotation = common ?? 0, c = Math.cos(rotation), s = Math.sin(rotation);
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const target of this.snapshots) {
@@ -34,7 +38,8 @@ export class ResizePlan {
                 x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
             }
         }
-        if (![x0, y0, x1, y1, down.x, down.y].every(Number.isFinite) || x1 <= x0 || y1 <= y0) throw new RangeError('Invalid resize bounds');
+        if (![x0, y0, x1, y1, down.x, down.y].every(Number.isFinite) || x1 < x0 || y1 < y0 || (x1 === x0 && y1 === y0))
+            throw new RangeError('Invalid resize bounds');
         this.startBox = { origin: { x: c * x0 - s * y0, y: s * x0 + c * y0 }, width: x1 - x0, height: y1 - y0, rotation };
     }
     private check(signal?: AbortSignal): void {
@@ -52,15 +57,22 @@ export class ResizePlan {
                 y: anchor.y + s * u * frame.scaleX + c * v * frame.scaleY };
             const quarterTurns = Math.round((snapshot.worldRotation - angle) / (Math.PI / 2));
             const swap = !this.mixed && Math.abs(quarterTurns % 2) === 1;
+            const turn = this.mixed ? 0 : (quarterTurns % 4 + 4) % 4;
+            const hx = this.handle.x, hy = this.handle.y;
+            const localX = (turn === 0 ? hx : turn === 1 ? hy : turn === 2 ? -hx : -hy) as -1 | 0 | 1;
+            const localY = (turn === 0 ? hy : turn === 1 ? -hx : turn === 2 ? -hy : hx) as -1 | 0 | 1;
             const factors: KindResizeFactors = { x: swap ? frame.scaleY : frame.scaleX, y: swap ? frame.scaleX : frame.scaleY,
                 zeroSignX: swap ? zeroSignY : zeroSignX, zeroSignY: swap ? zeroSignX : zeroSignY,
-                handle: this.handle.x && this.handle.y ? 'corner' : 'side', scope: this.scopeOverride ?? (this.snapshots.length === 1 ? 'single' : 'multi') };
+                handleX: localX, handleY: localY, handle: hx && hy ? 'corner' : 'side',
+                scope: this.scopeOverride ?? (this.snapshots.length === 1 ? 'single' : 'multi') };
             yield { snapshot, centre, factors };
         }
     }
     preview(pointer: Vec2, modifiers: ResizeModifiers, zeroSignX: -1 | 1 = 1, zeroSignY: -1 | 1 = 1): SelectionResizePreview {
         this.check();
-        const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.mixed), ops: Op[] = [];
+        if (!this.services.kinds || !this.services.place) throw new Error('This resize plan requires asynchronous geometry');
+        const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.forceAspect), ops: Op[] = [];
+        if (frame.scaleX === 1 && frame.scaleY === 1) return { frame, ops };
         for (const { snapshot, centre, factors } of this.targets(frame, zeroSignX, zeroSignY)) {
             const patch = resizeKind(snapshot.node, factors, this.services.kinds);
             for (const op of patch) ops.push(op);
@@ -71,7 +83,12 @@ export class ResizePlan {
     async previewAsync(pointer: Vec2, modifiers: ResizeModifiers, signal: AbortSignal,
         zeroSignX: -1 | 1 = 1, zeroSignY: -1 | 1 = 1): Promise<SelectionResizePreview> {
         this.check(signal);
-        const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.mixed), ops: Op[] = [];
+        const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.forceAspect), ops: Op[] = [];
+        if (frame.scaleX === 1 && frame.scaleY === 1) return { frame, ops };
+        if (this.services.planAllAsync) {
+            const all = await this.services.planAllAsync([...this.targets(frame, zeroSignX, zeroSignY)], frame, signal);
+            this.check(signal); return { frame, ops: all };
+        }
         for (const { snapshot, centre, factors } of this.targets(frame, zeroSignX, zeroSignY)) {
             const patch = this.services.resizeKindAsync
                 ? await this.services.resizeKindAsync(snapshot.node, factors, signal) : resizeKind(snapshot.node, factors, this.services.kinds);

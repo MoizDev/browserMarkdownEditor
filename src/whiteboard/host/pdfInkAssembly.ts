@@ -2,12 +2,13 @@ import type { PageGeometry } from '../../platform/types';
 import { NATIVE_FORMAT_ID } from '../format/identity';
 import type { PinnedPdfAssembly } from './saveBuildTypes';
 import { pdfBoardAttachments, pdfInkReservedNames } from './pdfAttachments';
-import { pdfInkPages } from './pdfInkExport';
+import { emitStreamingPdfInk } from './pdfInkExport';
 import type { OpenPdfInkWriter, PinnedPdfInkSnapshot } from './pdfInkAssemblyTypes';
 
 function sameGeometry(a: PageGeometry, b: PageGeometry): boolean {
     return a.index === b.index && a.width === b.width && a.height === b.height && a.rotate === b.rotate
-        && a.userUnit === b.userUnit && a.toUserSpace.every((value, i) => value === b.toUserSpace[i]);
+        && a.userUnit === b.userUnit && a.toUserSpace.length === 6 && b.toUserSpace.length === 6
+        && a.toUserSpace.every((value, i) => Number.isFinite(value) && value === b.toUserSpace[i]);
 }
 
 /** Stage every physical page from pristine bytes, preserving the outer attachment inventory.
@@ -40,9 +41,7 @@ export function pinPdfInkAssembly(snapshot: PinnedPdfInkSnapshot, openWriter: Op
                     || geometries.some((page, i) => !sameGeometry(page, prepared.inspection.geometries[i]))) {
                     throw new Error('PDF source or page geometry changed');
                 }
-                const pages = await pdfInkPages(snapshot.ink, signal);
-                check(signal);
-                const ink = await writer.request('writer.emitInk', { revision: snapshot.revision, displayListSchema: 1, pages }, request);
+                const ink = await emitStreamingPdfInk(snapshot.ink, snapshot.revision, signal);
                 check(signal);
                 const stage = await writer.request('writer.stageAnnotated', { writerSession: prepared.writerSession,
                     revision: snapshot.revision, ink, geometries, reservedNames: pdfInkReservedNames(snapshot.media) }, request);

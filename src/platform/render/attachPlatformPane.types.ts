@@ -1,5 +1,6 @@
 import type { Camera, Rect, ViewState } from '../types';
 import type { DamageRecord } from './damage';
+import type { CaptureExportOptions } from './captureExport';
 import type { CameraController, Point } from './camera';
 import type { CompositorAppearance, CompositorBackend, CompositorCaptureOptions, CompositorIsolation, CompositorMirrorQuad, LayerCoverage, LayerHost } from './compositor.types';
 import type { BorrowedMirror, MirrorSet, MirrorView } from './mirrorSet';
@@ -45,6 +46,7 @@ export interface PlatformPaneOptions<T extends object> {
         checkpoint(): void;
         captureRegion?(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
         captureBlob?(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<Blob>;
+        captureExportBlob?(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob>;
     };
     readonly layers: readonly PlatformLayerDefinition[];
     readonly initialVisible: boolean;
@@ -78,6 +80,8 @@ export interface PlatformPaneOptions<T extends object> {
 export type AttachPlatformPane = <T extends object>(host: HTMLElement, options: PlatformPaneOptions<T>) => PlatformPane;
 
 export interface PlatformPane {
+    /** Actual live source/view/device fence; not evidence that any pixels were presented. */
+    currentFrameToken(): FrameToken | null;
     setVisible(visible: boolean): void;
     setFocused(focused: boolean): void;
     observeSize(): void;
@@ -88,5 +92,6 @@ export interface PlatformPane {
     cancelMotion(): void;
     captureRegion(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
     captureBlob(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<Blob>;
+    captureExportBlob(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob>;
     dispose(): void;
 }

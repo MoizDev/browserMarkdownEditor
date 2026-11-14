@@ -24,8 +24,14 @@ export function createBoardBuildPinning(ports: BoardBuildPorts): BoardBuildPinni
             const release = () => {
                 if (released) return;
                 released = true;
+                // No asynchronous build may publish after its pinned resources retire.
+                lifetime.abort();
                 pending.delete(cancel);
-                try { media.release(); } finally { pdf?.release(); }
+                const retire = () => { try { media.release(); } finally { pdf?.release(); } };
+                // A cancelled build can still be running in its worker: the abort reply does not prove the physical
+                // work has stopped. Retire the pinned media and PDF only once the in-flight build has actually settled.
+                if (inFlight) void inFlight.then(retire, retire);
+                else retire();
             };
             const cancel = () => { lifetime.abort(); release(); };
             pending.add(cancel);

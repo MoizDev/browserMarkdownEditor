@@ -10,6 +10,8 @@ import { SampleStore } from '../ink/samples';
 import { createJobAuthority, type JobAuthority } from '../security/admission';
 import { SessionScene } from '../scene/sessionScene';
 import type { SessionSceneOptions } from '../scene/sessionScene';
+import type { RenderToken } from '../../platform/render/types';
+import { admitPaintSourceRebind, type PaintSourceAdmission, type PaintSourceExpectation, type PaintSourceWitness } from './paintSourceRebind';
 import { createBoardSession } from '../session/createBoardSession';
 import type { BoardSession } from '../session/BoardSession';
 import type { BoardSessionFactoryOptions, ComposedBoardSession } from '../session/factoryTypes';
@@ -45,7 +47,20 @@ export interface BoardRuntime {
     readonly encoder: BoardSessionFactoryOptions['encoder'];
     readonly ready: Promise<SessionScene>;
     readonly scene: SessionScene | null;
+    /** The token future pins adopt: the scene's original token until a verified rebind replaces it. Pins already taken keep the token they captured. */
+    readonly paintToken: RenderToken;
+    readonly paintBinding: ReturnType<ReturnType<typeof createBoardRenderServices>['capturePaintBinding']>;
+    /**
+     * Adopts an admitted source as the paint token for FUTURE pins on this same
+     * runtime, session, scene, records, tools, selection, samples, media and history.
+     * `adopt` must be all-or-nothing: if it throws, the runtime keeps the old token.
+     */
+    rebindPaintSource(witness: PaintSourceWitness, expected: PaintSourceExpectation,
+        adopt: (token: RenderToken) => void, isCurrent: () => boolean): PaintSourceAdmission;
+    adoptPaintSource(witness: PaintSourceWitness, expected: PaintSourceExpectation, isCurrent: () => boolean): PaintSourceAdmission;
     bindView(sink: BoardRuntimeViewSink): () => void;
+    /** Document-owned services, never tied to a pane's mount/visibility lifetime. Returns unregister. */
+    registerOwned(dispose: () => void): () => void;
     flushFrame(frameId: number): void;
     dispose(): void;
 }
@@ -71,7 +86,11 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     const jobs = createJobAuthority(`${options.owner.documentId}:${options.owner.session}`, options.scene.token.vaultEpoch, options.owner.session);
     const selection = new SelectionState(first.id), tools = createBoardToolState(options.doc.ui, options.doc.view.toolLock);
     const attached = new Set<Registration>(), controller = new AbortController();
+    const owned = new Set<{ dispose(): void }>();
     let scene: SessionScene | null = null, disposed = false, pendingReveal: Set<NodeId> | undefined;
+    let paintBinding = options.render.capturePaintBinding(options.scene.token);
+    let paintToken: RenderToken = Object.freeze({ vaultEpoch: options.scene.token.vaultEpoch, documentId: options.scene.token.documentId,
+        bytesGeneration: options.scene.token.bytesGeneration, session: options.scene.token.session }), adopting = false;
     const stopSelection = selection.subscribe(() => { pendingReveal = undefined; });
     const report = (error: unknown) => options.onFailure(error);
     const visible = (entry: Registration) => safe(entry, () => entry.sink.visible(), false);
@@ -163,16 +182,53 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     const runtime: BoardRuntime = {
         session, selection, tools, samples, jobs, media: options.media, render: options.render, encoder: options.encoder, ready,
         get scene() { return scene; },
+        get paintToken() { return paintToken; },
+        get paintBinding() { return paintBinding; },
+        rebindPaintSource(witness, expected, adopt, isCurrent) {
+            if (disposed) throw new DOMException('Board runtime disposed', 'AbortError');
+            if (adopting) throw new Error('A paint source rebind is already adopting');
+            const admission = admitPaintSourceRebind(paintToken, expected, witness, () => !disposed && isCurrent());
+            if (admission.unchanged) return admission;
+            adopting = true;
+            try { adopt(admission.token); } finally { adopting = false; }
+            if (disposed) throw new DOMException('Board runtime disposed', 'AbortError');
+            paintToken = admission.token;
+            return admission;
+        },
+        adoptPaintSource(witness, expected, isCurrent) {
+            if (disposed || !scene) throw new Error('Board paint source is not available');
+            const target = scene;
+            const admission = runtime.rebindPaintSource(witness, expected, token => {
+                const binding = options.render.capturePaintBinding(token);
+                target.setPaintBinding(binding);
+                paintBinding = binding;
+            }, isCurrent);
+            if (!admission.unchanged) invalidate();
+            return admission;
+        },
         bindView(sink) {
             if (disposed) throw new Error('Board runtime disposed');
             const entry = { sink, report }; attached.add(entry); views.add(entry); notices.visibilityChanged(); flushReveal();
             let detached = false;
             return () => { if (detached) return; detached = true; attached.delete(entry); views.delete(entry); notices.visibilityChanged(); };
         },
+        registerOwned(dispose) {
+            if (disposed) throw new DOMException('Board runtime disposed', 'AbortError');
+            if (typeof dispose !== 'function') throw new TypeError('Owned resource requires a disposer');
+            const entry = { dispose }; owned.add(entry);
+            return () => { owned.delete(entry); };
+        },
         flushFrame(frameId) { if (!disposed) { notices.visibilityChanged(); flushReveal(); notices.flushFrame(frameId); } },
         dispose() {
             if (disposed) return;
-            disposed = true; jobs.dispose(); controller.abort(); stopSelection(); stopTools();
+            disposed = true;
+            // Cache/services stop accepting new work at document close. Already
+            // captured read-only jobs retain their own Scene/media/renderer leases.
+            for (const entry of owned) {
+                owned.delete(entry);
+                try { entry.dispose(); } catch (error) { try { report(error); } catch { /* Dispose every owner. */ } }
+            }
+            jobs.dispose(); controller.abort(); stopSelection(); stopTools();
             for (const entry of attached) views.delete(entry);
             attached.clear(); notices.visibilityChanged(); pendingReveal = undefined;
             runtimes.delete(session);

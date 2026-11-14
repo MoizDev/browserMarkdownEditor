@@ -6,10 +6,26 @@ import type { WriterOperations } from './protocol';
 export type NotebookOutputSpec = { path: string; pages: readonly { width: number; height: number }[] };
 
 export function notebookOutputSpec(args: WriterOperations['writer.buildNotebook']['args']): NotebookOutputSpec {
-    if (!args.notebookSource || !validNotebookSourcePath(args.notebookSource.path) || !Array.isArray(args.pages) ||
-        !args.pages.length || args.pages.length > 100_000) throw new Error('Invalid notebook output specification');
+    if (!args || typeof args !== 'object' || Array.isArray(args) || !Number.isSafeInteger(args.revision) || args.revision < 0 ||
+        typeof args.writeId !== 'string' || !/^[0-9a-f]{32}$/.test(args.writeId) || !args.notebookSource ||
+        typeof args.notebookSource !== 'object' || Array.isArray(args.notebookSource) ||
+        Object.keys(args.notebookSource).some(key => key !== 'path') || !validNotebookSourcePath(args.notebookSource.path) ||
+        args.notebookSource.path.length > 4096 || !Array.isArray(args.pages) || !args.pages.length || args.pages.length > 100_000) {
+        throw new Error('Invalid notebook output specification');
+    }
+    if (args.kind === 'pre-emitted') {
+        if (Object.keys(args).some(key => !['kind', 'pdf', 'pages', 'revision', 'notebookSource', 'writeId'].includes(key)) ||
+            !(args.pdf instanceof Blob) || typeof File !== 'undefined' && args.pdf instanceof File || args.pdf.size < 8 || args.pdf.size >= 0x80000000) {
+            throw new Error('Invalid emitted notebook source');
+        }
+    } else if ((args.kind !== undefined && args.kind !== 'display') || args.displayListSchema !== 1 ||
+        Object.keys(args).some(key => !['kind', 'displayListSchema', 'pages', 'revision', 'notebookSource', 'writeId'].includes(key))) {
+        throw new Error('Invalid notebook display source');
+    }
     const pages = args.pages.map(page => {
-        if (!page || !Number.isFinite(page.width) || page.width <= 0 || page.width > 14_400 ||
+        if (!page || typeof page !== 'object' || Array.isArray(page) ||
+            args.kind === 'pre-emitted' && Object.keys(page).some(key => key !== 'width' && key !== 'height') ||
+            !Number.isFinite(page.width) || page.width <= 0 || page.width > 14_400 ||
             !Number.isFinite(page.height) || page.height <= 0 || page.height > 14_400) throw new Error('Invalid notebook page dimensions');
         return { width: page.width, height: page.height };
     });

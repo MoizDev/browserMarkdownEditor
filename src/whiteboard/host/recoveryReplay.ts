@@ -14,6 +14,7 @@ export async function recoverBoardJournal(payload: unknown, options: {
     doc: BoardDoc; samples: SampleStore; apply: (tx: Transaction) => Applied; signal: AbortSignal;
     cooperate?: () => Promise<void>; projectMedia?: (entry: MediaEntry) => MediaEntry;
     mediaFiles?: ReadonlyMap<string, string>; isCurrent?: () => boolean;
+    assertDiskBaseline(signal: AbortSignal): Promise<void>;
 }): Promise<void> {
     const { doc, signal } = options, initialRevision = doc.rev;
     const check = () => {
@@ -89,11 +90,18 @@ export async function recoverBoardJournal(payload: unknown, options: {
                 if (due()) await cooperate();
                 if (node.kind === 'opaque' && !doc.nodes.has(node.id)) throw new Error(`Recovery cannot create opaque node ${node.id}`);
             }
+            const earlyDeleted = new Set<NodeId>();
             for (const sheet of desired.sheets.values()) {
                 if (due()) await cooperate();
                 const old = doc.sheets.get(sheet.id);
                 if (!old) {
-                    if (doc.nodes.has(sheet.id as unknown as NodeId)) throw new Error('Recovery sheet identity conflicts with a current node');
+                    const conflict = doc.nodes.get(sheet.id as unknown as NodeId);
+                    if (conflict) {
+                        if (conflict.kind === 'opaque' || desired.nodes.has(conflict.id) || (doc.children.get(conflict.id)?.length ?? 0) > 0)
+                            throw new Error('Recovery sheet identity conflicts with retained content');
+                        ops.push({ t: 'delete', id: conflict.id });
+                        earlyDeleted.add(conflict.id);
+                    }
                     ops.push({ t: 'sheet', op: 'create', sheet });
                 } else {
                     if (old.name !== sheet.name) ops.push({ t: 'sheet', op: 'set', id: sheet.id, key: 'name', value: sheet.name });
@@ -145,13 +153,16 @@ export async function recoverBoardJournal(payload: unknown, options: {
             const removed: Node[][] = Array.from({ length: 65 }, () => []), added: Node[][] = Array.from({ length: 65 }, () => []);
             for (const node of doc.nodes.values()) {
                 if (due()) await cooperate();
-                if (!desired.nodes.has(node.id)) removed[depth(doc, node)].push(node);
+                if (!desired.nodes.has(node.id) && !earlyDeleted.has(node.id)) removed[depth(doc, node)].push(node);
             }
             for (let d = 64; d >= 1; d--) for (const node of removed[d]) { if (due()) await cooperate(); ops.push({ t: 'delete', id: node.id }); }
+            // Free removed sheet identities after their old children have moved or gone,
+            // before a recovered node may claim one of those identities.
+            for (const sheet of doc.sheets.values()) { if (due()) await cooperate(); if (!desired.sheets.has(sheet.id)) ops.push({ t: 'sheet', op: 'delete', id: sheet.id }); }
             for (const node of desired.nodes.values()) {
                 if (due()) await cooperate();
                 if (!doc.nodes.has(node.id)) {
-                    if (doc.sheets.has(node.id as unknown as SheetId)) throw new Error('Recovery node identity conflicts with a current sheet');
+                    if (desired.sheets.has(node.id as unknown as SheetId)) throw new Error('Recovery node identity conflicts with a target sheet');
                     added[depth(desired, node)].push(node);
                 }
             }
@@ -183,8 +194,9 @@ export async function recoverBoardJournal(payload: unknown, options: {
             ops.push({ t: 'ext', target: 'pen', value: desired.ui.ext }, { t: 'ext', target: 'view', value: desired.view.ext });
             if (desired.host.kind === 'notebook') ops.push({ t: 'ext', target: 'paper', value: desired.host.ext });
             else if (desired.host.kind === 'pdf-ink') ops.push({ t: 'ext', target: 'host', value: desired.host.ext });
-            for (const sheet of doc.sheets.values()) { if (due()) await cooperate(); if (!desired.sheets.has(sheet.id)) ops.push({ t: 'sheet', op: 'delete', id: sheet.id }); }
             for (const entry of doc.media.values()) { if (due()) await cooperate(); if (!desiredMedia.has(entry.id)) ops.push({ t: 'media', op: 'drop', id: entry.id, restoreMissing: true }); }
+            check();
+            await options.assertDiskBaseline(signal);
             check();
             const receipt = options.apply({ origin: 'recovery', label: 'Recover unsaved changes', ops });
             receipt.release();

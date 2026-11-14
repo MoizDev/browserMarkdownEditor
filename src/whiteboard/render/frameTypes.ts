@@ -1,4 +1,5 @@
 import type { FrameBudget } from '../../platform/render/types';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { PaintFrame, PaintNodeSource } from './paintStream';
 import type { PaintFrameSource } from './resources';
 
@@ -6,18 +7,26 @@ import type { PaintFrameSource } from './resources';
  * mutable model data after admission; cancellation drops the partial frame rather than publishing. */
 export interface PinnedPaintSource {
     readonly source: PaintNodeSource;
-    release(): void;
+    release(): void | Promise<void>;
 }
 export interface PaintFrameAssembler extends PaintFrameSource {
+    bindMemory?(allocator: MemoryAllocator): void;
+    cpuWorkingSet?(): number;
+    memoryBytes?(): number;
     /** Superseding a request cancels and releases only the incomplete staging source. */
     request(source: PinnedPaintSource): void;
     prepare(budget: FrameBudget): void;
     needsFrame(): boolean;
     /** Presentation uses the frame actually drawn, not the newest requested scene revision. */
     presented(frame: PaintFrame): void;
+    /** Retains this exact frame's source/metadata through asynchronous presentation-fact work.
+     * Release only after its physical worker work retires; hide/dispose cannot reclaim it early. */
+    retain(frame: PaintFrame): () => void;
     /** Called when the backend no longer holds this frame, including cancelled staging. */
     retire(frame: PaintFrame): void;
-    /** Drop all pins on hide while keeping this assembler reusable. */
+    /** Retire pins on hide; outstanding presentation-fact borrows still own their source. */
     clear(): void;
+    /** Resolves after retired sources, including outstanding borrows, physically release. */
+    whenRetired(): Promise<void>;
     dispose(): void;
 }

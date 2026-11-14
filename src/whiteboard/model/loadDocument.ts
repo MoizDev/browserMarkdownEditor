@@ -1,7 +1,7 @@
 import type { BoardDoc, BoardDocInput, OpaqueIndexedDoc, Sheet } from './doc';
 import type { NodeId, ParentId, SheetId } from './ids';
 import type { MediaEntry, MediaId } from './media';
-import { createNode, type Node } from './nodes';
+import { attachedTargets, createNode, type Node } from './nodes';
 import { compareOrder } from './orderKey';
 
 // Loading can encounter a million siblings; native sort and index construction
@@ -95,10 +95,7 @@ export async function createLoadedBoardDoc(input: BoardDocInput, cooperate?: () 
                 parent = container.parent;
             }
         }
-        if (node.kind === 'connector') {
-            if (node.start.attach) addMember(attachedTo, node.start.attach.target, node.id);
-            if (node.end.attach) addMember(attachedTo, node.end.attach.target, node.id);
-        }
+        for (const target of attachedTargets(node)) addMember(attachedTo, target, node.id);
         if ((node.kind === 'picture' || node.kind === 'clip') && node.media) addMember(mediaRefs, node.media, node.id);
         if (node.kind === 'linkcard' && node.preview) {
             if (node.preview.image) addMember(mediaRefs, node.preview.image, node.id);

@@ -1,5 +1,5 @@
 import type { pinPdfInkHostForSave } from '../../pdf/session/inkHost';
-import type { PdfEditableInkSource } from '../../pdf/session/inkAcquisition.types';
+import type { PdfRuntimeInkSource } from '../../pdf/session/legacyInkAcquisition.types';
 import { encodeHost } from '../format/encode';
 import type { BoardRecoveryRecipe } from '../format/recoveryRecipe';
 import type { SerializerRecordOverride } from '../format/serializerProtocol';
@@ -12,7 +12,7 @@ import { createPdfRecoveryRecipe } from './pdfRecovery';
 import type { BoardRuntime } from './runtime';
 
 class PdfBuildContext {
-    constructor(readonly owner: object, readonly revision: number, readonly acquisition: PdfEditableInkSource,
+    constructor(readonly owner: object, readonly revision: number, readonly acquisition: PdfRuntimeInkSource,
         readonly writeId: string, readonly override: SerializerRecordOverride) {}
 }
 
@@ -79,7 +79,7 @@ export function createPdfInkBuildCapture(options: {
                 return pinPdfInkAssembly({ revision, source: context.acquisition.source, writeId: context.writeId,
                     media: scene.media, mediaBlob: scene.mediaBlob,
                     isCurrent: () => !released && options.currentOwner(), release,
-                    ink: { pages, sheets: scene.sheets, readSheetPage: scene.readSheetPage },
+                    ink: { pages, sheets: scene.sheets, readSheetPage: scene.readSheetPage, writeSheetPage: scene.writeSheetPage },
                 }, signal => context.acquisition.openWriter(signal));
             } catch (error) { release(); throw error; }
         },

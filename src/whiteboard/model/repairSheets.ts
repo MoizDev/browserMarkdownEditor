@@ -24,7 +24,7 @@ export async function repairSheets(
         if ((i & 255) === 0) await tick();
         reserved.add(sheets[i].id);
     }
-    const records: Sheet[] = [], seen = new Set<string>(), orders = new Set<string>();
+    const records: Sheet[] = [], seen = new Set<string>();
     let badOrder = false, protectedOrder = false;
     const record = (ordinal: number, code: string, id: string) => {
         changed.add(ordinal);
@@ -53,8 +53,8 @@ export async function repairSheets(
             record(i, 'duplicate-sheet-id', id);
         }
         seen.add(sheet.id);
-        if (!isValidKey(sheet.order) || orders.has(sheet.order)) badOrder = true;
-        orders.add(sheet.order);
+        // Valid ties are sorted by id, not rewritten on load.
+        if (!isValidKey(sheet.order)) badOrder = true;
         if (sheet.ext?.raw.has('order')) protectedOrder = true;
         records.push(sheet);
     }

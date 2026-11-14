@@ -163,8 +163,12 @@ export type NativeRecord = KnownRecord | JsonObject;
 
 // R-W6/text §4.2: positional defaults are explicit; future trailing elements stay untouched.
 export type StoredRun = readonly [string, JsonObject?, ...JsonValue[]];
-export type StoredBlock = readonly [string, number, string, readonly StoredRun[], number?, ...JsonValue[]];
-export interface StoredRichText extends FutureFields { readonly b: readonly StoredBlock[]; }
+export type StoredBlock = readonly [string, number, string, readonly StoredRun[], (number | null)?, ...JsonValue[]];
+export type StoredBlockCarrier = readonly [number, number, number, string, number, string, number | null, readonly JsonValue[]];
+export interface StoredRichText extends FutureFields {
+    readonly b: readonly StoredBlock[];
+    readonly carriers?: readonly StoredBlockCarrier[];
+}
 
 // R-W17/19/20: the reader brands raw lexemes into the model's ExtBag/PreservedBlock.
 // There is no by-id source registry or dotted-path sidecar beside the document.
@@ -202,7 +206,7 @@ export const NODE_PROPERTY_ORDER = {
     text: ['text', 'color', 'size', 'font', 'align', 'autoSize', 'w', 'scale'],
     sticky: ['text', 'color', 'labelColor', 'size', 'font', 'align', 'valign', 'growY', 'fit', 'scale', 'url'],
     connector: ['route', 'start', 'end', 'bend', 'elbowMid', 'headStart', 'headEnd', 'color', 'labelColor', 'fill', 'dash', 'size', 'font', 'label', 'labelAt', 'width', 'labelScale'],
-    polyline: ['points', 'spline', 'color', 'dash', 'size', 'width'],
+    polyline: ['points', 'startAttach', 'endAttach', 'spline', 'color', 'dash', 'size', 'width'],
     frame: ['w', 'h', 'name', 'color'], group: [],
     picture: ['w', 'h', 'media', 'crop', 'flipX', 'flipY', 'alt', 'inverted', 'playing', 'url'],
     clip: ['w', 'h', 'media', 'time', 'playing', 'autoplay', 'alt'],
@@ -366,14 +370,19 @@ function richText(value: unknown, field: string): number {
     const blocks = array(rt.b, `${field}.b`);
     if (blocks.length < 1 || blocks.length > FORMAT_LIMITS.richTextBlocks) refuse('limit', field, 'Rich text has an invalid block count');
     let total = blocks.length - 1; // the plain-text projection has a newline between blocks
+    const lengths: number[] = [];
     for (const entry of blocks) {
-        const block = array(entry, field);
+        const initial = total, block = array(entry, field);
         if (block.length < 4) refuse('value', field, 'Rich text block needs kind, level, dir and runs');
         const kind = string(block[0], field);
         const level = integer(block[1], field, 0, 7);
         if (kind === 'p' && level !== 0) refuse('value', field, 'Paragraph level must be zero', 'repair');
         string(block[2], field);
-        if (block.length > 4) integer(block[4], field, 1, Number.MAX_SAFE_INTEGER);
+        if (block.length > 4 && block[4] !== null) {
+            if (kind === 'ol') integer(block[4], field, 1, Number.MAX_SAFE_INTEGER);
+            else if (block.length > 5) number(block[4], field, -Number.MAX_VALUE, Number.MAX_VALUE);
+            else refuse('value', field, 'Only an ordered list has an active start value');
+        }
         const runs = array(block[3], field);
         if (runs.length < 1 || runs.length > FORMAT_LIMITS.recordBytes) refuse('limit', field, 'Rich text has an invalid run count');
         for (const entry of runs) {
@@ -398,8 +407,25 @@ function richText(value: unknown, field: string): number {
                 optional(marks, 'link', url);
             }
         }
+        lengths.push(total - initial);
     }
-    json(value, FORMAT_LIMITS.richTextDepth);
+    if (rt.carriers !== undefined) {
+        const carriers = array(rt.carriers, `${field}.carriers`);
+        if (carriers.length > FORMAT_LIMITS.textChars + FORMAT_LIMITS.richTextBlocks) refuse('limit', field, 'Too many opaque block carriers');
+        for (const value of carriers) {
+            const carrier = array(value, `${field}.carriers`);
+            if (carrier.length !== 8) refuse('value', field, 'Block carrier needs eight fields');
+            const index = integer(carrier[0], field, 0, blocks.length - 1), length = lengths[index];
+            const from = integer(carrier[1], field, 0, length);
+            integer(carrier[2], field, from, length);
+            const kind = string(carrier[3], field, 16), level = integer(carrier[4], field, 0, 7), dir = string(carrier[5], field, 16);
+            if (!['p', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(kind) || (kind === 'p' && level !== 0)
+                || !['auto', 'ltr', 'rtl'].includes(dir)) refuse('value', field, 'Invalid opaque block carrier attributes');
+            if (carrier[6] !== null) number(carrier[6], field, -Number.MAX_VALUE, Number.MAX_VALUE);
+            array(carrier[7], field);
+        }
+    }
+    json(value, FORMAT_LIMITS.richTextDepth + 1);
     return total;
 }
 function connectorEnd(value: unknown, field: string) {

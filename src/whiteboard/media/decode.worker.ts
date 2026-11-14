@@ -5,6 +5,7 @@ import { hashMedia } from './sha256';
 import { sniffMedia } from './sniff';
 import { webmHeader } from './webmHeader';
 import { preflightSvgText } from './svgXmlRuntime';
+import { privatePngDensityWorker } from './privatePngWorker';
 import { boardHandlers } from '../workers/protocol';
 
 interface DecoderTrack { readonly frameCount: number }
@@ -20,6 +21,7 @@ serve({
     protocol: 1,
     buildId: 'whiteboard-media-1',
     handlers: boardHandlers({
+        privatePngDensity: privatePngDensityWorker,
         async svgPreflight(args, context) {
             if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid SVG request');
             const blob = (args as { blob: Blob }).blob;
@@ -33,7 +35,15 @@ serve({
             if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid media request');
             const blob = (args as { blob: Blob }).blob;
             if (blob.size > 10 * 1024 * 1024) throw new RangeError('Media files must be at most 10 MiB');
-            return hashMedia(blob, undefined, () => context.slice());
+            return hashMedia(blob, context.signal, () => context.slice());
+        },
+        async hashSource(args, context) {
+            if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid source hash request');
+            const blob = (args as { blob: Blob }).blob;
+            // Source JSON is not a media asset. The caller already admitted its
+            // full conversion peak; SHA keeps only the shared 4 MiB sliced reader.
+            if (blob.size > 256 * 1024 * 1024) throw new RangeError('Legacy sources must be at most 256 MiB');
+            return hashMedia(blob, context.signal, () => context.slice());
         },
         async probe(args, context) {
             if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid media request');

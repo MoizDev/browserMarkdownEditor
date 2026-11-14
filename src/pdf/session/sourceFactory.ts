@@ -3,6 +3,7 @@ import type { RenderToken } from '../../platform/render';
 import type { PdfReadingBinding } from '../../types/reading';
 import { awaitSessionDisposals, getSessionIdentity } from '../../utils/sessionIdentity';
 import { fingerprintSnapshot } from '../../utils/snapshotFingerprint';
+import type { DiskVersion } from '../../utils/diskVersion';
 import { PdfSelectionState } from '../text/selectionState';
 import { getPdfSessionMirrors } from '../layer/tileMirror';
 import { PdfTiledDocumentSession } from './documentSession';
@@ -17,6 +18,7 @@ interface Entry {
     readonly token: RenderToken;
     readonly session: PdfTiledDocumentSession;
     binding: PdfReadingBinding;
+    version?: Promise<DiskVersion>;
     ready?: Promise<PdfTiledSource>;
 }
 
@@ -55,22 +57,36 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
             if (!current(token)) throw new DOMException('PDF session replaced during source release', 'AbortError');
             let entry = identity.getSlot<Entry>(sourceSlot);
             if (!entry || !matches(entry.token, token)) {
-                const holder: { binding: PdfReadingBinding } = { binding: reading };
+                const holder: { binding: PdfReadingBinding; version?: Promise<DiskVersion> } = { binding: reading };
                 const session = new PdfTiledDocumentSession(token, 'outer', requestSignal =>
                     holder.binding.acquireSnapshot(holder.binding.identity, requestSignal), pool, current,
                 (blob, stat, requestSignal) => {
-                    void fingerprintSnapshot(blob, requestSignal).then(hash => {
-                        if (current(token)) holder.binding.onReaderVersion(holder.binding.identity, { ...stat, hash });
-                    }).catch(() => {});
+                    const version = fingerprintSnapshot(blob, requestSignal).then(hash => ({ ...stat, hash }));
+                    holder.version = version;
+                    void version.catch(() => {});
                 }, requestPdfPassword);
-                entry = { token, session, get binding() { return holder.binding; }, set binding(value) { holder.binding = value; } };
+                entry = { token, session, get binding() { return holder.binding; }, set binding(value) { holder.binding = value; },
+                    get version() { return holder.version; } };
                 identity.setSlot(sourceSlot, entry, old => old.session.close());
             } else entry.binding = reading;
+            await awaitSessionDisposals(id);
+            signal.throwIfAborted();
+            if (!current(token) || identity.getSlot(sourceSlot) !== entry) throw new DOMException('PDF session replaced during source release', 'AbortError');
             if (!entry.ready) {
                 const owner = entry;
                 const ready = (async () => {
                     const document = await owner.session.open();
                     if (!current(token)) throw new DOMException('PDF session replaced', 'AbortError');
+                    const attempt = owner.version;
+                    if (!attempt) throw new Error('PDF snapshot version unavailable');
+                    const version = attempt.then(value => {
+                        if (!current(token) || identity.getSlot(sourceSlot) !== owner || owner.version !== attempt || !owner.session.isCurrent()) {
+                            throw new DOMException('PDF snapshot replaced', 'AbortError');
+                        }
+                        owner.binding.onReaderVersion(owner.binding.identity, value);
+                        return value;
+                    });
+                    void version.catch(() => {});
                     const stack = pageStack(document.pages);
                     const mirror = getPdfSessionMirrors({ session: owner.session, token,
                         currentToken: () => current(token) ? token : null });
@@ -82,7 +98,7 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
                         owner.session.lifetimeSignal);
                     owner.session.lifetimeSignal.throwIfAborted();
                     if (!current(token)) throw new DOMException('PDF session replaced', 'AbortError');
-                    return { session: owner.session, document, mirror, capturer, selection, transition, bridge };
+                    return { session: owner.session, document, mirror, capturer, selection, transition, bridge, version };
                 })();
                 owner.ready = ready;
                 void ready.catch(() => { if (owner.ready === ready) owner.ready = undefined; });

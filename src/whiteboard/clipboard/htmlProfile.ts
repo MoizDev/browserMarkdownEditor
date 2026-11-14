@@ -6,7 +6,7 @@ import { matchingIdentity, validBoardIdentity } from '../workers/protocol';
 
 // Provenance: clipboard/security contracts and native rich-text representation;
 // independent isolated HTML extraction, no third-party source.
-const CHUNK = 192 * 1024, LIMIT = SECURITY_LIMITS.clipboardHtmlBytes, MAX_DEPTH = 128, MAX_NODES = 2_000_000;
+const CHUNK = 192 * 1024, LIMIT = SECURITY_LIMITS.clipboardHtmlBytes, MAX_NODES = 2_000_000;
 const pause = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 const ignored = new Set(['script', 'style', 'form', 'object', 'iframe', 'embed', 'svg', 'math', 'template', 'noscript', 'head',
     'input', 'textarea', 'button', 'select', 'option', 'video', 'audio', 'canvas']);
@@ -101,19 +101,34 @@ async function spanMarks(style: string, inherited: Marks): Promise<Marks> {
     }
     return marks;
 }
-async function parse(blob: Blob, mode: 'markers' | 'rich'): Promise<unknown> {
+async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise<unknown> {
     const input = new TextDecoder('utf-8', { fatal: true }).decode(await blob.arrayBuffer());
     // eslint-disable-next-line bme/html-sinks -- fixed opaque-origin sandbox, network-denied CSP; parsed nodes never enter its live DOM.
     const doc = new DOMParser().parseFromString(input, 'text/html');
-    let visited = 0, sliceStart = performance.now();
-    const tick = async (depth: number) => {
-        if (depth > MAX_DEPTH || ++visited > MAX_NODES) throw new RangeError('Clipboard HTML is too complex');
+    let visited = 0, elements = 0, sliceStart = performance.now();
+    const tick = async (node: Node, depth: number) => {
+        if (++visited > MAX_NODES || node.nodeType === 1 && (depth > SECURITY_LIMITS.htmlDepth || ++elements > SECURITY_LIMITS.htmlElements)) {
+            throw new RangeError('Clipboard HTML is too complex');
+        }
         if ((visited & 255) === 0 || performance.now() - sliceStart > 4) { await pause(); sliceStart = performance.now(); }
     };
+    if (mode === 'metadata') {
+        let title = '', description = '', count = 0;
+        for (let child = doc.head.firstElementChild; child; child = child.nextElementSibling) {
+            if (++count > SECURITY_LIMITS.htmlElements) throw new RangeError('Preview metadata is too complex');
+            const tag = child.localName.toLowerCase();
+            if (!title && tag === 'title') title = (child.textContent ?? '').trim().slice(0, 500);
+            if (!description && tag === 'meta' && (child.getAttribute('name') ?? '').toLowerCase() === 'description') {
+                description = (child.getAttribute('content') ?? '').trim().slice(0, 2000);
+            }
+            if ((count & 255) === 0) await pause();
+        }
+        return { title, description };
+    }
     if (mode === 'markers') {
         let hasPrivate = false, payload: string | null = null, legacy: string | null = null;
         const walk = async (node: Node, depth: number): Promise<void> => {
-            await tick(depth);
+            await tick(node, depth);
             if (node.nodeType === 1) {
                 const element = node as Element;
                 if (element.hasAttribute('data-wb-board') || element.hasAttribute('data-wb-board-payload')) hasPrivate = true;
@@ -126,7 +141,8 @@ async function parse(blob: Blob, mode: 'markers' | 'rich'): Promise<unknown> {
         return { hasPrivate, privatePayload: payload, legacyPayload: legacy };
     }
     const blocks: Block[] = [], dataImages: { blob: Blob; alt: string; order: number; textOffset: number }[] = [];
-    let imageBytes = 0;
+    const refusedImages: { name: string; reason: string }[] = [];
+    let imageBytes = 0, imageCount = 0;
     let kind: Block['kind'] = 'p', level = 0, dir: Block['dir'] = 'auto', start: number | undefined;
     let runs: Run[] = [], length = 0;
     const flush = (force = false) => {
@@ -156,7 +172,7 @@ async function parse(blob: Blob, mode: 'markers' | 'rich'): Promise<unknown> {
         }
     };
     const walk = async (node: Node, ctx: Context, depth: number): Promise<void> => {
-        await tick(depth);
+        await tick(node, depth);
         if (node.nodeType === 3) { await add(node.nodeValue ?? '', ctx.marks, ctx.pre); return; }
         if (node.nodeType !== 1) return;
         const el = node as Element, tag = el.localName.toLowerCase();
@@ -165,11 +181,16 @@ async function parse(blob: Blob, mode: 'markers' | 'rich'): Promise<unknown> {
         if (tag === 'img') {
             const src = (el.getAttribute('src') ?? '').trim(), alt = el.getAttribute('alt') ?? '';
             if (/^data:/i.test(src)) {
-                if (dataImages.length >= SECURITY_LIMITS.mediaBatch) throw new RangeError('Too many inline images');
-                const data = await inlineImage(src, SECURITY_LIMITS.inlineMediaBytes - imageBytes);
-                imageBytes += data.size;
+                if (++imageCount > SECURITY_LIMITS.mediaBatch) throw new RangeError('Too many inline images');
                 if (alt.length > MAX_TEXT_LENGTH) throw new RangeError('Inline image alt text exceeds limits');
-                dataImages.push({ blob: data, alt, order: dataImages.length, textOffset: length + blocks.length });
+                try {
+                    const data = await inlineImage(src, SECURITY_LIMITS.inlineMediaBytes - imageBytes);
+                    imageBytes += data.size;
+                    dataImages.push({ blob: data, alt, order: dataImages.length, textOffset: length + blocks.length });
+                } catch (error) {
+                    refusedImages.push({ name: alt.slice(0, 10_000) || 'Clipboard image',
+                        reason: error instanceof Error ? error.message.slice(0, 500) : 'Invalid inline image' });
+                }
             } else {
                 const link = safeLink(src);
                 await add(alt || (link && /^https?:/i.test(link) ? link : ''), ctx.marks, ctx.pre);
@@ -209,7 +230,7 @@ async function parse(blob: Blob, mode: 'markers' | 'rich'): Promise<unknown> {
     const fragment: RichFragment = { blocks: blocks.length ? blocks : [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] };
     const projectedLength = length + Math.max(0, blocks.length - 1);
     for (const image of dataImages) image.textOffset = Math.min(image.textOffset, projectedLength);
-    return { rich: fragment, dataImages };
+    return { rich: fragment, dataImages, refusedImages };
 }
 const initialize = (event: MessageEvent) => {
     if (event.source !== parent || event.ports.length !== 1) return;
@@ -229,7 +250,7 @@ const initialize = (event: MessageEvent) => {
                 done = true; send({ type: 'error' }); return;
             }
             parts.push(data.bytes); total += data.bytes.byteLength; send({ type: 'ack', seq: expected++ });
-        } else if (data.type === 'finish' && data.seq === expected && (data.mode === 'markers' || data.mode === 'rich')) {
+        } else if (data.type === 'finish' && data.seq === expected && (data.mode === 'markers' || data.mode === 'rich' || data.mode === 'metadata')) {
             done = true;
             void parse(new Blob(parts, { type: 'text/html' }), data.mode).then(result => send({ type: 'result', result }), () => send({ type: 'error' }));
         }

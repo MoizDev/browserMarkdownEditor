@@ -39,13 +39,17 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   bytes generation and session; `FrameToken` also carries view lease and device generation. Check
   the full relevant token, revision and ownership at async publication; stale worker responses,
   disposed leases and prior-device resources must never update the current view (C7, design §7.1).
+  Rest snapping is presentation only: never write its correction back into the semantic camera.
+  That advanced the epoch every frame and cancelled CPU colour jobs forever; use the common
+  `pagePresentation`/`projectPage` for paint, overlays and measurement geometry.
 - Split `prepare(view, budget)` into bounded resumable work, respect `shouldYield()` and
   `claimUpload(bytes)` and never perform resource creation or uploads inside draw. Use the host's
   canonical CPU/GPU allocators; a failed `reserve` means defer or use a lower-quality/2D path, not
   an unaccounted allocation. Return the same lease to the allocator that issued it; GPU retirement
   remains charged until complete (C4.3, design §§5.6, 6, 7.1).
 - `host.device()` describes the GPU resources available to the preparing compositor, not a promise
-  about the displayed backend; it can be null. Reacquire it after backend/generation changes, and never import the
+  about the displayed backend; it can be null. A qualified candidate is not the preparing device
+  during the first CPU picture or resize bridge. Reacquire it after backend/generation changes, and never import the
   broker or native GL into a layer. `host.uniforms(bytes)` is valid only during `drawGpu` and uses
   the current encoder's fenced ring. `host.drawTexturedQuad` takes source texels including real
   gutters and a device-pixel destination for either backend. `host.paintWorld` and `host.paintPage`
@@ -54,6 +58,9 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
 - `encode` and `submit` can return null: do not acknowledge presentation or advance overlays without
   a complete current frame. Requeue budget/deadline deferrals and null submit; a worker or other
   external wait instead wakes on completion or a real deadline, never by polling frames.
+  Regular and mirror CPU attempts share ONE canonical scene key for pending source admissions;
+  their back-buffer/presentation keys remain separate. Different pending keys made both attempts
+  evict each other's admitted images forever before the first frame, despite complete PDF tiles.
 - Compose page, committed ink and live stroke as one document-colour group; invert that group once,
   not each translucent element. Chrome/selection remains outside it. Capture/export bypasses view
   inversion (C2.5, design §4.2).
@@ -64,11 +71,22 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   Both are lazy render exports keyed by the actual worker incarnation; these estimates are
   report-only, separate from the decoded-raster CPU budget C (design §6.2; worker-host §5.8).
 - Capture belongs to the session: select an idle GPU route only if its full document/session token
-  matches the immutable capture snapshot, otherwise use CPU. Capture snapshots retain their own layers,
-  revision and isolation inventory for the requested region/scale; never reuse the live viewport plan.
+  matches the immutable snapshot and the scheduler is running/not suspended, otherwise use CPU.
+  Retain content/resources synchronously before awaiting. Async `prepare` may publish the frozen
+  plan's isolation getter; copy it AFTER prepare, never spread its initial empty value or reuse the
+  live viewport inventory. Preserve the getter when composing child snapshots.
+- `captureBlob(rect, maxSide, options)` encodes PNG from the SAME CPU capture target before cleanup;
+  no second canvas repaint or new GPU context. It shares bitmap capture's queue/deadline/admission.
+  Aborting rejects promptly but retains the active slot/storage until native encoding settles.
+  Compose PDF+ink through genuine `PdfInkBackdrop.captureSnapshot` (plain, source/session leased),
+  not nested queued `captureRegion`: two parent captures would occupy both slots and deadlock.
 - CPU coverage witnesses and their helpers are benchmark-only conditional imports. Shadow backing,
   bitmap staging and counting scratch are charged to the canonical allocators as measurement bytes;
-  they are not a dependency of normal rendering.
+  they are not a dependency of normal rendering. Raster identity is explicit (`Layer.benchmarkRaster`
+  on canonical PDF layers, declared/assigned only in benchmark builds); procedural notebook paper
+  is not raster. Preserve custom `benchmarkDomain` callbacks when freezing compositor bindings.
+  Vector current waits for its completed authoritative pass; optional witness failure never skips
+  mandatory colour submission. Dev esbuild must bind the false constant BEFORE DCE/import analysis.
 
 ## Boundaries
 

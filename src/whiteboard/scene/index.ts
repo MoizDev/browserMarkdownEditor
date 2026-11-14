@@ -1,6 +1,7 @@
 import { intersects, validBox, writeBox } from './bounds';
 import { PackedBuildJob } from './packedBuild';
 import type { PackedSnapshot, PackedTreeData } from './packedBuild';
+import type { Box } from './bounds';
 export { INDEX_FANOUT, PackedBuildJob } from './packedBuild';
 export type { PackedSnapshot, PackedTreeData } from './packedBuild';
 const ACTIVE = 0x80000000;
@@ -166,6 +167,20 @@ export class HybridIndex {
     get highWater(): number { return this.next; }
     get ready(): boolean { return this.seeded === 0; }
     get byteLength(): number { return this.packed.byteLength + this.edits.byteLength + this.generations.byteLength + this.versions.byteLength + this.dynamic.byteLength + this.dirty.byteLength; }
+    /** Root-only union: obsolete packed leaves deliberately remain a conservative overestimate. */
+    occupiedBounds(): Box | null {
+        if (!this.ready || !this.active) return null;
+        const packed = this.packed, edits = this.edits;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const [root, values] of [[packed.root, packed.bounds], [edits.root, edits.bounds]] as const) {
+            if (root === NONE) continue;
+            const offset = 4 * root;
+            if (!validBox(values, offset)) return null;
+            minX = Math.min(minX, values[offset]); minY = Math.min(minY, values[offset + 1]);
+            maxX = Math.max(maxX, values[offset + 2]); maxY = Math.max(maxY, values[offset + 3]);
+        }
+        return minX === Infinity ? null : Object.freeze([minX, minY, maxX, maxY] as const);
+    }
     get needsRebuild(): boolean { return this.cleanup >= this.packed.count && this.cleanupWord >= this.dirty.length && this.dirtyCount > Math.max(2048, this.active * 0.05); }
     get needsCleanup(): boolean { return this.queryLeases === 0 && (this.cleanup < this.packed.count || this.cleanupWord < this.dirty.length); }
     private markDirty(slot: number): void {

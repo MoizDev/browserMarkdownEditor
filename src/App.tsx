@@ -1,6 +1,7 @@
 import { runReaderHostCommand } from './utils/documentReading';
 import { createDocumentBuffers, sourceIsNewer, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions, type SessionEntry } from './utils/documentSessions';
+import { createClosedCanvasVersions } from './utils/closedCanvasVersions';
 import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
 import type { AttachCanvasSession, CanvasSessionBridge } from './utils/canvasSessionBridge';
@@ -48,6 +49,9 @@ import type { SearchController } from './utils/searchController';
 import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
 import type { RecoveryEntry } from './utils/recoveryJournal';
 import type { NativeCanvasHost, NativeCanvasIdentity } from './types/nativeCanvas';
+import { pdfEngineAvailableInBuild } from './utils/pdfEngineAvailability';
+import { createClipboardCache } from './utils/clipboardCache';
+import { createNativeEmbedHost } from './utils/nativeEmbedHost';
 import { materializeRecoveryCopy, recoveryCopyMedia } from './utils/recoveryCopy';
 import { bindRecoveryAdapter, recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
@@ -376,6 +380,14 @@ function hasHostedNativeOwner(entry: SessionEntry | undefined, documentId: strin
     && owner.documentId === documentId && owner.session === entry.serial;
 }
 
+function hasWritableHostedNativeOwner(entry: SessionEntry | undefined, documentId: string): boolean {
+  if (!hasHostedNativeOwner(entry, documentId) || !entry || !('peek' in entry.adapter) || typeof entry.adapter.peek !== 'function') return false;
+  const hosted: unknown = entry.adapter.peek();
+  if (!hosted || typeof hosted !== 'object' || !('board' in hosted)) return false;
+  const board = hosted.board;
+  return !!board && typeof board === 'object' && 'isReadOnly' in board && board.isReadOnly === false;
+}
+
 interface PdfRebuildEntry {
   identity: ReaderIdentity;
   root: FileSystemDirectoryHandle;
@@ -421,6 +433,7 @@ export default function App() {
     getVaultActivation,
     resolveVaultDir,
     resolveVaultFile,
+    verifyVaultFileIdentity,
     vaultDirExists,
     nameTaken,
     pickDirectory: pickDirectoryFromFileSystem,
@@ -454,6 +467,7 @@ export default function App() {
     readFileVersioned,
     readFileSnapshot,
     readBoardAsset,
+    readLegacyBoardAsset,
     putBoardAsset,
     readBytesVersioned,
     inspectExportTarget,
@@ -461,6 +475,7 @@ export default function App() {
     statFile,
     writeFileVersioned,
     writeConflictCopy,
+    writeDistinctCopy,
     recreateFile,
     resolveFileHandle,
     subscribeVaultChanges,
@@ -958,6 +973,9 @@ export default function App() {
    *  there is nothing to decide. STABLE — it is handed to EditorPane and on to
    *  every memoized DocumentPane, which must not re-render per keystroke. */
   const notify = useCallback((message: string) => {
+    if (typeof message !== 'string' || !message.trim()) {
+      console.error('An app notice needs a nonempty message:', new Error('Invalid app notice').stack);
+    }
     void tell({ title: 'Could not continue', confirmLabel: 'OK', body: message });
   }, [tell]);
 
@@ -1014,6 +1032,7 @@ export default function App() {
   // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
   const sessionReportRef = useRef<(documentId: string, source: ContentSource, options?: ContentChangeOptions) => void>(() => {});
+  const nativeTransitionRef = useRef<(documentId: string, source: import('./utils/documentBuffers').DeferredSource, revision: number, prior: ContentSource) => void>(() => { throw new Error('Canvas source coordinator is not ready'); });
   const bytesGenerationsRef = useRef(new Map<string, number>());
   const bufferPathIdsRef = useRef(new Map<string, string>());
   const [documentBuffers] = useState(() => createDocumentBuffers(path => bufferPathIdsRef.current.get(path)));
@@ -1124,6 +1143,20 @@ export default function App() {
     showRestoreNotice();
     return unsubscribe;
   }, [announce]);
+  const ensureCanvasBridge = useCallback((tab: OpenTab) => {
+    const kind = tab.representation.loadedKind;
+    if (tab.readError || !kind || !['pdf', 'drawing', 'notebook'].includes(kind)) {
+      throw new Error('Canvas representation is not ready');
+    }
+    const entry = documentSessions.ensure(tab.id, kind, bytesGenerationsRef.current.get(tab.id) ?? 0,
+      owner => createCanvasSessionBridge(owner, () => documentBuffers.get(tab.id)?.source ?? ''));
+    if (kind === 'pdf') ensurePdfSessionRoute(entry);
+    documentBuffers.setOwner(tab.id, { documentId: tab.id, session: entry.serial });
+    if (!entry.getSlot(RECOVERY_SESSION_BINDING)) {
+      entry.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(tab.id, entry.adapter), dispose => dispose());
+    }
+    return entry;
+  }, [documentBuffers, documentSessions]);
   // A binary host acquires in its passive effect. Publish the new tab first;
   // lazy dev imports hid this parent/child effect ordering race in production.
   useLayoutEffect(() => {
@@ -1138,18 +1171,12 @@ export default function App() {
       const tab = tabs.find(t => t.file.path === path);
       const kind = tab?.representation.loadedKind;
       if (!tab || tab.readError || !kind || !['pdf', 'drawing', 'notebook'].includes(kind)) continue;
-      const entry = documentSessions.ensure(tab.id, kind, bytesGenerationsRef.current.get(tab.id) ?? 0,
-        owner => createCanvasSessionBridge(owner, () => documentBuffers.get(tab.id)?.source ?? ''));
-      if (kind === 'pdf') ensurePdfSessionRoute(entry);
-      documentBuffers.setOwner(tab.id, { documentId: tab.id, session: entry.serial });
-      if (!entry.getSlot(RECOVERY_SESSION_BINDING)) {
-        entry.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(tab.id, entry.adapter), dispose => dispose());
-      }
+      ensureCanvasBridge(tab);
     }
-  }, [tabs, layout, documentBuffers, documentSessions]);
+  }, [tabs, layout, documentBuffers, ensureCanvasBridge]);
   const attachNativeCanvasSession = useCallback<AttachCanvasSession>(
-    (documentId, create) => attachCanvasSession(documentSessions, documentId, create), [documentSessions]);
-  const nativePoliciesRef = useRef(new Map<string, { session: number; sourceGeneration: number; retainedThroughGeneration: number; activation: number; kind: 'drawing' | 'notebook' | 'pdfInk'; emergencyReadOnly: boolean }>());
+    (documentId, create, commit) => attachCanvasSession(documentSessions, documentId, create, commit), [documentSessions]);
+  const nativePoliciesRef = useRef(new Map<string, { session: number; sourceGeneration: number; retainedThroughGeneration: number; activation: number; kind: 'drawing' | 'notebook' | 'pdfInk'; emergencyReadOnly: boolean; pdfWriteAuthority?: { canWriteSource(): boolean; canWrite(): boolean } }>());
   const onNativeCanvasReady = useCallback<NativeCanvasReady>(acquisition => {
     const { owner, vaultActivation, bytesGeneration, kind } = acquisition;
     const live = () => {
@@ -1168,15 +1195,25 @@ export default function App() {
     const prior = nativePoliciesRef.current.get(owner.documentId);
     const same = prior && prior.session === owner.session && prior.sourceGeneration === bytesGeneration && prior.activation === vaultActivation && prior.kind === kind;
     const emergencyReadOnly = same ? prior.emergencyReadOnly : !!withNativeCanvasPolicy(tab.representation, kind).emergencyReadOnly;
+    if (!same && kind === 'pdfInk' && !acquisition.pdfWriteAuthority) return null;
     if (!same) nativePoliciesRef.current.set(owner.documentId, { session: owner.session, sourceGeneration: bytesGeneration,
-      retainedThroughGeneration: bytesGeneration, activation: vaultActivation, kind, emergencyReadOnly });
+      retainedThroughGeneration: bytesGeneration, activation: vaultActivation, kind, emergencyReadOnly,
+      ...(acquisition.pdfWriteAuthority ? { pdfWriteAuthority: acquisition.pdfWriteAuthority } : {}) });
     const digest = acquisition.legacyOriginalSha256;
     const legacyOriginalSha256 = digest && /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
+    // The bridge's initial conversion report follows this callback synchronously,
+    // before React commits the representation update.
+    tabsRef.current = tabsRef.current.map(current => current.id === owner.documentId && live()
+      ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
+      : current);
     setTabs(previous => previous.map(current => current.id === owner.documentId && live()
       ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
       : current));
     return { emergencyReadOnly };
   }, [documentSessions, getVaultActivation]);
+  const [nativeClipboard] = useState(() => createClipboardCache(error => console.error('Could not release clipboard resources:', error)));
+  const [nativeEmbeds] = useState(createNativeEmbedHost);
+  useEffect(() => { nativeClipboard.setActive(true); return () => nativeClipboard.setActive(false); }, [nativeClipboard]);
   const nativeCanvasHost = useMemo<NativeCanvasHost>(() => {
     const current = (identity: NativeCanvasIdentity) => {
       if (identity.vaultActivation !== getVaultActivation()) return undefined;
@@ -1190,14 +1227,26 @@ export default function App() {
       return tab && !tab.readError && tab.representation.status === 'ready' && tab.representation.loadedKind === loaded
         && entry?.serial === identity.session && (entry.bytesGeneration === identity.bytesGeneration || retained) ? tab : undefined;
     };
-    const writable = (identity: NativeCanvasIdentity) => {
+    // The first failing guard names the refusal; a null result is the only state in which the source may be written.
+    const writeBlockSource = (identity: NativeCanvasIdentity): string | null => {
       const policy = nativePoliciesRef.current.get(identity.documentId);
       const entry = documentSessions.get(identity.documentId);
-      return !!current(identity) && !!policy && !policy.emergencyReadOnly && policy.session === identity.session
-        && policy.activation === identity.vaultActivation && policy.kind === identity.kind
-        && policy.sourceGeneration === identity.bytesGeneration && policy.retainedThroughGeneration === entry?.bytesGeneration
-        && hasHostedNativeOwner(entry, identity.documentId);
+      if (!current(identity)) return 'The native canvas session has ended.';
+      if (!policy) return 'The native canvas is not available for editing.';
+      if (policy.emergencyReadOnly) return 'This canvas is in emergency read-only mode.';
+      if (policy.session !== identity.session || policy.activation !== identity.vaultActivation || policy.kind !== identity.kind
+        || policy.sourceGeneration !== identity.bytesGeneration || policy.retainedThroughGeneration !== entry?.bytesGeneration)
+        return 'The native canvas changed; reopen it to continue.';
+      if (!hasHostedNativeOwner(entry, identity.documentId)) return 'The native canvas has no active editor.';
+      if (!getBaseline(identity.documentId)) return 'The file has no disk baseline yet.';
+      if (diskStateRef.current.has(identity.documentId)) return 'The file changed on disk; resolve the conflict first.';
+      if (identity.kind === 'pdfInk' && policy.pdfWriteAuthority?.canWriteSource() !== true) return 'The PDF source is locked for writing.';
+      return null;
     };
+    const writableSource = (identity: NativeCanvasIdentity) => writeBlockSource(identity) === null;
+    const writeBlockReason = (identity: NativeCanvasIdentity): string | null => writeBlockSource(identity)
+      ?? (hasWritableHostedNativeOwner(documentSessions.get(identity.documentId), identity.documentId) ? null : 'Another editor holds this canvas for writing.');
+    const writable = (identity: NativeCanvasIdentity) => writeBlockReason(identity) === null;
     const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();
       const tab = current(identity), root = rootHandleRef.current;
@@ -1206,6 +1255,12 @@ export default function App() {
         hash: media.hash, preferredName: media.preferredName, signal, isCurrent: () => !!current(identity) && (!write || writable(identity)) };
     };
     return {
+      clipboard: nativeClipboard,
+      embeds: nativeEmbeds,
+      async createEditingCapabilities(context) {
+        const { createNativeEditingCapabilities } = await import('./components/whiteboard/nativeEditingCapabilityFactory');
+        return createNativeEditingCapabilities(context);
+      },
       identity(id) {
         const tab = tabsRef.current.find(tab => tab.id === id), entry = documentSessions.get(id);
         if (!tab || tab.readError || tab.representation.status !== 'ready' || !entry) return undefined;
@@ -1227,12 +1282,17 @@ export default function App() {
           vaultActivation: getVaultActivation(), kind: loaded === 'pdf' ? 'pdfInk' : loaded, path: tab.file.path, name: tab.file.name };
       },
       isCurrent: identity => !!current(identity),
+      canWriteSource: identity => writableSource(identity),
+      canWrite: identity => writable(identity),
+      writeBlockReason: identity => writeBlockReason(identity),
       session(id) {
         const adapter = documentSessions.get(id)?.adapter;
         return adapter && 'peek' in adapter ? (adapter as CanvasSessionBridge).peek() : undefined;
       },
       async acquireBytes(identity, signal) {
         await awaitSessionDisposals(identity.documentId);
+        const bridge = documentSessions.get(identity.documentId)?.adapter;
+        if (bridge && 'settled' in bridge && typeof bridge.settled === 'function') await (bridge as CanvasSessionBridge).settled();
         signal.throwIfAborted();
         const tab = current(identity);
         if (!tab?.file.handle) throw new DOMException('Canvas session ended', 'AbortError');
@@ -1242,10 +1302,108 @@ export default function App() {
           const bytes = await new Response(snapshot.blob.stream()).blob();
           const version = await snapshot.fingerprint(signal);
           signal.throwIfAborted();
-          if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
-          if (baseline && baseline.hash !== version.hash) throw new Error('The canvas changed on disk. Reload it before editing.');
+          const latest = current(identity), currentBaseline = getBaseline(identity.documentId);
+          if (!latest || latest.file.handle !== tab.file.handle) throw new DOMException('Canvas session ended', 'AbortError');
+          if ((baseline && baseline.hash !== version.hash) || (currentBaseline && currentBaseline.hash !== version.hash)) throw new Error('The canvas changed on disk. Reload it before editing.');
+          if (isNativeDrawingFile(latest.file.name) && !currentBaseline) setBaseline(identity.documentId, version);
           return bytes;
         } finally { snapshot.dispose(); }
+      },
+      pinBoardSource(identity) {
+        const tab = current(identity), buffer = documentBuffers.get(identity.documentId);
+        if (!tab || identity.kind === 'pdfInk' || !buffer) throw new DOMException('Canvas source is unavailable', 'AbortError');
+        const captured = documentBuffers.retainSnapshotForDocument(identity.documentId);
+        if (!captured || captured.revision !== buffer.revision) { captured?.release(); throw new DOMException('Canvas source changed', 'AbortError'); }
+        const dirty = buffer.revision > buffer.savedRevision, prior = buffer.source, revision = buffer.revision;
+        const baselineAtPin = getBaseline(identity.documentId);
+        if (dirty && !baselineAtPin) { captured.release(); throw new Error('The unsaved canvas has no verified disk baseline.'); }
+        const acquireDisk = (signal: AbortSignal) => this.acquireBytes(identity, signal);
+        let released = false, observedDiskHash: string | undefined;
+        const isCurrent = () => {
+          const latest = documentBuffers.get(identity.documentId);
+          return !released && !!current(identity) && !!latest && latest.revision === revision && latest.source === prior
+            && (!dirty || getBaseline(identity.documentId) === baselineAtPin)
+            && latest.owner.documentId === identity.documentId && latest.owner.session === identity.session;
+        };
+        return { dirty, isCurrent,
+          async read(signal) {
+            signal.throwIfAborted();
+            if (!isCurrent()) throw new DOMException('Canvas source changed', 'AbortError');
+            const disk = await acquireDisk(signal);
+            const baseline = getBaseline(identity.documentId);
+            if (!isCurrent() || signal.aborted) throw new DOMException('Canvas source changed', 'AbortError');
+            if (dirty && (!baseline || baseline !== baselineAtPin)) throw new Error('The canvas disk baseline changed during acquisition.');
+            let diskHash: string;
+            if (baseline) diskHash = baseline.hash;
+            else { const { hashBytes } = await import('./utils/diskVersion'); diskHash = await hashBytes(await disk.arrayBuffer()); }
+            if (!isCurrent() || signal.aborted) throw new DOMException('Canvas source changed', 'AbortError');
+            observedDiskHash = diskHash;
+            if (!dirty) return { input: disk, diskHash };
+            const data = captured.data;
+            const resolved = typeof data === 'object' && data !== null && 'kind' in data && data.kind === 'build'
+              ? await data.run(signal) : data;
+            if (!isCurrent() || signal.aborted) throw new DOMException('Canvas source changed', 'AbortError');
+            const input = typeof resolved === 'string' ? new Blob([resolved]) : resolved instanceof Blob ? resolved
+              : resolved instanceof Uint8Array ? new Blob([resolved.slice().buffer as ArrayBuffer]) : null;
+            if (!input) throw new Error('The captured canvas source is not binary or text.');
+            return { input, diskHash };
+          },
+          async verify(signal) {
+            signal.throwIfAborted();
+            if (!isCurrent() || !observedDiskHash) throw new DOMException('Canvas source changed', 'AbortError');
+            const disk = await acquireDisk(signal);
+            const { hashBytes } = await import('./utils/diskVersion');
+            const hash = await hashBytes(await disk.arrayBuffer());
+            if (!isCurrent() || signal.aborted || hash !== observedDiskHash) throw new DOMException('Canvas disk baseline changed', 'AbortError');
+          },
+          accept(source) {
+            if (!dirty || !isCurrent()) throw new DOMException('Canvas source changed', 'AbortError');
+            nativeTransitionRef.current(identity.documentId, source, revision, prior);
+          },
+          release() { if (!released) { released = true; captured.release(); } },
+        };
+      },
+      async confirmLegacyPdfConversion(identity, request, signal) {
+        signal.throwIfAborted();
+        if (identity.kind !== 'pdfInk' || !/^[a-f0-9]{64}$/.test(request.originalSha256)
+          || (request.foreign !== null && (request.foreign.kind !== 'foreign'
+            || !['mismatch', 'unsupported', 'malformed'].includes(request.foreign.reason)))) throw new Error('Invalid PDF conversion request');
+        const initial = current(identity), root = rootHandleRef.current;
+        if (!initial?.file.handle || !initial.file.parentHandle || !root) throw new DOMException('PDF session ended', 'AbortError');
+        const path = initial.file.path, handle = initial.file.handle as FileSystemFileHandle, parent = initial.file.parentHandle;
+        const stillCurrent = () => {
+          const tab = current(identity), entry = documentSessions.get(identity.documentId);
+          return !!tab && rootHandleRef.current === root && tab.file.path === path && tab.file.handle === handle
+            && tab.file.parentHandle === parent && entry?.serial === identity.session && entry.bytesGeneration === identity.bytesGeneration
+            && getBaseline(identity.documentId)?.hash === request.originalSha256 && !tab.dirty
+            && !documentBuffers.isDirty(identity.documentId) && !documentSessions.hasPendingEdits(identity.documentId)
+            && !diskStateRef.current.has(identity.documentId) && !flushingRef.current.has(identity.documentId)
+            && !saveTimersRef.current.has(path) && !getView(path)?.hasPendingEdits?.();
+        };
+        const verify = async () => {
+          signal.throwIfAborted();
+          if (!stillCurrent()) throw new DOMException('PDF changed before conversion', 'AbortError');
+          const snapshot = await readFileSnapshot(handle, signal);
+          try {
+            const version = await snapshot.fingerprint(signal);
+            signal.throwIfAborted();
+            if (!stillCurrent() || version.hash !== request.originalSha256) throw new Error('The PDF changed on disk. Reload it before conversion.');
+          } finally { snapshot.dispose(); }
+        };
+        await verify();
+        const question = ask({ title: 'Convert PDF annotations?', confirmLabel: 'Convert',
+          body: <>{request.foreign && <><strong>This PDF was changed by another program or its write mark could not be verified.</strong> Converting may replace those changes when the PDF is next saved.<br /><br /></>}
+            The existing annotations will be converted for this editor. A copy of the original PDF will be kept in this folder’s Trash before any replacement.</> });
+        const shown = dialogRef.current;
+        const cancel = () => { if (shown && dialogRef.current === shown) shown.onCancel?.(); };
+        signal.addEventListener('abort', cancel, { once: true });
+        if (signal.aborted) cancel();
+        let accepted: boolean;
+        try { accepted = await question; } finally { signal.removeEventListener('abort', cancel); }
+        signal.throwIfAborted();
+        if (!accepted) return false;
+        await verify();
+        return true;
       },
       async keepConversionBackup(identity, original, digest, signal) {
         const tab = current(identity);
@@ -1262,6 +1420,22 @@ export default function App() {
           throw new DOMException('Canvas session ended', 'AbortError');
         }
         return result;
+      },
+      acceptConvertedSource(identity, source, digest) {
+        const tab = current(identity);
+        if (!tab || !writable(identity) || !/^[a-f0-9]{64}$/.test(digest)
+          || getBaseline(identity.documentId)?.hash !== digest || tab.representation.legacyOriginalSha256 !== digest
+          || tab.representation.nativeCanvasKind !== identity.kind || tab.representation.nativeCanvasSession !== identity.session
+          || source.kind !== 'deferred' || source.owner.documentId !== identity.documentId || source.owner.session !== identity.session
+          || !documentSessions.isLiveOwner(identity.documentId, source.owner)) {
+          throw new DOMException('Legacy conversion is no longer authorized', 'AbortError');
+        }
+        const prior = documentBuffers.get(identity.documentId);
+        sessionReportRef.current(identity.documentId, source);
+        const accepted = documentBuffers.get(identity.documentId);
+        if (!accepted || accepted.revision === prior?.revision || accepted.source !== source) {
+          throw new Error('Legacy conversion source was not accepted');
+        }
       },
       async appendJournal(identity, source, capture) {
         if (!current(identity) || !writable(identity) || typeof source === 'string' || source.kind !== 'deferred'
@@ -1291,6 +1465,21 @@ export default function App() {
         if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
         return { name: found.name, blob };
       },
+      async readLegacyAsset(identity, src, signal) {
+        signal.throwIfAborted();
+        const tab = current(identity), root = rootHandleRef.current;
+        if (!tab?.file.handle || !tab.file.parentHandle || !root) throw new DOMException('Canvas session ended', 'AbortError');
+        const path = tab.file.path, owner = tab.file.handle as FileSystemFileHandle, parent = tab.file.parentHandle;
+        const isCurrent = () => {
+          const latest = current(identity);
+          return !!latest && rootHandleRef.current === root && latest.file.path === path
+            && latest.file.handle === owner && latest.file.parentHandle === parent;
+        };
+        const blob = await readLegacyBoardAsset({ root, parent, owner, src, signal, isCurrent });
+        signal.throwIfAborted();
+        if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+        return blob;
+      },
       async putMedia(identity, media, blob, signal) {
         const name = await putBoardAsset({ ...request(identity, media, signal, true), extension: media.extension, blob });
         signal.throwIfAborted();
@@ -1298,7 +1487,7 @@ export default function App() {
         return name;
       },
     };
-  }, [documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal]);
+  }, [nativeClipboard, nativeEmbeds, documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, readLegacyBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal, ask]);
   useEffect(() => {
     const open = new Set(tabs.map(tab => tab.id));
     for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);
@@ -1989,14 +2178,14 @@ export default function App() {
       // outside change is compared with (checkOpenDocs).
       const handle = node.handle as FileSystemFileHandle;
       let readError: string | undefined;
-      const read = (isPdfFile(node.name) || isEpubFile(node.name)) ? null : await readFileVersioned(handle).catch(error => { readError=describeReadError(error); return null; });
+      const read = (isPdfFile(node.name) || isEpubFile(node.name) || isNativeDrawingFile(node.name)) ? null : await readFileVersioned(handle).catch(error => { readError=describeReadError(error); return null; });
       if (rootHandleRef.current !== rootAtOpen) return false;
       const content = read?.text ?? '';
       // What this note referred to when it was opened — the baseline every
       // later save's asset diff is taken against.
       if (read) rememberAssetRefs(node, content);
       const id = newTabId();
-      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, handle);
+      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, handle);
       // Re-check inside the updater: a second click can land while the first
       // read is still in flight, and tabsRef only updates post-commit.
       // A source file opens ready to type in: there is no "reading mode" worth
@@ -2284,17 +2473,27 @@ export default function App() {
     trashInFlightRef.current = true;
     const activation = getVaultActivation();
     const controller = new AbortController();
-    const pdfTab = isPdfFile(node.name) ? tabsRef.current.find(t => t.file.path === node.path) : undefined;
-    const current = () => getVaultActivation() === activation && (!pdfTab || (pdfTab.representation.nativeCanvasKind === 'pdfInk'
-      && pdfTab.representation.nativeCanvasSession !== undefined && getSessionIdentity(pdfTab.id)?.serial === pdfTab.representation.nativeCanvasSession
-      && tabsRef.current.some(t => t.id === pdfTab.id && t.file.path === node.path && t.representation.generation === pdfTab.representation.generation && t.representation.legacyOriginalSha256 === pdfTab.representation.legacyOriginalSha256)));
+    const nativeKind = isPdfFile(node.name) ? 'pdfInk' : isNativeDrawingFile(node.name) ? 'drawing' : undefined;
+    const nativeTab = nativeKind ? tabsRef.current.find(t => t.file.path === node.path) : undefined;
+    const current = () => {
+      if (getVaultActivation() !== activation) return false;
+      if (!nativeKind) return true;
+      if (!nativeTab) return false;
+      const policy = nativePoliciesRef.current.get(nativeTab.id), session = documentSessions.get(nativeTab.id);
+      return nativeTab.representation.nativeCanvasKind === nativeKind && nativeTab.representation.nativeCanvasSession !== undefined
+        && policy?.kind === nativeKind && policy.activation === activation && policy.session === nativeTab.representation.nativeCanvasSession
+        && session?.serial === policy.session && session.bytesGeneration === policy.retainedThroughGeneration
+        && hasHostedNativeOwner(session, nativeTab.id)
+        && tabsRef.current.some(t => t.id === nativeTab.id && t.file.path === node.path && t.file.handle === nativeTab.file.handle
+          && t.representation.generation === nativeTab.representation.generation && t.representation.legacyOriginalSha256 === nativeTab.representation.legacyOriginalSha256);
+    };
     try {
       await reconcileQueueRef.current;
-      if (isPdfFile(node.name) && (!pdfTab || !current())) { notify('Open the converted PDF annotation view first to locate its pre-conversion copy.'); return; }
-      const source = pdfTab ? null : await readFileVersioned(node.handle);
-      const digest = pdfTab ? pdfTab.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
+      if (nativeKind && (!nativeTab || !current())) { notify('Open the converted document in its native view first to locate its pre-conversion copy.'); return; }
+      const source = nativeKind ? null : await readFileVersioned(node.handle);
+      const digest = nativeKind ? nativeTab?.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
       if (!digest || !/^[a-f0-9]{64}$/.test(digest)) {
-        notify('No pre-conversion copy is recorded for this file. For a converted PDF, open its annotation view first.');
+        notify('No pre-conversion copy is recorded for this file.');
         return;
       }
       const items = await listTrash();
@@ -2328,7 +2527,7 @@ export default function App() {
       controller.abort();
       trashInFlightRef.current = false;
     }
-  }, [announce, getVaultActivation, handleIO, listTrash, notify, readFileVersioned, restoreConversionCopy, rootHandle]);
+  }, [announce, documentSessions, getVaultActivation, handleIO, listTrash, notify, readFileVersioned, restoreConversionCopy, rootHandle]);
   useEffect(() => registerConversionRestore(node => { void restoreBeforeConversion(node); }), [restoreBeforeConversion]);
 
   // Shared destination transaction for a staged notebook PDF. The source owner
@@ -2401,6 +2600,7 @@ export default function App() {
           + `${paper.pageCount === 1 ? 'page' : 'pages'}.`,
       });
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError' && !isCurrent()) return;
       console.error('Could not export the notebook:', err);
       notify(err instanceof DOMException && err.name === 'TypeMismatchError'
         ? `A folder named "${notebookPdfName(file.name)}" already exists.` : `Could not export "${file.name}".`);
@@ -2510,6 +2710,56 @@ export default function App() {
       approved: entry.approved, copyName: entry.copyName });
   }, [currentPdfOwner, setDiskState, setPdfRebuildNotice]);
 
+  const unsignedCopyInFlight = useRef(false);
+  const handleUnsignedPdfCopy = useCallback(async (identity: ReaderIdentity, displayed: DiskVersion) => {
+    if (unsignedCopyInFlight.current) return;
+    const source = currentPdfOwner(identity), root = rootHandleRef.current;
+    const session = source && getSessionIdentity(source.id), activation = getVaultActivation();
+    if (!source?.file.handle || !source.file.parentHandle || !root || !session) throw new Error('The signed PDF is no longer open.');
+    const { handle, parentHandle, name, path } = source.file;
+    const current = () => {
+      const tab = currentPdfOwner(identity);
+      return rootHandleRef.current === root && getVaultActivation() === activation && getSessionIdentity(source.id) === session &&
+        tab?.file.handle === handle && tab.file.parentHandle === parentHandle && !diskStateRef.current.has(source.id) &&
+        !documentBuffers.isDirty(source.id) && !documentSessions.hasPendingEdits(source.id);
+    };
+    const check = () => { if (!current()) throw new DOMException('The signed PDF changed. Open it again before creating a copy.', 'AbortError'); };
+    const signal = new AbortController().signal;
+    let snapshot: import('./types/reading').ReadOnlyFileSnapshot | undefined;
+    unsignedCopyInFlight.current = true;
+    try {
+      check();
+      if (!pdfEngineAvailableInBuild()) throw new Error('The native PDF engine is unavailable in this build.');
+      const confirmed = await ask({ title: 'Create an unsigned PDF copy?', confirmLabel: 'Create unsigned copy',
+        body: 'The new copy will have no valid digital signatures. The signed original stays unchanged and is also kept as an attachment in the copy. Use the original, not the copy, to verify signatures.' });
+      if (!confirmed) return;
+      check();
+      snapshot = await readFileSnapshot(handle as FileSystemFileHandle, signal);
+      const version = await snapshot.fingerprint(signal);
+      check();
+      if (version.hash !== displayed.hash) { setDiskState(source.id, 'conflict'); throw new Error('The PDF changed on disk. Resolve that change before creating an unsigned copy.'); }
+      const [{ prepareUnsignedPdfCopy }, { getSharedPdfPool }] = await Promise.all([
+        import('./pdf/writing/unsignedCopyClient'), import('./pdf/session/startup'),
+      ]);
+      check();
+      const prepared = await prepareUnsignedPdfCopy({ pool: getSharedPdfPool(), source: snapshot.blob.slice(0, snapshot.blob.size, 'application/pdf'),
+        originalSha: version.hash, isCurrent: current, signal });
+      check();
+      if (prepared.kind !== 'unsigned-copy-only' || prepared.originalSha !== version.hash) throw new Error('The writer did not return a verified unsigned copy.');
+      const fresh = await readFileSnapshot(handle as FileSystemFileHandle, signal);
+      try {
+        if ((await fresh.fingerprint(signal)).hash !== version.hash) {
+          setDiskState(source.id, 'conflict'); throw new Error('The signed original changed while the copy was prepared. Nothing has been written.');
+        }
+      } finally { fresh.dispose(); }
+      check();
+      const copy = await writeDistinctCopy(parentHandle, parentVaultPath(path), name.replace(/\.pdf$/i, '') + ' (unsigned).pdf',
+        new Blob([prepared.bytes], { type: 'application/pdf' }), current);
+      if (current()) void tell({ title: 'Unsigned PDF copy created', confirmLabel: 'OK',
+        body: `"${copy.name}" is in the same folder. The signed original is unchanged; its exact bytes are attached to the copy as "${prepared.attachmentName}".` });
+    } finally { snapshot?.dispose(); unsignedCopyInFlight.current = false; }
+  }, [ask, currentPdfOwner, documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, setDiskState, tell, writeDistinctCopy]);
+
   // The outer bytes, not the embedded original, are what another program edited.
   // Check both sides of the awaited close; a successful copy never grants a
   // source belonging to a tab, vault or generation that changed while copying.
@@ -2589,13 +2839,13 @@ export default function App() {
    * would be the silent loss this whole mechanism exists to prevent.
    */
   const keepClosingEdits = useCallback(async (
-    root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array | Blob,
+    root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array | Blob, guard?: () => boolean,
   ) => {
     try {
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path, caller: 'closing-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
       }
-      const copy = await writeConflictCopyRef.current(path, data, root);
+      const copy = await writeConflictCopyRef.current(path, data, root, guard);
       // A dialog, not the status line: the tab is gone, and the edits are now in
       // a file the reader did not ask for — they must hear where.
       void tellRef.current({
@@ -2661,12 +2911,13 @@ export default function App() {
     const nativeAuthorized = nativeSource && policy && !policy.emergencyReadOnly && policy.session === bufferedSource.owner.session
       && policy.kind === (tab.representation.loadedKind === 'pdf' ? 'pdfInk' : tab.representation.loadedKind)
       && policy.activation === getVaultActivation() && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(tab.id) ?? 0)
-      && hasHostedNativeOwner(documentSessions.get(tab.id), tab.id) && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
+      && hasWritableHostedNativeOwner(documentSessions.get(tab.id), tab.id) && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
+    if (nativeSource && !nativeAuthorized) return 'skipped';
     const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
-    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && acceptedFlushable && tab.representation.status === 'ready'
+    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !((pending || documentBuffers.isDirty(tab.id)) && acceptedFlushable && tab.representation.status === 'ready'
       && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
-    if (!tab.dirty && !pending && !force) return 'skipped';
+    if (!tab.dirty && !documentBuffers.isDirty(tab.id) && !pending && !force) return 'skipped';
     // A drain reports into the synchronous funnel before React commits its tab.
     let captured;
     try { captured = documentBuffers.retainSnapshotOf(path); }
@@ -2694,15 +2945,32 @@ export default function App() {
     }
     const { id, file } = tab;
     const handle = tab.file.handle as FileSystemFileHandle;
-    const isPdf = isPdfFile(file.name);
+    const isPdf = tab.representation.status === 'ready' && tab.representation.loadedKind === 'pdf';
     // An annotated PDF tab's buffer is a tldraw snapshot; the file on disk is a
     // real PDF, rebuilt from the pristine original + the overlays the canvas
     // parked for us. No render data yet means the canvas has not reported a
     // change — which is also every PDF only ever read.
-    const pdfData = isPdf ? getPdfRenderData(path) : undefined;
-    const pdfEntry = isPdf ? pdfRebuildRef.current.get(id) : undefined;
-    const pdfOriginal = nativeSource ? pdfEntry?.value.role.original : pdfData?.original;
-    if (isPdf && (!pdfOriginal || !canRebuildAnnotatedPdf(pdfOriginal))) return 'skipped';
+    const nativePdf = nativeSource && tab.representation.status === 'ready' && tab.representation.loadedKind === 'pdf';
+    const pdfData = isPdf && !nativeSource ? getPdfRenderData(path) : undefined;
+    const pdfEntry = isPdf && !nativeSource ? pdfRebuildRef.current.get(id) : undefined;
+    const pdfOriginal = pdfData?.original;
+    const pdfWriteAllowed = () => {
+      if (!isPdf) return true;
+      if (!nativeSource) return !!pdfOriginal && canRebuildAnnotatedPdf(pdfOriginal);
+      const latest = tabsRef.current.find(item => item.id === id), active = nativePoliciesRef.current.get(id);
+      if (!nativePdf || !latest || latest.file.path !== path || latest.file.handle !== handle
+        || latest.representation.status !== 'ready' || latest.representation.loadedKind !== 'pdf'
+        || active !== policy || !active || active.kind !== 'pdfInk' || active.emergencyReadOnly
+        || active.activation !== getVaultActivation() || active.session !== sessionAtCall?.serial
+        || active.retainedThroughGeneration !== (bytesGenerationsRef.current.get(id) ?? 0)
+        || documentSessions.get(id) !== sessionAtCall || !hasHostedNativeOwner(sessionAtCall, id)
+        || !active.pdfWriteAuthority) return false;
+      try { return active.pdfWriteAuthority.canWrite(); } catch { return false; }
+    };
+    const assertPdfWriteAuthority = () => {
+      if (!pdfWriteAllowed()) throw new Error('The PDF is now read-only. Its unsaved annotations have not been written.');
+    };
+    if (!pdfWriteAllowed()) return 'skipped';
     if (isPdf) {
       const refusal = nativeSource ? undefined : pdfSnapshotRefusal(snapshot);
       if (refusal) { setSaveStatus('Not saved'); notifyRef.current(new PdfBuildRefused(refusal).message); return 'skipped'; }
@@ -2731,7 +2999,10 @@ export default function App() {
         const data = isPdf && !nativeSource
           ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
           : await buildCaptured();
-        if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed';
+        assertPdfWriteAuthority();
+        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall || !hasWritableHostedNativeOwner(sessionAtCall, id))) return 'failed';
+        if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return 'failed';
+        if (!await keepClosingEdits(rootAtCall, path, file.name, data, isPdf ? pdfWriteAllowed : undefined)) return 'failed';
         return held === 'conflict' ? 'changed' : 'deleted';
       } catch (error) {
         if (error instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(error.message); return 'skipped'; }
@@ -2766,8 +3037,8 @@ export default function App() {
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? baselineAtCall ?? seeded ?? null;
         // An awaited build/baseline must not resurrect a revoked role capability.
-        if (isPdf && (!pdfOriginal || !canRebuildAnnotatedPdf(pdfOriginal) || !closing && diskStateRef.current.has(id))) return 'skipped';
-        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall)) return 'skipped';
+        if (!pdfWriteAllowed() || isPdf && !closing && diskStateRef.current.has(id)) return 'skipped';
+        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall || !hasWritableHostedNativeOwner(sessionAtCall, id))) return 'skipped';
         if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return 'skipped';
         if (conversionDigest) {
           if (!expected) throw new Error('The conversion baseline is unavailable.');
@@ -2778,8 +3049,8 @@ export default function App() {
             try {
               await reconcileQueueRef.current;
               const stillCurrent = () => {
-                if (!nativeCanvasHost.isCurrent(conversionIdentity) || rootHandleRef.current !== rootAtCall
-                  || documentSessions.get(id) !== sessionAtCall
+                if (!nativeCanvasHost.isCurrent(conversionIdentity) || !pdfWriteAllowed() || rootHandleRef.current !== rootAtCall
+                  || documentSessions.get(id) !== sessionAtCall || !hasWritableHostedNativeOwner(sessionAtCall, id)
                   || !tabsRef.current.some(t => t.id === id && t.file.path === path && t.file.handle === handle)
                   || getBaseline(id)?.hash !== expected.hash || diskStateRef.current.has(id)
                   || documentBuffers.revisionForDocument(id)?.revision !== revision) return false;
@@ -2798,9 +3069,14 @@ export default function App() {
         if (__BME_BENCH__) {
           try { reportVault({ op: 'write', path, caller: 'flushTab' }); } catch { /* Measurement must not interrupt a write. */ }
         }
+        // Conversion backup and the versioned write can both yield after a
+        // permission revocation. A kept copy is a write too, not an escape hatch.
+        assertPdfWriteAuthority();
+        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall || !hasWritableHostedNativeOwner(sessionAtCall, id))) return closing ? 'failed' : 'skipped';
+        if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return closing ? 'failed' : 'skipped';
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
-          if (closing) { if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed'; }
+          if (closing) { assertPdfWriteAuthority(); if (!await keepClosingEdits(rootAtCall, path, file.name, data, isPdf ? pdfWriteAllowed : undefined)) return 'failed'; }
           else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return result.status;
         }
@@ -2943,8 +3219,14 @@ export default function App() {
   // `fromDisk`: the text was just reloaded from the file (a reload in place —
   // editor/externalReload.ts). It is buffered like any edit, but it IS the file,
   // so the tab stays clean and nothing is scheduled to write it back.
-  const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions) => {
+  const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions & {
+    nativeTransition?: { revision: number; prior: ContentSource };
+  }) => {
     const target = tabsRef.current.find(t => t.file.path === path);
+    const transition = options?.nativeTransition, transitionBuffer = target && transition && documentBuffers.get(target.id);
+    if (transition && (!target || typeof content === 'string' || !transitionBuffer || transitionBuffer.revision !== transition.revision
+      || transitionBuffer.source !== transition.prior || transitionBuffer.owner.documentId !== content.owner.documentId
+      || transitionBuffer.owner.session !== content.owner.session)) return;
     const policy = target && nativePoliciesRef.current.get(target.id);
     const liveNativePolicy = !!target && !!policy && policy.kind === (target.representation.loadedKind === 'pdf' ? 'pdfInk' : target.representation.loadedKind)
       && policy.activation === getVaultActivation()
@@ -2975,7 +3257,7 @@ export default function App() {
     }
     if (!accepted) return;
     const prior = documentBuffers.get(target.id)?.source;
-    if (!options?.fromDisk && typeof content !== 'string' && prior && typeof prior !== 'string'
+    if (!transition && !options?.fromDisk && typeof content !== 'string' && prior && typeof prior !== 'string'
       && prior.owner.documentId === content.owner.documentId && prior.owner.session === content.owner.session
       && content.revision <= prior.revision) {
       if (content.revision === prior.revision && !options?.fromJournal) scheduleSave(path);
@@ -3019,6 +3301,23 @@ export default function App() {
     }
     if (!options?.fromJournal) scheduleSave(path);
   }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, syncExitGuard, scheduleSave]);
+  nativeTransitionRef.current = (id, source, revision, prior) => {
+    const tab = tabsRef.current.find(item => item.id === id), before = documentBuffers.get(id);
+    if (!tab || !before || before.revision !== revision || before.source !== prior || !documentBuffers.isDirty(id)
+      || !documentSessions.isLiveOwner(id, source.owner)) throw new DOMException('Canvas source changed', 'AbortError');
+    try { updateTabContent(tab.file.path, source, { nativeTransition: { revision, prior } }); }
+    catch (error) {
+      const accepted = documentBuffers.get(id);
+      if (!accepted || accepted.source !== source || accepted.revision !== revision + 1) throw error;
+      // Once published, the bridge must keep the source even if a subscriber failed.
+      console.error('Canvas source notification failed:', error);
+      try { syncExitGuard(); scheduleSave(tab.file.path); } catch (notifyError) { console.error('Canvas source follow-up failed:', notifyError); }
+    }
+    const after = documentBuffers.get(id);
+    if (!after || after.source !== source || after.revision !== revision + 1 || !documentBuffers.isDirty(id)) {
+      throw new Error('The canvas source transition was not accepted');
+    }
+  };
   sessionReportRef.current = (id, source, options) => {
     const tab = tabsRef.current.find(t => t.id === id);
     if (tab) updateTabContent(tab.file.path, source, options);
@@ -3156,11 +3455,22 @@ export default function App() {
     const handle = tab?.file.handle as FileSystemFileHandle | undefined;
     const preview = tab ? takePdfRotation(tab.id) : undefined;
     if (!tab || !handle) return;
+    const rootAtCall = rootHandleRef.current, vaultAtCall = currentVaultIdRef.current;
+    const activationAtCall = getVaultActivation(), readerEpochAtCall = readerEpochRef.current.epoch;
+    const sessionAtCall = documentSessions.get(tab.id), generationAtCall = sessionAtCall?.bytesGeneration;
+    const revisionAtCall = documentBuffers.revisionForDocument(tab.id)?.revision;
+    const routeAtCall = sessionAtCall ? readPdfSessionRoute(sessionAtCall) : undefined;
+    if (!routeAtCall || !sessionAtCall || generationAtCall === undefined || !rootAtCall || !vaultAtCall) {
+      notifyRef.current('This PDF is not ready to rotate. Try again in a moment.'); return;
+    }
     // Do this before taking the per-tab write chain: a canvas checkpoint itself
     // uses that chain and would deadlock if awaited from inside a rotation.
     try { await getView(path)?.flushPending?.(); }
     catch { notifyRef.current('The PDF annotations could not be saved. Keep the file open and retry before rotating.'); return; }
-    if (!tabsRef.current.some(current => current.id === tab.id && current.file.path === path && current.file.handle === handle)) return;
+    if (rootHandleRef.current !== rootAtCall || currentVaultIdRef.current !== vaultAtCall || getVaultActivation() !== activationAtCall ||
+      readerEpochRef.current.epoch !== readerEpochAtCall || documentSessions.get(tab.id) !== sessionAtCall ||
+      sessionAtCall.bytesGeneration !== generationAtCall || documentBuffers.revisionForDocument(tab.id)?.revision !== revisionAtCall ||
+      !tabsRef.current.some(current => current.id === tab.id && current.file.path === path && current.file.handle === handle)) return;
     if (diskStateRef.current.get(tab.id)) {
       notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.');
       return;
@@ -3172,32 +3482,82 @@ export default function App() {
 
     const { id } = tab;
     const rotationRevision = documentBuffers.revisionForDocument(id)?.revision;
-    const rotationSession = documentSessions.get(id);
+    const rotationSession = sessionAtCall;
     const annotationsChanged = () => documentBuffers.revisionForDocument(id)?.revision !== rotationRevision
       || documentSessions.get(id) !== rotationSession || !!rotationSession?.adapter.hasPendingEdits();
+    const nativeCurrent = () => rootHandleRef.current === rootAtCall && currentVaultIdRef.current === vaultAtCall &&
+      getVaultActivation() === activationAtCall && readerEpochRef.current.epoch === readerEpochAtCall &&
+      documentSessions.get(id) === rotationSession && rotationSession.bytesGeneration === generationAtCall &&
+      readPdfSessionRoute(rotationSession) === 'tiled' && !diskStateRef.current.has(id) && !annotationsChanged() &&
+      !documentSessions.hasPendingEdits(id) && !getView(path)?.hasPendingEdits?.() &&
+      tabsRef.current.some(current => current.id === id && current.file.path === path && current.file.handle === handle && !current.dirty);
     const run = async (): Promise<void> => {
       try {
-        const bytes = await readFileBytes(handle);
-        const { readPdfRole } = await import('./utils/pdfAnnotation');
-        const role = await readPdfRole(bytes);
-        if (!canRotatePdfRole(role)) {
-          notifyRef.current(role.kind === 'annotated'
-            ? 'This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.'
-            : `This PDF cannot be rotated safely. ${pdfRoleNotice(role) ?? 'Open its source notebook to change its pages.'}`);
-          return;
+        let rotated: Uint8Array;
+        let expected: import('./utils/diskVersion').DiskVersion | null = null;
+        if (routeAtCall === 'tiled') {
+          const controller = new AbortController();
+          const check = () => {
+            const baseline = getBaseline(id);
+            if (!nativeCurrent() || (expected && baseline && baseline.hash !== expected.hash)) {
+              throw new DOMException('The PDF rotation source changed', 'AbortError');
+            }
+          };
+          let snapshot: Awaited<ReturnType<typeof readFileSnapshot>> | undefined;
+          let acquisition: Awaited<ReturnType<typeof import('./pdf/session/inkAcquisition').acquirePdfInkSource>> | undefined;
+          try {
+            check();
+            const seed = pdfSeedForRef.current(id);
+            const seeded = seed ? await seed : null;
+            check();
+            expected = getBaseline(id) ?? seeded ?? null;
+            if (!expected) throw new Error('The PDF disk baseline is unavailable.');
+            snapshot = await readFileSnapshot(handle, controller.signal);
+            check();
+            const version = await snapshot.fingerprint(controller.signal);
+            check();
+            if (version.hash !== expected.hash) { setDiskState(id, 'conflict'); return; }
+            const outer = snapshot.blob.slice(0, snapshot.blob.size, snapshot.blob.type);
+            const { acquirePdfInkSource } = await import('./pdf/session/inkAcquisition');
+            check();
+            acquisition = await acquirePdfInkSource({ outer, signal: controller.signal, isCurrent: nativeCurrent,
+              token: { vaultEpoch: readerEpochAtCall, documentId: id, session: rotationSession.serial, bytesGeneration: generationAtCall } });
+            check();
+            if (acquisition.kind === 'read-only') {
+              notifyRef.current(`This PDF cannot be rotated safely. ${acquisition.reason}`); return;
+            }
+            if (!acquisition.isCurrent() || acquisition.source.outerFingerprint !== expected.hash) throw new Error('The PDF source does not match its disk baseline.');
+            if (acquisition.kind !== 'plain') {
+              notifyRef.current('This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.'); return;
+            }
+            const { rotateNativePdfSource } = await import('./pdf/writing/rotationClient');
+            check();
+            if (!acquisition.isCurrent()) throw new DOMException('The PDF rotation source changed', 'AbortError');
+            rotated = await rotateNativePdfSource({ acquisition, delta, ...(pageIndex === undefined ? {} : { pageIndices: [pageIndex] }), signal: controller.signal });
+            check();
+            if (!acquisition.isCurrent()) throw new DOMException('The PDF rotation source changed', 'AbortError');
+          } finally {
+            try { if (acquisition) await acquisition.release(); }
+            finally { snapshot?.dispose(); controller.abort(); }
+          }
+          check();
+        } else {
+          const bytes = await readFileBytes(handle);
+          const { readPdfRole } = await import('./utils/pdfAnnotation');
+          const role = await readPdfRole(bytes);
+          if (!canRotatePdfRole(role)) {
+            notifyRef.current(role.kind === 'annotated'
+              ? 'This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.'
+              : `This PDF cannot be rotated safely. ${pdfRoleNotice(role) ?? 'Open its source notebook to change its pages.'}`);
+            return;
+          }
+          // The classic worker owns this transferred byte array after the role read.
+          const { rotatePdfAsync } = await import('./utils/pdfBuildClient');
+          rotated = await rotatePdfAsync(bytes, delta, pageIndex);
+          const seed = pdfSeedForRef.current(id);
+          const seeded = seed ? await seed : null;
+          expected = getBaseline(id) ?? seeded ?? null;
         }
-        // In the build worker, not here: pdf-lib pauses on a zero-delay timer
-        // every 50-100 objects, and a hidden window runs those once a second —
-        // a 1,105-page book took 1.3s focused and never finished minimized.
-        // `bytes` is transferred (detached) — readPdfRole is done with it.
-        const { rotatePdfAsync } = await import('./utils/pdfBuildClient');
-        const rotated = await rotatePdfAsync(bytes, delta, pageIndex);
-
-        // Same baseline resolution as flushTab's write: a PDF's is hashed in
-        // the background at open, so wait the seed out rather than write blind.
-        const seed = pdfSeedForRef.current(id);
-        const seeded = seed ? await seed : null;
-        const expected = getBaseline(id) ?? seeded ?? null;
         if (annotationsChanged() || documentSessions.hasPendingEdits(id) || getView(path)?.hasPendingEdits?.()) {
           notifyRef.current('This PDF has annotations still being saved. Try again in a moment.');
           return;
@@ -3268,7 +3628,7 @@ export default function App() {
       if (chains.get(id) === chained) chains.delete(id);
       endPdfRotation(path);
     }
-  }, [readFileBytes, setDiskState, bumpBytesGeneration, documentSessions, documentBuffers]);
+  }, [readFileBytes, readFileSnapshot, setDiskState, bumpBytesGeneration, documentSessions, documentBuffers, getVaultActivation]);
 
   const pdfDeparturesRef = useRef(new Set<string>());
   const preparePdfDeparture = useCallback(async (paths: readonly string[], trashOwned = false): Promise<boolean> => {
@@ -3527,7 +3887,10 @@ export default function App() {
     if (retryingReadsRef.current.has(tab.id)) return false;
     retryingReadsRef.current.add(tab.id);
     try {
-      const { text: content, version } = await readFileVersioned(tab.file.handle as FileSystemFileHandle);
+      const binaryDrawing = isNativeDrawingFile(tab.file.name);
+      const { text: content, version } = binaryDrawing
+        ? { text: '', version: (await readBytesVersioned(tab.file.handle as FileSystemFileHandle)).version }
+        : await readFileVersioned(tab.file.handle as FileSystemFileHandle);
       const current = tabsRef.current.find(t => t.id === tab.id);
       if (!current) return false;
       setBaseline(tab.id, version);
@@ -3537,8 +3900,8 @@ export default function App() {
       bumpBytesGeneration(tab.id);
       // The asset-diff baseline the restore held back, taken under the path the
       // document answers to NOW.
-      if ((tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) ||
-          (isCanvasFile(current.file.name) && !boardBaselinesRef.current.capture(current.file.path))) {
+      if (!binaryDrawing && ((tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) ||
+          (isCanvasFile(current.file.name) && !boardBaselinesRef.current.capture(current.file.path)))) {
         rememberAssetRefs(current.file, content);
       }
       assetReadableWakeRef.current.add(current.file.path);
@@ -3570,7 +3933,7 @@ export default function App() {
     } finally {
       retryingReadsRef.current.delete(tab.id);
     }
-  }, [readFileVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState, documentBuffers, bumpBytesGeneration, seedDocumentBuffer]);
+  }, [readFileVersioned, readBytesVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState, documentBuffers, bumpBytesGeneration, seedDocumentBuffer]);
   // handleFileClick is declared long before this, and reads it through a ref
   // rather than growing a dependency.
   useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab]);
@@ -4028,7 +4391,7 @@ export default function App() {
             // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
             // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
             // fill the buffer with garbage.
-            if (isPdfFile(path) || isEpubFile(path)) {
+            if (isPdfFile(path) || isEpubFile(path) || isNativeDrawingFile(path)) {
               entry.content = '';
               break;
             }
@@ -4098,8 +4461,8 @@ export default function App() {
             if (entry.help || entry.dropped || (entry.content === undefined && entry.readError === undefined)) continue;
             try {
               const { handle, parentHandle } = await resolveVaultFile(root, entry.path);
-              if (classifyRequestedKind(entry.origin) !== classifyRequestedKind(handle.name)) {
-                if (isEpubFile(handle.name) || isPdfFile(handle.name)) { entry.content=''; entry.readError=undefined; readVersions.delete(entry); }
+              if (classifyRequestedKind(entry.origin) !== classifyRequestedKind(handle.name) || isNativeDrawingFile(entry.origin) !== isNativeDrawingFile(handle.name)) {
+                if (isEpubFile(handle.name) || isPdfFile(handle.name) || isNativeDrawingFile(handle.name)) { entry.content=''; entry.readError=undefined; readVersions.delete(entry); }
                 else try { const read=await readFileVersioned(handle); entry.content=read.text; entry.readError=undefined; readVersions.set(entry,read.version); }
                 catch(error){entry.content='';entry.readError=describeReadError(error);}
               }
@@ -4142,7 +4505,7 @@ export default function App() {
             if (entry.readError === undefined) {
               const version = readVersions.get(entry);
               if (version) setBaseline(id, version);
-              else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
+              else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, node.handle);
             }
             seedDocumentBuffer(id, node.path, entry.readError !== undefined ? '' : entry.content!,
               entry.readError === undefined && representationFor(node.name).bufferKind === 'text');
@@ -4283,13 +4646,14 @@ export default function App() {
    */
   useEffect(() => {
     if (!fileTree.length) return;
-    const kinds = { epub: false, pdf: false, drawing: false, notebook: false };
+    const kinds = { epub: false, pdf: false, drawing: false, nativeDrawing: false, notebook: false };
     for (const file of collectFiles(fileTree)) {
       if (isEpubFile(file.name)) kinds.epub = true;
       else if (isPdfFile(file.name)) kinds.pdf = true;
       else if (isNotebookFile(file.name)) kinds.notebook = true;
       else if (isDrawingFile(file.name)) kinds.drawing = true;
-      if (kinds.epub && kinds.pdf && kinds.drawing && kinds.notebook) break;
+      else if (isNativeDrawingFile(file.name)) kinds.nativeDrawing = true;
+      if (kinds.epub && kinds.pdf && kinds.drawing && kinds.nativeDrawing && kinds.notebook) break;
     }
     prefetchPanes(kinds);
   }, [fileTree]);
@@ -5063,7 +5427,8 @@ export default function App() {
         invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
         const { handle, parentHandle } = await resolveVaultFile(rootHandle, dest);
         if (rootHandleRef.current !== rootHandle) return [];
-        const changedKind = classifyRequestedKind(handle.name) !== doc.representation.loadedKind;
+        const changedKind = classifyRequestedKind(handle.name) !== doc.representation.loadedKind
+          || isNativeDrawingFile(handle.name) !== isNativeDrawingFile(doc.file.name);
         if (changedKind) {
           await drain(doc.id);
           if (rootHandleRef.current !== rootHandle) return [];
@@ -5079,7 +5444,7 @@ export default function App() {
         }
         let replacement: { content: string; readError?: string } | undefined;
         if (changedKind) {
-          if (isEpubFile(handle.name) || isPdfFile(handle.name)) replacement = { content: '' };
+          if (isEpubFile(handle.name) || isPdfFile(handle.name) || isNativeDrawingFile(handle.name)) replacement = { content: '' };
           else try { const read = await readFileVersioned(handle); replacement = { content: read.text }; setBaseline(doc.id, read.version); }
           catch (error) { replacement = { content: '', readError: describeReadError(error) }; }
         }
@@ -5180,7 +5545,7 @@ export default function App() {
           clearPdfRenderData(from);
           assetRefsRef.current.delete(from);
           diskStateRef.current.delete(doc.id);
-          if (replacement && !replacement.readError) rememberAssetRefs({ ...doc.file, name: handle.name, path: dest, handle, parentHandle }, replacement.content);
+          if (replacement && !replacement.readError && !isNativeDrawingFile(handle.name)) rememberAssetRefs({ ...doc.file, name: handle.name, path: dest, handle, parentHandle }, replacement.content);
         }
         // Buffered edits go to the NEW handle, never the old one. They are not
         // in the copy the rename made: that read the file from disk.
@@ -5484,7 +5849,7 @@ export default function App() {
         if (sameStat(stat, baseline)) { if (held) lift(id, path); continue; }
         let read: { text: string; version: DiskVersion };
         try {
-          read = (isPdfFile(file.name) || isEpubFile(file.name))
+          read = (isPdfFile(file.name) || isEpubFile(file.name) || isNativeDrawingFile(file.name))
             ? { text: '', version: isEpubFile(file.name) ? await (async () => { const snap = await readFileSnapshot(handle); try { return await snap.fingerprint(); } finally { snap.dispose(); } })() : (await readBytesVersioned(handle)).version }
             : await readFileVersioned(handle);
         } catch (err) {
@@ -5658,7 +6023,13 @@ export default function App() {
       } finally { resolvingRef.current.delete(id); }
       return;
     }
-    if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf') {
+    const conflictSource = documentBuffers.get(id)?.source, conflictPolicy = nativePoliciesRef.current.get(id);
+    const nativeConflict = !!conflictSource && typeof conflictSource !== 'string' && !!conflictPolicy && !conflictPolicy.emergencyReadOnly
+      && conflictPolicy.kind === (tab.representation.loadedKind === 'pdf' ? 'pdfInk' : tab.representation.loadedKind)
+      && conflictPolicy.session === conflictSource.owner.session && conflictPolicy.activation === getVaultActivation()
+      && conflictPolicy.retainedThroughGeneration === (bytesGenerationsRef.current.get(id) ?? 0)
+      && hasHostedNativeOwner(documentSessions.get(id), id) && documentSessions.isLiveOwner(id, conflictSource.owner);
+    if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf' && !nativeConflict) {
       if (action === 'close') removeTab(path);
       else if (action === 'retry' || action === 'reload') await retryUnreadTabRef.current(path);
       return;
@@ -5769,7 +6140,7 @@ export default function App() {
         await drain(id);
         const captured = capturedMine = captureMine();
         const keep = await captured.build();
-        const read = isPdf
+        const read = isPdf || isNativeDrawingFile(file.name)
           ? { text: '', version: (await readBytesVersioned(handle)).version }
           : await readFileVersioned(handle);
         if (__BME_BENCH__) {
@@ -5853,17 +6224,19 @@ export default function App() {
     try {
       // As handleFileClick: a PDF's bytes are read by its pane, and decoding one
       // as UTF-8 would corrupt it.
-      const read = (isPdfFile(node.name) || isEpubFile(node.name)) ? null : await readFileVersioned(node.handle);
+      const read = (isPdfFile(node.name) || isEpubFile(node.name) || isNativeDrawingFile(node.name)) ? null : await readFileVersioned(node.handle);
       if (rootHandleRef.current !== rootAtOpen) return false;
       const content = read?.text ?? '';
-      rememberAssetRefs(node, content);
+      if (!isNativeDrawingFile(node.name)) rememberAssetRefs(node, content);
       // The disk baseline, as handleFileClick takes it.
       const id = newTabId();
-      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
+      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, node.handle);
       seedDocumentBuffer(id, node.path, content, representationFor(node.name).bufferKind === 'text');
-      setTabs(prev => prev.some(t => t.file.path === node.path)
+      // Session-only tools acquire immediately after this resolves; commit the tab
+      // and its source classification before handing them the live App owner.
+      flushSync(() => setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
-        : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]);
+        : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]));
       return true;
     } catch (err) {
       console.error('Agent could not open a file:', err);
@@ -5938,6 +6311,90 @@ export default function App() {
     };
   }, [getVaultActivation]);
 
+  const ensureNativeAgentRuntime = useCallback<NonNullable<AgentHostDeps['ensureNativeAgentRuntime']>>(async (path, signal) => {
+    signal.throwIfAborted();
+    const tab = tabsRef.current.find(item => item.file.path === path);
+    const kind = tab?.representation.loadedKind;
+    if (!tab || tab.readError || tab.representation.status !== 'ready' || (kind !== 'drawing' && kind !== 'notebook')) {
+      throw new Error('The open canvas representation is not available for native reading.');
+    }
+    ensureCanvasBridge(tab);
+    const identity = nativeCanvasHost.identity(tab.id);
+    if (!identity || identity.kind !== kind) throw new DOMException('Canvas session ended', 'AbortError');
+    const pinned = nativeCanvasHost.session(tab.id) ? undefined : nativeCanvasHost.pinBoardSource(identity);
+    let pinTransferred = false;
+    try {
+    const [{ ensureNativeBoard }, { createNativeAcquisitionOptions }, { prepareNativeRuntime }, { getBoardRuntime }] = await Promise.all([
+      import('./components/whiteboard/acquireNativeBoard'), import('./components/whiteboard/nativeAcquisitionOptions'),
+      import('./whiteboard/host/prepareNativeRuntime'), import('./whiteboard/host/runtime'),
+    ]);
+    signal.throwIfAborted();
+    if (!nativeCanvasHost.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+    const reason = 'This native canvas is currently available in read-only mode.';
+    const onError = (error: unknown) => console.error('Native canvas session failed:', error);
+    const options = createNativeAcquisitionOptions({ host: nativeCanvasHost, identity,
+      attachCanvasSession: attachNativeCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason: reason,
+      emergencyReadOnly: () => !!nativePoliciesRef.current.get(tab.id)?.emergencyReadOnly,
+      onError, prepare: prepareSignal => {
+        pinTransferred = true;
+        return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: kind, sourcePin: pinned,
+          signal: prepareSignal, deadlineMs: 30_000, zMax: 100, readOnlyReason: reason, onError,
+          onHistoryLimit: () => announce('The board history limit was reached.') });
+      },
+    });
+    const acquired = await ensureNativeBoard(options, signal);
+    signal.throwIfAborted();
+    const runtime = getBoardRuntime(acquired.adapter.board);
+    if (!runtime || !nativeCanvasHost.isCurrent(identity) || nativeCanvasHost.session(tab.id) !== acquired.adapter) {
+      throw new DOMException('Canvas session ended', 'AbortError');
+    }
+    const isCurrent = () => nativeCanvasHost.isCurrent(identity) && nativeCanvasHost.session(tab.id) === acquired.adapter;
+    return { identity, runtime, isCurrent, canWrite: () => isCurrent() && nativeCanvasHost.canWrite(identity),
+      writeBlockReason: () => isCurrent() ? nativeCanvasHost.writeBlockReason(identity) : 'The native canvas session has ended.',
+      activateEditing() {
+        if (!isCurrent() || !nativeCanvasHost.canWriteSource(identity)) throw new Error('The native canvas source is not writable.');
+        if (!acquired.adapter.activateEditing) throw new Error('The native session has no editing admission.');
+        acquired.adapter.activateEditing();
+        if (!isCurrent() || !nativeCanvasHost.canWrite(identity)) throw new Error('The native canvas source is no longer writable.');
+      },
+      async readMedia(entry, mediaSignal) {
+        mediaSignal.throwIfAborted();
+        if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+        const pending = runtime.media.get(entry.id);
+        if (pending) return pending;
+        const result = await nativeCanvasHost.readMedia(identity, { hash: entry.id.slice(7), preferredName: entry.file }, mediaSignal);
+        mediaSignal.throwIfAborted();
+        if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+        return result?.blob ?? null;
+      } };
+    } finally { if (!pinTransferred) pinned?.release(); }
+  }, [announce, attachNativeCanvasSession, ensureCanvasBridge, nativeCanvasHost, onNativeCanvasReady]);
+
+  const [closedCanvasVersions] = useState(() => createClosedCanvasVersions());
+  const closedCanvasReads = useRef(new Set<{ root: FileSystemDirectoryHandle; activation: number; path: string; controller: AbortController }>());
+  useLayoutEffect(() => {
+    for (const read of closedCanvasReads.current) {
+      if (read.root !== rootHandle || read.activation !== getVaultActivation() || tabs.some(tab => tab.file.path === read.path)) read.controller.abort();
+    }
+  }, [rootHandle, tabs, getVaultActivation]);
+  useEffect(() => () => { for (const read of closedCanvasReads.current) read.controller.abort(); }, []);
+  const acquireClosedAgentCanvas = useCallback<NonNullable<AgentHostDeps['acquireClosedCanvasSource']>>(async (path, handle, kind, guard) => {
+    const root = rootHandleRef.current, activation = getVaultActivation();
+    if (!root) throw new DOMException('Vault is closed', 'AbortError');
+    const read = { root, activation, path, controller: new AbortController() };
+    closedCanvasReads.current.add(read);
+    const signal = AbortSignal.any([guard.signal, read.controller.signal]);
+    const isCurrent = () => !signal.aborted && guard.isCurrent() && rootHandleRef.current === root
+      && getVaultActivation() === activation && !bufferPathIdsRef.current.has(path)
+      && !tabsRef.current.some(tab => tab.file.path === path);
+    try {
+      const { acquireClosedCanvasSource } = await import('./utils/closedCanvasSource');
+      const lease = await acquireClosedCanvasSource({ root, activation, path, handle, kind, signal, documentId: newTabId(),
+        sessions: documentSessions, versions: closedCanvasVersions, io: { handleIO, readFileSnapshot, statFile, verifyVaultFileIdentity }, isCurrent });
+      return { ...lease, async release() { try { await lease.release(); } finally { closedCanvasReads.current.delete(read); } } };
+    } catch (error) { closedCanvasReads.current.delete(read); throw error; }
+  }, [closedCanvasVersions, documentSessions, getVaultActivation, handleIO, readFileSnapshot, statFile, verifyVaultFileIdentity]);
+
   const agentDepsRef = useRef<AgentHostDeps | null>(null);
   useLayoutEffect(() => {
     const activation = rootHandle ? assetActivationsRef.current.get(rootHandle) ?? -1 : -1;
@@ -5956,6 +6413,8 @@ export default function App() {
       readFile,
       readFileBytes,
       closedPdfAgent: () => routeEngines().pdfViewer === 'tiled' ? closedPdfAccess : null,
+      acquireClosedCanvasSource: acquireClosedAgentCanvas,
+      ensureNativeAgentRuntime,
       readFileVersioned,
       statFile,
       writeFileVersioned,
@@ -6527,6 +6986,7 @@ export default function App() {
             onRetryRead={retryUnreadTab}
             onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}
+            onUnsignedPdfCopy={handleUnsignedPdfCopy}
             onOpenNote={openNoteByName}
             markdownSessions={markdownSessions}
             getWikiLinkTargets={getWikiLinkTargets}

@@ -191,11 +191,22 @@ export default defineConfig([
           // PdfTiledView is itself a lazy switch target; its engine imports must
           // stay behind that boundary rather than moving into PdfPane/App.
           // These hooks are reached only through the lazy PdfTiledView chunk.
-          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts'],
+          // Native clipboard adapters are consumed by lazy NativeCanvasEntry;
+          // their document-owned service lends commands to attached views.
+          // Agent reads load this projection only for a real tool call; its closed
+          // source authority is created by App's same canonical session store.
+          // These exact editing adapters are reached only from the lazy NativeCanvasEntry.
+          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/NativePdfEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts', 'src/components/whiteboard/nativeClipboardController.ts', 'src/components/whiteboard/useNativeClipboard.ts', 'src/utils/nativeCanvasAgentRead.ts', 'src/utils/nativeCanvasAgentMutation.ts', 'src/utils/closedCanvasSource.ts',
+            'src/components/whiteboard/NativeCanvasEditing.tsx', 'src/components/whiteboard/NativeBoardChrome.tsx', 'src/components/whiteboard/NativeBoardChromeHost.tsx',
+            'src/components/whiteboard/nativeBoardActions.ts', 'src/components/whiteboard/nativeBoardOperations.ts', 'src/components/whiteboard/nativeCameraOperations.ts',
+            'src/components/whiteboard/nativeCommandSource.ts', 'src/components/whiteboard/nativeEditingKeyboard.ts', 'src/components/whiteboard/nativeEditingLease.ts',
+            'src/components/whiteboard/nativeEditingCapabilityFactory.ts',
+            'src/components/whiteboard/nativeImportAdapter.ts', 'src/components/whiteboard/nativeLinkOperations.ts', 'src/components/whiteboard/nativeTextClipboard.ts',
+            'src/components/whiteboard/useNativeBoardLanguage.ts', 'src/components/whiteboard/useNativeSheetControls.tsx'],
           // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
           // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.
           // App's closed-PDF agent seam imports the contained host only on an awaited tiled tool call.
-          darkLazy: ['src/App.tsx', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
+          darkLazy: ['src/App.tsx', 'src/utils/agentHost.ts', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
           message: 'The new engines stay dark until their switch is wired',
         },
         {

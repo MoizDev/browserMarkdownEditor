@@ -1,4 +1,4 @@
-import { parseJson } from '../format/jsonRead';
+import { parseJson, type JsonSpan } from '../format/jsonRead';
 import type { RawJson } from '../model/json';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { normalizeRichText, type Block, type Marks, type RichText, type Run } from './richText';
@@ -9,7 +9,11 @@ function record(value: unknown): RecordValue | null {
     return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as RecordValue : null;
 }
 function children(value: RecordValue): readonly unknown[] { return Array.isArray(value.content) ? value.content : []; }
-function raw(value: unknown): RawJson {
+function raw(value: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): RawJson {
+    if (typeof value === 'object' && value !== null) {
+        const original = originals?.get(value);
+        if (original !== undefined) return typeof original === 'string' ? original : original.raw();
+    }
     const encoded = JSON.stringify(value);
     if (encoded === undefined || encoded.length > MAX_TEXT_LENGTH * 4) throw new RangeError('Unsupported rich data exceeds preservation limit');
     return parseJson(encoded).raw();
@@ -32,7 +36,7 @@ function repairSurrogates(text: string): { text: string; count: number } {
 }
 
 /** Data-only ProseMirror mapping; unrepresentable input must keep its legacy source read-only. */
-export function convertLegacyRichText(input: unknown): RichImportResult {
+export function convertLegacyRichText(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): RichImportResult {
     const repairs: string[] = [], unrepresentable: string[] = [], blocks: Block[] = [];
     let visited = 0, total = 0, replaced = 0;
     const fail = (message: string): never => { throw new Error(message); };
@@ -71,7 +75,10 @@ export function convertLegacyRichText(input: unknown): RichImportResult {
                 default: extra.push(item);
             }
         }
-        if (extra.length) { result.x = raw(extra); repairs.push('Preserved unsupported inline marks'); }
+        if (extra.length) {
+            result.x = parseJson(`[${extra.map(item => raw(item, originals)).join(',')}]`).raw();
+            repairs.push('Preserved unsupported inline marks');
+        }
         return result;
     };
     const collect = (node: unknown, depth: number): string => {
@@ -102,7 +109,7 @@ export function convertLegacyRichText(input: unknown): RichImportResult {
             if (node?.type === 'text' && typeof node.text === 'string') append(node.text, marks(node.marks));
             else if (node?.type === 'hardBreak') append('\u2028', {});
             else {
-                append(collect(item, depth + 1), { x: raw(item) });
+                append(collect(item, depth + 1), { x: raw(item, originals) });
                 repairs.push('Preserved an unsupported inline node');
             }
         }
@@ -144,9 +151,12 @@ export function convertLegacyRichText(input: unknown): RichImportResult {
                 return;
             }
             case 'text': case 'hardBreak': inline([node], list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1); return;
-            default:
-                inline([{ type: 'text', text: collect(node, depth + 1), marks: [{ type: 'unsupported', node }] }], 'p', 0, direction(node), undefined, depth + 1);
+            default: {
+                const mark = { type: 'unsupported', node };
+                if (originals) originals.set(mark, parseJson(`{"type":"unsupported","node":${raw(node, originals)}}`).raw());
+                inline([{ type: 'text', text: collect(node, depth + 1), marks: [mark] }], 'p', 0, direction(node), undefined, depth + 1);
                 repairs.push('Preserved an unsupported block node');
+            }
         }
     };
     try {
@@ -161,4 +171,21 @@ export function convertLegacyRichText(input: unknown): RichImportResult {
         const text: RichText = { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] };
         return { text, repairs, unrepresentable };
     }
+}
+
+/** Pass lexical spans when the legacy reader still has them; unknown carriers keep their original tokens. */
+export function convertLegacyRichSpan(root: JsonSpan): RichImportResult {
+    const originals = new WeakMap<object, RawJson | JsonSpan>(), pending: JsonSpan[] = [root];
+    let count = 0;
+    while (pending.length) {
+        const span = pending.pop()!;
+        if (++count > 200_000) throw new RangeError('Rich text structure exceeds safe limits');
+        if (span.kind !== 'object' && span.kind !== 'array') continue;
+        const value = span.value();
+        if (typeof value !== 'object' || value === null) continue;
+        originals.set(value, span);
+        if (span.kind === 'array') for (const child of span.items()) pending.push(child);
+        else for (const child of span.fieldMap().values()) pending.push(child);
+    }
+    return convertLegacyRichText(root.value(), originals);
 }

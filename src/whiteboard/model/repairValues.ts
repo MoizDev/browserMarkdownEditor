@@ -34,18 +34,17 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
         const ids = messages.get(code);
         if (ids) ids.push(id); else messages.set(code, [id]);
     };
-    let refusal: string | null = null;
     for (let i = 0; i < nodes.length; i++) {
         if ((steps++ & 255) === 0) await tick();
         const original = nodes[i];
         if (original.kind === 'opaque') { result.push(original); continue; }
         let node = original;
         let numericChanged = false, mediaChanged = false;
+        // Plan document-model §9.2 clamps out-of-range values with no content lost. A preserved raw token stays
+        // the write authority until the user sets the property (change/apply drops it, §9.3), so only the
+        // in-memory projection changes here; refusing the board would contradict the plan's clamp rule.
         const set = (key: keyof typeof NODE_FILE_FIELDS, value: unknown) => {
             if (Object.is(Reflect.get(node, key), value)) return;
-            if (NODE_FILE_FIELDS[key].some(token => node.ext?.raw.has(token))) {
-                refusal = `Repair would override preserved ${key} on node ${node.id}`; return;
-            }
             node = { ...node, [key]: value } as Exclude<NodeRecord, { kind: 'opaque' }>;
             numericChanged = true;
         };
@@ -88,9 +87,11 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
             range('bend', -1_000_000, 1_000_000, 0);
             range('elbowMid', 0, 1, 0.5); range('labelAt', 0, 1, 0.5);
             const repairEnd = (end: ConnectorEnd): ConnectorEnd => {
-                const x = clamp(end.x, -MAX_COORDINATE, MAX_COORDINATE, 0), y = clamp(end.y, -MAX_COORDINATE, MAX_COORDINATE, 0);
+                const x = Number.isFinite(end.x) ? clamp(end.x, -MAX_COORDINATE, MAX_COORDINATE, 0) : 0;
+                const y = Number.isFinite(end.y) ? clamp(end.y, -MAX_COORDINATE, MAX_COORDINATE, 0) : 0;
                 const a = end.attach;
-                const ax = a ? clamp(a.anchor.x, 0, 1, 0.5) : 0, ay = a ? clamp(a.anchor.y, 0, 1, 0.5) : 0;
+                const ax = a ? Number.isFinite(a.anchor.x) ? clamp(a.anchor.x, 0, 1, 0.5) : 0.5 : 0;
+                const ay = a ? Number.isFinite(a.anchor.y) ? clamp(a.anchor.y, 0, 1, 0.5) : 0.5 : 0;
                 if (x === end.x && y === end.y && (!a || (ax === a.anchor.x && ay === a.anchor.y))) return end;
                 return { ...end, x, y, attach: a ? { ...a, anchor: { x: ax, y: ay } } : null };
             };
@@ -109,7 +110,8 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
             let modified = false;
             for (const point of node.points) {
                 if ((steps++ & 255) === 0) await tick();
-                const x = clamp(point.x, -MAX_COORDINATE, MAX_COORDINATE, 0), y = clamp(point.y, -MAX_COORDINATE, MAX_COORDINATE, 0);
+                const x = Number.isFinite(point.x) ? clamp(point.x, -MAX_COORDINATE, MAX_COORDINATE, 0) : 0;
+                const y = Number.isFinite(point.y) ? clamp(point.y, -MAX_COORDINATE, MAX_COORDINATE, 0) : 0;
                 if (x !== point.x || y !== point.y) { points.push({ x, y }); modified = true; } else points.push(point);
             }
             if (modified) set('points', points);
@@ -126,11 +128,19 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
         }
         if ((node.kind === 'picture' || node.kind === 'clip') && node.media !== null && !mediaIds.has(node.media)) {
             const raw = new Map(node.ext?.raw);
-            if (raw.has('media')) refusal = `Repair would override preserved media on node ${node.id}`;
-            else {
-                // This token is generated from the already decoded, typed media id.
-                raw.set('media', JSON.stringify(node.media) as RawJson);
-                node = { ...node, media: null, ext: { fields: node.ext?.fields ?? new Map(), raw } };
+            // An existing raw token remains the write authority; only its in-memory projection changes.
+            if (!raw.has('media')) raw.set('media', JSON.stringify(node.media) as RawJson);
+            node = { ...node, media: null, ext: { fields: node.ext?.fields ?? new Map(), raw } };
+            mediaChanged = true;
+        }
+        if (node.kind === 'linkcard' && node.preview) {
+            const preview = node.preview;
+            const image = preview.image !== null && !mediaIds.has(preview.image) ? null : preview.image;
+            const favicon = preview.favicon !== null && !mediaIds.has(preview.favicon) ? null : preview.favicon;
+            if (image !== preview.image || favicon !== preview.favicon) {
+                const raw = new Map(node.ext?.raw);
+                if (!raw.has('preview')) raw.set('preview', JSON.stringify(preview) as RawJson);
+                node = { ...node, preview: { ...preview, image, favicon }, ext: { fields: node.ext?.fields ?? new Map(), raw } };
                 mediaChanged = true;
             }
         }
@@ -138,8 +148,7 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
         if (numericChanged || mediaChanged) changed.add(i);
         if (numericChanged) notice('numeric', node.id);
         if (mediaChanged) notice('missing-media', node.id);
-        if (refusal) break;
     }
-    return { nodes: refusal ? nodes : result, changedOrdinals: changed,
-        notices: [...messages].map(([code, nodeIds]) => ({ code, count: nodeIds.length, nodeIds })), readOnlyReason: refusal };
+    return { nodes: result, changedOrdinals: changed,
+        notices: [...messages].map(([code, nodeIds]) => ({ code, count: nodeIds.length, nodeIds })), readOnlyReason: null };
 }

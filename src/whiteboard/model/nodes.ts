@@ -337,7 +337,7 @@ export function createPicture(p: NodeInput<'picture'>): PictureNode {
         locked: p.locked ?? COMMON_NODE_DEFAULTS.locked,
         opacity: p.opacity ?? COMMON_NODE_DEFAULTS.opacity, ext: p.ext,
         w: p.w, h: p.h, media: p.media, crop: p.crop, flipX: p.flipX, flipY: p.flipY,
-        alt: p.alt, inverted: p.inverted, playing: p.playing, url: p.url,
+        alt: p.alt, inverted: p.inverted, playing: p.playing ?? NODE_DEFAULTS.picture.playing, url: p.url,
     };
 }
 

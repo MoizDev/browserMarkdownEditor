@@ -1,6 +1,7 @@
 import type { Transaction } from '../../change/ops';
 import type { NodeId } from '../../model/ids';
-import { sliceRichText, type Block, type Marks, type RichText } from '../richText';
+import { sliceRichText, spliceRichText, type Block, type Marks, type RichText } from '../richText';
+import { trackBlock } from '../carriers';
 import { linkUrl, type ToggleMark } from './format';
 
 export interface InputRuleResult { readonly transaction: Transaction; readonly caret: number }
@@ -32,7 +33,7 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
         const kind: Block['kind'] = token[0] === '#' ? `h${token.length}` as Block['kind'] : /\d/.test(token[0]) ? 'ol' : 'ul';
         const number = kind === 'ol' ? Number.parseInt(token, 10) : undefined;
         if (number !== undefined && !Number.isSafeInteger(number)) return null;
-        const content = sliceRichText(text, caret, start + value.length).blocks[0];
+        const content = spliceRichText(text, start, caret, { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] }).after[0];
         const replacement: Block = { ...content, kind, level: 0, ...(number === undefined ? {} : { start: number }) };
         return { transaction: transaction(id, key, start, start + value.length, { blocks: [replacement] }, true), caret: start };
     }
@@ -46,8 +47,8 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
         const match = pattern.exec(before);
         if (!match) continue;
         const from = start + match.index;
-        const content = sliceRichText(text, from + delimiter, caret - delimiter);
-        const replacement = { blocks: content.blocks.map(item => ({ ...item, runs: item.runs.map(run => ({ ...run, marks: { ...run.marks, [mark]: true } as Marks })) })) };
+        const content = sliceRichText(text, from + delimiter, caret - delimiter, true);
+        const replacement = { blocks: content.blocks.map(item => trackBlock({ ...item, runs: item.runs.map(run => ({ ...run, marks: { ...run.marks, [mark]: true } as Marks })) }, item)) };
         return { transaction: transaction(id, key, from, caret, replacement), caret: from + match[1].length };
     }
     const word = (trigger === 'typing'
@@ -59,8 +60,8 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
         if (!url) return null;
         const end = caret - (trigger === 'typing' ? 1 : 0) - (word[1].length - raw.length);
         const from = end - raw.length;
-        const content = sliceRichText(text, from, end);
-        const replacement = { blocks: content.blocks.map(item => ({ ...item, runs: item.runs.map(run => ({ ...run, marks: { ...run.marks, link: url } })) })) };
+        const content = sliceRichText(text, from, end, true);
+        const replacement = { blocks: content.blocks.map(item => trackBlock({ ...item, runs: item.runs.map(run => ({ ...run, marks: { ...run.marks, link: url } })) }, item)) };
         return { transaction: transaction(id, key, from, end, replacement), caret };
     }
     return null;

@@ -6,6 +6,7 @@ import type { RenderToken } from '../../platform/render/types';
 import type { SheetId } from '../model/ids';
 import type { PaintImageProvider } from '../render/resources';
 import type { PaintFrame } from '../render/paintStream';
+import type { VideoFrameOverlay } from '../media/videoFrames';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
 export type { ViewerPaintPresentation } from '../render/paintPresentation';
 import type { PaintPalette } from '../render/colour';
@@ -57,16 +58,21 @@ export interface ViewerInteractionPorts {
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
     presented?(revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation): void;
     liveNodeIds?(): ReadonlySet<string>;
+    /** Immutable, identity-stable semantic hover/edit targets requiring exact paint. */
+    sensitiveNodeIds?(): ReadonlySet<string>;
 }
 export interface ViewerEngine {
     readonly session: BoardSession; // EXACT same instance the App acquired; never a second doc.
     readonly scene: SceneSpatial;
     readonly accessibility: ViewerAccessibilitySource;
     getSnapshot(): ViewerSnapshot;
+    /** The layers' own deadline: a wake invalidates the view and nothing else. Picture animation schedules through it. */
+    wakeAt(deadlineMs: number | null): void;
     getView(): ViewerViewParams;
     subscribe(listener: () => void): () => void;
     setView(params: ViewerViewParams): void;
     focusNode(id: string): void;
+    cancelReveal(): void;
     bindInteractions(ports: ViewerInteractionPorts): () => void;
     connectEmbeds(port: EmbedPresentationPort | null): void;
     readyPaintFrame(): PaintFrame | null;
@@ -85,6 +91,8 @@ export interface AttachViewOptions {
     readonly view: ViewerViewParams;
     readonly palette?: Readonly<{ light: PaintPalette; dark: PaintPalette }>;
     readonly images?: PaintImageProvider;
+    /** A view's playing video frames, served by their own image keys. Absent for any view with no video to play. */
+    readonly liveFrames?: VideoFrameOverlay;
     readonly signal?: AbortSignal;
     readonly reveal: (world: Readonly<{ x: number; y: number; width: number; height: number }>) => void;
     readonly onError: (error: Error) => void;

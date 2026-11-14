@@ -7,6 +7,7 @@ import { checkMediaBytes, checkMediaDimensions } from '../security/limits';
 import { sniffMedia } from './sniff';
 import { createSvgAdmissionProfile } from './svgProfile';
 import { svgFrameFactory } from './svgFrameHost';
+import { svgParseBudget } from './svgBudget';
 import { videoFrameInProfile } from './videoFrameHost';
 
 // SVG must be parsed and decoded in a network-denied opaque realm. This narrow
@@ -24,6 +25,15 @@ interface WorkerInspection {
     readonly decodePixels: number;
 }
 const worker = boardWorker('decode');
+const inspected = new WeakMap<InspectedMedia, { input: Blob; bytes: Blob; identity: BoardJobIdentity; current(): boolean }>();
+
+/** Storage consumes the actual verified immutable bytes, never a descriptor-shaped claim. */
+export function inspectedMediaBytes(info: InspectedMedia, input: Blob, identity: BoardJobIdentity): Blob {
+    const ticket = inspected.get(info);
+    if (!ticket || ticket.input !== input || ticket.identity.session !== identity.session || ticket.identity.epoch !== identity.epoch
+        || ticket.identity.revision !== identity.revision || !ticket.current()) throw new TypeError('Media inspection is foreign or stale');
+    return ticket.bytes;
+}
 
 function validSize(width: number, height: number): boolean {
     return checkMediaDimensions(width, height).ok;
@@ -33,7 +43,15 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
     identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean }): Promise<InspectedMedia> {
     // File objects carry path-like metadata and are refused by the worker host;
     // a Blob slice preserves the bytes without sending that metadata across.
+    const input = blob;
     blob = blob.slice(0, blob.size, blob.type);
+    const identity = Object.freeze({ ...options.identity });
+    const attest = (value: InspectedMedia): InspectedMedia => {
+        if (!options.isCurrent(identity)) throw new DOMException('Media inspection became stale', 'AbortError');
+        const result = Object.freeze(value);
+        inspected.set(result, { input, bytes: blob, identity, current: () => options.isCurrent(identity) });
+        return result;
+    };
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
     const call = <T>(op: string, payload: unknown, deadlineMs: number): Promise<T> =>
         worker.request<T>(op, payload, options.identity, { priority: 1, deadlineMs, signal }, options.isCurrent);
@@ -44,10 +62,20 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
     if (sniffMedia(prefix) === 'image/svg+xml') {
         if (!checkMediaBytes(blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
         const svg = options.svg ?? createSvgAdmissionProfile(svgFrameFactory, options.identity, options.isCurrent);
-        await call<boolean>('svgPreflight', { blob }, 5000);
-        signal.throwIfAborted();
-        const size = await svg.header(blob, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
-        signal.throwIfAborted();
+        const parsing = options.memory.reserve(svgParseBudget(blob.size));
+        if (!parsing) throw new Error('Not enough memory to inspect this SVG');
+        let size: Awaited<ReturnType<SvgAdmissionProfile['header']>>;
+        try {
+            try {
+                if (await call<boolean>('svgPreflight', { blob }, 5000) !== true) throw new Error('Invalid SVG preflight response');
+            } catch (error) {
+                if (signal.aborted) await worker.recycle('SVG preflight cancelled').catch(() => undefined);
+                throw error;
+            }
+            signal.throwIfAborted();
+            size = await svg.header(blob, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+            signal.throwIfAborted();
+        } finally { options.memory.release(parsing); }
         if (!validSize(size.width, size.height) || !Number.isSafeInteger(size.rgbaBytes)
             || size.rgbaBytes < 4 * size.width * size.height || size.rgbaBytes > 4 * (2 ** 26)) throw new RangeError('Invalid SVG dimensions');
         const id = await call<MediaId>('hash', { blob }, 10000);
@@ -56,17 +84,20 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         const lease = options.memory.reserve(size.rgbaBytes);
         if (!lease) throw new Error('Not enough memory to decode this picture');
         try {
-            const typed = blob.slice(0, blob.size, 'image/svg+xml');
+            const parsingProbe = options.memory.reserve(svgParseBudget(blob.size));
+            if (!parsingProbe) throw new Error('Not enough memory to probe this SVG');
             try {
-                await call<boolean>('probe', { blob: typed, width: size.width, height: size.height, animated: false, mime: 'image/svg+xml' }, 10000);
-            } catch {
-                await worker.recycle('SVG worker probe failed').catch(() => undefined);
-                signal.throwIfAborted();
-                await svg.probe(typed, size.width, size.height, signal);
-            }
+                const typed = blob.slice(0, blob.size, 'image/svg+xml');
+                try {
+                    await call<boolean>('probe', { blob: typed, width: size.width, height: size.height, animated: false, mime: 'image/svg+xml' }, 10000);
+                } catch (error) {
+                    if (signal.aborted) { await worker.recycle('SVG worker probe cancelled').catch(() => undefined); throw error; }
+                    await svg.probe(typed, size.width, size.height, signal);
+                }
+            } finally { options.memory.release(parsingProbe); }
         } finally { options.memory.release(lease); }
         signal.throwIfAborted();
-        return { id, mime: 'image/svg+xml', width: size.width, height: size.height, animated: false, duration: null };
+        return attest({ id, mime: 'image/svg+xml', width: size.width, height: size.height, animated: false, duration: null });
     }
     const result = await call<WorkerInspection>('inspect', { blob }, 10000);
     signal.throwIfAborted();
@@ -92,12 +123,12 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             try {
                 await call<boolean>('probe', { blob, width: result.width, height: result.height, animated: result.animated, mime: result.mime }, 10000);
             } catch (error) {
-                // A cancelled native decoder may still be running after its request settles.
-                await worker.recycle('cancelled image probe').catch(() => undefined);
+                // Only cancellation can leave the native decoder running after the request settles.
+                if (signal.aborted) await worker.recycle('cancelled image probe').catch(() => undefined);
                 throw error;
             }
         }
         signal.throwIfAborted();
-        return { id: result.id, mime: result.mime, width: result.width, height: result.height, animated: result.animated, duration };
+        return attest({ id: result.id, mime: result.mime, width: result.width, height: result.height, animated: result.animated, duration });
     } finally { options.memory.release(lease); }
 }

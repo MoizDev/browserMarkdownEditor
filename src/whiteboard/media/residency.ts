@@ -9,6 +9,7 @@ import { matchingIdentity, type BoardJobIdentity } from '../workers/protocol';
 import { mediaRasterGeometry, parseMediaTileKey } from './mips';
 import { createSvgAdmissionProfile, rasterSvgInProfile } from './svgProfile';
 import { svgFrameFactory } from './svgFrameHost';
+import { svgParseBudget } from './svgBudget';
 
 export interface MediaRasterSource {
     readonly blob: Blob;
@@ -33,6 +34,7 @@ interface Cached {
     readonly durationMs: number;
     readonly frameCount: number;
     refs: number;
+    retired: boolean;
     closed: boolean;
 }
 interface Pending {
@@ -43,7 +45,6 @@ interface Pending {
     readonly promise: Promise<Cached>;
     resolve(value: Cached): void;
     reject(error: unknown): void;
-    releaseMemory?: () => void;
     workerRequest?: Promise<unknown>;
 }
 
@@ -91,7 +92,7 @@ export class MediaResidency implements PaintImageProvider {
                     release: () => {
                         if (!held) return;
                         held = false; entry.refs--;
-                        if (!entry.refs && this.wanted && !this.wanted.has(imageKey)) this.drop(imageKey, entry);
+                        if (!entry.refs && (entry.retired || this.wanted && !this.wanted.has(imageKey))) this.drop(imageKey, entry);
                     } });
             }, error => {
                 if (done) return;
@@ -119,7 +120,7 @@ export class MediaResidency implements PaintImageProvider {
             for (const job of this.pending.values()) job.controller.abort();
             // Termination is synchronous even when the replacement worker starts later.
             if (this.active) void this.worker.recycle('pane hidden').catch(() => undefined);
-            for (const job of this.pending.values()) job.releaseMemory?.();
+            // A cancelled frame may still own decoder scratch until its promise actually settles.
             for (const [key, entry] of this.cache) this.drop(key, entry);
         }
     }
@@ -137,8 +138,11 @@ export class MediaResidency implements PaintImageProvider {
 
     private drop(key: string, entry: Cached): void {
         if (entry.closed) return;
+        entry.retired = true;
+        if (this.cache.get(key) === entry) this.cache.delete(key);
+        // An in-flight capture owns its image lease even after the pane becomes hidden.
+        if (entry.refs) return;
         entry.closed = true;
-        this.cache.delete(key);
         entry.bitmap.close();
         this.host.memory.release(entry.memory);
     }
@@ -195,15 +199,26 @@ export class MediaResidency implements PaintImageProvider {
         if (source.mime === 'image/svg+xml') {
             let bytes = this.svgBytes.get(tile.id);
             if (bytes === undefined) {
-                const typed = source.blob.slice(0, source.blob.size, 'image/svg+xml');
-                await this.worker.request<boolean>('svgPreflight', { blob: typed }, job.identity,
-                    { priority: 1, deadlineMs: 5000, signal }, () => current());
-                const profile = createSvgAdmissionProfile(svgFrameFactory, job.identity, () => current());
-                const dimensions = await profile.header(typed, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
-                if (!current()) throw new DOMException('Stale media request', 'AbortError');
-                if (dimensions.width !== source.width || dimensions.height !== source.height) throw new Error('SVG dimensions do not match admitted media');
-                bytes = dimensions.rgbaBytes;
-                this.svgBytes.set(tile.id, bytes);
+                const parsing = this.host.memory.reserve(svgParseBudget(source.blob.size));
+                if (!parsing) throw new Error('Not enough memory to inspect this SVG');
+                try {
+                    const typed = source.blob.slice(0, source.blob.size, 'image/svg+xml');
+                    let passed: boolean;
+                    try {
+                        passed = await this.worker.request<boolean>('svgPreflight', { blob: typed }, job.identity,
+                            { priority: 1, deadlineMs: 5000, signal }, () => current());
+                    } catch (error) {
+                        if (signal.aborted && this.visible && !this.disposed) await this.worker.recycle('SVG preflight cancelled').catch(() => undefined);
+                        throw error;
+                    }
+                    if (passed !== true) throw new Error('Invalid SVG preflight response');
+                    const profile = createSvgAdmissionProfile(svgFrameFactory, job.identity, () => current());
+                    const dimensions = await profile.header(typed, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+                    if (!current()) throw new DOMException('Stale media request', 'AbortError');
+                    if (dimensions.width !== source.width || dimensions.height !== source.height) throw new Error('SVG dimensions do not match admitted media');
+                    bytes = dimensions.rgbaBytes;
+                    this.svgBytes.set(tile.id, bytes);
+                } finally { this.host.memory.release(parsing); }
             }
             intermediate = bytes;
         }
@@ -214,12 +229,17 @@ export class MediaResidency implements PaintImageProvider {
             this.host.memory.release(memory);
             throw new Error('Not enough memory to decode this picture');
         }
-        let outputHeld = true, scratchHeld = !!scratch;
+        const svgScratch = source.mime === 'image/svg+xml' ? this.host.memory.reserve(svgParseBudget(source.blob.size)) : null;
+        if (source.mime === 'image/svg+xml' && !svgScratch) {
+            this.host.memory.release(memory); if (scratch) this.host.memory.release(scratch);
+            throw new Error('Not enough memory to rasterize this SVG');
+        }
+        let outputHeld = true, scratchHeld = !!scratch, svgHeld = !!svgScratch;
         const releaseMemory = () => {
             if (outputHeld) { outputHeld = false; this.host.memory.release(memory); }
             if (scratchHeld && scratch) { scratchHeld = false; this.host.memory.release(scratch); }
+            if (svgHeld && svgScratch) { svgHeld = false; this.host.memory.release(svgScratch); }
         };
-        job.releaseMemory = releaseMemory;
         let bitmap: ImageBitmap | undefined, durationMs = 0, frameCount = 1;
         try {
             const blob = source.blob.slice(0, source.blob.size, source.mime);
@@ -236,8 +256,11 @@ export class MediaResidency implements PaintImageProvider {
                 frameCount = result.frameCount;
             } catch (error) {
                 job.workerRequest = undefined;
-                await this.worker.recycle('media raster interrupted').catch(() => undefined);
-                if (!current()) throw error;
+                if (!current()) {
+                    // A cancelled native decode may still hold scratch in the shared worker.
+                    if (this.visible && !this.disposed) await this.worker.recycle('media raster cancelled').catch(() => undefined);
+                    throw error;
+                }
                 if (source.mime !== 'image/svg+xml') throw error;
                 bitmap = await rasterSvgInProfile(svgFrameFactory, blob, source.width, source.height, geometry, job.identity, () => current(), signal);
             }
@@ -246,13 +269,12 @@ export class MediaResidency implements PaintImageProvider {
                 || !Number.isFinite(durationMs) || durationMs < 0 || !Number.isSafeInteger(frameCount) || frameCount < 1) throw new Error('Invalid media raster');
             const existing = this.cache.get(job.key);
             if (existing && !existing.closed && matchingIdentity(existing.identity, job.identity) && sameToken(existing.token, job.token)) {
-                bitmap.close(); releaseMemory(); job.releaseMemory = undefined; return existing;
+                bitmap.close(); releaseMemory(); return existing;
             }
             if (existing) this.drop(job.key, existing);
-            const entry: Cached = { bitmap, memory, token: job.token, identity: job.identity, durationMs, frameCount, refs: 0, closed: false };
+            const entry: Cached = { bitmap, memory, token: job.token, identity: job.identity, durationMs, frameCount, refs: 0, retired: false, closed: false };
             this.cache.set(job.key, entry);
             outputHeld = false;
-            job.releaseMemory = undefined;
             bitmap = undefined;
             return entry;
         } catch (error) {
@@ -260,7 +282,6 @@ export class MediaResidency implements PaintImageProvider {
             throw error;
         } finally {
             releaseMemory();
-            job.releaseMemory = undefined;
         }
     }
 }

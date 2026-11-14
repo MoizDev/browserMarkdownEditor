@@ -94,7 +94,7 @@ export class InputRouter<Context> {
     const release = this.takeRelease()
     try {
       if (owner.kind === 'ink') owner.finish(reason)
-      else if (reason === 'flush' && (owner.kind === 'pan' || owner.kind === 'pinch' || owner.kind === 'zoom-brush' || owner.kind === 'laser')) owner.finish(reason)
+      else if (reason === 'flush' && (owner.kind === 'pan' || owner.kind === 'pinch' || owner.kind === 'laser')) owner.finish(reason)
       else owner.cancel(reason === 'undo' ? 'undo' : reason === 'escape' ? 'escape' : 'invalidated')
     } finally { release?.() }
     return true

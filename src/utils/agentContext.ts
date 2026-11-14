@@ -387,9 +387,26 @@ export async function buildAgentContext(
     // Ask every mounted pane where the user is — in parallel, each bounded.
     const views = new Map<string, ViewReporter>();
     const infos = new Map<string, ViewInfo>();
+    const wholeSheet = new Set<string>();
+    const unreadable = new Map<string, string>();
     await Promise.all(workspace.tabs.map(async tab => {
         const view = getView(tab.path);
-        if (!view) return;
+        if (!view) {
+            // An open drawing with no mounted pane is read from its own session, bounded like a view.
+            // A failure or a refusal is named on its tab line, never silently skipped.
+            if (tab.kind !== 'drawing') return;
+            if (!workspace.nativeView) { unreadable.set(tab.path, 'its board is not available to read'); return; }
+            try {
+                const read = await workspace.nativeView(tab.path, AbortSignal.timeout(DESCRIBE_TIMEOUT_MS));
+                if (!read) { unreadable.set(tab.path, 'it is not open as a native board'); return; }
+                infos.set(tab.path, read.info);
+                if (read.wholeSheet) wholeSheet.add(tab.path);
+            } catch (error) {
+                unreadable.set(tab.path, error instanceof Error && error.name === 'TimeoutError' ? 'reading it timed out'
+                    : error instanceof Error ? error.message.slice(0, 200) : 'reading it failed');
+            }
+            return;
+        }
         views.set(tab.path, view);
         const info = await withTimeout(view.describe(), DESCRIBE_TIMEOUT_MS);
         if (info) infos.set(tab.path, info);
@@ -428,7 +445,10 @@ export async function buildAgentContext(
         const shown = onScreen && idx !== -1 && panes[idx].activePath === tab.path;
         const where = idx === -1 ? 'not in a pane' : `${shown ? 'on screen in' : 'behind another tab in'} pane ${idx + 1}`;
         const flags = [tab.dirty && 'unsaved changes', tab.unreadable && 'could not be read'].filter(Boolean).join(', ');
-        const position = info ? livePosition(info) : rememberedPosition(workspace.remembered(tab.path));
+        const position = info
+            ? (wholeSheet.has(tab.path) ? `${livePosition(info)}; never viewed, so this is the whole sheet` : livePosition(info))
+            : unreadable.has(tab.path) ? `not readable now (${unreadable.get(tab.path)})`
+                : rememberedPosition(workspace.remembered(tab.path));
         tabLines.push(`- ${tab.path} — ${kindLabel(tab, info)}${flags ? `, ${flags}` : ''}; ${where}; ${position}`);
     }
     if (tabLines.length) {

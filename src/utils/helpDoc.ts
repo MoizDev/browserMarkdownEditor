@@ -411,9 +411,21 @@ exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
 artwork, not a screenshot of the controls. SVG is copied as text; board data is
 native JSON records, with media referenced by hash rather than a portable asset
 bundle. Context-menu image exports use the selection, or the whole sheet when
-nothing is selected. These operations
+nothing is selected. With exactly one picture selected, the same menu offers
+**Replace picture…** (the new image keeps the old one's centre and longer side;
+a PDF annotation page does not offer it yet), **Crop picture** with six presets,
+and **Invert picture**. With one link card selected it offers **Fetch link
+preview**, which contacts the link's site only when you ask. A row that cannot
+run now stays on the menu and says why, such as a locked picture or a read-only
+canvas. These operations
 and navigation do not edit the source; drawing, Cut and Paste remain unavailable
 in this native viewer.
+
+The agent's **canvas tools** use the document session rather than its viewer.
+They can change an eligible native drawing or notebook while its pane is hidden
+or unmounted; a batch is one undo step and follows the normal save path. A disk
+conflict, emergency read-only setting or unsupported native document still
+refuses changes. This does not enable the viewer's unfinished drawing tools.
 
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
@@ -472,6 +484,8 @@ the reader, not your files. If the browser retains the loading failure, reload
 the app to try again. The tiled reader offers **Open in Classic** as an explicit alternative; it never switches PDF engines by itself. A password-protected PDF asks for its password in the tiled reader; cancelling leaves the file unchanged, and Retry lets you enter it again. The password is kept only in that open source session, never saved. Classic may instead report that a password is required. Editing and rotation of encrypted PDFs are refused so the encrypted file is not rewritten.
 
 Signed or certified PDFs—and PDFs whose write safety cannot be established—are read-only for in-place annotation and rotation in **both Classic and tiled readers**. The outer PDF and any embedded pristine original must both pass the safety check before an editor can open or a save can write. Keeping a foreign write mark does not override this protection. Where available, **Save unsigned annotated copy** asks first and creates a different file; it never overwrites the signed original or claims that its signatures cover the new copy. Unsupported copies are refused without changing the original.
+
+In the tiled reader, Annotate on an eligible unannotated PDF currently opens a **read-only native ink view**; it does not yet enable drawing or change the PDF. When the tiled reader encounters eligible annotations in the Classic format, Annotate offers **Convert legacy annotations…** and **Open in Classic**. Conversion is your choice: it checks the source, asks for confirmation, warns about an unverifiable foreign write mark, and keeps the original in the folder's Trash before conversion. The converted native annotation view is currently **read-only**; opening it does not save over the PDF. Cancelling or a refused conversion returns to the original PDF. Choose **Open in Classic** explicitly to use the Classic route instead.
 
 In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, including pages you have never opened. A short single-line selection pre-fills the bar; otherwise it keeps this pane's last query. Matching ignores case and accents, folds ligatures, and matches across line breaks, hyphenated line ends and PDF text-item boundaries. The count shows progress and stops at **10,000+** matches. Scans without selectable text are not OCR'd.
 - In the input, \`Enter\` / \`Shift + Enter\` move to the next / previous match. \`Cmd + G\` / \`Ctrl + G\` and their Shift forms do the same from the bar or PDF page. Next waits for an unfinished scan rather than wrapping early.

@@ -24,6 +24,11 @@ export function mediaTileKey(tile: MediaTile): string {
     return `media:${tile.id.slice(7)}:${tile.frame}:${tile.level}:${tile.column}:${tile.row}`;
 }
 
+/** A tile key has six segments; the static frame-zero form `media:<hash>:0` (three) stays with paintImages. */
+export function isMediaTileKey(key: string): boolean {
+    return key.startsWith('media:') && key.split(':').length === 6;
+}
+
 export function parseMediaTileKey(key: string): MediaTile {
     const match = /^media:([0-9a-f]{64}):(0|[1-9]\d*):(0|[1-9]\d*):(-1|0|[1-9]\d*):(-1|0|[1-9]\d*)$/.exec(key);
     if (!match) throw new Error('Invalid media tile key');

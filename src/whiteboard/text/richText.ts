@@ -1,10 +1,22 @@
 import type { RawJson } from '../model/json';
 import { blockTextLength, isBlockRange } from '../model/textOffsets';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
+import { projectionPosition } from './projection';
+import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, sliceCarriers, trackBlock } from './carriers';
 
 // text.md §4.1: immutable values; UTF-16 offsets refer to the plain-text projection.
 export interface RichText { readonly blocks: readonly Block[] }
 export type RichFragment = RichText;
+
+export interface BlockCarrier {
+    readonly from: number;
+    readonly to: number;
+    readonly kind: Block['kind'];
+    readonly level: number;
+    readonly dir: Block['dir'];
+    readonly start?: number;
+    readonly tail: RawJson;
+}
 
 export interface Block {
     readonly kind: 'p' | 'ul' | 'ol' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
@@ -14,6 +26,7 @@ export interface Block {
     readonly dir: 'auto' | 'ltr' | 'rtl';
     readonly runs: readonly Run[];
     readonly tail?: RawJson; // R-W19/R-W21: JSON ARRAY of trailing tuple elements; writer splices its interior.
+    readonly carriers?: readonly BlockCarrier[];
 }
 
 export interface Run {
@@ -64,28 +77,32 @@ function normalizedRuns(runs: readonly Run[]): readonly Run[] {
     return output ? output.length ? output : [runs[0]] : runs;
 }
 
+const normalizedBlocks = new WeakMap<Block, Block>();
+function normalizedBlock(block: Block): Block {
+    const cached = normalizedBlocks.get(block);
+    if (cached) return cached;
+    const runs = block.runs.length ? normalizedRuns(block.runs) : [{ text: '', marks: {} }];
+    const result = runs === block.runs ? block : trackBlock({ ...block, runs }, block);
+    normalizedBlocks.set(block, result);
+    normalizedBlocks.set(result, result);
+    return result;
+}
+
 export function normalizeRichText(text: RichText): RichText {
     if (!text.blocks.length) return EMPTY_RICH_TEXT;
     let blocks: Block[] | undefined;
     for (let i = 0; i < text.blocks.length; i++) {
-        const block = text.blocks[i];
-        const runs = block.runs.length ? normalizedRuns(block.runs) : [{ text: '', marks: {} }];
-        if (runs !== block.runs && !blocks) blocks = text.blocks.slice(0, i);
-        if (blocks) blocks.push(runs === block.runs ? block : { ...block, runs });
+        const block = text.blocks[i], normalized = normalizedBlock(block);
+        if (normalized !== block && !blocks) blocks = text.blocks.slice(0, i);
+        if (blocks) blocks.push(normalized);
     }
     return blocks ? { blocks } : text;
 }
 
 interface TextPoint { readonly block: number; readonly offset: number; readonly start: number }
 function locate(text: RichText, offset: number): TextPoint {
-    if (!Number.isSafeInteger(offset) || offset < 0) throw new RangeError('Invalid rich-text offset');
-    let start = 0;
-    for (let i = 0; i < text.blocks.length; i++) {
-        const length = blockTextLength(text.blocks[i]);
-        if (offset <= start + length) return { block: i, offset: offset - start, start };
-        start += length + 1;
-    }
-    throw new RangeError('Rich-text offset exceeds its projection');
+    const point = projectionPosition(text, offset);
+    return { block: point.index, offset: point.offset, start: point.start };
 }
 
 function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boolean): Run[] {
@@ -116,7 +133,7 @@ function emptyRun(block: Block, offset: number): Run {
     return { text: '', marks: {} };
 }
 
-export function sliceRichText(text: RichText, from: number, to: number): RichFragment {
+export function sliceRichText(text: RichText, from: number, to: number, preserveOrigins = false): RichFragment {
     if (to < from) throw new RangeError('Reversed rich-text slice');
     const first = locate(text, from);
     const last = locate(text, to);
@@ -126,9 +143,64 @@ export function sliceRichText(text: RichText, from: number, to: number): RichFra
         const start = i === first.block ? first.offset : 0;
         const end = i === last.block ? last.offset : blockTextLength(block);
         const runs = sliceRuns(block, start, end, from === to);
-        blocks.push({ ...block, runs: runs.length ? runs : [emptyRun(block, start)] });
+        const { carriers: _carriers, ...base } = block;
+        const carriers = sliceCarriers(block, start, end, preserveOrigins);
+        const sliced: Block = { ...base, runs: runs.length ? runs : [emptyRun(block, start)], ...(carriers ? { carriers } : {}) };
+        blocks.push(preserveOrigins ? trackBlock(sliced, block) : sliced);
     }
     return { blocks };
+}
+
+function spliceCarriers(before: readonly Block[], firstOffset: number, lastOffset: number, insert: RichFragment): readonly (readonly BlockCarrier[] | undefined)[] {
+    const sourceHasCarriers = before.some((block, index) => !!block.carriers?.length || (index > 0 && block.tail !== undefined && block.tail !== '[]'));
+    const insertedHasCarriers = insert.blocks.some((block, index) => !!block.carriers?.length || (index === 0 && block.tail !== undefined && block.tail !== '[]'));
+    if (!sourceHasCarriers && !insertedHasCarriers) return insert.blocks.map(() => undefined);
+    const last = before.length - 1, output = insert.blocks.map(() => [] as BlockCarrier[]);
+    const lastOutput = output.length - 1;
+    const suffixStart = (lastOutput === 0 ? firstOffset : 0) + blockTextLength(insert.blocks[lastOutput]);
+    const insertedSources = new Set<object>(), insertedTails = new Set<object>();
+    for (const block of insert.blocks) {
+        for (const carrier of block.carriers ?? []) insertedSources.add(carrierSource(carrier));
+        if (block.tail !== undefined && block.tail !== '[]') insertedTails.add(blockOrigin(block));
+    }
+    const place = (carrier: BlockCarrier, blockIndex: number) => {
+        let retained = false;
+        if (carrier.from === carrier.to) {
+            if (blockIndex === 0 && carrier.from < firstOffset) {
+                output[0].push(mapCarrier(carrier, carrier.from, carrier.to)); retained = true;
+            } else if (blockIndex === last && carrier.from >= lastOffset) {
+                const offset = suffixStart + carrier.from - lastOffset;
+                output[lastOutput].push(mapCarrier(carrier, offset, offset)); retained = true;
+            }
+        } else {
+            if (blockIndex === 0) {
+                const end = Math.min(carrier.to, firstOffset);
+                if (carrier.from < end) { output[0].push(mapCarrier(carrier, carrier.from, end)); retained = true; }
+            }
+            if (blockIndex === last) {
+                const start = Math.max(carrier.from, lastOffset);
+                if (start < carrier.to) {
+                    output[lastOutput].push(mapCarrier(carrier, suffixStart + start - lastOffset, suffixStart + carrier.to - lastOffset));
+                    retained = true;
+                }
+            }
+        }
+        if (!retained && !insertedSources.has(carrierSource(carrier)))
+            output[0].push(mapCarrier(carrier, firstOffset, firstOffset));
+    };
+    for (let index = 0; index < before.length; index++) {
+        const block = before[index];
+        for (const carrier of block.carriers ?? []) place(carrier, index);
+        if (index > 0 && block.tail !== undefined && block.tail !== '[]' && !insertedTails.has(blockOrigin(block)))
+            place(carrierForTail(block, 0, blockTextLength(block)), index);
+    }
+    for (let index = 0; index < insert.blocks.length; index++) {
+        const block = insert.blocks[index], offset = index === 0 ? firstOffset : 0;
+        for (const carrier of block.carriers ?? []) output[index].push(mapCarrier(carrier, offset + carrier.from, offset + carrier.to));
+        if (index === 0 && block.tail !== undefined && block.tail !== '[]' && blockOrigin(block) !== blockOrigin(before[0]))
+            output[0].push(carrierForTail(block, offset, offset + blockTextLength(block)));
+    }
+    return output.map(coalesceCarriers);
 }
 
 export interface RichSpliceResult {
@@ -155,6 +227,7 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
     else {
         const startBlock = text.blocks[first.block];
         const endBlock = text.blocks[last.block];
+        const mappedCarriers = spliceCarriers(before, first.offset, last.offset, insert);
         const prefix = sliceRuns(startBlock, 0, first.offset, false);
         const suffix = sliceRuns(endBlock, last.offset, blockTextLength(endBlock), from === to);
         const blocks: Block[] = [];
@@ -163,7 +236,10 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
             const runs = [...(i === 0 ? prefix : []), ...fragment.runs, ...(i + 1 === insert.blocks.length ? suffix : [])];
             // Existing first-block attributes live outside the replaced character
             // range. Newline-bearing fragment blocks carry their own attributes.
-            blocks.push({ ...(i === 0 ? startBlock : fragment), runs });
+            const base = i === 0 ? startBlock : fragment;
+            const { carriers: _carriers, ...attributes } = base;
+            const carriers = mappedCarriers[i];
+            blocks.push(trackBlock({ ...attributes, runs, ...(carriers ? { carriers } : {}) }, base));
         }
         after = normalizeRichText({ blocks }).blocks;
     }

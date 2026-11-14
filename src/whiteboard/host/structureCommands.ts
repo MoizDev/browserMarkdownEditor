@@ -73,6 +73,7 @@ export function createStructureCommands(options: StructureCommandsOptions) {
             } catch (error) { report(error); return false; }
         },
         changePaper(paper: Readonly<NotebookPaper>): boolean { return run(() => commands.changePaper(doc, board, paper)); },
+        reorderPage(from: number, to: number): boolean { return run(() => commands.reorderPage(doc, board, from, to)); },
         addPage(): boolean { return run(() => commands.addPage(doc, board)); },
         async deleteLastPage(expectedPage: number): Promise<boolean> {
             try {

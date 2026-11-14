@@ -13,12 +13,13 @@ export interface EditableSessionPort {
     readonly doc: BoardDoc;
     readonly history: HistoryController;
     apply(transaction: Transaction): Applied;
+    preflight(transaction: Transaction): { readonly ops: Transaction['ops']; release(): void };
     subscribe(listener: (notice: ChangeNotice) => void): () => void;
     beginGesture(): () => void;
     setComposition(active: boolean): void;
 }
 export type TextEditViewServices = Omit<EditSessionServices,
-    'history' | 'apply' | 'readText' | 'plainText' | 'marksAt' | 'fragment' | 'format' | 'link' | 'enter' | 'blocks'
+    'history' | 'apply' | 'prepareCut' | 'readText' | 'plainText' | 'marksAt' | 'fragment' | 'format' | 'link' | 'enter' | 'blocks'
     | 'alive' | 'layout' | 'composition' | 'inList' | 'isStandaloneText'>;
 export interface TextEditBindingOptions {
     readonly container: HTMLElement;

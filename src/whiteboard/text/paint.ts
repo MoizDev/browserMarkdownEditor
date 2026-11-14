@@ -54,6 +54,8 @@ export interface PaintLine {
 export interface TextPaint {
     readonly key: string;
     readonly fontEpoch: number;
+    /** The immutable face table whose indices this layout uses. */
+    readonly faceTable?: FaceTable;
     readonly box: { readonly w: number; readonly h: number };
     /** Conservative ink bounds, including the box and possible overhang. */
     readonly ink: Rect;
@@ -96,10 +98,17 @@ export interface CaretIndex {
     hitTest(x: number, y: number): CaretStop;
     /** Resolve affinity at wraps and bidi boundaries; use paragraph-direction primary caret otherwise. */
     caret(position: CaretPosition): CaretStop;
+    /** The painted grapheme actually under a point, or null outside text ink. */
+    clusterAt(x: number, y: number): TextCluster | null;
     /** Selection boxes in visual order, including line-break extension where applicable. */
-    selection(start: number, end: number): readonly Rect[];
+    selection(start: number, end: number, visible?: { readonly top: number; readonly bottom: number }): readonly Rect[];
+    /** Aggregate without retaining an array for every selected line. */
+    selectionBounds(start: number, end: number): Rect | null;
+    forEachSelection(start: number, end: number, visit: (rect: Rect) => void): void;
     /** Character boxes for an EditContext UTF-16 range, one box per code unit. */
     characterBounds(start: number, end: number): readonly Rect[];
+    navigate?(position: CaretPosition, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end', goalX?: number): CaretStop;
+    navigateWord?(position: CaretPosition, direction: 'left' | 'right', boundary: number): CaretStop;
 }
 
 export interface TextPadding { readonly top: number; readonly right: number; readonly bottom: number; readonly left: number }

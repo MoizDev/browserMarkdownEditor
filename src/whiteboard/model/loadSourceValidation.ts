@@ -18,8 +18,8 @@ function boundedString(value: unknown, max: number): value is string {
 function position(value: unknown, size: number): value is ReadPosition {
     if (!fields(value, ['ordinal', 'line', 'byteOffset', 'byteLength'])) return false;
     const { ordinal, line, byteOffset, byteLength } = value;
-    return typeof ordinal === 'number' && Number.isSafeInteger(ordinal) && ordinal >= 0
-        && typeof line === 'number' && Number.isSafeInteger(line) && line >= 1
+    return typeof ordinal === 'number' && Number.isSafeInteger(ordinal) && ordinal >= 0 && ordinal < FORMAT_LIMITS.records
+        && typeof line === 'number' && Number.isSafeInteger(line) && line >= 1 && line <= size + 1
         && typeof byteOffset === 'number' && Number.isSafeInteger(byteOffset) && byteOffset >= 0 && byteOffset <= size
         && typeof byteLength === 'number' && Number.isSafeInteger(byteLength) && byteLength >= 0
         && byteLength <= FORMAT_LIMITS.recordBytes && byteLength <= size - byteOffset;
@@ -29,6 +29,8 @@ function source(value: unknown, size: number): value is ReadSourceRecord {
         || typeof value.category !== 'string' || !RECORD_ORDER.includes(value.category as ReadSourceRecord['category'])
         || !boundedString(value.type, FORMAT_LIMITS.idChars) || (Object.hasOwn(value, 'id') && !boundedString(value.id, FORMAT_LIMITS.idChars))
         || !position(value.position, size) || typeof value.reencode !== 'boolean') return false;
+    const needsId = value.category === 'node' || value.category === 'sheet' || value.category === 'media' || value.category === 'opaque';
+    if (needsId !== Object.hasOwn(value, 'id') || (value.category !== 'opaque' && value.type !== value.category)) return false;
     if (Object.hasOwn(value, 'nodeBounds')) {
         const b = value.nodeBounds;
         if (value.category !== 'node' || !Array.isArray(b) || b.length !== 4) return false;
@@ -48,23 +50,31 @@ export async function validateLoadSources(sources: readonly ReadSourceRecord[], 
         || !Array.isArray(unmapped)) throw new TypeError('Invalid source validation input');
     let steps = 0, started = performance.now();
     const tick = async () => { check(); await cooperate?.(); check(); started = performance.now(); steps = 0; };
-    const ordinals = new Set<number>();
-    let end = 0;
+    const ordinals = new Set<number>(), identities = new Set<string>();
+    let end = 0, previousOrdinal = -1;
     check();
     for (const entry of sources) {
         if (++steps >= 256 || performance.now() - started >= 3) await tick();
-        if (!source(entry, baseline.size) || ordinals.has(entry.position.ordinal) || entry.position.byteOffset < end) throw new TypeError('Invalid live source metadata');
+        if (!source(entry, baseline.size) || entry.position.ordinal <= previousOrdinal
+            || entry.position.byteLength === 0 || entry.position.byteOffset < end) throw new TypeError('Invalid live source metadata');
+        const identity = JSON.stringify([entry.category, entry.type, entry.id ?? null]);
+        if (identities.has(identity)) throw new TypeError('Duplicate live source identity');
+        identities.add(identity);
         ordinals.add(entry.position.ordinal);
+        previousOrdinal = entry.position.ordinal;
         end = entry.position.byteOffset + entry.position.byteLength;
     }
     for (const entry of removedSources) {
         if (++steps >= 256 || performance.now() - started >= 3) await tick();
-        if (!source(entry, baseline.size)) throw new TypeError('Invalid removed source metadata');
+        if (!source(entry, baseline.size) || entry.position.byteLength === 0 || ordinals.has(entry.position.ordinal)) throw new TypeError('Invalid removed source metadata');
+        ordinals.add(entry.position.ordinal);
     }
     for (const entry of unmapped) {
         if (++steps >= 256 || performance.now() - started >= 3) await tick();
         if (!fields(entry, ['raw', 'position', 'reason']) || !boundedString(entry.raw, FORMAT_LIMITS.recordBytes)
-            || !position(entry.position, baseline.size) || !boundedString(entry.reason, 10_000)) throw new TypeError('Invalid unmapped source metadata');
+            || !position(entry.position, baseline.size) || entry.position.byteLength === 0 || ordinals.has(entry.position.ordinal)
+            || !boundedString(entry.reason, 10_000)) throw new TypeError('Invalid unmapped source metadata');
+        ordinals.add(entry.position.ordinal);
     }
     check();
 }

@@ -16,6 +16,21 @@ import type { SceneSpatial } from '../scene/types';
 import { createViewerAccessibility } from './accessibility';
 import type { AttachView, ViewerInteractionPorts, ViewerPaintPresentation, ViewerSnapshot, ViewerViewParams } from './types';
 
+class SelectionIds implements ReadonlySet<string> {
+    readonly [Symbol.toStringTag] = 'SelectionIds';
+    constructor(private readonly ids: readonly NodeId[], private readonly current: () => readonly NodeId[],
+        private readonly selected: (id: NodeId) => boolean) {}
+    get size(): number { return this.ids.length; }
+    has(id: string): boolean { return this.current() === this.ids ? this.selected(id as NodeId) : this.ids.includes(id as NodeId); }
+    *values(): SetIterator<string> { yield* this.ids; }
+    keys(): SetIterator<string> { return this.values(); }
+    *entries(): SetIterator<[string, string]> { for (const id of this.ids) yield [id, id]; }
+    [Symbol.iterator](): SetIterator<string> { return this.values(); }
+    forEach(fn: (value: string, key: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
+        for (const id of this.ids) fn.call(thisArg, id, id, this);
+    }
+}
+
 /** Attaches view resources only. The admitted model, scene, selection/history and
  * journal belong to the exact App-owned runtime and survive this view's disposal. */
 export const attachView: AttachView = options => {
@@ -27,6 +42,7 @@ export const attachView: AttachView = options => {
     let paintJob: AbortController | null = null, revealJob: AbortController | null = null, request = 0;
     let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame; context?: ViewerPaintPresentation } | null = null;
     let interaction: ViewerInteractionPorts | null = null, embedPort: EmbedPresentationPort | null = null;
+    let lastSensitive: ReadonlySet<string> | undefined;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
         if (!a) return b ?? null;
@@ -72,7 +88,8 @@ export const attachView: AttachView = options => {
         pin() { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.pin(); },
     };
     const images = options.images ?? { acquire: async () => { throw new Error('This board view has no admitted image provider'); } };
-    const frames = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const frames = options.liveFrames ? options.liveFrames.wrap(assembler) : assembler;
     const previewOmission = (dry: PaintFrame): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;
         const preview = previewCoverage?.();
@@ -82,19 +99,34 @@ export const attachView: AttachView = options => {
             && a.session === b.session ? preview.nodeIds : null;
     };
     const omitPreview = (dry: PaintFrame) => union(previewOmission(dry), view.visible ? embedPort?.inlineNodeIds(dry.sceneRevision) : null);
-    const liveNodeIds = () => union(interaction?.liveNodeIds?.(), view.visible ? embedPort?.inlineNodeIds() : null) ?? undefined;
+    const selections = new WeakMap<readonly NodeId[], ReadonlySet<string>>();
+    const selectionIds = (): ReadonlySet<string> => {
+        const ids = runtime.selection.getSnapshot().selected;
+        let result = selections.get(ids);
+        if (!result) {
+            result = new SelectionIds(ids, () => runtime.selection.getSnapshot().selected, id => runtime.selection.has(id));
+            selections.set(ids, result);
+        }
+        return result;
+    };
+    const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(
+        selectionIds(), union(union(interaction?.liveNodeIds?.(), view.visible ? embedPort?.inlineNodeIds() : null), sensitive));
+    const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
         liveNodeIds,
-        onDrawn(revision, _frame, context) {
+        onDrawn(revision, frame, context) {
+            options.liveFrames?.drawn(frame);
             embedPort?.drawn({ token: context.token, frameId: context.frameId, cameraEpoch: context.view.epoch,
                 sceneRevision: revision, omittedNodeIds: context.omittedNodeIds });
         },
         beforePrepare(current, budget) {
             runtime.flushFrame(budget.frameId);
             if (runtime.scene && !runtime.scene.ready) runtime.scene.step(8, budget.prepareDeadline);
-            if (!lastView || current.epoch !== lastView.epoch) {
+            const sensitive = interaction?.sensitiveNodeIds?.();
+            const changed = sensitive !== lastSensitive;
+            if (!lastView || current.epoch !== lastView.epoch || changed) {
                 lastView = { ...current, camera: { ...current.camera }, viewport: { ...current.viewport } };
-                requestPaint();
+                requestPaint(sensitive);
             }
         },
         onPresented(revision, token, frame, context) {
@@ -134,7 +166,7 @@ export const attachView: AttachView = options => {
         snapshot = makeSnapshot(); accessibility.invalidate();
         for (const listener of listeners) listener();
     }
-    function requestPaint(): void {
+    function requestPaint(sensitive = interaction?.sensitiveNodeIds?.()): void {
         if (disposed || !view.visible || !runtime.scene?.ready) return;
         paintJob?.abort();
         const controller = new AbortController(), sequence = ++request;
@@ -143,8 +175,8 @@ export const attachView: AttachView = options => {
         const current = lastView;
         const world: Rect | undefined = current ? { x: current.camera.x, y: current.camera.y,
             width: current.viewport.width / current.camera.z, height: current.viewport.height / current.camera.z } : undefined;
-        const sensitiveNodes = new Set(runtime.selection.getSnapshot().selected);
-        for (const id of liveNodeIds() ?? []) sensitiveNodes.add(id as NodeId);
+        lastSensitive = sensitive;
+        const sensitiveNodes = precisionNodeIds(sensitive) as ReadonlySet<NodeId>;
         const deviceScale = current ? current.camera.z * current.viewport.dpr : undefined;
         void pin.paintSource({ sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
             ...(world ? { world } : {}), ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) }, controller.signal).then(source => {
@@ -153,10 +185,11 @@ export const attachView: AttachView = options => {
             paintJob = null; publish();
         }, error => { pin.release(); if (!controller.signal.aborted) report(error); });
     }
+    const cancelReveal = () => { const job = revealJob; revealJob = null; job?.abort(); };
     const reveal = (ids: ReadonlySet<NodeId>) => {
-        revealJob?.abort();
-        const controller = new AbortController(); revealJob = controller;
+        cancelReveal();
         if (disposed || !view.visible || !ids.size) return;
+        const controller = new AbortController(); revealJob = controller;
         void (async () => {
             const ready = await runtime.ready;
             let box: readonly [number, number, number, number] | null = null;
@@ -168,7 +201,8 @@ export const attachView: AttachView = options => {
             if (!disposed && view.visible && revealJob === controller && !controller.signal.aborted && box) {
                 options.reveal({ x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1] });
             }
-        })().catch(error => { if (!controller.signal.aborted) report(error); });
+        })().catch(error => { if (!controller.signal.aborted) report(error); })
+            .finally(() => { if (revealJob === controller) revealJob = null; });
     };
     const unbind = runtime.bindView({ visible: () => view.visible, focused: () => view.focused,
         invalidate() { layers.invalidate('board-session'); publish(); },
@@ -185,7 +219,7 @@ export const attachView: AttachView = options => {
     const stopSelection = runtime.selection.subscribe(() => {
         const currentSheet = sheet();
         if (currentSheet !== previousSheet) { previousSheet = currentSheet; clearPreview?.(); }
-        revealJob?.abort(); publish(); requestPaint();
+        cancelReveal(); publish(); requestPaint();
     });
     let previousRevision = options.session.doc.rev;
     const stopSession = options.session.subscribe(() => {
@@ -198,7 +232,7 @@ export const attachView: AttachView = options => {
         clearPreview?.(); clearPreview = null;
         const oldEmbed = embedPort; embedPort = null;
         if (oldEmbed) { oldEmbed.setVisible(false); void oldEmbed.dispose().catch(report); }
-        disposed = true; paintJob?.abort(); revealJob?.abort(); interaction?.finishGesture(); interaction?.finishComposition();
+        disposed = true; paintJob?.abort(); cancelReveal(); interaction?.finishGesture(); interaction?.finishComposition();
         unbind(); stopScene?.(); stopSelection(); stopSession(); accessibility.dispose(); frames.dispose(); listeners.clear(); interaction = null;
         options.signal?.removeEventListener('abort', dispose);
     };
@@ -206,6 +240,7 @@ export const attachView: AttachView = options => {
     return {
         session: options.session, scene, accessibility,
         getSnapshot: () => snapshot,
+        wakeAt(deadlineMs) { if (!disposed) layers.wakeAt(deadlineMs); },
         getView: () => ({ ...view }),
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         setView(next) {
@@ -213,7 +248,7 @@ export const attachView: AttachView = options => {
             const old = view; view = { ...next }; previousSheet = sheet();
             if (old.visible !== view.visible) embedPort?.setVisible(view.visible);
             if (view.visible && (old.theme !== view.theme || old.sheetId !== view.sheetId)) clearPreview?.();
-            if (!view.visible) { clearPreview?.(); paintJob?.abort(); revealJob?.abort(); frames.clear(); drawnFrame = null; interaction?.finishGesture(); interaction?.finishComposition(); }
+            if (!view.visible) { clearPreview?.(); paintJob?.abort(); cancelReveal(); frames.clear(); drawnFrame = null; interaction?.finishGesture(); interaction?.finishComposition(); }
             publish();
             if (view.visible && (!old.visible || view.theme !== old.theme || view.sheetId !== old.sheetId)) requestPaint();
             layers.invalidate('board-view');
@@ -222,6 +257,7 @@ export const attachView: AttachView = options => {
             if (disposed || !options.session.doc.nodes.has(id as NodeId)) return;
             runtime.selection.replace([id as NodeId]); reveal(new Set([id as NodeId]));
         },
+        cancelReveal,
         connectEmbeds(port) {
             if (disposed) { if (port) void port.dispose().catch(report); return; }
             if (embedPort === port) return;

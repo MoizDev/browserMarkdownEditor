@@ -22,6 +22,9 @@ import type { WriteResult } from '../format/writeTypes';
 import { createBoardEncoderBounds } from '../host/encoderBounds';
 import { createBoardRenderServices } from '../render/services';
 import { LEGACY_SCAN_MAX_BYTES } from './legacyScan';
+import { relativeLegacyAssetSource } from '../import/records/media';
+import { hashMedia } from '../media/sha256';
+import { SECURITY_LIMITS } from '../security/limits';
 
 // Provenance: the independent legacy mapping, actual canonical font/geometry,
 // native encoders and C5 repair. This worker creates bytes, never a session authority.
@@ -33,6 +36,8 @@ export interface LegacyPrepareRequest {
     readonly zMax: number;
     /** Actual host inspections from the scan's copied bytes; each is rebound by SHA below. */
     readonly media: readonly InspectedMedia[];
+    /** Actual App-resolved copied bytes, bound to original source order and URI. */
+    readonly relativeAssets?: readonly { readonly sourceOrdinal: number; readonly src: string; readonly blob: Blob }[];
 }
 export interface LegacyPrepareReply {
     readonly status: 'prepared' | 'read-only';
@@ -56,19 +61,30 @@ function validToken(token: RenderToken): boolean {
         && [token.vaultEpoch, token.session, token.bytesGeneration].every(value => Number.isSafeInteger(value) && value >= 0);
 }
 async function hash(blob: Blob, context: WorkerContext): Promise<string> {
-    const bytes = await blob.arrayBuffer(); context.signal.throwIfAborted();
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)); context.signal.throwIfAborted();
-    return `sha256:${Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')}`;
+    return hashMedia(blob, context.signal, () => context.slice());
 }
 export async function legacyPrepare(value: unknown, context: WorkerContext): Promise<LegacyPrepareReply> {
     const request = value as LegacyPrepareRequest;
     if (!request || !(request.bytes instanceof Blob) || (typeof File !== 'undefined' && request.bytes instanceof File)
         || request.bytes.size > LEGACY_SCAN_MAX_BYTES || !['whiteboard', 'notebook', 'pdf-ink'].includes(request.kind)
         || request.host?.kind !== request.kind || !validToken(request.token) || !Number.isFinite(request.zMax) || request.zMax <= 0
-        || !Array.isArray(request.media) || request.media.length > 100_000) throw new TypeError('Invalid copied legacy preparation request');
+        || !Array.isArray(request.media) || request.media.length > 100_000
+        || request.relativeAssets !== undefined && (!Array.isArray(request.relativeAssets) || request.relativeAssets.length > 100_000))
+        throw new TypeError('Invalid copied legacy preparation request');
     const check = () => context.signal.throwIfAborted(), tick = async () => { check(); await context.slice(); check(); };
     const text = await request.bytes.text(); check();
     if (await hasNativeMarkerIncremental(text, tick)) throw new Error('A native source cannot enter legacy conversion');
+    const relativeAssets = new Map<number, { readonly src: string; readonly blob: Blob }>();
+    let relativeBytes = 0;
+    for (const item of request.relativeAssets ?? []) {
+        if (!item || !Number.isSafeInteger(item.sourceOrdinal) || item.sourceOrdinal < 0 || item.sourceOrdinal >= 200_000
+            || relativeAssets.has(item.sourceOrdinal) || typeof item.src !== 'string' || !item.src.length || item.src.length > 16_384
+            || !(item.blob instanceof Blob) || (typeof File !== 'undefined' && item.blob instanceof File)
+            || item.blob.size > SECURITY_LIMITS.mediaBytes || item.blob.size > LEGACY_SCAN_MAX_BYTES - relativeBytes)
+            throw new TypeError('Invalid resolved legacy media');
+        relativeBytes += item.blob.size; relativeAssets.set(item.sourceOrdinal, { src: item.src, blob: item.blob });
+        if ((relativeAssets.size & 255) === 0) await tick();
+    }
     const inspections = new Map(request.media.map(item => [item.id, item]));
     for (const item of request.media) {
         if (!/^sha256:[0-9a-f]{64}$/.test(item.id) || !Number.isSafeInteger(item.width) || !Number.isSafeInteger(item.height)
@@ -100,6 +116,12 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
             prepareGeometry: draftGeometry.prepareGeometry,
             ...(request.host.kind === 'pdf-ink' ? { pageSource: { kind: 'pdf-ink' as const,
                 pages: request.host.pages.map(page => ({ w: page[0], h: page[1] })) } } : {}),
+            async resolveAsset(asset, sourceOrdinal) {
+                check();
+                const resolved = relativeAssets.get(sourceOrdinal);
+                if (!resolved || relativeLegacyAssetSource(asset) !== resolved.src) throw new Error('Legacy relative media is not bound to this source record');
+                return resolved.blob;
+            },
             async admitMedia(blob) {
                 const id = await hash(blob, context), inspected = inspections.get(id); check();
                 if (!inspected) throw new Error('Legacy asset has no matching actual host inspection');

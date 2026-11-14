@@ -41,12 +41,14 @@ async function validReply(value: unknown, kind: BoardKind, inputBytes: number, c
     for (const asset of v.assets) {
         if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return false;
         const item = asset as Record<string, unknown>;
+        const inline = item.src === undefined && item.blob instanceof Blob && !(typeof File !== 'undefined' && item.blob instanceof File);
+        const relative = item.blob === undefined && typeof item.src === 'string' && item.src.length > 0 && item.src.length <= 16_384 && string(item.src);
         if (!Number.isSafeInteger(item.sourceOrdinal) || (item.sourceOrdinal as number) <= previous || (item.sourceOrdinal as number) >= (v.recordCount as number)
-            || !(item.blob instanceof Blob) || (typeof File !== 'undefined' && item.blob instanceof File)
-            || item.blob.size > SECURITY_LIMITS.mediaBytes || item.blob.size > SECURITY_LIMITS.inlineMediaBytes - bytes
+            || (!inline && !relative) || inline && ((item.blob as Blob).size > SECURITY_LIMITS.mediaBytes || (item.blob as Blob).size > INPUT_LIMIT - bytes)
             || !string(item.name) || (item.assetId !== undefined && !string(item.assetId))
             || (item.mimeHint !== undefined && !string(item.mimeHint))) return false;
-        previous = item.sourceOrdinal as number; bytes += item.blob.size;
+        previous = item.sourceOrdinal as number;
+        if (inline) bytes += (item.blob as Blob).size;
         if ((++visits & 255) === 0) { await yieldToHost(); check(); }
     }
     return bytes <= inputBytes;

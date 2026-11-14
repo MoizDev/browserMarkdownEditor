@@ -1,37 +1,38 @@
-import { isTextGraphemeBoundary, blockTextLength, scanText } from '../model/textOffsets';
+import { isTextGraphemeBoundary, blockTextLength } from '../model/textOffsets';
+import { projectionLength as indexedLength, projectionPosition, projectionText } from './projection';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
+import { trackBlock } from './carriers';
 
-interface Position { readonly block: Block; readonly index: number; readonly start: number; readonly offset: number }
-function position(text: RichText, offset: number): Position {
-    if (!Number.isSafeInteger(offset) || offset < 0) throw new RangeError('Invalid text offset');
-    let start = 0;
-    for (let index = 0; index < text.blocks.length; index++) {
-        const block = text.blocks[index], length = blockTextLength(block);
-        if (offset <= start + length) return { block, index, start, offset: offset - start };
-        start += length + 1;
-    }
-    throw new RangeError('Text offset exceeds projection');
-}
+const position = projectionPosition;
 function check(text: RichText, from: number, to = from): void {
     if (to < from || !isTextGraphemeBoundary(text, from) || !isTextGraphemeBoundary(text, to))
         throw new RangeError('Text range must have grapheme boundaries');
 }
 function withoutStart(block: Block): Block {
+    // The native tuple's dormant start slot remains attached to an opaque future tail.
+    if (block.tail !== undefined && block.tail !== '[]') return block;
     const { start: _start, ...rest } = block;
     return rest;
 }
+function insertionBlock(block: Block): Block {
+    const { tail: _tail, carriers: _carriers, ...rest } = block;
+    return rest;
+}
 function continuation(block: Block): Block {
-    const { start: _start, tail: _tail, ...rest } = block;
+    const { start: _start, tail: _tail, carriers: _carriers, ...rest } = block;
     return rest;
 }
 export function plain(value: RichText): string {
-    return value.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
+    return projectionText(value);
 }
 export function fromPlain(value: string): RichText {
-    const lines = value.replace(/\r\n?/g, '\n').split('\n');
-    if (lines.length > MAX_TEXT_BLOCKS || value.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
+    if (value.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
+    const normalized = value.replace(/\r\n?/g, '\n');
+    if (normalized.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
+    const lines = normalized.split('\n');
+    if (lines.length > MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds limits');
     return { blocks: lines.map(text => ({ kind: 'p', level: 0, dir: 'auto', runs: [{ text, marks: {} }] })) };
 }
 export function marksAt(value: RichText, offset: number): Marks {
@@ -48,18 +49,41 @@ export function marksAt(value: RichText, offset: number): Marks {
     }
     return {};
 }
+export function linkRangeAt(value: RichText, offset: number): { readonly from: number; readonly to: number; readonly url: string } | null {
+    check(value, offset);
+    const found = position(value, offset), runs = found.block.runs;
+    let at = 0, chosen = -1;
+    for (let index = 0; index < runs.length; index++) {
+        const end = at + runs[index].text.length;
+        if ((found.offset > at && found.offset <= end) || (found.offset === 0 && at === 0 && end > 0)) { chosen = index; break; }
+        at = end;
+    }
+    if (chosen < 0 || !runs[chosen].marks.link) return null;
+    const url = runs[chosen].marks.link!;
+    let first = chosen, last = chosen;
+    while (first > 0 && runs[first - 1].marks.link === url) first--;
+    while (last + 1 < runs.length && runs[last + 1].marks.link === url) last++;
+    let from = found.start;
+    for (let index = 0; index < first; index++) from += runs[index].text.length;
+    let to = from;
+    for (let index = first; index <= last; index++) to += runs[index].text.length;
+    return from < to && isTextGraphemeBoundary(value, from) && isTextGraphemeBoundary(value, to) ? { from, to, url } : null;
+}
 export function insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment {
     check(value, from);
     const { block } = position(value, from);
     const marks = storedMarks ?? marksAt(value, from);
-    const lines = inserted.replace(/\r\n?/g, '\n').split('\n');
-    if (lines.length > MAX_TEXT_BLOCKS || inserted.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
-    return { blocks: lines.map((text, index) => ({ ...(index === 0 ? block : continuation(block)), runs: [{ text, marks }] })) };
+    if (inserted.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
+    const normalized = inserted.replace(/\r\n?/g, '\n');
+    if (normalized.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
+    const lines = normalized.split('\n');
+    if (lines.length > MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds limits');
+    return { blocks: lines.map((text, index) => ({ ...(index === 0 ? insertionBlock(block) : continuation(block)), runs: [{ text, marks }] })) };
 }
 function mapMarks(value: RichText, from: number, to: number, map: (marks: Marks) => Marks): RichFragment {
     check(value, from, to);
-    const fragment = sliceRichText(value, from, to);
-    return normalizeRichText({ blocks: fragment.blocks.map(block => ({ ...block, runs: block.runs.map(run => ({ ...run, marks: map(run.marks) })) })) });
+    const fragment = sliceRichText(value, from, to, true);
+    return normalizeRichText({ blocks: fragment.blocks.map(block => trackBlock({ ...block, runs: block.runs.map(run => ({ ...run, marks: map(run.marks) })) }, block)) });
 }
 export function toggleMark(value: RichText, from: number, to: number, mark: RichMark): RichFragment {
     check(value, from, to);
@@ -95,7 +119,7 @@ export function enter(value: RichText, selection: RichSelection): RichEdit {
     }
     const next = continuation(block);
     const marks = marksAt(value, from);
-    const insert: RichText = { blocks: [{ ...block, runs: [{ text: '', marks }] }, { ...next, runs: [{ text: '', marks }] }] };
+    const insert: RichText = { blocks: [{ ...insertionBlock(block), runs: [{ text: '', marks }] }, { ...next, runs: [{ text: '', marks }] }] };
     return { from, to, insert, selection: { anchor: from + 1, focus: from + 1 } };
 }
 export function blocks(value: RichText, from: number, to: number, kind: Block['kind'] | 'indent' | 'outdent'): RichEdit {
@@ -117,4 +141,4 @@ export function blocks(value: RichText, from: number, to: number, kind: Block['k
     return { from: first.start, to: end, insert: normalizeRichText({ blocks: changed }), selection: { anchor: from, focus: to }, replaceBlocks: true };
 }
 export const richTextOperations: RichTextOperations = { plain, fromPlain, normalize: normalizeRichText, splice: spliceRichText, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks };
-export function projectionLength(text: RichText): number { return scanText(text); }
+export function projectionLength(text: RichText): number { return indexedLength(text); }

@@ -1,4 +1,3 @@
-import { graphemeBoundaries } from '../graphemes';
 import type { EditSelection, TextChange } from './host';
 
 export interface KeyServices {
@@ -6,6 +5,7 @@ export interface KeyServices {
     selection(): EditSelection;
     setSelection(selection: EditSelection): void;
     replace(change: TextChange): void;
+    adjacent(offset: number, direction: -1 | 1): number;
     // Visual movement is supplied by the caret index built from the renderer's
     // TextPaint, not by a second text layout in the input layer.
     move(offset: number, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end' | 'word-left' | 'word-right'): number;
@@ -15,16 +15,6 @@ export interface KeyServices {
     undoTransformation(): boolean;
 }
 
-function adjacentGrapheme(text: string, offset: number, direction: -1 | 1): number {
-    const boundaries = graphemeBoundaries(text);
-    if (direction < 0) {
-        for (let i = boundaries.length - 1; i >= 0; i--) if (boundaries[i] < offset) return boundaries[i];
-        return 0;
-    }
-    for (const boundary of boundaries) if (boundary > offset) return boundary;
-    return text.length;
-}
-
 function consume(event: KeyboardEvent): void { event.preventDefault(); event.stopPropagation(); }
 
 export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: boolean): boolean {
@@ -32,16 +22,23 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
     const mod = mac ? event.metaKey : event.ctrlKey;
     const word = mac ? event.altKey : event.ctrlKey;
     const { anchor, focus } = services.selection();
-    const text = services.text();
+    let cachedText: string | undefined;
+    const text = () => cachedText ??= services.text();
     const lower = event.key.toLowerCase();
     if (mod && !event.altKey && lower === 'a') {
-        consume(event); services.setSelection({ anchor: 0, focus: text.length }); return true;
+        consume(event); services.command('select-all'); return true;
     }
-    if (mod && !event.altKey && ['b', 'i', 'u', 'e', 'k', 'h', 's', 'z', 'c', 'x', 'v'].includes(lower)) {
+    // Ordinary clipboard chords must reach the browser's synchronous copy/cut/paste events.
+    if (mod && !event.altKey && !event.shiftKey && (lower === 'c' || lower === 'x' || lower === 'v')) return false;
+    if (mod && lower === 'v' && (event.shiftKey || event.altKey)) {
+        consume(event);
+        services.command(event.shiftKey ? event.altKey ? 'paste-plain-inverted' : 'paste-plain' : 'paste-inverted');
+        return true;
+    }
+    if (mod && !event.altKey && ['b', 'i', 'u', 'e', 'k', 'h', 's', 'z'].includes(lower)) {
         const command = lower === 'b' ? 'bold' : lower === 'i' ? 'italic' : lower === 'u' ? 'underline'
             : lower === 'e' ? 'code' : lower === 'k' ? 'link' : lower === 'h' && event.shiftKey ? 'highlight'
-            : lower === 's' && event.shiftKey ? 'strike' : lower === 'z' ? event.shiftKey ? 'redo' : 'undo'
-            : lower === 'c' ? 'copy' : lower === 'x' ? 'cut' : lower === 'v' ? event.shiftKey ? 'paste-plain' : 'paste' : null;
+            : lower === 's' && event.shiftKey ? 'strike' : lower === 'z' ? event.shiftKey ? 'redo' : 'undo' : null;
         if (command) { consume(event); services.command(command); return true; }
     }
     if (mod && event.altKey && (/^[0-6]$/.test(event.key) || /^Digit[0-6]$/.test(event.code))) {
@@ -67,7 +64,7 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
         if (from === to) {
             const destination = mod && mac && backward ? services.move(focus, 'line-start')
                 : word ? services.move(focus, backward ? 'word-left' : 'word-right')
-                : adjacentGrapheme(text, focus, backward ? -1 : 1);
+                : services.adjacent(focus, backward ? -1 : 1);
             from = Math.min(focus, destination); to = Math.max(focus, destination);
         }
         consume(event);
@@ -80,7 +77,7 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
     if (!movement) return false;
     let next: number;
     if (!event.shiftKey && anchor !== focus && (movement === 'left' || movement === 'right')) next = services.collapse({ anchor, focus }, movement);
-    else if ((mod && mac && (movement === 'up' || movement === 'down')) || (!mac && event.ctrlKey && (movement === 'line-start' || movement === 'line-end'))) next = movement === 'up' || movement === 'line-start' ? 0 : text.length;
+    else if ((mod && mac && (movement === 'up' || movement === 'down')) || (!mac && event.ctrlKey && (movement === 'line-start' || movement === 'line-end'))) next = movement === 'up' || movement === 'line-start' ? 0 : text().length;
     else if (mod && mac && (movement === 'left' || movement === 'right')) next = services.move(focus, movement === 'left' ? 'line-start' : 'line-end');
     else if (word && (movement === 'left' || movement === 'right')) next = services.move(focus, movement === 'left' ? 'word-left' : 'word-right');
     else next = services.move(focus, movement);

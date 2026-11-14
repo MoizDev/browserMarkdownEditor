@@ -2,7 +2,8 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { MediaIngestor } from '../media/ingest';
 import type { MediaIngestOptions, MediaSource } from '../media/ingest';
 import { inspectMedia } from '../media/inspect';
-import type { MediaEntry, MediaId } from '../model/media';
+import type { MediaId } from '../model/media';
+import type { StoreMedia } from '../media/storage.types';
 import type { NodeId } from '../model/ids';
 import type { MediaLease } from '../media/store';
 import type { TransactionOrigin } from '../change/ops';
@@ -17,7 +18,7 @@ export interface BoardMediaIngestOptions {
     readonly memory: MemoryAllocator;
     current(): boolean;
     finishGesture(): void;
-    storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    readonly storeMedia: StoreMedia;
     noticeRefused(files: readonly { readonly name: string; readonly reason: string }[]): void;
 }
 function snapshot(source: MediaSource): MediaSource {
@@ -37,7 +38,7 @@ export function createBoardMediaIngestor(options: BoardMediaIngestOptions): Medi
     const host = {
         inspectMedia: (blob: Blob, request: Parameters<ConstructorParameters<typeof MediaIngestor>[1]['inspectMedia']>[1]) =>
             inspectMedia(blob, { ...request, memory: options.memory }),
-        storeMedia: (entry: MediaEntry, blob: Blob, signal: AbortSignal) => options.storeMedia(entry, blob, signal),
+        storeMedia: options.storeMedia,
         rememberMedia(id: MediaId, blob: Blob) {
             if (!leases.has(id)) leases.set(id, runtime.media.retain(id, 'snapshot'));
             runtime.media.put(id, blob);
@@ -49,7 +50,7 @@ export function createBoardMediaIngestor(options: BoardMediaIngestOptions): Medi
     };
     const signal = (external?: AbortSignal) => external ? AbortSignal.any([lifetime.signal, external]) : lifetime.signal;
     class ViewIngestor extends MediaIngestor {
-        constructor() { super(runtime.session, host, runtime.jobs, runtime.media); }
+        constructor() { super(runtime.session, host, runtime.jobs, runtime.media, runtime); }
         override ingest(sources: readonly MediaSource[], request: MediaIngestOptions): Promise<readonly NodeId[]> {
             if (disposed) return Promise.reject(new DOMException('Media view disposed', 'AbortError'));
             let owned: MediaSource[];

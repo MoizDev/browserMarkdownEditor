@@ -8,9 +8,14 @@ import type { SceneMetadata } from './snapshotDoc';
 import type { SpatialCursor } from '../pick';
 import type { PaintNodeSource } from '../render/paintStream';
 import type { PaintNodeOrder } from '../render/paintOrder';
+import type { ScenePaintNodeStream } from '../render/scenePaintStream';
 import type { BoundsQuality, Box } from './bounds';
 import type { NearestVisitor, QueryBuffer, QueryRequest, SpatialQuery } from './query';
 
+export interface SceneOccupiedBounds {
+    readonly revision: number;
+    readonly bounds: Box;
+}
 export interface SceneBounds {
     readonly revision: number;
     readonly quality: BoundsQuality;
@@ -38,6 +43,7 @@ export interface ScenePaintRequest {
 export interface ScenePaintBinding {
     readonly token: RenderToken;
     readonly preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => Promise<PaintNodeSource>;
+    readonly preparePaintStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => ScenePaintNodeStream;
     readonly retainRenderer?: () => { release(): void };
 }
 
@@ -49,6 +55,9 @@ export interface SceneSnapshot {
     readonly token: RenderToken;
     readonly revision: number;
     readonly layout: Readonly<PageStack> | null;
+    readonly nodeCount: number;
+    /** Null means empty or not conservatively known; nodeCount distinguishes an empty pin. */
+    readonly occupiedBounds: SceneOccupiedBounds | null;
     worldBounds(id: NodeId): SceneBounds | null;
     /** Pinned immutable row and metadata reads; neither scans the document. */
     readNodeNow(id: NodeId): Node | undefined;
@@ -56,6 +65,7 @@ export interface SceneSnapshot {
     /** Immutable read side owned by this pin; never a mutation authority. */
     readDocument(signal?: AbortSignal): Promise<BoardDoc>;
     paintSource(request: ScenePaintRequest, signal?: AbortSignal): Promise<PaintNodeSource>;
+    paintStream?(request: ScenePaintRequest, signal?: AbortSignal): Promise<ScenePaintNodeStream>;
     release(): void | Promise<void>;
 }
 export interface SceneSpatial {

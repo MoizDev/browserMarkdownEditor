@@ -3,9 +3,16 @@ import { boardWorker } from '../workers/client'
 import type { BoardJobIdentity } from '../workers/protocol'
 import { PaintStreamJob } from '../render/paintStream'
 import type { PaintItem, PaintNodeSource } from '../render/paintStream'
-import { paintItemDisplay } from './displayList'
+import { captureTextDisplay, paintItemDisplay } from './displayList'
 import type { ExportImage } from './displayList'
-import { createExportTextResolver } from './textResolver'
+import { openExportTextStream } from './textStreamLease'
+
+function transferBytes(item: PageDisplayItem): number {
+  if (item.kind === 'group') return item.items.reduce((sum, child) => sum + transferBytes(child), 0)
+  if (item.kind === 'image') return item.bytes.byteLength
+  if (item.kind === 'raster') return item.png.byteLength
+  return item.d.length * 64
+}
 
 function transferable(item: PageDisplayItem, transfers: Transferable[]): PageDisplayItem {
   if (item.kind === 'group') return { ...item, items: item.items.map(child => transferable(child, transfers)) }
@@ -30,7 +37,6 @@ export async function streamSvg(
   signal.throwIfAborted()
   const identity: BoardJobIdentity = { session: crypto.randomUUID(), epoch: source.token.vaultEpoch, revision: source.sceneRevision }
   const streamId = crypto.randomUUID(), client = boardWorker('export')
-  const text = createExportTextResolver(source, signal)
   const current = (candidate: BoardJobIdentity) => !signal.aborted && source.isCurrent()
     && candidate.session === identity.session && candidate.epoch === identity.epoch && candidate.revision === identity.revision
   const opts = { priority: 0 as const, signal }
@@ -38,10 +44,20 @@ export async function streamSvg(
   const job = new PaintStreamJob(source, item => { chunk.push(item) })
   let started = false, finished = false
   async function send(items: PageDisplayItem[]): Promise<void> {
-    if (!items.length) return
-    const transfer: Transferable[] = []
-    const owned = items.map(item => transferable(item, transfer))
-    await client.request('svgChunk', { streamId, items: owned }, identity, { ...opts, transfer }, current)
+    let offset = 0
+    while (offset < items.length) {
+      signal.throwIfAborted()
+      let end = offset, bytes = 0
+      while (end < items.length && end - offset < 64) {
+        const next = transferBytes(items[end])
+        if (end > offset && bytes + next > 16 * 1024 * 1024) break
+        bytes += next; end++
+      }
+      const transfer: Transferable[] = []
+      const payload = items.slice(offset, end).map(item => transferable(item, transfer))
+      await client.request('svgChunk', { streamId, items: payload }, identity, { ...opts, transfer }, current)
+      offset = end
+    }
   }
   try {
     started = true
@@ -59,7 +75,17 @@ export async function streamSvg(
       const items: PageDisplayItem[] = []
       for (const item of chunk) {
         signal.throwIfAborted()
-        items.push(await paintItemDisplay(item, scale, image, signal, text))
+        if (item.kind === 'text') {
+          await send(items)
+          items.length = 0
+          const frame = captureTextDisplay(item)
+          const lease = await openExportTextStream(source, item, scale, signal, true)
+          try {
+            const chunk = client.request('svgChunk', { streamId, text: { id: lease.id, owner: lease.owner, frame } }, identity, opts, current)
+            lease.track(chunk)
+            await chunk
+          } finally { await lease.release() }
+        } else items.push(await paintItemDisplay(item, scale, image, signal))
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }
       chunk.length = 0

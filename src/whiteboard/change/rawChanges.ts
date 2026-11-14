@@ -1,6 +1,6 @@
 import type { ExtBag, RawJson } from '../model/json';
 import type { MediaId } from '../model/media';
-import { scanRawMedia, visitNodeRaw, visitRichTextRaw, type NodeRawCarrier } from '../model/rawMedia';
+import { pdfHostMediaRawValues, scanRawMedia, visitNodeRaw, visitRichTextRaw, type NodeRawCarrier } from '../model/rawMedia';
 import type { Block } from '../text/richText';
 
 export interface PreservedDelta {
@@ -28,6 +28,13 @@ export class RawChanges {
         if (before !== undefined) this.add(before, -1);
         if (after !== undefined) this.add(after, 1);
     }
+    pdf(before: RawJson, after: RawJson): void {
+        if (before === after) return;
+        // Source fingerprints are PDF-owned bookkeeping, not media. Use the
+        // same structural partition as native admission, including unknown tails.
+        for (const raw of pdfHostMediaRawValues(before)) if (raw !== null) this.add(raw, -1);
+        for (const raw of pdfHostMediaRawValues(after)) if (raw !== null) this.add(raw, 1);
+    }
     private map(before: ReadonlyMap<string, RawJson> | undefined, after: ReadonlyMap<string, RawJson> | undefined): void {
         if (before === after) return;
         if (before) for (const [key, raw] of before) if (after?.get(key) !== raw) this.add(raw, -1);
@@ -43,6 +50,8 @@ export class RawChanges {
     }
     rich(before: readonly Block[], after: readonly Block[]): void {
         if (before === after) return;
+        // Joining paragraphs moves primary tails into range carriers. The same
+        // visitor handles both for splice/set, preserving independent equal tails.
         visitRichTextRaw({ blocks: before }, raw => this.add(raw, -1));
         visitRichTextRaw({ blocks: after }, raw => this.add(raw, 1));
     }

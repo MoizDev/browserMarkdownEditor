@@ -51,39 +51,39 @@ function releaseAll(leases: readonly ClipboardLease[]): void {
     if (failure) throw failure;
 }
 
-/** Synchronous copy reads only pinned rows and builds a detached selected-subtree document. */
+/** Synchronous copy captures the current revision and builds a detached selected-subtree document. */
 export function createBoardCopySnapshotNow(options: BoardCopySnapshotOptions): BoardCopySnapshotNowResult {
     const { runtime } = options, session = runtime.session, live = session.doc, owner = session.owner;
     const state = runtime.selection.getSnapshot(), selection = [...new Set(options.selection ?? state.selected)], revision = live.rev;
-    const signal = options.signal ?? new AbortController().signal, scene = runtime.scene, fontEpoch = runtime.render.text.fonts.epoch;
-    if (!scene || !scene.ready || scene.revision !== revision) throw new Error('Clipboard scene is not ready');
-    const pin = scene.pin(), held: ClipboardLease[] = [pin];
+    const signal = options.signal ?? new AbortController().signal, fontEpoch = runtime.render.text.fonts.epoch, paintBinding = runtime.paintBinding;
+    // Synchronous capture reads the current document directly; no Scene/AABB cache can lag a just-made selection.
+    const held: ClipboardLease[] = [];
     let output: CopySnapshot | undefined, transferred = false, released = false;
     const check = () => {
         signal.throwIfAborted();
         if (released || !options.current() || session.owner !== owner || session.doc !== live || live.rev !== revision
-            || runtime.selection.getSnapshot() !== state || pin.revision !== revision || runtime.render.text.fonts.epoch !== fontEpoch)
+            || runtime.selection.getSnapshot() !== state || runtime.render.text.fonts.epoch !== fontEpoch)
             throw new DOMException('Clipboard source changed', 'AbortError');
     };
     const keep = <T extends ClipboardLease>(lease: T): T => { held.push(lease); return lease; };
     try {
         check();
-        const metadata = pin.metadataNow(), sheet = metadata.sheets.get(state.sheet);
+        const metadata = live, sheet = metadata.sheets.get(state.sheet);
         if (!sheet) throw new Error('Clipboard source sheet is unavailable');
         const roots: NodeId[] = [], skipped: NodeId[] = [], copied = new Map<NodeId, Readonly<Node>>(), ordered = new Map<NodeId, NodeId[]>();
         for (const chosen of selectedRoots(live, selection)) {
-            const root = pin.readNodeNow(chosen.id); if (!root) throw new Error('Clipboard root is unavailable');
+            const root = live.nodes.get(chosen.id); if (!root) throw new Error('Clipboard root is unavailable');
             let parent = root.parent, inSheet = false;
             for (let depth = 0; depth < 64; depth++) {
                 if (parent === state.sheet) { inSheet = true; break; }
-                const ancestor = pin.readNodeNow(parent as NodeId); if (!ancestor) break; parent = ancestor.parent;
+                const ancestor = live.nodes.get(parent as NodeId); if (!ancestor) break; parent = ancestor.parent;
             }
             if (!inSheet) throw new Error('Clipboard selection spans another sheet');
             if (root.kind === 'opaque') { skipped.push(root.id); continue; }
             roots.push(root.id); const subtree: NodeId[] = []; ordered.set(root.id, subtree);
             const pending = [root.id];
             while (pending.length) {
-                check(); const id = pending.pop()!, node = pin.readNodeNow(id);
+                check(); const id = pending.pop()!, node = live.nodes.get(id);
                 if (!node) throw new Error('Clipboard subtree is incomplete');
                 if (node.kind === 'opaque') { skipped.push(id); continue; }
                 if (copied.has(id)) throw new Error('Clipboard roots overlap');
@@ -116,7 +116,7 @@ export function createBoardCopySnapshotNow(options: BoardCopySnapshotOptions): B
             if (rootSet.has(node.id)) {
                 const pose = worldPose(live, node.id); let opacity = node.opacity, parent = original.parent;
                 for (let depth = 0; parent !== state.sheet && depth < 64; depth++) {
-                    const ancestor = pin.readNodeNow(parent as NodeId); if (!ancestor) throw new Error('Clipboard root ancestor is unavailable');
+                    const ancestor = live.nodes.get(parent as NodeId); if (!ancestor) throw new Error('Clipboard root ancestor is unavailable');
                     opacity *= ancestor.opacity; parent = ancestor.parent;
                 }
                 if (parent !== state.sheet) throw new Error('Clipboard root ancestry exceeds limit');
@@ -189,7 +189,7 @@ export function createBoardCopySnapshotNow(options: BoardCopySnapshotOptions): B
         };
         const rootBounds = new Map<NodeId, ClipboardBounds>();
         for (const id of roots) {
-            check(); const paint = runtime.render.prepareOverlayNow(projection, { sheetId: state.sheet, theme: 'light' }, ordered.get(id)!, signal);
+            check(); const paint = paintBinding.prepareOverlayNow(projection, { sheetId: state.sheet, theme: 'light' }, ordered.get(id)!, signal);
             const measured = measureBoardPaintBoundsNow(paint, { memory: options.memory, signal, toleranceWorld: options.toleranceWorld, includeInvisible: true });
             const b = measured.bounds; if (!b) throw new Error(`Clipboard root has no measurable paint: ${id}`);
             rootBounds.set(id, { x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] });

@@ -138,7 +138,7 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
     {
         name: 'vault_create',
         mutates: true,
-        description: 'Create a NEW file (a note is a .md file) with optional content. Refused if a file or folder already has that name. Parent folders must exist (see vault_mkdir). Create an empty .tldraw drawing or .notebook by name, then add to it with canvas_apply.',
+        description: 'Create a NEW file (a note is a .md file) with optional content. Refused if a file or folder already has that name. Parent folders must exist (see vault_mkdir). Create an empty .drawing native drawing, .tldraw drawing or .notebook by name, then add to it with canvas_apply.',
         inputSchema: {
             type: 'object', additionalProperties: false, required: ['path'],
             properties: { path: PATH, content: { type: 'string', default: '' } },

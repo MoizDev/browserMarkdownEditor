@@ -15,6 +15,7 @@ export interface KeyboardCursorServices {
 }
 export interface KeyboardCursor {
   readonly active: boolean
+  currentSample(): RealSample | null
   activate(point: KeyboardCursorPoint): void
   move(dx: number, dy: number, coarse: boolean, modifiers: Modifiers): void
   enter(modifiers: Modifiers): boolean

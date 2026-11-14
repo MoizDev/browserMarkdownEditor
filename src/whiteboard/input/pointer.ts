@@ -6,6 +6,22 @@ export interface PresentedMapping {
   clientToSurface(x: number, y: number): { readonly x: number; readonly y: number }
 }
 
+/** Freeze the DOM rectangle and camera from one actually presented frame. */
+export function presentedMapping(time: number,
+  rect: Readonly<{ left: number; top: number; width: number; height: number }>,
+  viewport: Readonly<{ width: number; height: number }>,
+  camera: Readonly<{ x: number; y: number; z: number }>): PresentedMapping {
+  const { left, top, width, height } = rect, { width: vw, height: vh } = viewport, { x, y, z } = camera
+  if (![time, left, top, width, height, vw, vh, x, y, z].every(Number.isFinite)
+    || time < 0 || width <= 0 || height <= 0 || vw <= 0 || vh <= 0 || z <= 0) throw new RangeError('Invalid presented mapping geometry')
+  const sx = vw / width, sy = vh / height
+  const clientToSurface = (clientX: number, clientY: number) => ({ x: (clientX - left) * sx, y: (clientY - top) * sy })
+  return Object.freeze({ time, clientToSurface, clientToWorld(clientX: number, clientY: number) {
+    const point = clientToSurface(clientX, clientY)
+    return { x: x + point.x / z, y: y + point.y / z }
+  } })
+}
+
 // Record mappings only after presentation, not when a future camera is scheduled.
 export class MappingHistory {
   private entries: PresentedMapping[] = []

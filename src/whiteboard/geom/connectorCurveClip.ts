@@ -7,7 +7,7 @@ import { dyadic, dyadicMultiply, dyadicSubtract, type Dyadic } from './numeric';
 import type { Vec2 } from './path';
 import type { ExactConnectorContour, ExactConnectorCrossing } from './connectorExactClip';
 
-interface RootBand { readonly lo: number; readonly hi: number; readonly exact?: ExactPoint }
+interface RootBand { readonly lo: number; readonly hi: number; readonly exact?: ExactPoint; readonly curve?: ExactCurve; readonly depth?: number }
 interface CurveWork { readonly curve: ExactCurve; readonly depth: number }
 const ONE: Dyadic = Object.freeze({ n: 1n, e: 0 });
 function sum(a: Dyadic, b: Dyadic): Dyadic { return dyadicSubtract(a, { n: -b.n, e: b.e }); }
@@ -80,8 +80,8 @@ export function* curvedConnectorLineCrossings(start: Vec2, end: Vec2, length: nu
         if (!point) throw new RangeError('Connector boundary intersection is parallel');
         endpoint(point);
     };
-    const cubic = function* (points: ExactCurve): Generator<void, void> {
-        const stack: CurveWork[] = [{ curve: points, depth: 0 }];
+    const cubic = function* (points: ExactCurve, depth = 0, widthLimit = error): Generator<void, void> {
+        const stack: CurveWork[] = [{ curve: points, depth }];
         while (stack.length) {
             if (++nodes > maxPieces * 64) throw new RangeError('Connector curve root budget exhausted');
             const item = stack.pop()!, p = item.curve.map(weighted), signs = p.map(point => exactSide(line, point));
@@ -94,7 +94,9 @@ export function* curvedConnectorLineCrossings(start: Vec2, end: Vec2, length: nu
             for (const point of p) { const t = parameter(point, start, end); lo = Math.min(lo, t.lo); hi = Math.max(hi, t.hi); }
             if (!Number.isFinite(lo) || !Number.isFinite(hi)) throw new RangeError('Connector curve projection overflows');
             if (hi < 0 || lo > 1) { yield; continue; }
-            if (variations === 1 && lo > 0 && hi < 1 && (hi - lo) * length <= error) { add({ lo, hi }); yield; continue; }
+            if (variations === 1 && lo > 0 && hi < 1 && (hi - lo) * length <= widthLimit) {
+                add({ lo, hi, curve: item.curve, depth: item.depth }); yield; continue;
+            }
             if (item.depth >= 64 || nodes + stack.length + 2 > maxPieces * 64) throw new RangeError('Connector curve root cannot be isolated');
             const [left, right] = splitExactCurve(item.curve);
             stack.push({ curve: right, depth: item.depth + 1 }, { curve: left, depth: item.depth + 1 }); yield;
@@ -118,14 +120,27 @@ export function* curvedConnectorLineCrossings(start: Vec2, end: Vec2, length: nu
         }
         if (current && begin) segment(current, begin);
     }
-    const sorted = yield* sortBands(bands), roots: RootBand[] = [];
-    for (const band of sorted) {
-        const previous = roots[roots.length - 1];
-        if (previous && previous.hi >= band.lo) {
-            if (previous.exact && band.exact && sameExactPoint(previous.exact, band.exact)) { yield; continue; }
-            throw new RangeError('Connector boundary crossings cannot be separated');
+    let roots: RootBand[];
+    for (;;) {
+        const sorted = yield* sortBands(bands), distinct: RootBand[] = [];
+        let overlap: readonly [RootBand, RootBand] | undefined;
+        for (const band of sorted) {
+            const previous = distinct[distinct.length - 1];
+            if (previous && previous.hi >= band.lo) {
+                if (previous.exact && band.exact && sameExactPoint(previous.exact, band.exact)) { yield; continue; }
+                overlap = [previous, band]; break;
+            }
+            distinct.push(band); yield;
         }
-        roots.push(band); yield;
+        if (!overlap) { roots = distinct; break; }
+        const candidates = overlap.filter(band => band.curve && band.depth !== undefined && band.depth < 64);
+        if (!candidates.length) throw new RangeError('Connector boundary crossings cannot be separated');
+        const chosen = candidates.reduce((a, b) => a.hi - a.lo >= b.hi - b.lo ? a : b);
+        const limit = (chosen.hi - chosen.lo) * length / 4;
+        if (!(limit > 0) || !Number.isFinite(limit)) throw new RangeError('Connector boundary crossings cannot be separated');
+        const index = bands.indexOf(chosen);
+        if (index < 0) throw new Error('Missing connector root band');
+        bands.splice(index, 1); yield* cubic(chosen.curve!, chosen.depth!, limit);
     }
     const states: boolean[] = [];
     for (let i = 0; i <= roots.length; i++) {

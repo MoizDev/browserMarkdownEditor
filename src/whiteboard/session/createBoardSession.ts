@@ -152,6 +152,8 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         pending = emptyTouched(); pendingDirty = false;
     }
     function capture(): ReturnType<typeof boardContentSource>['source'] {
+        // A closed session must never pin a new build: retireSettled has already passed over the checkpoint map.
+        if (disposed) throw new DOMException('Board session ended', 'AbortError');
         encodePending();
         if (cachedSource?.revision === contentRevision) return cachedSource.handle.source;
         retireSource();
@@ -261,7 +263,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             } while (outstanding.size);
         },
         onChange(listener: (source: ContentSource) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        journalDelta() { capture(); return journal.delta(cachedSource!.context); },
+        journalDelta() { if (disposed) return undefined; capture(); return journal.delta(cachedSource!.context); },
         async recover(payload: unknown) {
             guard();
             if (pendingState() || doc.rev !== savedRevision) throw new ApplyFailed('recovery-conflict', 'Current board state changed; save the recovery as a copy or reload before applying it');

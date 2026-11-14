@@ -10,7 +10,8 @@ import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
-import { PAPER_USER, PaperMainMenu } from './paperCanvas';
+import { PaperMainMenu } from './paperCanvas';
+import { PAPER_USER } from './paperUser';
 import { bindImageInvertKey } from './invertibleImageShape';
 import {
     flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,

@@ -1,27 +1,8 @@
 import { Children, cloneElement, isValidElement, type ReactNode } from 'react';
 import {
     ColorSchemeMenu, DefaultMainMenu, DefaultMainMenuContent, PreferencesGroup,
-    computed, createTLCurrentUser,
 } from 'tldraw';
-import type { TLUiMainMenuProps, TLUserPreferences } from 'tldraw';
-
-// tldraw's user record is shared across editors. A stored dark preference (or a
-// whiteboard changing it later) must not recolour ink against white paper, nor
-// may opening a paper host overwrite the whiteboard's own preference.
-const sharedUser = createTLCurrentUser();
-const paperPreferences = computed('paper user preferences', () => ({
-    ...sharedUser.userPreferences.get(), colorScheme: 'light' as const,
-}));
-export const PAPER_USER = createTLCurrentUser({
-    userPreferences: paperPreferences,
-    setUserPreferences(next: TLUserPreferences) {
-        const current = sharedUser.userPreferences.get();
-        const updated = { ...next, colorScheme: current.colorScheme };
-        if (Object.keys(updated).some(key => updated[key as keyof TLUserPreferences] !== current[key as keyof TLUserPreferences])) {
-            sharedUser.setUserPreferences(updated);
-        }
-    },
-});
+import type { TLUiMainMenuProps } from 'tldraw';
 
 // Keep the library's menu and preferences intact except for the paper-only
 // colour-scheme control. The component identities are its public menu API.

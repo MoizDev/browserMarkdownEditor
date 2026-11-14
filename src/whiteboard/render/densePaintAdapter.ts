@@ -3,6 +3,8 @@ import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { FrameBudget } from '../../platform/render/types';
 import { PaintBoundsJob } from './paintBounds';
+import type { PaintBoundsCache } from './paintBoundsCache';
+import { InkTileCoverageJob } from './inkTileCoverage';
 import { inkCoverageChunks, type PaintFrame, type PaintItem } from './paintStream';
 import type { PaintLayerResources } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter } from './reference/canvasPaintAdapter';
@@ -28,6 +30,8 @@ export class DenseTileJob {
     private pathLease: ByteLease | null = null;
     private adapter: CanvasPaintAdapter | null = null;
     private bounds: PaintBoundsJob | null = null;
+    private inkClip: InkTileCoverageJob | null = null;
+    private paintingItem: PaintItem | null = null;
     private index = 0;
     private estimateClip = 0;
     private estimateChunk = 0;
@@ -35,14 +39,14 @@ export class DenseTileJob {
     private estimated = false;
     private painted = 0;
     private bitmapHeld = false;
-    private phase: 'start' | 'bounds' | 'estimate' | 'item' | 'complete' | 'empty' | 'cancelled' = 'start';
+    private phase: 'start' | 'bounds' | 'crop' | 'estimate' | 'item' | 'complete' | 'empty' | 'cancelled' = 'start';
     private blocked = false;
     private resultValue: DenseTileBitmap | null = null;
     private readonly end: number;
     constructor(private readonly resources: PaintLayerResources, private readonly host: LayerHost,
         private readonly report: (error: unknown) => void, private readonly source: PaintFrame,
         private readonly items: readonly PaintItem[], private readonly rect: Readonly<Rect>, private readonly scale: number,
-        range?: Readonly<{ first: number; end: number }>) {
+        range?: Readonly<{ first: number; end: number }>, private readonly boundsCache?: PaintBoundsCache) {
         this.index = range?.first ?? 0; this.end = range?.end ?? items.length;
         if (!Number.isSafeInteger(this.index) || !Number.isSafeInteger(this.end) || this.index < 0
             || this.end < this.index || this.end > items.length) throw new RangeError('Invalid dense paint interval');
@@ -51,15 +55,18 @@ export class DenseTileJob {
     }
     get result(): DenseTileBitmap { if (!this.resultValue) throw new Error('Dense tile is not complete'); return this.resultValue; }
     get isEmpty(): boolean { return this.phase === 'empty'; }
+    get isComplete(): boolean { return this.phase === 'complete'; }
     get memoryBytes(): number { return (this.scratch?.bytes ?? 0) + (this.bitmapLease?.bytes ?? 0) + (this.pathLease?.bytes ?? 0)
-        + (this.bitmapHeld ? BITMAP_BYTES : 0); }
+        + (this.bitmapHeld ? BITMAP_BYTES : 0) + (this.inkClip?.memoryBytes ?? 0); }
     get cpuWorkingSet(): number {
-        return this.memoryBytes + (this.phase === 'start' ? 2 * BITMAP_BYTES : this.phase === 'estimate' && !this.pathLease ? this.estimate : 0);
+        return this.memoryBytes + (this.phase === 'start' ? 2 * BITMAP_BYTES : this.phase === 'estimate' && !this.pathLease ? this.estimate : 0)
+            + Math.max(0, (this.inkClip?.cpuWorkingSet ?? 0) - (this.inkClip?.memoryBytes ?? 0));
     }
     needsFrame(): boolean { return !this.blocked && this.phase !== 'complete' && this.phase !== 'empty' && this.phase !== 'cancelled'
         && (this.phase !== 'item' || !!this.adapter?.needsFrame()); }
     private releasePath(): void {
         this.adapter?.dispose(); this.adapter = null;
+        this.paintingItem = null; this.inkClip?.dispose(); this.inkClip = null;
         if (this.pathLease) { this.host.allocator.cpu.release(this.pathLease); this.pathLease = null; }
     }
     private releaseScratch(): void {
@@ -133,16 +140,37 @@ export class DenseTileJob {
                     }
                     const item = this.items[this.index];
                     if ((item.kind === 'image' ? item.blend : item.material.blend) !== 'normal') throw new Error('Backdrop-dependent paint cannot enter a dense tile');
-                    this.bounds ??= new PaintBoundsJob(item);
-                    if (!this.bounds.step(1)) continue;
-                    const bounds = this.bounds.result; this.bounds = null;
+                    let bounds: Readonly<Rect> | null;
+                    if (this.boundsCache) {
+                        if (!this.boundsCache.step(item, 1)) {
+                            if (this.boundsCache.blocked) { this.blocked = true; return; }
+                            continue;
+                        }
+                        bounds = this.boundsCache.read(item)!.bounds;
+                    } else {
+                        this.bounds ??= new PaintBoundsJob(item);
+                        if (!this.bounds.step(1)) continue;
+                        bounds = this.bounds.result; this.bounds = null;
+                    }
                     const bleed = 2 / this.scale;
                     const visible = { x: this.rect.x - bleed, y: this.rect.y - bleed,
                         width: this.rect.width + 2 * bleed, height: this.rect.height + 2 * bleed };
                     if (!bounds || !intersects(bounds, visible)) { this.index++; continue; }
-                    this.estimate = 256; this.estimateClip = 0; this.estimateChunk = 0; this.estimated = false; this.phase = 'estimate';
+                    this.estimate = 256; this.estimateClip = 0; this.estimateChunk = 0; this.estimated = false;
+                    this.paintingItem = item;
+                    if (item.kind === 'ink') {
+                        this.inkClip = new InkTileCoverageJob(item, visible, this.host.allocator.cpu); this.phase = 'crop';
+                    } else this.phase = 'estimate';
+                } else if (this.phase === 'crop') {
+                    if (!this.inkClip!.step(1)) {
+                        if (this.inkClip!.blocked) { this.blocked = true; return; }
+                        continue;
+                    }
+                    this.paintingItem = this.inkClip!.result;
+                    if (!this.paintingItem) { this.releasePath(); this.index++; this.phase = 'bounds'; continue; }
+                    this.phase = 'estimate';
                 } else if (this.phase === 'estimate') {
-                    const item = this.items[this.index];
+                    const item = this.paintingItem!;
                     if (!this.estimated) {
                         if (!this.estimateStep(item)) continue;
                         this.estimated = true;
@@ -155,7 +183,7 @@ export class DenseTileJob {
                     this.adapter!.prepare(tileView, budget);
                     const prepared = this.adapter!.borrowPrepared();
                     if (!prepared) return;
-                    paintItem2d(this.ctx!, this.items[this.index], prepared.resources);
+                    paintItem2d(this.ctx!, this.paintingItem!, prepared.resources);
                     this.releasePath(); this.index++; this.painted++; this.phase = 'bounds';
                 } else return;
             }

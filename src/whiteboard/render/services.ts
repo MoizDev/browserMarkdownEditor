@@ -4,6 +4,9 @@ import { worldPose } from '../change/coordinates';
 import { ApplyFailed } from '../change/errors';
 import { createBoardChangeGeometry } from '../geom/changeGeometry';
 import { compose, inverse } from '../geom/affine';
+import { transformBox } from '../geom/bounds';
+import { nextUp } from '../geom/numeric';
+import type { PaintNode } from './paintStream';
 import { geometrySceneBounds, transformedPathBounds } from '../geom/providers';
 import { resolveConnectorGeometry, resolveConnectorGeometryNow } from '../geom/resolveConnector';
 import type { AttachmentSurface, ConnectorGeometry } from '../geom/connectorTypes';
@@ -40,6 +43,18 @@ interface Prepared {
     readonly connector?: ConnectorGeometry;
     readonly inkPrecision?: string;
     readonly inkLod?: boolean;
+}
+const allocationScratch = new Float64Array(4);
+function withAllocation(paint: PaintNode, geometry: Prepared, context: SceneResolveContext): PaintNode {
+    const ink = geometry.bounds.ink;
+    if (!ink) return paint;
+    // Rewalking every realised command for every dense tile left a 1000-polyline view blank.
+    // The canonical prepared ink envelope already covers all this node's contributions.
+    transformBox(allocationScratch, 0, ink, 0, context.world);
+    const [x, y, right, bottom] = allocationScratch;
+    const bounds = { x, y, width: nextUp(right - x), height: nextUp(bottom - y) };
+    if (Object.values(bounds).some(value => !Number.isFinite(value)) || bounds.width < 0 || bounds.height < 0) return paint;
+    return { ...paint, allocationBounds: Object.freeze(bounds) };
 }
 function matrix(doc: BoardDoc, id: NodeId): Affine {
     const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -281,10 +296,11 @@ export function createBoardRenderServices(options: {
             async resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
                 const geometry = await prepare(node, doc, itemSignal, context);
-                if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
-                if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
-                return paintVectorNode(node, geometry.vector!, context, palette, text.faces,
-                    { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
+                    : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
+                    : await paintVectorNode(node, geometry.vector!, context, palette, text.faces,
+                        { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                return withAllocation(paint, geometry, context);
             },
         }, signal);
     };
@@ -295,10 +311,11 @@ export function createBoardRenderServices(options: {
             resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
                 const geometry = prepareNow(node, doc, itemSignal, context);
-                if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
-                if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
-                return paintVectorNodeNow(node, geometry.vector!, context, palette, text.faces,
-                    { signal: itemSignal, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
+                    : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
+                    : paintVectorNodeNow(node, geometry.vector!, context, palette, text.faces,
+                        { signal: itemSignal, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                return withAllocation(paint, geometry, context);
             },
         }, signal);
     };

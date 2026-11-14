@@ -27,7 +27,7 @@ A local-first, Obsidian-style Markdown editor that runs **entirely in the browse
 database. Optional fonts use Google; the local VaultAgent helper serves AI and terminal. It reads and
 writes the user's real files through the **File System Access API**, so it is **Chromium-only by
 design** (`showDirectoryPicker`, OPFS, `color-mix` are used freely). Stack: **React 19 + Vite 7 +
-TS 6 + CodeMirror 6**, KaTeX, mermaid, tldraw (drawings, notebooks, PDF ink), pdf.js + pdf-lib, idb-keyval, xterm.js.
+TS 6 + CodeMirror 6**, KaTeX, mermaid, in-house canvas/PDF engines, tldraw (Classic), pdf.js + pdf-lib, idb-keyval, xterm.js.
 
 ## Commands
 

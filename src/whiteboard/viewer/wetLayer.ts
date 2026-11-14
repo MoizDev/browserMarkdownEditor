@@ -38,6 +38,7 @@ export interface BoardWetOptions {
 export interface BoardWetRenderer extends BoardWetLayer {
     readonly layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }>;
     consumeInput(): void;
+    liveNodeIds(): ReadonlySet<string>;
     presented(revision: number, token: RenderToken, frame?: PaintFrame): void;
     clear(): void;
     dispose(): void;
@@ -68,8 +69,25 @@ function predictionSamples(g: CurveGeometry): SampleSequence {
         y: i => g.originY + g.cubics[i ? (i - 1) * 8 + 7 : 1],
         pressure: () => undefined, segmentKind: () => 'freehand' };
 }
+class ImmutableIds implements ReadonlySet<string> {
+    readonly [Symbol.toStringTag] = 'ImmutableIds';
+    private readonly ids: Set<string>;
+    constructor(values?: Iterable<string>) { this.ids = new Set(values); }
+    get size(): number { return this.ids.size; }
+    has(value: string): boolean { return this.ids.has(value); }
+    entries(): SetIterator<[string, string]> { return this.ids.entries(); }
+    keys(): SetIterator<string> { return this.ids.keys(); }
+    values(): SetIterator<string> { return this.ids.values(); }
+    [Symbol.iterator](): SetIterator<string> { return this.values(); }
+    forEach(callback: (value: string, value2: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
+        for (const value of this.ids) callback.call(thisArg, value, value, this);
+    }
+}
+const EMPTY_LIVE_IDS: ReadonlySet<string> = new ImmutableIds();
+
 export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer {
     let handover: WetInkHandover | null = null, disposed = false, generation = 0, dirty = false, denied = false;
+    let liveIds: ReadonlySet<string> = EMPTY_LIVE_IDS;
     let owner: LayerHost | null = null, work: Work | null = null, reserved = 0, lastPrepareFrame: number | null = null;
     const hosts = new Set<LayerHost>(), prepared = new Map<number, Prepared>(), callbacks = new Set<() => void>();
     let publicationVersion = 0, sourceVersion = -1, sourceGeneration = -1, paletteRevision = -1;
@@ -95,7 +113,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     const clear = () => {
         dropWork(); for (const item of prepared.values()) dropPrepared(item); prepared.clear();
         gpu?.release('pressure'); gpuPrepared = null; gpuToken = null; publicationVersion++;
-        dirty = false; denied = false;
+        dirty = false; denied = false; liveIds = EMPTY_LIVE_IDS;
     };
     const reserve = (bytes: number): ByteLease | null => {
         const lease = owner?.allocator.cpu.reserve(bytes) ?? null;
@@ -328,6 +346,15 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         onInputFrame(callback) { callbacks.add(callback); return () => { callbacks.delete(callback); }; },
         invalidate,
         consumeInput() { if (disposed || !options.current()) return; for (const callback of callbacks) callback(); },
+        liveNodeIds() {
+            if (disposed) return EMPTY_LIVE_IDS;
+            const next = new Set<string>();
+            for (const snapshot of handover?.forFrame(() => false) ?? []) if (snapshot.dry) next.add(snapshot.dry.nodeId);
+            let changed = next.size !== liveIds.size;
+            if (!changed) for (const id of next) if (!liveIds.has(id)) { changed = true; break; }
+            if (changed) liveIds = next.size ? new ImmutableIds(next) : EMPTY_LIVE_IDS;
+            return liveIds;
+        },
         presented(revision, token, frame) {
             if (disposed || !sameToken(token, options.token) || !frame || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
             for (const item of handover?.forFrame(() => false) ?? []) if (item.dry && available(frame, item.dry, token)) handover?.acknowledgePresented(item.dry);

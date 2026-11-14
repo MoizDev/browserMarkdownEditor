@@ -63,6 +63,10 @@ export class BoardSpellClient {
 
     start(): Promise<void> {
         if (this.disposed) return Promise.reject(new Error('Spelling client disposed'));
+        if (this.host?.state === 'failed') {
+            this.host.dispose(); this.host = null; this.ready = null;
+            this.dictionaryBarrier = Promise.resolve();
+        }
         if (this.ready) return this.ready;
         let host!: WorkerClient;
         host = createWorkerClient({
@@ -123,6 +127,11 @@ export class BoardSpellClient {
                 await host.request('dictionary', { words: this.custom }, { priority: 2, deadlineMs: 10_000, terminateOnDeadline: true });
         });
         this.dictionaryBarrier = update;
+        void update.catch(error => {
+            if (this.dictionaryBarrier === update && host === this.host && error instanceof Error
+                && (error.name === 'Cancelled' || error.name === 'WorkerCrashed'))
+                this.dictionaryBarrier = Promise.resolve();
+        });
         await update;
     }
 

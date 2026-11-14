@@ -8,9 +8,12 @@ import { bindImageInvertKey } from './invertibleImageShape';
 import { subscribePenScale } from '../utils/penStyle';
 import { flushCanvasViewPositions, readCanvasViewPos, writeCanvasViewPos } from '../utils/canvasViewState';
 import { registerView, type DrawingViewInfo } from '../utils/viewRegistry';
+import { registerPending } from '../utils/unloadCoordinator';
 import { captureRegion, createCanvasAgentOps, selectedAgentShapeIds, summarizeShapes, type CanvasPageModel } from './canvasAgentOps';
 
 interface DrawingPaneProps {
+    /** OpenTab.id from the host; a rename must not change pending-work identity. */
+    documentId?: string;
     /** The drawing's vault path. Every change is reported against it explicitly
      *  (never "the active tab") so a save landing after a tab switch cannot
      *  write drawing JSON into another file's buffer. */
@@ -64,7 +67,7 @@ function parseDrawingFile(content: string): { snapshot?: TLEditorSnapshot; ui?: 
  * CodeMirror uses, so dirty-tracking, autosave, Cmd+S and close-flush all work
  * unchanged.
  */
-export default function DrawingPane({ filePath, content, onContentChange, theme }: DrawingPaneProps) {
+export default function DrawingPane({ documentId, filePath, content, onContentChange, theme }: DrawingPaneProps) {
     const onContentChangeRef = useRef(onContentChange);
     useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
 
@@ -123,12 +126,28 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
         const disposeInvert = bindImageInvertKey(editor);
 
         let lastUi = JSON.stringify(readCanvasUi(editor));
+        let unregisterPending: (() => void) | undefined;
+        const hasPendingEdits = () => serializeTimerRef.current !== null;
 
         const flush = () => {
-            serializeTimerRef.current = null;
             const uiNow = readCanvasUi(editor);
             lastUi = JSON.stringify(uiNow);
             onContentChangeRef.current(filePath, JSON.stringify({ ...getSnapshot(editor.store), ui: uiNow }));
+            // The funnel now owns this revision. If hand-over throws, retain the
+            // pending marker so a later checkpoint can retry rather than exit clean.
+            serializeTimerRef.current = null;
+            unregisterPending?.();
+            unregisterPending = undefined;
+        };
+        const flushPending = () => {
+            if (!serializeTimerRef.current) return;
+            clearTimeout(serializeTimerRef.current);
+            flush();
+        };
+        const reportPending = () => {
+            if (documentId && !unregisterPending) {
+                unregisterPending = registerPending({ documentId, hasPendingEdits, flushPending });
+            }
         };
 
         // Mid-stroke the document is about to change again, and serializing a
@@ -145,6 +164,14 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
         const schedule = () => {
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
             serializeTimerRef.current = setTimeout(tick, serializeDelay(editor, SERIALIZE_DEBOUNCE_MS));
+            reportPending();
+        };
+        const armFirstChange = () => {
+            if (serializeTimerRef.current !== null) return;
+            // store.listen is frame-batched. The first shape must protect this
+            // task too, without doing shape-count work in a half-finished batch.
+            serializeTimerRef.current = setTimeout(tick, SERIALIZE_DEBOUNCE_MS);
+            reportPending();
         };
 
         // Reopen where the reader LEFT it, not where the file was last saved:
@@ -219,19 +246,23 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
             capture: (maxSide) => captureRegion(editor, editor.getViewportPageBounds(), maxSide, editor.getZoomLevel() * 2),
             // A stroke still inside the serialize debounce is an edit App cannot
             // see yet; reloading the file from disk over it would lose it.
-            hasPendingEdits: () => serializeTimerRef.current !== null,
-            flushPending: () => {
-                if (!serializeTimerRef.current) return;
-                clearTimeout(serializeTimerRef.current);
-                flush();
-            },
+            hasPendingEdits,
+            flushPending,
         });
 
         // source: 'user'     → a programmatic load never marks the file dirty.
         // scope: 'document'  → panning/zooming (session state) doesn't either.
         // The agent's canvas edits are 'user' too (editor API, no remote merge
         // — see canvasAgentOps.ts), so they are saved exactly like a stroke.
-        const unlistenDoc = editor.store.listen(schedule, { source: 'user', scope: 'document' });
+        const stopPending = (['shape', 'asset', 'binding', 'page', 'document'] as const).flatMap(type => [
+            editor.sideEffects.registerAfterCreateHandler(type, (_record, source) => { if (source === 'user') armFirstChange(); }),
+            editor.sideEffects.registerAfterChangeHandler(type, (_before, _after, source) => { if (source === 'user') armFirstChange(); }),
+            editor.sideEffects.registerAfterDeleteHandler(type, (_record, source) => { if (source === 'user') armFirstChange(); }),
+        ]);
+        const unlistenDoc = editor.store.listen(() => {
+            // A same-task forced drain already consumed this notification.
+            if (hasPendingEdits()) schedule();
+        }, { source: 'user', scope: 'document' });
 
         // The pickers live in session scope alongside camera/selection noise
         // that must NOT dirty the file — so compare just the slice we persist
@@ -246,8 +277,8 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
         const unlistenPen = subscribePenScale(saveUiIfChanged);
 
         return () => {
-            editorRef.current = null;
             unregisterView();
+            stopPending.forEach(stop => stop());
             stopViewWatch();
             window.removeEventListener('pagehide', onPageHide);
             // The memory record is current (the watch writes it on every
@@ -260,15 +291,14 @@ export default function DrawingPane({ filePath, content, onContentChange, theme 
             unlistenPen();
             // Unmounting mid-debounce (tab switch, tab close) must not drop the
             // last strokes — flush them synchronously while the editor is alive.
-            if (serializeTimerRef.current) {
-                clearTimeout(serializeTimerRef.current);
-                flush();
-            }
+            flushPending();
+            unregisterPending?.();
+            editorRef.current = null;
         };
-    }, [filePath, ui]);
+    }, [documentId, filePath, ui]);
 
     return (
-        <div className="drawing-pane">
+        <div className="drawing-pane" data-legacy-board="">
             <Tldraw
                 snapshot={snapshot}
                 onMount={handleMount}

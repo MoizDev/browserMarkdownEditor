@@ -38,9 +38,11 @@ export interface ScheduledSubmission {
     readonly completed?: () => boolean;
 }
 
-/** Encoding/submission belong to the compositor; abort cleanup must not publish pixels (§7.1:687–688). */
+/** Encoding/submission belong to the compositor; abort cleanup must not publish pixels (§7.1:687–688).
+ * A late budget miss may decline with null; its previous picture/DOM transform then remain together.
+ */
 export interface ScheduledEncoding {
-    submit(): ScheduledSubmission;
+    submit(): ScheduledSubmission | null;
     discard(): void;
 }
 
@@ -62,6 +64,8 @@ export interface ScheduledPane {
     sceneRevision(layer: Layer): number;
     /** Immediate critical preparation, not "a worker is pending"; becomes false when that work drains. */
     isCritical(layer: Layer, view: ViewState): boolean;
+    /** Platform target/ring admission once per frame, before any layer prepares; never draws. */
+    prepareFrame(view: ViewState, budget: FrameBudget): void;
     encode(frame: ScheduledFrame): ScheduledEncoding | null;
     writeOverlays(frame: ScheduledFrame): void;
     /** Stop input/speculative work and synchronously checkpoint through the session, never await a frame. */
@@ -475,8 +479,15 @@ export class FrameScheduler {
                     entry.reasons.clear();
                     // Discard stale document/view work BEFORE a callback can resize a surface.
                     if (!this.token(entry)) { entry.renderable = false; this.cancelMotion(entry); return; }
+                    // Capture the CURRENT gesture anchor before a target commit can replace
+                    // backing/clip state; camera and DOM remain on the old frame if it fails.
+                    const reportedAnchor = entry.pane.resizeAnchor?.();
+                    const anchor = reportedAnchor ? { world: { ...reportedAnchor.world }, surface: { ...reportedAnchor.surface } } : undefined;
+                    const previousGeometry = entry.pane.metrics.current?.tags.geometryGeneration;
                     const result = entry.pane.commitMetrics(frameId);
-                    if (result?.kind === 'ready') entry.pane.camera.setViewport(result.metrics.viewport, entry.pane.resizeAnchor?.());
+                    if (result?.kind === 'ready') {
+                        entry.pane.camera.setViewport(result.metrics.viewport, anchor, result.tags.geometryGeneration !== previousGeometry);
+                    }
                     const token = this.token(entry);
                     const metrics = entry.pane.metrics.current;
                     entry.renderable = !!token && result?.kind !== 'failed' && metrics?.kind === 'ready' && metrics.tags.deviceGeneration === token.deviceGeneration;
@@ -539,6 +550,9 @@ export class FrameScheduler {
             const criticalPending = () => work.some(item => this.call(item.entry,
                 () => item.frame.layers.some(meta => item.entry.pane.isCritical(meta.layer, item.frame.view))) === true);
             for (const item of criticalOrder) {
+                prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, null, prepareDeadline, true, meter, criticalPending));
+            }
+            for (const item of criticalOrder) {
                 for (const meta of item.frame.layers) {
                     if (meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, prepareDeadline, true, meter, criticalPending));
                 }
@@ -568,6 +582,7 @@ export class FrameScheduler {
                     if (!this.valid(item.work.entry, item.work.frame.token)) return;
                     const submission = item.encoding.submit();
                     item.done = true;
+                    if (!submission) { this.mark(item.work.entry, 'presentation-deferred'); return; }
                     if (!this.valid(item.work.entry, item.work.frame.token)) return;
                     const drawn = Object.freeze(submission.drawn.filter(revision => revision.layer.onFramePresented !== undefined)
                         .map(revision => Object.freeze({ layer: revision.layer, sceneRevision: revision.sceneRevision })));
@@ -612,13 +627,13 @@ export class FrameScheduler {
         }
     };
 
-    private prepare(item: FrameWork, meta: ScheduledLayerSnapshot, deadline: number, critical: boolean,
+    private prepare(item: FrameWork, meta: ScheduledLayerSnapshot | null, deadline: number, critical: boolean,
         meter: UploadMeter, criticalPending: () => boolean): number {
         if (performance.now() >= deadline) return 0;
         let overshoot = 0;
         this.call(item.entry, () => {
             const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= deadline ||
-                item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical;
+                (meta !== null && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
             // remainingBytes includes the explicit one-tile progress grant, not a disguised larger cap.
             // The nominal cap stays in the frame meter and any use beyond it is reported as an overrun.
             const availableBytes = () => {
@@ -649,7 +664,10 @@ export class FrameScheduler {
                     return true;
                 },
             };
-            if (!shouldYield()) meta.layer.prepare(item.frame.view, budget);
+            if (!shouldYield()) {
+                if (meta) meta.layer.prepare(item.frame.view, budget);
+                else item.entry.pane.prepareFrame(item.frame.view, budget);
+            }
             overshoot = Math.max(0, performance.now() - deadline);
         });
         return overshoot;

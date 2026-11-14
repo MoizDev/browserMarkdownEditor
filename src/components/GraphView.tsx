@@ -77,6 +77,7 @@ interface GraphMeasurement {
     links: GraphLink[];
     publications: number;
     steps: number;
+    stepMs: { samples: number[]; total: number; count: number };
 }
 
 /** Pan/zoom viewport state. */
@@ -129,7 +130,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     useEffect(() => {
         if (__BME_BENCH__) {
             try {
-                const data: GraphMeasurement = { ids: [], ring: [], nodes: null, links: [], publications: 0, steps: 0 };
+                const data: GraphMeasurement = { ids: [], ring: [], nodes: null, links: [], publications: 0, steps: 0,
+                    stepMs: { samples: [], total: 0, count: 0 } };
                 measurementRef.current = data;
                 perfRoot().graph = {
                     positions: () => ({
@@ -139,6 +141,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     snapshot: () => data.links.map(link => [link.source, link.target]),
                     get publications() { return data.publications; },
                     get steps() { return data.steps; },
+                    get stepMs() { return { ...data.stepMs, samples: data.stepMs.samples.slice() }; },
                 };
                 return () => {
                     data.ids = [];
@@ -147,6 +150,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     data.links = [];
                     data.publications = 0;
                     data.steps = 0;
+                    data.stepMs = { samples: [], total: 0, count: 0 };
                     measurementRef.current = null;
                 };
             } catch { /* Measurement failures must not enter the app's path. */ }
@@ -218,6 +222,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     data.ids = nodes.map(node => node.id);
                     data.ring = [];
                     data.steps = 0;
+                    data.stepMs = { samples: [], total: 0, count: 0 };
                 }
             } catch { /* Measurement failures must not enter the app's path. */ }
         }
@@ -507,7 +512,26 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         };
 
         const loop = () => {
+            // A frame includes auto-fit + drawing; G0 must not report those as physics.
+            let stepStarted: number | undefined;
+            if (__BME_BENCH__) {
+                try { stepStarted = performance.now(); }
+                catch { /* A measurement failure must not stop the layout. */ }
+            }
             const moved = step();
+            if (__BME_BENCH__) {
+                try {
+                    const stepFinished = performance.now();
+                    const data = measurementRef.current;
+                    if (moved && stepStarted !== undefined && data) {
+                        const ms = stepFinished - stepStarted;
+                        data.stepMs.samples.push(ms);
+                        if (data.stepMs.samples.length > 4096) data.stepMs.samples.shift();
+                        data.stepMs.total += ms;
+                        data.stepMs.count++;
+                    }
+                } catch { /* A measurement failure must not stop the layout. */ }
+            }
             // The camera follows the layout while it settles, until the reader takes over.
             if (moved && autoFitRef.current) fit();
             // Only repaint when something actually changed — a settled graph idles.

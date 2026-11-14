@@ -49,6 +49,8 @@ import { externalReload, reloadSpec } from '../editor/externalReload';
 import { registerView, type LineCol, type MarkdownViewInfo, type TextChange } from '../utils/viewRegistry';
 import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
+import { ASSETS_DIR } from '../utils/assets';
+import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
@@ -708,10 +710,9 @@ function DocumentPane({
     // (editor/noteSearch.ts). Only the FOCUSED pane acts, for the table-insert
     // reason — two panes must not both open. Bubble phase, so the content and
     // the panel have had their turn and `keyIsForNote` sees what they took. A
-    // canvas pane builds no view and never listens, so a PDF keeps the
-    // browser's find, which its text layer makes real. Registered by the pane,
-    // not baked into the EditorState, so the outlives-the-pane rule does not
-    // apply.
+    // canvas pane builds no CodeMirror view; PDF/EPUB find is routed below
+    // through their reader controllers. Registered by the pane, not baked
+    // into the EditorState, so the outlives-the-pane rule does not apply.
     useEffect(() => {
         if (isCanvas) return;
         const onKeyDown = (event: KeyboardEvent) => {
@@ -723,15 +724,16 @@ function DocumentPane({
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [isCanvas]);
 
-    // The PDF floats outside this slot. Header/tab focus still belongs to its
-    // Text surface; Original intentionally retains the browser's native find.
+    // PDFs float outside this slot. Header/tab focus still belongs to the
+    // focused document's own Original or extracted-Text find.
     useEffect(() => {
         if (!isPdf && !isEpub) return;
         const key = (event: KeyboardEvent) => {
             if (!isFocusedRef.current || event.defaultPrevented || event.isComposing || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'f') return;
             const target = event.target;
             if (!(target instanceof Element) || target.closest('input, textarea, select, [contenteditable="true"], [role="menu"], [role="dialog"], [data-agent-panel], [data-terminal]') || document.querySelector('[aria-modal="true"]')) return;
-            if ((!isEpub && controller?.capabilities().surface !== 'pdf-text') || !controller?.findReading) return;
+            const surface = controller?.capabilities().surface;
+            if ((!isEpub && surface !== 'pdf-text' && surface !== 'pdf-original') || !controller?.findReading) return;
             event.preventDefault(); controller.findReading();
         };
         window.addEventListener('keydown', key);
@@ -998,6 +1000,7 @@ function DocumentPane({
 
                             // Into the .Assets folder beside THIS pane's note.
                             const parentHandle = fileRef.current.parentHandle || null;
+                            const assetFolder = joinVaultPath(parentVaultPath(fileRef.current.path), ASSETS_DIR);
                             saveAsset(filename, blob!, parentHandle).then(() => {
                                 // Insert the markdown at cursor
                                 const insertText = `![[${filename}]]\n`;
@@ -1011,7 +1014,7 @@ function DocumentPane({
                                 }
                             }).catch(err => {
                                 console.error('Failed to save pasted image:', err);
-                                alert('Failed to save image to .Assets folder.');
+                                onNotify(`Could not save the pasted image to “${assetFolder}”. Check that this is a writable folder, then try again.`);
                             });
 
                             return true; // We handled the paste

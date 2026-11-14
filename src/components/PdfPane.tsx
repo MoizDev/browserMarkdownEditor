@@ -1,20 +1,28 @@
-import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfAnnotation';
 import { createPdfDocumentSession } from '../utils/pdfDocumentSession';
 import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
+import { prepareClassicPdfRetry } from '../utils/pdfClassicOpen';
+import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth, type ClassicPdfHealth } from '../utils/pdfClassicHealth';
+import PdfRenderNotice from './PdfRenderNotice';
 import { createPdfTextReader, pdfTextAnchor } from '../utils/pdfReadingText';
 import type { PdfTextAnchor, PdfTextReader, PdfTextTypography } from '../utils/pdfReadingText';
 import { readPdfNavigationRevision, readPdfViewPos, writePdfViewPos } from '../utils/pdfViewState';
 import type { PdfViewPos } from '../utils/pdfViewState';
 import PdfReadingText from './PdfReadingText';
-import type { NotebookSource } from '../utils/pdfFormat';
+import { canRebuildAnnotatedPdf, isEditablePdfRole, pdfRoleNotice, revokePdfRole, revokePdfSource } from '../utils/pdfRole';
+import { getPdfRenderData } from '../utils/pdfRenderCache';
+import type { PdfAnnotationPreflight, PdfRole } from '../utils/pdfRole';
 import PdfViewer from './PdfViewer';
+import type { PdfViewerHandle } from './PdfViewer';
+import { peekPdfFindMemory, retainPdfFindMemory } from '../utils/pdfFindHighlight';
+import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode } from '../types';
-import type { LocationCause, PdfReadingBinding, ReaderCapabilities } from '../types/reading';
+import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity } from '../types/reading';
 import type { DiskVersion } from '../utils/diskVersion';
 import { registerReadingSurface } from '../utils/documentReading';
 import { flushPdfTextViewState } from '../utils/readerViewState';
@@ -78,17 +86,19 @@ export interface PdfPaneProps {
      *  would paint over one placed there. */
     disk?: 'conflict' | 'deleted';
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
+    /** App owns the baseline and held choice, bound to the FULL reader token.
+     *  When supplied, this callback also owns initial-edit baseline adoption. */
+    onAnnotationPreflight?: (identity: ReaderIdentity, value: PdfAnnotationPreflight) => void;
+    /** Only after App has kept that exact outer generation in Trash. The exact
+     *  role's rebuild capability must also have been explicitly granted. */
+    pdfRebuildApproval?: { generation: string };
 }
 
 interface PdfSource {
-    /** The pages to draw on and rebuild from — the embedded pristine original
-     *  for a file already annotated here, otherwise the file's own bytes. */
-    original: Uint8Array;
-    /** Snapshot found on disk when the file was opened. */
-    diskSnapshot: string;
-    /** Set when this PDF is a notebook's export; the pane then hands you back
-     *  to the notebook instead of letting you fork it. */
-    notebookSource: NotebookSource | null;
+    entry: object;
+    role: PdfRole;
+    handle: FileSystemFileHandle;
+    path: string;
 }
 
 /**
@@ -106,22 +116,67 @@ interface PdfSource {
  */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction }: PdfPaneProps) {
-    const { readFileBytes, readBytesVersioned } = useFileSystem();
-    const root = useRef<HTMLDivElement>(null);
+function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval }: PdfPaneProps) {
+    const { readBytesVersioned } = useFileSystem();
+    const root = useRef<HTMLDivElement>(null), viewerActions = useRef<PdfViewerHandle>(null);
+    const findVault = reading?.identity.vaultId, findEpoch = reading?.identity.vaultEpoch, findDocument = reading?.identity.documentId;
+    const findIdentity = useMemo(() => findVault !== undefined && findEpoch !== undefined && findDocument !== undefined
+        ? { vaultId: findVault, vaultEpoch: findEpoch, documentId: findDocument } : undefined, [findVault, findEpoch, findDocument]);
+    const findMemory = useMemo<PdfFindMemory>(() => findIdentity ? peekPdfFindMemory(findIdentity) ?? { open: false, query: '' } : { open: false, query: '' }, [findIdentity]);
+    useLayoutEffect(() => findIdentity ? retainPdfFindMemory(findIdentity, findMemory) : undefined, [findIdentity, findMemory]);
     // Binding values change on preference/status updates. A retained session and
     // its async consumers always call the current binding without reopening bytes.
     const binding = useRef(reading);
-    useLayoutEffect(() => { binding.current = reading; });
+    const writeState = useRef({ isDirty, disk, onAnnotationPreflight });
+    useLayoutEffect(() => { binding.current = reading; writeState.current = { isDirty, disk, onAnnotationPreflight }; });
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
     const pageDigest = useRef<string | undefined>(undefined);
     const restoredRecord = useRef(false);
-    const [source, setSource] = useState<PdfSource | null>(null);
+    const [roleRetry, setRoleRetry] = useState(0);
+    const annotateEntry = useMemo(() => ({ mode, handle: file.handle, path: file.path, attempt: roleRetry }), [mode, file.handle, file.path, roleRetry]);
+    const currentEntry = useRef(annotateEntry);
+    useLayoutEffect(() => { currentEntry.current = annotateEntry; }, [annotateEntry]);
+    const [loadedSource, setSource] = useState<PdfSource | null>(null);
+    // Render-time entry identity is necessary: effect cleanup alone leaves one
+    // commit in which a prior vault/path/mode's role could mount a canvas before
+    // the new preflight. Each return to Annotate starts without a capability.
+    const source = loadedSource && loadedSource.entry === annotateEntry && loadedSource.handle === file.handle && loadedSource.path === file.path ? loadedSource.role : null;
+    const foreignHeld = source?.kind === 'annotated' && source.writeMark.kind === 'foreign' &&
+        (!source.generation || pdfRebuildApproval?.generation !== source.generation || !canRebuildAnnotatedPdf(source.original));
+    const editableSource = source && isEditablePdfRole(source) && !foreignHeld ? source : null;
+    // Before App's DiskBar seam is present, fail visibly read-only as well as
+    // refusing the write capability. Once there is a bar, it is the ONE choice.
+    const foreignNotice = !foreignHeld ? undefined : source.writeMark.kind === 'foreign' && source.writeMark.reason === 'mismatch'
+        ? 'This PDF was changed by another program after this app saved it. Annotate is read-only so rebuilding its pages does not discard those changes. You can still read the PDF.'
+        : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
+    const roleNotice = source && pdfRoleNotice(source) || (!disk ? foreignNotice : undefined);
+    const readOnly = mode === 'edit' && (!!roleNotice || foreignHeld);
+    const annotationMode = mode === 'edit' && !readOnly;
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
+    const [idleHealth] = useState(createClassicPdfHealth);
+    const [annotationRender, setAnnotationRender] = useState<{ original: Uint8Array; health: ClassicPdfHealth } | null>(null);
+    const reportRenderHealth = useCallback((health: ClassicPdfHealth) => {
+        if (editableSource) setAnnotationRender({ original: editableSource.original, health });
+    }, [editableSource]);
+    const [retryEpoch, setRetryEpoch] = useState(0);
+    const [retryBusy, setRetryBusy] = useState(false);
+    const retryInFlight = useRef(false);
+    // Role inspection has its own build worker. A refused edit displays the
+    // outer PDF, so its renderer health must belong to that viewer, not a source.
+    const annotationHealth = annotationRender && annotationRender.original === editableSource?.original ? annotationRender.health : idleHealth;
+    const renderHealth = annotationMode ? annotationHealth : session?.health ?? idleHealth;
+    const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
+    const renderDelayIssue = renderDiagnostics.find(issue => issue.code === 'render-delayed');
+    const fatalRenderIssue = renderDiagnostics.find(classicPdfFailureIsFatal);
+    const documentRenderIssue = renderDiagnostics.find(issue => issue.incomplete && (annotationMode || issue.pageIndex === undefined));
+    useEffect(() => {
+        if (!annotationMode && fatalRenderIssue && session) void session.dispose().catch(console.error);
+    }, [annotationMode, fatalRenderIssue, session]);
     const generation = useRef(0);
     const returnEpoch = useRef(0);
     useEffect(() => () => { ++returnEpoch.current; flushPdfTextViewState(); }, []);
     const [textReader, setTextReader] = useState<PdfTextReader | null>(null);
+    useLayoutEffect(() => { textReader?.setVisible(isVisible); }, [textReader, isVisible]);
     const [textSurface, setTextSurface] = useState(false);
     const lastReturnRevision = useRef<number | undefined>(undefined);
     const textAnchor = useRef<PdfTextAnchor | undefined>(undefined);
@@ -235,15 +290,10 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         setTextSurface(false);
         publishLocation('user-navigation', false);
     }
-    // Two failures, tracked separately because they clear on different events:
-    // opening the file (and, for an annotated one, reading its attachments)
-    // fails once per file, while the viewer's byte read is retried after every
-    // save. One shared slot let a later successful view read wipe a source
-    // failure, leaving the pane stuck on "Loading PDF…" with no source and no
-    // error to show for it.
-    const [sourceError, setSourceError] = useState<string | null>(null);
+    // A failed attachment read is a tagged read-only role, not a failure to
+    // display the outer pages. Keep the viewer's own IO error separate.
     const [viewError, setViewError] = useState<string | null>(null);
-    const error = mode === 'edit' ? sourceError : viewError;
+    const error = mode === 'read' || readOnly ? viewError : null;
 
     // Panes for background tabs mount hidden at session restore; don't touch
     // the disk (or pdf.js) until the tab is first brought to the front.
@@ -282,6 +332,19 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const viewStaleRef = useRef(false);
     useEffect(() => { if (isDirty) viewStaleRef.current = true; }, [isDirty]);
 
+    const retryRendering = useCallback(() => {
+        if (annotationMode || isDirty || flushing || disk || retryInFlight.current) return;
+        retryInFlight.current = true;
+        setRetryBusy(true);
+        prepareClassicPdfRetry(!!renderDelayIssue);
+        viewStaleRef.current = true;
+        setViewError(null);
+        // Reopening the outer renderer cannot revoke a tagged read-only role
+        // or turn a refused edit into an annotation capability.
+        setSession(null);
+        setRetryEpoch(epoch => epoch + 1);
+    }, [annotationMode, isDirty, flushing, disk, renderDelayIssue]);
+
     /* Read the file's role only once annotating is actually wanted.
        Every PDF can be annotated now, so this can no longer be gated on the
        filename — and reading every PDF on open just to find out would be an
@@ -295,13 +358,19 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     // here yields its pristine original and existing snapshot out of its
     // attachments; any other PDF yields itself as the original.
     //
-    // Deliberately does NOT re-run on saves: `original` feeds the canvas, and
-    // replacing it would re-rasterize every page mid-session.
+    // Recheck on each Annotate entry, but never mid-stroke/on autosave: replacing
+    // the source underneath a live canvas would re-rasterize every page.
     useEffect(() => {
-        if (!activated || !needsSource) return;
+        if (!activated || !needsSource || mode !== 'edit') return;
         let cancelled = false;
+        const isCurrent = () => !cancelled && currentEntry.current === annotateEntry;
+        let inspected: PdfRole | undefined;
+        if (loadedSource) revokePdfRole(loadedSource.role);
+        // Graph/disk remounts lose component state, not the parked save data.
+        // A fresh preflight revokes that older source too, before any await.
+        const parked = getPdfRenderData(file.path);
+        if (parked) revokePdfSource(parked.original);
         setSource(null);
-        setSourceError(null);
 
         (async () => {
             try {
@@ -312,28 +381,57 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 // whose name says "(annotated)". Still only when annotating: a
                 // PDF opened to read is a wasted N-MB allocation and disk read
                 // otherwise, and the viewer does its own read below.
-                const role = await readPdfRole(await readFileBytes(file.handle as FileSystemFileHandle));
-
-                if (cancelled) return;
-                setSource({
-                    original: role.original,
-                    diskSnapshot: role.snapshot,
-                    notebookSource: role.notebookSource,
-                });
+                const handle = file.handle as FileSystemFileHandle;
+                const { bytes, version } = await readBytesVersioned(handle);
+                if (!isCurrent()) return;
+                const role = inspected = await readPdfRole(bytes, version.hash);
+                if (!isCurrent()) { revokePdfRole(role); return; }
+                // An external program can replace bytes while the worker is
+                // decoding an attachment. A fresh generation, not the earlier
+                // stat or observer hint, decides which source may be mounted.
+                const current = await readBytesVersioned(handle);
+                if (!isCurrent() || current.version.hash !== version.hash) {
+                    revokePdfRole(role);
+                    if (isCurrent()) {
+                        viewStaleRef.current = true;
+                        setSession(null);
+                        setRoleRetry(value => value + 1);
+                    }
+                    return;
+                }
+                // An agent/graph restore can start directly in edit mode, with
+                // no prior viewer read to seed App's versioned-write baseline.
+                const b = binding.current;
+                // Like the viewer, a role read must not silently adopt disk's
+                // baseline over an unsaved local revision or a held conflict.
+                if (b && isEditablePdfRole(role) && writeState.current.onAnnotationPreflight) {
+                    writeState.current.onAnnotationPreflight(b.identity, { role, version: current.version });
+                } else if (!writeState.current.isDirty && !writeState.current.disk) {
+                    if (displayedVersion.current && displayedVersion.current.hash !== current.version.hash) {
+                        viewStaleRef.current = true;
+                        setSession(null);
+                    }
+                    b?.onReaderVersion(b.identity, current.version);
+                }
+                displayedVersion.current = current.version;
+                setSource({ role, handle, path: file.path, entry: annotateEntry });
             } catch (err) {
+                if (inspected) revokePdfRole(inspected);
                 console.error('Could not open PDF:', err);
-                if (!cancelled) setSourceError(err instanceof Error ? err.message : String(err));
+                if (isCurrent()) setSource({ role: { kind: 'unreadable', alreadyAnnotated: true, generation: '', attachment: 'PDF', reason: 'corrupt' }, handle: file.handle as FileSystemFileHandle, path: file.path, entry: annotateEntry });
             }
         })();
 
         return () => { cancelled = true; };
-    }, [activated, needsSource, file.path, file.handle, file.name, readFileBytes]);
+    // loadedSource is the result, not an input: adding it would inspect forever.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activated, needsSource, mode, file.path, file.handle, file.name, readBytesVersioned, roleRetry, annotateEntry]);
 
     // Read the bytes the viewer shows: once on first need, and again only after
     // a save of THIS file lands (mid-flush the bytes on disk still predate the
     // strokes, so wait out `flushing`/`isDirty`; their clearing re-runs this).
     useEffect(() => {
-        if (!activated || mode !== 'read' || !file.handle || flushing || isDirty) return;
+        if (!activated || mode !== 'read' && !readOnly || !file.handle || flushing || isDirty) return;
         if (session && !viewStaleRef.current) return;
         let cancelled = false;
 
@@ -371,26 +469,34 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 // the pane on "Loading PDF…" for the rest of the session.
                 console.error('Could not refresh the PDF view:', err);
                 if (!cancelled) setViewError(err instanceof Error ? err.message : String(err));
+            } finally {
+                if (!cancelled) { retryInFlight.current = false; setRetryBusy(false); }
             }
         })();
 
         return () => { cancelled = true; };
-    }, [activated, mode, flushing, isDirty, session, file.handle, file.path, readBytesVersioned]);
+    }, [activated, mode, readOnly, flushing, isDirty, session, file.handle, file.path, readBytesVersioned, retryEpoch]);
 
     function focusReading() {
-        root.current?.querySelector<HTMLElement>(mode === 'edit' ? '.tl-container' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-viewer-scroll')?.focus({ preventScroll: true });
+        root.current?.querySelector<HTMLElement>(mode === 'edit' && !readOnly ? '.tl-container' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-viewer-scroll')?.focus({ preventScroll: true });
     }
     const capabilities: ReaderCapabilities = {
-        surface: mode === 'edit' ? 'pdf-annotation' : textSurface ? 'pdf-text' : 'pdf-original',
-        emphasis: disk ? { kind: 'inactive', reason: 'Resolve the PDF disk change to refresh Word emphasis' }
-            : mode === 'edit' ? nativeAnnotation
+        surface: annotationMode ? 'pdf-annotation' : textSurface ? 'pdf-text' : 'pdf-original',
+        emphasis: fatalRenderIssue ? { kind: 'inactive', reason: 'Try again to restart PDF rendering' }
+            : disk ? { kind: 'inactive', reason: 'Resolve the PDF disk change to refresh Word emphasis' }
+            : annotationMode ? nativeAnnotation
             : isDirty || flushing || !session ? { kind: 'inactive', reason: 'Waiting for the PDF to finish loading or saving' }
             : textSurface ? { kind: 'inactive', reason: 'Word emphasis applies to Original PDF pages. Choose Original PDF to use it.' }
             : nativeReader,
-        text: textSurface ? textQuality : 'partial', find: mode === 'read', copy: mode === 'read', appearance: textSurface ? 'reflow' : 'none',
+        text: textSurface ? textQuality : 'partial', find: mode === 'read' || readOnly, copy: mode === 'read' || readOnly, appearance: textSurface ? 'reflow' : 'none',
     };
-    const actions = useRef({ showText, showOriginal, focusReading, capabilities, publishLocation });
-    useLayoutEffect(() => { actions.current = { showText, showOriginal, focusReading, capabilities, publishLocation }; });
+    function findReading() {
+        if (mode !== 'read' && !readOnly) return;
+        if (textSurfaceRef.current) { const input = root.current?.querySelector<HTMLInputElement>('.pdf-reading-find input'); input?.focus(); input?.select(); }
+        else { findMemory.open = true; viewerActions.current?.openFind(); }
+    }
+    const actions = useRef({ showText, showOriginal, focusReading, findReading, capabilities, publishLocation });
+    useLayoutEffect(() => { actions.current = { showText, showOriginal, focusReading, findReading, capabilities, publishLocation }; });
     const identity = reading?.identity;
     const registerKeyboardTarget = reading?.registerKeyboardTarget;
     useEffect(() => {
@@ -399,7 +505,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             capabilities: () => actions.current.capabilities,
             showPdfText: () => actions.current.showText(),
             showPdfOriginal: () => actions.current.showOriginal(),
-            findReading: () => { const input = root.current?.querySelector<HTMLInputElement>('.pdf-reading-find input'); input?.focus(); input?.select(); },
+            findReading: () => actions.current.findReading(),
             focusReading: () => actions.current.focusReading(),
         });
         const unregisterKeyboard = registerKeyboardTarget?.(file.path, () => actions.current.focusReading());
@@ -409,8 +515,9 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     useEffect(() => {
         const b = binding.current;
         b?.onReaderCapabilities(b.identity, actions.current.capabilities);
-        b?.onReaderStatus(b.identity, error ? { phase: 'error', message: error } : { phase: session || mode === 'edit' && source ? 'ready' : 'loading' });
-    }, [capabilityKey, error, session, mode, source]);
+        b?.onReaderStatus(b.identity, fatalRenderIssue ? { phase: 'error', message: new ClassicPdfError(fatalRenderIssue).message }
+            : error ? { phase: 'error', message: error } : { phase: !renderDelayIssue && (session || mode === 'edit' && source) ? 'ready' : 'loading' });
+    }, [capabilityKey, error, fatalRenderIssue, renderDelayIssue, session, mode, source]);
     useEffect(() => {
         if (!isVisible) { actions.current.publishLocation('layout'); flushPdfTextViewState(); }
     }, [isVisible]);
@@ -423,8 +530,13 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
 
     let body: ReactNode = null;
     if (activated) {
-        if (error) {
-            body = <div className="pdf-pane-message">Could not open this PDF: {error}</div>;
+        if (fatalRenderIssue) {
+            body = <div className="pdf-render-failed"><PdfRenderNotice issue={fatalRenderIssue} annotation={annotationMode}
+                onRetry={retryRendering} retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>;
+        } else if (error) {
+            body = documentRenderIssue ? <div className="pdf-render-failed"><PdfRenderNotice issue={documentRenderIssue} annotation={annotationMode}
+                onRetry={retryRendering} retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>
+                : <div className="pdf-pane-message">Could not open this PDF: {error}</div>;
         } else if (mode === 'edit' && !source) {
             /* Waiting on the ROLE read, which is lazy — only annotating needs
                it. Gating every branch on it (as this did) left a PDF opened for
@@ -432,22 +544,22 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                no longer happens until you switch to annotate. Reading needs
                `viewBytes` and nothing else; that is the branch further down. */
             body = <div className="pdf-pane-message">Loading PDF…</div>;
-        } else if (mode === 'edit' && source?.notebookSource) {
+        } else if (mode === 'edit' && source?.kind === 'notebookExport') {
             // A notebook's export. Annotating it would fork a third document
             // whose marks the notebook could neither see nor replace, so the
             // pane hands you back to the notebook instead of drawing anything.
             body = (
                 <div className="pdf-pane-message">
-                    This PDF was exported from <strong>{source!.notebookSource!.path}</strong>.
+                    This PDF was exported from <strong>{source.notebookSource.path}</strong>.
                     <button
                         className="pdf-pane-action"
-                        onClick={() => onOpenNotebookSource(file.path, source!.notebookSource!.path)}
+                        onClick={() => onOpenNotebookSource(file.path, source.notebookSource.path)}
                     >
                         Open the notebook
                     </button>
                 </div>
             );
-        } else if (mode === 'edit' && source) {
+        } else if (mode === 'edit' && editableSource) {
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
             // unmounting it is what flushes pending strokes to disk.
@@ -456,13 +568,14 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                     <PdfAnnotateCanvas
                         key={file.path}
                         filePath={file.path}
-                        original={source.original}
+                        documentId={reading?.identity.documentId}
+                        original={editableSource.original}
+                        onRenderHealth={reportRenderHealth}
                         emphasisEnabled={reading?.emphasisEnabled ?? false}
                         onNativeEmphasisResult={(_page, result) => reportNative(setNativeAnnotation, result)}
-                        // Prefer the live buffer (unsaved strokes) over disk, but only
-                        // once it holds this file's snapshot — on the first render
-                        // after a tab switch `content` may still be '' .
-                        snapshot={content || source.diskSnapshot}
+                        // Only an unsaved buffer outranks this fresh role read.
+                        // A clean old snapshot must not hide another app's ink.
+                        snapshot={isDirty ? content || editableSource.snapshot : editableSource.snapshot}
                         onContentChange={onContentChange}
                         onFlushNow={onFlushNow}
                         onFlushStart={() => setFlushing(true)}
@@ -478,7 +591,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             body = <div className="pdf-pane-message">Loading PDF…</div>;
         } else {
             body = textSurface && textReader ? (
-                <PdfReadingText filePath={file.path} controller={textReader} isFocused={isFocused} anchor={initialTextAnchor} expectedPageDigest={pageDigest.current}
+                <PdfReadingText filePath={file.path} controller={textReader} isFocused={isFocused} isVisible={isVisible} anchor={initialTextAnchor} expectedPageDigest={pageDigest.current}
                     onShowOriginalPage={page => { void showOriginal(page); }} onShowOriginal={() => { void showOriginal(); }}
                     onLocation={(anchor, cause, digest) => {
                         textAnchor.current = anchor;
@@ -488,10 +601,19 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         publishLocation(cause);
                     }} onTextQuality={setTextQuality} emphasisEnabled={false} typography={reading?.typography ?? DEFAULT_TEXT_TYPOGRAPHY}
                     onTypographyChange={reading?.onTypographyChange} />
-            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer filePath={file.path} session={session} isActive={isFocused} isVisible={isVisible} onRotate={rotateThis}
+            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer ref={viewerActions} filePath={file.path} session={session} reader={textReader ?? undefined} findMemory={findMemory} onNotify={reading?.onNotify} isActive={isFocused} isVisible={isVisible} onRotate={rotateThis}
                 onLocation={() => publishLocation('layout', false)} emphasisEnabled={reading?.emphasisEnabled ?? false}
-                onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} />
+                onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} onRetry={retryRendering}
+                retryDisabled={retryBusy || isDirty || flushing || !!disk} />
                 {mappingNotice && <div className="pdf-pane-mapping-notice" role="status">{mappingNotice}</div>}
+                {readOnly && roleNotice && <div className="pdf-pane-mapping-notice pdf-role-notice" role="status"
+                    // Mapping notices are click-through; this one owns Retry.
+                    style={{ pointerEvents: 'auto' }}
+                    onContextMenu={event => event.preventDefault()}
+                    onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
+                    {roleNotice}
+                    <button className="pdf-pane-action" onClick={() => setRoleRetry(value => value + 1)}>Retry</button>
+                </div>}
             </>;
         }
     }
@@ -507,11 +629,19 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             // report a click on a PDF as "focus this pane" — capture, so a
             // scroll, a text selection or a click on the zoom pill all count.
             onPointerDownCapture={() => { if (isVisible) onFocusPane(file.path); }}
+            // Tab can enter another pane's page/find field without a pointer.
+            // Its header commands must then belong to that same document.
+            onFocusCapture={() => { if (isVisible && !isFocused) onFocusPane(file.path); }}
         >
             {disk && <DiskBar name={file.name} state={disk} path={file.path} onAction={onDiskAction} />}
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the viewer and lose the reading position. */}
-            <div className="pdf-pane-body">{body}</div>
+            <div className="pdf-pane-body">
+                {body}
+                {!fatalRenderIssue && !error && (documentRenderIssue || renderDelayIssue) && <div className="pdf-render-document-notice"><PdfRenderNotice
+                    issue={(documentRenderIssue || renderDelayIssue)!} annotation={annotationMode} onRetry={retryRendering}
+                    retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>}
+            </div>
         </div>
     );
 }

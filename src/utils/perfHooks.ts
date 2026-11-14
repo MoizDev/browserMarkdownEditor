@@ -1,6 +1,7 @@
 // Measurement hooks of contract C9: benchmark builds only. Every call site is
-// inside `if (__BME_BENCH__)`, so production and development builds drop this
-// module entirely; the production-bundle scan looks for PERF_PLANT to prove it.
+// inside `if (__BME_BENCH__)`: the production build drops this module entirely
+// (the production-bundle scan looks for PERF_PLANT to prove it); the dev server
+// still serves its text but never calls it, so it creates nothing there.
 // It measures and reports. It asserts nothing and changes no behaviour.
 
 export const PERF_PLANT = 'bme-perf-hooks-plant-7f3a';

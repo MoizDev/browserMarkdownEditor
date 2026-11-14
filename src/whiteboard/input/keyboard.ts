@@ -1,4 +1,6 @@
 import type { Modifiers } from './tool'
+import type { KeyboardCursor } from './keyboardCursorTypes'
+import type { KeyboardNavigationPriority } from './scrollKeysTypes'
 
 export interface KeyBinding {
   readonly id: string
@@ -127,6 +129,9 @@ export interface KeyboardActions {
   readonly editing: () => boolean
   run(id: string, event: KeyboardEvent): boolean
   modifierChanged?(modifiers: Modifiers): void
+  readonly cursor?: KeyboardCursor
+  navigation?(): KeyboardNavigationPriority
+  gestureActive?(): boolean
   clearLatches(): void
 }
 

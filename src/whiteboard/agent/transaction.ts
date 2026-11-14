@@ -5,6 +5,7 @@ import type { NodeId } from '../model/ids';
 import type { BoardSession } from '../session/BoardSession';
 import { AgentApplyCancelled, AgentApplyReadOnly, AgentOpRefused } from './errors';
 import { validateAgentOp } from './validate';
+import type { ShapeSummary } from './shapes';
 
 export { AgentApplyCancelled, AgentApplyReadOnly, AgentOpRefused } from './errors';
 
@@ -12,6 +13,7 @@ export interface AgentApplyResult {
     readonly created: string[];
     readonly updated: string[];
     readonly deleted: string[];
+    readonly updatedShapes?: readonly ShapeSummary[];
     readonly errors: string[];
 }
 export interface AgentOpResult {
@@ -30,6 +32,7 @@ export interface AgentApplyHost {
     readonly session: BoardSession;
     isCurrent(): boolean;
     readOnlyReason(): string | null;
+    summarize?(id: NodeId): ShapeSummary | undefined;
     stage(op: CanvasOp, context: AgentOpContext): AgentOpResult;
 }
 
@@ -74,7 +77,18 @@ export async function applyAgentOperations(host: AgentApplyHost, ops: readonly C
                 if (staged.deleted) result.deleted.push(...staged.deleted);
                 for (const problem of staged.problems ?? []) result.errors.push(`op ${number}: ${problem}`);
             }
-            return result;
+            const updatedShapes: ShapeSummary[] = [];
+            if (host.summarize) {
+                for (const id of new Set(result.updated)) {
+                    try {
+                        const shape = host.summarize(id as NodeId);
+                        if (shape) updatedShapes.push(shape);
+                    } catch {
+                        result.errors.push(`Could not read the final geometry of ${id}; the edit was applied.`);
+                    }
+                }
+            }
+            return { ...result, updatedShapes };
         } finally { batch.applied.release(); }
     });
 }

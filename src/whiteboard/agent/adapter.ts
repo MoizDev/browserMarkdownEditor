@@ -8,7 +8,7 @@ import type { SampleLease } from '../model/samples';
 import type { BoardSession } from '../session/BoardSession';
 import { planAgentPlacement, type LocalBox } from './placement';
 import { reanchorAgentRoot } from './reanchor';
-import { listAgentShapes, type AgentGeometry, type ShapePage, type ShapeQuery, type ShapeSummary } from './shapes';
+import { listAgentShapes, summarizeAgentNode, type AgentGeometry, type ShapePage, type ShapeQuery, type ShapeSummary } from './shapes';
 import { stageAgentOp } from './stage';
 import { applyAgentOperations, type AgentApplyResult } from './transaction';
 
@@ -48,6 +48,11 @@ export function createBoardAgentAdapter(host: AgentAdapterHost): BoardAgentAdapt
             return applyAgentOperations({ session: host.session,
                 isCurrent: () => host.isCurrent() && (guard?.isCurrent() ?? true),
                 readOnlyReason: () => host.readOnlyReason(),
+                summarize: id => {
+                    const node = host.session.doc.nodes.get(id);
+                    return node ? summarizeAgentNode(node, host.geometry,
+                        host.session.doc.kind === 'whiteboard' ? undefined : host.geometry.page(node)) : undefined;
+                },
                 stage: (op, context) => stageAgentOp({ doc: host.session.doc, sheet: host.sheet(), currentPage: host.page(),
                     admitSamples: builder => host.admitSamples(builder),
                     target: (node, page) => host.target(node, page),

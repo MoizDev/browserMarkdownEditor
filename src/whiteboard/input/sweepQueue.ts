@@ -4,6 +4,7 @@ export interface SweepPoint { readonly x: number; readonly y: number }
 export interface SweptSelectionCursor {
   step(budget: { readonly deadline: number; readonly maxVisits: number }): { readonly status: 'pending' | 'complete' | 'stale' | 'cancelled'; readonly ids: readonly NodeId[] }
   cancel(): void
+  wait?(wake: () => void): () => void
 }
 export interface SweepQueueServices {
   beginSweep(from: SweepPoint, to: SweepPoint, topOnly: boolean): SweptSelectionCursor
@@ -29,6 +30,7 @@ export class SweepQueue {
   private next = 0
   private revision: number
   private scheduled: (() => void) | null = null
+  private waiting: (() => void) | null = null
   private closed = false
   private cancelled = false
   private resolve!: (ids: ReadonlySet<NodeId>) => void
@@ -47,15 +49,16 @@ export class SweepQueue {
   finish(): Promise<ReadonlySet<NodeId>> { this.closed = true; this.request(); return this.result }
   cancel(): void {
     if (this.cancelled) return
-    this.cancelled = true; this.scheduled?.(); this.scheduled = null
+    this.cancelled = true; this.scheduled?.(); this.scheduled = null; this.waiting?.(); this.waiting = null
     for (const segment of this.segments) segment.cursor?.cancel()
     this.services.preview(new Set())
     this.reject(new DOMException('Sweep cancelled', 'AbortError'))
   }
   private request(): void {
-    if (!this.cancelled && !this.scheduled) this.scheduled = this.services.schedule(() => { this.scheduled = null; this.step() })
+    if (!this.cancelled && !this.scheduled && !this.waiting) this.scheduled = this.services.schedule(() => { this.scheduled = null; this.step() })
   }
   private restart(revision: number): void {
+    this.waiting?.(); this.waiting = null
     this.revision = revision
     this.next = 0
     this.visible.clear()
@@ -77,6 +80,11 @@ export class SweepQueue {
           for (const id of result.ids) { segment.ids.add(id); this.visible.add(id) }
           segment.complete = result.status === 'complete'
           if (segment.complete) this.next++
+          else if (segment.cursor.wait) {
+            let awakened = false
+            const cancel = segment.cursor.wait(() => { awakened = true; this.waiting = null; this.request() })
+            if (awakened) cancel(); else this.waiting = cancel
+          }
           this.services.preview(new Set(this.visible))
         }
       }
@@ -84,6 +92,6 @@ export class SweepQueue {
         this.cancelled = true
         this.resolve(new Set(this.visible))
       } else if (this.next < this.segments.length || this.closed) this.request()
-    } catch (error) { this.cancelled = true; for (const segment of this.segments) segment.cursor?.cancel(); this.reject(error) }
+    } catch (error) { this.cancelled = true; this.waiting?.(); this.waiting = null; for (const segment of this.segments) segment.cursor?.cancel(); this.reject(error) }
   }
 }

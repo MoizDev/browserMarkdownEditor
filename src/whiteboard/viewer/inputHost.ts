@@ -48,6 +48,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     let disposed = false, enabled = false, attached: (() => void) | null = null, flush: (() => void) | null = null;
     let binding: { surface: HTMLElement; overlay: HTMLElement } | null = null, presented: PlatformPresentation | null = null;
     const contacts = new Set<number>();
+    const scheduled = new Set<() => void>();
     const current = () => !disposed && options.visible() && options.current(token);
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting cannot block cleanup */ } };
     const safe = (fn: () => void) => { try { fn(); } catch (error) { report(error); } };
@@ -116,10 +117,20 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     return {
         attachInput,
         layers: wet.layers,
-        consumeInput(_timestamp: number) { if (!current() || !enabled) { stopAttachment(); return; } safe(connect); safe(() => wet.consumeInput()); },
+        schedule(callback: () => void) {
+            if (disposed) return () => {};
+            scheduled.add(callback); options.invalidate();
+            return () => { scheduled.delete(callback); };
+        },
+        consumeInput(_timestamp: number) {
+            if (!current() || !enabled) { stopAttachment(); scheduled.clear(); return; }
+            safe(connect); safe(() => wet.consumeInput());
+            const ready = [...scheduled]; scheduled.clear();
+            for (const callback of ready) safe(callback);
+        },
         isInteracting() { return current() && (contacts.size > 0 || options.session.isGestureActive); },
-        setInputEnabled(value: boolean) { if (disposed || enabled === value) return; enabled = value; if (!value) stopAttachment(); else safe(connect); },
-        cancelViewWork(_reason: string) { stopAttachment(); presented = null; },
+        setInputEnabled(value: boolean) { if (disposed || enabled === value) return; enabled = value; if (!value) { stopAttachment(); scheduled.clear(); } else safe(connect); },
+        cancelViewWork(_reason: string) { stopAttachment(); scheduled.clear(); presented = null; },
         writeOverlays(frame: ScheduledFrame) {
             if (!binding || !current() || !presented || presented.frameId !== frame.frameId || !sameToken(frame.token, token)) return;
             safe(() => {
@@ -134,7 +145,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         onPresentation(value: PlatformPresentation | null) { presented = value && current() && sameToken(value.token, token) ? value : null; },
         dispose() {
             if (disposed) return;
-            stopAttachment(); disposed = true; binding = null; presented = null;
+            stopAttachment(); scheduled.clear(); disposed = true; binding = null; presented = null;
             safe(stopInteraction); safe(() => options.engine.setInteractionLayers(null)); safe(() => wet.dispose()); safe(() => options.overlays?.dispose?.());
         },
     };

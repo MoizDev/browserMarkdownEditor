@@ -169,7 +169,7 @@ interface CacheEntry {
 
 export interface VaultTextCache {
     /** Load/refresh contents for `files`; returns a path → text snapshot. */
-    sync(files: FileTreeFileNode[]): Promise<Map<string, string>>;
+    sync(files: FileTreeFileNode[], readSnapshot: (handle: FileSystemFileHandle) => Promise<File>): Promise<Map<string, string>>;
     /** Forget everything (e.g. when a different vault is opened). */
     clear(): void;
 }
@@ -181,7 +181,7 @@ export function createVaultTextCache(): VaultTextCache {
     let generation = 0;
 
     return {
-        async sync(files: FileTreeFileNode[]): Promise<Map<string, string>> {
+        async sync(files: FileTreeFileNode[], readSnapshot: (handle: FileSystemFileHandle) => Promise<File>): Promise<Map<string, string>> {
             const startedGeneration = generation;
             const next = new Map<string, CacheEntry>();
             let totalSize = 0;
@@ -192,7 +192,7 @@ export function createVaultTextCache(): VaultTextCache {
             // every time rather than a race.
             await mapPool(files, async (node) => {
                 try {
-                    const file = await node.handle.getFile();
+                    const file = await readSnapshot(node.handle);
                     if (file.size > MAX_INDEXED_FILE_SIZE) return;
                     // Synchronous check-then-add, so parallel tasks can't
                     // blow the budget between the two statements.

@@ -659,7 +659,23 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         };
     }, [host, clamp, constraint, capabilities, filePath, find.find, goPage, onNotice, onRotate, persist, platformPane, rotate, stack, updateCamera]);
 
-    useEffect(() => registerView(filePath, {
+    useEffect(() => {
+        const renderPageWithInfo = async (pageNumber: number, maxSide: number) => {
+            assertPdfRenderAllowed(capabilities);
+            assertPdfCaptureAllowed(capabilities);
+            const index = pageNumber - 1, page = pdf.pages[index];
+            if (!Number.isInteger(pageNumber) || !page) throw new RangeError('PDF page is out of range.');
+            if (!Number.isFinite(maxSide) || maxSide <= 0 || !session.isCurrent()) throw new Error('PDF page capture is unavailable.');
+            const capture = await capturer.capturePageWithInfo(index, maxSide);
+            try {
+                if (!mounted.current || liveSession.current !== session) { capture.bitmap.close(); throw new DOMException('PDF view changed', 'AbortError'); }
+                const png = await bitmapPng(capture.bitmap);
+                capture.check();
+                if (!mounted.current || liveSession.current !== session) throw new DOMException('PDF view changed', 'AbortError');
+                return { png, emphasis: capture.emphasis };
+            } finally { capture.release(); }
+        };
+        return registerView(filePath, {
         kind: 'pdf',
         describe(): PdfViewInfo {
             const position = pagedPosition(camera.current, viewport.current, stack, INSETS) ?? { page: 0, offset: 0, zoom: 1 };
@@ -687,27 +703,16 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             const now = camera.current;
             return session.isCurrent() && active.current.isVisible && snapshot.x === now.x && snapshot.y === now.y && snapshot.z === now.z ? output : null;
         },
-        async renderPage(pageNumber, maxSide) {
-            assertPdfRenderAllowed(capabilities);
-            assertPdfCaptureAllowed(capabilities);
-            const index = pageNumber - 1, page = pdf.pages[index];
-            if (!Number.isInteger(pageNumber) || !page) throw new RangeError('PDF page is out of range.');
-            if (!Number.isFinite(maxSide) || maxSide <= 0 || !session.isCurrent()) return null;
-            const scale = Math.min(maxSide, 1568) / Math.max(page.width, page.height);
-            const bitmap = await pdf.poolDocument.renderPage(index, scale, { priority: 0, ...pdf.emphasis.variant(index), maxPixels: 1568 * 1568 });
-            if (getPdfPageQuality(pdf.poolDocument.docKey, index).state === 'degraded') {
-                bitmap.close(); throw new Error('This PDF page may be incomplete and cannot be captured as complete.');
-            }
-            const output = await bitmapPng(bitmap);
-            return session.isCurrent() && getPdfPageQuality(pdf.poolDocument.docKey, index).state !== 'degraded' ? output : null;
-        },
+        renderPageWithInfo,
+        async renderPage(pageNumber, maxSide) { return (await renderPageWithInfo(pageNumber, maxSide)).png; },
         async pdfText(pages) {
             assertPdfCopyAllowed(capabilities);
             const result = await pdfAgentPages(pdf.poolDocument, pages, new AbortController().signal, () => session.isCurrent());
             if (!session.isCurrent()) throw new Error('PDF text changed during the request.');
             return result;
         },
-    }), [capabilities, filePath, pdf, platformPane, selectedText, session, stack]);
+        });
+    }, [capabilities, capturer, filePath, pdf, platformPane, selectedText, session, stack]);
     useEffect(() => { platformPane.current?.invalidate('pdf-invert'); }, [inverted, platformPane]);
     useEffect(() => {
         const observer = new MutationObserver(() => platformPane.current?.invalidate('pdf-theme'));

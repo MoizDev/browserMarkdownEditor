@@ -105,15 +105,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             }, error => { spellSource = null; report(error); });
         }).catch(error => { spellSource = null; if (!disposed) report(error); });
     };
-    const stopDictionary = options.spelling.subscribe(() => {
-        spellSource = null; spellGeneration++;
-        const words = options.spelling.words();
-        const added = new Set(words.map(word => word.toLowerCase()));
-        misspellings = misspellings.filter(range => !added.has(range.word.toLowerCase()));
-        requestFrame();
-        if (spell) void spell.setDictionary(words).then(checkSpelling, report);
-        else checkSpelling();
-    });
     const live = document.createElement('div');
     live.setAttribute('aria-live', 'polite'); live.setAttribute('aria-atomic', 'true');
     Object.assign(live.style, { position: 'absolute', width: '1px', height: '1px', overflow: 'hidden', clipPath: 'inset(50%)' });
@@ -146,6 +137,15 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     };
     const current = () => !disposed && options.current() && engine.getView().visible;
     const requestFrame = () => options.interaction.invalidate();
+    const stopDictionary = options.spelling.subscribe(() => {
+        spellSource = null; spellGeneration++;
+        const words = options.spelling.words();
+        const added = new Set(words.map(word => word.toLowerCase()));
+        misspellings = misspellings.filter(range => !added.has(range.word.toLowerCase()));
+        requestFrame();
+        if (spell) void spell.setDictionary(words).then(checkSpelling, report);
+        else checkSpelling();
+    });
     const clientMatrix = (world: Affine): Affine => {
         const bounds = overlay.getBoundingClientRect(), vp = options.viewport();
         if (!(bounds.width > 0 && bounds.height > 0 && vp.width > 0 && vp.height > 0)) throw new Error('Text overlay has no viewport');

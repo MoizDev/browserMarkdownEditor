@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useSyncExternalStore } from 'react';
 import { getExpandedPaths, isExpanded, subscribeExpandedPaths } from '../utils/expandedPaths';
 import TreeNode from './TreeNode';
 import {
@@ -15,16 +15,15 @@ import {
     PenTool, Search, SidebarLeft, SquarePen,
 } from './icons';
 import {
-    ancestorsOf, clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor,
+    ancestorsOf, clearCreateRequest, getCreateKindFor, getCreateRequest, nameForKind, placeholderFor,
     requestCreate, subscribeCreateRequest, type CreateKind,
 } from '../utils/createRequest';
 import { getActiveFilePath, subscribeActiveFile } from '../utils/activeFile';
 import { collectFiles } from '../utils/tree';
 import { createSortCache, isTimeSort, sortTree, TREE_SORT_ORDERS, type TreeSortOrder } from '../utils/treeSort';
-import { getFileTimes, getFileTimesVersion, statFileTimes, subscribeFileTimes } from '../utils/fileTimes';
+import { areIndexTimesReady, getFileTimes, getFileTimesVersion, statFileTimes, subscribeFileTimes } from '../utils/fileTimes';
 import { readJSON, writeJSON } from '../utils/storage';
-import { createVaultTextCache } from '../utils/vaultSearch';
-import type { VaultTextCache } from '../utils/vaultSearch';
+import type { SearchController } from '../utils/searchController';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 import { orderListFor, type EntryOrder, type IconNode } from '../utils/entryStyle';
 
@@ -60,13 +59,13 @@ function readSortOrder(): TreeSortOrder {
     return TREE_SORT_ORDERS.includes(stored as TreeSortOrder) ? stored as TreeSortOrder : 'name-asc';
 }
 
-/** How many frames auto-reveal waits for a row the expand it just asked for
- *  to mount, before giving up (a file filtered out of the tree never will). */
-const REVEAL_FRAMES = 10;
+const TREE_OVERSCAN = 8;
+interface VisibleRow { node: FileTreeNode; depth: number; createRow?: boolean }
 
 interface FileExplorerProps {
     readSnapshot: (handle: FileSystemFileHandle) => Promise<File>;
     rootHandle: FileSystemDirectoryHandle | null;
+    search: SearchController;
     fileTree: FileTreeNode[];
     onFileClick: (node: FileTreeNode) => void;
     onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath?: string) => void | Promise<void>;
@@ -96,12 +95,12 @@ interface FileExplorerProps {
     /** Copy files dragged in from the OS into `targetDir`. */
     onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
     onOpenSearchResult: (node: FileTreeFileNode, range: TextRange | null) => void;
-    getOpenTabContent: (path: string) => string | null;
 }
 
 function FileExplorer({
     readSnapshot,
     rootHandle,
+    search,
     fileTree,
     onFileClick,
     onCreateFile,
@@ -121,7 +120,6 @@ function FileExplorer({
     onRenameFile,
     onImportFiles,
     onOpenSearchResult,
-    getOpenTabContent,
 }: FileExplorerProps) {
     /* The name box at the vault ROOT. Driven by the same store the tree rows
        use, so the header's buttons can open it either here or inside a folder
@@ -167,19 +165,20 @@ function FileExplorer({
        explorer of a user sorting by name. The custom order is subscribed the
        same way, only while Custom is chosen: `.appearance.json` also changes
        with every icon pick. */
-    const sortCacheRef = useRef(createSortCache());
+    const [sortCache] = useState(createSortCache);
     const timesVersion = useSyncExternalStore(
         subscribeFileTimes,
         useCallback(() => (isTimeSort(sortOrder) ? getFileTimesVersion() : 0), [sortOrder]),
     );
+    const indexTimesReady = useSyncExternalStore(subscribeFileTimes, areIndexTimesReady);
     const customOrder = useSyncExternalStore(
         subscribeEntryStyles,
         useCallback(() => (reordering ? getEntryOrder() : NO_ORDER), [reordering]),
     );
     const displayTree = useMemo(() => {
         void timesVersion; // the times map is mutable; its version is the dependency
-        return sortTree(fileTree, sortOrder, getFileTimes(), sortCacheRef.current, customOrder);
-    }, [fileTree, sortOrder, timesVersion, customOrder]);
+        return sortTree(fileTree, sortOrder, getFileTimes(), sortCache, customOrder);
+    }, [fileTree, sortOrder, timesVersion, customOrder, sortCache]);
 
     /** What a Custom-order drag measures against — only built under Custom, and
      *  once per display tree, not per `dragover`. */
@@ -193,11 +192,11 @@ function FileExplorer({
        file on disk). Never per keystroke: saves stamp their own path instead.
        The cleanup discards a walk the tree or the order has since outdated. */
     useEffect(() => {
-        if (!isTimeSort(sortOrder)) return;
+        if (!isTimeSort(sortOrder) || indexTimesReady) return;
         let current = true;
         void statFileTimes(collectFiles(fileTree), () => current, readSnapshot);
         return () => { current = false; };
-    }, [fileTree, sortOrder, readSnapshot]);
+    }, [fileTree, sortOrder, readSnapshot, indexTimesReady]);
 
     // ── Expand all / Collapse all ───────────────────────────────────────────
     /** Every folder in the tree — the REAL ones, so a stale expandedPaths
@@ -221,6 +220,76 @@ function FileExplorer({
         () => folderPaths.some(p => expandedPaths.has(p)),
         [folderPaths, expandedPaths],
     );
+    const createRequest = useSyncExternalStore(subscribeCreateRequest, getCreateRequest);
+    const visibleRows = useMemo(() => {
+        const rows: VisibleRow[] = [];
+        const walk = (nodes: FileTreeNode[], depth: number) => {
+            for (const node of nodes) {
+                rows.push({ node, depth });
+                if (node.kind === 'directory') {
+                    if (createRequest?.path === node.path) rows.push({ node, depth, createRow: true });
+                    if (expandedPaths.has(node.path)) walk(node.children, depth + 1);
+                }
+            }
+        };
+        walk(displayTree, 0);
+        return rows;
+    }, [displayTree, expandedPaths, createRequest]);
+    const [viewport, setViewport] = useState({ top: 0, height: 0, rowHeight: 28 });
+    const [draggedPath, setDraggedPath] = useState<string | null>(null);
+    const updateViewport = useCallback(() => {
+        const tree = treeRef.current;
+        if (!tree) return;
+        const rowHeight = parseFloat(getComputedStyle(tree).getPropertyValue('--nav-item-height')) || 28;
+        setViewport(previous => {
+            const next = { top: tree.scrollTop, height: tree.clientHeight, rowHeight };
+            return previous.top === next.top && previous.height === next.height && previous.rowHeight === next.rowHeight ? previous : next;
+        });
+    }, []);
+    useLayoutEffect(() => {
+        const tree = treeRef.current;
+        if (!tree) return;
+        updateViewport();
+        const observer = new ResizeObserver(updateViewport);
+        observer.observe(tree);
+        return () => observer.disconnect();
+    }, [searchOpen, updateViewport]);
+    const rootOffset = creatingInRoot ? viewport.rowHeight : 0;
+    const start = Math.max(0, Math.floor((viewport.top - rootOffset) / viewport.rowHeight) - TREE_OVERSCAN);
+    const end = Math.min(visibleRows.length, Math.ceil((viewport.top + viewport.height - rootOffset) / viewport.rowHeight) + TREE_OVERSCAN);
+    // A native drag ends if its source unmounts. Keep just that row, even when
+    // auto-scrolling carries the viewport far away from it.
+    const draggedIndex = draggedPath ? visibleRows.findIndex(row => !row.createRow && row.node.path === draggedPath) : -1;
+    const rowIndices = Array.from({ length: Math.max(0, end - start) }, (_, i) => start + i);
+    if (draggedIndex >= 0 && (draggedIndex < start || draggedIndex >= end)) {
+        rowIndices.push(draggedIndex);
+        rowIndices.sort((a, b) => a - b);
+    }
+    const revealPathRef = useRef<string | null>(null);
+    const focusPathRef = useRef<string | null>(null);
+    useLayoutEffect(() => {
+        if (!createRequest?.path) return;
+        revealPathRef.current = createRequest.path;
+        onExpandPaths(ancestorsOf(createRequest.path));
+    }, [createRequest, onExpandPaths]);
+    useLayoutEffect(() => {
+        const path = revealPathRef.current;
+        const tree = treeRef.current;
+        if (!path || !tree) return;
+        const index = visibleRows.findIndex(row => !row.createRow && row.node.path === path);
+        if (index < 0) return;
+        const top = rootOffset + (index + (createRequest?.path === path ? 1 : 0)) * viewport.rowHeight;
+        if (top < tree.scrollTop) tree.scrollTop = top;
+        else if (top + viewport.rowHeight > tree.scrollTop + tree.clientHeight) tree.scrollTop = top + viewport.rowHeight - tree.clientHeight;
+        revealPathRef.current = null;
+        updateViewport();
+    }, [visibleRows, rootOffset, viewport.rowHeight, updateViewport, createRequest]);
+    useLayoutEffect(() => {
+        const path = focusPathRef.current;
+        if (!path) return;
+        const row = treeRef.current?.querySelector<HTMLElement>(`.tree-item[data-path="${CSS.escape(path)}"]`);
+        if (row) { row.focus(); focusPathRef.current = null; }
+    }, [start, end, visibleRows]);
 
     // ── Auto-reveal ─────────────────────────────────────────────────────────
     const filePathSet = useMemo(() => new Set(collectFiles(fileTree).map(f => f.path)), [fileTree]);
@@ -234,7 +303,6 @@ function FileExplorer({
        the row highlight already rides each row's own boolean subscription. */
     useEffect(() => {
         if (!autoReveal || searchOpen) return;
-        let frame = 0;
         const reveal = () => {
             const path = getActiveFilePath();
             // The Help tab's bare pseudo-path, and anything not in the tree yet
@@ -243,31 +311,21 @@ function FileExplorer({
             revealedRef.current = path;
             const slash = path.lastIndexOf('/');
             if (slash !== -1) onExpandPaths(ancestorsOf(path.slice(0, slash)));
-            // The expand has not committed yet, so the row may not exist until
-            // a frame or two later.
-            let tries = 0;
-            cancelAnimationFrame(frame);
-            const scroll = () => {
-                const row = treeRef.current?.querySelector(`.tree-file[data-path="${CSS.escape(path)}"]`);
-                if (row) { row.scrollIntoView({ block: 'nearest' }); return; }
-                if (++tries < REVEAL_FRAMES) frame = requestAnimationFrame(scroll);
-            };
-            frame = requestAnimationFrame(scroll);
+            revealPathRef.current = path;
+            const index = visibleRows.findIndex(row => !row.createRow && row.node.path === path);
+            const tree = treeRef.current;
+            if (index >= 0 && tree) {
+                const top = rootOffset + index * viewport.rowHeight;
+                if (top < tree.scrollTop) tree.scrollTop = top;
+                else if (top + viewport.rowHeight > tree.scrollTop + tree.clientHeight) tree.scrollTop = top + viewport.rowHeight - tree.clientHeight;
+                revealPathRef.current = null;
+                updateViewport();
+            }
         };
         reveal();
         const unsubscribe = subscribeActiveFile(reveal);
-        return () => { unsubscribe(); cancelAnimationFrame(frame); };
-    }, [autoReveal, searchOpen, filePathSet, onExpandPaths]);
-
-    // The indexed vault text lives here (not in SearchPanel) so reopening
-    // search doesn't re-read unchanged files.
-    const searchCacheRef = useRef<VaultTextCache | null>(null);
-    const searchCache = (searchCacheRef.current ??= createVaultTextCache());
-
-    // A different vault may reuse paths — never serve the old vault's text.
-    useEffect(() => {
-        searchCache.clear();
-    }, [searchCache, rootHandle]);
+        return unsubscribe;
+    }, [autoReveal, searchOpen, filePathSet, onExpandPaths, visibleRows, rootOffset, viewport.rowHeight, updateViewport]);
 
     useEffect(() => {
         if (creatingInRoot && inputRef.current) {
@@ -427,6 +485,47 @@ function FileExplorer({
             label: 'Vault actions',
             opener: container,
         });
+    };
+
+    const handleTreeKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        const target = e.target as HTMLElement;
+        if (target.closest('input, button')) return;
+        const rows = visibleRows.filter(row => !row.createRow);
+        const path = target.closest<HTMLElement>('.tree-item[data-path]')?.dataset.path;
+        let index = rows.findIndex(row => row.node.path === path);
+        if (e.key === 'ArrowDown') index = Math.min(rows.length - 1, index + 1);
+        else if (e.key === 'ArrowUp') index = index < 0 ? rows.length - 1 : Math.max(0, index - 1);
+        else if (index >= 0 && e.key === 'ArrowRight') {
+            const node = rows[index].node;
+            if (node.kind === 'directory' && !expandedPaths.has(node.path)) onToggleExpand(node.path);
+            else if (node.kind === 'directory' && index + 1 < rows.length) index++;
+        } else if (index >= 0 && e.key === 'ArrowLeft') {
+            const node = rows[index].node;
+            if (node.kind === 'directory' && expandedPaths.has(node.path)) onToggleExpand(node.path);
+            else {
+                const parent = node.path.slice(0, node.path.lastIndexOf('/'));
+                const parentIndex = rows.findIndex(row => row.node.path === parent);
+                if (parentIndex >= 0) index = parentIndex;
+            }
+        } else if (index >= 0 && (e.key === 'Enter' || e.key === ' ')) {
+            const node = rows[index].node;
+            if (node.kind === 'directory') onToggleExpand(node.path); else onFileClick(node);
+            e.preventDefault();
+            return;
+        } else return;
+        e.preventDefault();
+        const row = rows[index];
+        if (!row) return;
+        const absolute = visibleRows.findIndex(item => item === row);
+        const tree = treeRef.current;
+        if (!tree) return;
+        focusPathRef.current = row.node.path;
+        const top = rootOffset + absolute * viewport.rowHeight;
+        if (top < tree.scrollTop) tree.scrollTop = top;
+        else if (top + viewport.rowHeight > tree.scrollTop + tree.clientHeight) tree.scrollTop = top + viewport.rowHeight - tree.clientHeight;
+        updateViewport();
+        const element = tree.querySelector<HTMLElement>(`.tree-item[data-path="${CSS.escape(row.node.path)}"]`);
+        if (element) { element.focus(); focusPathRef.current = null; }
     };
 
     // ── Custom order: placing a dragged tree node ──────────────────────────
@@ -676,9 +775,7 @@ function FileExplorer({
             {searchOpen ? (
                 <SearchPanel
                     fileTree={fileTree}
-                    readSnapshot={readSnapshot}
-                    cache={searchCache}
-                    getOpenTabContent={getOpenTabContent}
+                    search={search}
                     onOpenResult={handleSearchResult}
                     onClose={onCloseSearch}
                 />
@@ -686,11 +783,18 @@ function FileExplorer({
                 <div
                     ref={treeRef}
                     className={`nav-files-container${rootDragOver ? ' drag-over-root' : ''}`}
+                    onDragStartCapture={e => setDraggedPath((e.target as HTMLElement).closest<HTMLElement>('.tree-item[data-path]')?.dataset.path ?? null)}
+                    onDragEndCapture={() => setDraggedPath(null)}
                     onDragEnter={handleRootDragEnter}
                     onDragOver={handleRootDragOver}
                     onDragLeave={handleRootDragLeave}
                     onDrop={handleRootDrop}
                     onContextMenu={handleRootContextMenu}
+                    onScroll={updateViewport}
+                    onKeyDown={handleTreeKeyDown}
+                    role="tree"
+                    aria-label="Vault files"
+                    tabIndex={0}
                 >
                     {creatingInRoot && (
                         <div className="tree-item tree-inline-input" style={{ paddingLeft: 12 }}>
@@ -704,10 +808,17 @@ function FileExplorer({
                             />
                         </div>
                     )}
-                    {displayTree.map((node) => (
+                    {rowIndices.map((index, position) => {
+                        const { node, depth, createRow } = visibleRows[index];
+                        const key = `${node.path}${createRow ? '/\u0000create' : ''}`;
+                        const gap = index - (position ? rowIndices[position - 1] + 1 : 0);
+                        return <React.Fragment key={key}>
+                        {gap > 0 && <div key="gap" style={{ height: gap * viewport.rowHeight }} />}
                         <TreeNode
-                            key={node.path}
+                            key="row"
                             node={node}
+                            depth={depth}
+                            createRow={createRow}
                             onFileClick={onFileClick}
                             // Straight through — no wrapper. The two that used
                             // to sit here each raised a window.prompt() for the
@@ -726,7 +837,9 @@ function FileExplorer({
                             onRenameFile={onRenameFile}
                             onImportFiles={onImportFiles}
                         />
-                    ))}
+                        </React.Fragment>;
+                    })}
+                    <div style={{ height: (visibleRows.length - (rowIndices.at(-1) ?? -1) - 1) * viewport.rowHeight }} />
                 </div>
             )}
         </div>

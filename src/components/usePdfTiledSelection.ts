@@ -13,7 +13,7 @@ export interface PdfTiledSelectionOptions {
     docKey: string;
     pageCount: number;
     selection: PdfSelectionState;
-    geometry: PdfSelectionGeometryCache;
+    geometry?: PdfSelectionGeometryCache;
     isVisible: boolean;
     isFocused: boolean;
     /** Convert client coordinates using the current camera, not a captured one. */
@@ -36,7 +36,8 @@ export interface PdfTiledSelectionOptions {
 /** Pane-owned state is supplied by the caller and survives unmounting this
  * surface. Geometry/worker requests are always owned by this mounted pane. */
 export function usePdfTiledSelection(options: PdfTiledSelectionOptions) {
-    const live = useRef(options); live.current = options;
+    const live = useRef(options);
+    useLayoutEffect(() => { live.current = options; });
     const input = useRef<PdfTextInputBinding | null>(null);
     const visibility = useRef<PdfTextVisibility | null>(null);
     const snapshot = useSyncExternalStore(options.selection.subscribe, options.selection.getSnapshot, options.selection.getSnapshot);
@@ -44,7 +45,7 @@ export function usePdfTiledSelection(options: PdfTiledSelectionOptions) {
     useLayoutEffect(() => { options.selection.setDocument(options.docKey); }, [options.selection, options.docKey]);
     useLayoutEffect(() => {
         const { element, selection, geometry } = options;
-        if (!element) return;
+        if (!element || !geometry) return;
         const detach = selection.attachGeometry(geometry);
         const gestures = new PdfSelectionGestures({ selection, cached: page => geometry.cached(page),
             locale: (page, line) => live.current.locale?.(page, line) });

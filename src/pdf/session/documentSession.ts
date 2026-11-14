@@ -38,16 +38,21 @@ export class PdfTiledDocumentSession {
     private document: OpenTiledDocument | null = null;
     private closing: Promise<void> | null = null;
     private closed = false;
+    private captureUsers = 0;
+    private readonly captureWaiters = new Set<() => void>();
 
     constructor(readonly token: RenderToken, readonly source: 'outer' | 'original',
-        private readonly file: Blob, private readonly pool: TiledDocumentPool,
-        private readonly isTokenCurrent: (token: RenderToken) => boolean) {}
+        private readonly acquireSnapshot: (signal: AbortSignal) => Promise<{ blob: Blob; dispose(): void }>,
+        private readonly pool: TiledDocumentPool, private readonly isTokenCurrent: (token: RenderToken) => boolean) {}
 
     open(): Promise<OpenTiledDocument> {
         if (this.closed || !this.isTokenCurrent(this.token)) return Promise.reject(new DOMException('PDF session closed', 'AbortError'));
         if (!this.opening) {
             this.opening = (async () => {
-                const blob = await stablePdfBlob(this.file, this.controller.signal);
+                const snapshot = await this.acquireSnapshot(this.controller.signal);
+                let blob: Blob;
+                try { blob = await stablePdfBlob(snapshot.blob, this.controller.signal); }
+                finally { snapshot.dispose(); }
                 const opened = await this.pool.open(blob, this.token, this.source, this.controller.signal);
                 if (this.closed || !this.isTokenCurrent(this.token)) {
                     await opened.close();
@@ -60,6 +65,24 @@ export class PdfTiledDocumentSession {
             void opening.catch(() => { if (this.opening === opening && !this.closed) this.opening = null; });
         }
         return this.opening;
+    }
+
+    /** Captures pin the source until their async work has actually settled.
+     * Hiding a pane never cancels this signal; closing the session does. */
+    async acquireCapture(): Promise<{ document: OpenTiledDocument; signal: AbortSignal; release(): void }> {
+        if (this.closed) throw new DOMException('PDF session closed', 'AbortError');
+        this.captureUsers++;
+        let released = false;
+        const release = () => {
+            if (released) return;
+            released = true;
+            if (--this.captureUsers === 0) { for (const wake of this.captureWaiters) wake(); this.captureWaiters.clear(); }
+        };
+        try {
+            const document = await this.open();
+            if (this.closed) throw new DOMException('PDF session closed', 'AbortError');
+            return { document, signal: this.controller.signal, release };
+        } catch (error) { release(); throw error; }
     }
 
     isCurrent(): boolean { return !this.closed && this.isTokenCurrent(this.token); }
@@ -78,6 +101,7 @@ export class PdfTiledDocumentSession {
         this.closing = (async () => {
             // A late successful open closes itself after observing `closed`.
             if (this.opening) await this.opening.catch(() => undefined);
+            if (this.captureUsers) await new Promise<void>(resolve => this.captureWaiters.add(resolve));
             const document = this.document;
             this.document = null;
             const slots = [...this.slots.values()];

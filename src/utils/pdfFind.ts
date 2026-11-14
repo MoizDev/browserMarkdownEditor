@@ -6,6 +6,8 @@ export interface PdfFindProgress {
 }
 export interface PdfFindPageText { text: string; tokenBreaks: readonly number[] | Uint32Array; quality: 'available' | 'partial' | 'none' }
 export interface PdfFindSource {
+    /** Identifies immutable bytes and extraction schema, never a path. */
+    readonly cacheKey?: string;
     pageCount(signal: AbortSignal): Promise<number>;
     page(index0: number, signal: AbortSignal): Promise<PdfFindPageText>;
 }
@@ -18,6 +20,7 @@ export interface PdfFindEngine {
      * do not cycle the reader's small geometry cache. */
     pageText(index0: number, signal: AbortSignal): Promise<PdfFindPageText>;
     clearIndex(): void;
+    setVisible(visible: boolean): void;
     dispose(): void;
 }
 export const TOKEN_BREAK = '\uE000', LINE_HYPHEN = '\uE001';
@@ -105,7 +108,8 @@ export function project(page: PdfFindPageText): { key: string; map: Uint32Array 
 
 type IndexedPage = { bytes: Uint8Array; canonical: string; tokenBreaks: Uint32Array; runs: Uint32Array; length: number; canonicalLength: number;
     quality: PdfFindPageText['quality']; failed: boolean; cost: number };
-type DocumentCache = { pages: Map<number, IndexedPage>; bytes: number };
+type DocumentCache = { pages: Map<number, IndexedPage>; bytes: number; owners: Set<symbol>; visible: Set<symbol>; hiddenSince?: number };
+const keyedDocuments = new Map<string, DocumentCache>();
 // In insertion order: evict a whole document, not an arbitrary set of its pages.
 // The pane's visibility owner calls clearIndex after 60 s hidden; disposal of
 // the document session releases it immediately, including on a vault switch.
@@ -205,13 +209,20 @@ export async function* matchPage(key: string, units: string, signal: AbortSignal
 }
 
 export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes: DOCUMENT_BYTES }): PdfFindEngine {
-    const cache: DocumentCache = { pages: new Map(), bytes: 0 };
+    const key = source.cacheKey;
+    let cache = key ? keyedDocuments.get(key) : undefined;
+    if (!cache) {
+        cache = { pages: new Map(), bytes: 0, owners: new Set(), visible: new Set() };
+        if (key) keyedDocuments.set(key, cache);
+    }
+    const retained = cache, owner = Symbol('PDF find consumer');
+    retained.owners.add(owner); retained.visible.add(owner); retained.hiddenSince = undefined;
     const lifetime = new AbortController();
     let current: AbortController | undefined, serial = 0;
     const maxBytes = Math.max(0, Math.min(DOCUMENT_BYTES, Number.isFinite(budget.indexBytes) ? budget.indexBytes : DOCUMENT_BYTES));
     async function getPage(index: number, signal: AbortSignal) {
-        const cached = cache.pages.get(index);
-        if (cached) { touch(cache); return cached; }
+        const cached = retained.pages.get(index);
+        if (cached) { touch(retained); return cached; }
         let page: IndexedPage;
         try { page = await indexPage(await source.page(index, signal), signal); }
         catch (error) {
@@ -219,16 +230,16 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
             page = { bytes: new Uint8Array(), canonical: '', tokenBreaks: new Uint32Array(), runs: new Uint32Array(), length: 0, canonicalLength: 0, quality: 'none', failed: true, cost: 64 };
         }
         if (signal.aborted) throw abort();
-        const shared = cache.pages.get(index);
-        if (shared) { touch(cache); return shared; }
-        if (!page.failed && cache.bytes + page.cost <= maxBytes) {
-            touch(cache);
+        const shared = retained.pages.get(index);
+        if (shared) { touch(retained); return shared; }
+        if (!page.failed && retained.bytes + page.cost <= maxBytes) {
+            touch(retained);
             while (appBytes + page.cost > APP_BYTES) {
-                const victim = [...documents.keys()].find(document => document !== cache);
+                const victim = [...documents.keys()].find(document => document !== retained);
                 if (!victim) break;
                 clearCache(victim); documents.delete(victim);
             }
-            cache.pages.set(index, page); cache.bytes += page.cost; appBytes += page.cost;
+            retained.pages.set(index, page); retained.bytes += page.cost; appBytes += page.cost;
         }
         return page;
     }
@@ -240,7 +251,17 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
             if (page.failed) throw new Error(`Could not read physical page ${index + 1}`);
             return { text: page.canonical, tokenBreaks: Array.from(page.tokenBreaks), quality: page.quality };
         },
-        clearIndex() { clearCache(cache); },
+        clearIndex() {
+            if (!retained.visible.size && retained.hiddenSince !== undefined && Date.now() - retained.hiddenSince >= 60_000) clearCache(retained);
+        },
+        setVisible(visible) {
+            if (visible) { retained.visible.add(owner); retained.hiddenSince = undefined; }
+            else {
+                const wasVisible = retained.visible.size > 0;
+                retained.visible.delete(owner);
+                if (wasVisible && !retained.visible.size) retained.hiddenSince = Date.now();
+            }
+        },
         async *search(query, startPage, externalSignal) {
             current?.abort();
             const controller = new AbortController(); current = controller;
@@ -283,6 +304,14 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
                 yield progress(true);
             } finally { if (current === controller) current = undefined; }
         },
-        dispose() { lifetime.abort(); current?.abort(); clearCache(cache); documents.delete(cache); },
+        dispose() {
+            lifetime.abort(); current?.abort();
+            retained.owners.delete(owner); retained.visible.delete(owner);
+            if (!retained.visible.size && retained.hiddenSince === undefined) retained.hiddenSince = Date.now();
+            if (!retained.owners.size) {
+                clearCache(retained); documents.delete(retained);
+                if (key && keyedDocuments.get(key) === retained) keyedDocuments.delete(key);
+            }
+        },
     };
 }

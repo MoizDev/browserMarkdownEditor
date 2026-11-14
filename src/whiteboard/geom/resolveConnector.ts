@@ -4,7 +4,7 @@ import type { Arrowhead } from '../model/styles';
 import { inverse, transformPoint } from './affine';
 import { ContourClipper, type ClipInterval } from './clip';
 import { connectorBody } from './connectors';
-import { bodyCrossings, bodyLength, pointAtLength, tangentAtLength, trimBodyPath } from './connectorPath';
+import { bodyCrossingSteps, bodyLength, pointAtLength, tangentAtLength, trimBodyPath } from './connectorPath';
 import type { AttachmentSurface, ConnectorBody, ConnectorGeometryRequest, ConnectorGeometryResult, ConnectorLabelPaint, ResolvedConnectorEnd } from './connectorTypes';
 import { routeElbow } from './elbow';
 import { connectorHeadScale, headGeometry } from './heads';
@@ -54,13 +54,10 @@ function closedHead(kind: Arrowhead): boolean { return !['none', 'arrow', 'pipe'
 /** One independent provider for free/attached arcs and received rectilinear
  * routes. It returns an explicit refusal for a route without a valid candidate;
  * the load admission owner must preserve original bytes/read-only in that case. */
-export async function resolveConnectorGeometry(request: ConnectorGeometryRequest, options: {
-    signal: AbortSignal;
-    cooperate?: () => Promise<void>;
-    label?: (position: Vec2, bodyLength: number, signal: AbortSignal) => Promise<ConnectorLabelPaint | null>;
-}): Promise<ConnectorGeometryResult> {
-    const { node, toleranceWorld: error, maxPieces } = request, signal = options.signal;
-    signal.throwIfAborted();
+type LabelWork = { readonly kind: 'label'; readonly position: Vec2; readonly length: number };
+function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolean):
+    Generator<void | LabelWork, ConnectorGeometryResult, ConnectorLabelPaint | null> {
+    const { node, toleranceWorld: error, maxPieces } = request;
     if (!Number.isFinite(error) || error <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1
         || !request.localToWorld.every(Number.isFinite)) throw new RangeError('Invalid connector geometry budget');
     const startTarget = node.start.attach ? request.resolveTarget(node.start.attach.target) : undefined;
@@ -126,18 +123,18 @@ export async function resolveConnectorGeometry(request: ConnectorGeometryRequest
     };
     const point = (distance: number) => { const value = locate(distance); return pointAtLength(value.body, value.distance); };
     const tangent = (distance: number, direction: 1 | -1) => { const value = locate(distance); return tangentAtLength(value.body, value.distance, direction); };
-    const crossings = async (target: AttachmentSurface) => {
+    const crossings = function* (target: AttachmentSurface): Generator<void, { distance: number; entering: boolean }[]> {
         const result: { distance: number; entering: boolean }[] = [];
         for (let i = 0; i < bodies.length; i++) {
-            for (const hit of await bodyCrossings(bodies[i], target, error, maxPieces, options.cooperate, signal)) result.push({ distance: offsets[i] + hit.distance, entering: hit.entering });
-            signal.throwIfAborted();
+            for (const hit of yield* bodyCrossingSteps(bodies[i], target, error, maxPieces)) result.push({ distance: offsets[i] + hit.distance, entering: hit.entering });
+            yield;
         }
         return result;
     };
     let startBoundary = 0, endBoundary = total;
-    if (startTarget && !node.start.attach!.exact) startBoundary = (await crossings(startTarget)).find(hit => !hit.entering)?.distance ?? 0;
+    if (startTarget && !node.start.attach!.exact) startBoundary = (yield* crossings(startTarget)).find(hit => !hit.entering)?.distance ?? 0;
     if (endTarget && !node.end.attach!.exact) {
-        const values = await crossings(endTarget);
+        const values = yield* crossings(endTarget);
         for (let i = values.length - 1; i >= 0; i--) if (values[i].entering) { endBoundary = values[i].distance; break; }
     }
     const span = Math.max(0, endBoundary - startBoundary);
@@ -161,7 +158,7 @@ export async function resolveConnectorGeometry(request: ConnectorGeometryRequest
         body.push(...trimBodyPath(bodies[i], Math.max(0, bodyFrom - offsets[i]), Math.min(bodyLength(bodies[i]), bodyTo - offsets[i]), error, maxPieces));
         if (body.length > maxPieces) throw new RangeError('Connector path budget exceeded');
     }
-    const label = options.label ? await options.label(point(from + (to - from) * node.labelAt), to - from, signal) : request.label;
+    const label = resolveLabel ? yield { kind: 'label', position: point(from + (to - from) * node.labelAt), length: to - from } : request.label;
     const exclusions: { outline: readonly PathOp[]; localToWorld: Affine }[] = [];
     if (label) {
         const { w, h } = label.paint.box;
@@ -183,7 +180,40 @@ export async function resolveConnectorGeometry(request: ConnectorGeometryRequest
     const resolved = (terminal: 'start' | 'end', distance: number, tip: Vec2, direction: typeof startTangent): ResolvedConnectorEnd => ({
         aimWorld: terminal === 'start' ? a : b, boundaryWorld: point(distance), tipWorld: tip, tangentWorld: direction.vector,
         degenerate: direction.degenerate, target: node[terminal].attach?.target ?? null });
-    signal.throwIfAborted();
     return { status: 'ready', geometry: { key: request.key, start: resolved('start', startBoundary, startTip, startTangent),
         end: resolved('end', endBoundary, endTip, endTangent), body, heads, label, bodyExclusions: exclusions, inkBoundsWorld: bounds } };
+}
+
+export function resolveConnectorGeometryNow(request: ConnectorGeometryRequest, options: {
+    label?: (position: Vec2, bodyLength: number) => ConnectorLabelPaint | null;
+} = {}): ConnectorGeometryResult {
+    const steps = connectorSteps(request, !!options.label);
+    let input: ConnectorLabelPaint | null = null;
+    for (;;) {
+        const next = steps.next(input);
+        if (next.done) return next.value;
+        input = next.value?.kind === 'label' ? options.label!(next.value.position, next.value.length) : null;
+    }
+}
+
+export async function resolveConnectorGeometry(request: ConnectorGeometryRequest, options: {
+    signal: AbortSignal;
+    cooperate?: () => Promise<void>;
+    label?: (position: Vec2, bodyLength: number, signal: AbortSignal) => Promise<ConnectorLabelPaint | null>;
+}): Promise<ConnectorGeometryResult> {
+    const steps = connectorSteps(request, !!options.label), signal = options.signal;
+    let input: ConnectorLabelPaint | null = null, count = 0, started = performance.now();
+    signal.throwIfAborted();
+    for (;;) {
+        const next = steps.next(input); input = null;
+        if (next.done) { signal.throwIfAborted(); return next.value; }
+        if (next.value?.kind === 'label') {
+            input = await options.label!(next.value.position, next.value.length, signal);
+            signal.throwIfAborted();
+        } else if (++count >= 256 || performance.now() - started >= 3) {
+            signal.throwIfAborted();
+            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            signal.throwIfAborted(); count = 0; started = performance.now();
+        }
+    }
 }

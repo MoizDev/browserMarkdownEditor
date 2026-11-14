@@ -102,18 +102,30 @@ function inspectDocument(text: string, budget: { bytes: number; pixels: number; 
             if (budget.pixels > 2 ** 26) throw new Error('SVG inline resources exceed the pixel limit');
         }
     };
+    const localResource = (value: string): boolean => {
+        const trimmed = value.trim();
+        return trimmed.startsWith('#') || /^data:/i.test(trimmed);
+    };
+    const checkCss = (css: string) => {
+        if (/\b@import\b/i.test(css)) throw new Error('External SVG styles are forbidden');
+        for (const match of css.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)) if (!localResource(match[2])) throw new Error('External SVG resources are forbidden');
+    };
     const stack: Element[] = [root];
     while (stack.length) {
         const node = stack.pop()!;
+        if (['script', 'foreignobject'].includes(node.localName.toLowerCase())) throw new Error('Active SVG content is forbidden');
         for (const attr of Array.from(node.attributes)) {
+            if (/^on/i.test(attr.localName)) throw new Error('SVG event handlers are forbidden');
             if (attr.value.includes('\\')) throw new Error('SVG resource escapes cannot be safely budgeted');
+            if (['href', 'src'].includes(attr.localName.toLowerCase()) && !localResource(attr.value)) throw new Error('External SVG resources are forbidden');
+            checkCss(attr.value);
             chargeData(attr.value);
         }
         if (node.localName === 'style') {
             const css = node.textContent ?? '';
             if (css.includes('\\')) throw new Error('SVG resource escapes cannot be safely budgeted');
             if (/\b(?:width|height)\s*:/i.test(css)) throw new Error('SVG intrinsic dimensions cannot be safely established');
-            chargeData(css);
+            checkCss(css); chargeData(css);
         }
         for (const child of Array.from(node.children)) stack.push(child);
     }

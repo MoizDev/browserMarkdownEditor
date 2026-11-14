@@ -166,7 +166,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         flush: report,
         finishGesture: options.finishGesture,
         finishComposition: options.finishComposition,
-        captureJournal: () => journal.capture(),
+        captureJournal: () => journal.capture(capture()),
         journalError: options.onFailure,
     });
     const mediaReferenceSnapshot = () => {

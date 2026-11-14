@@ -2,7 +2,7 @@ import type { RawJson } from '../model/json';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { inheritProjection, projectionLength, projectionPosition } from './projection';
 import { inheritWordBoundaries, textBoundaries } from './boundaries';
-import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOrigin, sliceCarriers, trackBlock, trackRun } from './carriers';
+import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOrigin, sliceCarrierSteps, trackBlock, trackRun } from './carriers';
 import { firstRunAt, runContaining, runIndex } from './runIndex';
 import type { PlainTextOptions } from './plainText';
 
@@ -142,9 +142,11 @@ function slicedRun(run: Run, text: string, preserveOrigin: boolean): Run {
     const result = preserveOrigin && text === run.text ? run : { ...run, text };
     return preserveOrigin && opaqueRun(run) ? trackRun(result, run) : result;
 }
-function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Run[] {
+function* sliceRunSteps(block: Block, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Generator<void, Run[]> {
     const runs: Run[] = [], indexed = runIndex(block);
+    let visited = 0;
     for (let i = firstRunAt(indexed, from); i < block.runs.length; i++) {
+        if ((++visited & 255) === 0) yield;
         const run = block.runs[i], position = indexed.starts[i], end = indexed.starts[i + 1];
         if (position > to || (position === to && run.text.length > 0)) break;
         if (run.text.length === 0) {
@@ -157,6 +159,10 @@ function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boole
     }
     return runs;
 }
+function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Run[] {
+    const steps = sliceRunSteps(block, from, to, keepEndAnchors, preserveOrigin);
+    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+}
 function emptyRun(block: Block, offset: number, preserveOrigin: boolean): Run {
     const indexed = runIndex(block);
     if (!indexed.count) return { text: '', marks: {} };
@@ -164,23 +170,48 @@ function emptyRun(block: Block, offset: number, preserveOrigin: boolean): Run {
     return slicedRun(block.runs[index], '', preserveOrigin);
 }
 
-export function sliceRichText(text: RichText, from: number, to: number, preserveOrigins = false): RichFragment {
+function* sliceSteps(text: RichText, from: number, to: number, preserveOrigins: boolean): Generator<void, RichFragment> {
     if (to < from || !textBoundaries.isBoundary(text, from) || !textBoundaries.isBoundary(text, to))
         throw new RangeError('Rich-text slice must use grapheme boundaries');
     const first = locate(text, from);
     const last = locate(text, to);
     const blocks: Block[] = [];
     for (let i = first.block; i <= last.block; i++) {
+        if (((i - first.block) & 255) === 255) yield;
         const block = text.blocks[i];
         const start = i === first.block ? first.offset : 0;
         const end = i === last.block ? last.offset : blockTextLength(block);
-        const runs = sliceRuns(block, start, end, from === to, preserveOrigins);
+        const runs = yield* sliceRunSteps(block, start, end, from === to, preserveOrigins);
         const { carriers: _carriers, ...base } = block;
-        const carriers = sliceCarriers(block, start, end, preserveOrigins);
+        const carriers = yield* sliceCarrierSteps(block, start, end, preserveOrigins);
         const sliced: Block = { ...base, runs: runs.length ? runs : [emptyRun(block, start, preserveOrigins)], ...(carriers ? { carriers } : {}) };
         blocks.push(preserveOrigins ? trackBlock(sliced, block) : sliced);
     }
     return { blocks };
+}
+
+export function sliceRichText(text: RichText, from: number, to: number, preserveOrigins = false): RichFragment {
+    const steps = sliceSteps(text, from, to, preserveOrigins);
+    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+}
+
+/** A long selection can be captured cooperatively without publishing a partial fragment. */
+export async function sliceRichTextCooperative(text: RichText, from: number, to: number, options: PlainTextOptions,
+    preserveOrigins = false): Promise<RichFragment> {
+    const budget = options.sliceMilliseconds ?? 3;
+    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich slice time slice');
+    const steps = sliceSteps(text, from, to, preserveOrigins);
+    let started = performance.now();
+    for (;;) {
+        options.signal?.throwIfAborted();
+        const step = steps.next();
+        if (step.done) return step.value;
+        if (performance.now() - started >= budget) {
+            await options.cooperate();
+            options.signal?.throwIfAborted();
+            started = performance.now();
+        }
+    }
 }
 
 function spliceCarriers(before: readonly Block[], firstOffset: number, lastOffset: number, insert: RichFragment): readonly (readonly BlockCarrier[] | undefined)[] {

@@ -40,9 +40,11 @@ export function carrierForTail(block: Block, from: number, to: number): BlockCar
     carrierOrigins.set(carrier, blockOrigin(block));
     return carrier;
 }
-export function sliceCarriers(block: Block, from: number, to: number, preserveOrigin: boolean): readonly BlockCarrier[] | undefined {
+export function* sliceCarrierSteps(block: Block, from: number, to: number, preserveOrigin: boolean): Generator<void, readonly BlockCarrier[] | undefined> {
     const result: BlockCarrier[] = [];
+    let visited = 0;
     for (const carrier of block.carriers ?? []) {
+        if ((++visited & 255) === 0) yield;
         if (carrier.from === carrier.to) {
             if (carrier.from >= from && carrier.from <= to) result.push(mapCarrier(carrier, carrier.from - from, carrier.to - from, preserveOrigin));
         } else {
@@ -51,6 +53,10 @@ export function sliceCarriers(block: Block, from: number, to: number, preserveOr
         }
     }
     return result.length ? result : undefined;
+}
+export function sliceCarriers(block: Block, from: number, to: number, preserveOrigin: boolean): readonly BlockCarrier[] | undefined {
+    const steps = sliceCarrierSteps(block, from, to, preserveOrigin);
+    for (;;) { const step = steps.next(); if (step.done) return step.value; }
 }
 export function coalesceCarriers(carriers: readonly BlockCarrier[]): readonly BlockCarrier[] | undefined {
     if (!carriers.length) return undefined;

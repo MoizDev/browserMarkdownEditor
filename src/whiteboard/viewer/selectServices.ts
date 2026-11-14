@@ -13,7 +13,7 @@ import type { NodeId } from '../model/ids';
 import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
 import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
 import type { createBoardRenderServices } from '../render/services';
-import type { SelectRegion, SelectToolContext } from '../tools/select';
+import { selectTool, type SelectRegion, type SelectToolContext } from '../tools/select';
 import type { createBoardPointQuery } from './pointQuery';
 import type { createBoardRegionQuery } from './regionQuery';
 import { createBoardAttachmentResolver } from './attachments';
@@ -236,7 +236,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             cancel,
         };
     };
-    return { select, eraser, beginHandle, writeOverlays, cancelPending,
+    // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
+    const tool = { id: selectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
+        return beginHandle(sample, modifiers) ?? selectTool.begin(sample, modifiers, select);
+    } };
+    return { select, tool, eraser, beginHandle, writeOverlays, cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

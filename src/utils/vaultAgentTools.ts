@@ -698,8 +698,9 @@ function nativeViewCaption(path: string, native: NativeCanvasView, page: number 
     const info = native.info;
     if (info.kind === 'drawing') return `${path}${native.wholeSheet ? ', the whole sheet' : onScreenCaption(info.viewport)}:`;
     const count = info.pageCount;
-    if (page !== undefined) return `${path}, page ${page} of ${count}${info.kind === 'pdf' ? ' (with its ink)' : ''}:`;
-    const pages = info.kind === 'pdf' ? `${count} PDF page${count === 1 ? '' : 's'}` : `${count} page${count === 1 ? '' : 's'}`;
+    const pdf = info.kind === 'pdf-annotate';
+    if (page !== undefined) return `${path}, page ${page} of ${count}${pdf ? ' (with its ink)' : ''}:`;
+    const pages = pdf ? `${count} PDF page${count === 1 ? '' : 's'}` : `${count} page${count === 1 ? '' : 's'}`;
     if (native.wholeSheet) return `${path}, the whole sheet of its ${pages}:`;
     return `${path}, pages ${info.visiblePages.join(', ')} of ${pages} on its recorded view:`;
 }
@@ -733,7 +734,7 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             } });
             ctx.ensureLive();
             if (native) {
-                const count = native.info.kind === 'pdf' ? native.info.pageCount : 0;
+                const count = native.info.kind === 'pdf-annotate' ? native.info.pageCount : 0;
                 if (page !== undefined && count && page > count) throw new ToolError(`page ${page} is past the end of "${path}", which has ${count} page${count === 1 ? '' : 's'}.`);
                 const blob = await withTimeout(native.capture(max, ctx.signal, page), REPORTER_TIMEOUT_MS, 'capturing the canvas');
                 ctx.ensureLive();

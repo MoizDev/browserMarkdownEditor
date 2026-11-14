@@ -5,6 +5,14 @@ import { hashMedia } from './sha256';
 import { sniffMedia } from './sniff';
 import { webmHeader } from './webmHeader';
 
+interface DecoderTrack { readonly frameCount: number }
+interface DecoderInstance {
+    readonly tracks: { readonly ready: Promise<void>; readonly selectedTrack: DecoderTrack | null };
+    decode(options: { frameIndex: number }): Promise<{ image: { close(): void } }>;
+    close(): void;
+}
+type DecoderConstructor = new (options: { data: ReadableStream<Uint8Array>; type: string }) => DecoderInstance;
+
 serve({
     protocol: 1,
     buildId: 'whiteboard-media-1',
@@ -17,13 +25,25 @@ serve({
         },
         async probe(args, context) {
             if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid media request');
-            const { blob, width, height } = args as { blob: Blob; width: number; height: number };
+            const { blob, width, height, animated, mime } = args as { blob: Blob; width: number; height: number; animated: boolean; mime: string };
             const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image', colorSpaceConversion: 'default', premultiplyAlpha: 'premultiply' });
             try {
                 if (bitmap.width !== width || bitmap.height !== height) throw new Error('Picture dimensions do not match header');
                 await context.slice();
-                return true;
             } finally { bitmap.close(); }
+            if (animated) {
+                const Decoder = (globalThis as unknown as { ImageDecoder?: DecoderConstructor }).ImageDecoder;
+                if (!Decoder) throw new Error('Animated picture decoding is unavailable');
+                const decoder = new Decoder({ data: blob.stream(), type: mime });
+                try {
+                    await decoder.tracks.ready;
+                    if (!decoder.tracks.selectedTrack || decoder.tracks.selectedTrack.frameCount < 1) throw new Error('Invalid animated picture');
+                    const frame = await decoder.decode({ frameIndex: 0 });
+                    frame.image.close();
+                    await context.slice();
+                } finally { decoder.close(); }
+            }
+            return true;
         },
         async inspect(args, context) {
             if (!args || typeof args !== 'object' || !(args as { blob?: unknown }).blob || !((args as { blob: unknown }).blob instanceof Blob)) {

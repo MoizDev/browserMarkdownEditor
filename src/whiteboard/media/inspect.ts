@@ -76,7 +76,16 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         signal.throwIfAborted();
         const lease = options.memory.reserve(4 * size.width * size.height);
         if (!lease) throw new Error('Not enough memory to decode this picture');
-        try { await options.svg.probe(blob, signal); } finally { options.memory.release(lease); }
+        try {
+            const typed = blob.slice(0, blob.size, 'image/svg+xml');
+            try {
+                await worker.request<boolean>('probe', { blob: typed, width: size.width, height: size.height, animated: false, mime: 'image/svg+xml' }, { priority: 1, deadlineMs: 10000, signal });
+            } catch {
+                await worker.recycle('SVG worker probe failed', { lazy: true }).catch(() => undefined);
+                signal.throwIfAborted();
+                await options.svg.probe(typed, signal);
+            }
+        } finally { options.memory.release(lease); }
         signal.throwIfAborted();
         return { id, mime: 'image/svg+xml', width: size.width, height: size.height, animated: false, duration: null };
     }
@@ -89,7 +98,7 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         const duration = result.mime.startsWith('video/') ? await videoProbe(blob, result, signal) : null;
         if (duration === null) {
             try {
-                await worker.request<boolean>('probe', { blob, width: result.width, height: result.height }, { priority: 1, deadlineMs: 10000, signal });
+                await worker.request<boolean>('probe', { blob, width: result.width, height: result.height, animated: result.animated, mime: result.mime }, { priority: 1, deadlineMs: 10000, signal });
             } catch (error) {
                 // A cancelled native decoder may still be running after its request settles.
                 await worker.recycle('cancelled image probe', { lazy: true }).catch(() => undefined);

@@ -76,11 +76,11 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
     let transferred = false, stagingDisposed = false;
     return {
         kind: 'ready' as const,
-        take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean) {
+        take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null) {
             if (transferred || stagingDisposed || !current() || owner.documentId !== documentId || owner.session !== identity.session || !isLiveOwner(owner)) throw stale();
             const slot = getSessionIdentity(documentId);
             if (!slot || slot.serial !== owner.session || slot.getSlot(sourceSlot)) throw new Error('A PDF ink source is already owned by this session');
-            const owned = prepared.take(owner, isLiveOwner);
+            const owned = prepared.take(owner, isLiveOwner, readOnlyReason);
             transferred = true;
             let closed = false, closing: Promise<void> | undefined;
             const facade: PdfInkSourceState = { getSnapshot: rebind.getSnapshot, subscribe: rebind.subscribe };

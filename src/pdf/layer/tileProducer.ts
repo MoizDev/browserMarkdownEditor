@@ -88,8 +88,10 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
                     return true;
                 };
                 const abort = () => {
+                    // The caller's bitmap reservation stays held until an already-started decode settles (C5.3).
+                    if (converting) return;
                     if (finish()) reject(abortError(signal));
-                    if (!converting) releaseWaiter();
+                    releaseWaiter();
                 };
                 signal.addEventListener('abort', abort, { once: true });
                 if (signal.aborted) { abort(); return; }
@@ -100,7 +102,8 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
                     if (result.docKey !== document.docKey || result.reqId !== args.reqId || result.page !== args.page ||
                         result.scale !== args.scale || result.rect.x !== args.rect.x || result.rect.y !== args.rect.y ||
                         result.rect.w !== args.rect.w || result.rect.h !== args.rect.h || result.variant !== args.variant ||
-                        result.profileKey !== args.profileKey || result.w !== width || result.h !== height ||
+                        result.profileKey !== args.profileKey || result.annotations !== args.annotations || result.forms !== args.forms ||
+                        JSON.stringify(result.emphasis) !== JSON.stringify(args.emphasis) || result.w !== width || result.h !== height ||
                         !(result.pixels instanceof ArrayBuffer) || result.pixels.byteLength !== width * height * 4) {
                         throw new Error('PDF tile reply does not match its request');
                     }

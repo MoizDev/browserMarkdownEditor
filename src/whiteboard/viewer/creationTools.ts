@@ -240,7 +240,8 @@ export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> 
         if (id === 'polyline' && modifiers.shift) {
             const { runtime } = context, session = runtime.session, doc = session.doc;
             const prior = lastPolyline.get(session), node = prior ? doc.nodes.get(prior) : undefined;
-            if (node?.kind === 'polyline' && node.points.length < 5000 && !isLocked(doc, node)
+            // Default: an attached terminal stays bound; continuation starts a new line rather than moving the binding.
+            if (node?.kind === 'polyline' && node.points.length < 5000 && !node.endAttach && !isLocked(doc, node)
                 && sheetOf(doc, node.id) === runtime.selection.getSnapshot().sheet) {
                 // Shift continues the last authored line in the current sheet; the geometry plan owns one undo step.
                 return polylineHandleGesture(sample, modifiers, { runtime, id: node.id, index: node.points.length, insert: true,

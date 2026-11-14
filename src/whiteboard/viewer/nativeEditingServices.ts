@@ -7,6 +7,7 @@ import type { BoardSession } from '../session/BoardSession';
 import { createBoardInputHost } from './inputHost';
 import { createBoardToolServices, type BoardToolServicesOptions } from './toolServices';
 import type { ViewerEngine } from './types';
+import { NO_SENSITIVE_IDS } from './sensitiveTargets';
 
 // Provenance: the view-owned composition of the input host and tool services,
 // written against this repository's own viewer contracts; no third-party source.
@@ -64,6 +65,7 @@ export function createNativeEditingInput(options: NativeEditingOptions) {
             captureText: () => active?.captureText(),
             restoreText: value => active?.restoreText(value),
             beforeHistoryReplay: (step, direction) => active?.beforeHistoryReplay(step, direction) ?? true,
+            sensitiveNodeIds: () => active?.sensitiveNodeIds() ?? NO_SENSITIVE_IDS,
         } });
     const { dispose: disposeHost, ...input } = host;
     return {

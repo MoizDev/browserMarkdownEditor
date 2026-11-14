@@ -11,7 +11,7 @@ export interface SpellMenuServices {
     canAdd(word: string): boolean;
     add(word: string): void;
     replace(range: Misspelling, suggestion: string): void;
-    open(rows: SpellMenuRows): void;
+    open(rows: SpellMenuRows | null): void;
 }
 
 // The capture belongs to one text revision; an agent edit or undo while the
@@ -25,9 +25,10 @@ export class SpellingMenuRequest {
         const revision = this.services.revision();
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timeout = new Promise<readonly string[]>(resolve => { timer = setTimeout(() => resolve([]), 250); });
-        const suggestions = await Promise.race([this.services.suggest(range.word).catch(() => []), timeout]);
+        const suggestions = await Promise.race([Promise.resolve().then(() => this.services.suggest(range.word)).catch(() => []), timeout]);
         if (timer !== undefined) clearTimeout(timer);
-        if (serial !== this.serial || revision !== this.services.revision()) return;
+        if (serial !== this.serial) return;
+        if (revision !== this.services.revision()) { this.services.open(null); return; }
         this.services.open({
             suggestions: suggestions.slice(0, 5), canAdd: this.services.canAdd(range.word),
             choose: suggestion => {

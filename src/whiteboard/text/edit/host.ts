@@ -34,6 +34,7 @@ export interface EditHostCallbacks {
     compositionFormat?(event: Event): void;
     commitComposition(change: TextChange): void;
     keydown(event: KeyboardEvent): void;
+    contextMenu(x: number, y: number): void;
     characterBounds(start: number, end: number): DOMRect[];
 }
 
@@ -106,7 +107,11 @@ export class EditHost {
         this.element.setAttribute('aria-label', label);
         Object.assign(this.element.style, { position: 'absolute', opacity: '0', pointerEvents: 'none' });
         this.listen(this.element, 'keydown', event => callbacks.keydown(event as KeyboardEvent));
-        this.listen(this.element, 'contextmenu', event => event.preventDefault());
+        this.listen(this.element, 'contextmenu', event => {
+            event.preventDefault();
+            const mouse = event as MouseEvent;
+            callbacks.contextMenu(mouse.clientX, mouse.clientY);
+        });
         container.append(this.element);
         this.sync();
     }

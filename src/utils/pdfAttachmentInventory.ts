@@ -1,7 +1,7 @@
 // Read-only and worker-only. pdf.js's public attachment map selects a branch
 // and collapses duplicate names: neither behaviour can authorize replacing pages.
 import { PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream } from 'pdf-lib';
-import { boundedAttachmentBytes, inventoryAttachments, type AttachmentEntry } from './pdfAttachmentTree';
+import { attachmentText, boundedAttachmentBytes, inventoryAttachments, type AttachmentEntry } from './pdfAttachmentTree';
 import { BOARD_ATTACHMENT, NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, PDF_APP_MARKER_NAMESPACE, SNAPSHOT_ATTACHMENT } from './pdfFormat';
 import { compatibleLegacySnapshot, PDF_EDITABLE_JSON_LIMIT, PDF_PRISTINE_LIMIT } from './pdfRole';
 import type { PdfRole, PdfRoleFailure } from './pdfRole';
@@ -19,14 +19,35 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
         const has = (entry: Entry, name: string) => entry.keys.length
             ? entry.keys.some(value => value.decodeText() === name)
             : entry.names.has(name);
-        // The namespace is fail-closed; only exact, bounded declarations with
-        // their expected names are understood by this writer.
+        // Filespec /Desc and EmbeddedFile /Params/LocalVaultMarker are equal
+        // authorities: PDFium's public attachment API writes only the latter.
+        const declarations = new Map<Entry, { value?: string; conflict: boolean; invalid: boolean }>();
+        for (const entry of all) {
+            const desc = entry.description.startsWith(PDF_APP_MARKER_NAMESPACE) ? entry.description.split('\n', 1)[0] : undefined;
+            const ef = entry.spec.lookup(key('EF'));
+            const streams = ef instanceof PDFDict ? [ef.lookup(key('F')), ef.lookup(key('UF'))] : [];
+            let param: string | undefined, invalid = false, conflict = false;
+            for (const stream of streams) {
+                if (!(stream instanceof PDFRawStream)) continue;
+                const params = stream.dict.lookup(key('Params'));
+                if (!(params instanceof PDFDict)) continue;
+                const raw = params.lookup(key('LocalVaultMarker'));
+                if (raw === undefined) continue;
+                const value = attachmentText(raw);
+                if (value === undefined) invalid = true;
+                else if (param !== undefined && param !== value) conflict = true;
+                else param = value;
+            }
+            if (desc !== undefined && param !== undefined && desc !== param) conflict = true;
+            declarations.set(entry, { value: desc ?? param, conflict, invalid });
+        }
+        const conflicting = all.filter(entry => declarations.get(entry)!.conflict);
+        if (conflicting.length) return { kind: 'ambiguous', alreadyAnnotated: true, generation, candidates: conflicting.map(entry => entry.id) };
         const marker = (entry: Entry, name: string, role: string, format: string) => {
             const prefix = `local-vault-pdf/v1;role=${role};format=${format}`;
-            return entry.keys.length <= 1 && has(entry, name) && prefix.length <= 256 &&
-                (entry.description === prefix || entry.description.startsWith(prefix + '\n'));
+            return entry.keys.length <= 1 && has(entry, name) && prefix.length <= 256 && declarations.get(entry)!.value === prefix;
         };
-        const newer = all.filter(entry => has(entry, BOARD_ATTACHMENT) || entry.description.startsWith(PDF_APP_MARKER_NAMESPACE) &&
+        const newer = all.filter(entry => has(entry, BOARD_ATTACHMENT) || (declarations.get(entry)!.value !== undefined || declarations.get(entry)!.invalid) &&
             !marker(entry, NOTEBOOK_SOURCE_ATTACHMENT, 'notebook-source', 'notebook-source') &&
             !marker(entry, ORIGINAL_ATTACHMENT, 'pristine', 'tldraw-legacy') &&
             !marker(entry, SNAPSHOT_ATTACHMENT, 'editable', 'tldraw-legacy'));

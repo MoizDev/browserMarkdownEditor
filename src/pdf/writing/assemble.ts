@@ -41,7 +41,7 @@ export async function assembleDisplayPdf(input: DisplayPdfInput, context: Worker
     const stream = ef.lookup(PDFName.of('F'));
     if (!(name instanceof PDFString || name instanceof PDFHexString) || name.decodeText() !== NOTEBOOK_SOURCE_ATTACHMENT ||
         !(description instanceof PDFString || description instanceof PDFHexString) || !description.decodeText().startsWith(marker + '\n') ||
-        !(stream instanceof PDFRawStream) || new TextDecoder('utf-8', { fatal: true }).decode(decodePDFRawStream(stream).getBytes()) !== pointer) {
+        !(stream instanceof PDFRawStream) || new TextDecoder('utf-8', { fatal: true }).decode(decodePDFRawStream(stream).getBytes(0)) !== pointer) {
         throw new Error('Notebook source pointer verification failed');
     }
     return bytes;

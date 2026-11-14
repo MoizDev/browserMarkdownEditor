@@ -25,6 +25,16 @@ export interface AgentStageHost {
     delete(id: NodeId, builder: CommandBuilder): { readonly deleted: readonly NodeId[]; readonly kept: readonly NodeId[]; readonly notes: readonly string[] };
 }
 
+function sameValue(a: unknown, b: unknown): boolean {
+    if (Object.is(a, b)) return true;
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+    if (Array.isArray(a) || Array.isArray(b)) {
+        return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, i) => sameValue(value, b[i]));
+    }
+    const left = Object.keys(a), right = Object.keys(b);
+    return left.length === right.length && left.every(key => Object.hasOwn(b, key) && sameValue(Reflect.get(a, key), Reflect.get(b, key)));
+}
+
 export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentOpContext): AgentOpResult {
     const base = { doc: host.doc, sheet: host.sheet, currentPage: host.currentPage, builder: context.builder };
     if (op.op === 'create') {
@@ -44,11 +54,18 @@ export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentO
         return { created: created.id, notes: created.notes };
     }
     if (op.op === 'update') {
+        const id = context.resolve(op.id);
+        const original = host.doc.nodes.get(id);
+        const before = original ? { ...original } : undefined;
         const result = stageAgentUpdate(op, { ...base, resolve: context.resolve,
             placement: (node, update) => host.placement(node, update) });
         if (op.page !== undefined || op.x !== undefined || op.y !== undefined || op.w !== undefined || op.h !== undefined || op.rotation !== undefined) {
             host.reanchor(result.updated[0], context.builder);
         }
+        const after = host.doc.nodes.get(id);
+        if (before && after && Object.keys(before).every(key => sameValue(
+            Reflect.get(before, key), Reflect.get(after, key),
+        ))) throw new AgentOpRefused('requested update made no change');
         return result;
     }
     const deleted: NodeId[] = [], notes: string[] = [], problems: string[] = [];

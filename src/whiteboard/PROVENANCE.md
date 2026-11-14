@@ -62,15 +62,15 @@ third-party code included (normally "none") · date.
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
-| `agent/shapes.ts` | w-p | F-AGENT-001, WB-D11, WB-D12, C8 | integration §9 | Agent specification, public model and disk revision interfaces; authoritative geometry supplied by shared projection; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/shapes.ts` | w-p, w-j | F-AGENT-001/004, WB-D10/11/12, C8 | integration §9 | Agent specification, public model and disk revision interfaces; shared projection also reports committed updates; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/transaction.ts` | w-p, w-j | F-AGENT-002/003/004/005/012/013, WB-D10, C8 | integration §9; change and history §3 | Agent specification, post-commit result projection and shared session queue/agent batch runner; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/validate.ts` | w-p | F-AGENT-002/012/013/015, C8 | integration §9 | Agent specification and public model style vocabulary; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/create.ts` | w-p | F-AGENT-002/012/013, C8 | integration §9, document-model §§3–4 | Agent spec and public model/change/page APIs; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/createInk.ts` | w-p | F-AGENT-002/003/013/015, C8 | integration §9, ink §2 | Agent spec, sample store and public geometry/model APIs; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/update.ts` | w-p | F-AGENT-004/012, WB-D10, C8 | integration §9, document-model §§3/7 | Agent specification and model/change/style metrics APIs; placement delegated to authoritative staged geometry; no tldraw or old canvas source | none | 2026-11-13 |
-| `agent/stage.ts` | w-p | F-AGENT-002/003/004/005/012, R-11, C8 | integration §9 | Agent specification and public model/change APIs, delegates protected deletion and authoritative geometry; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/stage.ts` | w-p, w-j | F-AGENT-002/003/004/005/012, WB-D10, R-11, C8 | integration §9 | Agent specification and public model/change APIs, refuses unchanged updates and delegates protected deletion and authoritative geometry; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/closed.ts` | w-p | F-AGENT-001/011, WB-D11, C8 | integration §9, native-format read | Agent specification and native reader/sample lease APIs; C5 admission supplied by session host; no tldraw or old canvas source | none | 2026-11-13 |
-| `agent/adapter.ts` | w-p | F-AGENT-001/002/003/004/005/012/013, WB-D11/12, C8 | integration §9 | Agent specification and session, change and scene provider contracts; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/adapter.ts` | w-p, w-j | F-AGENT-001/002/003/004/005/012/013, WB-D10/11/12, C8 | integration §9 | Agent specification and session, change and scene provider contracts with post-commit projection; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/camera.ts` | w-p | F-AGENT-010, C8, C1 | integration §9; platform camera contract | Agent and platform camera conventions; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/placement.ts` | w-p | F-AGENT-004/013, WB-D10, C8 | integration §9; document-model transform | C8 centre-based rectangle semantics and public model/page APIs; local box supplied by shared geometry; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/reanchor.ts` | w-p | F-AGENT-007/013, C8 | integration §9; document-model pages | Staged world-centre reanchor via shared geometry/page stack; no tldraw or old canvas source | none | 2026-11-13 |
@@ -290,20 +290,28 @@ third-party code included (normally "none") · date.
 | `media/headers.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §1; security §6 | Image container header structures, independently implemented; no tldraw source | none | 2026-11-13 |
 | `media/isoHeaders.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | ISO-BMFF bounded boxes and AVIF primary-property association, independently implemented | none | 2026-11-13 |
 | `media/webmHeader.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | EBML bounded element encoding and WebM track fields, independently implemented | none | 2026-11-13 |
-| `media/decode.worker.ts` | lane w-q | F-MEDIA-001/003/004; SEC-4 | media §1; threading §2; security §6 | Shared identity-enveloped board worker and browser bitmap API; no tldraw source | none | 2026-11-13 |
+| `media/decode.worker.ts` | lane w-q | F-MEDIA-001/003/004/011; SEC-4 | media §§1/4–5; threading §2; security §6 | Shared identity-enveloped worker; bitmap mips/tiles and complete-track ImageDecoder frames | none | 2026-11-13 |
 | `media/inspect.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §1; security §§3/6 | SEC-W1 budgets; platform worker and memory allocator contracts; isolated SVG profile injection | none | 2026-11-13 |
-| `media/ingest.ts` | lane w-q | F-MEDIA-001/002/003/004/008; SEC-4 | media §§1–3; security §3 | SEC-W1 budgets and shared session job authority; board model/apply contracts | none | 2026-11-13 |
-| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session-owned bytes, history/clipboard holders and collision-safe file location ledger | none | 2026-11-13 |
-| `media/svgProfile.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §§5–6 | Separate opaque XML/image profiles and fixed-shape response requirements | none | 2026-11-13 |
+| `media/ingest.ts` | lane w-q | F-MEDIA-001/002/003/004/008; F-DROP-006; SEC-4 | media §§1–3; clipboard §4.2; security §3 | SEC-W1 authority; per-file refusal, gesture-queued apply/history and physical-location ledger | none | 2026-11-13 |
+| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session bytes, clipboard holders after source close and model-validated collision-safe location ledger | none | 2026-11-13 |
+| `media/svgProfile.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §§5–6 | Separate opaque XML/image profiles and origin-clean raster fallback | none | 2026-11-13 |
 | `media/svgXmlRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Worker XML preflight; isolated XML, nested inline data and pixel accounting | none | 2026-11-13 |
-| `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context rasterization, isolated image profile only | none | 2026-11-13 |
-| `media/svgFrameRuntime.ts` | lane w-q | SEC-3/4 | security §§5–6 | Identity- and token-bound sequential bounded transfer within opaque profile | none | 2026-11-13 |
+| `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context raster tiles, isolated image profile only | none | 2026-11-13 |
+| `media/svgFrameRuntime.ts` | lane w-q | SEC-3/4 | security §§5–6 | Identity/token-bound sequential bounded transfer and raster reply | none | 2026-11-13 |
 | `media/svgXmlEntry.ts` | lane w-q | SEC-3/4 | security §6 | Network-denied XML profile entry | none | 2026-11-13 |
 | `media/svgImageEntry.ts` | lane w-q | SEC-3/4 | security §6 | Network-denied blob-image profile entry | none | 2026-11-13 |
-| `media/svgFrameHost.ts` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 frame API, token validation, bounded acknowledged transfer | none | 2026-11-13 |
+| `media/svgFrameHost.ts` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 frame API, token validation, bounded transfer, stale-raster disposal | none | 2026-11-13 |
 | `media/svgFrames.d.ts` | lane w-q | SEC-3/4 | security §6 | Build-time virtual fixed-frame declarations | none | 2026-11-13 |
 | `build/whiteboardSvgFrames.mjs` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 exact-byte hashing/bundling helper; strict separate profile CSPs | none | 2026-11-13 |
 | `build/whiteboardSvgFrames.d.mts` | lane w-q | SEC-3/4 | security §§5–6 | Vite plugin declaration for fixed-frame build | none | 2026-11-13 |
+| `media/mips.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §§4/9; rendering §8.4 | Bounded mip geometry, visible tiles and one-texel interior-edge apron | none | 2026-11-13 |
+| `media/residency.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §§4–5/8–9; C4 | Renderer PaintImageProvider, local-only source validation, shared worker priorities and memory leases | none | 2026-11-13 |
+| `media/animation.ts` | lane w-q | F-MEDIA-011; SEC-4 | media §5 | Largest-eight visible animation scheduler; hide pauses until current frame reloads | none | 2026-11-13 |
+| `clipboard/types.ts` | lane w-q | F-CLIP-002/003/005/010; F-DROP-001/005; SEC-8 | clipboard §§3–6/9 | Fixed-shape transfer, placement and text-editor interfaces | none | 2026-11-13 |
+| `clipboard/rendition.ts` | lane w-q | F-CLIP-001; SEC-10 | clipboard §2.3; text §4.1 | Fixed-shape rich text projection with inert DOM node construction | none | 2026-11-13 |
+| `clipboard/snapshot.ts` | lane w-q | F-CLIP-001/004; SEC-8/10 | clipboard §§2.1–2.3/2.5 | Model graph, native encoder, sample/media leases, revision and text-selection guards; opaque exclusion ruling | none | 2026-11-13 |
+| `clipboard/encode.ts` | lane w-q | F-CLIP-001; SEC-10 | clipboard §§2.1–2.3/7 | Native payload, bounded inline bytes, browser CompressionStream and opaque cache-only ruling | none | 2026-11-13 |
+| `clipboard/copy.ts` | lane w-q | F-CLIP-001/004; SEC-10 | clipboard §§2.1–2.3/2.5 | Native clipboard event/API, exact cache-envelope matching, revision/selection guards and transactional host callbacks | none | 2026-11-13 |
 
 ## Text editing and spelling (lane w-i)
 

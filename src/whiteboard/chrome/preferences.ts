@@ -28,6 +28,10 @@ export function readBoardViewFlags(value: unknown): BoardViewFlags {
     };
 }
 
+export interface BoardPreferenceState {
+    reconcileView(view: BoardViewFlags): void;
+}
+
 // The host persists view flags through the file save funnel, or the PDF view record for PDF ink.
 export class BoardPreferenceState {
     private snapshot: BoardLocalPreferences;
@@ -46,8 +50,14 @@ export class BoardPreferenceState {
     setView<K extends keyof BoardViewFlags>(key: K, value: BoardViewFlags[K]): void {
         if (this.snapshot.view[key] === value) return;
         const view = { ...this.snapshot.view, [key]: value };
-        this.snapshot = { ...this.snapshot, view };
         this.persistView(view);
+        this.reconcileView(view);
+    }
+
+    /** Keyboard commands and other panes can change file view flags independently. */
+    reconcileView(view: BoardViewFlags): void {
+        if ((Object.keys(view) as (keyof BoardViewFlags)[]).every(key => this.snapshot.view[key] === view[key])) return;
+        this.snapshot = { ...this.snapshot, view: { ...view } };
         this.notify();
     }
 

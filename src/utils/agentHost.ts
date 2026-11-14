@@ -28,7 +28,7 @@ import { readPdfViewPos } from './pdfViewState';
 import { readCanvasViewPos } from './canvasViewState';
 import { isScrollAnchor } from '../editor/scrollAnchor';
 import {
-    isEpubFile, isCanvasFile, isDrawingFile, isImageFile, isMarkdownFile, isNotebookFile, isPdfFile,
+    isEpubFile, isCanvasFile, isDrawingFile, isNativeDrawingFile, isImageFile, isMarkdownFile, isNotebookFile, isPdfFile,
 } from './fileTypes';
 import { isTextFile } from './vaultSearch';
 import { nameTaken } from './entryNames';
@@ -126,7 +126,7 @@ function docKind(tab: OpenTab): AgentDocKind {
     if (tab.file.isHelp) return 'help';
     if (tab.representation?.loadedKind === 'epub' || isEpubFile(name)) return 'epub';
     if (isPdfFile(name)) return 'pdf';
-    if (isDrawingFile(name)) return 'drawing';
+    if (isDrawingFile(name) || isNativeDrawingFile(name)) return 'drawing';
     if (isNotebookFile(name)) return 'notebook';
     if (isMarkdownFile(name)) return 'markdown';
     if (isImageFile(name)) return 'image';
@@ -242,6 +242,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         openBuffer: path => liveText(getDeps(), path),
 
         async readText(path) {
+            if (isNativeDrawingFile(path)) return null;
             const deps = getDeps();
             const live = liveText(deps, path);
             if (live !== undefined) return live;
@@ -262,6 +263,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         async applyTextChanges(path, expected, changes): Promise<HostResult> {
             const deps = getDeps();
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
+            if (isNativeDrawingFile(path)) return { ok: false, reason: 'invalid', message: 'Native .drawing whiteboards are read-only in this build; they cannot be changed as text or with canvas tools.' };
             // A canvas is JSON on disk but a live tldraw store on screen, which
             // would re-serialize over any text edit at its next change.
             if (isCanvasFile(path) || isPdfFile(path) || isEpubFile(path)) {
@@ -320,6 +322,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         },
 
         async createFile(path, content) {
+            if (isNativeDrawingFile(path)) return { ok: false, reason: 'invalid', message: 'This build cannot create native .drawing whiteboards.' };
             if (isEpubFile(path) || isPdfFile(path) || !isTextFile(path)) return {ok:false,reason:'invalid',message:'Create accepts text documents only; import an existing binary document.'};
             const deps = getDeps();
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
@@ -419,7 +422,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         async openCanvasForAgent(path) {
             const deps = getDeps();
             const open = openTabAt(deps,path);
-            if(isEpubFile(path)||open?.representation?.loadedKind==='epub'||open?.readError)return null;
+            if(isNativeDrawingFile(path)||isEpubFile(path)||open?.representation?.loadedKind==='epub'||open?.readError)return null;
             const pdf = isPdfFile(path);
             if (!pdf && !isCanvasFile(path)) return null;
             const hasCanvas = (r: ViewReporter) => !!r.canvas;

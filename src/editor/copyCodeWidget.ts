@@ -1,4 +1,5 @@
 import { WidgetType } from '@codemirror/view';
+import { countEditorWidget } from './editorPerf';
 
 // Same lucide outline style as components/icons.tsx, but as plain strings —
 // widgets build raw DOM, not React.
@@ -21,6 +22,7 @@ export class CopyCodeWidget extends WidgetType {
     /** @param code The block's inner text, fences excluded — what Cmd+C would want. */
     constructor(readonly code: string) {
         super();
+        if (__BME_BENCH__) { countEditorWidget(); }
     }
 
     override eq(other: CopyCodeWidget): boolean {

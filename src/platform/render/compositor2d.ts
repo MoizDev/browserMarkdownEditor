@@ -559,9 +559,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     dispose(): void {
         if (this.disposed) return;
+        const manager = __BME_BENCH__ ? benchmarkCanvas?.managers.get(this) : undefined;
         this.detach(); this.releaseGpu('hidden');
-        this.backing?.close(); this.working?.close(); this.cpu?.close();
+        this.backing?.close(); this.working?.close();
         this.disposed = true;
+        if (!__BME_BENCH__ || ((!manager || manager.drained) && !benchmarkCanvas?.retiringManagers.get(this)?.size)) this.cpu?.close();
     }
 
     private check(): void { if (this.disposed) throw new Error('Canvas compositor is disposed'); }
@@ -583,11 +585,23 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             snapshot.serial, frame.layers.map(item => item.sceneRevision)]);
     }
     private init(): boolean {
-        if (__BME_BENCH__ && benchmarkCanvas && !benchmarkCanvas.managers.has(this)) benchmarkCanvas.managers.set(this, new benchmarkCanvas.BenchmarkCanvas2D({
-            paneId: this.options.paneId,
-            working: { reserve: bytes => this.reserveGpu(bytes), release: lease => this.releaseGpuLease(lease) },
-            cpu: { reserve: bytes => this.reserveCpu(bytes), release: lease => this.releaseCpuLease(lease) },
-        }));
+        if (__BME_BENCH__ && benchmarkCanvas && !benchmarkCanvas.managers.has(this)) {
+            const pending = benchmarkCanvas.retiringManagers.get(this) ?? new Set<import('./benchmarkCanvas2D').BenchmarkCanvas2D>();
+            benchmarkCanvas.retiringManagers.set(this, pending);
+            const manager = new benchmarkCanvas.BenchmarkCanvas2D({
+                paneId: this.options.paneId,
+                working: { reserve: bytes => this.reserveGpu(bytes), release: lease => this.releaseGpuLease(lease) },
+                cpu: { reserve: bytes => this.reserveCpu(bytes), release: lease => this.releaseCpuLease(lease) },
+                onDrained: () => {
+                    pending.delete(manager);
+                    if (!pending.size) {
+                        benchmarkCanvas.retiringManagers.delete(this);
+                        if (this.disposed) this.cpu?.close();
+                    }
+                },
+            });
+            pending.add(manager); benchmarkCanvas.managers.set(this, manager);
+        }
         if (this.working && this.cpu && this.backing) return true;
         const owner = this.options.currentToken();
         if (!owner) return false;

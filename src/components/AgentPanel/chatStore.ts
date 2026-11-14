@@ -1081,7 +1081,9 @@ class ChatStore {
         let result: ToolResult;
         let change: AgentChange | undefined;
         try {
-            const execution = await executeTool(call.name, call.args, host.toolHost, { vaultToken: this.runVaultToken, signal: this.runAbort?.signal });
+            const bridge = agentBridge.getState();
+            const execution = await executeTool(call.name, call.args, host.toolHost, { vaultToken: this.runVaultToken,
+                signal: this.runAbort?.signal, helperVersion: helperReady(bridge) ? bridge.helper.version : undefined });
             result = execution.result;
             change = execution.change;
         } catch (e) {

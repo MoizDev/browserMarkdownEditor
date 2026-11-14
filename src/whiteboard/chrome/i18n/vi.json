@@ -377,6 +377,7 @@
     "paper.deleteContents": "Trang này chứa {items}.",
     "paper.deleteConfirm": "Xóa trang",
     "paper.cancel": "Hủy bỏ",
-    "paper.keepProtected": "Nội dung bị khóa sẽ được giữ lại."
+    "paper.keepProtected": "Nội dung bị khóa sẽ được giữ lại.",
+    "chrome.readOnly": "Bảng này ở chế độ chỉ đọc."
   }
 }

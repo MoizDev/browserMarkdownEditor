@@ -447,6 +447,7 @@
     "paper.deleteContents": "Cette page contient {items}.",
     "paper.deleteConfirm": "Supprimer la page",
     "paper.cancel": "Annuler",
-    "paper.keepProtected": "Le contenu verrouillé sera conservé."
+    "paper.keepProtected": "Le contenu verrouillé sera conservé.",
+    "chrome.readOnly": "Ce forum est en lecture seule."
   }
 }

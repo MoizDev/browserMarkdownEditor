@@ -377,6 +377,7 @@
     "paper.deleteContents": "ਇਸ ਪੰਨੇ ਵਿੱਚ {items} ਸ਼ਾਮਲ ਹੈ।",
     "paper.deleteConfirm": "ਪੰਨਾ ਮਿਟਾਓ",
     "paper.cancel": "ਰੱਦ ਕਰੋ",
-    "paper.keepProtected": "ਲਾਕ ਕੀਤੀ ਸਮੱਗਰੀ ਰੱਖੀ ਜਾਵੇਗੀ।"
+    "paper.keepProtected": "ਲਾਕ ਕੀਤੀ ਸਮੱਗਰੀ ਰੱਖੀ ਜਾਵੇਗੀ।",
+    "chrome.readOnly": "ਇਹ ਬੋਰਡ ਸਿਰਫ਼ ਪੜ੍ਹਨ ਲਈ ਹੈ।"
   }
 }

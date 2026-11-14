@@ -15,7 +15,7 @@ import type { UiBlock } from '../model/styles';
 import type { Block, Marks, RichText, Run } from '../text/richText';
 import { COMPATIBILITY_FENCE, isCompatibilityFence } from './fence';
 import { NATIVE_FORMAT_ID } from './identity';
-import { JsonReadError, parseJson } from './jsonRead';
+import { JsonReadError, parseJson, parseJsonIncremental } from './jsonRead';
 import type { JsonSpan } from './jsonRead';
 import { inspectPoints, inspectPointsIncremental } from './points';
 import type { PointInspection } from './points';
@@ -105,10 +105,18 @@ function url(span: JsonSpan, httpsOnly = false): string {
 function nullable<T>(span: JsonSpan, read: (span: JsonSpan) => T): T | null {
     return span.kind === 'null' ? null : read(span);
 }
-function extras(fields: ReadonlyMap<string, JsonSpan>, known: readonly string[], raw = new Map<string, RawJson>()): ExtBag | null {
+async function extras(fields: ReadonlyMap<string, JsonSpan>, known: readonly string[], raw = new Map<string, RawJson>(),
+    cooperate?: () => Promise<void>): Promise<ExtBag | null> {
     const additional = new Map<string, RawJson>();
-    for (const [key, value] of fields) if (!known.includes(key)) additional.set(key, value.raw());
+    let count = 0;
+    for (const [key, value] of fields) {
+        if (!known.includes(key)) additional.set(key, cooperate ? await value.rawIncremental(cooperate) : value.raw());
+        if (cooperate && (++count & 255) === 0) await cooperate();
+    }
     return additional.size || raw.size ? { fields: additional, raw } : null;
+}
+function fieldMap(span: JsonSpan, cooperate?: () => Promise<void>): Promise<ReadonlyMap<string, JsonSpan>> {
+    return cooperate ? span.fieldMapIncremental(cooperate) : Promise.resolve(span.fieldMap());
 }
 function hasExtras(fields: ReadonlyMap<string, JsonSpan>, known: readonly string[]): boolean {
     for (const key of fields.keys()) if (!known.includes(key)) return true;
@@ -130,14 +138,17 @@ function enumeration(span: JsonSpan, allowed: readonly string[], fallback: strin
     note(context, 'approximation', colour ? 'A newer colour is shown approximately' : 'A newer style is shown with a known fallback');
     return colour ? swatch(value, fallback) : fallback;
 }
-function prefix(span: JsonSpan, count: number): { values: JsonSpan[]; tail?: RawJson; } {
+async function prefix(span: JsonSpan, count: number, cooperate?: () => Promise<void>): Promise<{ values: JsonSpan[]; tail?: RawJson; }> {
     const values: JsonSpan[] = [];
-    for (const item of span.items()) {
+    const items = cooperate ? span.itemsIncremental(cooperate) : span.items();
+    for await (const item of items) {
         if (values.length < count) values.push(item);
         else {
             // A future tuple may have millions of tiny extras. Retain one lexical array, not a
             // span/object per extra; the complete tuple was grammar/depth checked before this walk.
-            return { values, tail: parseJson('[' + span.source.slice(item.start, span.end - 1) + ']').raw() };
+            const text = '[' + span.source.slice(item.start, span.end - 1) + ']';
+            const tail = cooperate ? await parseJsonIncremental(text, cooperate) : parseJson(text);
+            return { values, tail: cooperate ? await tail.rawIncremental(cooperate) : tail.raw() };
         }
     }
     return { values };
@@ -146,29 +157,34 @@ function tuple(span: JsonSpan, limit: number): JsonSpan[] {
     span.length(limit); // Guard the allocation below, not merely the completed array.
     return [...span.items()];
 }
-function rich(span: JsonSpan, context: ModelReadContext): { value: RichText; unknown: boolean; repaired: boolean; } {
+async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value: RichText; unknown: boolean; repaired: boolean; }> {
     // The depth check and block count precede every block/run allocation and every JSON.parse of text.
-    const text = parseJson(span.text(), FORMAT_LIMITS.richTextDepth);
-    const fields = text.fieldMap(), sourceBlocks = required(fields, 'b');
-    sourceBlocks.length(FORMAT_LIMITS.richTextBlocks);
+    const cooperate = context.options.cooperate;
+    const text = cooperate ? await parseJsonIncremental(span.text(), cooperate, FORMAT_LIMITS.richTextDepth)
+        : parseJson(span.text(), FORMAT_LIMITS.richTextDepth);
+    const fields = await fieldMap(text, cooperate), sourceBlocks = required(fields, 'b');
+    if (cooperate) await sourceBlocks.lengthIncremental(FORMAT_LIMITS.richTextBlocks, cooperate);
+    else sourceBlocks.length(FORMAT_LIMITS.richTextBlocks);
     const blocks: Block[] = [];
     let chars = 0, unknown = hasExtras(fields, ['b']), repaired = false;
-    for (const sourceBlock of sourceBlocks.items()) {
-        const blockTuple = prefix(sourceBlock, 5), values = blockTuple.values;
+    const sourceBlockItems = cooperate ? sourceBlocks.itemsIncremental(cooperate) : sourceBlocks.items();
+    for await (const sourceBlock of sourceBlockItems) {
+        const blockTuple = await prefix(sourceBlock, 5, cooperate), values = blockTuple.values;
         if (values.length < 4) fail('Rich block needs kind, level, direction and runs', sourceBlock);
         const kind = enumeration(values[0], BLOCKS, 'p', context, () => { unknown = true; });
         const level = number(values[1]);
         const dir = enumeration(values[2], DIRECTIONS, DIRECTIONS[0], context, () => { unknown = true; });
         const runs: Run[] = [];
         let firstEmpty: Run | undefined, sourceRunCount = 0, firstEmptyUnknown = false, discardedEmptyUnknown = false;
-        for (const sourceRun of values[3].items()) {
+        const sourceRuns = cooperate ? values[3].itemsIncremental(cooperate) : values[3].items();
+        for await (const sourceRun of sourceRuns) {
             sourceRunCount++;
-            const runTuple = prefix(sourceRun, 2), run = runTuple.values;
+            const runTuple = await prefix(sourceRun, 2, cooperate), run = runTuple.values;
             if (!run.length) fail('Rich run needs text', sourceRun);
             const length = run[0].stringLength(FORMAT_LIMITS.textChars);
             chars += length;
             if (chars + blocks.length > FORMAT_LIMITS.textChars) fail('Text exceeds one million UTF-16 units', run[0], true);
-            const markFields = run[1]?.fieldMap();
+            const markFields = run[1] ? await fieldMap(run[1], cooperate) : undefined;
             const hasUnknownMarks = markFields ? hasExtras(markFields, MARKS) : false;
             unknown ||= hasUnknownMarks;
             const marks: Record<string, unknown> = {};
@@ -176,7 +192,7 @@ function rich(span: JsonSpan, context: ModelReadContext): { value: RichText; unk
                 for (const key of MARKS) {
                     const value = markFields.get(key);
                     if (!value) continue;
-                    if (key === 'x') marks.x = value.raw();
+                    if (key === 'x') marks.x = cooperate ? await value.rawIncremental(cooperate) : value.raw();
                     else if (key === 'link') marks.link = url(value);
                     else {
                         if (value.kind !== 'boolean' || value.value() !== true) fail('Present rich marks must be true', value);
@@ -185,7 +201,7 @@ function rich(span: JsonSpan, context: ModelReadContext): { value: RichText; unk
                 }
             }
             const extra = runTuple.tail;
-            const original = run[0].string(FORMAT_LIMITS.textChars);
+            const original = cooperate ? await run[0].stringIncremental(FORMAT_LIMITS.textChars, cooperate) : run[0].string(FORMAT_LIMITS.textChars);
             const clean = original.replace(/[\ud800-\udfff]/gu, '\ufffd');
             if (clean !== original) repaired = true;
             if (clean.includes('\n')) fail('Rich run contains a paragraph break', run[0]);
@@ -297,7 +313,7 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
         } else if (key === 'text' || key === 'label') {
             if (key === 'label' && span.kind === 'null') value[key] = null;
             else {
-                const text = rich(span, context);
+                const text = await rich(span, context);
                 value[key] = text.value;
                 if (text.unknown) keep();
                 repaired ||= text.repaired;
@@ -370,7 +386,7 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
             value[key] = enumeration(span, allowed, fallback, context, keep, key === 'color' || key === 'labelColor');
         }
     }
-    value.ext = extras(fields, [...COMMON_FIELDS, ...NODE_PROPERTY_ORDER[knownKind]], raw);
+    value.ext = await extras(fields, [...COMMON_FIELDS, ...NODE_PROPERTY_ORDER[knownKind]], raw, context.options.cooperate);
     if (points) {
         const ref = context.options.admitEncoded(points.pts, points.inspection.header);
         if (!Number.isSafeInteger(ref) || ref < 0) throw new Error('Sample admission returned an invalid reference');
@@ -379,8 +395,8 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
     return { category: 'node', value: value as unknown as NodeRecord, bounds: cachedBounds, pointHeader: points?.inspection.header, reencode: repaired };
 }
 
-export function readHeader(root: JsonSpan): { kind: BoardKind; version: readonly [number, number]; fields: Map<string, RawJson>; fenceValid: boolean; } {
-    const fields = root.fieldMap();
+export async function readHeader(root: JsonSpan, cooperate?: () => Promise<void>): Promise<{ kind: BoardKind; version: readonly [number, number]; fields: Map<string, RawJson>; fenceValid: boolean; }> {
+    const fields = await fieldMap(root, cooperate);
     if (required(fields, 'format').string(128) !== NATIVE_FORMAT_ID) fail('Not native board content', root);
     const version = tuple(required(fields, 'version'), 2);
     if (version.length !== 2) fail('Version must be [major,minor]', root);
@@ -401,17 +417,23 @@ export function readHeader(root: JsonSpan): { kind: BoardKind; version: readonly
         }
     }
     const preserved = new Map<string, RawJson>();
-    for (const [name, value] of fields) if (!['format', 'version', 'kind', 'document', 'fence', 'records'].includes(name)) preserved.set(name, value.raw());
+    let count = 0;
+    for (const [name, value] of fields) {
+        if (!['format', 'version', 'kind', 'document', 'fence', 'records'].includes(name)) {
+            preserved.set(name, cooperate ? await value.rawIncremental(cooperate) : value.raw());
+        }
+        if (cooperate && (++count & 255) === 0) await cooperate();
+    }
     return { kind, version: [major, minor], fields: preserved, fenceValid };
 }
 export async function readRecord(root: JsonSpan, kind: BoardKind, context: ModelReadContext): Promise<MappedRecord> {
-    const fields = root.fieldMap(), type = required(fields, 'type').string(128);
+    const fields = await fieldMap(root, context.options.cooperate), type = required(fields, 'type').string(128);
     switch (type) {
         case 'node': return node(root, fields, context);
         case 'sheet': return {
             category: 'sheet', reencode: false, value: {
                 id: identifier(required(fields, 'id')) as SheetId, name: required(fields, 'name').string(200),
-                order: required(fields, 'order').string(256) as OrderKey, ext: extras(fields, ['type', 'id', 'name', 'order']),
+                order: required(fields, 'order').string(256) as OrderKey, ext: await extras(fields, ['type', 'id', 'name', 'order'], undefined, context.options.cooperate),
             }
         };
         case 'media': {
@@ -432,7 +454,7 @@ export async function readRecord(root: JsonSpan, kind: BoardKind, context: Model
                     duration: videoDuration,
                     file: file ? name : MEDIA_DEFAULTS.file, animated: fields.has('animated') ? boolean(fields.get('animated')!) : MEDIA_DEFAULTS.animated,
                     name: fields.has('name') ? fields.get('name')!.string(10000) : MEDIA_DEFAULTS.name,
-                    ext: extras(fields, ['type', 'id', 'mime', 'w', 'h', 'bytes', 'duration', 'file', 'animated', 'name'], raw),
+                    ext: await extras(fields, ['type', 'id', 'mime', 'w', 'h', 'bytes', 'duration', 'file', 'animated', 'name'], raw, context.options.cooperate),
                 }
             };
         }
@@ -458,14 +480,14 @@ export async function readRecord(root: JsonSpan, kind: BoardKind, context: Model
                 category: 'pen', reencode: false, value: {
                     tool: tool as UiBlock['tool'], next: next as unknown as UiBlock['next'],
                     penWidth: fields.has('width') ? number(fields.get('width')!) : UI_DEFAULTS.penWidth,
-                    ext: extras(fields, ['type', 'tool', 'color', 'width', 'next'], raw)
+                    ext: await extras(fields, ['type', 'tool', 'color', 'width', 'next'], raw, context.options.cooperate)
                 }
             };
         }
         case 'view': {
             const value = { ...VIEW_DEFAULTS } as unknown as Record<string, unknown>;
             for (const key of ['grid', 'focusMode', 'toolLock', 'transparent', 'debugMode']) if (fields.has(key)) value[key] = boolean(fields.get(key)!);
-            value.ext = extras(fields, ['type', 'sheet', 'x', 'y', 'zoom', 'grid', 'focusMode', 'toolLock', 'transparent', 'debugMode']);
+            value.ext = await extras(fields, ['type', 'sheet', 'x', 'y', 'zoom', 'grid', 'focusMode', 'toolLock', 'transparent', 'debugMode'], undefined, context.options.cooperate);
             let savedView: SavedView | undefined;
             if (['sheet', 'x', 'y', 'zoom'].every(key => fields.has(key))) savedView = {
                 sheet: identifier(fields.get('sheet')!), x: number(fields.get('x')!, true), y: number(fields.get('y')!, true), zoom: number(fields.get('zoom')!),
@@ -488,7 +510,7 @@ export async function readRecord(root: JsonSpan, kind: BoardKind, context: Model
             return {
                 category: 'paper', reencode: false, value: {
                     kind: 'notebook', paper: normalizePaper(paper),
-                    ext: extras(fields, ['type', 'size', 'orientation', 'ruling', 'spacing', 'margin', 'pages'], raw)
+                    ext: await extras(fields, ['type', 'size', 'orientation', 'ruling', 'spacing', 'margin', 'pages'], raw, context.options.cooperate)
                 }
             };
         }
@@ -504,11 +526,11 @@ export async function readRecord(root: JsonSpan, kind: BoardKind, context: Model
                 pages.push([w, h]);
             }
             if (!pages.length) fail('PDF host needs at least one page', sourcePages);
-            return { category: 'host', reencode: false, value: { kind: 'pdf-ink', pdf: pdf.raw(), pages, ext: extras(fields, ['type', 'pdf', 'pages']) } };
+            return { category: 'host', reencode: false, value: { kind: 'pdf-ink', pdf: context.options.cooperate ? await pdf.rawIncremental(context.options.cooperate) : pdf.raw(), pages, ext: await extras(fields, ['type', 'pdf', 'pages'], undefined, context.options.cooperate) } };
         }
         case 'end': return {
             category: 'end', count: integer(required(fields, 'count'), 0, FORMAT_LIMITS.records - 1),
-            value: extras(fields, ['type', 'count']), reencode: false
+            value: await extras(fields, ['type', 'count'], undefined, context.options.cooperate), reencode: false
         };
         default: return { category: 'opaque', type, id: identifier(required(fields, 'id')), value: root.raw(), reencode: false };
     }

@@ -377,6 +377,7 @@
     "paper.deleteContents": "이 페이지에는 {items}가 포함되어 있습니다.",
     "paper.deleteConfirm": "페이지 삭제",
     "paper.cancel": "취소",
-    "paper.keepProtected": "잠긴 콘텐츠는 보관됩니다."
+    "paper.keepProtected": "잠긴 콘텐츠는 보관됩니다.",
+    "chrome.readOnly": "이 보드는 읽기 전용입니다."
   }
 }

@@ -377,6 +377,7 @@
     "paper.deleteContents": "Esta página contém {items}.",
     "paper.deleteConfirm": "Excluir página",
     "paper.cancel": "Cancelar",
-    "paper.keepProtected": "O conteúdo bloqueado será mantido."
+    "paper.keepProtected": "O conteúdo bloqueado será mantido.",
+    "chrome.readOnly": "Esta placa é somente leitura."
   }
 }

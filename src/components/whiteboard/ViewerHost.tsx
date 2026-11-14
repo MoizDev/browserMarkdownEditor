@@ -68,7 +68,7 @@ export default function ViewerHost<T extends object>({
             <div className="board-viewer-surface" ref={setSurface} aria-hidden="true" />
             <div className="board-viewer-overlay" ref={setOverlay} />
         </BoardAccessibility>
-        {(readOnly || reason) && <div className="board-viewer-notice" role="status">{reason ?? readOnlyNotice}</div>}
+        {readOnly && <div className="board-viewer-notice" role="status">{reason ?? readOnlyNotice}</div>}
         {chrome}
     </div>;
 }

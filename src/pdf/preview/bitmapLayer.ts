@@ -168,7 +168,9 @@ export class PreviewBitmapLayer implements Layer {
                 const uploaded = this.uploaded.get(tile);
                 if (!uploaded || uploaded.device !== this.host.device() || !onScreen(tile.destination, view)) continue;
                 this.host.drawTexturedQuad(pass, uploaded.texture, tile.source,
-                    project(tile.destination, view), { opacity: 1, sampling: 'linear', coverage: expected.current() ? 'current' : 'standin' });
+                    project(tile.destination, view), { opacity: 1, sampling: 'linear',
+                        ...(__BME_BENCH__ ? expected.current() ? { coverage: 'current' as const, standInRatio: 1 }
+                            : { coverage: 'standin' as const } : {}) });
             }
         }
     }
@@ -180,7 +182,9 @@ export class PreviewBitmapLayer implements Layer {
             for (const tile of page.tiles) {
                 if (!onScreen(tile.destination, view)) continue;
                 this.host.drawTexturedQuad(ctx, tile.bitmap, tile.source,
-                    project(tile.destination, view), { opacity: 1, sampling: 'linear', coverage: expected.current() ? 'current' : 'standin' });
+                    project(tile.destination, view), { opacity: 1, sampling: 'linear',
+                        ...(__BME_BENCH__ ? expected.current() ? { coverage: 'current' as const, standInRatio: 1 }
+                            : { coverage: 'standin' as const } : {}) });
             }
         }
     }

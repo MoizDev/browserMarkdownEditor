@@ -1,5 +1,6 @@
 import { serve } from '../workers/serve';
 import type { FrameToken } from './types';
+import { coverageBandRows, coverageScratchBytes } from './coverageCountSizing';
 
 interface CoverageFrame {
     readonly frameId: number;
@@ -43,34 +44,34 @@ if (__BME_BENCH__) serve({
                 if (encoding !== 'r8' && encoding !== 'rgb') throw new TypeError('Invalid coverage encoding');
                 const width = bitmap.width, height = bitmap.height, pixels = width * height;
                 if (!width || !height || !Number.isSafeInteger(pixels * 16)) throw new RangeError('Invalid coverage bitmap size');
-                canvas = new OffscreenCanvas(width, height);
+                const rows = coverageBandRows(width, height);
+                canvas = new OffscreenCanvas(width, rows);
                 const ctx = canvas.getContext('2d', { colorSpace: 'srgb', willReadFrequently: true });
                 if (!ctx || ctx.isContextLost()) throw new Error('Coverage canvas unavailable');
                 ctx.imageSmoothingEnabled = false;
-                ctx.drawImage(bitmap, 0, 0);
-                if (ctx.isContextLost()) throw new Error('Coverage canvas lost');
-                const data = ctx.getImageData(0, 0, width, height).data;
-                if (ctx.isContextLost()) throw new Error('Coverage canvas lost');
+                ctx.globalCompositeOperation = 'copy';
                 let outside = 0, hole = 0, standin = 0, current = 0, invalid = 0, countMs = 0;
-                let countStarted = performance.now();
-                for (let i = 0; i < data.length; i += 4) {
-                    const value = encoding === 'rgb' ? (data[i] ? 3 : data[i + 1] ? 2 : data[i + 2] ? 1 : 0) : data[i];
-                    switch (value) {
-                        case 0: outside++; break;
-                        case 1: hole++; break;
-                        case 2: standin++; break;
-                        case 3: current++; break;
-                        default: invalid++; break;
+                for (let y = 0; y < height; y += rows) {
+                    const started = performance.now(), bandRows = Math.min(rows, height - y);
+                    ctx.drawImage(bitmap, 0, y, width, bandRows, 0, 0, width, bandRows);
+                    if (ctx.isContextLost()) throw new Error('Coverage canvas lost');
+                    const data = ctx.getImageData(0, 0, width, bandRows).data;
+                    if (ctx.isContextLost()) throw new Error('Coverage canvas lost');
+                    for (let i = 0; i < data.length; i += 4) {
+                        const value = encoding === 'rgb' ? (data[i] ? 3 : data[i + 1] ? 2 : data[i + 2] ? 1 : 0) : data[i];
+                        switch (value) {
+                            case 0: outside++; break;
+                            case 1: hole++; break;
+                            case 2: standin++; break;
+                            case 3: current++; break;
+                            default: invalid++; break;
+                        }
                     }
-                    if (i && i % (65536 * 4) === 0) {
-                        countMs += performance.now() - countStarted;
-                        await context.slice();
-                        countStarted = performance.now();
-                    }
+                    countMs += performance.now() - started;
+                    if (y + bandRows < height) await context.slice();
                 }
-                countMs += performance.now() - countStarted;
-                // Nominal canvas reserve (12 B/px) plus ImageData (4 B/px); the caller accounts for the transferred source.
-                return { frame, outside, hole, standin, current, invalid, pixels, ownedScratchBytes: pixels * 16, countMs };
+                // Nominal band canvas (12 B/px) and readback (4 B/px); source is accounted separately.
+                return { frame, outside, hole, standin, current, invalid, pixels, ownedScratchBytes: coverageScratchBytes(width, height), countMs };
             } finally {
                 bitmap.close();
                 if (canvas) { canvas.width = 0; canvas.height = 0; }

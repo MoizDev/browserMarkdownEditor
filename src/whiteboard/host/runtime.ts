@@ -49,6 +49,7 @@ export interface BoardRuntime {
     readonly scene: SessionScene | null;
     /** The token future pins adopt: the scene's original token until a verified rebind replaces it. Pins already taken keep the token they captured. */
     readonly paintToken: RenderToken;
+    readonly paintBinding: ReturnType<ReturnType<typeof createBoardRenderServices>['capturePaintBinding']>;
     /**
      * Adopts an admitted source as the paint token for FUTURE pins on this same
      * runtime, session, scene, records, tools, selection, samples, media and history.
@@ -87,6 +88,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     const attached = new Set<Registration>(), controller = new AbortController();
     const owned = new Set<{ dispose(): void }>();
     let scene: SessionScene | null = null, disposed = false, pendingReveal: Set<NodeId> | undefined;
+    let paintBinding = options.render.capturePaintBinding(options.scene.token);
     let paintToken: RenderToken = Object.freeze({ vaultEpoch: options.scene.token.vaultEpoch, documentId: options.scene.token.documentId,
         bytesGeneration: options.scene.token.bytesGeneration, session: options.scene.token.session }), adopting = false;
     const stopSelection = selection.subscribe(() => { pendingReveal = undefined; });
@@ -181,6 +183,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         session, selection, tools, samples, jobs, media: options.media, render: options.render, encoder: options.encoder, ready,
         get scene() { return scene; },
         get paintToken() { return paintToken; },
+        get paintBinding() { return paintBinding; },
         rebindPaintSource(witness, expected, adopt, isCurrent) {
             if (disposed) throw new DOMException('Board runtime disposed', 'AbortError');
             if (adopting) throw new Error('A paint source rebind is already adopting');
@@ -198,6 +201,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             const admission = runtime.rebindPaintSource(witness, expected, token => {
                 const binding = options.render.capturePaintBinding(token);
                 target.setPaintBinding(binding);
+                paintBinding = binding;
             }, isCurrent);
             if (!admission.unchanged) invalidate();
             return admission;

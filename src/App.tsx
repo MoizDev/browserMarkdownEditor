@@ -4440,7 +4440,8 @@ export default function App() {
     // Every open document this move carries…
     const moving = tabsRef.current
       .filter(t => (isFolder ? t.file.path.startsWith(prefix) : t.file.path === fromPath))
-      .map(t => ({ from: t.file.path, to: to(t.file.path), dirty: t.dirty, doc: t }));
+      .map(t => ({ from: t.file.path, to: to(t.file.path), dirty: t.dirty, doc: t,
+        revisionAtMoveStart: documentBuffers.revisionForDocument(t.id)?.revision }));
 
     // …and every open document it OVERWRITES. renameFile/moveFile deliberately
     // land on a taken name, and for a folder that is a MERGE: each file inside
@@ -4469,7 +4470,7 @@ export default function App() {
       }
     }
 
-    for (const { from, to: dest, doc } of moving) {
+    for (const { from, to: dest, doc, revisionAtMoveStart } of moving) {
       try {
         await getReadingSurface({vaultId:vaultIdAtMove,vaultEpoch:readerEpochRef.current.epoch,documentId:doc.id,byteGeneration:doc.representation.generation})?.captureReading?.().catch(()=>{});
         if(rootHandleRef.current!==rootHandle)return [];
@@ -4492,12 +4493,16 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           const live = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
           if (!live) break;
-          needsSave = live.dirty || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from) || (contentOf(from) ?? live.content) !== doc.content;
+          needsSave = live.dirty || documentBuffers.isDirty(doc.id) || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from)
+            || documentBuffers.revisionForDocument(doc.id)?.revision !== revisionAtMoveStart;
           if (!changedKind || !needsSave) break;
           await getView(from)?.flushPending?.();
           if (rootHandleRef.current !== rootHandle) return [];
           if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) break;
-          const text = contentOf(from) ?? live.content;
+          const captured = documentBuffers.snapshotOf(from);
+          const text = typeof captured?.data === 'string' ? captured.data : contentOf(from);
+          if (text === undefined) throw Error('Pending source edits cannot be preserved. Keep this tab open.');
+          const textRevision = captured?.revision;
           let data: string | Uint8Array = text;
           if (live.representation.loadedKind === 'pdf') {
             const pdf = getPdfRenderData(from);
@@ -4512,7 +4517,7 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           const latest = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
           if (!latest) break;
-          if ((contentOf(from) ?? latest.content) === text && !getView(from)?.hasPendingEdits?.()) break;
+          if (documentBuffers.revisionForDocument(doc.id)?.revision === textRevision && !getView(from)?.hasPendingEdits?.()) break;
         }
         if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
         // A destination opened during retargeting must not share this path or
@@ -4570,7 +4575,7 @@ export default function App() {
       catch (error) { console.error('Could not move recovery records:', error); }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -5057,6 +5062,7 @@ export default function App() {
       if (action === 'save') {
         await drain(id);
         const savedRevision = pendingRevisionsRef.current.get(id)?.revision ?? 0;
+        const dataRevision = documentBuffers.revisionForDocument(id)?.revision;
         const data = await mine();
         if (data === null) {
           void tell({ title: 'Nothing to save', confirmLabel: 'OK', body: <>This PDF has no annotations of yours to write back. Close the tab, or put <strong>{file.name}</strong> back from wherever it went.</> });
@@ -5080,14 +5086,15 @@ export default function App() {
         diskStateRef.current.delete(id);
         const pendingRevision = pendingRevisionsRef.current.get(id);
         if (pendingRevision && savedRevision > pendingRevision.saved) pendingRevision.saved = savedRevision;
+        if (dataRevision !== undefined) documentBuffers.markSaved(id, dataRevision);
         syncExitGuard();
-        clearSaveTimer(path);
+        if (dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision) clearSaveTimer(path);
         recordFileWritten(path, result.version.lastModified);
         notifySearchChanges();
         setTabs(prev => prev.map(t => (t.id === id ? {
           ...t,
           file: { ...t.file, handle: result.handle, parentHandle },
-          dirty: typeof data === 'string' && t.content !== data ? t.dirty : false,
+          dirty: dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision ? false : t.dirty,
           disk: undefined,
         } : t)));
         if (graphAtCall && graphAtCall === indexGraphRef.current && graphAtCall.activation === getVaultActivation()) {
@@ -5162,7 +5169,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes

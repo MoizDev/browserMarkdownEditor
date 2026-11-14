@@ -66,15 +66,16 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
             const project = (ops: readonly NodeSetOp[]) => projectBoardGeometrySets(doc, ops, { signal: request, current: active, cooperate: options.cooperate });
             const stage = async (movement: Vec2) => {
                 const initial: NodeSetOp[] = plan.preview(movement).ops.map(op => { if (op.t !== 'set') throw new Error('Translation produced a non-set operation'); return op; });
-                let candidate = await project(initial); assert(); const compensation: NodeSetOp[] = [];
+                let candidate = await project(initial); assert(); const compensation: NodeSetOp[] = []; let protectedCount = 0;
                 for (const saved of protectedRoots) {
                     const node = candidate.nodes.get(saved.id); if (!node) throw new Error('Protected descendant disappeared');
                     const pose = poseInParent(candidate, node, node.parent, saved.pose);
                     if (pose.x !== node.x) compensation.push({ t: 'set', id: node.id, key: 'x', value: pose.x });
                     if (pose.y !== node.y) compensation.push({ t: 'set', id: node.id, key: 'y', value: pose.y });
                     if (pose.rotation !== node.rotation) compensation.push({ t: 'set', id: node.id, key: 'rotation', value: pose.rotation });
-                    candidate = await project([...initial, ...compensation]); assert();
+                    if (++protectedCount % 256 === 0) { await cooperate(); assert(); }
                 }
+                if (compensation.length) { candidate = await project([...initial, ...compensation]); assert(); }
                 const scope = await acquireBoardGeometryScope(runtime, roots.map(root => root.id), { doc: candidate, signal: request, current: active, cooperate: options.cooperate });
                 return { scope, compensation };
             };

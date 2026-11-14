@@ -115,9 +115,13 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
             const request = requestSignal ?? signal;
             let candidate = await projectBoardGeometrySets(doc, initial, { signal: request, current: active, cooperate: options.cooperate });
             assert();
+            let protectedCount = 0;
             for (const saved of protectedRoots) {
                 const node = candidate.nodes.get(saved.node.id); if (!node) throw new Error('Protected descendant disappeared');
                 initial.push(...provisional(candidate, { node, pose: saved.pose }, saved.pose));
+                if (++protectedCount % 256 === 0) { await cooperate(); assert(); }
+            }
+            if (protectedRoots.length) {
                 candidate = await projectBoardGeometrySets(doc, initial, { signal: request, current: active, cooperate: options.cooperate }); assert();
             }
             const staged = await acquireBoardGeometryScope(runtime, roots.map(root => root.node.id), { doc: candidate, signal: request, current: active, cooperate: options.cooperate });

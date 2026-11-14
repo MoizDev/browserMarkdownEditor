@@ -3,11 +3,14 @@ import type { NodeId } from '../../model/ids';
 import type { Marks, RichText } from '../richText';
 import type { EditSelection, TextChange } from './host';
 import { linkUrl, type ToggleMark } from './format';
+import { inputRule, type InputRuleResult } from './rules';
 
 // The rich-text lane supplies these operations; this controller owns only the
 // edit session and sends every content change through the transaction service.
 export interface EditTransactions {
     apply(transaction: Transaction): void;
+    readText(): RichText;
+    rememberTransformation(rule: InputRuleResult, before: EditSelection, after: EditSelection): void;
     setSelection(selection: EditSelection): void;
     typing(kind: 'typing' | 'composition' | 'boundary', before: EditSelection, after: EditSelection): void;
     marksAt(offset: number): Marks;
@@ -46,11 +49,22 @@ export class TextEditController {
         return true;
     }
 
-    replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary', before: EditSelection): void {
+    replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary', before: EditSelection): EditSelection {
         const fragment = this.services.fragment(change.from, change.text, this.storedMarks);
         this.services.typing(kind, before, change.selection);
         this.services.apply({ origin: 'tool', label: kind === 'composition' ? 'Compose text' : 'Edit text',
             ops: [{ t: 'splice', id: this.id, key: this.key, from: change.from, to: change.to, insert: fragment }] });
-        this.services.setSelection(change.selection);
+        let selection = change.selection;
+        if (kind === 'typing' && change.text && selection.anchor === selection.focus) {
+            const rule = inputRule(this.id, this.key, this.services.readText(), selection.focus);
+            if (rule) {
+                const after = { anchor: rule.caret, focus: rule.caret };
+                this.services.apply(rule.transaction);
+                this.services.rememberTransformation(rule, selection, after);
+                selection = after;
+            }
+        }
+        this.services.setSelection(selection);
+        return selection;
     }
 }

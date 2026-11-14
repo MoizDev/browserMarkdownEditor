@@ -1306,8 +1306,13 @@ export default function App() {
     try {
       const treeAtStart = assetProofTreeRef.current;
       const boards: Array<{ path: string; handle?: FileSystemFileHandle }> = [];
+      const diskBoardPaths = new Set<string>();
       for await (const [name, handle] of handleIO.entries(dir)) {
-        if (handle.kind === 'file' && isCanvasFile(name)) boards.push({ path: joinVaultPath(folder, name), handle: handle as FileSystemFileHandle });
+        if (handle.kind === 'file' && isCanvasFile(name)) {
+          const boardPath = joinVaultPath(folder, name);
+          diskBoardPaths.add(boardPath);
+          boards.push({ path: boardPath, handle: handle as FileSystemFileHandle });
+        }
       }
       for (const tab of tabsRef.current) {
         if (isCanvasFile(tab.file.name) && parentVaultPath(tab.file.path) === folder && !boards.some(board => board.path === tab.file.path)) boards.push({ path: tab.file.path });
@@ -1427,6 +1432,11 @@ export default function App() {
       });
       if (decision.blocked.note.size || decision.blocked.board.size) return abandon();
       for (const name of decision.retire) {
+        const currentBoards = new Set<string>();
+        for await (const [entry, handle] of handleIO.entries(dir)) {
+          if (handle.kind === 'file' && isCanvasFile(entry)) currentBoards.add(joinVaultPath(folder, entry));
+        }
+        if (currentBoards.size !== diskBoardPaths.size || [...currentBoards].some(boardPath => !diskBoardPaths.has(boardPath))) return abandon();
         const hashed = hashedVersions.get(name);
         for (const version of hashed ? [...closedVersions, hashed] : closedVersions) {
           const current = await handleIO.file(version.handle).catch(() => null);

@@ -21,6 +21,24 @@ export interface NativeCommandSourceOptions {
     onError(error: unknown): void;
 }
 
+const keyCommands: Readonly<Record<string, BoardCommand>> = {
+    delete: 'delete', 'select.all': 'selectAll', group: 'group', ungroup: 'ungroup', lock: 'toggleLocked', duplicate: 'duplicate',
+    'arrange.back': 'sendBack', 'arrange.backward': 'sendBackward', 'arrange.forward': 'bringForward', 'arrange.front': 'bringFront',
+    'align.left': 'alignLeft', 'align.center': 'alignHorizontal', 'align.right': 'alignRight', 'align.top': 'alignTop',
+    'align.middle': 'alignVertical', 'align.bottom': 'alignBottom', 'distribute.horizontal': 'distributeHorizontal',
+    'distribute.vertical': 'distributeVertical', flatten: 'flatten',
+};
+
+/** The input router and menus consult the same live command authority. */
+export function createNativeKeyCommands(source: BoardCommandSource, other: (id: string, event: KeyboardEvent) => boolean) {
+    return { run(id: string, event: KeyboardEvent): boolean {
+        const command = keyCommands[id];
+        if (!command) return other(id, event);
+        if (source.state(command).enabled) void source.run(command);
+        return true;
+    } };
+}
+
 const commandMutates: Record<BoardCommand, boolean> = {
     undo: true, redo: true, delete: true, duplicate: true, cut: true, copy: false, paste: true, selectAll: false,
     group: true, ungroup: true, flatten: true, editLink: true, frameSelection: true, toggleLocked: true,

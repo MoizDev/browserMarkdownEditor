@@ -19,6 +19,7 @@ export interface EditTransactions {
     fragment(from: number, value: string, storedMarks: Marks | null): RichText;
     format(mark: ToggleMark, from: number, to: number): Transaction | null;
     link(url: string, from: number, to: number): Transaction | null;
+    enter(selection: EditSelection): { readonly transaction: Transaction; readonly selection: EditSelection };
 }
 
 export class TextEditController {
@@ -49,6 +50,20 @@ export class TextEditController {
         this.services.apply(tx);
         this.services.setSelection(selection);
         return true;
+    }
+
+    enter(selection: EditSelection): EditSelection {
+        const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
+        this.services.typing('typing', selection, selection, { from, to, text: '\n', selection });
+        if (from === to) {
+            const rule = inputRule(this.id, this.key, this.services.readText(), from, 'enter');
+            if (rule) this.services.apply(rule.transaction);
+        }
+        const result = this.services.enter(selection);
+        this.services.apply(result.transaction);
+        this.services.setSelection(result.selection);
+        this.services.completeTyping('typing', result.selection);
+        return result.selection;
     }
 
     replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary', before: EditSelection): EditSelection {

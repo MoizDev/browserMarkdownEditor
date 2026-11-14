@@ -1,7 +1,7 @@
 import { createContainedFrame } from '../../platform/containedFrame';
 import { svgImageFrame, svgXmlFrame } from 'virtual:whiteboard-svg-frames';
 import type { SvgContainedFrame, SvgFrameFactory } from './svgProfile';
-import { matchingIdentity, validBoardIdentity } from '../workers/protocol';
+import { closeWorkerResult, matchingIdentity, validBoardIdentity } from '../workers/protocol';
 
 const CHUNK = 192 * 1024;
 const LIMIT = 5 * 1024 * 1024;
@@ -27,9 +27,11 @@ export const svgFrameFactory: SvgFrameFactory = {
                 if (now - windowStart >= 1000) { windowStart = now; count = 0; }
                 if (++count > 120 || !event.data || typeof event.data !== 'object') { fail(new Error('Invalid SVG frame response')); return; }
                 const reply = event.data as { v?: unknown; token?: unknown; identity?: unknown; type?: unknown; seq?: unknown; result?: unknown; message?: unknown };
-                if (reply.v !== 1 || reply.token !== token || !validBoardIdentity(reply.identity) || !matchingIdentity(reply.identity, identity) || typeof reply.type !== 'string' || !waiting) { fail(new Error('Invalid SVG frame response')); return; }
+                if (reply.v !== 1 || reply.token !== token || !validBoardIdentity(reply.identity) || !matchingIdentity(reply.identity, identity) || typeof reply.type !== 'string' || !waiting) {
+                    closeWorkerResult(event.data); fail(new Error('Invalid SVG frame response')); return;
+                }
                 if (reply.type === 'error') { fail(new Error('SVG could not be read')); return; }
-                if (reply.type !== expected) { fail(new Error('Unexpected SVG frame response')); return; }
+                if (reply.type !== expected) { closeWorkerResult(event.data); fail(new Error('Unexpected SVG frame response')); return; }
                 const resolve = waiting;
                 waiting = undefined; rejectWait = undefined;
                 resolve({ type: reply.type, seq: reply.seq, result: reply.result, message: reply.message });
@@ -59,7 +61,7 @@ export const svgFrameFactory: SvgFrameFactory = {
         } catch (error) { dispose(); throw error; }
         return {
             async request(operation, blob, requestSignal, size) {
-                if (used || (profile === 'svg-xml' ? operation !== 'header' : operation !== 'probe')) throw new Error('Invalid SVG frame operation');
+                if (used || (profile === 'svg-xml' ? operation !== 'header' : operation !== 'probe' && operation !== 'raster')) throw new Error('Invalid SVG frame operation');
                 if (blob.size > LIMIT) throw new RangeError('SVG files must be at most 5 MiB');
                 used = true;
                 const cancel = () => fail(requestSignal.reason ?? new DOMException('SVG job cancelled', 'AbortError'));

@@ -26,10 +26,7 @@ export function resolveExportScope(source: ExportScopeSource, route: ExportRoute
 }
 
 function safeName(value: string): string {
-  return value.split('').map(char => {
-    const code = char.charCodeAt(0)
-    return char === '/' || char === '\\' || code < 32 || code === 127 ? ' ' : char
-  }).join('').trim() || 'Untitled'
+  return Array.from(value, ch => ch === '/' || ch === '\\' || ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127 ? ' ' : ch).join('').trim() || 'Untitled'
 }
 function two(value: number): string { return String(value).padStart(2, '0') }
 /** The caller supplies time so one command uses one name despite asynchronous rendering. */

@@ -13,8 +13,10 @@ export default function PdfTiledPageField({ page, pageCount, onNavigate }: Props
     const [draft, setDraft] = useState(String(page + 1));
     const editing = useRef(false);
     const current = useRef(page);
-    current.current = page;
-    useEffect(() => { if (!editing.current) setDraft(String(page + 1)); }, [page]);
+    useEffect(() => {
+        current.current = page;
+        if (!editing.current) setDraft(String(page + 1));
+    }, [page]);
     const restore = () => setDraft(String(current.current + 1));
     return <div className="pdf-viewer-pill pdf-viewer-pages">
         <input className="pdf-viewer-page-input" aria-label="Current page" type="text" inputMode="numeric" value={draft}

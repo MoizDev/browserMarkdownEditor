@@ -5,7 +5,6 @@ import { readPdfTextViewState } from '../utils/readerViewState';
 import type { PdfReadingBinding } from '../types/reading';
 import type { ReaderIntegration } from '../types/reading';
 import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
-import type { EditorState } from '@codemirror/state';
 import BacklinksPanel from './BacklinksPanel';
 import DocumentPane from './DocumentPane';
 import TabBar from './TabBar';
@@ -156,10 +155,6 @@ interface EditorPaneProps {
     /** Write a notebook out as a PDF beside it (a row of its pane's ⋯ menu). */
     onExportNotebook: (file: ActiveFile) => void;
     onOpenNote: OpenNoteByNameHandler;
-    /** Every open document's EditorState, OWNED BY App so it outlives this
-     *  component — the graph view unmounts it. This component only hands it to
-     *  the panes and prunes it to the open documents. */
-    stateCache: Map<string, EditorState>;
     /** The [[ autocomplete's source. Baked into each cached state, so it must
      *  be stable for the app's life (App's is). */
     getWikiLinkTargets: () => WikiLinkTarget[];
@@ -236,21 +231,7 @@ const pct = (n: number) => n.toFixed(4);
 const PANE_WIDTH_STYLE: React.CSSProperties[] = Array.from(
     { length: MAX_PANES }, (_, i) => ({ flexGrow: `var(--pane-w-${i}, 1)` }));
 
-/**
- * What a document's pane, and its cached EditorState, are held under.
- *
- * Its ID, because a path is not enough: renameFile/moveFile deliberately
- * overwrite an existing name, so for one commit two different documents answer
- * to the same path — and keyed by path React matched the survivor to the pane
- * the OVERWRITTEN document was drawn in and kept that pane's view, while the
- * state cache handed over its text and its undo history. The renamed file's
- * first keystroke then saved the dead document's bytes over it.
- *
- * And its PATH, because a rename must still rebuild the view: the update
- * listener that reports edits has the path baked into it (see DocumentPane), so
- * a pane carried across a rename would go on reporting the old one and every
- * edit after it would land nowhere. Injective either way — an id holds no '|'.
- */
+/** A document id distinguishes a renamed survivor from an overwritten tab. */
 const paneKey = (tab: OpenTab) => tab.id;
 
 /** The least a pane may be left holding, as a percentage of the editor. */
@@ -306,13 +287,12 @@ interface PaneResize {
  * A PANE is a column owning its own set of tabs and showing one of them (see
  * utils/tabPanes.ts); most workspaces are one pane with a few tabs, which is
  * the ordinary tab strip. Each column is a DocumentPane owning its own
- * CodeMirror view; this component owns what is shared between them — handing
- * App's per-document EditorState cache to the panes and pruning it, the tab
- * strip, the status bar (which is about the FOCUSED pane's document), the
- * image-delete confirmation, and the PDF panes, which are deliberately NOT
+ * CodeMirror view; this component owns what is shared between them — the tab
+ * strip, the status bar (which is about the FOCUSED pane's document), and the
+ * PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, contentOf, documentBuffers, nativeCanvasHost, markdownSessions, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, contentOf, documentBuffers, nativeCanvasHost, markdownSessions, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -921,11 +901,8 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         // readable self, so a retry that succeeds REMOUNTS it
                         // and every mount-time step (the view built from the
                         // real text, the scroll-anchor hold) runs as on a fresh
-                        // open. stateKey stays the same: the unreadable pane
-                        // never builds a view, so there is nothing cached under
-                        // it to adopt.
+                        // open. The unreadable pane never builds a view.
                         key={`${paneKey(tab)}${tab.readError ? '|unread' : ''}`}
-                        stateKey={paneKey(tab)}
                         tab={tab}
                         paneId={panes[i].id}
                         isFocused={tab.file.path === focusedPath}
@@ -940,7 +917,6 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         theme={theme}
                         tabSize={tabSize}
                         rainbowBrackets={rainbowBrackets}
-                        stateCache={stateCache}
                         contentOf={contentOf}
                         documentBuffers={documentBuffers}
                         markdownSessions={markdownSessions}

@@ -310,6 +310,7 @@ third-party code included (normally "none") · date.
 | `text/edit/geometry.ts` | w-i | E-TXT-5 | text §5.3 | Design, platform Rect and affine rectangle bounds | none | 2026-11-13 |
 | `text/edit/rules.ts` | w-i | F-TEXT-011/012/015 | text §5.4 | Design and TX-2 rich splice types; typed delimiters, finite list starts and URL/email autolink on space or Enter | none | 2026-11-13 |
 | `text/edit/tool.ts` | w-i | F-TEXT-001/002 | text §5.6; spec/text | Design and w-f public Tool interface | none | 2026-11-13 |
+| `text/outlineTypes.ts` | w-i | T-7, C2.4 | text §§3/8 | Design and platform PageDisplayItem types; export-only interface | none | 2026-11-13 |
 | `text/spell/words.ts` | w-i | COV-34 | text §5.8 | Design, Intl.Segmenter and punctuation-aware URL exclusion | none | 2026-11-13 |
 | `text/spell/menu.ts` | w-i | COV-29/39, E-TXT-26/28 | text §5.8 | Design; revision capture, stale menu fallback and deadline scheduling | none | 2026-11-13 |
 

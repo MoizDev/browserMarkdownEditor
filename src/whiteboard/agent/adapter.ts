@@ -1,14 +1,14 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
-import type { NodeSetOp, Op } from '../change/ops';
+import type { Op } from '../change/ops';
 import type { SampleBuilder } from '../ink/samples';
 import type { NodeId, SheetId } from '../model/ids';
 import type { Node, Point } from '../model/nodes';
 import type { SampleLease } from '../model/samples';
 import type { BoardSession } from '../session/BoardSession';
+import { planAgentPlacement, type LocalBox } from './placement';
 import { listAgentShapes, type AgentGeometry, type ShapePage, type ShapeQuery, type ShapeSummary } from './shapes';
 import { stageAgentOp } from './stage';
 import { applyAgentOperations, type AgentApplyResult } from './transaction';
-import type { UpdateOp } from './update';
 
 export interface AgentAdapterHost {
     readonly session: BoardSession;
@@ -21,7 +21,7 @@ export interface AgentAdapterHost {
     enqueue<T>(signal: AbortSignal, task: () => T): Promise<T>;
     admitSamples(builder: SampleBuilder): SampleLease;
     target(node: Node, page: number): Point;
-    placement(node: Node, op: UpdateOp): { readonly ops: readonly NodeSetOp[]; readonly notes?: readonly string[] };
+    localBox(node: Node): LocalBox;
     delete(id: NodeId): { readonly ops: readonly Op[]; readonly kept: readonly NodeId[] };
 }
 export interface AgentGuard { readonly signal?: AbortSignal; isCurrent(): boolean }
@@ -51,7 +51,8 @@ export function createBoardAgentAdapter(host: AgentAdapterHost): BoardAgentAdapt
                 stage: (op, context) => stageAgentOp({ doc: host.session.doc, sheet: host.sheet(), currentPage: host.page(),
                     admitSamples: builder => host.admitSamples(builder),
                     target: (node, page) => host.target(node, page),
-                    placement: (node, update) => host.placement(node, update),
+                    placement: (node, update) => planAgentPlacement(node, update, { doc: host.session.doc,
+                        sheet: host.sheet(), currentPage: host.page(), builder: context.builder, localBox: candidate => host.localBox(candidate) }),
                     delete: id => host.delete(id) }, op, context),
             }, ops, signal);
         },

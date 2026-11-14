@@ -28,6 +28,13 @@ export class SelectionState {
     setFocus(focus: ParentId): void { this.publish(this.snapshot.sheet, focus, [], null); }
     replace(ids: readonly NodeId[], active: NodeId | null = ids[ids.length - 1] ?? null): void { this.publish(this.snapshot.sheet, this.snapshot.focus, ids, active); }
     clear(): void { this.replace([]); }
+    reconcile(doc: BoardDoc): void {
+        const { sheet, selected, active } = this.snapshot;
+        if (!doc.sheets.has(sheet)) { this.clear(); return; }
+        const focus = this.snapshot.focus === sheet || sheetOf(doc, this.snapshot.focus) === sheet ? this.snapshot.focus : sheet;
+        const eligible = selected.filter(id => selectableAtFocus(doc, id, focus, sheet) === id);
+        this.publish(sheet, focus, eligible, active !== null && eligible.includes(active) ? active : eligible[eligible.length - 1] ?? null);
+    }
     toggle(id: NodeId): void {
         const ids = this.snapshot.selected;
         if (ids.includes(id)) {

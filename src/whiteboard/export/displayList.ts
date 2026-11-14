@@ -83,8 +83,10 @@ export async function paintFrameDisplayList(
 ): Promise<PageDisplayList> {
   if (!Number.isSafeInteger(page) || page < 0 || !Number.isFinite(scale) || scale <= 0) throw new RangeError('Invalid export page or scale')
   const items: PageDisplayItem[] = []
+  let count = 0
   for (const band of [frame.underlay, frame.content]) {
     for (const item of band) {
+      if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
       signal?.throwIfAborted()
       items.push(await displayItem(item, scale, image, signal))
     }

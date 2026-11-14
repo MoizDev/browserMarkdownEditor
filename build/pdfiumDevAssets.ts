@@ -40,11 +40,6 @@ export function developmentPdfiumAssets(): Plugin {
         if (!asset) return next()
         if (req.method !== 'GET' && req.method !== 'HEAD') { res.statusCode = 405; res.end(); return }
         res.setHeader('Content-Type', asset.type)
-        // The parser stays opaque; its pinned WASM fetch is CORS + SRI with credentials omitted.
-        if (asset.type === 'application/wasm') {
-          res.setHeader('Access-Control-Allow-Origin', '*')
-          res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
-        }
         res.setHeader('Content-Length', asset.bytes.length)
         res.setHeader('Cache-Control', 'no-store')
         res.setHeader('X-Content-Type-Options', 'nosniff')

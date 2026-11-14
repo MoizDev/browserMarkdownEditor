@@ -3648,7 +3648,7 @@ body.is-resizing-panes * {
   position: absolute;
   z-index: 4;
   top: 8px;
-  right: 12px;
+  left: 16px;
   padding: 5px 10px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;

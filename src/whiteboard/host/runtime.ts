@@ -30,6 +30,7 @@ export type BoardRuntimeOptions = Omit<BoardSessionFactoryOptions, 'selection' |
 export interface BoardRuntime {
     readonly session: ComposedBoardSession;
     readonly selection: SelectionState;
+    readonly media: BoardSessionFactoryOptions['media'];
     readonly ready: Promise<SessionScene>;
     readonly scene: SessionScene | null;
     bindView(sink: BoardRuntimeViewSink): () => void;
@@ -128,7 +129,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     })();
     void ready.catch(() => {});
     const runtime: BoardRuntime = {
-        session, selection, ready,
+        session, selection, media: options.media, ready,
         get scene() { return scene; },
         bindView(sink) {
             if (disposed) throw new Error('Board runtime disposed');

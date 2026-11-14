@@ -72,7 +72,12 @@ function complete<T>(steps: Generator<void, T>): T {
     for (;;) { const step = steps.next(); if (step.done) return step.value; }
 }
 async function completeIncremental<T>(steps: Generator<void, T>, cooperate: () => Promise<void>): Promise<T> {
-    for (;;) { const step = steps.next(); if (step.done) return step.value; await cooperate(); }
+    let started = performance.now();
+    for (;;) {
+        const step = steps.next();
+        if (step.done) return step.value;
+        if (performance.now() - started >= 3) { await cooperate(); started = performance.now(); }
+    }
 }
 class Reader {
     stringUnits = 0;

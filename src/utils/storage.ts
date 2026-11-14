@@ -44,6 +44,10 @@ const mirror = createLocalStorageMirror({
 
 export function isRegisteredStorageKey(key: string): boolean { return ownedKeys.has(key); }
 
+// Session data belongs to one tab, especially terminal IDs; never mirror it across windows.
+export function writeSessionValue(key: string, value: string): void { sessionStorage.setItem(key, value); }
+export function removeSessionValue(key: string): void { sessionStorage.removeItem(key); }
+
 /** Raw-string writer for keys whose readers do not JSON-parse their value. */
 export function writeStoredValue(key: string, value: string): boolean {
     if (!ownedKeys.has(key)) { console.error(`Unregistered browser setting: ${key}`); return false; }

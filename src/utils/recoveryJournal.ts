@@ -1,6 +1,8 @@
 import { INDEXED_DB_NAMES } from './storage';
 import { requestPersistentStorage } from './storagePersistence';
 
+export type RecoveryCopy = string | Uint8Array | Blob | { kind: 'recipe'; payload: unknown };
+
 /** Payloads are owned and versioned by the document adapter, not interpreted by the store. */
 export interface RecoveryEntry {
     vaultId: string;
@@ -11,8 +13,8 @@ export interface RecoveryEntry {
     revision: number;
     updatedAt: number;
     payload: unknown;
-    /** Self-contained file bytes/text: mismatched or missing baselines can only be saved aside. */
-    copy: string | Uint8Array | Blob;
+    /** Self-contained file or recipe: missing baselines can only be saved aside. */
+    copy: RecoveryCopy;
     /** Vault-relative media references travel with a folder move. */
     mediaRefs: string[];
     /** Set once a newer window's journal for this path has been observed. */

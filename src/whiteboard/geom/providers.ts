@@ -6,8 +6,10 @@ import { cubicBounds } from './bounds';
 import type { Box } from './bounds';
 import { figureOutline, figureSemanticBounds, realiseFigureContour } from './figures';
 import type { PathOp, Vec2 } from './path';
+import { pointPath, regionPath } from './pick';
+import type { PathPickOptions } from './pick';
 import { styleGeometryMetrics } from './styleMetrics';
-import type { KindGeometry, NarrowResult, PointQuery, RegionQuery } from './types';
+import type { KindGeometry, NarrowResult } from './types';
 import { DashWalker, DotWalker, dashPath, dotPath, drawPath } from './variants';
 
 export interface FigurePaintPath {
@@ -18,17 +20,6 @@ export interface FigurePaintPath {
 }
 export interface PositionedFigureText { readonly paint: TextPaint; readonly x: number; readonly y: number }
 export interface FigureAttachmentSurface { readonly outline: readonly PathOp[]; readonly logicalBox: Rect }
-export interface PathPickOptions {
-    readonly interiorPaths?: readonly (readonly PathOp[])[];
-    readonly strokeRadiusLocal: number;
-    readonly marginCss: number;
-    readonly errorCss: number;
-    readonly maxSegments: number;
-}
-export interface PathPicker {
-    pointPath(paths: readonly (readonly PathOp[])[], query: PointQuery, options: PathPickOptions): NarrowResult;
-    regionPath(paths: readonly (readonly PathOp[])[], query: RegionQuery, options: PathPickOptions): NarrowResult;
-}
 export interface FigureGeometryOptions {
     readonly key: string;
     readonly kernelVersion: number;
@@ -38,7 +29,6 @@ export interface FigureGeometryOptions {
     readonly hitMarginCss: number;
     readonly hitErrorCss: number;
     readonly label: PositionedFigureText | null;
-    readonly picker: PathPicker;
 }
 export type FigureGeometry = KindGeometry<FigurePaintPath, PositionedFigureText, FigureAttachmentSurface>;
 export function figureSceneBounds(geometry: FigureGeometry): Readonly<{ ink: Box; hit: Box }> {
@@ -80,7 +70,7 @@ function expand(rect: Rect, radius: number): Rect {
 
 /** Figure paint, attachment and hit geometry are derived from the same realized contours. */
 export function prepareFigureGeometry(node: Readonly<FigureNode>, options: FigureGeometryOptions): FigureGeometry {
-    const { pathError, lengthError, maxPieces, hitMarginCss, hitErrorCss, label, picker } = options;
+    const { pathError, lengthError, maxPieces, hitMarginCss, hitErrorCss, label } = options;
     const height = node.h + node.growY;
     if (![node.w, height, node.width, pathError, lengthError, hitMarginCss, hitErrorCss].every(Number.isFinite)
         || node.w < 0 || height < 0 || node.width < 0 || pathError <= 0 || lengthError <= 0 || hitMarginCss < 0
@@ -134,13 +124,13 @@ export function prepareFigureGeometry(node: Readonly<FigureNode>, options: Figur
         key: options.key, boxLocal, inkBoundsLocal: ink ?? { x: 0, y: 0, width: 0, height: 0 }, selectBoundsLocal: select,
         paths, text: label ? [label] : [], attachments: { outline: interior, logicalBox: boxLocal },
         point(query) {
-            if (labelPath && picker.pointPath([], query, labelOptions).hit) return { hit: true, distanceCss: 0, part: 'label' };
-            const result = picker.pointPath(strokes, query, optionsForBody);
+            if (labelPath && pointPath([], query, labelOptions).hit) return { hit: true, distanceCss: 0, part: 'label' };
+            const result = pointPath(strokes, query, optionsForBody);
             return result.hit ? { ...result, part: 'body' } : none;
         },
         region(query) {
-            if (labelPath && picker.regionPath([], query, labelOptions).hit) return { hit: true, distanceCss: 0, part: 'label' };
-            const result = picker.regionPath(strokes, query, optionsForBody);
+            if (labelPath && regionPath([], query, labelOptions).hit) return { hit: true, distanceCss: 0, part: 'label' };
+            const result = regionPath(strokes, query, optionsForBody);
             return result.hit ? { ...result, part: 'body' } : none;
         },
     };

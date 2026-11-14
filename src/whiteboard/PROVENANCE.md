@@ -226,6 +226,7 @@ third-party code included (normally "none") · date.
 | `host/prepareSessionTypes.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Native admission ownership and App session preparation ports; no tldraw source | none | 2026-11-13 |
 | `host/prepareSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Single-use C5 admission transfer, read-only authority and session lease cleanup; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkAssemblyTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned PDF source, all-sheet ink and attachment writer boundary; no tldraw source | none | 2026-11-13 |
+| `host/pdfInkAssembly.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned pristine writer source, all-sheet ordered ink, exact legacy fence and verified revision/write mark; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 
@@ -248,6 +249,7 @@ third-party code included (normally "none") · date.
 | `text/edit/managerTypes.ts` | lane w-n | T-4, T-5 | text §§5–6 | Pane-owned editing manager, text tool creation, select/enter/type and lifecycle contracts | none | 2026-11-13 |
 | `text/edit/manager.ts` | lane w-n | T-4, T-5 | text §§5–6; spec/text F-TEXT-004 | Pane-owned text editing entry and session-history creation; no tldraw source | none | 2026-11-13 |
 | `text/edit/inputBridge.ts` | lane w-n | T-4, T-5 | text §§5–6; spec/text F-TEXT-004 | Adapts the pane input router to selection/caret and editing gestures without a second capture | none | 2026-11-13 |
+| `text/edit/createText.ts` | lane w-n | T-3, T-5 | text §6; document-model §§3, 7 | Session defaults, host-provided page placement, fractional order, dynamic-size rule and single create transaction | none | 2026-11-13 |
 | `input/attach.ts`, `input/keyboard.ts` (text entry seam) | lane w-n | T-4, T-5 | text §§5–6; spec/text F-TEXT-004 | Pane's existing input router and keyboard owner; selection-to-edit and double-click bridge | none | 2026-11-13 |
 | `text/edit/binding.ts` | lane w-n | T-4, T-5 | text §§5–6 | W-i's edit session and rich adapter, shared history/layout, IME overlay and pane transforms; frame name as plain text | none | 2026-11-13 |
 | `text/edit/growth.ts` | lane w-n | T-2, T-5 | text §6 | Original local prediction of rich edits, shared layout measurement, and same-transaction text/figure/sticky size updates | none | 2026-11-13 |

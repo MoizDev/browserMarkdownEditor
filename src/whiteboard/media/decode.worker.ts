@@ -10,6 +10,7 @@ import { boardHandlers } from '../workers/protocol';
 interface DecoderTrack { readonly frameCount: number }
 interface DecoderInstance {
     readonly tracks: { readonly ready: Promise<void>; readonly selectedTrack: DecoderTrack | null };
+    readonly completed: Promise<void>;
     decode(options: { frameIndex: number }): Promise<{ image: ImageBitmapSource & { readonly duration?: number | null; close(): void } }>;
     close(): void;
 }
@@ -48,6 +49,7 @@ serve({
                 const decoder = new Decoder({ data: blob.stream(), type: mime });
                 try {
                     await decoder.tracks.ready;
+                    await decoder.completed;
                     if (!decoder.tracks.selectedTrack || decoder.tracks.selectedTrack.frameCount < 1) throw new Error('Invalid animated picture');
                     const frame = await decoder.decode({ frameIndex: 0 });
                     frame.image.close();
@@ -76,6 +78,7 @@ serve({
                 const decoder = new Decoder({ data: value.blob.stream(), type: value.mime });
                 try {
                     await decoder.tracks.ready;
+                    await decoder.completed;
                     const track = decoder.tracks.selectedTrack;
                     if (!track || frame >= track.frameCount) throw new Error('Invalid animation frame');
                     frameCount = track.frameCount;

@@ -258,10 +258,10 @@ third-party code included (normally "none") · date.
 | `media/headers.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §1; security §6 | Image container header structures, independently implemented; no tldraw source | none | 2026-11-13 |
 | `media/isoHeaders.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | ISO-BMFF bounded boxes and AVIF primary-property association, independently implemented | none | 2026-11-13 |
 | `media/webmHeader.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | EBML bounded element encoding and WebM track fields, independently implemented | none | 2026-11-13 |
-| `media/decode.worker.ts` | lane w-q | F-MEDIA-001/003/004/011; SEC-4 | media §§1/4–5; threading §2; security §6 | Shared identity-enveloped board worker; bitmap mips/tiles and ImageDecoder frames | none | 2026-11-13 |
+| `media/decode.worker.ts` | lane w-q | F-MEDIA-001/003/004/011; SEC-4 | media §§1/4–5; threading §2; security §6 | Shared identity-enveloped worker; bitmap mips/tiles and complete-track ImageDecoder frames | none | 2026-11-13 |
 | `media/inspect.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §1; security §§3/6 | SEC-W1 budgets; platform worker and memory allocator contracts; isolated SVG profile injection | none | 2026-11-13 |
 | `media/ingest.ts` | lane w-q | F-MEDIA-001/002/003/004/008; SEC-4 | media §§1–3; security §3 | SEC-W1 budgets and shared session job authority; board model/apply contracts | none | 2026-11-13 |
-| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session-owned bytes, history/clipboard holders and collision-safe file location ledger | none | 2026-11-13 |
+| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session bytes, history/clipboard holders surviving source close and collision-safe location ledger | none | 2026-11-13 |
 | `media/svgProfile.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §§5–6 | Separate opaque XML/image profiles and origin-clean raster fallback | none | 2026-11-13 |
 | `media/svgXmlRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Worker XML preflight; isolated XML, nested inline data and pixel accounting | none | 2026-11-13 |
 | `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context raster tiles, isolated image profile only | none | 2026-11-13 |

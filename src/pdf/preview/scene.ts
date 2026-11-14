@@ -39,6 +39,7 @@ export class PreviewScene {
         if (!snapshot) {
             this.snapshotValue = null;
             this.requests.clear();
+            this.layer.queueCpuPrepare(null);
             this.layer.setExpected(new Map());
             this.sceneRevision++;
             this.invalidate();
@@ -46,6 +47,14 @@ export class PreviewScene {
         }
         this.snapshotValue = snapshot;
         this.sceneRevision++;
+        // Viewer sync can precede ResizeObserver and the actor's first grant. Copy only from
+        // the scheduled preparation phase, after that observation has installed pane demand.
+        this.layer.queueCpuPrepare(() => this.copyVisible(snapshot));
+        this.invalidate();
+    }
+
+    private copyVisible(snapshot: PreviewSnapshot): void {
+        if (this.disposed || !this.visible || this.snapshotValue !== snapshot) return;
         const view = snapshot.camera;
         const viewport: PreviewRect = {
             x: view.x, y: view.y,
@@ -104,6 +113,7 @@ export class PreviewScene {
         if (!visible) {
             this.requests.clear();
             this.snapshotValue = null;
+            this.layer.queueCpuPrepare(null);
             this.layer.bitmaps.setVisible(false);
         } else this.layer.bitmaps.setVisible(true);
     }
@@ -113,5 +123,6 @@ export class PreviewScene {
         this.disposed = true;
         this.requests.clear();
         this.snapshotValue = null;
+        this.layer.queueCpuPrepare(null);
     }
 }

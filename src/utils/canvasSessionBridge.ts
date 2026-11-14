@@ -95,7 +95,12 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
             let detachError: unknown;
             try { detach?.(); } catch (error) { detachError = error; }
             releaseWork = Promise.resolve().then(async () => {
-                try { await dispose?.(); } finally { if (detachError !== undefined) throw detachError; }
+                // A detach error wins over a dispose error, as a throw in `finally` would make it.
+                let disposeFailed = false;
+                let disposeError: unknown;
+                try { await dispose?.(); } catch (error) { disposeFailed = true; disposeError = error; }
+                if (detachError !== undefined) throw detachError;
+                if (disposeFailed) throw disposeError;
             });
             return releaseWork;
         },

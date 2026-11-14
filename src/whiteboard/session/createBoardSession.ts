@@ -242,6 +242,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         journalDelta() { capture(); return journal.delta(cachedSource!.context); },
         async recover(payload: unknown) {
             guard();
+            if (pendingState()) throw new ApplyFailed('recovery-conflict', 'Save current board changes before recovery; otherwise save the recovery as a copy');
             const release = queue.beginGesture();
             recovering = true; notifyPending();
             let opened = false;

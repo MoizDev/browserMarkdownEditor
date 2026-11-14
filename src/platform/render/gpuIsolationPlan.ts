@@ -16,7 +16,7 @@ export interface LayerIsolationDeclaration {
         readonly stencil?: boolean; readonly samples?: Samples; readonly format?: TextureFormat };
 }
 interface Entry {
-    width: number; height: number; groups: number; external: number; shortfall: number;
+    left: number; top: number; right: number; bottom: number; groups: number; external: number; shortfall: number;
     format: TextureFormat; samples: Samples; stencil: boolean;
 }
 
@@ -60,12 +60,21 @@ export class GpuIsolationPlan {
     }
 
     finish(): DeviceReservation[] {
-        const primary = this.#entries.get(this.#key('rgba8', 1, false));
-        if (this.#multiply && !primary) this.#entry({ x: 0, y: 0, width: this.#width, height: this.#height }, 'rgba8', 1, false);
-        return [...this.#entries.values()].map(entry => ({ width: entry.width, height: entry.height, format: entry.format,
+        if (this.#multiply) {
+            // Every multiply reads a single-sampled backdrop in its own target's format.
+            // Union all potentially active classes before adding those backdrop entries.
+            const entries = [...this.#entries.values()];
+            for (const entry of entries) {
+                const backdrop = this.#entry({ x: entry.left, y: entry.top, width: entry.right - entry.left,
+                    height: entry.bottom - entry.top }, entry.format, 1, false);
+                backdrop.shortfall = Math.max(backdrop.shortfall, 1);
+            }
+        }
+        return [...this.#entries.values()].map(entry => ({ width: entry.right - entry.left, height: entry.bottom - entry.top, format: entry.format,
             samples: entry.samples, stencil: entry.stencil,
             count: Math.max(entry.shortfall, entry.groups + entry.external +
-                (entry.format === 'rgba8' && entry.samples === 1 && !entry.stencil ? this.#ownDepth + (this.#multiply ? 1 : 0) : 0)) }))
+                (entry.format === 'rgba8' && entry.samples === 1 && !entry.stencil ? this.#ownDepth : 0) +
+                (this.#multiply && entry.samples === 1 && !entry.stencil ? 1 : 0)) }))
             .filter(entry => entry.count > 0 && entry.width > 0 && entry.height > 0);
     }
 
@@ -74,16 +83,15 @@ export class GpuIsolationPlan {
             !Number.isSafeInteger(bounds.x + bounds.width) || !Number.isSafeInteger(bounds.y + bounds.height) ||
             !['rgba8', 'r8'].includes(format) || ![1, 4].includes(samples) || typeof stencil !== 'boolean') throw new ArenaError('invalid-input');
         const right = Math.min(this.#width, bounds.x + bounds.width), bottom = Math.min(this.#height, bounds.y + bounds.height);
-        const width = Math.max(0, right - Math.min(this.#width, bounds.x));
-        const height = Math.max(0, bottom - Math.min(this.#height, bounds.y));
+        const left = Math.min(this.#width, bounds.x), top = Math.min(this.#height, bounds.y);
         const key = this.#key(format, samples, stencil);
         let entry = this.#entries.get(key);
         if (!entry) {
-            entry = { width: 0, height: 0, groups: 0, external: 0, shortfall: 0, format, samples, stencil };
+            entry = { left, top, right, bottom, groups: 0, external: 0, shortfall: 0, format, samples, stencil };
             this.#entries.set(key, entry);
         }
-        entry.width = Math.max(entry.width, width);
-        entry.height = Math.max(entry.height, height);
+        entry.left = Math.min(entry.left, left); entry.top = Math.min(entry.top, top);
+        entry.right = Math.max(entry.right, right); entry.bottom = Math.max(entry.bottom, bottom);
         return entry;
     }
     #key(format: TextureFormat, samples: Samples, stencil: boolean): string { return `${format}:${samples}:${stencil}`; }

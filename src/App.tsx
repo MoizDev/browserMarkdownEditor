@@ -9,7 +9,7 @@ import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
 import { getNoteResolver } from './utils/noteResolver';
-import { setRecordScope } from './utils/storage';
+import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice } from './utils/storage';
 import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
@@ -905,6 +905,15 @@ export default function App() {
     setSaveStatus(message);
     saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 5000);
   }, []);
+  useEffect(() => {
+    const showRestoreNotice = () => {
+      const notice = takeRestoreNotice();
+      if (notice) announce(notice);
+    };
+    const unsubscribe = subscribeRestoreNotice(showRestoreNotice);
+    showRestoreNotice();
+    return unsubscribe;
+  }, [announce]);
   // A binary host acquires in its passive effect. Publish the new tab first;
   // lazy dev imports hid this parent/child effect ordering race in production.
   useLayoutEffect(() => { tabsRef.current = tabs; }, [tabs]);

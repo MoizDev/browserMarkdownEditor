@@ -121,9 +121,22 @@ export class PersistSession {
                     lastSweepAt: Date.now(), recordCount: count.result }, this.vaultId);
                 await transactionDone(tx);
             } catch (error) {
-                this.problem(error instanceof DOMException && error.name === 'QuotaExceededError' ? 'quota' : 'corrupt', String(error));
+                const quota = error instanceof DOMException && error.name === 'QuotaExceededError';
+                this.problem(quota ? 'quota' : 'corrupt', String(error));
                 for (const [path, change] of entries) if (!this.dirty.has(path)) this.dirty.set(path, change);
-                this.reset ||= reset;
+                this.reset ||= reset || quota;
+                if (quota) {
+                    // Deletion frees cache space and is independent of vault saves.
+                    try {
+                        const db = await openIndexDatabase();
+                        const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts'], 'readwrite');
+                        tx.objectStore('vaults').delete(this.vaultId);
+                        tx.objectStore('notes').delete(range(this.vaultId));
+                        tx.objectStore('texts').delete(range(this.vaultId));
+                        tx.objectStore('layouts').delete(this.vaultId);
+                        await transactionDone(tx);
+                    } catch { /* The in-memory index remains usable. */ }
+                }
             }
         };
         this.flushing = this.flushing.then(run, run);

@@ -465,6 +465,10 @@ export interface FileSystemContextValue {
   restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
+  /** Preserve supplied bytes in this folder's `.Garbage`, never touching the
+   *  source. Resolves after close to its collision-free physical basename;
+   *  rejects on failure so the caller must not rebuild. */
+  keepCopyInGarbage: (dir: FileSystemDirectoryHandle, name: string, bytes: Uint8Array) => Promise<string>;
   /** Crawl every `.Garbage` in the vault and return the bin's flat root list,
    *  newest-deleted first. Uncached by design — see the crawl's own comment. */
   listTrash: () => Promise<TrashItem[]>;

@@ -38,7 +38,7 @@ resolves the vault itself.
   cannot be found at all ends at `~`, which is exactly the old behaviour.
 - **The browser side is `utils/terminalStart.ts`**, a one-function store App fills from the focused
   tab — not `viewRegistry`, not `agentContext`: the terminal stays independent of the agent. The vault
-  id comes from `vaultAgentStore.ensureVaultId`, the SAME minting the agent host uses (two mintings
+  id comes from `useFileSystem().ensureVaultId`, the SAME minting the agent host uses (two mintings
   would split one vault in two), and it is minted lazily — on the first terminal or the first time
   Settings is opened, never merely because a vault was opened.
 - **Only NEW shells follow the focus.** A running shell owns its cwd; `cd`-ing it under the user was
@@ -159,7 +159,7 @@ every shell is a child of **`vaultagent-pty`**: ~380 lines of libc C, its own La
   while focus is inside (non-mac). `macOptionIsMeta: false`. Links open on ⌘/Ctrl-click (http/https).
 - **Context menu:** the app's own (`openContextMenu`), raised only when the program has not enabled mouse
   tracking or Shift is held.
-- **Fonts:** Settings (`utils/terminalSettings.ts`, import-free store, clamped, Reset to Defaults) →
+- **Fonts:** Settings (`utils/terminalSettings.ts`, lightweight store, clamped, Reset to Defaults) →
   `terminal.fontHint` candidates probed with `new FontFace(…, 'local("<name>")').load()` (PostScript names
   work) → none; never blocks open > ~1.5 s, swaps later (re-set `fontFamily`, `clearTextureAtlas`, refit).
   The bundled **Symbols Nerd Font Mono** (`public/fonts/`, upstream notices beside it; mixed MIT / CC BY 4.0

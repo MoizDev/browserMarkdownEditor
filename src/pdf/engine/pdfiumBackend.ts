@@ -134,8 +134,10 @@ class PdfiumDocument implements BackendDoc {
     private inventory(): PdfAttachmentInfo[] {
         return pdfiumAttachmentInventory(this.runtime, this.document).map(item => {
             const descMarker = item.description?.startsWith('local-vault-pdf/') ? item.description.split('\n', 1)[0] : undefined;
-            const marker = descMarker && item.paramsMarker && descMarker !== item.paramsMarker ? undefined : descMarker ?? item.paramsMarker;
-            return { index: item.index, name: item.name, size: null, ...(item.description ? { desc: item.description } : {}),
+            // Filespec /Desc is the sole app role marker. Legacy /Params text
+            // is foreign metadata, never a second source of edit authority.
+            const marker = descMarker && descMarker.length <= 256 ? descMarker : undefined;
+            return { index: item.index, name: item.name, size: null, ...(item.description ? { desc: item.description.slice(0, 1024) } : {}),
                 ...(marker ? { localVaultMarker: marker } : {}) };
         });
     }

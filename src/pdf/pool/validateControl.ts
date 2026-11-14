@@ -28,7 +28,7 @@ export function validatePdfEngineInit(value: unknown, expected: EngineInitArgs):
 export function validatePdfWorkerStats(value: unknown, role: 'render' | 'writer' = 'render'): PdfWorkerStats {
     const o = record(value, ['heapBytes', 'docs', 'pagesLoaded', 'blockCacheBytes']);
     if (role !== 'render' && role !== 'writer') invalidPdfReply();
-    const docs = integer(o.docs, 0, 64), pagesLoaded = integer(o.pagesLoaded, 0, 100_000 * docs);
+    const docs = integer(o.docs, 0, 100_000), pagesLoaded = integer(o.pagesLoaded, 0, 100_000 * docs);
     const blockCacheBytes = integer(o.blockCacheBytes, 0, docs * 8 * 1024 * 1024);
     return { heapBytes: integer(o.heapBytes, 0, role === 'render' ? RENDER_ENGINE_LIMITS.maxHeapBytes : WRITER_ENGINE_LIMITS.maxHeapBytes),
         docs, pagesLoaded, blockCacheBytes };

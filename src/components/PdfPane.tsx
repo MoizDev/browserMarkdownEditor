@@ -49,6 +49,7 @@ export interface PdfPaneProps {
     /** Native ink attaches to the same App-owned session as its reader. */
     attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     reading?: PdfReadingBinding;
+    nativeCanvasHost?: import('../types/nativeCanvas').NativeCanvasHost;
     file: ActiveFile;
     /**
      * Whether this document is on screen. EditorPane keeps one pane MOUNTED per

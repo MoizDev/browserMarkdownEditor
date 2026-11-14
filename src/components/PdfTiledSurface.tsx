@@ -41,6 +41,12 @@ export default function PdfTiledSurface(props: Props) {
             if (!controller.signal.aborted) setPasswords(store);
             const factory = await ensurePdfTiledSourceFactory();
             controller.signal.throwIfAborted();
+            if (retry > 0 && identity) {
+                const { retryPdfPool } = await import('../pdf/session/startup');
+                await retryPdfPool({ vaultEpoch: reading.identity.vaultEpoch, documentId: reading.identity.documentId,
+                    bytesGeneration: identity.bytesGeneration, session: identity.serial });
+                controller.signal.throwIfAborted();
+            }
             return factory.open(reading, controller.signal);
         }).then(value => {
             if (!controller.signal.aborted) { setLoaded({ key, source: value }); setError(null); }
@@ -48,7 +54,7 @@ export default function PdfTiledSurface(props: Props) {
             if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'PDF could not be opened.');
         });
         return () => controller.abort();
-    }, [reading, key, retry]);
+    }, [reading, identity, key, retry]);
     useEffect(() => {
         if (!key) return;
         let disposed = false;

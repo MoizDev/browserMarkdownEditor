@@ -11,6 +11,8 @@ export interface PdfEnginePort extends ContainedPort {
 }
 export interface PdfWorkerBroker {
     spawn(role: 'render' | 'writer', workerId: number): Promise<PdfEnginePort>;
+    /** Explicit user Retry only; ordinary requests cannot clear frame quarantine. */
+    reset?(): void;
     dispose(): void;
 }
 export interface PdfPoolOptions {

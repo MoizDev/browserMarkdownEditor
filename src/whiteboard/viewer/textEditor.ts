@@ -388,6 +388,29 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const selection = manager.current.editor.getSelection(); return { node: active, anchor: selection.anchor, head: selection.focus };
     };
     return { manager, input, editText, writeOverlays, captureText,
+        clipboardSelection() {
+            const editor = manager.current?.editor, node = active && doc.nodes.get(active), transform = currentWorld;
+            if (!editor || !node || !transform) return null;
+            const selection = editor.getSelection(), from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
+            if (from === to) return null;
+            const boxes = editor.rangeRects(from, to);
+            if (!boxes.length) return null;
+            let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+            for (const box of boxes) {
+                left = Math.min(left, box.x); top = Math.min(top, box.y);
+                right = Math.max(right, box.x + box.width); bottom = Math.max(bottom, box.y + box.height);
+            }
+            const world = new Float64Array(4);
+            transformBox(world, 0, [left, top, right, bottom], 0, transform, 0);
+            return { revision: doc.rev, node, selection: { ...selection }, fragment: editor.copySelection(),
+                bounds: { x: world[0], y: world[1], w: world[2] - world[0], h: world[3] - world[1] } };
+        },
+        pasteText(fragment: RichText) { if (!manager.current) return false; manager.current.editor.replaceSelection(fragment); return true; },
+        cutText(node: NodeId, revision: number, selection: EditSelection) {
+            const editor = manager.current?.editor, current = editor?.getSelection();
+            if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus) return false;
+            editor.deleteSelection(); return true;
+        },
         spellingAt(offset: number) { return misspellings.find(range => offset >= range.from && offset < range.to) ?? null; },
         spellingAtClient(x: number, y: number) {
             const editor = manager.current?.editor;

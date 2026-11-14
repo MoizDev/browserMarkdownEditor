@@ -1,6 +1,7 @@
 import type { Affine } from '../../platform/types';
 import { cubicBounds, type Box } from '../geom/bounds';
 import type { Vec2 } from '../geom/path';
+import { polylineWorldSemanticBounds } from '../geom/providers';
 import { curveParameters, writeCurveSpan } from '../ink/curve';
 import type { SampleStore } from '../ink/samples';
 import type { Node, StrokeNode } from '../model/nodes';
@@ -35,21 +36,14 @@ function inkBounds(node: StrokeNode, m: Affine, samples: SampleStore): Box {
         : node.widthModel.rMin + (node.widthModel.rMax - node.widthModel.rMin) * pressure;
     return expand(box!, radius);
 }
-function lineBounds(node: Extract<Node, { kind: 'polyline' }>, m: Affine): Box {
-    let box: Box | undefined;
-    for (const p of node.points) {
-        const q = point(p.x, p.y, m);
-        box = union(box, [q.x, q.y, q.x, q.y]);
-    }
-    if (!box) throw new Error('Empty imported line');
-    return expand(box, node.width / 2);
-}
-
-// Connectors and cubic polylines use their owning geometry provider, never a straight-line fallback.
+// Connectors use their owning geometry provider, never a straight-line fallback.
 export function basicLegacyGeometry(samples: SampleStore, remaining: LegacyGeometry): LegacyGeometry {
     return { worldBounds(node: Readonly<Node>, transform: Affine): Box | undefined {
         if (node.kind === 'stroke') return inkBounds(node, transform, samples);
-        if (node.kind === 'polyline' && node.spline === 'line') return lineBounds(node, transform);
+        if (node.kind === 'polyline') {
+            const r = polylineWorldSemanticBounds(node, transform);
+            return [r.x, r.y, r.x + r.width, r.y + r.height];
+        }
         return remaining.worldBounds(node, transform);
     } };
 }

@@ -8,6 +8,7 @@ export interface KindResizeFactors {
     readonly zeroSignX: -1 | 1;
     readonly zeroSignY: -1 | 1;
     readonly handle: 'side' | 'corner';
+    readonly scope: 'single' | 'multi';
 }
 export interface KindResizeContext {
     /** Text layout and growth are computed before the transaction is applied. */
@@ -17,7 +18,7 @@ export interface KindResizeContext {
     /** Group content is planned recursively exactly once, never by persisting a group scale. */
     resizeGroup(node: Readonly<GroupNode>, factors: KindResizeFactors): readonly Op[];
     /** Frame resizing compensates children to keep their world poses stable. */
-    resizeFrame(node: Readonly<FrameNode>, width: number, height: number): readonly Op[];
+    resizeFrame(node: Readonly<FrameNode>, width: number, height: number, factors: KindResizeFactors): readonly Op[];
     /** Media policies own aspect and reflection representation. */
     resizeMedia(node: Readonly<ClipNode | LinkcardNode | EmbedNode>, factors: KindResizeFactors): readonly Op[];
 }

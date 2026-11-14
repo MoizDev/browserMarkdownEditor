@@ -11,7 +11,7 @@ export interface JournalCapture {
 export type JournalEvent =
     | { type: 'change'; documentId: string; vaultId: string; path: string; fingerprint: string; kind: string; revision: number; capture(): JournalCapture }
     | { type: 'written'; documentId: string; revision: number; fingerprint: string }
-    | { type: 'checkpoint' }
+    | { type: 'checkpoint'; documentId?: string }
     | { type: 'retarget'; vaultId: string; from: string; to: string; folder: boolean }
     | { type: 'release'; documentId: string };
 
@@ -22,23 +22,42 @@ interface Session { journalId: string; saved: number; change?: Change }
 export function createRecoveryFunnel(journal: ReturnType<typeof createRecoveryJournal>, failed: (error: unknown) => void) {
     const sessions = new Map<string, Session>();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const checkpoint = () => {
-        if (timer !== undefined) clearTimeout(timer);
-        timer = undefined;
-        for (const session of sessions.values()) {
-            const change = session.change;
-            if (!change || change.revision <= session.saved) continue;
-            try {
-                const data = change.capture();
-                journal.record({ vaultId: change.vaultId, journalId: session.journalId, path: change.path,
-                    fingerprint: change.fingerprint, kind: change.kind, revision: change.revision,
-                    updatedAt: Date.now(), ...data });
-            } catch (error) { failed(error); }
+    const checkpoint = (onlyDocumentId?: string) => {
+        if (onlyDocumentId === undefined) {
+            if (timer !== undefined) clearTimeout(timer);
+            timer = undefined;
         }
-        void journal.flush().catch(() => {});
+        for (const [documentId, session] of [...sessions]) {
+            if (onlyDocumentId !== undefined && documentId !== onlyDocumentId) continue;
+            let settled = false;
+            for (let attempt = 0; attempt < 8; attempt++) {
+                const change = session.change;
+                if (sessions.get(documentId) !== session || !change || change.revision <= session.saved) { settled = true; break; }
+                let data: JournalCapture;
+                try { data = change.capture(); }
+                catch (error) {
+                    if (sessions.get(documentId) !== session || session.change !== change) continue;
+                    failed(error); settled = true; break;
+                }
+                if (sessions.get(documentId) !== session || session.change !== change) continue;
+                if (change.revision <= session.saved) { settled = true; break; }
+                try {
+                    journal.record({ vaultId: change.vaultId, journalId: session.journalId, path: change.path,
+                        fingerprint: change.fingerprint, kind: change.kind, revision: change.revision,
+                        updatedAt: Date.now(), ...data });
+                } catch (error) { failed(error); }
+                settled = true; break;
+            }
+            if (!settled && sessions.get(documentId) === session && session.change && session.change.revision > session.saved) {
+                failed(new Error(`Recovery checkpoint kept changing for ${documentId}`));
+                if (timer === undefined) timer = setTimeout(checkpoint, 500);
+            }
+        }
+        // Scoped callers await the journal flush themselves, so its failure reaches them.
+        if (onlyDocumentId === undefined) void journal.flush().catch(() => {});
     };
     return (event: JournalEvent): void | Promise<void> => {
-        if (event.type === 'checkpoint') { checkpoint(); return; }
+        if (event.type === 'checkpoint') { checkpoint(event.documentId); return; }
         if (event.type === 'retarget') {
             const move = (path: string) => path === event.from ? event.to : event.folder && path.startsWith(`${event.from}/`) ? event.to + path.slice(event.from.length) : path;
             for (const session of sessions.values()) {

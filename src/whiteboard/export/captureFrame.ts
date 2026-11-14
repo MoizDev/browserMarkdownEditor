@@ -4,15 +4,15 @@ import type { PaintFrame, PaintItem, PaintNodeSource } from '../render/paintStre
 /** Consume one pinned scene revision in bounded work slices. A stale/cancelled partial stream
  * is never exposed as a frame; the source owner retains its leases until export settles. */
 export async function capturePaintFrame(source: PaintNodeSource, signal: AbortSignal): Promise<PaintFrame> {
-  const underlay: PaintItem[] = [], content: PaintItem[] = []
-  const job = new PaintStreamJob(source, (item, band) => (band === 'underlay' ? underlay : content).push(item))
+  const underlay: PaintItem[] = [], content: PaintItem[] = [], inkNodeIds = new Set<string>()
+  const job = new PaintStreamJob(source, (item, band) => { (band === 'underlay' ? underlay : content).push(item); if (item.kind === 'ink') inkNodeIds.add(item.nodeId) })
   try {
     for (;;) {
       signal.throwIfAborted()
       const state = job.step(1024)
       if (state === 'complete') {
         signal.throwIfAborted()
-        return { token: source.token, sceneRevision: source.sceneRevision, underlay, content }
+        return { token: source.token, sceneRevision: source.sceneRevision, underlay, content, inkNodeIds }
       }
       if (state !== 'pending') throw new Error(`Paint capture ${state}`)
       await new Promise<void>(resolve => setTimeout(resolve, 0))

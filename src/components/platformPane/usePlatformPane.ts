@@ -9,6 +9,8 @@ export interface UsePlatformPaneOptions<T extends object> {
     readonly vaultEpoch: number;
     readonly documentId: string;
     readonly layers: readonly PlatformLayerDefinition[];
+    /** Input borrows the attached pane for scheduler motion, never a second camera loop. */
+    readonly onPane?: (pane: PlatformPane | null) => void;
     /** App/session-owned services and callbacks must remain stable for the document session. */
     readonly services: Omit<PlatformPaneOptions<T>, 'documentToken' | 'initialVisible' | 'initialFocused' | 'layers'>;
 }
@@ -26,10 +28,12 @@ export function usePlatformPane<T extends object>(options: UsePlatformPaneOption
     const identity = useSyncExternalStore(subscribeSessionIdentity, readIdentity, readIdentity);
     const pane = useRef<PlatformPane | null>(null);
     const current = useRef({ isVisible, isFocused, layers });
+    const onPane = useRef(options.onPane);
 
     useLayoutEffect(() => {
         current.current = { isVisible, isFocused, layers };
-    }, [isVisible, isFocused, layers]);
+        onPane.current = options.onPane;
+    }, [isVisible, isFocused, layers, options.onPane]);
     // Hide before a simultaneous layer replacement can schedule any more view work.
     useLayoutEffect(() => { pane.current?.setVisible(isVisible); }, [isVisible]);
     useLayoutEffect(() => { pane.current?.setFocused(isFocused); }, [isFocused]);
@@ -54,13 +58,18 @@ export function usePlatformPane<T extends object>(options: UsePlatformPaneOption
             else {
                 owned = attached;
                 pane.current = attached;
+                onPane.current?.(attached);
             }
         }).catch(error => {
             if (!cancelled) services.onError(error);
         });
         return () => {
             cancelled = true;
-            if (pane.current === owned) pane.current = null;
+            if (pane.current === owned) {
+                pane.current = null;
+                // Cancel captured contacts/motion while their platform is still alive.
+                try { onPane.current?.(null); } catch (error) { services.onError(error); }
+            }
             owned?.dispose();
             owned = null;
         };

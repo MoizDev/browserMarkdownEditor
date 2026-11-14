@@ -8,6 +8,7 @@ interface Staging {
     readonly job: PaintStreamJob;
     readonly underlay: PaintItem[];
     readonly content: PaintItem[];
+    readonly inkNodeIds: Set<string>;
 }
 interface Published { readonly pin: PinnedPaintSource; readonly frame: PaintFrame }
 
@@ -25,13 +26,29 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         if (!entry || entry === latest) return;
         retained.delete(frame); entry.pin.release();
     };
+    const clear = () => {
+        const work = staging; staging = null; latest = null;
+        const entries = [...retained.values()]; retained.clear();
+        const errors: unknown[] = [];
+        if (work) {
+            try { work.job.cancel(); } catch (error) { errors.push(error); }
+            try { work.pin.release(); } catch (error) { errors.push(error); }
+        }
+        for (const entry of entries) {
+            try { entry.pin.release(); } catch (error) { errors.push(error); }
+        }
+        if (errors.length) throw new AggregateError(errors, 'Failed to release paint frame pins');
+    };
     return {
         request(pin) {
             if (disposed) { pin.release(); return; }
             dropStaging();
-            const underlay: PaintItem[] = [], content: PaintItem[] = [];
-            const job = new PaintStreamJob(pin.source, (item, band) => (band === 'underlay' ? underlay : content).push(item));
-            staging = { pin, job, underlay, content };
+            const underlay: PaintItem[] = [], content: PaintItem[] = [], inkNodeIds = new Set<string>();
+            const job = new PaintStreamJob(pin.source, (item, band) => {
+                (band === 'underlay' ? underlay : content).push(item);
+                if (item.kind === 'ink') inkNodeIds.add(item.nodeId);
+            });
+            staging = { pin, job, underlay, content, inkNodeIds };
             invalidate();
         },
         prepare(budget) {
@@ -43,7 +60,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                     if (status === 'pending') continue;
                     if (status !== 'complete') { dropStaging(); return; }
                     const frame: PaintFrame = Object.freeze({ token: work.pin.source.token, sceneRevision: work.pin.source.sceneRevision,
-                        underlay: Object.freeze(work.underlay), content: Object.freeze(work.content) });
+                        underlay: Object.freeze(work.underlay), content: Object.freeze(work.content), inkNodeIds: work.inkNodeIds });
                     const published: Published = { pin: work.pin, frame };
                     retained.set(frame, published); latest = published; staging = null; invalidate(); return;
                 }
@@ -56,11 +73,10 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
             if (!retained.has(frame)) throw new Error('Cannot present an unowned paint frame');
         },
         retire,
+        clear,
         dispose() {
             if (disposed) return;
-            disposed = true; dropStaging(); latest = null;
-            for (const entry of retained.values()) entry.pin.release();
-            retained.clear();
+            disposed = true; clear();
         },
     };
 }

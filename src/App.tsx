@@ -1,5 +1,5 @@
 import { runReaderHostCommand } from './utils/documentReading';
-import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
+import { createDocumentBuffers, sourceIsNewer, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions } from './utils/documentSessions';
 import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
@@ -18,7 +18,6 @@ import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/readi
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
 import { flushSync } from 'react-dom';
 import React, { useState, useReducer, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
-import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
@@ -49,7 +48,7 @@ import type { SearchController } from './utils/searchController';
 import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
 import type { RecoveryEntry } from './utils/recoveryJournal';
 import type { NativeCanvasHost, NativeCanvasIdentity } from './types/nativeCanvas';
-import { materializeRecoveryCopy } from './utils/recoveryCopy';
+import { materializeRecoveryCopy, recoveryCopyMedia } from './utils/recoveryCopy';
 import { bindRecoveryAdapter, recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
 import { createRecoveryFunnel } from './utils/recoveryFunnel';
@@ -576,27 +575,9 @@ export default function App() {
     }).catch(() => {});
   }, [indexGraphRef, getVaultActivation]);
 
-  // ── Per-document editor state ────────────────────────────────────────────
-  // Each document's full EditorState (doc + undo history + selection + an open
-  // search panel) is cached by DOCUMENT — `${OpenTab.id}|${path}`, EditorPane's
-  // paneKey — and adopted by whichever pane shows it next, so undo survives tab
-  // switches and being dragged into a column of its own, and can never reach
-  // across documents. By id rather than by path because a rename that
-  // overwrites an open file leaves two documents answering to one path for a
-  // commit, and keyed by path the survivor adopted the loser's text and history —
-  // then saved it over the file that had just replaced it (see OpenTab.id).
-  //
-  // Held HERE rather than in EditorPane because the graph view REPLACES
-  // EditorPane, and a cache it owned went with it — measured: ⌘Z did nothing
-  // after a trip to the Neural Brain view and back (issue #34). EditorPane
-  // still prunes it to the open documents, so an entry for a document closed
-  // while the graph is up waits for its next mount; it cannot be adopted
-  // meanwhile, since ids never repeat (see newTabId).
-  const [editorStates] = useState(() => new Map<string, EditorState>());
-
   // The [[ autocomplete's targets, deduped by link name since wikilinks
   // resolve by name, not path. It is baked into each document's EditorState
-  // (outside any compartment), and that state is cached above and outlives
+  // (outside any compartment), and that session-owned state outlives
   // EditorPane, so the getter must be stable for the APP's life: one created in
   // EditorPane would go on reading that EditorPane's graph once a graph-view
   // trip unmounted it, and a note created afterwards would never be offered.
@@ -1077,11 +1058,10 @@ export default function App() {
         }
         if (!adapter) return false;
         adapter.dispatch(spec);
-        editorStates.set(id, adapter.state);
         return true;
       },
     };
-  }, [documentBuffers, documentSessions, editorStates, getVaultActivation]);
+  }, [documentBuffers, documentSessions, getVaultActivation]);
   const bumpBytesGeneration = useCallback((id: string) => {
     const generation = (bytesGenerationsRef.current.get(id) ?? 0) + 1;
     prepareBytesChange(id, generation);
@@ -1089,7 +1069,7 @@ export default function App() {
     const session = documentSessions.get(id);
     const policy = nativePoliciesRef.current.get(id);
     if (policy && session && policy.session === session.serial) policy.generation = generation;
-    if (session) session.bytesGeneration = generation;
+    if (session) documentSessions.setBytesGeneration(id, generation);
   }, [documentSessions]);
   const invalidReaderTokens = useRef(new Set<string>());
   const layoutRef = useRef<TabLayout>(layout);
@@ -1186,12 +1166,17 @@ export default function App() {
       return tab && !tab.readError && tab.representation.status === 'ready' && tab.representation.loadedKind === loaded
         && entry?.serial === identity.session && entry.bytesGeneration === identity.bytesGeneration ? tab : undefined;
     };
-    const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal) => {
+    const writable = (identity: NativeCanvasIdentity) => {
+      const policy = nativePoliciesRef.current.get(identity.documentId);
+      return !!policy && !policy.emergencyReadOnly && policy.session === identity.session
+        && policy.activation === identity.vaultActivation && policy.generation === identity.bytesGeneration;
+    };
+    const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();
       const tab = current(identity), root = rootHandleRef.current;
-      if (!tab?.file.handle || !tab.file.parentHandle || !root) throw new DOMException('Canvas session ended', 'AbortError');
+      if (!tab?.file.handle || !tab.file.parentHandle || !root || write && !writable(identity)) throw new DOMException('Canvas session ended or read-only', 'AbortError');
       return { root, parent: tab.file.parentHandle, owner: tab.file.handle as FileSystemFileHandle,
-        hash: media.hash, preferredName: media.preferredName, signal, isCurrent: () => !!current(identity) };
+        hash: media.hash, preferredName: media.preferredName, signal, isCurrent: () => !!current(identity) && (!write || writable(identity)) };
     };
     return {
       identity(id) {
@@ -1223,6 +1208,26 @@ export default function App() {
           return bytes;
         } finally { snapshot.dispose(); }
       },
+      async appendJournal(identity, source, capture) {
+        if (!current(identity) || !writable(identity) || typeof source === 'string' || source.kind !== 'deferred'
+          || source.owner.documentId !== identity.documentId || source.owner.session !== identity.session
+          || !documentSessions.isLiveOwner(identity.documentId, source.owner)) {
+          throw new DOMException('Canvas session ended or read-only', 'AbortError');
+        }
+        const prior = documentBuffers.get(identity.documentId)?.source;
+        if (sourceIsNewer(source, prior)) sessionReportRef.current(identity.documentId, source, { fromJournal: true });
+        const tab = current(identity), buffered = documentBuffers.get(identity.documentId);
+        if (!tab || !writable(identity)) throw new DOMException('Canvas session ended or read-only', 'AbortError');
+        if (!buffered || typeof buffered.source === 'string' || buffered.source.kind !== source.kind
+          || buffered.source.owner.documentId !== source.owner.documentId || buffered.source.owner.session !== source.owner.session
+          || buffered.source.revision !== source.revision) return;
+        const baseline = getBaseline(identity.documentId), vaultId = currentVaultIdRef.current;
+        if (!baseline || !vaultId) throw new Error('Recovery baseline is unavailable');
+        void recoveryEvent({ type: 'change', documentId: identity.documentId, vaultId, path: tab.file.path,
+          fingerprint: baseline.hash, kind: tab.representation.loadedKind, revision: buffered.revision, capture: () => capture });
+        void recoveryEvent({ type: 'checkpoint', documentId: identity.documentId });
+        await recoveryJournal.flush();
+      },
       async readMedia(identity, media, signal) {
         const found = await readBoardAsset(request(identity, media, signal));
         if (!found) return null;
@@ -1232,13 +1237,13 @@ export default function App() {
         return { name: found.name, blob };
       },
       async putMedia(identity, media, blob, signal) {
-        const name = await putBoardAsset({ ...request(identity, media, signal), extension: media.extension, blob });
+        const name = await putBoardAsset({ ...request(identity, media, signal, true), extension: media.extension, blob });
         signal.throwIfAborted();
-        if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+        if (!current(identity) || !writable(identity)) throw new DOMException('Canvas session ended or read-only', 'AbortError');
         return name;
       },
     };
-  }, [documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset]);
+  }, [documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset, recoveryEvent, recoveryJournal]);
   useEffect(() => {
     const open = new Set(tabs.map(tab => tab.id));
     for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);
@@ -2578,7 +2583,7 @@ export default function App() {
       const source = documentSessions.checkpoint(tab.id);
       const prior = documentBuffers.get(tab.id)?.source;
       if (source && typeof source !== 'string' && documentSessions.isLiveOwner(tab.id, source.owner)
-        && (typeof prior === 'string' || !prior || prior.owner.session !== source.owner.session || source.revision > prior.revision)) {
+        && sourceIsNewer(source, prior)) {
         sessionReportRef.current(tab.id, source);
         clearSaveTimer(path);
       }
@@ -2756,6 +2761,12 @@ export default function App() {
             } else if (sessionAtCall?.adapter.journalDelta && documentSessions.get(id) === sessionAtCall) {
               void recoveryEvent({ type: 'change', documentId: id, vaultId, path: liveTab.file.path, fingerprint: result.version.hash,
                 kind: liveTab.representation.loadedKind, revision: newer.revision, capture: () => {
+                  if (documentSessions.get(id) !== sessionAtCall) throw new Error('Recovery session changed before capture');
+                  const source = sessionAtCall.adapter.checkpoint(), prior = documentBuffers.get(id)?.source;
+                  if (typeof source === 'string' || !documentSessions.isLiveOwner(id, source.owner)) throw new Error('Recovery source owner changed before capture');
+                  if (!prior || typeof prior === 'string' || prior.owner.session !== source.owner.session || source.revision > prior.revision) {
+                    sessionReportRef.current(id, source);
+                  }
                   if (documentSessions.get(id) !== sessionAtCall || documentBuffers.get(id)?.revision !== newer.revision) throw new Error('Recovery revision changed before capture');
                   const capture = sessionAtCall.adapter.journalDelta?.();
                   if (!capture) throw new Error('This session cannot yet capture recovery data');
@@ -2838,13 +2849,16 @@ export default function App() {
   const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions) => {
     const target = tabsRef.current.find(t => t.file.path === path);
     const policy = target && nativePoliciesRef.current.get(target.id);
+    const liveNativePolicy = !!target && !!policy && policy.activation === getVaultActivation()
+      && policy.generation === (bytesGenerationsRef.current.get(target.id) ?? 0)
+      && documentSessions.isLiveOwner(target.id, { documentId: target.id, session: policy.session });
     const ownedNative = !!target && typeof content !== 'string' && !!policy && !policy.emergencyReadOnly
       && policy.session === content.owner.session && policy.activation === getVaultActivation()
       && policy.generation === (bytesGenerationsRef.current.get(target.id) ?? 0)
       && documentSessions.isLiveOwner(target.id, content.owner);
     const accepted = !!target && (canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')
       || ownedNative && !target.readError && target.representation.status === 'ready')
-      && (typeof content === 'string' || documentSessions.isLiveOwner(target.id, content.owner));
+      && (typeof content === 'string' ? !!options?.fromDisk || !liveNativePolicy : documentSessions.isLiveOwner(target.id, content.owner));
     if (__BME_BENCH__) {
       try {
         const kind = target?.representation.loadedKind ?? 'unknown';
@@ -2860,6 +2874,13 @@ export default function App() {
       } catch { /* Measurement must not interrupt a content report. */ }
     }
     if (!accepted) return;
+    const prior = documentBuffers.get(target.id)?.source;
+    if (!options?.fromDisk && typeof content !== 'string' && prior && typeof prior !== 'string'
+      && prior.owner.documentId === content.owner.documentId && prior.owner.session === content.owner.session
+      && content.revision <= prior.revision) {
+      if (content.revision === prior.revision && !options?.fromJournal) scheduleSave(path);
+      return;
+    }
     assetReferenceRevisionRef.current++;
     const wasDirty = documentBuffers.isDirty(target.id);
     const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk, !options?.fromDisk);
@@ -2879,6 +2900,12 @@ export default function App() {
         void recoveryEvent({ type: 'change', documentId: target.id, vaultId, path,
           fingerprint: baseline.hash, kind: target.representation.loadedKind, revision: buffer.revision,
           capture: () => {
+            if (documentSessions.get(target.id) !== session) throw new Error('Recovery session changed before capture');
+            const source = session.adapter.checkpoint(), prior = documentBuffers.get(target.id)?.source;
+            if (typeof source === 'string' || !documentSessions.isLiveOwner(target.id, source.owner)) throw new Error('Recovery source owner changed before capture');
+            if (!prior || typeof prior === 'string' || prior.owner.session !== source.owner.session || source.revision > prior.revision) {
+              sessionReportRef.current(target.id, source);
+            }
             if (documentSessions.get(target.id) !== session || documentBuffers.get(target.id)?.revision !== buffer.revision) throw new Error('Recovery revision changed before capture');
             const capture = session.adapter.journalDelta?.();
             if (!capture) throw new Error('This session cannot yet capture recovery data');
@@ -2890,7 +2917,7 @@ export default function App() {
     if (!wasDirty || target.representation.loadedKind === 'pdf' && target.representation.bufferKind !== 'annotationSnapshot') {
       setTabs(prev => prev.map(t => t.id === target.id && !t.readError ? { ...t, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     }
-    scheduleSave(path);
+    if (!options?.fromJournal) scheduleSave(path);
   }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, syncExitGuard, scheduleSave]);
   sessionReportRef.current = (id, source, options) => {
     const tab = tabsRef.current.find(t => t.id === id);
@@ -2942,8 +2969,7 @@ export default function App() {
     const pagehide = () => {
       checkpointSessions((id, source) => {
         const prior = documentBuffers.get(id)?.source;
-        if (source === prior || typeof source !== 'string' && prior && typeof prior !== 'string'
-          && source.owner.session === prior.owner.session && source.revision <= prior.revision) return;
+        if (!sourceIsNewer(source, prior)) return;
         sessionReportRef.current(id, source);
       });
       void recoveryEvent({ type: 'checkpoint' });
@@ -3159,7 +3185,6 @@ export default function App() {
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
       documentSessions.release(doc.id, 'tab-close');
-      editorStates.delete(doc.id);
       if (bufferPathIdsRef.current.get(path) === doc.id) bufferPathIdsRef.current.delete(path);
       void documentSessions.settled(doc.id).then(() => { documentBuffers.remove(doc.id); syncExitGuard(); });
       bytesGenerationsRef.current.delete(doc.id);
@@ -3187,7 +3212,7 @@ export default function App() {
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
-  }, [clearSaveTimer, documentBuffers, documentSessions, editorStates, indexGraphRef, recoveryEvent, syncExitGuard]);
+  }, [clearSaveTimer, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, syncExitGuard]);
 
   /**
    * A rename or move that lands on a name another tab is holding. renameFile /
@@ -3556,8 +3581,7 @@ export default function App() {
   // ── Vault switch ────────────────────────────────────────────────────────
   // A tab is only meaningful inside the vault it was opened from: its path
   // indexes that vault's tree and its handle writes into that vault's folder.
-  // App owns the EditorState cache, keyed by document id AND path; both fields
-  // distinguish a surviving document from another at the same path. Carrying
+  // App owns each document session by id, distinct even at a reused path. Carrying
   // tabs across a switch would still show and autosave the previous vault's
   // notes behind the new tree. Flush the old handles and hand the new vault
   // an empty workspace, even when both vaults have a matching path.
@@ -4913,7 +4937,7 @@ export default function App() {
         const sessionSource = documentSessions.checkpoint(doc.id);
         const buffered = documentBuffers.get(doc.id)?.source;
         if (sessionSource && typeof sessionSource !== 'string' && documentSessions.isLiveOwner(doc.id, sessionSource.owner)
-          && (typeof buffered === 'string' || !buffered || buffered.owner.session !== sessionSource.owner.session || sessionSource.revision > buffered.revision)) {
+          && sourceIsNewer(sessionSource, buffered)) {
           documentBuffers.report(doc.id, sessionSource);
           syncExitGuard();
         }
@@ -5015,7 +5039,6 @@ export default function App() {
         setLayout(l => renamePath(l, from, dest));
         });
         if (changedKind) {
-          editorStates.delete(doc.id);
           clearPdfRenderData(from);
           assetRefsRef.current.delete(from);
           diskStateRef.current.delete(doc.id);
@@ -5034,7 +5057,7 @@ export default function App() {
       catch (error) { console.error('Could not move recovery records:', error); }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers, documentSessions, syncExitGuard, seedDocumentBuffer]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers, documentSessions, syncExitGuard, seedDocumentBuffer]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -5181,12 +5204,11 @@ export default function App() {
       const spec = reloadSpec(markdown.state, text);
       if (spec) markdown.dispatch(spec);
       else updateTabContent(path, markdown.checkpoint(), { fromDisk: true });
-      editorStates.set(id, markdown.state);
     } else updateTabContent(path, text, { fromDisk: true });
     // The asset diff's baseline is the file as it now is.
     rememberAssetRefs(file, text);
     setTabs(prev => prev.map(t => (t.id === id && (t.dirty || t.disk) ? { ...t, dirty: false, disk: undefined } : t)));
-  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, editorStates, markdownSessions, updateTabContent, rememberAssetRefs, syncExitGuard, seedDocumentBuffer]);
+  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, markdownSessions, updateTabContent, rememberAssetRefs, syncExitGuard, seedDocumentBuffer]);
 
   /**
    * Follow a rename/move made on disk: open documents, expanded folders, icons,
@@ -5513,13 +5535,12 @@ export default function App() {
       const prior = documentBuffers.get(id)?.source;
       if (checkpoint && typeof checkpoint !== 'string') {
         if (!documentSessions.isLiveOwner(id, checkpoint.owner)) throw new Error('The document session changed.');
-        if (typeof prior === 'string' || !prior || prior.owner.session !== checkpoint.owner.session || checkpoint.revision > prior.revision) {
+        if (sourceIsNewer(checkpoint, prior)) {
           sessionReportRef.current(id, checkpoint);
         }
       }
       const source = documentBuffers.get(id)?.source;
-      if (checkpoint && typeof checkpoint !== 'string' && (typeof source === 'string' || !source
-        || source.owner.session !== checkpoint.owner.session || source.revision < checkpoint.revision)) {
+      if (checkpoint && typeof checkpoint !== 'string' && sourceIsNewer(checkpoint, source)) {
         throw new Error('The current document revision could not be captured.');
       }
       const snapshot = documentBuffers.snapshotForDocument(id);
@@ -5573,6 +5594,7 @@ export default function App() {
         let parentHandle = file.parentHandle;
         try { if (root) ({ parentHandle } = await resolveVaultFile(root, path)); } catch { /* keep the old one */ }
         setBaseline(id, result.version);
+        if (isPdf) bumpBytesGeneration(id);
         diskStateRef.current.delete(id);
         documentBuffers.markSaved(id, dataRevision);
         if (captured.sourceRevision !== undefined && captured.session && documentSessions.get(id) === captured.session) {
@@ -5671,7 +5693,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, bumpBytesGeneration]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes
@@ -6027,34 +6049,55 @@ export default function App() {
   }, []);
 
   const inspectRecovery = useCallback(async (entry: RecoveryEntry): Promise<RecoveryInspection> => {
-    if (!rootHandle || currentVaultId !== entry.vaultId || rootHandleRef.current !== rootHandle) return 'unavailable';
+    const activation = getVaultActivation();
+    const current = () => getVaultActivation() === activation && rootHandleRef.current === rootHandle && currentVaultIdRef.current === entry.vaultId;
+    if (!rootHandle || currentVaultId !== entry.vaultId || !current()) return 'unavailable';
     try {
       const vault = recentVaults.find(item => item.id === entry.vaultId);
       if (!vault) return 'unavailable';
       const relative = await handleIO.relativeTo(rootHandle, vault.handle);
-      if (!relative || relative.length !== 0 || rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+      if (!relative || relative.length !== 0 || !current()) return 'unavailable';
       const handle = await resolveFileHandle(entry.path);
-      if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+      if (!current()) return 'unavailable';
       if (!handle) return 'copy';
       const snapshot = await readFileSnapshot(handle);
       try {
         const version = await snapshot.fingerprint();
-        if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+        if (!current()) return 'unavailable';
         const copy = await materializeRecoveryCopy(entry, new AbortController().signal);
         const copyHash = copy instanceof Blob ? await fingerprintSnapshot(copy)
           : await hashBytes(typeof copy === 'string' ? new TextEncoder().encode(copy) : copy);
-        if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
-        if (copyHash === version.hash) return 'equal';
+        if (!current()) return 'unavailable';
+        if (copyHash === version.hash) {
+          const assets = recoveryCopyMedia(entry);
+          if (assets.length) {
+            const { parentHandle } = await resolveVaultFile(rootHandle, entry.path);
+            if (!current()) return 'unavailable';
+            for (const asset of assets) {
+              const found = await readBoardAsset({ root: rootHandle, parent: parentHandle, owner: handle,
+                hash: asset.hash, preferredName: asset.file, signal: new AbortController().signal, isCurrent: current });
+              if (!current()) return 'unavailable';
+              // Equal document bytes do not make the only durable image backup
+              // redundant when its .Assets file disappeared after the save.
+              if (!found) return 'copy';
+            }
+          }
+          return 'equal';
+        }
         return version.hash === entry.fingerprint ? 'match' : 'copy';
       } finally { snapshot.dispose(); }
     } catch (error) { console.warn('Could not inspect recovery entry:', error); return 'unavailable'; }
-  }, [rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle, readFileSnapshot]);
+  }, [rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle, resolveVaultFile, readFileSnapshot, readBoardAsset, getVaultActivation]);
 
   const recoverEntry = useCallback(async (entry: RecoveryEntry) => {
+    const activation = getVaultActivation();
+    const root = rootHandleRef.current;
     const tab = tabsRef.current.find(t => t.file.path === entry.path);
-    if (!tab || hasUnsaved(tab)) throw new Error('Open the unchanged document and save its current edits first.');
+    if (!root || currentVaultIdRef.current !== entry.vaultId || !tab || hasUnsaved(tab)) throw new Error('Open the unchanged document and save its current edits first.');
+    const current = () => getVaultActivation() === activation && rootHandleRef.current === root && currentVaultIdRef.current === entry.vaultId
+      ? tabsRef.current.find(t => t.id === tab.id && t.file.path === entry.path) : undefined;
     if (entry.copyOnly || await inspectRecovery(entry) !== 'match') throw new Error('The file changed; save these changes as a copy instead.');
-    const live = tabsRef.current.find(t => t.id === tab.id && t.file.path === entry.path);
+    const live = current();
     if (!live || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
     const adapter = recoveryAdapter(tab.id);
     if (adapter?.recover) {
@@ -6066,22 +6109,71 @@ export default function App() {
     if (recoveredText === undefined || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
     const expected = contentOf(entry.path), revision = documentBuffers.revisionForDocument(tab.id)?.revision;
     const { isolateHistory } = await import('@codemirror/commands');
-    if (expected === undefined || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
+    const latest = current();
+    if (expected === undefined || !latest || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || hasUnsaved(latest)) throw new Error('The document changed while recovery was being prepared.');
     if (!await markdownSessions.dispatch(tab.id, { changes: { from: 0, to: expected.length, insert: recoveredText }, userEvent: 'input.recover', annotations: isolateHistory.of('full') })) throw new Error('The document changed while recovery was being prepared.');
-  }, [hasUnsaved, inspectRecovery, contentOf, documentBuffers, markdownSessions]);
+  }, [hasUnsaved, inspectRecovery, contentOf, documentBuffers, markdownSessions, getVaultActivation]);
 
   const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) => {
+    const activation = getVaultActivation();
     const root = rootHandleRef.current;
     if (!root || currentVaultIdRef.current !== entry.vaultId) throw new Error('Return to the original vault first.');
     const vault = recentVaults.find(item => item.id === entry.vaultId);
     const relative = vault && await handleIO.relativeTo(root, vault.handle);
-    if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
-    const copyData = await materializeRecoveryCopy(entry, new AbortController().signal);
-    const data = copyData;
-    if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
-    const copy = await writeConflictCopy(entry.path, data, root);
+    if (!relative || relative.length !== 0 || getVaultActivation() !== activation || rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('Return to the original vault first.');
+    const current = () => getVaultActivation() === activation && rootHandleRef.current === root && currentVaultIdRef.current === entry.vaultId;
+    const check = () => { if (!current()) throw new Error('The vault changed.'); };
+    const signal = new AbortController().signal;
+    const copyData = await materializeRecoveryCopy(entry, signal);
+    check();
+    const assets = recoveryCopyMedia(entry);
+    const ids = new Set<string>();
+    for (const asset of assets) {
+      if (!asset.id || ids.has(asset.id)) throw new Error('Invalid or duplicate recovery media.');
+      ids.add(asset.id);
+    }
+    let copy = await writeConflictCopy(entry.path, copyData, root);
+    check();
+    if (assets.length) {
+      // The generated file is the asset-write owner, never the missing original.
+      // A crash mid-restore leaves both a readable capsule and a preserved copy.
+      const { handle, parentHandle } = await resolveVaultFile(root, copy);
+      check();
+      const files = new Map<string, string>();
+      for (const asset of assets) {
+        const file = await putBoardAsset({ root, parent: parentHandle, owner: handle, hash: asset.hash,
+          preferredName: asset.file, extension: asset.extension, blob: asset.blob, signal, isCurrent: current });
+        check();
+        files.set(asset.id, file);
+      }
+      if (assets.some(asset => files.get(asset.id) !== asset.file)) {
+        const data = await materializeRecoveryCopy(entry, signal, files);
+        check();
+        const hash = copyData instanceof Blob ? await fingerprintSnapshot(copyData, signal)
+          : await hashBytes(typeof copyData === 'string' ? new TextEncoder().encode(copyData) : copyData);
+        check();
+        let written = false;
+        const opened = tabsRef.current.find(tab => tab.file.path === copy);
+        if (!opened || !hasUnsaved(opened)) {
+          const snapshot = await readFileSnapshot(handle, signal);
+          try {
+            const expected = await snapshot.fingerprint();
+            check();
+            // Someone may have opened/edited the copy during media IO. Only
+            // our original bytes authorize the filename-remapping write.
+            const latest = tabsRef.current.find(tab => tab.file.path === copy);
+            if (expected.hash === hash && (!latest || !hasUnsaved(latest))) {
+              written = (await writeFileVersioned(handle, data, expected)).status === 'written';
+            }
+          } finally { snapshot.dispose(); }
+        }
+        check();
+        if (!written) copy = await writeConflictCopy(entry.path, data, root);
+      }
+    }
+    check();
     announce(`Recovered changes were saved as “${copy}”.`);
-  }, [writeConflictCopy, announce, recentVaults, handleIO]);
+  }, [writeConflictCopy, resolveVaultFile, putBoardAsset, readFileSnapshot, writeFileVersioned, hasUnsaved, announce, recentVaults, handleIO, getVaultActivation]);
 
   // The welcome screen can report a refused open too; returning before the
   // workspace's host used to hide the app notice on exactly that path.
@@ -6294,7 +6386,6 @@ export default function App() {
             onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}
             onOpenNote={openNoteByName}
-            stateCache={editorStates}
             markdownSessions={markdownSessions}
             getWikiLinkTargets={getWikiLinkTargets}
             onNotify={notify}

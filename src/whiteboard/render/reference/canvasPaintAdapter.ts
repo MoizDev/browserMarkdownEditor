@@ -3,7 +3,7 @@ import type { FrameBudget, GpuReleaseReason } from '../../../platform/render/typ
 import type { PaintBand } from '../material';
 import type { PaintFrame, PaintItem } from '../paintStream';
 import type { PaintImageLease, PaintLayerResources } from '../resources';
-import { InkPath2dJob, Path2dJob } from './coverage2d';
+import { InkCoverageUnionPath2dJob, Path2dJob } from './coverage2d';
 import type { PathOrigin2d } from './coverage2d';
 import { paintItem2d } from './paint2d';
 import type { PaintResources2d, PreparedPath2d } from './paint2d';
@@ -21,7 +21,7 @@ export interface CanvasPaintAdapter {
 
 export type PaintProjection2d = (ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void) => void;
 
-type PathJob = Path2dJob | InkPath2dJob;
+type PathJob = Path2dJob | InkCoverageUnionPath2dJob;
 type Snapshot = {
     frame: PaintFrame;
     scale: number;
@@ -151,7 +151,7 @@ export function createCanvasPaintAdapter(
                 s.paths.set(item, cached.prepared);
             } else {
                 const path = item.kind === 'ink'
-                    ? new InkPath2dJob(item.coverage, itemScale, [item.coverage.boundsLocal.x, item.coverage.boundsLocal.y])
+                    ? new InkCoverageUnionPath2dJob(item.coverage, itemScale)
                     : new Path2dJob(item.d, pathOrigin(item.d));
                 s.job = { key, item, path };
             }

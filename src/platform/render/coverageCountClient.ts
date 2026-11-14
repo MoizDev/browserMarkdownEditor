@@ -8,6 +8,7 @@ export interface CoverageFrameTag {
     readonly frameId: number;
     readonly token: FrameToken;
     readonly cameraEpoch: number;
+    readonly sceneRevision: string;
 }
 export interface CoverageCount {
     readonly frame: CoverageFrameTag;
@@ -18,6 +19,7 @@ export interface CoverageCount {
     readonly invalid: number;
     readonly pixels: number;
     readonly ownedScratchBytes: number;
+    readonly countMs: number;
 }
 export type CoverageDropReason = 'disabled' | 'overflow' | 'memory' | 'invalid' | 'deadline' | 'stale' | 'error' | 'disposed';
 export interface CoverageCounterOptions {
@@ -26,7 +28,7 @@ export interface CoverageCounterOptions {
     onDrop(frame: CoverageFrameTag, reason: CoverageDropReason): void;
 }
 export interface CoverageCounter {
-    count(bitmap: ImageBitmap, frameTag: CoverageFrameTag): boolean;
+    count(bitmap: ImageBitmap, frameTag: CoverageFrameTag, encoding?: 'r8' | 'rgb'): boolean;
     dispose(): void;
 }
 
@@ -34,6 +36,7 @@ interface Pending {
     readonly bitmap: ImageBitmap;
     readonly frame: CoverageFrameTag;
     readonly pixels: number;
+    readonly encoding: 'r8' | 'rgb';
     readonly lease: ByteLease;
     readonly deadline: number;
     timer: ReturnType<typeof setTimeout> | null;
@@ -46,21 +49,23 @@ const maxOwned = 8;
 
 function validFrame(frame: CoverageFrameTag): boolean {
     const token = frame?.token;
-    return !!token && typeof token.documentId === 'string' &&
+    return !!token && typeof token.documentId === 'string' && typeof frame.sceneRevision === 'string' &&
         [frame.frameId, frame.cameraEpoch, token.vaultEpoch, token.bytesGeneration, token.session, token.viewLease, token.deviceGeneration]
             .every(value => Number.isSafeInteger(value) && value >= 0);
 }
 function copyFrame(frame: CoverageFrameTag): CoverageFrameTag {
-    return Object.freeze({ frameId: frame.frameId, cameraEpoch: frame.cameraEpoch, token: Object.freeze({ ...frame.token }) });
+    return Object.freeze({ frameId: frame.frameId, cameraEpoch: frame.cameraEpoch, sceneRevision: frame.sceneRevision,
+        token: Object.freeze({ ...frame.token }) });
 }
 function sameFrame(a: CoverageFrameTag, b: CoverageFrameTag): boolean {
-    return validFrame(a) && a.frameId === b.frameId && a.cameraEpoch === b.cameraEpoch &&
+    return validFrame(a) && a.frameId === b.frameId && a.cameraEpoch === b.cameraEpoch && a.sceneRevision === b.sceneRevision &&
         a.token.vaultEpoch === b.token.vaultEpoch && a.token.documentId === b.token.documentId &&
         a.token.bytesGeneration === b.token.bytesGeneration && a.token.session === b.token.session &&
         a.token.viewLease === b.token.viewLease && a.token.deviceGeneration === b.token.deviceGeneration;
 }
 function validCount(result: CoverageCount, pixels: number): boolean {
-    if (!result || typeof result !== 'object' || result.pixels !== pixels || result.ownedScratchBytes !== pixels * 16) return false;
+    if (!result || typeof result !== 'object' || result.pixels !== pixels || result.ownedScratchBytes !== pixels * 16 ||
+        !Number.isFinite(result.countMs) || result.countMs < 0) return false;
     const counts = [result.outside, result.hole, result.standin, result.current, result.invalid];
     return counts.every(value => Number.isSafeInteger(value) && value >= 0) && counts.reduce((sum, value) => sum + value, 0) === pixels;
 }
@@ -95,7 +100,7 @@ export function createCoverageCounter(options: CoverageCounterOptions): Coverage
                     if (!__BME_BENCH__) throw new Error('Coverage counting is disabled');
                     return new Worker(new URL('./coverageCount.worker.ts', import.meta.url), { type: 'module' });
                 } });
-            const request = client.request<CoverageCount>('count', { bitmap: item.bitmap, frame: item.frame }, {
+            const request = client.request<CoverageCount>('count', { bitmap: item.bitmap, frame: item.frame, encoding: item.encoding }, {
                 priority: 3, cpu: 'governed', deadlineMs: remaining, terminateOnDeadline: true, transfer: [item.bitmap],
             });
             void request.then(result => {
@@ -118,8 +123,8 @@ export function createCoverageCounter(options: CoverageCounterOptions): Coverage
         }
     };
     return {
-        count(bitmap, frameTag) {
-            if (!__BME_BENCH__ || disposed || !validFrame(frameTag)) {
+        count(bitmap, frameTag, encoding = 'r8') {
+            if (!__BME_BENCH__ || disposed || !validFrame(frameTag) || (encoding !== 'r8' && encoding !== 'rgb')) {
                 bitmap.close();
                 notifyDrop(frameTag, !__BME_BENCH__ ? 'disabled' : disposed ? 'disposed' : 'invalid');
                 return false;
@@ -136,7 +141,7 @@ export function createCoverageCounter(options: CoverageCounterOptions): Coverage
             try { lease = options.memory.reserve(bytes); }
             catch { bitmap.close(); notifyDrop(frame, 'memory'); return false; }
             if (!lease) { bitmap.close(); notifyDrop(frame, 'memory'); return false; }
-            const item: Pending = { bitmap, frame, pixels, lease, deadline: performance.now() + deadlineMs, timer: null, closed: false };
+            const item: Pending = { bitmap, frame, pixels, encoding, lease, deadline: performance.now() + deadlineMs, timer: null, closed: false };
             item.timer = setTimeout(() => {
                 const index = queue.indexOf(item);
                 if (index < 0) return;

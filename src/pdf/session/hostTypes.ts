@@ -3,6 +3,8 @@ import type { PdfSelectionState } from '../text/selectionState';
 import type { OpenTiledDocument, PdfTiledDocumentSession } from './documentSession';
 import type { PdfSessionMirrors } from '../layer/tileMirror';
 import type { PdfSessionCapturer } from './sessionCapture';
+import type { PdfVersionTransitionOwner } from './versionOwner';
+import type { PdfVersionBridge } from '../layer/versionBridge';
 
 /** One App-session-owned source, never a component/pane lifetime. */
 export interface PdfTiledSource {
@@ -11,6 +13,8 @@ export interface PdfTiledSource {
     readonly mirror: PdfSessionMirrors;
     readonly capturer: PdfSessionCapturer;
     readonly selection: PdfSelectionState;
+    readonly transition: PdfVersionTransitionOwner;
+    readonly bridge: PdfVersionBridge | null;
 }
 
 /** Implemented in the lazy PDF route; the caller supplies only the app's

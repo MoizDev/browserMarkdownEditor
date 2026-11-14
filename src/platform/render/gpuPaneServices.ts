@@ -42,6 +42,7 @@ export class GpuPaneServices {
             const gpuStaging = register('gpu-staging', 'gpu', 'working');
             const cpuStaging = register('cpu-staging', 'cpu', 'working');
             this.services = {
+                ...(__BME_BENCH__ ? { measurementPaneId: options.paneId } : {}),
                 working, program, gpuStaging, cpuStaging,
                 returnLease: lease => options.governor.releaseLease(lease),
                 schedulePoll: callback => options.scheduler.schedulePoll(callback),

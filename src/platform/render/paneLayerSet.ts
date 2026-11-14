@@ -50,6 +50,9 @@ export class PaneLayerSet {
                 const compositor: CompositorLayer = {
                     id: definition.id, layer: owned, group: definition.group, isolation: definition.isolation,
                     coverage: (frame, backend) => definition.coverage(owned, frame, backend),
+                    ...(__BME_BENCH__ && definition.benchmarkDomain ? {
+                        benchmarkDomain: (frame: Parameters<CompositorLayer['coverage']>[0]) => definition.benchmarkDomain!(owned, frame),
+                    } : {}),
                 };
                 const binding = { definition, layer: owned, compositor };
                 created.push(binding);

@@ -1,4 +1,4 @@
-import type { SourceOwner } from '../../utils/documentBuffers';
+import type { ContentSource, SourceOwner } from '../../utils/documentBuffers';
 import type { SessionAdapter } from '../../utils/documentSessions';
 import type { JournalCapture } from '../../utils/recoveryFunnel';
 import type { Applied, TouchedSet, Transaction } from '../change/ops';
@@ -8,6 +8,7 @@ import type { NoticeDispatcher } from '../change/notices';
 import type { EncoderContext } from '../format/encode';
 import type { RecordChanges } from '../format/recordChanges';
 import type { SerializerCheckpoint, SerializerSession } from '../format/serializerClient';
+import type { SerializerPrime } from '../format/serializerProtocol';
 import type { MediaStore } from '../media/store';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
@@ -21,10 +22,10 @@ import type { BoardSession } from './BoardSession';
  * until the returned append or drain, so pagehide captures a fixed revision without waiting. */
 export interface BoardJournalPort {
     record(applied: Applied, revision: number): void;
-    capture(): () => void | Promise<void>;
+    capture(source: ContentSource): () => void | Promise<void>;
     delta(): JournalCapture | undefined;
     recover(payload: unknown, apply: (transaction: Transaction) => Applied): void | Promise<void>;
-    acknowledge(revision: number): void;
+    acknowledge(revision: number, baseline?: SerializerPrime): void;
     drain(): Promise<void>;
     dispose(): void;
 }
@@ -65,6 +66,7 @@ export type ComposedBoardSession = BoardSession & SessionAdapter & {
     readonly readOnlyReason: string | null;
     mediaReferences(): readonly string[];
     mediaReferenceIssues(): readonly MediaId[];
+    onPending(listener: () => void): () => void;
     flushNow(): void;
     pageHide(): void;
     hidden(): void;

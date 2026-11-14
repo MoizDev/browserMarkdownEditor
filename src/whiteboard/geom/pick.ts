@@ -52,7 +52,8 @@ function segments(paths: readonly (readonly PathOp[])[], tolerance: number, maxS
 }
 const result = (hit: boolean, distanceCss: number): NarrowResult => ({ hit, distanceCss, part: hit ? 'body' : 'none' });
 export function pointPath(paths: readonly (readonly PathOp[])[], query: PointQuery, options: PathPickOptions): NarrowResult {
-    const { strokeRadiusLocal: radius, marginCss: margin, errorCss, maxSegments } = options;
+    const { strokeRadiusLocal: radius, errorCss, maxSegments } = options;
+    const margin = query.input === 'touch' ? Math.max(8, options.marginCss) : options.marginCss;
     if (![radius, margin, errorCss, query.point.x, query.point.y, ...query.localToSurface].every(Number.isFinite)
         || radius < 0 || margin < 0 || errorCss <= 0 || !Number.isSafeInteger(maxSegments) || maxSegments < 1) throw new RangeError('Invalid path pick query');
     if (options.interiorPaths?.length) {

@@ -11,6 +11,12 @@ Columns: module path · author (lane) · spec ids implemented · design document
 consulted while writing (tldraw files read, if any, and the fact taken; literature; packages) ·
 third-party code included (normally "none") · date.
 
+## Chrome and style controls (lane w-j)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `chrome/penWidth.ts` | w-j | F-STYLE-006/008, R-2 | integration §6; geometry §3.2 | Style specification endpoints and w-h's public StyleGeometryMetrics; no tldraw or old canvas source | none | 2026-11-13 |
+
 ## Model, changes, history and text (lane w-c)
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
@@ -157,6 +163,9 @@ third-party code included (normally "none") · date.
 | `text/measure.ts` | lane w-n | T-1, T-2 | text §§2–3, 7.2 | Canvas TextMetrics API and fixed-size draw recipe; bounded epoch-aware cache | none | 2026-11-13 |
 | `text/itemize.ts` | lane w-n | T-1, T-2 | text §§2–3 | Rich-text runs and independently implemented Unicode line, bidi and grapheme APIs | none | 2026-11-13 |
 | `text/wrap.ts` | lane w-n | T-1, T-2 | text §§2, 6 | Greedy Unicode line opportunities and grapheme emergency breaks, own implementation | none | 2026-11-13 |
+| `text/layout.ts` | lane w-n | T-1, T-2, T-6 | text §§2–3, 6–7 | Unicode itemizer and bidi reordering, face metrics and canvas measurement, heading sizes from spec/text F-TEXT-012; own layout implementation | none | 2026-11-13 |
+| `text/caretIndex.ts` | lane w-n | T-4, T-5 | text §§5.3–5.6 | Independent reference-size prefix measurement and grapheme-index geometry | none | 2026-11-13 |
+| `text/layout.worker.ts` | lane w-n | T-1, T-2, T-6 | text §§2–3, 7.2 | OffscreenCanvas, worker-local FontFaceSet and platform worker protocol | none | 2026-11-13 |
 | `text/fonts.ts` | lane w-n | T-6 | text §7 | FontFace API; lazy per-context registration and epoch, no tldraw source | none | 2026-11-13 |
 | `text/fontMetrics.json` | lane w-n | T-6 | text §7 | Generated directly from pinned upstream WOFF2 metrics tables | font metrics | 2026-11-13 |
 | `text/fonts/*.woff2` | lane w-n | T-6 | text §7.1; IR-4 | Arrow Type Shantell Sans 1.011 release ZIP matches tagged tree; IBM Plex Sans/Serif/Mono 1.1.0 tags; exact per-file URLs, tags and SHA-256 in `tools/whiteboard-fonts/manifest.json` and G-TXT-FONTPIN | upstream unmodified fonts, SIL OFL 1.1, Plex Reserved Font Name | 2026-11-13 |
@@ -173,6 +182,7 @@ third-party code included (normally "none") · date.
 | `geom/numeric.ts` | lane w-g | GE-1 | geometry §2.1–2.2 | Design; IEEE 754 binary64; independent dyadic arithmetic | none | 2026-11-13 |
 | `geom/predicates.ts` | lane w-g | GE-1 | geometry §2.2 | Design; interval-filtered exact dyadic predicates | none | 2026-11-13 |
 | `geom/affine.ts` | lane w-g | GE-1 | geometry §2.3 | Design; shared affine helpers and singular value identity | none | 2026-11-13 |
+| `geom/flatten.ts` | lane w-g | GE-1 | geometry §2.4 | Design; w-e's bounded ink cubic flattening job and circular sagitta bound | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 
@@ -237,6 +247,6 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `model/pages.ts` | lane w-l | M-6, E-DOC-12/13/14, C1.5, C2.3 | document-model §6 | Design; platform pageStack and geometry contract; no tldraw source | none | 2026-11-13 |
-| `commands/pagesAndSheets.ts` | lane w-l | F-SHEET-002/003/005/006, F-NB-002/003/004/006/007/008, R-11, R-24 | document-model §6; change-and-history §2 | Specs and own model/apply interfaces; no tldraw source | none | 2026-11-13 |
+| `commands/pagesAndSheets.ts` | lane w-l | F-SHEET-002/003/004/005/006, F-NB-002/003/004/006/007/008, R-11, R-24 | document-model §6; change-and-history §2 | Specs and own model/apply interfaces; no tldraw source | none | 2026-11-13 |
 | `host/notebookPaper.ts` | lane w-l | F-NB-002/003/004/014, C2.4 | notebook §F-NB-004 | Specs, platform display-list contract and paper.ts; no tldraw source | none | 2026-11-13 |
 | `host/notebookExport.ts` | lane w-l | F-NB-014, F-SHEET-008, R-12, C2.4 | notebook §F-NB-014; sheets §F-SHEET-008 | Specs, platform display-list contract; no tldraw source | none | 2026-11-13 |

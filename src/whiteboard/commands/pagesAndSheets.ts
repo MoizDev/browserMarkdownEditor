@@ -3,8 +3,9 @@ import type { Applied, BoardOp, Op } from '../change/ops';
 import { PAGE_GAP } from '../../platform/render/pageStack';
 import { MAX_PAGES, paperPageSize, type NotebookPaper } from '../../utils/paper';
 import { childrenOf, type BoardDoc } from '../model/doc';
-import type { NodeId, SheetId } from '../model/ids';
+import { newNodeId, type NodeId, type SheetId } from '../model/ids';
 import type { ConnectorEnd, ConnectorNode, Node, Point } from '../model/nodes';
+import type { ExtBag } from '../model/json';
 import { keyBetween } from '../model/orderKey';
 
 /** A refusal is safe to show in the host's own dialog. */
@@ -24,6 +25,51 @@ export function addSheet(doc: BoardDoc, apply: ApplyController, id: SheetId, nam
     return commit(apply, 'Create sheet', [{ t: 'sheet', op: 'create', sheet: {
         id, name, order: keyBetween(last?.order ?? null, null), ext: null,
     } }]);
+}
+
+function withoutRaw(ext: ExtBag | null, keys: readonly string[]): ExtBag | null {
+    if (!ext) return null;
+    const raw = new Map(ext.raw);
+    for (const key of keys) raw.delete(key);
+    return { fields: ext.fields, raw };
+}
+
+export function duplicateSheet(doc: BoardDoc, apply: ApplyController, source: SheetId, id: SheetId): Applied {
+    if (doc.sheetOrder.length >= 40) throw new StructureRefused('Maximum pages reached');
+    const index = doc.sheetOrder.findIndex(sheet => sheet.id === source);
+    if (index < 0) throw new StructureRefused('Sheet no longer exists');
+    const original = doc.sheetOrder[index];
+    const allocated = new Set<NodeId>();
+    const tables = { nodes: { has: (node: NodeId) => allocated.has(node) || doc.nodes.has(node) }, sheets: doc.sheets };
+    const nodes: Node[] = [];
+    const ids = new Map<NodeId, NodeId>();
+    const visit = (node: Node) => {
+        if (node.kind === 'opaque') throw new StructureRefused('Unsupported content cannot be duplicated safely');
+        let copy: NodeId;
+        do { copy = newNodeId(tables); } while (copy === id as unknown as NodeId);
+        allocated.add(copy); ids.set(node.id, copy); nodes.push(node);
+        for (const child of childrenOf(doc, node.id)) visit(child);
+    };
+    for (const node of childrenOf(doc, source)) visit(node);
+    const ops: Op[] = [{ t: 'sheet', op: 'create', sheet: { id, name: `${original.name.slice(0, 195)} Copy`,
+        order: keyBetween(original.order, doc.sheetOrder[index + 1]?.order ?? null),
+        ext: withoutRaw(original.ext, ['id', 'name', 'order']) } }];
+    for (const node of nodes) {
+        const parent = node.parent === source ? id : ids.get(node.parent as NodeId);
+        if (!parent) throw new StructureRefused('Content parent cannot be duplicated safely');
+        if (node.kind === 'opaque') throw new StructureRefused('Unsupported content cannot be duplicated safely');
+        if (node.kind === 'connector') {
+            const remap = (end: typeof node.start) => {
+                if (!end.attach) return end;
+                const target = ids.get(end.attach.target);
+                if (!target) throw new StructureRefused('Connector target cannot be duplicated safely');
+                return { ...end, attach: { ...end.attach, target } };
+            };
+            ops.push({ t: 'create', node: { ...node, id: ids.get(node.id)!, parent, start: remap(node.start), end: remap(node.end),
+                ext: withoutRaw(node.ext, ['id', 'parent', 'start', 'end']) } });
+        } else ops.push({ t: 'create', node: { ...node, id: ids.get(node.id)!, parent, ext: withoutRaw(node.ext, ['id', 'parent']) } });
+    }
+    return commit(apply, 'Duplicate sheet', ops);
 }
 
 export function renameSheet(apply: ApplyController, id: SheetId, name: string): Applied {

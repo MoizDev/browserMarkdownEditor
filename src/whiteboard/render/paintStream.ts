@@ -6,6 +6,7 @@ import type { InkMaterial, PaintBand, PathMaterial, TextMaterial } from './mater
 import type { TextPaint, FaceTable } from '../text/paint';
 import type { BoardDoc } from '../model/doc';
 import type { SessionDenseRasters } from './sessionDenseRasters';
+import type { ScenePaintNodeStream } from './scenePaintStream';
 
 export type FillRule = 'nonzero' | 'evenodd';
 export interface PaintClip {
@@ -87,6 +88,8 @@ export interface PaintFrame {
     readonly sessionRasters?: SessionDenseRasters;
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
+    /** Reopens this frame's pinned scene as a bounded stream over a tile apron; absent when not reopenable. */
+    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly inkNodeIds: ReadonlySet<string>;

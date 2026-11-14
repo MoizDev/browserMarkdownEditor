@@ -3,6 +3,7 @@ import type { Modifiers, RealSample } from './tool'
 export interface PresentedMapping {
   readonly time: number
   clientToWorld(x: number, y: number): { readonly x: number; readonly y: number }
+  clientToSurface(x: number, y: number): { readonly x: number; readonly y: number }
 }
 
 // Record mappings only after presentation, not when a future camera is scheduled.
@@ -10,7 +11,8 @@ export class MappingHistory {
   private entries: PresentedMapping[] = []
   constructor(private readonly onExpired: () => void = () => {}) {}
   present(mapping: PresentedMapping): void {
-    if (!Number.isFinite(mapping.time) || (this.entries.length && mapping.time < this.entries[this.entries.length - 1].time)) throw new Error('Invalid presentation time')
+    if (!Number.isFinite(mapping.time) || typeof mapping.clientToWorld !== 'function' || typeof mapping.clientToSurface !== 'function'
+      || (this.entries.length && mapping.time < this.entries[this.entries.length - 1].time)) throw new Error('Invalid presented input mapping')
     this.entries.push(mapping)
     // Retain at least 250 ms even at very high frame rates.
     while (this.entries.length > 64 && mapping.time - this.entries[1].time >= 250) this.entries.shift()
@@ -24,6 +26,9 @@ export class MappingHistory {
   }
   map(time: number, x: number, y: number): { readonly x: number; readonly y: number } {
     return this.at(time).clientToWorld(x, y)
+  }
+  surface(time: number, x: number, y: number): { readonly x: number; readonly y: number } {
+    return this.at(time).clientToSurface(x, y)
   }
   /** Recover the physical input point through the SAME presented affine that
    * acquired it. Reprojecting with a newer pan camera feeds motion back twice. */
@@ -108,11 +113,12 @@ export class PointerAcquisition {
     const time = event.timeStamp
     if (!Number.isFinite(time) || time < 0 || time > performance.now() + 10000 || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) throw new Error('Invalid pointer sample')
     const point = this.mappings.map(time, event.clientX, event.clientY)
-    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('Invalid input mapping')
+    const surface = this.mappings.surface(time, event.clientX, event.clientY)
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(surface.x) || !Number.isFinite(surface.y)) throw new Error('Invalid input mapping')
     const source = event.pointerType === 'pen' || event.pointerType === 'touch' ? event.pointerType : 'mouse'
     const pressureKnown = source === 'pen' && Number.isFinite(event.pressure)
     return { pointerId: event.pointerId, sequence: ++this.sequence, source, x: point.x, y: point.y,
-      pressure: pressureKnown ? Math.max(0, Math.min(1, event.pressure)) : 0.5, pressureKnown, time,
+      surfaceX: surface.x, surfaceY: surface.y, pressure: pressureKnown ? Math.max(0, Math.min(1, event.pressure)) : 0.5, pressureKnown, time,
       buttons: event.buttons, tiltX: Math.max(-90, Math.min(90, event.tiltX || 0)), tiltY: Math.max(-90, Math.min(90, event.tiltY || 0)), twist: ((event.twist || 0) % 360 + 360) % 360 }
   }
 

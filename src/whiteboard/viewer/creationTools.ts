@@ -10,7 +10,7 @@ import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
-import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample, Tool } from '../input/tool';
+import { sampleSurface, type CancelReason, type FinishReason, type GestureOwner, type Modifiers, type RealSample, type Tool } from '../input/tool';
 import { hasOpaqueDescendant, isSheetParent, sheetOf } from '../model/doc';
 import { polylineHandleGesture } from '../input/polylineHandles';
 import { createAddedBoardDoc } from '../model/overlayDoc';
@@ -70,7 +70,7 @@ class CreationGesture implements GestureOwner {
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
         this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
-        this.downSurface = context.sampleToSurface(down); this.lastSurface = this.downSurface;
+        this.downSurface = sampleSurface(down, context.sampleToSurface); this.lastSurface = this.downSurface;
         this.revision = doc.rev; this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
         const parent = doc.nodes.get(this.parent as Node['id']);
         if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame') || isLocked(doc, parent))) throw new Error('Creation focus is not an editable container');
@@ -100,7 +100,7 @@ class CreationGesture implements GestureOwner {
     private node(sample = this.sample, modifiers = this.modifiers): Node {
         const p = this.local(sample), style = this.style;
         let dx = p.x - this.base.x, dy = p.y - this.base.y;
-        const surface = this.context.sampleToSurface(sample);
+        const surface = sampleSurface(sample, this.context.sampleToSurface);
         const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= 4;
         if (modifiers.shift) {
             if (this.context.kind === 'connector' || this.context.kind === 'polyline') {
@@ -141,7 +141,7 @@ class CreationGesture implements GestureOwner {
         }
     }
     private async snapped(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
-        const node = this.node(sample, modifiers), surface = this.context.sampleToSurface(sample);
+        const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
         // Default: creation snapping is off unless Always Snap is inverted by the accelerator.
         if ((this.context.alwaysSnap?.() ?? false) === modifiers.accel
             || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4
@@ -173,7 +173,7 @@ class CreationGesture implements GestureOwner {
         if (!this.valid()) { this.cancel('invalidated'); return; }
         this.modifiers = modifiers;
         for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) {
-            const surface = this.context.sampleToSurface(sample);
+            const surface = sampleSurface(sample, this.context.sampleToSurface);
             if (surface.x !== this.lastSurface.x || surface.y !== this.lastSurface.y) this.lastMovedAt = sample.time;
             this.lastSurface = surface; this.sample = sample;
         }

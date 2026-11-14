@@ -18,7 +18,7 @@ import type { BoardRuntime } from '../host/runtime';
 import type { EraserContext } from '../input/basicTools';
 import type { SweptSelectionCursor, SweepPoint, SweepQueueServices } from '../input/sweepQueue';
 import type { NodeId } from '../model/ids';
-import type { GestureOwner, InputToken, Modifiers, RealSample } from '../input/tool';
+import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample } from '../input/tool';
 import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
 import type { createBoardRenderServices } from '../render/services';
 import { selectTool, type SelectRegion, type SelectToolContext } from '../tools/select';
@@ -85,9 +85,10 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     const setGuides = (value: readonly BoardSnapGuide[]) => { guides = value; requestFrame(); };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
+    const physicalSurface = (sample: RealSample) => sampleSurface(sample, options.sampleToSurface);
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
     const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
-        sampleToSurface: options.sampleToSurface, invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
+        sampleToSurface: physicalSurface, invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
         show: ops => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
         armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
         clear: () => options.preview.clear(), resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
@@ -319,7 +320,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
         if (!mutable()) return null;
-        const surface = options.sampleToSurface(sample), coarse = sample.source === 'touch';
+        const surface = physicalSurface(sample), coarse = sample.source === 'touch';
         const shapeHit = shapeHandles.hit(surface, coarse);
         if (shapeHit) return shapeHandles.begin(shapeHit, sample, modifiers);
         const direction = stickyHandles.hit(surface, coarse);
@@ -342,7 +343,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         try { unregister = registerPending(cancel); } catch (error) { release(); throw error; }
         return { kind: 'node-edit', pointerIds,
             update(samples) { for (const next of samples) if (pointerIds.has(next.pointerId)) {
-                const point = options.sampleToSurface(next); if (Math.hypot(point.x - down.x, point.y - down.y) >= 4) cancel();
+                const point = physicalSurface(next); if (Math.hypot(point.x - down.x, point.y - down.y) >= 4) cancel();
             } },
             finish(reason) {
                 if (ended || cancelled) return; ended = true;

@@ -14,7 +14,7 @@ import { predictedTail, type PredictedPoint, type PredictionMapping } from './pr
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
 import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
-import type { GestureOwner, InputToken, Modifiers, RealSample, Tool } from './tool'
+import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample, type Tool } from './tool'
 import type { KeyboardNavigationPriority } from './scrollKeysTypes'
 import type { TextInputBridge } from '../text/edit/managerTypes'
 
@@ -113,8 +113,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     for (const cancel of pending) cancel()
     return pending.length > 0
   }
+  const physicalSurface = (sample: RealSample) => sampleSurface(sample, view.sampleToSurface)
   const handContext: HandContext = {
-    toSurface: view.sampleToSurface,
+    toSurface: physicalSurface,
     panBy: delta => view.camera.panBy(delta),
     invalidate: services.cameraChanged,
   }
@@ -122,7 +123,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const secondaryPan: Tool<unknown> = {
     id: 'secondary-pan',
     begin(sample, modifiers) {
-      const origin = view.sampleToSurface(sample)
+      const origin = physicalSurface(sample)
       const pan = handTool.begin(sample, modifiers, handContext)
       if (!pan) return null
       let dragging = false
@@ -130,7 +131,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         kind: 'pan', pointerIds: pan.pointerIds,
         update(samples, nextModifiers) {
           for (const point of samples) {
-            const surface = view.sampleToSurface(point)
+            const surface = physicalSurface(point)
             if (!dragging && Math.hypot(surface.x - origin.x, surface.y - origin.y) >= 4) { dragging = true; suppressMenu = true }
             if (dragging) pan.update([point], nextModifiers)
           }
@@ -189,7 +190,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (event.button !== 0) return null
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
-        const context = services.zoomBrush()
+        const source = services.zoomBrush()
+        const context = { ...source, toSurface: (point: RealSample) => sampleSurface(point, source.toSurface) }
         return { tool: { id: zoomBrushTool.id, begin: (point, keys) => zoomBrushTool.begin(point, keys, context) }, context: undefined }
       }
       if (editable() && services.editing() && services.textInput) {
@@ -199,7 +201,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if ((mode === 'view' || (editable() && choice.id === 'select')) && !modifiers.accel && !modifiers.alt && !modifiers.shift) {
         const open = services.linkAt?.(sample)
         if (open) {
-          const origin = view.sampleToSurface(sample)
+          const origin = physicalSurface(sample)
           const fallback = mode === 'view' ? { tool: hand, context: undefined } : services.resolveTool(choice, sample, modifiers, event)
           const link: Tool<unknown> = { id: 'view-link', begin: (_point, keys) => {
             let dragged = false
@@ -207,7 +209,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
             return {
               kind: mode === 'view' ? 'pan' : 'node-edit', pointerIds: new Set([sample.pointerId]),
               update: (samples, nextKeys) => { for (const point of samples) {
-                const next = view.sampleToSurface(point)
+                const next = physicalSurface(point)
                 if (!dragged && Math.hypot(next.x - origin.x, next.y - origin.y) >= 4) {
                   dragged = true
                   owner = fallback?.tool.begin(sample, keys, fallback.context) ?? null
@@ -275,7 +277,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     }
   }
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
-  const contact = (event: PointerEvent): ContactPoint => ({ ...view.clientToSurface(event.clientX, event.clientY), id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
+  const contact = (event: PointerEvent): ContactPoint => ({ ...view.mappings.surface(event.timeStamp, event.clientX, event.clientY),
+    id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
     services.textInput?.cancelPending()
     if (!current()) return
@@ -421,8 +424,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (!(router.activeOwner instanceof LiveInk)) return true
         let previous: Point
         return router.suspendInk(view.token, {
-          begin: sample => { previous = view.sampleToSurface(sample) },
-          update: samples => { for (const sample of samples) { const point = view.sampleToSurface(sample); view.camera.panBy({ x: previous.x - point.x, y: previous.y - point.y }); previous = point }; services.cameraChanged() },
+          begin: sample => { previous = physicalSurface(sample) },
+          update: samples => { for (const sample of samples) { const point = physicalSurface(sample); view.camera.panBy({ x: previous.x - point.x, y: previous.y - point.y }); previous = point }; services.cameraChanged() },
           end: () => {},
         })
       }

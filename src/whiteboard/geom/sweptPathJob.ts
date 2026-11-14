@@ -9,6 +9,7 @@ import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './po
 import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
 import { createExactInverseDistance } from './exactInverseDistance';
 import { strokeSeparatedFromHull } from './strokeSupport';
+import { createAnisotropicSweepJob } from './anisotropicSweepJob';
 import type { PathOp } from './path';
 import type { PathPickOptions } from './pick';
 import type { RegionQuery } from './types';
@@ -52,7 +53,7 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
     const stroke = strokeRadiusBounds(matrix, options.strokeRadiusLocal);
     if (!stroke) finished = { status: 'uncertain', reason: 'Swept path transform scale overflows' };
     const strokeRadius = add(stroke ?? interval(0), interval(query.radiusCss)), fillRadius = interval(query.radiusCss);
-    const inverseDistance = query.radiusCss === 0 && !isUniformDistanceMatrix(matrix) ? createExactInverseDistance(matrix) : null;
+    const anisotropic = !isUniformDistanceMatrix(matrix), inverseDistance = query.radiusCss === 0 && anisotropic ? createExactInverseDistance(matrix) : null;
     if (![strokeRadius.lo, strokeRadius.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Swept path radius overflows' };
     const point = (p: { readonly x: number; readonly y: number }): BoundsPoint => {
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) throw new RangeError('Invalid sweep point');
@@ -66,6 +67,8 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
     let segmentCubic: readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
     let capsuleCertificate: ReturnType<typeof createCurveCapsuleCertificate> | undefined, deferred: Pair | undefined;
     let capsulePhase: 'inner' | 'outer' | 'exact' = 'inner', exactCurve: readonly [ExactCurvePoint, ExactCurvePoint] | readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
+    let anisotropicJob: ReturnType<typeof createAnisotropicSweepJob> | undefined;
+    let sweepQuery: readonly [{ readonly x: number; readonly y: number }, { readonly x: number; readonly y: number }] | undefined;
     let exactSweep: readonly [ExactCurvePoint, ExactCurvePoint] | undefined;
     const stack: Pair[] = [];
     const finish = (result: SweptPathResult): SweptPathResult => { finished = Object.freeze(result); return finished; };
@@ -85,10 +88,22 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                     if (state.status === 'uncertain') fillUncertain = true;
                     fill = undefined; fillIndex++; continue;
                 }
+                if (anisotropicJob) {
+                    const result = anisotropicJob.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    anisotropicJob.cancel(); anisotropicJob = undefined;
+                    if (result.status === 'hit') return finish({ status: 'hit' });
+                    if (result.status === 'uncertain') stack.push(deferred!);
+                    deferred = undefined; exactCurve = undefined; exactSweep = undefined; sweepQuery = undefined; continue;
+                }
                 if (capsuleCertificate) {
                     const result = capsuleCertificate.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
                     capsuleCertificate.cancel(); capsuleCertificate = undefined;
+                    if (anisotropic && query.radiusCss > 0 && ((capsulePhase === 'inner' && result.status === 'uncertain')
+                        || (capsulePhase === 'outer' && result.status !== 'miss'))) {
+                        anisotropicJob = createAnisotropicSweepJob(exactCurve!, matrix, segmentLocalRadius, sweepQuery![0], sweepQuery![1], query.radiusCss); continue;
+                    }
                     if ((capsulePhase === 'inner' || capsulePhase === 'exact') && result.status === 'hit') return finish({ status: 'hit' });
                     if (capsulePhase === 'exact' && result.status === 'miss') { deferred = undefined; exactCurve = undefined; exactSweep = undefined; continue; }
                     if (capsulePhase === 'exact') { stack.push(deferred!); deferred = undefined; exactCurve = undefined; exactSweep = undefined; continue; }
@@ -127,7 +142,7 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                         if (segmentExact && exactSegmentsIntersect(segmentExact[0], segmentExact[1], exactPoint(first), exactPoint(last))) return finish({ status: 'hit' });
                         sweepIndex++; if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Swept path node limit exhausted' });
                         const pair: Pair = { path: segment, sweep: { points: [a, b], depth }, radius: segmentRadius, localRadius: segmentLocalRadius };
-                        exactCurve = segmentCubic ?? segmentExact; exactSweep = [exactPoint(first), exactPoint(last)]; deferred = pair;
+                        exactCurve = segmentCubic ?? segmentExact; exactSweep = [exactPoint(first), exactPoint(last)]; sweepQuery = [first, last]; deferred = pair;
                         if (inverseDistance) {
                             capsulePhase = 'exact';
                             const curve = exactCurve!.map(inverseDistance.map) as unknown as typeof exactCurve;
@@ -171,6 +186,6 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
             }
             return PENDING;
         },
-        cancel() { cancelled = true; capsuleCertificate?.cancel(); capsuleCertificate = undefined; deferred = undefined; exactCurve = undefined; exactSweep = undefined; stack.length = 0; },
+        cancel() { cancelled = true; capsuleCertificate?.cancel(); anisotropicJob?.cancel(); capsuleCertificate = undefined; deferred = undefined; exactCurve = undefined; exactSweep = undefined; stack.length = 0; },
     };
 }

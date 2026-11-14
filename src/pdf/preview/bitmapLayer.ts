@@ -40,6 +40,8 @@ export class PreviewBitmapLayer implements Layer {
     private cpuBlocked = false;
     private disposed = false;
     private expected = new Map<number, PreviewExpectedPage>();
+    readonly benchmarkDomain = __BME_BENCH__ ? (view: ViewState): readonly PreviewRect[] =>
+        [...this.expected.values()].filter(page => onScreen(page.rect, view)).map(page => project(page.rect, view)) : undefined;
 
     constructor(private readonly host: LayerHost) {
         this.bitmaps = new PreviewBitmapStore(host.allocator.cpu, () => {

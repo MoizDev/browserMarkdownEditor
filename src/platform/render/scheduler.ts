@@ -40,6 +40,8 @@ export interface PresentedLayerRevision {
 export interface ScheduledSubmission {
     readonly drawn: readonly PresentedLayerRevision[];
     readonly completed?: () => boolean;
+    /** Benchmark observation is committed only after this exact display and its overlays agree. */
+    readonly commitObservation?: () => void;
 }
 
 /** Encoding/submission belong to the compositor; abort cleanup must not publish pixels (§7.1:687–688).
@@ -670,6 +672,7 @@ export class FrameScheduler {
                     if (drawn.length) this.acknowledgements.push({ entry: item.work.entry, frameId, token: item.work.frame.token,
                         submission: completed ? { drawn, completed } : { drawn } });
                     item.work.entry.pane.writeOverlays(item.work.frame);
+                    if (__BME_BENCH__) submission.commitObservation?.();
                     if (benchmarkPerf) {
                         const frame = item.work.frame;
                         const accounting = item.work.entry.pane.benchmarkMemory?.();

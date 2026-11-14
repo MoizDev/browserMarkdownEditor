@@ -582,10 +582,14 @@ function* loadedRootSteps(doc: BoardDoc): Generator<void, ValidationResult> {
             || !integer(preserved.version[1], 0) || !(preserved.fields instanceof Map)
             || !Array.isArray(preserved.records) || !(yield* rootExtension(preserved.end))) return bad('Invalid preserved data');
         for (const [key, value] of preserved.fields) { yield; rawEntry(value, key); }
+        const preservedIdentities = new Set<string>();
         for (const record of preserved.records) {
             yield;
             if (!object(record) || !closed(record, ['type', 'id', 'raw']) || !string(record.type)
                 || !id(record.id) || typeof record.raw !== 'string') return bad('Invalid preserved record');
+            const key = JSON.stringify([record.type, record.id]);
+            if (preservedIdentities.has(key)) return bad('Duplicate preserved record identity');
+            preservedIdentities.add(key);
         }
         if (!(doc.preservedMediaRefs instanceof Map)) return bad('Invalid preserved media references', 'V-9');
         for (const [key, count] of doc.preservedMediaRefs) {
@@ -613,7 +617,7 @@ export async function validateLoadedRootIncremental(doc: BoardDoc, cooperate?: (
         if (step.done) { check(); return step.value; }
         if (++count >= 256 || performance.now() - started >= 3) {
             check();
-            await cooperate?.();
+            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
             check();
             count = 0; started = performance.now();
         }

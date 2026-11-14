@@ -38,7 +38,11 @@ export function createBoardLoadAdmission(authority: JobAuthority, ports: {
         async prepare(projection, baseline, context) {
             if (disposed) throw new DOMException('Board load is no longer current', 'AbortError');
             authority.assertContext(context);
-            const cooperate = async () => { authority.assertContext(context); await ports.cooperate?.(); authority.assertContext(context); };
+            const cooperate = async () => {
+                authority.assertContext(context);
+                await (ports.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                authority.assertContext(context);
+            };
             const load = await rehydrateLoad(projection, ports.admit, ports.samples, cooperate, context.signal);
             let registered: AdmittedLoadToken | undefined;
             try {

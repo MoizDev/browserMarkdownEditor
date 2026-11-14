@@ -50,13 +50,16 @@ export async function validateLoadSources(sources: readonly ReadSourceRecord[], 
         || !Array.isArray(unmapped)) throw new TypeError('Invalid source validation input');
     let steps = 0, started = performance.now();
     const tick = async () => { check(); await cooperate?.(); check(); started = performance.now(); steps = 0; };
-    const ordinals = new Set<number>();
+    const ordinals = new Set<number>(), identities = new Set<string>();
     let end = 0, previousOrdinal = -1;
     check();
     for (const entry of sources) {
         if (++steps >= 256 || performance.now() - started >= 3) await tick();
         if (!source(entry, baseline.size) || entry.position.ordinal <= previousOrdinal
             || entry.position.byteLength === 0 || entry.position.byteOffset < end) throw new TypeError('Invalid live source metadata');
+        const identity = JSON.stringify([entry.category, entry.type, entry.id ?? null]);
+        if (identities.has(identity)) throw new TypeError('Duplicate live source identity');
+        identities.add(identity);
         ordinals.add(entry.position.ordinal);
         previousOrdinal = entry.position.ordinal;
         end = entry.position.byteOffset + entry.position.byteLength;

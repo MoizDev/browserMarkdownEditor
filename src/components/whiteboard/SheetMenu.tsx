@@ -10,6 +10,7 @@ export interface SheetMenuProps {
     readonly sheets: readonly SheetMenuEntry[];
     readonly current: string;
     readonly readOnly: boolean;
+    readonly dir: 'ltr' | 'rtl';
     readonly t: (key: string, values?: Readonly<Record<string, string | number>>) => string;
     readonly close: () => void;
     readonly select: (id: string) => void;
@@ -21,7 +22,7 @@ export interface SheetMenuProps {
 }
 
 /** Logical sheets are independent of the paper-page navigator on paged hosts. */
-export function SheetMenu({ anchor, sheets, current, readOnly, t, close, select, create, rename, duplicate, remove, move }: SheetMenuProps) {
+export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, select, create, rename, duplicate, remove, move }: SheetMenuProps) {
     const panel = useRef<HTMLDivElement>(null);
     const input = useRef<HTMLInputElement>(null);
     const [editing, setEditing] = useState<string | null>(null);
@@ -46,12 +47,12 @@ export function SheetMenu({ anchor, sheets, current, readOnly, t, close, select,
         cancelled.current = false;
         setEditing(null);
     };
-    return <div ref={panel} className="board-sheet-menu" role="dialog" aria-label={t('sheet.menu')}
+    return <div ref={panel} className="board-sheet-menu" role="dialog" dir={dir} aria-label={t('sheet.menu')}
         style={{ left: Math.max(8, Math.min(rect.left, window.innerWidth - 288)), top: Math.min(rect.bottom + 6, window.innerHeight - 80) }}
         onContextMenu={event => event.preventDefault()} onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
         <div className="board-sheet-menu-label">{t('sheet.goToPage')}</div>
         {sheets.map((sheet, index) => <div className="board-sheet-row" key={sheet.id}>
-            {editing === sheet.id ? <input ref={input} aria-label={t('sheet.pageName')} value={name} maxLength={200}
+            {editing === sheet.id ? <input ref={input} aria-label={t('sheet.rename')} value={name} maxLength={200}
                 onChange={event => setName(event.currentTarget.value)} onBlur={() => finishRename(sheet)}
                 onKeyDown={event => {
                     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelled.current = true; event.currentTarget.blur(); }

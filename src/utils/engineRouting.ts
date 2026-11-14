@@ -8,7 +8,7 @@ export type PdfViewer = 'classic' | 'tiled';
 // The same availability list drives the controls and the synchronous router.
 export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['tldraw'];
 export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = ['classic'];
-export const PLATFORM_LAYER_AVAILABLE = false;
+export const PLATFORM_LAYER_AVAILABLE = true;
 export const CANVAS_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook', 'pdfInk'];
 export const engineKey = (kind: CanvasEngineKind) => `bme.whiteboard.engine.${kind}`;
 export const emergencyKey = (kind: CanvasEngineKind) => `bme.whiteboard.emergencyReadOnly.${kind}`;
@@ -17,8 +17,12 @@ function stored(key: string): string | null {
     try { return localStorage.getItem(key); } catch { return null; }
 }
 export function developerEnabled(): boolean { return stored('bme.developer') === 'true'; }
+let incrementalEditor: boolean | undefined;
+export function incrementalEditorEnabled(): boolean { return incrementalEditor ??= stored('bme.editor.incremental') !== 'false'; }
 export function setDeveloperSetting(key: string, value: string | boolean): boolean {
-    return writeStoredValue(key, String(value));
+    const written = writeStoredValue(key, String(value));
+    if (written && key === 'bme.editor.incremental') incrementalEditor = String(value) !== 'false';
+    return written;
 }
 
 /** Read at open, not continuously: an already-mounted editor keeps its engine. */

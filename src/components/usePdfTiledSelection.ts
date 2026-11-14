@@ -13,7 +13,7 @@ export interface PdfTiledSelectionOptions {
     docKey: string;
     pageCount: number;
     selection: PdfSelectionState;
-    geometry: PdfSelectionGeometryCache;
+    geometry?: PdfSelectionGeometryCache;
     isVisible: boolean;
     isFocused: boolean;
     /** Convert client coordinates using the current camera, not a captured one. */
@@ -25,6 +25,7 @@ export interface PdfTiledSelectionOptions {
     touchPointer?(phase: 'down' | 'move' | 'up' | 'cancel', event: PointerEvent): void;
     contextMenu(x: number, y: number, keyboard: boolean): void;
     findOpen(): boolean;
+    cancelCopy?(): boolean;
     closeFindPreservingHit(): void;
     setReaderVisible(visible: boolean): void;
     clearMirrorPages(): void;
@@ -36,7 +37,8 @@ export interface PdfTiledSelectionOptions {
 /** Pane-owned state is supplied by the caller and survives unmounting this
  * surface. Geometry/worker requests are always owned by this mounted pane. */
 export function usePdfTiledSelection(options: PdfTiledSelectionOptions) {
-    const live = useRef(options); live.current = options;
+    const live = useRef(options);
+    useLayoutEffect(() => { live.current = options; });
     const input = useRef<PdfTextInputBinding | null>(null);
     const visibility = useRef<PdfTextVisibility | null>(null);
     const snapshot = useSyncExternalStore(options.selection.subscribe, options.selection.getSnapshot, options.selection.getSnapshot);
@@ -44,7 +46,7 @@ export function usePdfTiledSelection(options: PdfTiledSelectionOptions) {
     useLayoutEffect(() => { options.selection.setDocument(options.docKey); }, [options.selection, options.docKey]);
     useLayoutEffect(() => {
         const { element, selection, geometry } = options;
-        if (!element) return;
+        if (!element || !geometry) return;
         const detach = selection.attachGeometry(geometry);
         const gestures = new PdfSelectionGestures({ selection, cached: page => geometry.cached(page),
             locale: (page, line) => live.current.locale?.(page, line) });
@@ -84,6 +86,7 @@ export function usePdfTiledSelection(options: PdfTiledSelectionOptions) {
             isFocused: () => live.current.isFocused,
             page: (page, signal) => geometry.get(page, 0, signal),
             findOpen: () => live.current.findOpen(),
+            cancelCopy: () => live.current.cancelCopy?.() ?? false,
             closeFindPreservingHit: () => live.current.closeFindPreservingHit(),
         });
         const lifecycle = new PdfTextVisibility({

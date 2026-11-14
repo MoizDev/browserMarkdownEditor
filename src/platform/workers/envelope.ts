@@ -64,10 +64,14 @@ export interface WorkerSpec {
     onStart?(client: WorkerClient): Promise<void>;
     silenceMs?: Record<Priority, number>;
     absoluteMs?: number;
+    restartPolicy?: { delaysMs: readonly number[]; maxFailures: number; windowMs: number };
     disposeResult?(op: string, result: unknown): void;
     events?: readonly string[];
     eventLimit?: number;
     permits?: CpuPermits;
+    // C5.5 permits read-only cloned file handles only for the same-origin vault
+    // index tree operations; contained ports still enforce the C5.2 allowlist.
+    fileHandleOps?: readonly string[];
 }
 
 export type ClientState = 'idle' | 'starting' | 'ready' | 'recycling' | 'backoff' | 'failed' | 'disposed';
@@ -114,17 +118,19 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
 }
 
 // Check caller arguments and contained replies only: structuredClone permits shared buffers and
-// handles beyond C5. Trusted same-origin replies already cloned without functions/accessors; walking
+// handles beyond C5; only the index's opted-in same-origin operations carry file handles.
+// Trusted same-origin replies already cloned without functions/accessors; walking
 // their large index snapshots again on the main thread would defeat moving that work off-thread.
 // Walk containers only; never scan the bytes of a buffer, bitmap or Blob.
-export function assertPayload(value: unknown, seen = new Set<object>()): void {
+export function assertPayload(value: unknown, seen = new Set<object>(), allowFileHandles = false): void {
     if (value === null || value === undefined || ['string', 'boolean', 'number', 'bigint'].includes(typeof value)) return;
     if (typeof value !== 'object') throw new WorkerHostError('Protocol', 'Worker payload must be plain data');
     if (seen.has(value)) return;
     seen.add(value);
+    if (allowFileHandles && typeof FileSystemFileHandle !== 'undefined' && value instanceof FileSystemFileHandle) return;
     if (value instanceof ArrayBuffer) return;
     if (ArrayBuffer.isView(value)) {
-        assertPayload(value.buffer, seen);
+        assertPayload(value.buffer, seen, allowFileHandles);
         return;
     }
     if (typeof ImageBitmap !== 'undefined' && value instanceof ImageBitmap) return;
@@ -137,6 +143,6 @@ export function assertPayload(value: unknown, seen = new Set<object>()): void {
     for (const key of Object.keys(value)) {
         const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
         if (!('value' in descriptor)) throw new WorkerHostError('Protocol', 'Worker payload must not contain accessors');
-        assertPayload(descriptor.value, seen);
+        assertPayload(descriptor.value, seen, allowFileHandles);
     }
 }

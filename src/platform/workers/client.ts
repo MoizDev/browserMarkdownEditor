@@ -14,8 +14,6 @@ type Job = {
     args: unknown;
     options: RequestOptions;
     phase: 'queued' | 'sent' | 'running' | 'settled';
-    asked: number;
-    posted?: number;
     deadline?: number;
     deadlineTimer?: ReturnType<typeof setTimeout>;
     started: number;
@@ -48,18 +46,11 @@ type Connection = {
     events: number;
 };
 
-type Timing = { id: number; asked: number; posted?: number; settled?: number };
-
 export function createWorkerClient(spec: WorkerSpec): WorkerClient {
     const existing = clients.get(spec.name);
     if (existing) return existing;
     const client = new Client(spec);
     clients.set(spec.name, client);
-    if (__BME_BENCH__ && typeof window !== 'undefined') {
-        const target = window as unknown as { __perf?: Record<string, unknown> };
-        const perf = target.__perf ??= {};
-        perf.workers = () => [...clients.values()].map(c => c.measure?.());
-    }
     return client;
 }
 
@@ -76,25 +67,13 @@ class Client implements WorkerClient {
     private spawningAt = 0;
     private respawnAt = 0;
     private crashes: number[] = [];
+    private restartAttempts = 0;
     private pumping = false;
     private pumpAgain = false;
     private poison = new Map<string, number>();
     private recyclePromise?: Promise<void>;
     private readyWaiters: { resolve(): void; reject(error: WorkerHostError): void }[] = [];
-    private timings?: Timing[];
-    measure?: () => unknown;
-
-    constructor(private spec: WorkerSpec) {
-        if (__BME_BENCH__) {
-            this.timings = [];
-            this.measure = () => ({
-                marker: 'bme-worker-measure-v1', name: this.spec.name, state: this.state,
-                generation: this.generation, inFlight: this.inFlight,
-                permits: [...this.pending.values()].filter(job => job.permit?.held).length,
-                requests: this.timings!.map(t => ({ ...t })),
-            });
-        }
-    }
+    constructor(private spec: WorkerSpec) {}
 
     get inFlight(): number { return this.pending.size; }
 
@@ -112,16 +91,12 @@ class Client implements WorkerClient {
         let reject!: (error: WorkerHostError) => void;
         const promise = new Promise<T>((yes, no) => { resolve = value => yes(value as T); reject = no; });
         const job: Job = {
-            id: ++this.nextId, op, args, options: { ...options }, phase: 'queued', asked,
+            id: ++this.nextId, op, args, options: { ...options }, phase: 'queued',
             deadline: options.deadlineMs === undefined ? undefined : asked + options.deadlineMs,
             started: 0, heard: 0, paused: false, admitted: false, bootstrap, resolve, reject,
         };
         this.pending.set(job.id, job);
         this.promises.set(promise, job);
-        if (__BME_BENCH__) {
-            this.timings!.push({ id: job.id, asked });
-            if (this.timings!.length > 512) this.timings!.shift();
-        }
         job.abort = () => this.cancel(job, 'Cancelled', 'Request aborted');
         options.signal?.addEventListener('abort', job.abort, { once: true });
         if (options.signal?.aborted) job.abort();
@@ -194,18 +169,15 @@ class Client implements WorkerClient {
                             }
                         }
                         if (!job.admitted || job.paused) continue;
-                        assertPayload(job.args);
+                        const allowHandles = !connection.alive && !!this.spec.fileHandleOps?.includes(job.op);
+                        assertPayload(job.args, new Set(), allowHandles);
                         if (!this.pending.has(job.id) || this.connection !== connection) continue;
                         job.phase = 'sent';
                         connection.sent.set(job.id, job);
                         const remaining = job.deadline === undefined ? undefined : Math.max(0, job.deadline - now());
                         connection.endpoint.postMessage({ v: 1, id: job.id, op: job.op, args: job.args, priority: job.options.priority, deadlineMs: remaining } satisfies MainMessage, job.options.transfer ?? []);
                         job.phase = 'running';
-                        job.posted = job.started = job.heard = now();
-                        if (__BME_BENCH__) {
-                            const timing = this.timings!.find(t => t.id === job.id);
-                            if (timing) timing.posted = job.posted;
-                        }
+                        job.started = job.heard = now();
                     } catch (error) {
                         connection.sent.delete(job.id);
                         this.settle(job, this.error('Protocol', `Cannot post worker request: ${String(error)}`));
@@ -257,10 +229,6 @@ class Client implements WorkerClient {
         job.options.transfer = undefined;
         job.abort = undefined;
         this.release(job);
-        if (__BME_BENCH__) {
-            const timing = this.timings!.find(t => t.id === job.id);
-            if (timing) timing.settled = now();
-        }
         if (error) job.reject(error);
         else job.resolve(result);
         job.resolve = () => {};
@@ -473,11 +441,16 @@ class Client implements WorkerClient {
         }
         this.retainQueued();
         const time = now();
-        this.crashes = this.crashes.filter(t => time - t < 60000);
+        const policy = this.spec.restartPolicy;
+        const windowMs = policy?.windowMs ?? 60000;
+        const maxFailures = policy?.maxFailures ?? 4;
+        this.crashes = this.crashes.filter(t => time - t < windowMs);
         this.crashes.push(time);
-        if (this.crashes.length >= 4) { this.fail(`Four worker crashes in 60 seconds: ${reason}`); return; }
+        if (this.crashes.length >= maxFailures) { this.fail(`${maxFailures} worker crashes in ${windowMs}ms: ${reason}`); return; }
+        const delays = policy?.delaysMs.length ? policy.delaysMs : backoff;
+        const attempt = policy ? this.restartAttempts++ : this.crashes.length - 1;
         this.state = 'backoff';
-        this.respawnAt = time + backoff[this.crashes.length - 1];
+        this.respawnAt = time + delays[Math.min(attempt, delays.length - 1)];
         if (this.respawnAt === time) this.spawn();
         else this.syncClock();
     }
@@ -505,6 +478,7 @@ class Client implements WorkerClient {
         if (this.state !== 'failed') return;
         this.failure = undefined;
         this.crashes = [];
+        this.restartAttempts = 0;
         this.poison.clear();
         this.state = 'idle';
         this.spawn();

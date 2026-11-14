@@ -9,6 +9,7 @@ import type { MediaEntry, MediaId } from '../model/media';
 import { createExportImageResolver } from '../export/exportImage';
 import { streamPageDisplayList } from '../export/streamPage';
 import { writeIncrementalPdfPage, type IncrementalPdfPage } from '../export/incrementalPdf';
+import { createIncrementalNotebookExportJob } from './notebookIncrementalJob';
 
 /** Pins the notebook's real paper and scene at one revision; the caller owns its release. */
 export function pinNativeNotebookExport({ runtime, revision, current, onError }: {
@@ -150,17 +151,18 @@ export function createNotebookExportJob(options: {
     readonly runtime: BoardRuntime;
     readonly sourcePath: string;
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
-    readonly writer: DisplayPdfWriter;
+    readonly writer?: DisplayPdfWriter;
     readonly onError: (error: unknown) => void;
 }): BuildJob & { release(): void } {
-    const pinned = pinNotebookExportWithMedia(options);
+    if (!options.writer) return createIncrementalNotebookExportJob(options);
+    const writer = options.writer, pinned = pinNotebookExportWithMedia(options);
     let released = false, started = false;
     const release = () => { if (!released) { released = true; pinned.release(); } };
     return { kind: 'build', revision: pinned.revision, release,
         async run(signal) {
             if (released || started) throw new Error('Notebook export job is no longer available');
             started = true;
-            try { return await exportNotebookPdf(pinned.snapshot, options.sourcePath, options.writer, signal); }
+            try { return await exportNotebookPdf(pinned.snapshot, options.sourcePath, writer, signal); }
             finally { release(); }
         } };
 }

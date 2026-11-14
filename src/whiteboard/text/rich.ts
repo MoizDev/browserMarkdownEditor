@@ -7,6 +7,8 @@ export type { Block, Marks, RichFragment, RichSpliceResult, RichText, Run } from
 export { plain, fromPlain, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks, projectionLength, richTextOperations } from './richOperations';
 export { normalizeRichText, sliceRichText, spliceRichText } from './richText';
 export { convertLegacyRichText } from './importRich';
+export { mapTextOffset, mapTextSelection, mapTextSelectionThrough } from './rangeMap';
+export type { TextAffinity, TextSpliceMap } from './rangeMap';
 
 /** TX-2 operations use UTF-16 offsets in the newline-separated projection. */
 export interface RichTextOperations {

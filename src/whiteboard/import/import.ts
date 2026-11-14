@@ -27,14 +27,20 @@ export interface LegacyImportResult {
 
 // I-1: the original text and admitted media remain in memory; this function has no file capability.
 export async function importLegacy(text: string, options: LegacyImportOptions): Promise<LegacyImportResult> {
-    const draft = await readLegacyRecords(text, options);
     const report = new ReportBuilder();
+    let draft: Awaited<ReturnType<typeof readLegacyRecords>> = null;
+    try { draft = await readLegacyRecords(text, options); }
+    catch (error) {
+        options.signal?.throwIfAborted();
+        report.refuse(null, error instanceof Error ? error.message : 'Import could not be read');
+    }
     let board: ImportedBoard | null = null;
     let leases: readonly SampleLease[] = [];
     let media: readonly ImportedMedia[] = [];
     let savedView: SavedView | undefined;
-    if (!draft) report.refuse(null, 'Not a drawing this app can read');
-    else {
+    if (!draft) {
+        if (report.finish().unrepresentable.length === 0) report.refuse(null, 'Not a drawing this app can read');
+    } else {
         report.include(draft.report); leases = draft.leases; media = draft.media;
         try {
             if (options.host.kind !== options.kind) throw new Error('Host kind does not match imported board');

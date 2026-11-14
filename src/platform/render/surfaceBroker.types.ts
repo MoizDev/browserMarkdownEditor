@@ -84,6 +84,8 @@ export interface SurfaceCallbacks {
      * commits the current grant in the shared frame and checks the resulting drawing buffer.
      */
     onGpuReady(grant: GpuGrant): void;
+    /** A native context capability was unavailable; repeated attempts inform pressure policy. */
+    onCapabilityFailure?(): void;
     /**
      * Present through a DIFFERENT 2D canvas, retaining the input/overlay host. Detach a lost GL
      * canvas solely for restoration notification; never request another context type on it.

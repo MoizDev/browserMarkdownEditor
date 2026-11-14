@@ -3,6 +3,8 @@ import type { WorkerClient } from '../../platform/workers';
 import type { ExtBag } from '../model/json';
 import type { PinnedBoardBuild } from '../session/contentSource';
 import type { RecordIntegrity } from './lineTable';
+import { boardEnvelope, matchingIdentity, validBoardIdentity } from '../workers/protocol';
+import type { BoardJobIdentity, BoardWorkerEnvelope } from '../workers/protocol';
 import type { SerializerBuild, SerializerChange, SerializerDelta, SerializerPrime, SerializerProduct, SerializerReply } from './serializerProtocol';
 
 interface Root { readonly prime: SerializerPrime; readonly header: string; }
@@ -48,7 +50,8 @@ function transferable(delta: SerializerDelta): { args: SerializerDelta; transfer
 }
 
 /** One board session owns one serializer, independent of pane and export-worker lifetimes. */
-export function createSerializerSession(prime: SerializerPrime, onFailure: (error: unknown) => void): SerializerSession {
+export function createSerializerSession(prime: SerializerPrime, onFailure: (error: unknown) => void,
+    owner?: Readonly<Pick<BoardJobIdentity, 'session' | 'epoch'>>): SerializerSession {
     if (!Number.isSafeInteger(prime.revision) || prime.revision < 0) throw new RangeError('Invalid baseline revision');
     if (!(prime.baseline instanceof Blob) || (typeof File !== 'undefined' && prime.baseline instanceof File)) {
         throw new TypeError('Baseline must be the Blob made from parsed bytes, never the File');
@@ -63,8 +66,12 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
     let loadedGeneration = 0;
     let disposed = false;
     let queue: Promise<void> = Promise.resolve();
+    const number = ++nextSerializer;
+    const session = owner?.session ?? `board-serializer-${number}`;
+    const epoch = owner?.epoch ?? 0;
+    if (!validBoardIdentity({ session, epoch, revision: prime.revision })) throw new RangeError('Invalid serializer session identity');
     const client: WorkerClient = createWorkerClient({
-        name: `board-serializer-${++nextSerializer}`, protocol: 1, permits: cpuGovernor,
+        name: `board-serializer-${number}`, protocol: 1, permits: cpuGovernor,
         spawn: () => new Worker(new URL('./serializer.worker.ts', import.meta.url), { type: 'module' }),
     });
     function serial<T>(work: () => Promise<T>): Promise<T> {
@@ -72,20 +79,26 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
         queue = next.then(() => { }, () => { });
         return next;
     }
-    async function request<T>(op: string, args: unknown, signal?: AbortSignal, transfer?: Transferable[]): Promise<T> {
+    async function request<T>(op: string, args: unknown, revision: number, priority: 0 | 2,
+        signal?: AbortSignal, transfer?: Transferable[]): Promise<T> {
         if (disposed) throw new WorkerHostError('Cancelled', 'Board serializer is disposed');
+        const identity: BoardJobIdentity = { session, epoch, revision };
         try {
-            return take(await client.request<SerializerReply<T>>(op, args, { priority: 2, signal, transfer }));
+            const reply = await client.request<BoardWorkerEnvelope<SerializerReply<T>>>(op, { identity, payload: args },
+                { priority, signal, transfer, deadlineMs: 120_000, terminateOnDeadline: true });
+            if (!boardEnvelope(reply) || !matchingIdentity(identity, reply.identity)) throw new WorkerHostError('Protocol', 'Invalid serializer reply identity');
+            if (disposed || signal?.aborted) throw new WorkerHostError('Cancelled', 'Board serializer is no longer current');
+            return take(reply.payload);
         } catch (error) { loaded = undefined; throw error; }
     }
-    async function sync(target: Revision, signal?: AbortSignal): Promise<void> {
+    async function sync(target: Revision, signal?: AbortSignal, priority: 0 | 2 = 2): Promise<void> {
         if (loadedGeneration !== client.generation) loaded = undefined;
         if (loaded === target) return;
         const pending: Revision[] = [];
         let cursor: Revision | null = target;
         while (cursor && cursor !== loaded) { pending.push(cursor); cursor = cursor.parent; }
         if (!cursor) {
-            await request<void>('prime', target.root.prime, signal);
+            await request<void>('prime', target.root.prime, target.root.prime.revision, priority, signal);
             loadedGeneration = client.generation;
             loaded = pending.pop(); // the root revision has no delta
         }
@@ -93,7 +106,7 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
             const next = pending.pop()!;
             if (!next.delta) throw new WorkerHostError('Protocol', 'Serializer revision chain is incomplete');
             const message = transferable(next.delta);
-            await request<void>('delta', message.args, signal, message.transfer);
+            await request<void>('delta', message.args, next.revision, priority, signal, message.transfer);
             loaded = next;
             loadedGeneration = client.generation;
         }
@@ -102,8 +115,8 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
         let retried = false;
         for (; ;) {
             try {
-                await sync(target, signal);
-                const product = await request<SerializerProduct>('build', { revision: target.revision, expected, endFields }, signal);
+                await sync(target, signal, 0);
+                const product = await request<SerializerProduct>('build', { revision: target.revision, expected, endFields }, target.revision, 0, signal);
                 if (product.revision !== target.revision || !(product.blob instanceof Blob) || !(product.index instanceof Blob)
                     || !/^[0-9a-f]{64}$/u.test(product.sha256)) throw new WorkerHostError('Protocol', 'Invalid serializer product');
                 return product;

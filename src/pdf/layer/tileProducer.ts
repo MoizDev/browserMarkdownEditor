@@ -3,6 +3,7 @@ import type { Priority } from '../../platform/workers/envelope';
 import type { PageTileArgs, PageTileResult } from '../worker/protocol';
 import type { WithoutDocKey } from '../pool/types';
 import { getPdfFontEpoch, pdfVariantRevision } from '../fonts/profiles';
+import { markPdfTileArrived } from '../pool/arrivalWindow';
 import type { PdfTileRequest } from './tileDemand';
 import type { CreatePdfTileProducer, PdfTileProducerOptions } from './tileProducer.types';
 
@@ -119,6 +120,7 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
                         if (finish()) reject(signal.aborted ? abortError(signal) : new DOMException('Stale PDF tile', 'AbortError'));
                         return;
                     }
+                    markPdfTileArrived(bitmap);
                     resolve(bitmap);
                 }).catch(error => { if (finish()) reject(error); }).finally(releaseWaiter);
             });

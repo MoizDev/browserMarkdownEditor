@@ -9,6 +9,7 @@ import { PdfTexturePool, type PooledTexture } from './texturePool';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 import { pdfVariantRevision } from '../fonts/profiles';
+import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
  * every returned bitmap transfers to this layer, including cancelled replies. */
@@ -156,6 +157,7 @@ export class PdfTileLayer implements Layer {
                             { source: existing.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
                         if (existing.texture) this.texturePool.release(existing.texture);
                         existing.texture = texture;
+                        consumePdfTileArrival(existing.bitmap);
                     } catch (error) { device.destroy(texture.handle); this.onError(error, request); }
                 }
                 continue;
@@ -174,6 +176,7 @@ export class PdfTileLayer implements Layer {
             void Promise.resolve().then(() => this.producer.render(request, entry.controller.signal)).then(bitmap => {
                 const current = !this.disposed && this.isCurrent() && this.entries.get(key) === entry && !entry.controller.signal.aborted;
                 if (!current || bitmap.width !== request.tile.textureWidth || bitmap.height !== request.tile.textureHeight) {
+                    forgetPdfTileArrival(bitmap);
                     bitmap.close();
                     if (this.entries.get(key) === entry) this.remove(key, entry);
                     this.finishRetiring(entry);
@@ -275,6 +278,7 @@ export class PdfTileLayer implements Layer {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination, { opacity: 1, sampling: 'linear' });
+            consumePdfTileArrival(entry.bitmap);
         }
     }
 
@@ -535,6 +539,7 @@ export class PdfTileLayer implements Layer {
         if (entry.texture) this.texturePool.release(entry.texture);
         if (entry.bitmap) {
             this.contentRevision++;
+            forgetPdfTileArrival(entry.bitmap);
             entry.bitmap.close();
             this.host.allocator.cpu.release(entry.lease);
         } else {

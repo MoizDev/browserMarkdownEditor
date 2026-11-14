@@ -351,6 +351,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   view.surface.addEventListener('lostpointercapture', up, true)
   const stopWet = view.wet.attach(handover)
   const stopFrame = view.wet.onInputFrame(() => {
+    if (current()) {
+      try { if (pointer.publishPendingInk()) view.wet.invalidate() }
+      catch (error) { pointer.interrupt('os-cancel'); services.error(error) }
+    }
     if (current() && router.activeOwner instanceof LiveInk) {
       if (pendingPrediction && router.activeOwner.allowsPrediction) router.activeOwner.publishPrediction(pendingPrediction)
       else router.activeOwner.publish()

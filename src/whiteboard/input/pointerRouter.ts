@@ -113,6 +113,7 @@ export class PointerRouter<Context> {
     options.router.attach(options.token)
     this.acquisition = new PointerAcquisition(options.root, options.mappings, sink, options.mac)
   }
+  publishPendingInk(): boolean { return this.pen?.publishPending() ?? false }
   modifiersChanged(modifiers: Modifiers): void {
     if (!this.options.current() || this.pointerId === null) return
     if (this.pen) this.pen.modifiersChanged(modifiers)

@@ -1,4 +1,5 @@
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
+import { LiveInk } from './liveInk';
 
 export type PenContactMode = 'ink' | 'eraser';
 export interface PenTransitionHost {
@@ -34,6 +35,7 @@ export class PenContactTransitions {
     private shadowMode: PenContactMode;
     private shadows: { readonly sequence: number; readonly owner: GestureOwner }[] = [];
     private shadow: { readonly sequence: number; readonly owner: GestureOwner } | null = null;
+    private readonly dirtyShadows = new Set<{ readonly sequence: number; readonly owner: GestureOwner }>();
     private readonly shadowed = new WeakSet<Batch>();
     constructor(readonly pointerId: number, initial: PenContactMode, private readonly host: PenTransitionHost) {
         this.mode = initial; this.shadowMode = initial;
@@ -46,12 +48,12 @@ export class PenContactTransitions {
     }
     modifiersChanged(modifiers: Modifiers): void {
         if (this.terminal || this.closed) return;
-        if (this.waiting) this.shadow?.owner.update([], modifiers);
+        if (this.waiting && this.shadow) { this.shadow.owner.update([], modifiers); this.dirtyShadows.add(this.shadow); }
         this.queue.push({ type: 'modifiers', modifiers }); this.drain();
     }
     end(samples: readonly RealSample[], modifiers: Modifiers, reason: FinishReason): void {
         if (this.terminal || this.closed) return;
-        if (this.waiting && samples.length) this.shadow?.owner.update(samples, modifiers);
+        if (this.waiting && samples.length && this.shadow) { this.shadow.owner.update(samples, modifiers); this.dirtyShadows.add(this.shadow); }
         this.terminal = true; this.queue.push({ type: 'end', samples, modifiers, reason }); this.drain();
     }
     /** A shadow is a real, unsaved ink builder, not a second presentation.
@@ -68,12 +70,26 @@ export class PenContactTransitions {
                 if (!owner || owner.kind !== 'ink' || !owner.discard) throw new Error('Pen prefix cannot be preserved');
                 this.shadow = { sequence: sample.sequence, owner }; this.shadows.push(this.shadow);
             } else this.shadow.owner.update([sample], batch.modifiers);
+            this.dirtyShadows.add(this.shadow);
         }
+    }
+    /** Runs from the shared input frame; bounded batches prevent a delayed
+     * eraser sweep from monopolizing a frame when the pen changes ends often. */
+    publishPending(): boolean {
+        if (this.closed) return false;
+        let count = 0;
+        for (const shadow of this.dirtyShadows) {
+            this.dirtyShadows.delete(shadow);
+            if (shadow.owner instanceof LiveInk) shadow.owner.publish();
+            if (++count >= 64) break;
+        }
+        return this.dirtyShadows.size > 0;
     }
     private discardShadow(sequence: number): void {
         const index = this.shadows.findIndex(value => value.sequence === sequence);
         if (index < 0) return;
         const [shadow] = this.shadows.splice(index, 1);
+        this.dirtyShadows.delete(shadow);
         if (this.shadow === shadow) this.shadow = null;
         shadow.owner.discard?.();
     }
@@ -95,7 +111,7 @@ export class PenContactTransitions {
                 if (batch.samples.length) this.host.update(batch.samples, batch.modifiers);
                 this.closed = true;
                 for (const shadow of this.shadows) shadow.owner.discard?.();
-                this.shadows = []; this.shadow = null;
+                this.shadows = []; this.shadow = null; this.dirtyShadows.clear();
                 try {
                     if (batch.reason === 'up') this.host.finish('up');
                     else if (batch.reason === 'escape' || batch.reason === 'undo' || batch.reason === 'flush') this.host.interrupt(batch.reason);
@@ -147,7 +163,7 @@ export class PenContactTransitions {
     stop(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
         if (this.closed) return false;
         this.closed = true; this.terminal = true; this.controller.abort(); this.queue.length = 0; this.cursor = 0;
-        const owner = this.host.owner(), shadows = this.shadows; this.shadows = []; this.shadow = null;
+        const owner = this.host.owner(), shadows = this.shadows; this.shadows = []; this.shadow = null; this.dirtyShadows.clear();
         let interrupted = false;
         try {
             if (shadows.length) { try { this.host.cancelPending(); } catch (error) { this.host.error(error); } }

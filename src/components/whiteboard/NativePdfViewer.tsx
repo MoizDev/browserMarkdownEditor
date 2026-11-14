@@ -241,8 +241,8 @@ function PdfEditingAttached({ props, context, updating }: { props: NativePdfView
         && outer.vaultActivation === actual.vaultEpoch && outer.bytesGeneration === actual.bytesGeneration;
     const cover = updating || source.status !== 'ready' || !paired;
     useLayoutEffect(() => {
-        if (cover) { lease.editing?.setInputEnabled(false); lease.editing?.cancelViewWork('pdf-source-updating'); }
-        else if (props.isVisible) lease.editing?.setInputEnabled(true);
+        lease.setInputPermitted(!cover && props.isVisible);
+        if (cover) lease.editing?.cancelViewWork('pdf-source-updating');
         lease.refreshAuthority();
     }, [lease, cover, source, props.isVisible]);
     const path = props.file.path, { onFocusPane, registerKeyboardTarget } = props;

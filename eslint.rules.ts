@@ -64,7 +64,19 @@ interface Zone {
   dark?: boolean
   /** directories outside the zone that a dark zone still lets in */
   darkExcept?: string[]
+  /** files outside the zone that may reach it ONLY by a dynamic import() or a type-only import, so
+   *  wiring a switch never puts the engine's code in the importer's chunk */
+  darkLazy?: string[]
   message: string
+}
+
+/** No runtime code crosses: `import type`, an import whose every specifier is a type, or `import('x').T`. */
+function typeOnly(node: Rule.Node): boolean {
+  const n = node as Node
+  if ((n.type as string) === 'TSImportType') return true
+  if (n.importKind === 'type' || n.exportKind === 'type') return true
+  const specs = (n.specifiers ?? []) as Node[]
+  return n.type === 'ImportDeclaration' && specs.length > 0 && specs.every(sp => sp.importKind === 'type')
 }
 
 // G-INV-06's engine half and I-0's dark zone (contracts C6.3). The new engines
@@ -83,6 +95,11 @@ const importZones: Rule.RuleModule = {
           if (t.local && z.noLocal?.some(d => under(t.local!, d))) context.report({ node, message: `${z.message} (imports ${t.local})` })
           if (t.bare && z.noPackage?.some(p => t.bare === p || t.bare!.startsWith(p + '/'))) context.report({ node, message: `${z.message} (imports ${t.bare})` })
         } else if (z.dark && t.local && z.files.some(d => under(t.local!, d)) && !z.darkExcept?.some(d => under(file, d))) {
+          if (z.darkLazy?.includes(file)) {
+            if (node.type === 'ImportExpression' || typeOnly(node)) continue
+            context.report({ node, message: `${z.message}: ${file} may reach ${t.local} only by a dynamic import() or a type-only import` })
+            continue
+          }
           context.report({ node, message: `${z.message} (${t.local} is imported by nothing until its switch is wired)` })
         }
       }

@@ -32,7 +32,7 @@ export function readPdfViewPos(path: string): PdfViewPos | undefined {
     return {
         page: Math.max(0, Math.floor(pos.page)),
         offset: Number.isFinite(pos.offset) ? Math.min(1, Math.max(0, pos.offset)) : 0,
-        zoom: Number.isFinite(pos.zoom) ? pos.zoom : undefined,
+        zoom: typeof pos.zoom === 'number' && Number.isFinite(pos.zoom) ? Math.max(0.4, Math.min(4, pos.zoom)) : undefined,
     };
 }
 

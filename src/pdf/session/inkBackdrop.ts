@@ -1,7 +1,6 @@
 import { fitWidthZ, pageAt, pageStack } from '../../platform/render';
-import type { PlatformLayerDefinition, Rect, RenderToken, ViewState } from '../../platform/render';
-import type { PageGeometry } from '../../platform/types';
-import { getSessionIdentity } from '../../utils/sessionIdentity';
+import type { Rect, RenderToken, ViewState } from '../../platform/render';
+import { awaitSessionDisposals, getSessionIdentity } from '../../utils/sessionIdentity';
 import { assertPdfCaptureAllowed, assertPdfRenderAllowed, tiledPdfCapabilities } from '../../utils/pdfCapabilities';
 import { createPdfEmphasisController } from '../emphasis/controller';
 import type { PdfEmphasisController } from '../emphasis/controller';
@@ -11,34 +10,13 @@ import { getPdfSessionMirrors } from '../layer/tileMirror';
 import { createPdfTileProducer } from '../layer/tileProducer';
 import type { PdfPool } from '../pool/types';
 import { pdfDocKey } from '../worker/protocol';
-import type { WriterSource } from '../writing/protocol';
 import { PdfTiledDocumentSession, pdfGeometryDigest } from './documentSession';
 import type { OpenTiledDocument, TiledDocumentPool } from './documentSession';
 import { tiledPoolAdapter } from './poolAdapter';
 import { pdfSessionCapturer } from './sessionCapture';
 import { retainPdfFocus } from './startup';
-
-export interface PdfInkBackdropOptions {
-    pool: PdfPool;
-    source: WriterSource;
-    readOnly: boolean;
-    isCurrent(): boolean;
-    isVisible(): boolean;
-    isFocused(): boolean;
-    emphasisEnabled(): boolean;
-    onError(error: unknown): void;
-    signal?: AbortSignal;
-}
-export interface PdfInkBackdrop {
-    pages: readonly { width: number; height: number }[];
-    layers: readonly PlatformLayerDefinition[];
-    resolveGeometry(page: number, signal: AbortSignal): Promise<PageGeometry>;
-    capture: {
-        renderPage(page: number, maxSide: number, signal?: AbortSignal): Promise<ImageBitmap>;
-        captureRegion(rect: Rect, maxSide: number, signal?: AbortSignal): Promise<ImageBitmap>;
-    };
-    dispose(): void;
-}
+import type { PdfInkBackdrop, PdfInkBackdropOptions } from './inkBackdrop.types';
+export type { PdfInkBackdrop, PdfInkBackdropOptions } from './inkBackdrop.types';
 type EmphasisDocument = OpenTiledDocument & { emphasis: PdfEmphasisController };
 interface ViewLease { visible: boolean; focused: boolean; enabled: boolean; pages: number[]; focusPage: number }
 interface Owner {
@@ -71,6 +49,9 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 /** The App slot owns the pristine source. This view owns only its layer and subscriptions. */
 export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Promise<PdfInkBackdrop> {
     const { source } = options, token = Object.freeze({ ...source.token });
+    options.signal?.throwIfAborted();
+    if (!options.isCurrent() || !currentToken(token)) throw stale();
+    await waitFor(awaitSessionDisposals(token.documentId), options.signal);
     options.signal?.throwIfAborted();
     if (!options.isCurrent() || !currentToken(token)) throw stale();
     if (!(source.pristine instanceof Blob) || source.pristine.size < 1 || source.pristine.size > 0x7fffffff ||

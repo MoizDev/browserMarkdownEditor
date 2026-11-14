@@ -32,7 +32,12 @@ export class BoardSpellClient {
                 if (this.pending.delete(id)) reject(new DOMException('Spelling deadline exceeded', 'TimeoutError'));
             }, deadline);
             this.pending.set(id, pending);
-            worker.postMessage({ id, ...payload });
+            try { worker.postMessage({ id, ...payload }); }
+            catch (error) {
+                this.pending.delete(id);
+                if (pending.timer) clearTimeout(pending.timer);
+                reject(error);
+            }
         });
     }
 

@@ -28,7 +28,7 @@ export const PDF_COPY_RESTRICTED = 'This PDF does not permit copying or text ext
 export const PDF_COPY_UNKNOWN = 'PDF copy permissions could not be established; text extraction is unavailable.';
 export const PDF_PRINT_RESTRICTED = 'This PDF does not permit printing.';
 export const PDF_PRINT_UNKNOWN = 'PDF print permissions could not be established; printing is unavailable.';
-export const PDF_PRINT_LOW_QUALITY_ONLY = 'This PDF permits only low-quality printing; the browser handoff cannot enforce that restriction.';
+export const PDF_PRINT_LOW_QUALITY_ONLY = 'This PDF permits only low-quality printing; the browser PDF viewer handles that restriction.';
 export const PDF_ENCRYPTED_READ_ONLY = 'Encrypted PDFs are read-only; annotation and rotation are unavailable.';
 export const PDF_XFA_UNSUPPORTED = 'XFA forms are unsupported; pages or fields may be missing or blank.';
 
@@ -48,9 +48,8 @@ export function assertPdfWriteAllowed(policy: Pick<PdfCapabilities, 'write'>): v
     assertAllowed(policy.write, 'This PDF cannot be safely rewritten.', 'PDF write safety could not be established.');
 }
 
-export function assertPdfPrintAllowed(policy: Pick<PdfCapabilities, 'print' | 'printHighQuality'>): void {
+export function assertPdfPrintAllowed(policy: Pick<PdfCapabilities, 'print'>): void {
     assertAllowed(policy.print, PDF_PRINT_RESTRICTED, PDF_PRINT_UNKNOWN);
-    assertAllowed(policy.printHighQuality, PDF_PRINT_LOW_QUALITY_ONLY, PDF_PRINT_UNKNOWN);
 }
 
 export function assertPdfCopyAllowed(policy: Pick<PdfCapabilities, 'copy'>): void {

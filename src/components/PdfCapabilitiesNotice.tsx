@@ -14,8 +14,9 @@ export default function PdfCapabilitiesNotice({ capabilities }: { capabilities: 
     if (capabilities.copy === false) messages.push(PDF_COPY_RESTRICTED);
     if (capabilities.copy === 'unknown') messages.push(PDF_COPY_UNKNOWN);
     if (capabilities.print === false) messages.push(PDF_PRINT_RESTRICTED);
-    else if (capabilities.print === 'unknown' || capabilities.print === true && capabilities.printHighQuality !== true && capabilities.printHighQuality !== false) messages.push(PDF_PRINT_UNKNOWN);
+    else if (capabilities.print === 'unknown') messages.push(PDF_PRINT_UNKNOWN);
     else if (capabilities.print === true && capabilities.printHighQuality === false) messages.push(PDF_PRINT_LOW_QUALITY_ONLY);
+    else if (capabilities.print === true && capabilities.printHighQuality !== true) messages.push('Printing is permitted; the quality restriction is unknown.');
     else if (capabilities.print === true) messages.push('Printing is permitted.');
     if (capabilities.forms === true) messages.push('Form fields are not editable. Saved appearances are shown where supported; missing appearances may be unavailable.');
     else if (capabilities.forms === 'unknown') messages.push('Form-field availability could not be established.');

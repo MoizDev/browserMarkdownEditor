@@ -48,6 +48,20 @@ function release(held: HeldSnapshot): void {
     if (--held.count !== 0) return;
     try { for (const lease of held.snapshot.leases) lease.release(); } finally { held.memory.release(); }
 }
+function sameCapture(a: CopySnapshot, b: CopySnapshot): boolean {
+    if (a.revision !== b.revision || a.payload.from.board !== b.payload.from.board || a.payload.from.sheet !== b.payload.from.sheet
+        || a.payload.from.kind !== b.payload.from.kind || a.roots.length !== b.roots.length || a.selected.length !== b.selected.length
+        || a.skippedOpaque.length !== b.skippedOpaque.length || a.payload.records.length !== b.payload.records.length
+        || a.textItems.length !== b.textItems.length) return false;
+    const x = a.textSelection, y = b.textSelection;
+    if (!!x !== !!y || x && y && (x.node !== y.node || x.anchor !== y.anchor || x.focus !== y.focus)) return false;
+    const equal = (p: readonly string[], q: readonly string[]) => p.every((value, index) => value === q[index]);
+    if (!equal(a.roots, b.roots) || !equal(a.selected, b.selected) || !equal(a.skippedOpaque, b.skippedOpaque)
+        || !equal(a.payload.records, b.payload.records)) return false;
+    const boundsEqual = (p: { x: number; y: number; w: number; h: number }, q: { x: number; y: number; w: number; h: number }) =>
+        p.x === q.x && p.y === q.y && p.w === q.w && p.h === q.h;
+    return boundsEqual(a.payload.bounds, b.payload.bounds) && a.textItems.every((item, index) => boundsEqual(item.bounds, b.textItems[index].bounds));
+}
 // Copy cache belongs to the window, not a pane; a vault switch must not invalidate its retained source.
 let windowWritten: { held: HeldSnapshot; envelope: ClipboardEnvelope; readMedia: ClipboardCopyHost['readMedia']; controller: AbortController } | null = null;
 
@@ -93,8 +107,16 @@ export class ClipboardCopy {
     /** The event path captures the current selection synchronously; it never waits for a warm cache. */
     copyEventNow(event: ClipboardEvent, capture: () => CopySnapshot, cut = false): boolean {
         if (!event.clipboardData || this.disposed) return false;
-        try { this.setSelection(capture()); }
-        catch (error) { this.host.notice(error instanceof Error ? error.message : 'Could not capture selection.'); return false; }
+        try {
+            const fresh = capture(), candidate = this.candidate;
+            let transferred = false;
+            try {
+                if (candidate && this.host.isCurrent(candidate.held.snapshot) && sameCapture(candidate.held.snapshot, fresh)) {
+                    for (const lease of fresh.leases) lease.release();
+                    transferred = true;
+                } else { transferred = true; this.setSelection(fresh); }
+            } finally { if (!transferred) for (const lease of fresh.leases) lease.release(); }
+        } catch (error) { this.host.notice(error instanceof Error ? error.message : 'Could not capture selection.'); return false; }
         return this.copyEvent(event, cut);
     }
 

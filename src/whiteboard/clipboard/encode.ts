@@ -40,10 +40,13 @@ function render(snapshot: CopySnapshot, encoded: string, cacheOnly: boolean): Cl
     div.append(span);
     const meta = div.ownerDocument.createElement('meta');
     meta.setAttribute('charset', 'utf-8');
+    // Serialization reads constructed DOM into the clipboard; it never parses markup into the app.
+    // eslint-disable-next-line bme/html-sinks
     let html = meta.outerHTML + div.outerHTML;
     if (new TextEncoder().encode(html).length > HTML_LIMIT) {
         if (!cacheOnly) return render(snapshot, `u.${base64url(jsonBytes(marker(snapshot)))}`, true);
         while (div.firstChild && div.firstChild !== span) div.firstChild.remove();
+        // eslint-disable-next-line bme/html-sinks
         html = meta.outerHTML + div.outerHTML;
     }
     return { html, plain: rendition.plain, encoded, cacheOnly };

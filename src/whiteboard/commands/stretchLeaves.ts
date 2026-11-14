@@ -38,9 +38,11 @@ export async function stretchBoardLeaves(options: StretchLeavesOptions): Promise
     for (const root of roots) {
         const result: NodeId[] = [], pending = [root]; leaves.set(root.id, result);
         while (pending.length) {
-            check(); const node = pending.pop()!; if (node.locked) continue;
+            check(); const node = pending.pop()!;
+            if (node.kind === 'opaque') throw new Error('Opaque content cannot be stretched');
+            if (node.locked) continue;
             if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
-            else { if (node.kind === 'opaque') throw new Error('Opaque content cannot be stretched'); result.push(node.id); all.add(node.id); }
+            else { result.push(node.id); all.add(node.id); }
             if (++visited % 256 === 0) { await cooperate(); check(); }
         }
         if (!result.length) throw new Error(`Group has no stretchable content: ${root.id}`);

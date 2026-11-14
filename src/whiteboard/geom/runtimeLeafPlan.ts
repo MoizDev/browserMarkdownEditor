@@ -59,12 +59,10 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
         const result: NodeId[] = [], pending = [root]; leaves.set(root.id, result);
         while (pending.length) {
             check(); const node = pending.pop()!;
+            if (node.kind === 'opaque') throw new Error(`Unsupported group resize descendant: ${node.id}`);
             if (node.locked) continue;
             if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
-            else {
-                if (node.kind === 'opaque') throw new Error(`Unsupported group resize descendant: ${node.id}`);
-                result.push(node.id); all.add(node.id);
-            }
+            else { result.push(node.id); all.add(node.id); }
             if (++count % 256 === 0) { await cooperate(); check(); }
         }
         if (!result.length) throw new Error(`Group has no resizable content: ${root.id}`);

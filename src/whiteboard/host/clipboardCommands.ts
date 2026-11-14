@@ -61,6 +61,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         return blob;
     };
     const copy = new ClipboardCopy({
+        memory: options.memory,
         readMedia: verifyMedia,
         isCurrent: snapshotCurrent,
         prepareCut(snapshot) {

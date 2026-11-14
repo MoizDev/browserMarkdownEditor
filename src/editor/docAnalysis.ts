@@ -2,7 +2,6 @@ import { StateField } from '@codemirror/state';
 import type { EditorState, Transaction } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import type { Tree } from '@lezer/common';
-import { docString } from './docCache';
 import { scanAllLines, updateLineScans } from './analysisLines';
 import type { LineScans } from './analysisLines';
 import { acceptedMath, filterInlineMath, pairMathTokens, updateBlockPairs } from './analysisMath';
@@ -24,8 +23,6 @@ export interface DocAnalysis {
     rev: number;
     treeLength: number;
     tree: Tree;
-    /** Transitional access for consumers not yet switched to source slices. */
-    readonly doc: string;
     codeRanges: CharRange[];
     mathRegions: MathRegion[];
     mathEnds: number[];
@@ -45,8 +42,7 @@ function makeAnalysis(state: EditorState, tree: Tree, rev: number, codeRanges: C
         ? updateObjects(update.previous.objects, update.transaction.startState.doc, state.doc,
             update.transaction.changes, lines.embedOpeners, codeRanges, mathRegions)
         : scanObjects(state.doc, codeRanges, mathRegions);
-    return { rev, treeLength: tree.length, tree, get doc() { return docString(state.doc); },
-        codeRanges, mathRegions, mathEnds: mathRegions.map(region => region.to), lines, blockPairs,
+    return { rev, treeLength: tree.length, tree, codeRanges, mathRegions, mathEnds: mathRegions.map(region => region.to), lines, blockPairs,
         inlineRaw, objects, delta };
 }
 

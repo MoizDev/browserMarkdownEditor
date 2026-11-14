@@ -92,7 +92,7 @@ export class BoardSpellClient {
     }
 
     /** Only the latest edited-node text is reported, even if an older check returns late. */
-    check(text: string, publish: (ranges: readonly Misspelling[]) => void, error: (reason: unknown) => void): void {
+    check(text: string, publish: (ranges: readonly Misspelling[]) => void, error: (reason: unknown) => void, delay = 300): void {
         const generation = ++this.generation;
         if (this.debounce !== null) clearTimeout(this.debounce);
         this.debounce = setTimeout(() => {
@@ -100,7 +100,7 @@ export class BoardSpellClient {
             void this.start().then(() => this.request<readonly Misspelling[]>({ kind: 'check', text }))
                 .then(ranges => { if (!this.disposed && generation === this.generation) publish(ranges); },
                     reason => { if (!this.disposed && generation === this.generation) error(reason); });
-        }, 300);
+        }, Math.max(0, delay));
     }
 
     /** Drop the worker when the editing pane is hidden; retain downloaded dictionary bytes. */

@@ -86,24 +86,32 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     let spell: BoardSpellClient | null = null, spellLoad: Promise<BoardSpellClient> | null = null;
     let misspellings: readonly Misspelling[] = [], spellGeneration = 0;
     let spellSource: RichText | null = null, spellNode: NodeId | null = null;
+    let spellTimer: ReturnType<typeof setTimeout> | null = null;
     let spellingMenu: SpellingMenuRequest | null = null;
     const checkSpelling = () => {
         const id = active, node = id && doc.nodes.get(id), value = node && nodeText(node);
         if (!id || !value || (spellNode === id && spellSource === value)) return;
         spellNode = id; spellSource = value;
-        const generation = ++spellGeneration, text = value.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
+        const generation = ++spellGeneration;
+        if (spellTimer !== null) clearTimeout(spellTimer);
         misspellings = [];
         spellLoad ??= import('../text/spell/client').then(({ BoardSpellClient }) => {
             if (disposed) throw new DOMException('Text editor disposed', 'AbortError');
             return spell = new BoardSpellClient(options.spelling.words());
         }).catch(error => { spellLoad = null; throw error; });
-        void spellLoad.then(client => {
-            if (disposed || active !== id || generation !== spellGeneration) return;
-            client.check(text, ranges => {
-                if (active !== id || generation !== spellGeneration) return;
-                misspellings = ranges; requestFrame();
-            }, error => { spellSource = null; report(error); });
-        }).catch(error => { spellSource = null; if (!disposed) report(error); });
+        const loading = spellLoad;
+        void loading.catch(() => {});
+        spellTimer = setTimeout(() => {
+            spellTimer = null;
+            void loading.then(client => {
+                if (disposed || active !== id || generation !== spellGeneration) return;
+                const text = value.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
+                client.check(text, ranges => {
+                    if (active !== id || generation !== spellGeneration) return;
+                    misspellings = ranges; requestFrame();
+                }, error => { spellSource = null; report(error); }, 0);
+            }).catch(error => { spellSource = null; if (!disposed) report(error); });
+        }, 300);
     };
     const live = document.createElement('div');
     live.setAttribute('aria-live', 'polite'); live.setAttribute('aria-atomic', 'true');
@@ -264,7 +272,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 autoScroll(x, y) { scroll = { x, y }; scheduleScroll(); }, stopAutoScroll: stopScroll,
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
                 menu: openTextMenu, openLink: options.ui.openLink,
-                finish() { stopScroll(); spellingMenu?.cancel(); spellingMenu = null; spellGeneration++; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
+                finish() { stopScroll(); spellingMenu?.cancel(); spellingMenu = null; spellGeneration++; if (spellTimer !== null) clearTimeout(spellTimer); spellTimer = null; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
                     options.ui.selectionChanged(null, null); requestFrame(); },
             };
             return { container: overlay, label: 'Edit board text', node: id, key, initialSelection, creationToken,

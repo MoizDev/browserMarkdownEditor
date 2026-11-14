@@ -30,7 +30,7 @@
 // from their JSON (canvasFileSummary.ts), and changes go through the live
 // canvas the host opens.
 
-import { MAX_TOOL_TEXT_CHARS, type CanvasOp, type ToolContent, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol';
+import { CANVAS_PAGING_VERSION, MAX_TOOL_TEXT_CHARS, compareVersions, type CanvasOp, type ToolContent, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol';
 import { VAULT_TOOLS, type ToolDef } from '../../shared/vaultAgentTools';
 import type { AgentChange, HostResult, VaultToolHost } from '../types/vaultAgent';
 import type { FileTreeNode } from '../types';
@@ -964,6 +964,35 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
     assertCanvasPath(path, !!ctx.host.canvasShapePage);
     await requireFile(ctx, path);
     const page = typeof a.page === 'number' ? a.page : undefined;
+    if (a.offset !== undefined || a.limit !== undefined || a.revision !== undefined) {
+        const query = { page, offset: a.offset as number | undefined, limit: a.limit as number | undefined,
+            revision: a.revision as number | undefined };
+        const view = getView(path);
+        let result = view?.canvas?.shapePage?.(query);
+        if (!result && !isPdfFile(path) && ctx.host.canvasShapePage) {
+            result = (await ctx.host.canvasShapePage(path, query, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } })) ?? undefined;
+            ctx.ensureLive();
+        }
+        if (ctx.signal?.aborted) throw new ToolError('Canvas read cancelled.');
+        if (!result) throw new ToolError(isPdfFile(path)
+            ? 'Open the PDF in annotation mode to page its shapes.' : 'Shape paging is unavailable for this board.');
+        const offset = result.revisionChanged ? 0 : query.offset ?? 0;
+        const lines: string[] = [];
+        let used = 0;
+        for (const shape of result.shapes) {
+            const line = formatShape(shape);
+            if (used + line.length + 1 > MAX_TOOL_TEXT_CHARS - 1500) break;
+            lines.push(line); used += line.length + 1;
+        }
+        const next = offset + lines.length;
+        const head = [`path: ${path}`, `revision: ${result.revision}`, `total: ${result.total}`,
+            ...(result.revisionChanged ? ['Revision changed; restarted at offset 0.'] : []),
+            ...(next < result.total ? [`nextOffset: ${next}`] : []),
+            isPdfFile(path) || isNotebookFile(path) ? COORDS_PAGED : COORDS_DRAWING];
+        return ok([...head, '', ...lines].join('\n'));
+    }
     if (isPdfFile(baseName(path))) {
         // A PDF's annotations live inside the PDF; only its annotate view
         // reads them out, so this one does open it (beside the user).
@@ -1047,7 +1076,7 @@ export async function executeTool(
     name: string,
     args: Record<string, unknown>,
     host: VaultToolHost,
-    run: { vaultToken: object | null; signal?: AbortSignal },
+    run: { vaultToken: object | null; signal?: AbortSignal; helperVersion?: string },
 ): Promise<ToolExecution> {
     const def = TOOL_DEFS.get(name);
     if (!def) return fail(`unknown tool "${name}". Available: ${VAULT_TOOLS.map(t => t.name).join(', ')}.`);
@@ -1055,6 +1084,11 @@ export async function executeTool(
         const ctx = makeCtx(host, run);
         ctx.ensureLive();
         const clean = dropNulls(args ?? {});
+        if (name === 'canvas_shapes' && clean !== null && typeof clean === 'object'
+            && ('offset' in clean || 'limit' in clean || 'revision' in clean)
+            && (!run.helperVersion || compareVersions(run.helperVersion, CANVAS_PAGING_VERSION) < 0)) {
+            return fail('canvas_shapes paging requires a newer VaultAgent helper.');
+        }
         const problems = validateAgainstSchema(def.inputSchema, clean);
         if (problems.length) return fail(`invalid arguments for ${name}:\n- ${problems.join('\n- ')}`);
         const out = await HANDLERS[def.name](clean as Args, ctx);

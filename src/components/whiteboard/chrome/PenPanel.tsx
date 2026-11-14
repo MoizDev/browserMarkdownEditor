@@ -29,15 +29,24 @@ export interface PenPanelProps {
 
 export function PenPanel(props: PenPanelProps) {
     const dragging = useRef(false);
+    const opened = useRef(false);
+    const timer = useRef<number | null>(null);
     const commit = useRef(props.commitWidth);
     useEffect(() => { commit.current = props.commitWidth; }, [props.commitWidth]);
-    useEffect(() => () => {
-        if (dragging.current) { dragging.current = false; commit.current(); }
-    }, []);
     const finish = () => {
+        if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; }
+        dragging.current = false;
+        if (opened.current) { opened.current = false; commit.current(); }
+    };
+    useEffect(() => () => {
+        if (timer.current !== null) window.clearTimeout(timer.current);
+        if (opened.current) { opened.current = false; commit.current(); }
+    }, []);
+    // A double-click resets the slider; keep its first click in the same undo step.
+    const deferFinish = () => {
         if (!dragging.current) return;
         dragging.current = false;
-        commit.current();
+        timer.current = window.setTimeout(finish, 500);
     };
     const toggleLabel = props.collapsed ? props.showLabel : props.hideLabel;
     return <div className="board-pen-panel">
@@ -58,14 +67,24 @@ export function PenPanel(props: PenPanelProps) {
             <input type="range" min={0} max={1} step={0.001} value={props.sliderPosition} aria-label={props.widthLabel}
                 aria-valuetext={props.mixedWidthLabel}
                 data-tooltip={props.widthLabel} disabled={props.disabled}
-                onPointerDown={() => { dragging.current = true; props.beginWidth(); }}
-                onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={finish} onBlur={finish}
+                onPointerDown={event => {
+                    if (opened.current && event.detail !== 2) finish();
+                    if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; }
+                    if (!opened.current) { props.beginWidth(); opened.current = true; }
+                    dragging.current = true;
+                }}
+                onPointerUp={deferFinish} onPointerCancel={finish} onLostPointerCapture={deferFinish} onBlur={finish}
                 onChange={event => {
-                    if (!dragging.current) props.beginWidth();
+                    if (!dragging.current) { finish(); props.beginWidth(); }
                     props.changeWidth(Number(event.currentTarget.value));
                     if (!dragging.current) props.commitWidth();
                 }}
-                onDoubleClick={() => { finish(); props.resetWidth(); }} />
+                onDoubleClick={() => {
+                    if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; }
+                    dragging.current = false;
+                    try { props.resetWidth(); }
+                    finally { if (opened.current) { opened.current = false; commit.current(); } }
+                }} />
         </>}
     </div>;
 }

@@ -377,6 +377,7 @@
     "paper.deleteContents": "ទំព័រនេះមាន {items} ។",
     "paper.deleteConfirm": "លុបទំព័រ",
     "paper.cancel": "បោះបង់",
-    "paper.keepProtected": "ខ្លឹមសារដែលបានចាក់សោនឹងត្រូវបានរក្សាទុក។"
+    "paper.keepProtected": "ខ្លឹមសារដែលបានចាក់សោនឹងត្រូវបានរក្សាទុក។",
+    "chrome.readOnly": "បន្ទះនេះគឺបានតែអាន។"
   }
 }

@@ -377,6 +377,7 @@
     "paper.deleteContents": "Denne siden inneholder {items}.",
     "paper.deleteConfirm": "Slett siden",
     "paper.cancel": "Avbryt",
-    "paper.keepProtected": "Låst innhold vil beholdes."
+    "paper.keepProtected": "Låst innhold vil beholdes.",
+    "chrome.readOnly": "Denne tavlen er skrivebeskyttet."
   }
 }

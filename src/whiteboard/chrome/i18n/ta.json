@@ -377,6 +377,7 @@
     "paper.deleteContents": "இந்தப் பக்கத்தில் {items} உள்ளது.",
     "paper.deleteConfirm": "பக்கத்தை நீக்கு",
     "paper.cancel": "ரத்து செய்",
-    "paper.keepProtected": "பூட்டிய உள்ளடக்கம் வைக்கப்படும்."
+    "paper.keepProtected": "பூட்டிய உள்ளடக்கம் வைக்கப்படும்.",
+    "chrome.readOnly": "இந்த பலகை படிக்க மட்டுமே."
   }
 }

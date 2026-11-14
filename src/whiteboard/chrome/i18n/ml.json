@@ -377,6 +377,7 @@
     "paper.deleteContents": "ഈ പേജിൽ {items} അടങ്ങിയിരിക്കുന്നു.",
     "paper.deleteConfirm": "പേജ് ഇല്ലാതാക്കുക",
     "paper.cancel": "റദ്ദാക്കുക",
-    "paper.keepProtected": "ലോക്ക് ചെയ്ത ഉള്ളടക്കം സൂക്ഷിക്കും."
+    "paper.keepProtected": "ലോക്ക് ചെയ്ത ഉള്ളടക്കം സൂക്ഷിക്കും.",
+    "chrome.readOnly": "ഈ ബോർഡ് വായിക്കാൻ മാത്രമുള്ളതാണ്."
   }
 }

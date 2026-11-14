@@ -429,6 +429,7 @@
     "paper.deleteContents": "تحتوي هذه الصفحة على {items}.",
     "paper.deleteConfirm": "حذف الصفحة",
     "paper.cancel": "إلغاء",
-    "paper.keepProtected": "سيتم الاحتفاظ بالمحتوى المقفل."
+    "paper.keepProtected": "سيتم الاحتفاظ بالمحتوى المقفل.",
+    "chrome.readOnly": "هذه اللوحة للقراءة فقط."
   }
 }

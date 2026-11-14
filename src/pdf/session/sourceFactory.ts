@@ -75,7 +75,9 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
                 owner.ready = ready;
                 void ready.catch(() => { if (owner.ready === ready) owner.ready = undefined; });
             }
-            return waitFor(entry.ready, signal);
+            const ready = entry.ready;
+            if (!ready) throw new Error('PDF session did not start');
+            return waitFor(ready, signal);
         },
     };
 }

@@ -5,18 +5,19 @@ import type { PathOp } from './path';
 import type { RegionQuery } from './types';
 import type { VectorNarrowDescriptor, VectorNarrowResult } from './vectorNarrow';
 
-const PENDING: VectorNarrowResult = Object.freeze({ status: 'pending' });
+type ClippedVectorRegionResult = VectorNarrowResult | Readonly<{ status: 'empty' }>;
+const PENDING: ClippedVectorRegionResult = Object.freeze({ status: 'pending' });
 
 /** Every visible realized stroke and semantic fill participates in containment;
  * any one certified component can establish ordinary overlap. */
 export function createClippedVectorRegionJob(descriptor: VectorNarrowDescriptor, query: RegionQuery, frames: readonly PointClipContour[]): {
-    step(budget: { readonly deadline: number; readonly maxWork: number }): VectorNarrowResult; cancel(): void;
+    step(budget: { readonly deadline: number; readonly maxWork: number }): ClippedVectorRegionResult; cancel(): void;
 } {
     const containment = query.kind === 'polygon' && query.containment;
-    let partIndex = 0, pathIndex = 0, fillDone = false, seen = false, cancelled = false, finished: VectorNarrowResult | undefined;
+    let partIndex = 0, pathIndex = 0, fillDone = false, seen = false, cancelled = false, finished: ClippedVectorRegionResult | undefined;
     let uncertain: { reason: string; part: VectorNarrowDescriptor['parts'][number]['part'] } | undefined;
     let active: ReturnType<typeof createClippedFilledPolygonJob> | ReturnType<typeof createClippedFilledSweepJob> | undefined;
-    const finish = (value: VectorNarrowResult): VectorNarrowResult => { finished = Object.freeze(value); return finished; };
+    const finish = (value: ClippedVectorRegionResult): ClippedVectorRegionResult => { finished = Object.freeze(value); return finished; };
     const start = (path: readonly PathOp[], fill: boolean, strokeRadiusLocal: number, maxCommands: number) => query.kind === 'polygon'
         ? createClippedFilledPolygonJob(path, query, { frames, fill, strokeRadiusLocal, maxCommands })
         : createClippedFilledSweepJob(path, query, { frames, fill, strokeRadiusLocal, maxCommands });
@@ -28,7 +29,8 @@ export function createClippedVectorRegionJob(descriptor: VectorNarrowDescriptor,
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (partIndex >= descriptor.parts.length) {
                     if (uncertain) return finish({ status: 'uncertain', ...uncertain });
-                    return containment && seen ? finish({ status: 'hit', result: { hit: true, distanceCss: 0, part: 'body' } }) : finish({ status: 'miss' });
+                    return containment ? seen ? finish({ status: 'hit', result: { hit: true, distanceCss: 0, part: 'body' } })
+                        : finish({ status: 'empty' }) : finish({ status: 'miss' });
                 }
                 const part = descriptor.parts[partIndex], fills = part.options.interiorPaths ?? [];
                 if (fills.length > 1) return finish({ status: 'uncertain', reason: 'Compound clipped fills require a winding partition', part: part.part });

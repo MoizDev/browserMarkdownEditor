@@ -147,7 +147,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
             if (!worldBox.every(Number.isFinite)) throw new RangeError('Board region bounds overflow');
             const worldToCss: Affine = [camera.z, 0, 0, camera.z, -camera.x * camera.z, -camera.y * camera.z];
             const queue: SpatialRef[] = [], hits = new Map<NodeId, number>();
-            const groups = new Map<NodeId, number>(), evaluated = new Map<NodeId, { readonly selected: NodeId; readonly hit: boolean; readonly rank: number; readonly whole?: boolean }>();
+            const groups = new Map<NodeId, number>(), evaluated = new Map<NodeId, { readonly selected: NodeId; readonly hit: boolean; readonly rank: number; readonly whole?: boolean; readonly empty?: boolean }>();
             cursor = scene.spatialCursor({ sheetId: sheet, purpose: 'selectable', request: { kind: 'box', box: worldBox, order: 'forward' } });
             const narrowPart = async (ref: SpatialRef, regionPoints: readonly Vec2[]) => {
                 check();
@@ -182,7 +182,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                     { x: ancestor.w, y: ancestor.h }, { x: 0, y: ancestor.h }].map(p => exactAffinePoint(frameCss, p));
                                 localPoints = clipPolygon(localPoints, polygon);
                                 if (!localPoints.length) {
-                                    return { selected, hit: false, rank: resolved.rank, whole: false };
+                                    return { selected, hit: false, rank: resolved.rank, whole: false, empty: false };
                                 }
                                 if (localPoints.length < 3) throw new BoardRegionUncertain('Frame-clipped polygon has a degenerate intersection');
                             }
@@ -192,7 +192,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 const localQuery: RegionQuery = query.kind === 'polygon'
                     ? { kind: 'polygon', points: localPoints, localToSurface, containment: query.containment }
                     : { kind: 'swept', points: localPoints, localToSurface, radiusCss: query.radiusCss };
-                let hit = false, whole = false;
+                let hit = false, whole = false, empty = false;
                 if (prepared.ink) {
                     let uncertain = false, any = false, all = true, visible = false;
                     for (const coverage of prepared.ink) {
@@ -223,6 +223,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     }
                     const containment = query.kind === 'polygon' && query.containment;
                     hit = containment ? all && visible : any;
+                    empty = containment && !visible && !uncertain;
                     if (!hit && uncertain) throw new BoardRegionUncertain('Ink region intersection is numerically ambiguous');
                 } else if (prepared.vector) {
                     let vector = prepared.vector;
@@ -244,7 +245,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                 for (;;) {
                                     check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
                                     if (value.status === 'pending') { await cooperate(); continue; }
-                                    if (value.status !== 'uncertain') { whole = true; hit = value.status === 'hit'; }
+                                    if (value.status !== 'uncertain') { whole = true; hit = value.status === 'hit'; empty = value.status === 'empty'; }
                                     break;
                                 }
                             } finally { job.cancel(); }
@@ -256,7 +257,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                     check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
                                     if (value.status === 'pending') { await cooperate(); continue; }
                                     if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
-                                    hit = value.status === 'hit'; break;
+                                    hit = value.status === 'hit'; empty = value.status === 'empty'; break;
                                 }
                             } finally { job.cancel(); }
                         }
@@ -276,7 +277,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         }
                         if (node.dash !== 'none' && connector.body.length)
                             components.push({ path: connector.body, transform: worldToCss, fill: false, radius: node.width / 2, part: 'body' });
-                        let certified = components.length > 0, all = true;
+                        let certified = components.length > 0, all = true, componentSeen = false;
                         for (const component of components) {
                             const options = { ...pathOptions, strokeRadiusLocal: component.radius,
                                 ...(component.fill ? { interiorPaths: [component.path] } : {}) };
@@ -287,13 +288,13 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                     check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
                                     if (value.status === 'pending') { await cooperate(); continue; }
                                     if (value.status === 'uncertain') certified = false;
-                                    else if (value.status === 'miss') all = false;
+                                    else if (value.status !== 'empty') { componentSeen = true; if (value.status === 'miss') all = false; }
                                     break;
                                 }
                             } finally { job.cancel(); }
                             if (!certified || !all) break;
                         }
-                        if (certified) return { selected, hit: all, rank: resolved.rank, whole: true };
+                        if (certified) return { selected, hit: all && componentSeen, rank: resolved.rank, whole: true, empty: !componentSeen };
                     }
                     const pathHit = async (paths: readonly (readonly PathOp[])[], region: RegionQuery, pathOptions: PathPickOptions) => {
                         const job = region.kind === 'swept' ? createSweptPathJob(paths, region, pathOptions)
@@ -379,10 +380,11 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         }
                         if (!containment && !body && otherHit && partialFrame && !partsCertified) throw new BoardRegionUncertain('Frame-clipped connector head requires a visible witness');
                         hit = containment ? parts.length > 0 && parts.every(Boolean) : body || ((!partialFrame || partsCertified) && otherHit);
+                        empty = containment && partialFrame && parts.length === 0;
                     }
                 } else throw new BoardRegionUncertain(`No real region geometry for ${node.kind}`);
                 check();
-                return { selected, hit, rank: resolved.rank, whole };
+                return { selected, hit, rank: resolved.rank, whole, empty };
             };
             const narrow = async (ref: SpatialRef) => {
                 check(); const resolved = scene.resolveSpatial(ref); if (!resolved) throw stale();
@@ -391,15 +393,15 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 for (const regionPoints of regions) {
                     try {
                         result = await narrowPart(ref, regionPoints);
-                        if (!result || result.hit || result.whole) break;
+                        if (!result || result.hit || result.whole || result.empty) break;
                     } catch (error) {
                         if (!(error instanceof BoardRegionUncertain)) throw error;
                         uncertain ??= error;
                     }
                     await cooperate(); check();
                 }
-                if (!result?.hit && !result?.whole && uncertain) throw uncertain;
-                if (result && !result.hit && !result.whole && decomposedContainment)
+                if (!result?.hit && !result?.whole && !result?.empty && uncertain) throw uncertain;
+                if (result && !result.hit && !result.whole && !result.empty && decomposedContainment)
                     throw new BoardRegionUncertain('Containment spans a non-convex lasso partition');
                 if (result) {
                     evaluated.set(resolved.id, result);
@@ -442,7 +444,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                 const member = scene.resolveSpatial(ref); if (!member) throw stale();
                                 if (selectableAtFocus(doc, member.id, focus, sheet) === group) {
                                     const result = await narrow(ref);
-                                    if (result) { any = true; all &&= result.hit; rank = Math.max(rank, result.rank); }
+                                    if (result && !result.empty) { any = true; all &&= result.hit; rank = Math.max(rank, result.rank); }
                                 }
                             }
                             if ((!complete || pendingIndex < pending.length) && all) { await cooperate(); check(); }

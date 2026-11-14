@@ -12,7 +12,7 @@ import type { PathOp, Vec2 } from './path';
 import type { RegionQuery } from './types';
 import type { VectorNarrowDescriptor } from './vectorNarrow';
 
-export type NonconvexContainmentResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
+export type NonconvexContainmentResult = Readonly<{ status: 'pending' | 'hit' | 'miss' | 'empty' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 const PENDING: NonconvexContainmentResult = Object.freeze({ status: 'pending' });
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
 
@@ -131,7 +131,7 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
                 yield;
             }
         }
-        return { status: seen ? 'hit' : 'miss' };
+        return { status: seen ? 'hit' : 'empty' };
     };
     let iterator: Generator<void, NonconvexContainmentResult> | undefined, cancelled = false, spent = 0, finished: NonconvexContainmentResult | undefined;
     const finish = (result: NonconvexContainmentResult): NonconvexContainmentResult => { finished = Object.freeze(result); return finished; };

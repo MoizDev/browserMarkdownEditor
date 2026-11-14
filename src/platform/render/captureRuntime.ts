@@ -39,7 +39,7 @@ export interface PlatformCapturerOptions {
     readonly paneId: string;
     readonly owner: MemorySessionOwner;
     /** Synchronously retain one immutable revision and its resources. */
-    snapshot(request: CaptureRequest): CaptureSnapshot;
+    snapshot(request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot;
 }
 
 /** Session-owned, never view-owned: a hide/unmount removes only the optional GPU route.
@@ -58,7 +58,7 @@ export function createPlatformCapturer(options: PlatformCapturerOptions): {
         reserve: bytes => { const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
         release: lease => { cache.release(lease); live -= lease.bytes; },
     };
-    const capturer = new PaneCapturer({ paneId: options.paneId, queue, memory, snapshot: request => options.snapshot(request),
+    const capturer = new PaneCapturer({ paneId: options.paneId, queue, memory, snapshot: request => options.snapshot(request, memory),
         tryGpu: () => gpuOwners.get(options.paneId)?.() ?? null });
     let disposed = false;
     return {

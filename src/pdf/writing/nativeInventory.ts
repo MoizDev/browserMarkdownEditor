@@ -7,7 +7,6 @@ export interface NativeAttachment {
     index: number;
     name: string;
     sha256: string;
-    bytes: Blob;
     /** Only the public EmbeddedFile Params marker, never a guessed Filespec Desc. */
     marker?: string;
 }
@@ -55,7 +54,7 @@ export async function inventoryNativeAttachments(document: WriterNativeDocument,
                 hash.update(bytes.subarray(offset, offset + 1024 * 1024));
                 await cooperate();
             }
-            result.push({ index: i, name, sha256: hash.digest(), bytes: new Blob([bytes]), ...(marker ? { marker } : {}) });
+            result.push({ index: i, name, sha256: hash.digest(), ...(marker ? { marker } : {}) });
         } finally { arena.dispose(); }
     }
     return result;

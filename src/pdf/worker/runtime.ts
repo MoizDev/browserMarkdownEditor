@@ -276,6 +276,14 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
             'page.imageRegions': serial(value => { const { args, item } = lookup(value); return item.doc.imageRegions(pageNumber(args.page, item)); }),
             'page.release': serial(value => { const { args, item } = lookup(value), page = pageNumber(args.page, item); item.raw.delete(page); item.loaded.delete(page); item.doc.releasePage(page); item.clone?.releasePage(page); return {}; }),
             'doc.outline': serial(value => { const { item } = lookup(value); return item.doc.outline({ maxDepth: 64, maxNodes: 20_000 }); }),
+            'doc.inspectNotebook': serial(async (value, ctx) => {
+                const { args, key, item } = lookup(value);
+                if (typeof args.expectedPath !== 'string' || args.expectedPath.length > 4096) throw bad('RangeError', 'Invalid notebook source path');
+                const { inspectPdfNotebook } = await import('../writing/notebookInspection');
+                const result = await inspectPdfNotebook(item.sourceBlob, args.expectedPath, () => ctx.slice());
+                if (closed || ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError');
+                return result;
+            }),
             'doc.inspectInk': serial(async (value, ctx) => {
                 const { key, item } = lookup(value), inspection = await ensureInspection(key, item, ctx);
                 try { if (ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError'); return inspection.result; }

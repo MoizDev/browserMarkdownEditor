@@ -113,6 +113,7 @@ export interface PdfEngineOps {
     'doc.outline': { args: { docKey: PdfDocKey }; result: RawOutlineNode[] };
     'doc.attachment': { args: { docKey: PdfDocKey; index: number; maxBytes: number }; result: ArrayBuffer };
     'doc.inspectInk': { args: { docKey: PdfDocKey }; result: PdfInkInspection };
+    'doc.inspectNotebook': { args: { docKey: PdfDocKey; expectedPath: string }; result: { path: string; pageCount: number } };
     'doc.inkMedia': { args: { docKey: PdfDocKey; name: string; outerFingerprint: string }; result: Blob };
     'font.provide': { args: { id: PdfFontId; bytes: ArrayBuffer }; result: { fontEpoch: number } };
     'worker.stats': { args: Record<string, never>; result: PdfWorkerStats };

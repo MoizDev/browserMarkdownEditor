@@ -9,6 +9,21 @@ import type { EmbedCoveragePath, EmbedDrawnPaint, EmbedHostingLease, EmbedHostin
 import type { LayerHost } from './compositor.types';
 
 const SLOT_BYTES = 65_536;
+class InlineIds implements ReadonlySet<string> {
+    readonly #values: Set<string>;
+    readonly [Symbol.toStringTag] = 'InlineIds';
+    constructor(values: Iterable<string> = []) { this.#values = new Set(values); Object.freeze(this); }
+    get size(): number { return this.#values.size; }
+    has(value: string): boolean { return this.#values.has(value); }
+    entries(): SetIterator<[string, string]> { return this.#values.entries(); }
+    keys(): SetIterator<string> { return this.#values.keys(); }
+    values(): SetIterator<string> { return this.#values.values(); }
+    [Symbol.iterator](): SetIterator<string> { return this.#values[Symbol.iterator](); }
+    forEach(callback: (value: string, key: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
+        for (const value of this.#values) callback.call(thisArg, value, value, this);
+    }
+}
+const EMPTY_INLINE: ReadonlySet<string> = new InlineIds();
 function sameToken(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
         a.session === b.session && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
@@ -63,6 +78,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
     let visible = true, disposed = false, requestBlocked = false, revision = 0;
     let prepared: { token: FrameToken; epoch: number; cameraEpoch: number; frameId: number } | null = null;
     let witness: EmbedDrawnPaint | null = null;
+    let inlineRevision: number | null = null, inlineCache: ReadonlySet<string> = EMPTY_INLINE;
     const slots = new Map<string, Slot>(), requests = new Set<Request>(), retiring = new Set<Promise<void>>();
     const report = (error: unknown) => { try { options.onError?.(error); } catch { /* reporting cannot break teardown */ } };
     const wake = () => host?.invalidate('embed-presentation');
@@ -258,11 +274,17 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             });
         },
         inlineNodeIds(sceneRevision) {
-            const ids = new Set<string>();
-            if (!packet || (sceneRevision !== undefined && packet.sceneRevision !== sceneRevision)) return ids;
-            for (const slot of slots.values()) if (slot.node && slot.clips && slot.containment && isEmbedContainmentApproved(slot.containment) &&
-                !slot.node.laterPaint.some(item => item.opacity === 'translucent')) ids.add(slot.id);
-            return ids;
+            if (!packet || (sceneRevision !== undefined && packet.sceneRevision !== sceneRevision)) return EMPTY_INLINE;
+            const eligible = (slot: Slot) => !!slot.node && !!slot.clips && !!slot.containment && isEmbedContainmentApproved(slot.containment) &&
+                !slot.node.laterPaint.some(item => item.opacity === 'translucent');
+            let count = 0, unchanged = inlineRevision === packet.sceneRevision;
+            for (const slot of slots.values()) if (eligible(slot)) { count++; if (!inlineCache.has(slot.id)) unchanged = false; }
+            if (unchanged && count === inlineCache.size) return inlineCache;
+            inlineRevision = packet.sceneRevision;
+            if (!count) return inlineCache = EMPTY_INLINE;
+            const ids: string[] = [];
+            for (const slot of slots.values()) if (eligible(slot)) ids.push(slot.id);
+            return inlineCache = new InlineIds(ids);
         },
         setVisible(value) {
             if (disposed || visible === value) return;

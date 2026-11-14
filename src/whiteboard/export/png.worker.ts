@@ -1,7 +1,10 @@
 import { encodePng } from './png'
 import type { PngWorkerRequest, PngWorkerResponse } from './pngWorkerProtocol'
 
-const scope = self as unknown as DedicatedWorkerGlobalScope
+const scope = self as unknown as {
+  postMessage(message: PngWorkerResponse): void
+  onmessage: ((event: MessageEvent<PngWorkerRequest>) => void) | null
+}
 const abort = new AbortController()
 let deliver: ((row: IteratorResult<Uint8Array>) => void) | undefined
 let started = false

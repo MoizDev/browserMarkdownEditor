@@ -1,5 +1,5 @@
 import type { BoardDoc, BoardKind, HostBlock, PreservedBlock, Sheet, ViewFlags } from '../model/doc';
-import { COMMON_NODE_DEFAULTS, NODE_DEFAULTS } from '../model/defaults';
+import { COMMON_NODE_DEFAULTS, MEDIA_DEFAULTS, NODE_DEFAULTS, UI_DEFAULTS, VIEW_DEFAULTS } from '../model/defaults';
 import { NODE_FILE_FIELDS, PAPER_FILE_FIELDS, PEN_FILE_FIELDS } from '../model/fileFields';
 import type { ExtBag } from '../model/json';
 import type { NodeId, SheetId } from '../model/ids';
@@ -8,8 +8,8 @@ import type { Node, StrokeNode } from '../model/nodes';
 import type { UiBlock } from '../model/styles';
 import type { RichText } from '../text/richText';
 import { COMPATIBILITY_FENCE, fenceDocument } from './fence';
-import { encodePoints } from './points';
-import type { PointSamples } from './points';
+import { decodePoints, encodePoints, pointExponent, POINT_LIMITS } from './points';
+import type { PointHeader, PointSamples } from './points';
 import { FORMAT_LIMITS, NATIVE_VERSION, NODE_PROPERTY_ORDER } from './schema';
 import type { Bounds } from './schema';
 import { compactRaw, guardWrite, jsonText, lazyValue, objectValue, rawValue, refuseWrite, tupleValue } from './writeJson';
@@ -18,7 +18,9 @@ import type { EncodedRecord, RecordIdentity, WriteResult } from './writeTypes';
 export interface SavedView { readonly sheet: string; readonly x: number; readonly y: number; readonly zoom: number; }
 export interface EncoderContext {
     readonly bounds: (node: Node) => Bounds;
-    readonly stroke: (node: StrokeNode) => { readonly k: number; readonly samples: PointSamples; }; // Stroke-local, pinned SampleStoreReader values.
+    readonly zMax: number; // Host's maximum CSS-px/world-unit scale, before the stroke's own sx/sy.
+    readonly stroke: (node: StrokeNode) => PointSamples; // Stroke-local, pinned SampleStoreReader values; requested only on cache miss.
+    readonly readEncoded: (node: StrokeNode) => { readonly pts: string; readonly header: PointHeader; } | null; // R-W34: native admission only, not authored quantization.
     readonly savedView: () => SavedView | undefined;
     // R-W22/25: the pinned model owns these indices; a save never scans nodes or RawJson values.
     readonly mediaRefs: ReadonlyMap<MediaId, ReadonlySet<NodeId>>;
@@ -42,10 +44,13 @@ function angle(value: number): number {
     return normalized === 0 || normalized >= turn ? 0 : normalized;
 }
 function marks(value: RichText['blocks'][number]['runs'][number]['marks']): unknown {
-    return objectValue(['b', 'i', 'u', 's', 'code', 'hl', 'link', 'x'].map(key => [key, value[key as keyof typeof value]]));
+    return objectValue([
+        ...['b', 'i', 'u', 's', 'code', 'hl', 'link'].map(key => [key, value[key as keyof typeof value]] as Field),
+        ['x', value.x === undefined ? undefined : rawValue(value.x)],
+    ]);
 }
 function richText(value: RichText): unknown {
-    if (!value.blocks.length || value.blocks.length > FORMAT_LIMITS.textChars + 1) refuseWrite('limit', 'Rich text needs a bounded, nonempty block list');
+    if (!value.blocks.length || value.blocks.length > FORMAT_LIMITS.richTextBlocks) refuseWrite('limit', 'Rich text needs a bounded, nonempty block list');
     let chars = value.blocks.length - 1;
     const blocks = value.blocks.map(block => {
         if (!block.runs.length || block.runs.length > FORMAT_LIMITS.recordBytes / 2) refuseWrite('limit', 'Rich text needs a bounded, nonempty run list');
@@ -83,10 +88,32 @@ function connectorEnd(value: Extract<Node, { kind: 'connector'; }>['start']): un
 function nodeProperty(node: Node, key: string, context: EncoderContext): unknown {
     if (key === 'pts' && node.kind === 'stroke') {
         return lazyValue(() => {
-            const { k, samples } = context.stroke(node);
+            const required = pointExponent(context.zMax, node.sx, node.sy);
+            if (!required.ok) refuseWrite('points', required.error.reason, 'samples');
+            const native = context.readEncoded(node);
+            if (native) {
+                const header = native.header;
+                if (!Number.isSafeInteger(header.count) || header.count < 1 || header.count > POINT_LIMITS.count
+                    || !Number.isInteger(header.k) || header.k < 0 || header.k > POINT_LIMITS.exponent
+                    || !Number.isSafeInteger(header.runCount) || header.runCount < 0 || header.runCount > header.count
+                    || typeof header.hasPressure !== 'boolean' || header.hasPressure !== (node.pressure === 'real')
+                    || typeof native.pts !== 'string' || native.pts.length > POINT_LIMITS.encodedChars) {
+                    refuseWrite('points', 'Native payload metadata does not match the stroke');
+                }
+                if (header.k >= required.value) return native.pts;
+            }
+            // An admitted native payload may need finer quantization after scaling. Decode that
+            // original, not the store's translated runs: opaque channels and explicit run boundaries
+            // still belong to the file even though the current renderer does not understand them.
+            let samples: PointSamples;
+            if (native) {
+                const decoded = decodePoints(native.pts);
+                if (!decoded.ok) refuseWrite('points', decoded.error.reason, 'samples');
+                samples = decoded.value;
+            } else samples = context.stroke(node);
             if (node.pressure === 'real' && samples.pressure == null) refuseWrite('points', 'Pressure-real stroke is missing its pressure channel');
             if (node.pressure === 'none' && samples.pressure != null) refuseWrite('points', 'Pressure-none stroke must not acquire a pressure channel');
-            const encoded = encodePoints(samples, k);
+            const encoded = encodePoints(samples, required.value);
             if (!encoded.ok) refuseWrite('points', encoded.error.reason, 'samples');
             return encoded.value.pts;
         });
@@ -115,17 +142,20 @@ function singleton(type: 'pen' | 'view' | 'paper' | 'host', fields: readonly Fie
 
 export function encodePen(ui: UiBlock): WriteResult<EncodedRecord> {
     return guardWrite(() => {
-        const next = objectValue(['fill', 'dash', 'size', 'font', 'align', 'textAlign', 'valign', 'headStart', 'headEnd', 'route', 'spline', 'highlighterColor']
-            .map(key => [key, ui.next[key as keyof typeof ui.next]]));
-        return singleton('pen', [[PEN_FILE_FIELDS.tool[0], ui.tool], [PEN_FILE_FIELDS.next[0], ui.next.color],
-        [PEN_FILE_FIELDS.penWidth[0], ui.penWidth], [PEN_FILE_FIELDS.next[1], next]], ui.ext);
+        const fields: Field[] = ['fill', 'dash', 'size', 'font', 'align', 'textAlign', 'valign', 'headStart', 'headEnd', 'route', 'spline', 'highlighterColor']
+            .map(key => [key, omitted(ui.next[key as keyof typeof ui.next], UI_DEFAULTS.next, key)]);
+        const next = fields.some(([, value]) => value !== undefined) ? objectValue(fields) : undefined;
+        return singleton('pen', [[PEN_FILE_FIELDS.tool[0], omitted(ui.tool, UI_DEFAULTS, 'tool')],
+        [PEN_FILE_FIELDS.next[0], omitted(ui.next.color, UI_DEFAULTS.next, 'color')],
+        [PEN_FILE_FIELDS.penWidth[0], omitted(ui.penWidth, UI_DEFAULTS, 'penWidth')], [PEN_FILE_FIELDS.next[1], next]], ui.ext);
     });
 }
 export function encodeView(view: ViewFlags, saved?: SavedView): WriteResult<EncodedRecord> {
     return guardWrite(() => singleton('view', [
         ['sheet', saved?.sheet], ['x', saved?.x], ['y', saved?.y], ['zoom', saved?.zoom],
-        ['grid', view.grid], ['focusMode', view.focusMode], ['toolLock', view.toolLock],
-        ['transparent', view.transparent], ['debugMode', view.debugMode],
+        ['grid', omitted(view.grid, VIEW_DEFAULTS, 'grid')], ['focusMode', omitted(view.focusMode, VIEW_DEFAULTS, 'focusMode')],
+        ['toolLock', omitted(view.toolLock, VIEW_DEFAULTS, 'toolLock')], ['transparent', omitted(view.transparent, VIEW_DEFAULTS, 'transparent')],
+        ['debugMode', omitted(view.debugMode, VIEW_DEFAULTS, 'debugMode')],
     ], view.ext));
 }
 export function encodePaper(host: Extract<HostBlock, { kind: 'notebook'; }>): WriteResult<EncodedRecord> {
@@ -153,7 +183,8 @@ export function encodeMedia(media: MediaEntry): WriteResult<EncodedRecord> {
         }
         return line({ category: 'media', type: 'media', id: media.id }, objectValue([
             ['type', 'media'], ['id', media.id], ['mime', media.mime], ['w', media.w], ['h', media.h], ['bytes', media.bytes],
-            ['duration', video ? media.duration : undefined], ['file', media.file], ['animated', media.animated], ['name', media.name],
+            ['duration', video ? media.duration : undefined], ['file', omitted(media.file, MEDIA_DEFAULTS, 'file')],
+            ['animated', omitted(media.animated, MEDIA_DEFAULTS, 'animated')], ['name', omitted(media.name, MEDIA_DEFAULTS, 'name')],
         ], media.ext));
     });
 }
@@ -205,10 +236,12 @@ export function encodeHeader(kind: BoardKind, preserved: PreservedBlock): WriteR
         return header.slice(0, -1) + ',"records":[';
     });
 }
-export function encodeEnd(count: number): WriteResult<string> {
+export function encodeEnd(count: number, endExt: ExtBag | null = null): WriteResult<string> {
     return guardWrite(() => {
         if (!Number.isSafeInteger(count) || count < 0 || count >= FORMAT_LIMITS.records) refuseWrite('limit', 'End count exceeds the native record limit');
-        return jsonText(objectValue([['type', 'end'], ['count', count]]));
+        // R-W30: only unknown end fields are preserved; neither type nor count may be shadowed.
+        if (endExt?.raw.size) refuseWrite('invalid', 'End count belongs to the session, not preserved data');
+        return jsonText(objectValue([['type', 'end'], ['count', count]], endExt));
     });
 }
 export function encodeOpaque(record: PreservedBlock['records'][number]): WriteResult<EncodedRecord> {

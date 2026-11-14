@@ -4,7 +4,7 @@ import type { EmbedContainment } from '../embedContainment.types';
 import type { ByteLease } from './gfx/api';
 import type { FrameBudget, FrameToken, Layer } from './types';
 import { createEmbedClipJob, type EmbedClipDom } from './embedClipDom';
-import type { EmbedCoveragePath, EmbedDrawnPaint, EmbedHostingLease, EmbedHostingSnapshot, EmbedPresentationFrame,
+import type { EmbedClippedCoverage, EmbedCoveragePath, EmbedDrawnPaint, EmbedHostingLease, EmbedHostingSnapshot, EmbedPresentationFrame,
     EmbedPresentationOptions, EmbedPresentationPort, EmbedPresentedNode } from './embedPresentation.types';
 import type { LayerHost } from './compositor.types';
 
@@ -40,6 +40,13 @@ function samePath(a: EmbedCoveragePath, b: EmbedCoveragePath): boolean {
 function samePaths(a: readonly EmbedCoveragePath[], b: readonly EmbedCoveragePath[]): boolean {
     return a === b || a.length === b.length && a.every((path, i) => samePath(path, b[i]));
 }
+function sameCoverage(a: EmbedClippedCoverage, b: EmbedClippedCoverage): boolean {
+    const x = a.stroke, y = b.stroke;
+    return (a.fill !== false) === (b.fill !== false) && samePath(a.path, b.path) && samePaths(a.clips, b.clips)
+        && (x === y || !!x && !!y && x.width === y.width && x.cap === y.cap && x.join === y.join
+            && x.miterLimit === y.miterLimit && (x.dashPhase ?? 0) === (y.dashPhase ?? 0)
+            && sameNumbers(x.dash ?? [], y.dash ?? []));
+}
 function sameGeometry(a: EmbedPresentedNode, b: EmbedPresentedNode): boolean {
     const x = a.rect, y = b.rect;
     if (a.source !== b.source || x.x !== y.x || x.y !== y.y || x.width !== y.width || x.height !== y.height ||
@@ -49,7 +56,7 @@ function sameGeometry(a: EmbedPresentedNode, b: EmbedPresentedNode): boolean {
         const other = b.laterPaint[i];
         if (item.opacity !== other.opacity) return false;
         if (item.opacity === 'translucent' || other.opacity === 'translucent') return true;
-        return samePath(item.coverage.path, other.coverage.path) && samePaths(item.coverage.clips, other.coverage.clips);
+        return sameCoverage(item.coverage, other.coverage);
     });
 }
 function* estimates(node: EmbedPresentedNode): Generator<number> {
@@ -58,7 +65,7 @@ function* estimates(node: EmbedPresentedNode): Generator<number> {
     yield 8192;
     for (const later of node.laterPaint) {
         if (later.opacity !== 'opaque') continue;
-        yield path(later.coverage.path) * 2;
+        yield path(later.coverage.path) * 2 + (later.coverage.stroke?.dash?.length ?? 0) * 640;
         for (const clip of later.coverage.clips) yield path(clip) * 2;
     }
 }
@@ -196,6 +203,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         for (const slot of slots.values()) {
             const node = slot.node, cap = slot.containment;
             if (!node || !cap || !isEmbedContainmentApproved(cap) || !slot.clips) { hide(slot); continue; }
+            // Owner adopted the plan's translucent-above interaction exception; its old extra confirmation step is cut.
             const interaction = node.laterPaint.some(item => item.opacity === 'translucent');
             const omitted = witness.omittedNodeIds?.has(slot.id) ?? false;
             const shown = interaction ? node.poster === 'painted' && !omitted && !!slot.interaction : node.poster === 'omitted' && omitted;

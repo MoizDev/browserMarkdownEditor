@@ -1,4 +1,6 @@
-import { sampleSurface, type GestureOwner, type Modifiers, type RealSample, type Tool } from './tool'
+import { sampleSurface, type FinishReason, type GestureOwner, type Modifiers, type RealSample, type Tool } from './tool'
+import type { TouchPanSample } from '../../platform/render/scheduler'
+import { PanFlingSamples } from './panFling'
 import type { NodeId } from '../model/ids'
 import { SweepQueue, type SweepQueueServices } from './sweepQueue'
 
@@ -108,14 +110,20 @@ export interface HandContext {
   toSurface(sample: RealSample): InkPoint
   panBy(delta: InkPoint): void
   invalidate(): void
+  flingEnabled?: boolean
+  startFling?(samples: readonly TouchPanSample[]): void
 }
 class HandGesture implements GestureOwner {
   readonly kind = 'pan' as const
   readonly pointerIds: ReadonlySet<number>
   private last: InkPoint
   private ended = false
+  private readonly fling = new PanFlingSamples()
+  private readonly canFling: boolean
   constructor(sample: RealSample, private readonly context: HandContext) {
     this.pointerIds = new Set([sample.pointerId]); this.last = sampleSurface(sample, context.toSurface)
+    this.canFling = context.flingEnabled ?? sample.source === 'touch'
+    if (this.canFling) this.fling.append(sample, this.last)
   }
   update(samples: readonly RealSample[]): void {
     if (this.ended) return
@@ -124,11 +132,17 @@ class HandGesture implements GestureOwner {
       const point = sampleSurface(sample, this.context.toSurface)
       this.context.panBy({ x: this.last.x - point.x, y: this.last.y - point.y })
       this.last = point
+      if (this.canFling) this.fling.append(sample, point)
     }
     if (samples.length) this.context.invalidate()
   }
-  finish(): void { this.ended = true }
-  cancel(): void { this.ended = true }
+  finish(reason: FinishReason): void {
+    if (this.ended) return
+    this.ended = true
+    if (reason === 'up' && this.canFling) this.context.startFling?.(this.fling.release())
+    else this.fling.clear()
+  }
+  cancel(): void { this.ended = true; this.fling.clear() }
 }
 export const handTool: Tool<HandContext> = {
   id: 'hand', begin: (sample, _modifiers, context) => new HandGesture(sample, context),

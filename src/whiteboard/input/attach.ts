@@ -1,4 +1,5 @@
 import { surfaceToWorld, type CameraController, type Point } from '../../platform/render/camera'
+import type { TouchPanSample } from '../../platform/render/scheduler'
 import type { BoardSession } from '../session/BoardSession'
 import { TOOLS } from '../model/styles'
 import type { Op } from '../change/ops'
@@ -65,6 +66,8 @@ export interface BoardInputServices {
   keyboardNavigation?(keyboardCursorActive: boolean): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
+  startFling?(samples: readonly TouchPanSample[]): void
+  cancelMotion?(): void
   edgeScrolling?(): boolean
   error(error: unknown): void
   pointerChanged?(sample: RealSample): void
@@ -114,13 +117,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     toSurface: physicalSurface,
     panBy: delta => view.camera.panBy(delta),
     invalidate: services.cameraChanged,
+    startFling: services.startFling,
   }
   const hand: Tool<unknown> = { id: handTool.id, begin: (sample, modifiers) => handTool.begin(sample, modifiers, handContext) }
   const secondaryPan: Tool<unknown> = {
     id: 'secondary-pan',
     begin(sample, modifiers) {
       const origin = physicalSurface(sample)
-      const pan = handTool.begin(sample, modifiers, handContext)
+      const pan = handTool.begin(sample, modifiers, { ...handContext, flingEnabled: true })
       if (!pan) return null
       let dragging = false
       const owner: GestureOwner = {
@@ -266,6 +270,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const down = (event: PointerEvent) => {
     services.textInput?.cancelPending()
     if (!current()) return
+    services.cancelMotion?.()
     if (!router.activeOwner) { dismissKeyboardCursor(); cancelContinuations(); services.cancelPendingGestures() }
     let focusSurface = event.pointerType !== 'touch'
     if (event.pointerType === 'pen') { doubleTap.clear(); services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp) }
@@ -301,7 +306,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     const cancelled = services.textInput?.cancelPending()
     if (cancelled && event.key === 'Escape') { event.preventDefault(); event.stopPropagation() }
   }
-  const wheelActivity = () => { services.textInput?.cancelPending() }
+  const wheelActivity = () => { services.textInput?.cancelPending(); services.cancelMotion?.() }
   const auxclick = (event: MouseEvent) => { if (event.button === 1 || event.button === 2) event.preventDefault() }
   const doubleClick = (event: MouseEvent) => {
     if (!current() || !editable() || event.button !== 0) return

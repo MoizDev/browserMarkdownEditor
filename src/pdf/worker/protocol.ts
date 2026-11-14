@@ -2,6 +2,7 @@ import type { PageGeometry } from '../../platform/types';
 import type { PdfiumJbig2Regions } from '../engine/pdfium/imageRegions.types';
 import type { MainMessage, WorkerMessage } from '../../platform/workers/envelope';
 import type { PdfFontId } from '../fonts/catalogue';
+import type { PdfInkInspection } from '../writing/inkInspection.types';
 import type { BackendInfo, DocInfo, EngineLimits, PageComplexity, RawOutlineNode, RawPdfLink, DeviceRect, PdfEngineRole } from '../engine/types';
 import type { FigureTag, Schema2PageText, LineTable } from '../text/types';
 import type { TileEmphasisArgs, PageProbeArgs, PageProbeResult } from '../emphasis/types';
@@ -111,6 +112,8 @@ export interface PdfEngineOps {
     'page.release': { args: PageArgs; result: Record<string, never> };
     'doc.outline': { args: { docKey: PdfDocKey }; result: RawOutlineNode[] };
     'doc.attachment': { args: { docKey: PdfDocKey; index: number; maxBytes: number }; result: ArrayBuffer };
+    'doc.inspectInk': { args: { docKey: PdfDocKey }; result: PdfInkInspection };
+    'doc.inkMedia': { args: { docKey: PdfDocKey; name: string; outerFingerprint: string }; result: Blob };
     'font.provide': { args: { id: PdfFontId; bytes: ArrayBuffer }; result: { fontEpoch: number } };
     'worker.stats': { args: Record<string, never>; result: PdfWorkerStats };
 }

@@ -2738,6 +2738,12 @@ export default function App() {
             } else if (sessionAtCall?.adapter.journalDelta && documentSessions.get(id) === sessionAtCall) {
               void recoveryEvent({ type: 'change', documentId: id, vaultId, path: liveTab.file.path, fingerprint: result.version.hash,
                 kind: liveTab.representation.loadedKind, revision: newer.revision, capture: () => {
+                  if (documentSessions.get(id) !== sessionAtCall) throw new Error('Recovery session changed before capture');
+                  const source = sessionAtCall.adapter.checkpoint(), prior = documentBuffers.get(id)?.source;
+                  if (typeof source === 'string' || !documentSessions.isLiveOwner(id, source.owner)) throw new Error('Recovery source owner changed before capture');
+                  if (!prior || typeof prior === 'string' || prior.owner.session !== source.owner.session || source.revision > prior.revision) {
+                    sessionReportRef.current(id, source);
+                  }
                   if (documentSessions.get(id) !== sessionAtCall || documentBuffers.get(id)?.revision !== newer.revision) throw new Error('Recovery revision changed before capture');
                   const capture = sessionAtCall.adapter.journalDelta?.();
                   if (!capture) throw new Error('This session cannot yet capture recovery data');
@@ -2864,6 +2870,12 @@ export default function App() {
         void recoveryEvent({ type: 'change', documentId: target.id, vaultId, path,
           fingerprint: baseline.hash, kind: target.representation.loadedKind, revision: buffer.revision,
           capture: () => {
+            if (documentSessions.get(target.id) !== session) throw new Error('Recovery session changed before capture');
+            const source = session.adapter.checkpoint(), prior = documentBuffers.get(target.id)?.source;
+            if (typeof source === 'string' || !documentSessions.isLiveOwner(target.id, source.owner)) throw new Error('Recovery source owner changed before capture');
+            if (!prior || typeof prior === 'string' || prior.owner.session !== source.owner.session || source.revision > prior.revision) {
+              sessionReportRef.current(target.id, source);
+            }
             if (documentSessions.get(target.id) !== session || documentBuffers.get(target.id)?.revision !== buffer.revision) throw new Error('Recovery revision changed before capture');
             const capture = session.adapter.journalDelta?.();
             if (!capture) throw new Error('This session cannot yet capture recovery data');

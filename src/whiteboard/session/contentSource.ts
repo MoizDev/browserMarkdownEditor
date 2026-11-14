@@ -32,13 +32,11 @@ export function boardContentSource(owner: SessionOwner, snapshot: PinnedBoardBui
     const job: BuildJob = Object.freeze({
         kind: 'build', revision,
         run(signal: AbortSignal) {
-            if (refs === 0) return Promise.reject(new Error('Board source has been released'));
             if (signal.aborted) return Promise.reject(new DOMException('Board build cancelled', 'AbortError'));
             return snapshot.build(signal);
         },
     });
-    const source: BoardContentSource = Object.freeze({ kind: 'deferred', owner: stableOwner, revision, retain,
-        read: () => { if (refs === 0) throw new Error('Board source has been released'); return job; } });
+    const source: BoardContentSource = Object.freeze({ kind: 'deferred', owner: stableOwner, revision, retain, read: () => job });
     let producer = true;
     return { source, release() { if (producer) { producer = false; drop(); } } };
 }

@@ -6,7 +6,10 @@ import type { PaintImageProvider } from '../render/resources';
 import { matchingIdentity, validBoardIdentity } from '../workers/protocol';
 import type { BoardJobIdentity } from '../workers/protocol';
 import { createBoardFullFrameDecoder } from './fullFrame';
+import { isMediaTileKey } from './mips';
 import { createBoardPaintImages } from './paintImages';
+import { MediaResidency } from './residency';
+import { createResidencySource } from './residencySource';
 import { MediaStore } from './store';
 import { videoFrameInProfile } from './videoFrameHost';
 import { createVideoFrameRegistry, VIDEO_FRAME_PREFIX, type VideoFrameRegistry } from './videoFrames';
@@ -25,7 +28,7 @@ export function createBoardHostImages(options: {
     readonly signal?: AbortSignal;
     /** Repaints the view when a playing video presents a new frame. */
     readonly invalidate?: () => void;
-}): PaintImageProvider & { dispose(): void; readonly memory: MemoryAllocator; readonly frames: VideoFrameRegistry } {
+}): PaintImageProvider & { dispose(): void; setVisible(visible: boolean): void; readonly memory: MemoryAllocator; readonly frames: VideoFrameRegistry } {
     const identity = Object.freeze({ ...options.identity }), token = Object.freeze({ ...options.token });
     if (!validBoardIdentity(identity) || !Number.isSafeInteger(token.vaultEpoch) || token.vaultEpoch < 0
         || !Number.isSafeInteger(token.session) || token.session < 0 || !Number.isSafeInteger(token.bytesGeneration)
@@ -64,23 +67,47 @@ export function createBoardHostImages(options: {
     const images = createBoardPaintImages({ media: options.media, memory, entry: options.entry, readBlob: options.readBlob,
         identity: value => { if (!sameToken(value)) throw new DOMException('Stale image token', 'AbortError'); return identity; },
         isCurrent: (value, job) => sameToken(value) && currentIdentity(job), decodeFullFrame: decoder });
+    // Tile rasters are created on the first tile key, not per view: the residency recycles the shared decode worker
+    // when it tears down mid-job, so a view that never paints a tile (every export path) must never own one.
+    let residency: MediaResidency | undefined, visible = true;
+    const tileResidency = (): MediaResidency => {
+        if (disposed) throw new DOMException('Board images disposed', 'AbortError');
+        if (residency) return residency;
+        const created = new MediaResidency({ memory,
+            source: createResidencySource({ media: options.media, memory, entry: options.entry, readBlob: options.readBlob, identity, isCurrent: currentIdentity }),
+            identity: value => { if (!sameToken(value)) throw new DOMException('Stale image token', 'AbortError'); return identity; },
+            isCurrent: (value, job) => sameToken(value) && currentIdentity(job) });
+        if (!visible) created.setVisible(false);
+        residency = created;
+        return created;
+    };
     const dispose = () => {
         if (disposed) return;
         disposed = true; options.signal?.removeEventListener('abort', dispose);
-        // Presented frames close before the decoder and cache they were drawn from.
-        try { frames.dispose(); } finally { try { images.dispose(); } finally { try { decoder.dispose(); } finally { cache.close(); } } }
+        // Presented frames and tile rasters close before the decoder and cache they were drawn from.
+        try { frames.dispose(); } finally { try { residency?.dispose(); } finally { try { images.dispose(); } finally { try { decoder.dispose(); } finally { cache.close(); } } } }
     };
     options.signal?.addEventListener('abort', dispose, { once: true });
     if (options.signal?.aborted) dispose();
     return {
         async acquire(key, value, signal) {
-            try { return key.startsWith(VIDEO_FRAME_PREFIX) ? await frames.lease(key, signal) : await images.acquire(key, value, signal); }
+            try {
+                if (key.startsWith(VIDEO_FRAME_PREFIX)) return await frames.lease(key, signal);
+                if (isMediaTileKey(key)) return await tileResidency().acquire(key, value, signal);
+                return await images.acquire(key, value, signal);
+            }
             catch (error) {
                 // A superseded or stopped video frame is the normal end of a paint, not a failure to report.
                 const retired = error instanceof DOMException && error.name === 'AbortError';
                 if (!disposed && !signal.aborted && !retired) { try { options.onError(error); } catch { /* Keep the decoder error. */ } }
                 throw error;
             }
+        },
+        /** The view's one visibility signal for picture memory: a hidden pane releases tile rasters and stops their decodes. */
+        setVisible(next: boolean) {
+            if (disposed) return;
+            visible = next;
+            residency?.setVisible(next);
         },
         dispose,
         memory,

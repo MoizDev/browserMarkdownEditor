@@ -232,6 +232,7 @@ export function createNativeViewLease(options: {
     const reveal = (rect: Rect) => { camera.bringIntoView(rect, 24); cameraOwner.changed(); };
     try {
         backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
+        images.setVisible(parameters.visible && current());
         video.setVisible(parameters.visible && current());
         animation.setVisible(parameters.visible && current(), performance.now());
         viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation),
@@ -435,6 +436,7 @@ export function createNativeViewLease(options: {
             setView(next) {
                 parameters = { ...parameters, ...next };
                 backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
+                images.setVisible(parameters.visible && current());
                 video.setVisible(parameters.visible && current());
                 animation.setVisible(parameters.visible && current(), performance.now());
                 viewer.setView(viewParameters());

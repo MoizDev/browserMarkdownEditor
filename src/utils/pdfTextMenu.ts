@@ -4,7 +4,7 @@ export function pdfSelectionQuote(text: string, filename: string, path: string, 
     // A vault-relative path is a URL, not a filesystem string in Markdown.
     // Keep separators while encoding delimiters that could end the link.
     const target = path.split('/').map(part => encodeURIComponent(part).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)).join('/');
-    const label = filename.replace(/[\\\[\]]/g, '\\$&');
+    const label = filename.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]');
     const start = Math.max(1, Math.floor(firstPage) + 1), end = Math.max(start, Math.floor(lastPage) + 1);
     return `${quote}\n> — [${label}](${target}), p. ${start}${end === start ? '' : `–${end}`}\n`;
 }

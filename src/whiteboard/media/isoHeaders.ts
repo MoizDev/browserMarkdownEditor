@@ -46,6 +46,14 @@ export function isoHeader(bytes: Uint8Array, kind: 'avif' | 'video'): RasterHead
         const ipco = props.find(box => box.type === 'ipco');
         if (!ipco) throw new Error('Missing AVIF properties');
         const properties = boxes(ipco.data, ipco.end);
+        let declaredPixels = 0;
+        for (const property of properties) {
+            if (property.type !== 'ispe') continue;
+            if (property.data + 12 > property.end) throw new Error('Invalid AVIF dimensions');
+            const item = checkedSize(view.getUint32(property.data + 4), view.getUint32(property.data + 8));
+            declaredPixels += item.width * item.height;
+            if (declaredPixels > PIXELS) throw new RangeError('AVIF image properties exceed the pixel limit');
+        }
         const associated: number[] = [];
         for (const ipma of props.filter(box => box.type === 'ipma')) {
             if (ipma.data + 8 > ipma.end) throw new Error('Invalid AVIF associations');
@@ -68,10 +76,14 @@ export function isoHeader(bytes: Uint8Array, kind: 'avif' | 'video'): RasterHead
                 }
             }
         }
-        let result: RasterHeader | undefined;
+        let result: RasterHeader | undefined, rotation = 0;
         for (const index of associated) {
             const prop = properties[index - 1];
             if (!prop) throw new Error('Invalid AVIF property index');
+            if (prop.type === 'irot') {
+                if (prop.data + 1 > prop.end) throw new Error('Invalid AVIF rotation');
+                rotation = bytes[prop.data] & 3;
+            }
             if (prop.type !== 'ispe') continue;
             if (prop.data + 12 > prop.end) throw new Error('Invalid AVIF dimensions');
             const next = checkedSize(view.getUint32(prop.data + 4), view.getUint32(prop.data + 8));
@@ -79,7 +91,8 @@ export function isoHeader(bytes: Uint8Array, kind: 'avif' | 'video'): RasterHead
             result = next;
         }
         if (!result) throw new Error('Missing AVIF dimensions');
-        return result;
+        const oriented = rotation % 2 ? checkedSize(result.height, result.width) : result;
+        return { ...oriented, decodePixels: declaredPixels };
     }
     const moov = top.find(box => box.type === 'moov');
     if (!moov) throw new Error('Missing video metadata');

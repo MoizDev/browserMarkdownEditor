@@ -262,7 +262,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             try {
                 return await capturer.captureExportBlob(scope.bounds, longest * pngScale,
                     { layers: [...pdfLayers, 'board-underlay', 'board-content'], theme: 'light', inverted: false, signal: captureSignal,
-                        clipboard: route === 'copy', pixelsPerWorldUnit: scale });
+                        deadlineMs: 300_000, clipboard: route === 'copy', pixelsPerWorldUnit: scale });
             } finally { capturer.dispose(); }
         };
         const pdfSvg = async (captureSignal: AbortSignal) => {
@@ -288,7 +288,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 for (let index = 0; index < pages.length; index++) {
                     captureSignal.throwIfAborted();
                     const page = pages[index], blob = await capturer.captureExportBlob(page, Math.max(page.width, page.height) * 2,
-                        { layers: pdfLayers, theme: 'light', inverted: false, signal: captureSignal });
+                        { layers: pdfLayers, theme: 'light', inverted: false, signal: captureSignal, deadlineMs: 300_000 });
                     captureSignal.throwIfAborted();
                     reserve(blob.size);
                     const key = `pdf-page:${index}`; pageBlobs.set(key, blob);

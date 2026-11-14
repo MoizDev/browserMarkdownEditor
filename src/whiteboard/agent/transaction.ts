@@ -20,6 +20,7 @@ export interface AgentOpResult {
     readonly updated?: readonly NodeId[];
     readonly deleted?: readonly NodeId[];
     readonly notes?: readonly string[];
+    readonly problems?: readonly string[];
 }
 export interface AgentOpContext {
     readonly builder: TxBuilder;
@@ -81,6 +82,7 @@ export async function applyAgentOperations(host: AgentApplyHost, ops: readonly C
                     if (staged.updated) result.updated.push(...staged.updated);
                     if (staged.deleted) result.deleted.push(...staged.deleted);
                     for (const note of [...validated.notes, ...(staged.notes ?? [])]) result.errors.push(`op ${i + 1}: note: ${note}`);
+                    for (const problem of staged.problems ?? []) result.errors.push(`op ${i + 1}: ${problem}`);
                 } catch (error) {
                     if (!(error instanceof AgentOpRefused) && !(error instanceof ApplyRefused)) throw error;
                     builder.rollbackTo(point);

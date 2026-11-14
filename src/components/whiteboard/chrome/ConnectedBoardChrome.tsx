@@ -1,9 +1,14 @@
 import { useSyncExternalStore } from 'react';
-import type { ToolState } from '../../../whiteboard/input/gesture';
 import { BoardChrome, type BoardChromeProps } from './BoardChrome';
 
+export interface ToolStateView {
+    getSnapshot(): { readonly active: { readonly id: string; readonly variant?: string }; readonly lastFigure?: string };
+    subscribe(listener: () => void): () => void;
+    setTool(id: string, variant?: string): void;
+}
+
 export interface ConnectedBoardChromeProps extends Omit<BoardChromeProps, 'selectedTool' | 'lastFigure' | 'selectTool'> {
-    readonly toolState: ToolState;
+    readonly toolState: ToolStateView;
     readonly openMedia: () => void;
 }
 

@@ -27,7 +27,7 @@ import {
 
 interface NotebookPaneProps {
     /** OpenTab.id from the host, never a path or a snapshot record id. */
-    documentId?: string;
+    documentId: string;
     /** The notebook's vault path. Every change is reported against it explicitly
      *  (never "the active tab") so a save landing after a tab switch cannot
      *  write notebook JSON into another file's buffer. */
@@ -316,7 +316,7 @@ export default function NotebookPane({ documentId, filePath, content, onContentC
             flush();
         };
         const reportPending = () => {
-            if (documentId && !unregisterPending) {
+            if (!unregisterPending) {
                 unregisterPending = registerPending({ documentId, hasPendingEdits, flushPending });
             }
         };

@@ -54,6 +54,7 @@ third-party code included (normally "none") · date.
 | `session/BoardSession.ts` | lane w-c | H-1/3/4/5, C7.0/2/5/6, D-10, R-19 | change-and-history §§2–4; integration §§2/9 | Design; source ownership/read-only/gesture contract and admitted pen/highlighter clearRedo history boundary; no tldraw source | none | 2026-11-13 |
 | `session/gestureQueue.ts` | lanes w-c/w-e | C7.2, WB-D17 | integration §§2/9 | Design/ruling; one session FIFO, idempotent gesture leases, cancellation and final owner/readiness/read-only checks; factory and viewer class delegate to the same queue | none | 2026-11-13 |
 | `text/rich.ts` | lane w-l | TX-2, R-W32 | text §4; change-and-history §2.1 | Design-only rich text interface, operations and import contract; no tldraw source | none | 2026-11-13 |
+| `text/importRich.ts` | lane w-l | TX-2, R-W25 | text §4.4 | ProseMirror data mapping from documented schema; unsupported JSON preserved inert, no tldraw source | none | 2026-11-13 |
 | `text/richOperations.ts` | lane w-l | TX-2 | text §4; change-and-history §2.1 | Design-only projection, mark/link edits, insertion, list/heading transforms and enter; no tldraw source | none | 2026-11-13 |
 | `model/textOffsets.ts` | lane w-l | TX-2, V-11 | text §4.3 | Grapheme boundary admission over immutable block projection; no tldraw source | none | 2026-11-13 |
 | `text/richText.ts` | lane w-c | M-3, V-11, H-2/3, R-W19/21/25 | text §4.1; change-and-history §2 | Design/rulings only; minimal immutable normalize/slice/splice, opaque carrier preservation and exact boundary-block inverse splices, not whole-value undo snapshots | none | 2026-11-13 |
@@ -172,6 +173,7 @@ third-party code included (normally "none") · date.
 | `import/basicGeometry.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; ink §3 | Public ink curve/sample interfaces, own cubic world bounds and w-h polylineWorldSemanticBounds; connectors delegated | none | 2026-11-13 |
 | `import/sampleWire.ts` | w-o | IMP-1/2, E-IMP-15, SEC-W1 | import §§1–3; native-format §4 | Public sample sequence and native point encoder; canonical C5 LoadSampleWire for host re-admission | none | 2026-11-13 |
 | `import/loadAdapterTypes.ts` | w-o | IMP-1, C5, SEC-W1 | import §1; document-model §9 | Public adapter contract for w-d's ordered C5 repair/projection port | none | 2026-11-13 |
+| `import/loadAdapter.ts` | w-o | IMP-1, C5, SEC-W1 | import §1; document-model §9 | Ordered draft to w-d C5 port, deterministic repair ids and native sample transfer | none | 2026-11-13 |
 | `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse, durable digest and collision-safe restore contracts | none | 2026-11-13 |
 | `import/conversionMetadata.ts` | w-o | IMP-6, E-IMP-16 | import §4; delivery M4 | Native header extension stores original-byte digest so restore survives rename/move | none | 2026-11-13 |
 
@@ -252,7 +254,7 @@ third-party code included (normally "none") · date.
 | `geom/transforms.ts` | lane w-g | GE-4; F-XFORM-001/003/004/005/006/007/008/010/011 | geometry §6.2–6.4 | Design; oriented-frame resize, signed crossings, rotation and parent-local translation | none | 2026-11-13 |
 | `geom/translation.ts` | lane w-g | GE-4; F-XFORM-001/002/003/011 | geometry §6.1–6.2 | Design; model world-pose/page conversion, immutable gesture snapshots and ordinary transaction ops | none | 2026-11-13 |
 | `geom/resizeKinds.types.ts` | lane w-g | GE-4 | geometry §6.4 | Design; injected text, connector, frame, media and group geometry contracts and single/multi scope | none | 2026-11-13 |
-| `geom/resizeKinds.ts` | lane w-g | GE-4; F-XFORM-007/009/010/014 | geometry §6.4–6.5 | Design; per-kind property operations, unchanged ink width, crop-aware picture reflection and injected layout | none | 2026-11-13 |
+| `geom/resizeKinds.ts` | lane w-g | GE-4; F-XFORM-007/009/010/014 | geometry §6.4–6.5 | Design; per-kind property operations, unchanged ink width, crop-aware picture reflection and injected layout; opaque guard | none | 2026-11-13 |
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |
 | `geom/arrange.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7; arrange spec | Design; world bounds, equal edge gaps, stable shelf pack with max-capacity tree | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
@@ -261,10 +263,11 @@ third-party code included (normally "none") · date.
 | `geom/pick.ts` | lane w-g | GE-3; F-SEL-001/003/004 | geometry §5.1–5.4 | Design; shared ink affine-distance, exact line topology, w-h contour clipper and semantic-interior region geometry | none | 2026-11-13 |
 | `pick.ts` | lane w-g | GE-3; F-SEL-001/003/004/005/006 | geometry §§4–5 | Design; streamed w-e SpatialQuery candidates, revision stamps and resumable narrow phase, no second index | none | 2026-11-13 |
 | `sweepSelection.types.ts` | lane w-g | GE-3; F-SEL-004 | geometry §§4–5 | Design; scene, selection and clipped per-kind swept-narrow interfaces | none | 2026-11-13 |
+| `sweepSelection.ts` | lane w-g | GE-3; F-SEL-004 | geometry §§4–5 | Design; one conservative scene query per swept segment and exact clipped narrow-phase adapter | none | 2026-11-13 |
 | `selection.ts` | lane w-g | GE-3; F-SEL-002/005/006/007/010/011 | geometry §5.3; selection spec | Design; model child and sheet indexes; selection, history restore, locked reconciliation and keyboard/group navigation | none | 2026-11-13 |
 | `selectionNavigation.ts` | lane w-g | GE-3; F-SEL-010; WB-D33 | geometry §§4–5; input §8.4 | Design; w-e shared spatial strip cursor, caller-owned reveal and eligible-node geometry | none | 2026-11-13 |
 | `accessibility/selection.ts` | lane w-g | GE-3; INT-11 | integration §6.1; selection spec | Bounded viewport and selection mirror source with names, kinds, order and lock state; structural host contract | none | 2026-11-13 |
-| `commands/delete.ts` | lane w-g | GE-4; WB-D18; F-SEL-009; RV-22 | geometry §6.2; selection spec | Design; model indexed opaque guard and w-c's shared locked-descendant deletion command | none | 2026-11-13 |
+| `commands/delete.ts` | lane w-g | GE-4; WB-D18; F-SEL-009; RV-22 | geometry §6.2; selection spec | Design; indexed opaque preflight, locked-node retention and w-c's shared deletion command | none | 2026-11-13 |
 | `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool, shared swept queue and exception-safe pending-gesture lifetime | none | 2026-11-13 |
 
 ## Figures and geometry providers (lane w-h)
@@ -276,8 +279,9 @@ third-party code included (normally "none") · date.
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe, shared cubic length/splitting kernel, and continuous dash/dot phase; no tldraw source | none | 2026-11-13 |
 | `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; scale-aware boundary membership, node-local hatch clipping and reflected phase; no tldraw source | none | 2026-11-13 |
 | `geom/polylineTypes.ts` | lane w-h | F-LINE-001/003 | geometry §§1, 9 | Model and geometry type contracts; no tldraw source | none | 2026-11-13 |
-| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector body, arrowhead and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
+| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector body, arrowhead, incident-end and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
 | `geom/heads.ts` | lane w-h | F-CONN-001, WB-D20, E-GEO-5/25 | geometry §8.3 | Independent head recipes, shared width metric and certified arc conversion; no tldraw source | none | 2026-11-13 |
+| `geom/connectors.ts` | lane w-h | F-CONN-001, E-GEO-5/6 | geometry §8.2 | Signed-sagitta circle construction and shared certified arc conversion from design; no tldraw source | none | 2026-11-13 |
 | `geom/polylines.ts` | lane w-h | F-LINE-001/003/004 | geometry §9 | Independent chord-weighted Hermite recipe from design, ordered model handles; no tldraw source | none | 2026-11-13 |
 | `geom/providers.ts` | lane w-h | F-FIG-001, F-STICKY-001, F-FRAME-001, F-LINE-001/003/004, WB-D20/24, E-GEO-8/35 | geometry §§1, 3, 5, 9; text §6 | Figure, polyline and container geometry, font-epoch pending geometry, transformed contour bounds, text-owned layout, ink-owned resumable picking, node-local hatch, platform path conversion and scene bounds; no tldraw source | none | 2026-11-13 |
 
@@ -290,20 +294,28 @@ third-party code included (normally "none") · date.
 | `media/headers.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §1; security §6 | Image container header structures, independently implemented; no tldraw source | none | 2026-11-13 |
 | `media/isoHeaders.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | ISO-BMFF bounded boxes and AVIF primary-property association, independently implemented | none | 2026-11-13 |
 | `media/webmHeader.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | EBML bounded element encoding and WebM track fields, independently implemented | none | 2026-11-13 |
-| `media/decode.worker.ts` | lane w-q | F-MEDIA-001/003/004; SEC-4 | media §1; threading §2; security §6 | Shared identity-enveloped board worker and browser bitmap API; no tldraw source | none | 2026-11-13 |
+| `media/decode.worker.ts` | lane w-q | F-MEDIA-001/003/004/011; SEC-4 | media §§1/4–5; threading §2; security §6 | Shared identity-enveloped worker; bitmap mips/tiles and complete-track ImageDecoder frames | none | 2026-11-13 |
 | `media/inspect.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §1; security §§3/6 | SEC-W1 budgets; platform worker and memory allocator contracts; isolated SVG profile injection | none | 2026-11-13 |
-| `media/ingest.ts` | lane w-q | F-MEDIA-001/002/003/004/008; SEC-4 | media §§1–3; security §3 | SEC-W1 budgets and shared session job authority; board model/apply contracts | none | 2026-11-13 |
-| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session-owned bytes, history/clipboard holders and collision-safe file location ledger | none | 2026-11-13 |
-| `media/svgProfile.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §§5–6 | Separate opaque XML/image profiles and fixed-shape response requirements | none | 2026-11-13 |
+| `media/ingest.ts` | lane w-q | F-MEDIA-001/002/003/004/008; F-DROP-006; SEC-4 | media §§1–3; clipboard §4.2; security §3 | SEC-W1 authority; per-file refusal, gesture-queued apply/history and physical-location ledger | none | 2026-11-13 |
+| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session bytes, clipboard holders after source close and model-validated collision-safe location ledger | none | 2026-11-13 |
+| `media/svgProfile.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §§5–6 | Separate opaque XML/image profiles and origin-clean raster fallback | none | 2026-11-13 |
 | `media/svgXmlRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Worker XML preflight; isolated XML, nested inline data and pixel accounting | none | 2026-11-13 |
-| `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context rasterization, isolated image profile only | none | 2026-11-13 |
-| `media/svgFrameRuntime.ts` | lane w-q | SEC-3/4 | security §§5–6 | Identity- and token-bound sequential bounded transfer within opaque profile | none | 2026-11-13 |
+| `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context raster tiles, isolated image profile only | none | 2026-11-13 |
+| `media/svgFrameRuntime.ts` | lane w-q | SEC-3/4 | security §§5–6 | Identity/token-bound sequential bounded transfer and raster reply | none | 2026-11-13 |
 | `media/svgXmlEntry.ts` | lane w-q | SEC-3/4 | security §6 | Network-denied XML profile entry | none | 2026-11-13 |
 | `media/svgImageEntry.ts` | lane w-q | SEC-3/4 | security §6 | Network-denied blob-image profile entry | none | 2026-11-13 |
-| `media/svgFrameHost.ts` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 frame API, token validation, bounded acknowledged transfer | none | 2026-11-13 |
+| `media/svgFrameHost.ts` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 frame API, token validation, bounded transfer, stale-raster disposal | none | 2026-11-13 |
 | `media/svgFrames.d.ts` | lane w-q | SEC-3/4 | security §6 | Build-time virtual fixed-frame declarations | none | 2026-11-13 |
 | `build/whiteboardSvgFrames.mjs` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 exact-byte hashing/bundling helper; strict separate profile CSPs | none | 2026-11-13 |
 | `build/whiteboardSvgFrames.d.mts` | lane w-q | SEC-3/4 | security §§5–6 | Vite plugin declaration for fixed-frame build | none | 2026-11-13 |
+| `media/mips.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §§4/9; rendering §8.4 | Bounded mip geometry, visible tiles and one-texel interior-edge apron | none | 2026-11-13 |
+| `media/residency.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §§4–5/8–9; C4 | Renderer PaintImageProvider, local-only source validation, shared worker priorities and memory leases | none | 2026-11-13 |
+| `media/animation.ts` | lane w-q | F-MEDIA-011; SEC-4 | media §5 | Largest-eight visible animation scheduler; hide pauses until current frame reloads | none | 2026-11-13 |
+| `clipboard/types.ts` | lane w-q | F-CLIP-002/003/005/010; F-DROP-001/005; SEC-8 | clipboard §§3–6/9 | Fixed-shape transfer, placement and text-editor interfaces | none | 2026-11-13 |
+| `clipboard/rendition.ts` | lane w-q | F-CLIP-001; SEC-10 | clipboard §2.3; text §4.1 | Fixed-shape rich text projection with inert DOM node construction | none | 2026-11-13 |
+| `clipboard/snapshot.ts` | lane w-q | F-CLIP-001/004; SEC-8/10 | clipboard §§2.1–2.3/2.5 | Model graph, native encoder, sample/media leases, revision and text-selection guards; opaque exclusion ruling | none | 2026-11-13 |
+| `clipboard/encode.ts` | lane w-q | F-CLIP-001; SEC-10 | clipboard §§2.1–2.3/7 | Native payload, bounded inline bytes, browser CompressionStream and opaque cache-only ruling | none | 2026-11-13 |
+| `clipboard/copy.ts` | lane w-q | F-CLIP-001/004; SEC-10 | clipboard §§2.1–2.3/2.5 | Native clipboard event/API, exact cache-envelope matching, revision/selection guards and transactional host callbacks | none | 2026-11-13 |
 
 ## Text editing and spelling (lane w-i)
 

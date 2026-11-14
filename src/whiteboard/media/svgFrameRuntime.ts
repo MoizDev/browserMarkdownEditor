@@ -14,7 +14,7 @@ export function runSvgFrame(process: Processor): void {
         const port = event.ports[0];
         let expected = 0, total = 0, done = false;
         const parts: ArrayBuffer[] = [];
-        const send = (data: Record<string, unknown>) => port.postMessage({ v: 1, token, identity, ...data });
+        const send = (data: Record<string, unknown>, transfer: Transferable[] = []) => port.postMessage({ v: 1, token, identity, ...data }, transfer);
         port.addEventListener('message', (message: MessageEvent<unknown>) => {
             if (done || !message.data || typeof message.data !== 'object') return;
             const data = message.data as { v?: unknown; token?: unknown; identity?: unknown; type?: unknown; seq?: unknown; bytes?: unknown; size?: unknown };
@@ -28,7 +28,10 @@ export function runSvgFrame(process: Processor): void {
             } else if (data.type === 'finish' && data.seq === expected) {
                 done = true;
                 const blob = new Blob(parts, { type: 'image/svg+xml' });
-                void process(blob, data.size).then(result => send({ type: 'result', result }), () => send({ type: 'error', message: 'SVG could not be read' }));
+                void process(blob, data.size).then(result => {
+                    try { send({ type: 'result', result }, result instanceof ImageBitmap ? [result] : []); }
+                    catch { if (result instanceof ImageBitmap) result.close(); }
+                }, () => send({ type: 'error', message: 'SVG could not be read' }));
             }
         });
         port.start();

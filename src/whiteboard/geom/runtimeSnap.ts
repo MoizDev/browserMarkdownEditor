@@ -156,8 +156,8 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
         // If the other correction changes a flanking set, the previous nearest-neighbour
         // proof is no longer valid; never publish that provisional winner as exact.
         for (const other of candidateBounds) {
-            if ((options.allowX !== false && flank(other, 'x', 0, 0) !== flank(other, 'x', dx, dy))
-                || (options.allowY !== false && flank(other, 'y', 0, 0) !== flank(other, 'y', dx, dy)))
+            if ((x?.priority === 1 && flank(other, 'x', 0, 0) !== flank(other, 'x', dx, dy))
+                || (y?.priority === 1 && flank(other, 'y', 0, 0) !== flank(other, 'y', dx, dy)))
                 throw new Error('Snap gap neighbours changed during simultaneous correction');
             if (++visited % 256 === 0) { await cooperate(); check(); }
         }

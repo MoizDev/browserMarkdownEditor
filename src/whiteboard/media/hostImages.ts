@@ -9,6 +9,7 @@ import { createBoardFullFrameDecoder } from './fullFrame';
 import { createBoardPaintImages } from './paintImages';
 import { MediaStore } from './store';
 import { videoFrameInProfile } from './videoFrameHost';
+import { createVideoFrameRegistry, VIDEO_FRAME_PREFIX, type VideoFrameRegistry } from './videoFrames';
 
 // Provenance: C4 shared memory governor, C5 contained media and paint image
 // ownership contracts; independent per-view wiring, no third-party source.
@@ -22,7 +23,9 @@ export function createBoardHostImages(options: {
     current(token: RenderToken): boolean;
     onError(error: unknown): void;
     readonly signal?: AbortSignal;
-}): PaintImageProvider & { dispose(): void } {
+    /** Repaints the view when a playing video presents a new frame. */
+    readonly invalidate?: () => void;
+}): PaintImageProvider & { dispose(): void; readonly memory: MemoryAllocator; readonly frames: VideoFrameRegistry } {
     const identity = Object.freeze({ ...options.identity }), token = Object.freeze({ ...options.token });
     if (!validBoardIdentity(identity) || !Number.isSafeInteger(token.vaultEpoch) || token.vaultEpoch < 0
         || !Number.isSafeInteger(token.session) || token.session < 0 || !Number.isSafeInteger(token.bytesGeneration)
@@ -39,6 +42,7 @@ export function createBoardHostImages(options: {
         reserve(bytes) { if (disposed) return null; const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
         release(lease) { cache.release(lease); live -= lease.bytes; },
     };
+    const frames = createVideoFrameRegistry({ memory, invalidate: () => options.invalidate?.() });
     const currentIdentity = (value: BoardJobIdentity) => !disposed && matchingIdentity(identity, value) && options.current(token);
     const decoder = createBoardFullFrameDecoder({ identity, isCurrent: currentIdentity,
         reserveCpu(bytes) {
@@ -63,18 +67,23 @@ export function createBoardHostImages(options: {
     const dispose = () => {
         if (disposed) return;
         disposed = true; options.signal?.removeEventListener('abort', dispose);
-        try { images.dispose(); } finally { try { decoder.dispose(); } finally { cache.close(); } }
+        // Presented frames close before the decoder and cache they were drawn from.
+        try { frames.dispose(); } finally { try { images.dispose(); } finally { try { decoder.dispose(); } finally { cache.close(); } } }
     };
     options.signal?.addEventListener('abort', dispose, { once: true });
     if (options.signal?.aborted) dispose();
     return {
         async acquire(key, value, signal) {
-            try { return await images.acquire(key, value, signal); }
+            try { return key.startsWith(VIDEO_FRAME_PREFIX) ? await frames.lease(key, signal) : await images.acquire(key, value, signal); }
             catch (error) {
-                if (!disposed && !signal.aborted) { try { options.onError(error); } catch { /* Keep the decoder error. */ } }
+                // A superseded or stopped video frame is the normal end of a paint, not a failure to report.
+                const retired = error instanceof DOMException && error.name === 'AbortError';
+                if (!disposed && !signal.aborted && !retired) { try { options.onError(error); } catch { /* Keep the decoder error. */ } }
                 throw error;
             }
         },
         dispose,
+        memory,
+        frames,
     };
 }

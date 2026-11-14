@@ -6,6 +6,7 @@ import type { RenderToken } from '../../platform/render/types';
 import type { SheetId } from '../model/ids';
 import type { PaintImageProvider } from '../render/resources';
 import type { PaintFrame } from '../render/paintStream';
+import type { VideoFrameOverlay } from '../media/videoFrames';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
 export type { ViewerPaintPresentation } from '../render/paintPresentation';
 import type { PaintPalette } from '../render/colour';
@@ -86,6 +87,8 @@ export interface AttachViewOptions {
     readonly view: ViewerViewParams;
     readonly palette?: Readonly<{ light: PaintPalette; dark: PaintPalette }>;
     readonly images?: PaintImageProvider;
+    /** A view's playing video frames, served by their own image keys. Absent for any view with no video to play. */
+    readonly liveFrames?: VideoFrameOverlay;
     readonly signal?: AbortSignal;
     readonly reveal: (world: Readonly<{ x: number; y: number; width: number; height: number }>) => void;
     readonly onError: (error: Error) => void;

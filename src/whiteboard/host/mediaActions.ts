@@ -20,6 +20,8 @@ export interface MediaSelection {
     readonly blocked: string | null;
     /** Replacing needs the document's storage port; a PDF annotation page has none yet, so the row is not offered there. */
     readonly replaceable: boolean;
+    /** A picture whose media is a video: its playback is offered by the view, not by these actions. */
+    readonly video: boolean;
 }
 export interface MediaActions {
     /** Null unless exactly one picture or link card is selected. `writable` is the view's own write permission. */
@@ -52,7 +54,8 @@ export function createMediaActions(options: MediaActionOptions): MediaActions {
                 : runtime.session.isGestureActive ? 'Finish the current gesture first.'
                 : isLocked(runtime.session.doc, node) ? `This ${node.kind === 'picture' ? 'picture' : 'card'} is locked.`
                 : null;
-            return Object.freeze({ id: node.id, kind: node.kind, blocked, replaceable: node.kind === 'picture' && options.restore !== undefined });
+            const video = node.kind === 'picture' && !!node.media && !!runtime.session.doc.media.get(node.media)?.mime.startsWith('video/');
+            return Object.freeze({ id: node.id, kind: node.kind, blocked, replaceable: node.kind === 'picture' && options.restore !== undefined, video });
         },
         replace(id, file, name) {
             if (!options.restore) return Promise.reject(new Error('Pictures cannot be replaced on this canvas.'));

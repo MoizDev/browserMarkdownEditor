@@ -12,7 +12,10 @@ import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtim
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
 import { createBoardCaptureSnapshot } from '../../whiteboard/export/runtimeSnapshot';
 import { createBoardHostImages } from '../../whiteboard/media/hostImages';
+import { BoardVideoPlayback } from '../../whiteboard/media/playback';
+import { videoFrameOverlay } from '../../whiteboard/media/videoFrames';
 import { boardPageStack } from '../../whiteboard/model/pages';
+import type { NodeId } from '../../whiteboard/model/ids';
 import type { MediaId } from '../../whiteboard/model/media';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { attachView } from '../../whiteboard/viewer/attachView';
@@ -37,10 +40,19 @@ export interface NativePdfBackdrop {
 }
 
 export interface NativeNavigationSnapshot { readonly page: number; readonly zoom: number }
+/** This view's playback of its video pictures. Playback never dirties the document; only the view's frames carry it. */
+export interface NativeVideoPlayback {
+    /** True once a drawn frame has shown this picture, so starting playback is offered only after its image is on screen. */
+    shown(node: NodeId): boolean;
+    playing(node: NodeId): boolean;
+    play(node: NodeId): void;
+    pause(node: NodeId): void;
+}
 export interface NativeViewLease extends BoardViewLease<object> {
     readonly runtime: BoardRuntime;
     readonly engine: ViewerEngine;
     readonly camera: CameraController;
+    readonly video: NativeVideoPlayback;
     readonly editing: ReturnType<typeof createNativeEditingLease> | null;
     getNavigationSnapshot(): NativeNavigationSnapshot;
     jump(page: number): void;
@@ -132,7 +144,25 @@ export function createNativeViewLease(options: {
             const found = await host.readMedia(identity, { hash: id.slice(7), preferredName: runtime.media.currentFile(id) ?? entry.file }, signal);
             if (!found) throw new Error(`Missing board media: ${id}`);
             return found.blob;
-        }, onError: options.onError });
+        }, invalidate: () => invalidate(), onError: options.onError });
+    // This view's own playback: it stops when the view hides and when the view is torn down, and it closes its presented frames
+    // before the source it came from is released.
+    const video = new BoardVideoPlayback({ memory: images.memory, frames: images.frames,
+        source(id) {
+            const node = board.doc.nodes.get(id);
+            if (!node || node.kind !== 'picture' || !node.media) return null;
+            const entry = board.doc.media.get(node.media), bytes = runtime.media.get(node.media);
+            return entry && bytes && entry.mime.startsWith('video/') ? { entry, blob: new Blob([bytes], { type: entry.mime }) } : null;
+        },
+        current: () => current() && parameters.visible,
+        invalidate: () => invalidate(),
+        error: (_id, message) => options.onNotice(message) });
+    const videoPort: NativeVideoPlayback = {
+        shown: node => images.frames.drawn(node),
+        playing: node => video.getState(node).playing,
+        play(node) { video.show(node, true); video.play(node); },
+        pause(node) { video.pause(node); },
+    };
     const viewParameters = (): ViewerViewParams => ({ ...parameters, sheetId: runtime.selection.getSnapshot().sheet,
         // attachView owns the notebook's actual paper layer; adding another one
         // here gives the compositor two definitions with the same layer id.
@@ -141,8 +171,10 @@ export function createNativeViewLease(options: {
     const reveal = (rect: Rect) => { camera.bringIntoView(rect, 24); cameraOwner.changed(); };
     try {
         backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
-        viewer = attachView({ session: board, token, view: viewParameters(), images, reveal, onError: options.onError });
-    } catch (error) { backdrop?.dispose(); images.dispose(); cameraOwner.dispose(); throw error; }
+        video.setVisible(parameters.visible && current());
+        viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames),
+            reveal, onError: options.onError });
+    } catch (error) { video.dispose(); backdrop?.dispose(); images.dispose(); cameraOwner.dispose(); throw error; }
     let presentedView: ViewState | null = null, presentedFrame: number | null = null;
     const edit = options.parameters.mode === 'edit' ? options.editing : undefined;
     const editing = (() => { try { return edit ? createNativeEditingLease({ session: board, runtime, engine: viewer, token,
@@ -161,7 +193,7 @@ export function createNativeViewLease(options: {
             interaction: { invalidate, cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
             ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
-        } catch (error) { viewer.dispose(); images.dispose(); cameraOwner.dispose(); throw error; } })();
+        } catch (error) { viewer.dispose(); video.dispose(); images.dispose(); cameraOwner.dispose(); throw error; } })();
     const stopEditingReady = editing && edit ? editing.subscribeAttachment(edit.onAttachment) : undefined;
     if (editing && edit) edit.onAttachment(editing.isAttached());
     const navigation = editing ?? createBoardNavigationHost({ camera, viewport: refreshViewport, platform: () => platformPane,
@@ -301,7 +333,7 @@ export function createNativeViewLease(options: {
         navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
     };
     const lease: NativeViewLease = {
-        runtime, engine: viewer, camera, editing, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
+        runtime, engine: viewer, camera, editing, video: videoPort, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
         setInputPermitted(permitted) { if (!disposed) { inputPermitted = permitted; updateInput(); } },
         canMutateView() { return !disposed && !!editing && !!edit && inputPermitted && sourceCurrent() && parameters.visible && !!platformPane &&
             current() && edit.canMutate() && !board.isReadOnly && host.canWrite(identity); },
@@ -341,6 +373,7 @@ export function createNativeViewLease(options: {
             setView(next) {
                 parameters = { ...parameters, ...next };
                 backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
+                video.setVisible(parameters.visible && current());
                 viewer.setView(viewParameters());
                 updateInput();
             },
@@ -375,7 +408,7 @@ export function createNativeViewLease(options: {
         dispose() {
             if (disposed) return;
             disposed = true; stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
-            navigation.dispose(); cameraOwner.dispose(); viewer.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
+            navigation.dispose(); cameraOwner.dispose(); viewer.dispose(); video.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
         },
     };
     return lease;

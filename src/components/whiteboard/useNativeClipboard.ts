@@ -311,6 +311,12 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 ];
                 const media = mediaActions.selection(!readonly);
                 if (media) entries.push({ kind: 'separator', id: 'media-separator' }, ...mediaRows(media, mediaActions, fail, chooseReplacementImage));
+                // A video's start row exists only after its image has been drawn in this view, or while it plays (so it can stop).
+                if (media?.video && (lease.video.shown(media.id) || lease.video.playing(media.id))) {
+                    const playing = lease.video.playing(media.id);
+                    entries.push({ kind: 'command', id: 'media-playback', label: playing ? 'Pause video' : 'Play video',
+                        run: () => { try { if (playing) lease.video.pause(media.id); else lease.video.play(media.id); } catch (error) { fail(error); } } });
+                }
                 openContextMenu({ x: event.clientX, y: event.clientY, label: 'Canvas', opener: surface, entries });
             };
             surface.addEventListener('focus', focus); surface.addEventListener('pointermove', move);

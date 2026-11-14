@@ -16,7 +16,7 @@ export interface NoteFacts {
 const markdown = parser.configure([GFM, Subscript, Superscript, Emoji]);
 
 function markdownTarget(raw: string): string | null {
-    const path = localMarkdownTarget(raw);
+    const path = localMarkdownTarget(raw, true);
     return path && /\.md$/i.test(path) ? path : null;
 }
 

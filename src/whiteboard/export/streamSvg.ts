@@ -3,7 +3,7 @@ import { boardWorker } from '../workers/client'
 import type { BoardJobIdentity } from '../workers/protocol'
 import { PaintStreamJob } from '../render/paintStream'
 import type { PaintItem, PaintNodeSource } from '../render/paintStream'
-import { paintItemDisplay, wrapTextDisplay } from './displayList'
+import { createTextDisplayWrapper, paintItemDisplay } from './displayList'
 import type { ExportImage } from './displayList'
 import { createStreamingExportTextResolver } from './textStreamResolver'
 
@@ -79,9 +79,10 @@ export async function streamSvg(
         if (item.kind === 'text') {
           await send(items)
           items.length = 0
+          const wrap = createTextDisplayWrapper(item)
           for await (const part of text(item, scale, signal)) {
             signal.throwIfAborted()
-            await send([wrapTextDisplay(item, [part])])
+            await send([wrap([part])])
             if (!source.isCurrent()) throw new Error('Paint capture stale')
           }
         } else items.push(await paintItemDisplay(item, scale, image, signal))

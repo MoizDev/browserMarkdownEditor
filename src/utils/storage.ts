@@ -3,6 +3,9 @@
 // consistent error handling instead of being hand-rolled at each call site.
 import { createLocalStorageMirror } from './localStorageMirror';
 
+// IndexedDB databases are distinct from the mirrored localStorage key registry below.
+export const INDEXED_DB_NAMES = { recoveryJournal: 'bme-recovery-journal' } as const;
+
 export const STORAGE_MIRROR_SENTINEL = 'bme.lsMirror';
 const MIRROR_VERSION = '1';
 const RESTORE_NOTICE = 'Settings restored after another tab reset them';

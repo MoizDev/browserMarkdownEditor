@@ -1,17 +1,16 @@
-import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, useRef, useSyncExternalStore } from 'react';
-import { subscribeSaveEpoch, getSaveEpoch } from '../utils/saveEpoch';
+import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useSyncExternalStore } from 'react';
 import { FileText, X } from './icons';
 import { collectFiles } from '../utils/tree';
 import { searchVault, isTextFile } from '../utils/vaultSearch';
 import { isCanvasFile } from '../utils/fileTypes';
-import type { VaultTextCache, FileSearchResult } from '../utils/vaultSearch';
+import type { FileSearchResult } from '../utils/vaultSearch';
+import type { VaultIndexSession } from '../utils/vaultIndexSession';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 
 interface SearchPanelProps {
-    readSnapshot: (handle: FileSystemFileHandle) => Promise<File>;
     fileTree: FileTreeNode[];
-    /** Owned by FileExplorer so indexed text survives closing the panel. */
-    cache: VaultTextCache;
+    /** Owned by the vault activation, surviving panel closure. */
+    cache: VaultIndexSession;
     /** Latest in-memory content of an open tab (may be newer than disk). */
     getOpenTabContent: (path: string) => string | null;
     onOpenResult: (node: FileTreeFileNode, range: TextRange | null) => void;
@@ -45,21 +44,15 @@ function rowKeyHandler(activate: () => void) {
  * tree in the sidebar. Matches file names and file contents (VSCode-style),
  * grouped per file; clicking a row opens the file (and jumps to the match).
  */
-export default function SearchPanel({ readSnapshot, fileTree, cache, getOpenTabContent, onOpenResult, onClose }: SearchPanelProps) {
-    // Subscribed rather than passed down: routing this through the memoized
-    // FileExplorer re-rendered the entire file tree after every save (see
-    // utils/saveEpoch.ts). Only this component, only while search is open.
-    const saveEpoch = useSyncExternalStore(subscribeSaveEpoch, getSaveEpoch);
+export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpenResult, onClose }: SearchPanelProps) {
+    const revision = useSyncExternalStore(cache.subscribe, cache.getRevision);
     const [query, setQuery] = useState('');
     // Results are computed from the deferred value so typing stays instant
     // even while a large vault is being scanned.
     const deferredQuery = useDeferredValue(query);
-    const [index, setIndex] = useState<Map<string, string> | null>(null);
+    const [ready, setReady] = useState(false);
+    const index = useMemo(() => cache.snapshot(), [cache, revision]);
     const inputRef = useRef<HTMLInputElement | null>(null);
-    // Monotonic sync id: a slow, older sync must never overwrite the snapshot
-    // of a newer one.
-    const syncSeqRef = useRef(0);
-
     const files = useMemo(() => collectFiles(fileTree), [fileTree]);
     // Drawings are JSON on disk: indexing them would surface raw snapshot text
     // as match snippets. They stay searchable by NAME (they're still in `files`).
@@ -68,26 +61,17 @@ export default function SearchPanel({ readSnapshot, fileTree, cache, getOpenTabC
         [files]
     );
 
-    // (Re-)validate the disk index. The cache skips files whose (mtime, size)
-    // are unchanged, so calls after the first are a cheap stat pass.
-    const refreshIndex = useCallback(() => {
-        const seq = ++syncSeqRef.current;
-        cache.sync(textFiles, readSnapshot).then(snapshot => {
-            if (seq === syncSeqRef.current) setIndex(snapshot);
-        });
-    }, [cache, textFiles, readSnapshot]);
-
-    // Sync on mount, on tree changes, and after each save-flush lands (a file
-    // edited then CLOSED would otherwise keep serving its pre-edit disk text).
     useEffect(() => {
-        void saveEpoch; // dependency only — the trigger, not an input
-        refreshIndex();
-    }, [refreshIndex, saveEpoch]);
+        let live = true;
+        setReady(false);
+        void cache.requestSync(textFiles).then(() => { if (live) setReady(true); }).catch(() => {});
+        return () => { live = false; };
+    }, [cache, textFiles]);
 
     // Open-tab buffers are read through a ref-backed accessor on purpose: it
     // keeps the memoized sidebar from re-rendering on editor keystrokes, at
     // the cost of results not live-updating while you type elsewhere. Any
-    // query change, tree change, save, or refocus recomputes.
+    // query change, tree change, or index publication recomputes.
     const results = useMemo(
         () => searchVault(files, deferredQuery, path =>
             // An OPEN drawing would otherwise leak its live JSON buffer in here,
@@ -135,7 +119,6 @@ export default function SearchPanel({ readSnapshot, fileTree, cache, getOpenTabC
                     autoFocus
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    onFocus={refreshIndex}
                 />
                 {query && (
                     <button
@@ -160,10 +143,10 @@ export default function SearchPanel({ readSnapshot, fileTree, cache, getOpenTabC
                 {!query && (
                     <p className="search-hint">Search file names and contents across the vault.</p>
                 )}
-                {query && index === null && (
+                {query && !ready && (
                     <p className="search-hint">Indexing vault…</p>
                 )}
-                {query && deferredQuery && index !== null && fileCount === 0 && (
+                {query && deferredQuery && ready && fileCount === 0 && (
                     <p className="search-hint">No results for “{deferredQuery}”.</p>
                 )}
                 {query && results.files.map(result => {

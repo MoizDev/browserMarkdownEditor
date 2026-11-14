@@ -483,6 +483,10 @@ rather than being stuck with it. It is also why annotating never builds up:
 every save redraws from that pristine copy, so the marks never thicken or
 double no matter how many times you edit.
 
+Annotated saves also carry a write mark. If another program changes the file after a marked save, Annotate stays read-only and explains that rebuilding from your last editable version would drop those changes. **Keep the file as it is** (the default, or Escape while the notice is focused) leaves it unchanged. **Annotate from my last version** first keeps the exact current PDF in that folder’s **Trash**, then enables editing. If the mark is malformed or belongs to an unsupported version, the notice says it cannot be verified and offers the same safe choice. A changed or deleted file must be resolved before this choice can continue; a failed copy enables nothing and offers Retry.
+
+Older annotated PDFs without a mark can still be edited. Before their first save here, a copy of the current file is kept in **Trash**; the saved PDF gains the mark. The notice names the retained copy. Editable annotations are limited to **32 MiB of UTF-8 JSON**: exceeding that limit refuses the save without changing the PDF. Keep those unsaved annotations open, or reduce them before saving. A refused revision is not reported as Saved and cannot be silently dropped by closing its tab or switching vaults.
+
 **A PDF that cannot be written on safely stays read-only.** Before the pen opens,
 the app checks what the file actually carries, not its name. A PDF holding an
 unrelated \`original.pdf\`, attachments that cannot be read or that contradict each

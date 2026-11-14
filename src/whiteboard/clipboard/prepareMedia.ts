@@ -71,7 +71,13 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
             && runtime.jobs.isCurrent(context.job) && options.current() && runtime.session === session && session.doc === doc && doc.rev === revision
             && session.owner.documentId === owner.documentId && session.owner.session === owner.session;
         const check = () => { runtime.jobs.assertContext(context); context.assertCurrent(); if (!current(identity)) throw new DOMException('Clipboard media staging became stale', 'AbortError'); };
-        const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
+        let steps = 0, sliceStart = performance.now();
+        const cooperate = async () => {
+            check();
+            if (++steps < 128 && performance.now() - sliceStart < 3) return;
+            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            check(); steps = 0; sliceStart = performance.now();
+        };
         const ops: Op[] = [], files = new Map<MediaId, string | null>(), blobs = new Map<MediaId, Blob>(), leases: MediaLease[] = [], missing: MediaId[] = [];
         let held = true;
         const release = () => { if (!held) return; held = false; for (const lease of leases) lease.release(); leases.length = 0; };

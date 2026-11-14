@@ -22,7 +22,13 @@ export async function restoreReferencedMediaInJob(options: RestoreReferencedMedi
             throw new DOMException('Media restoration became stale', 'AbortError');
         }
     };
-    const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
+    let steps = 0, sliceStart = performance.now();
+    const cooperate = async () => {
+        check();
+        if (++steps < 128 && performance.now() - sliceStart < 3) return;
+        await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        check(); steps = 0; sliceStart = performance.now();
+    };
     const ids = new Set<MediaId>(), files = new Map<MediaId, string | null>(), ops: Op[] = [], leases: { release(): void }[] = [];
     try {
         check(); let visits = 0;

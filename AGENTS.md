@@ -146,5 +146,4 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **ESLint's relaxations are intentional**, each explained in `eslint.config.ts` — do not tighten them.
 - **Match the house comment style.** Explain *why*, beside the code, with the measured evidence that
   forced it ("measured: 7 tabs → 0"); a comment restating what the line does is not it.
-- **Two things exist twice — change both halves.** "Is this name taken by either kind" is
-  `entryNames.nameTaken` *and* `FileSystemContext.entryExists`; ruled paper is `paper.ts` *and* `pdfBuild.ts`.
+- **Ruled paper exists twice** — change both `paper.ts` and `pdfBuild.ts`.

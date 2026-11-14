@@ -64,6 +64,7 @@ const TREE_OVERSCAN = 8;
 interface VisibleRow { node: FileTreeNode; depth: number; createRow?: boolean }
 
 interface FileExplorerProps {
+    readSnapshot: (handle: FileSystemFileHandle) => Promise<File>;
     rootHandle: FileSystemDirectoryHandle | null;
     fileTree: FileTreeNode[];
     onFileClick: (node: FileTreeNode) => void;
@@ -98,6 +99,7 @@ interface FileExplorerProps {
 }
 
 function FileExplorer({
+    readSnapshot,
     rootHandle,
     fileTree,
     onFileClick,
@@ -192,9 +194,9 @@ function FileExplorer({
     useEffect(() => {
         if (!isTimeSort(sortOrder)) return;
         let current = true;
-        void statFileTimes(collectFiles(fileTree), () => current);
+        void statFileTimes(collectFiles(fileTree), () => current, readSnapshot);
         return () => { current = false; };
-    }, [fileTree, sortOrder]);
+    }, [fileTree, sortOrder, readSnapshot]);
 
     // ── Expand all / Collapse all ───────────────────────────────────────────
     /** Every folder in the tree — the REAL ones, so a stale expandedPaths
@@ -783,6 +785,7 @@ function FileExplorer({
             {searchOpen ? (
                 <SearchPanel
                     fileTree={fileTree}
+                    readSnapshot={readSnapshot}
                     cache={searchCache}
                     getOpenTabContent={getOpenTabContent}
                     onOpenResult={handleSearchResult}

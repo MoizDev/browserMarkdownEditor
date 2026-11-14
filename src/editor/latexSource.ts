@@ -2,123 +2,30 @@ import { Decoration, EditorView, keymap } from '@codemirror/view';
 import { EditorSelection, Prec } from '@codemirror/state';
 import type { EditorState, Extension, Range, Text } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
-import { docString } from './docCache';
-import { overlapsRange, straddlesPoint } from './rangeSearch';
-import type { CharRange } from './rangeSearch';
-
-/** One $…$ / $$…$$ span. `latex` is the inner source, delimiters excluded. */
-export interface MathRegion {
-    from: number;
-    to: number;
-    latex: string;
-    block: boolean;
-}
+import { analyzeDocFull, docAnalysisField } from './docAnalysis';
+import type { DocAnalysis } from './docAnalysis';
+export type { DocAnalysis } from './docAnalysis';
+import { straddlesPoint } from '../utils/rangeSearch';
+import type { CharRange } from '../utils/rangeSearch';
+import { codeRangesForTree } from '../utils/mathRegions';
+export { findMathRegions } from '../utils/mathRegions';
+export type { MathRegion } from '../utils/mathRegions';
 
 /** Ranges where $ is literal text: fenced/indented code blocks and inline
  *  backticks. Shared by the live preview and the math bracket handler. */
 export function collectCodeRanges(state: EditorState): CharRange[] {
-    const out: CharRange[] = [];
-    syntaxTree(state).iterate({
-        enter(n) {
-            if (n.name === 'FencedCode' || n.name === 'CodeBlock' || n.name === 'InlineCode') {
-                out.push({ from: n.from, to: n.to });
-                return false;
-            }
-        },
-    });
-    return out;
+    return codeRangesForTree(syntaxTree(state));
 }
 
-/**
- * Find every math region in the document, using Obsidian's rules and nothing
- * more (no currency heuristics):
- *  - $$…$$ is block math and may span lines;
- *  - $…$ is inline math on a single line, where the opening $ is not followed
- *    by whitespace and the closing $ is not preceded by whitespace;
- *  - \$ is a literal dollar sign, never a delimiter;
- *  - $ inside code (fenced blocks, inline backticks) is literal.
- */
-export function findMathRegions(doc: string, codeRanges: CharRange[]): MathRegion[] {
-    const regions: MathRegion[] = [];
-    const inCode = (from: number, to: number) => overlapsRange(codeRanges, from, to);
-
-    const blocks: CharRange[] = [];
-    const blockRe = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$/g;
-    let m: RegExpExecArray | null;
-    while ((m = blockRe.exec(doc)) !== null) {
-        const from = m.index;
-        const to = from + m[0].length;
-        if (!m[1].trim() || inCode(from, to)) continue;
-        blocks.push({ from, to });
-        regions.push({ from, to, latex: m[1].trim(), block: true });
-    }
-
-    const inlineRe = /(?<![\\$])\$(?![\s$])([^$\n]*?[^\s$])\$(?!\$)/g;
-    while ((m = inlineRe.exec(doc)) !== null) {
-        const from = m.index;
-        const to = from + m[0].length;
-        if (m[1].endsWith('\\')) continue; // …\$ — escaped closing dollar
-        if (inCode(from, to)) continue;
-        if (overlapsRange(blocks, from, to)) continue;
-        regions.push({ from, to, latex: m[1], block: false });
-    }
-
-    return regions.sort((a, b) => a.from - b.from);
-}
-
-/* ── Whole-document analysis, computed once per (document, syntax tree) ──
-   The three expensive whole-document derivations — flattening the doc, walking
-   the tree for code ranges, and the two regex sweeps that locate math — are all
-   PURELY a function of the document and its parse. None of them depends on the
-   selection.
-
-   Without this, a single arrow keypress in edit mode redid all of it (the live
-   preview rebuilds on selection changes so it can reveal syntax under the
-   cursor), and every bracket keystroke redid it again inside isInMathContext
-   before the transaction even dispatched.
-
-   Text and Tree are immutable and persistent, so object identity is an EXACT
-   validity test rather than a heuristic — and keying on the tree (not just the
-   doc) is what keeps this from defeating livePreview's deliberate rebuild when
-   the markdown parser advances over a large file.
-
-   ONE ENTRY PER DOCUMENT, not one entry. A single slot was right while one
-   EditorView was ever live, but a split tab puts up to five documents on screen
-   at once, each with its own state, its own live-preview field and its own
-   background parser — and they take turns through the slot, so every alternation
-   between two panes, and every parse-advance transaction while both are still
-   parsing, missed and re-walked a whole document. A WeakMap keyed on the Text
-   restores the original argument exactly: an entry is retained only as long as
-   the document it describes is. */
-
-/** Everything about a document that the math + code passes need, memoized. */
-export interface DocAnalysis {
-    /** The flattened document (shared with docCache — not a second copy). */
-    doc: string;
-    codeRanges: CharRange[];
-    /** Sorted by `from`, and disjoint by construction (see mathEnds). */
-    mathRegions: MathRegion[];
-    /** Each region's `to`, ascending — the search key for overlapsMath. */
-    mathEnds: number[];
-}
-
+// States without the field (such as a future non-preview view) retain the full
+// analysis fallback. Ordinary Markdown states read the incremental field.
 const memo = new WeakMap<Text, { tree: unknown; value: DocAnalysis }>();
-
 export function analyzeDoc(state: EditorState): DocAnalysis {
-    const tree = syntaxTree(state);
-    const hit = memo.get(state.doc);
+    const current = state.field(docAnalysisField, false);
+    if (current) return current;
+    const tree = syntaxTree(state), hit = memo.get(state.doc);
     if (hit && hit.tree === tree) return hit.value;
-
-    const doc = docString(state.doc);
-    const codeRanges = collectCodeRanges(state);
-    const mathRegions = findMathRegions(doc, codeRanges);
-    const value: DocAnalysis = {
-        doc,
-        codeRanges,
-        mathRegions,
-        mathEnds: mathRegions.map(r => r.to),
-    };
-    // One entry per Text, replaced as the tree advances over the same document.
+    const value = analyzeDocFull(state);
     memo.set(state.doc, { tree, value });
     return value;
 }
@@ -222,10 +129,10 @@ export function isInMathContext(state: EditorState, pos: number): boolean {
     // the transaction dispatches, so it is input latency and not merely
     // garbage. It essentially always follows a buildDecorations pass on the
     // same state, so it is a cache hit.
-    const { doc, mathRegions } = analyzeDoc(state);
+    const { mathRegions } = analyzeDoc(state);
     if (straddlesPoint(mathRegions, pos)) return true;
     const line = state.doc.lineAt(pos);
-    const dollars = doc.slice(line.from, pos).match(/(?<!\\)\$/g);
+    const dollars = state.sliceDoc(line.from, pos).match(/(?<!\\)\$/g);
     return (dollars?.length ?? 0) % 2 === 1;
 }
 

@@ -1,13 +1,18 @@
 import type { Affine, PageDisplayItem, PageDisplayList, PathCommand } from '../../platform/types'
-import { coverageOutline } from '../ink/outline'
-import type { PaintFrame, PaintImageItem, PaintItem } from '../render/paintStream'
+import { InkOutlineJob } from '../ink/outline'
+import type { InkCoverage } from '../ink/outline'
+import type { PaintFrame, PaintImageItem, PaintItem, PaintTextItem } from '../render/paintStream'
 
-/** The image resolver returns a pinned, export-ready PNG/JPEG: crop and inversion are baked
- * into its bytes. The caller owns any image leases until this promise settles. */
+/** The image resolver returns a pinned, export-ready PNG/JPEG with inversion baked in.
+ * Dimensions are the original image pixels; the caller owns leases until this settles. */
 export type ExportImage = (item: PaintImageItem, signal?: AbortSignal) => Promise<{
   bytes: Uint8Array
   mime: 'image/png' | 'image/jpeg'
+  width: number
+  height: number
 }>
+/** Outlines/fallback are local to the text item; material alpha is already resolved. */
+export type ExportText = (item: PaintTextItem, scale: number, signal?: AbortSignal) => Promise<readonly PageDisplayItem[]>
 
 function transformPath(commands: readonly PathCommand[], matrix: Affine): PathCommand[] {
   const [a, b, c, d, e, f] = matrix
@@ -22,16 +27,45 @@ function transformPath(commands: readonly PathCommand[], matrix: Affine): PathCo
   })
 }
 
-async function displayItem(item: PaintItem, scale: number, image: ExportImage, signal?: AbortSignal): Promise<PageDisplayItem> {
+export async function inkOutline(coverage: InkCoverage, scale: number, signal?: AbortSignal): Promise<PathCommand[]> {
+  const commands: PathCommand[] = []
+  const job = new InkOutlineJob(coverage, scale, command => commands.push(command), Number.MAX_SAFE_INTEGER)
+  try {
+    while (job.step(1024) === 'pending') {
+      signal?.throwIfAborted()
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+    }
+    signal?.throwIfAborted()
+    return commands
+  } catch (error) { job.cancel(); throw error }
+}
+
+export async function paintItemDisplay(item: PaintItem, scale: number, image: ExportImage, signal?: AbortSignal, text?: ExportText): Promise<PageDisplayItem> {
   let leaf: PageDisplayItem
-  if (item.kind === 'image') {
+  if (item.kind === 'text') {
+    if (!text) throw new Error('Text outline export is unavailable')
+    const items = await text(item, scale, signal)
+    signal?.throwIfAborted()
+    leaf = { kind: 'group', transform: item.localToWorld, items: [...items] }
+  } else if (item.kind === 'image') {
     const data = await image(item, signal)
     signal?.throwIfAborted()
-    leaf = { kind: 'image', rect: { ...item.rect }, transform: item.localToWorld, ...data, opacity: item.opacity, blend: item.blend }
+    if (!Number.isFinite(data.width) || !Number.isFinite(data.height) || data.width <= 0 || data.height <= 0) throw new RangeError('Invalid export image dimensions')
+    const source = item.sourceRect, target = item.rect
+    if (source) {
+      if (source.width <= 0 || source.height <= 0) throw new RangeError('Invalid export image crop')
+      const sx = target.width / source.width, sy = target.height / source.height
+      const rect = { x: target.x - source.x * sx, y: target.y - source.y * sy, width: data.width * sx, height: data.height * sy }
+      const d: PathCommand[] = [['M', target.x, target.y], ['L', target.x + target.width, target.y],
+        ['L', target.x + target.width, target.y + target.height], ['L', target.x, target.y + target.height], ['Z']]
+      leaf = { kind: 'group', transform: item.localToWorld, clip: { d }, items: [{ kind: 'image', rect,
+        transform: [1, 0, 0, 1, 0, 0], bytes: data.bytes, mime: data.mime, opacity: item.opacity, blend: item.blend }] }
+    } else leaf = { kind: 'image', rect: { ...target }, transform: item.localToWorld,
+      bytes: data.bytes, mime: data.mime, opacity: item.opacity, blend: item.blend }
   } else {
     const [a, b, c, d0] = item.localToWorld
     const effectiveScale = Math.max(Number.MIN_VALUE, scale * Math.hypot(a, b, c, d0))
-    const d = item.kind === 'ink' ? [...coverageOutline(item.coverage, effectiveScale)] : [...item.d]
+    const d = item.kind === 'ink' ? await inkOutline(item.coverage, effectiveScale, signal) : [...item.d]
     const path: PageDisplayItem = item.kind === 'ink'
       ? { kind: 'path', d, fill: item.material.color, fillRule: 'nonzero', blend: item.material.blend }
       : { kind: 'path', d, fill: item.material.fill, fillRule: item.fillRule, blend: item.material.blend,
@@ -52,14 +86,16 @@ async function displayItem(item: PaintItem, scale: number, image: ExportImage, s
 
 /** Convert one pinned paint frame, preserving the underlay/content ordering. */
 export async function paintFrameDisplayList(
-  frame: PaintFrame, page: number, scale: number, image: ExportImage, signal?: AbortSignal,
+  frame: PaintFrame, page: number, scale: number, image: ExportImage, signal?: AbortSignal, text?: ExportText,
 ): Promise<PageDisplayList> {
   if (!Number.isSafeInteger(page) || page < 0 || !Number.isFinite(scale) || scale <= 0) throw new RangeError('Invalid export page or scale')
   const items: PageDisplayItem[] = []
+  let count = 0
   for (const band of [frame.underlay, frame.content]) {
     for (const item of band) {
+      if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
       signal?.throwIfAborted()
-      items.push(await displayItem(item, scale, image, signal))
+      items.push(await paintItemDisplay(item, scale, image, signal, text))
     }
   }
   signal?.throwIfAborted()

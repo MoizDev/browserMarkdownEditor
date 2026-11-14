@@ -14,7 +14,7 @@
 import type { AgentId, MirrorFile } from '../../shared/vaultAgentProtocol';
 import type { ChatTree } from '../utils/chatTree';
 import type { EditorMode, FileTreeNode, TabLayout, Theme } from './index';
-import type { TextChange, ViewReporter } from '../utils/viewRegistry';
+import type { CanvasShapePage, CanvasShapeQuery, TextChange, ViewReporter } from '../utils/viewRegistry';
 import type { AgentHostDeps } from '../utils/agentHost';
 
 /* ───────────────────────── the vault's chat index (.VaultAgent/chats.json) ───────────────────────── */
@@ -90,6 +90,14 @@ export interface VaultDirEntry {
 export type HostFailure = 'taken' | 'missing' | 'no-parent' | 'invalid' | 'stale' | 'busy' | 'error';
 export type HostResult = { ok: true } | { ok: false; reason: HostFailure; message?: string };
 
+export interface ClosedPdfAgentPage { page: number; text: string; quality?: 'partial'; warnings?: readonly string[] }
+export interface ClosedPdfAgentAccess {
+    read(path: string, bytes: Uint8Array, first: number, maxPages: number, maxChars: number,
+        signal: AbortSignal): Promise<{ pageCount: number; pages: ClosedPdfAgentPage[] }>;
+    render(path: string, bytes: Uint8Array, page: number, maxSide: number,
+        signal: AbortSignal): Promise<{ pageCount: number; png: Blob | null }>;
+}
+
 /**
  * Every path is vault-relative and ALREADY normalized and validated by the
  * executor (vaultAgentTools.normalizeAgentPath): no leading '/', no '.', '..',
@@ -99,7 +107,7 @@ export interface VaultToolHost {
     /** Identity of the open vault — a new object on every switch, null with none.
      *  The executor captures it when a run starts and refuses once it changes. */
     vaultToken(): object | null;
-    readSnapshot(handle: FileSystemFileHandle): Promise<File>;
+    searchAgent(config: { query: string; regex: boolean; caseSensitive: boolean; scope: string; maxResults: number }, signal?: AbortSignal): Promise<import('../utils/agentMatcher/types').MatchAnswer>;
     /** The file tree as the sidebar has it (root hidden folders excluded). */
     getFileTree(): FileTreeNode[];
     /** Direct children of a vault folder, straight from disk, hidden ones
@@ -113,6 +121,11 @@ export interface VaultToolHost {
      *  missing, a folder, or unreadable. */
     readText(path: string): Promise<string | null>;
     readBytes(path: string): Promise<Uint8Array | null>;
+    /** App-owned tiled engine access, or null when the classic viewer is selected. */
+    closedPdfAgent?(): ClosedPdfAgentAccess | null;
+    /** Session-owned live read or C5-admitted closed read; null means not a new board. */
+    canvasShapePage?(path: string, query: CanvasShapeQuery,
+        guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasShapePage | null>;
     /**
      * Apply `changes` (offsets into `expected`) to a text file. Refused as
      * 'stale' unless the current text (readText) still equals `expected`. Lands
@@ -132,6 +145,8 @@ export interface VaultToolHost {
      *  beside the user's focused pane without taking focus when it is not on
      *  screen, switches a PDF to annotate, and waits for it to mount. */
     openCanvasForAgent(path: string): Promise<ViewReporter | null>;
+    /** Rechecked at commit as a reload may revoke a canvas's write authority. */
+    canvasWritable(path: string): boolean;
 }
 
 /* ───────────────────────── change cards ───────────────────────── */

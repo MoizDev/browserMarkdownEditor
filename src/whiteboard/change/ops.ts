@@ -45,13 +45,14 @@ export type ContentOp =
     | { readonly t: 'create'; readonly node: NodeRecord }
     | { readonly t: 'delete'; readonly id: NodeId }
     | NodeSetOp
-    | { readonly t: 'splice'; readonly id: NodeId; readonly key: 'text' | 'label'; readonly from: number; readonly to: number; readonly insert: RichFragment; readonly wholeBlocks?: true }
+    | { readonly t: 'splice'; readonly id: NodeId; readonly key: 'text' | 'label'; readonly from: number; readonly to: number; readonly insert: RichFragment; readonly replaceBlocks?: true; readonly wholeBlocks?: true }
     | { readonly t: 'sheet'; readonly op: 'create'; readonly sheet: Sheet }
     | { readonly t: 'sheet'; readonly op: 'delete'; readonly id: SheetId }
     | { readonly t: 'sheet'; readonly op: 'set'; readonly id: SheetId; readonly key: 'name' | 'order'; readonly value: string }
     | BoardOp
     | { readonly t: 'media'; readonly op: 'add'; readonly entry: MediaEntry }
-    | { readonly t: 'media'; readonly op: 'drop'; readonly id: MediaId; readonly restoreMissing?: true };
+    | { readonly t: 'media'; readonly op: 'drop'; readonly id: MediaId; readonly restoreMissing?: true }
+    | { readonly t: 'media'; readonly op: 'set-file'; readonly id: MediaId; readonly file: string | null };
 
 // R-W26: inspectable inverse data, not a string-property escape for tools/readers.
 // Only apply constructs these when capturing an inverse; undo/redo replay them.
@@ -62,9 +63,12 @@ export interface ExtOp {
     readonly id?: string;
     readonly value: ExtBag | null;
 }
-export type Op = ContentOp | ExtOp;
+// Rollback-only inverse: file bookkeeping never enters history, including its
+// raw metadata. Keeping the restore in this op avoids an independently recorded ext op.
+type MediaFileRestore = Extract<ContentOp, { readonly t: 'media'; readonly op: 'set-file' }> & { readonly restoreExt: ExtBag | null };
+export type Op = ContentOp | ExtOp | MediaFileRestore;
 
-export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host';
+export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host' | 'revert';
 export interface Transaction {
     readonly ops: readonly Op[];
     readonly origin: TransactionOrigin;
@@ -82,6 +86,8 @@ export interface AppliedLease { release(): void }
 export interface Applied {
     readonly forward: readonly Op[];
     readonly inverse: readonly Op[];
+    /** Index-aligned inverse groups; concatenating them in reverse yields inverse. */
+    readonly inverseGroups: readonly (readonly Op[])[];
     readonly touched: TouchedSet;
     readonly dirtying: boolean;
     readonly recorded: boolean;
@@ -92,14 +98,15 @@ export interface Applied {
     release(): void;
 }
 
+export interface OpSink { push(op: Op): void }
 // H-3: a builder's savepoints are private to that builder and expire on commit/abort.
-export interface TxBuilder {
+export interface TxBuilder extends OpSink {
     savepoint(): number;
     rollbackTo(savepoint: number): void;
-    push(op: Op): void;
     commit(): Applied;
     abort(): void;
 }
+export type CommandBuilder = Omit<TxBuilder, 'commit'>;
 
 // change-and-history.md §2.2, H-4/H-6: the one policy table. Scene masks describe
 // derived work; they do not grant another writer or put any derived data in undo.
@@ -128,6 +135,7 @@ const NONE: OpPolicy = { history: false, dirty: 'never', scene: SceneImpact.none
 const PAPER: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.pages | SceneImpact.bounds | SceneImpact.chrome };
 const SHEET: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.sheets | SceneImpact.chrome };
 const MEDIA: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.none };
+const MEDIA_FILE: OpPolicy = { history: false, dirty: 'always', scene: SceneImpact.none };
 const METADATA: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.none };
 const PEN_METADATA: OpPolicy = { history: false, dirty: 'except-pdf', scene: SceneImpact.none };
 const CREATE_DELETE: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.paint | SceneImpact.geometry
@@ -160,6 +168,7 @@ export function policyForOp(op: Op): OpPolicy {
     if (op.t === 'set') return NODE_OP_POLICIES[op.key];
     if (op.t === 'board') return BOARD_OP_POLICIES[op.key];
     if (op.t === 'ext') return EXT_OP_POLICIES[op.target];
+    if (op.t === 'media' && op.op === 'set-file') return MEDIA_FILE;
     return OP_POLICIES[op.t];
 }
 export function opDirties(policy: OpPolicy, kind: BoardKind): boolean {

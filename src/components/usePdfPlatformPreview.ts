@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import type { RefObject } from 'react';
 import { routeEngines } from '../utils/engineRouting';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
-import type { PdfPreview, PreviewSnapshot } from '../pdf/preview/contracts';
+import type { PdfPreview, PreviewSnapshot } from '../utils/pdfPreviewTypes';
 
 interface ReaderIdentity {
     readonly vaultEpoch: number;
@@ -18,10 +18,13 @@ export function usePdfPlatformPreview(
     visible: boolean,
     focused: boolean,
     readSnapshot: () => PreviewSnapshot | null,
+    onNotice?: (message: string) => void,
 ): () => void {
     const [active] = useState(() => routeEngines().platformLayer);
     const snapshotRef = useRef(readSnapshot);
     snapshotRef.current = readSnapshot;
+    const noticeRef = useRef(onNotice);
+    noticeRef.current = onNotice;
     const previewRef = useRef<PdfPreview | null>(null);
     const visibleRef = useRef(visible);
     visibleRef.current = visible;
@@ -47,6 +50,7 @@ export function usePdfPlatformPreview(
                 root: root.current,
                 token: { vaultEpoch, documentId, bytesGeneration: byteGeneration, session: serial },
                 readSnapshot: () => snapshotRef.current(),
+                onNotice: message => noticeRef.current?.(message),
             });
             previewRef.current = preview;
             preview.setFocused(focusedRef.current);

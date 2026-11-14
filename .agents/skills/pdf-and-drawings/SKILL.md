@@ -93,8 +93,9 @@ as live tldraw shapes.
 - `pdfRotation.ts` is pure quarter-turn arithmetic with no imports; `pdfRotate.ts` holds the pdf-lib
   half and is imported **only by `pdfBuild.worker.ts`** — App reaches it through
   `pdfBuildClient.rotatePdfAsync` (dynamically imported; the client imports types only), so pdf-lib
-  stays out of the main bundle. A page in the wild can carry 450, -90 or 89.9 — `asQuarter`
-  normalizes on the way in as well as out, because pdf-lib throws on a non-multiple of 90.
+  stays out of the main bundle. The worker accepts only finite quarter-turn deltas and valid page
+  indices; existing non-quarter rotations are refused rather than rounded into a destructive write.
+  Multiples such as 450 and -90 are normalized modulo 360.
 - **It runs in the build worker, with pdf-lib's ticks OFF — and so does every pdf-lib load/save.**
   By default `PDFDocument.load` stops on a `setTimeout(0)` every 100 objects and `save()` every 50,
   so one rotation scheduled ~3 × objects / 100 zero-delay timers on the MAIN thread, each costing
@@ -122,7 +123,7 @@ as live tldraw shapes.
   `recordFileWritten`, `clearPdfRenderData` (the parked original predates the turn) and a `diskRev`
   bump, which is what remounts the pane on the new bytes. The reader comes back on its page because
   the position record is per path and survives the remount.
-- **Refused on a PDF this app has annotated**, with a notice that says why: the strokes are authored
+- **Refused on a PDF this app has annotated**, in App and again at the worker's role gate, with a notice that says why: the strokes are authored
   against the pages as they are and `/Rotate` would turn the paper out from under every mark.
   The role read that decides it happens in the HANDLER, at the moment of the gesture — doing it on
   open would undo `needsSource`'s whole point (an attachment read for every PDF merely read).
@@ -590,6 +591,9 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
 canvases. Split across two files because `react-refresh/only-export-components` is relaxed for
 `src/context/**` only, so a component and a helper cannot share a file.
 
+- **Shared user preferences are app-owned** (`utils/boardPreferences.ts`, registered/mirrored as
+  `bme.whiteboard.preferences`); `boardLegacyUser.ts` bridges the public current-user signal for all
+  three legacy panes. Paper projects the scheme to light without writing that projection back.
 - **The pen is PER FILE, and per open editor.** `penStyle` keys on the live `Editor` in a WeakMap,
   not one app-wide value, because a split shows two canvases at once and each answers to its own
   file. `canvasPen`'s `CanvasUiState` (`toolId` + `stylesForNextShape` + `penScale`) is the one shape
@@ -659,7 +663,9 @@ that lengthens that debounce owes a matching flush: unmount, `flushPending` **an
 
 Drawing/notebook `store.listen` is scoped `{source:'user', scope:'document'}`; PDF annotation uses
 synchronous user-only shape/asset/binding side effects, because a deferred listener missed immediate
-flushes. PDF exports serialize and snapshot before awaiting overlays; App awaits pending export before
+flushes. All three require the owning `OpenTab.id` for the pending-work coordinator; never derive it
+from a path or an optional reader binding. A PDF drain repeats if ink arrived during overlay export.
+PDF exports serialize and snapshot before awaiting overlays; App awaits pending export before
 leaving annotation. FontManager cleanup waits for in-flight document fonts, avoiding late updates to
 its disposed map. Programmatic loads and camera moves don't dirty the file; a separate session-scope listener only reschedules a save when the UI-state
 slice actually changed. Unmounting mid-debounce flushes synchronously. `getEfficientZoomLevel` is

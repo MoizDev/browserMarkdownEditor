@@ -1,6 +1,7 @@
 import type { Rect } from '../../platform/types';
 import type { Font, Swatch } from '../model/styles';
 import type { RichText } from './richText';
+import type { FontKey } from './fonts';
 
 /** All geometry is in block-local world units before the node transform, y down. */
 export interface InkRef {
@@ -15,6 +16,9 @@ export interface PaintRect {
     readonly ink: InkRef;
 }
 export interface Face {
+    /** Exact upstream face and whether this paint used that face or its fallback. */
+    readonly key: FontKey;
+    readonly loaded: boolean;
     /** Canvas font at the 64px reference size, including fallback families. */
     readonly css: string;
     readonly size: number;
@@ -39,6 +43,8 @@ export interface PaintLine {
     readonly top: number;
     readonly bottom: number;
     readonly baseline: number;
+    /** Inline origin, including alignment, also defined for an empty line. */
+    readonly x: number;
     /** Projection range includes a consumed hard break, if any. */
     readonly src: readonly [number, number];
     readonly direction: 'ltr' | 'rtl';
@@ -108,6 +114,9 @@ export interface TextLayoutStyle {
     readonly minHeight: number;
     /** Overflow policy for a word wider than the available line. */
     readonly overflow: 'allow' | 'grapheme' | 'shrink';
+    /** Frame titles use one line with an ellipsis instead of growing. */
+    readonly maxLines?: number;
+    readonly ellipsis?: boolean;
 }
 export interface TextLayoutRequest {
     readonly text: RichText;

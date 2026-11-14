@@ -20,6 +20,8 @@ export interface MirrorTextReply {
         lineBox: Float32Array;
         lineDir: Float32Array;
         lineBidi: Uint8Array;
+        headingLevels?: Array<[number, 1 | 2 | 3 | 4 | 5 | 6]>;
+        figures?: readonly MirrorFigure[];
     };
 }
 
@@ -31,6 +33,7 @@ export function mirrorTextFromReply(reply: MirrorTextReply, tags?: {
     const sel = reply.sel;
     if (!sel) return null;
     const lines: MirrorLine[] = [];
+    const headingLevels = tags?.headingLevels ?? new Map(sel.headingLevels ?? []);
     for (let i = 0; i * 2 + 1 < sel.lines.length; i++) {
         const first = sel.lines[i * 2], end = sel.lines[i * 2 + 1];
         const from = sel.charU16[first], to = sel.charU16[end];
@@ -41,9 +44,9 @@ export function mirrorTextFromReply(reply: MirrorTextReply, tags?: {
         const vertical = Math.abs(sel.lineDir[i * 2 + 1] ?? 0) > Math.abs(sel.lineDir[i * 2] ?? 0);
         lines.push({ from, to, box: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
             direction: vertical ? 'vertical' : sel.lineBidi[i] ? 'rtl' : 'ltr',
-            headingLevel: tags?.headingLevels?.get(i) });
+            headingLevel: headingLevels.get(i) });
     }
-    return { text: reply.text, lines, figures: tags?.figures };
+    return { text: reply.text, lines, figures: tags?.figures ?? sel.figures };
 }
 export interface MirrorPosition { page: number; offset: number }
 export interface MirrorSelection { anchor: MirrorPosition; focus: MirrorPosition }
@@ -72,6 +75,7 @@ export class PdfTextMirror {
     private readonly populated = new Set<number>();
     private readonly rendered = new Map<number, MirrorPageText>();
     private readonly live: HTMLDivElement;
+    private readonly skip: HTMLButtonElement;
     private announceTimer: ReturnType<typeof setTimeout> | undefined;
     private expectedSelection: MirrorSelection | null = null;
     private readonly onFocus: (event: FocusEvent) => void;
@@ -92,6 +96,7 @@ export class PdfTextMirror {
         skip.className = 'pdf-mirror-skip';
         skip.style.pointerEvents = 'auto';
         skip.addEventListener('click', options.openTextView);
+        this.skip = skip;
         root.append(skip);
         this.live = document.createElement('div');
         this.live.setAttribute('aria-live', 'polite');
@@ -133,6 +138,14 @@ export class PdfTextMirror {
         };
         root.addEventListener('focusin', this.onFocus);
         document.addEventListener('selectionchange', this.onSelection);
+    }
+
+    setViewport(x: number, y: number, zoom: number): void {
+        this.element.style.transform = `translate(${-x * zoom}px, ${-y * zoom}px) scale(${zoom})`;
+        this.skip.style.left = `${x}px`;
+        this.skip.style.top = `${y}px`;
+        this.skip.style.transformOrigin = '0 0';
+        this.skip.style.transform = `scale(${1 / zoom})`;
     }
 
     setPageBox(page: number, box: Rect): void {

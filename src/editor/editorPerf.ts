@@ -2,10 +2,6 @@ import { syntaxTree, syntaxTreeAvailable } from '@codemirror/language';
 import type { EditorState } from '@codemirror/state';
 import { perfRoot } from '../utils/perfHooks';
 
-// Today's mode reconfigure replaces the preview field, so its create() needs
-// the caller's reason. Set immediately before the synchronous dispatch; never
-// keep a flag across the async reading-anchor capture in DocumentPane.
-let nextCreateIsMode = false;
 let latestState: EditorState | null = null;
 
 const editor = {
@@ -39,9 +35,7 @@ function publish(): void {
 }
 
 /** Every caller is guarded by __BME_BENCH__; failures never enter the editor. */
-export function markEditorModeRender(): void {
-    nextCreateIsMode = true;
-}
+export function markEditorModeRender(): void { /* The field counts the mode transaction itself. */ }
 
 export function countEditorTransaction(state: EditorState): void {
     try {
@@ -51,6 +45,14 @@ export function countEditorTransaction(state: EditorState): void {
     } catch { /* Measurement cannot interrupt a transaction. */ }
 }
 
+export function countEditorWindow(length: number): void {
+    try { editor.windows++; editor.windowChars += length; publish(); } catch { /* Instrumentation is optional. */ }
+}
+
+export function countEditorSlice(length: number): void {
+    try { editor.slicedChars += length; publish(); } catch { /* Instrumentation is optional. */ }
+}
+
 export function countEditorWidget(): void {
     try {
         editor.widgetsBuilt++;
@@ -58,16 +60,28 @@ export function countEditorWidget(): void {
     } catch { /* Measurement cannot interrupt widget construction. */ }
 }
 
+export function measureEditorWork<T>(state: EditorState, render: () => T): T {
+    let started: number | undefined;
+    try { latestState = state; started = performance.now(); } catch { /* Optional instrumentation. */ }
+    const result = render();
+    try {
+        if (started !== undefined) {
+            const elapsed = performance.now() - started;
+            editor.l3Ms.total += elapsed; editor.l3Ms.samples.push(elapsed); publish();
+        }
+    } catch { /* Instrumentation cannot change rendering. */ }
+    return result;
+}
+
 /** Time only the existing pass; preserve its result, exceptions and widget identities. */
-export function measureEditorRender<T>(state: EditorState, create: boolean, render: () => T): T {
+export function measureEditorRender<T>(state: EditorState, reason: 'create' | 'mode' | 'coverage' | 'revGap' | 'error' | null,
+    windowChars: number, render: () => T): T {
     let started: number | undefined;
     try {
         latestState = state;
-        const reason = create ? (nextCreateIsMode ? 'mode' : 'create') : 'coverage';
-        if (create) nextCreateIsMode = false;
-        editor.fullRenders[reason]++;
+        if (reason) editor.fullRenders[reason]++;
         editor.windows++;
-        editor.windowChars += state.doc.length;
+        editor.windowChars += windowChars;
         publish();
         started = performance.now();
     } catch { /* Measurement cannot prevent a decoration pass. */ }

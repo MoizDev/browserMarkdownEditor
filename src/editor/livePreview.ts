@@ -1,24 +1,27 @@
 import { EditorView, Decoration, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { countEditorTransaction, measureEditorRender } from './editorPerf';
+import { countEditorSlice, countEditorTransaction, countEditorWindow, measureEditorRender, measureEditorWork } from './editorPerf';
+import { docAnalysisField } from './docAnalysis';
+import { planPreviewWindows } from './livePreviewWindows';
+import type { PreviewWindow } from './livePreviewWindows';
+import { incrementalEditorEnabled } from '../utils/engineRouting';
 import type { SyntaxNode } from '@lezer/common';
-import { EditorSelection, Facet, Prec, RangeSet, RangeValue } from '@codemirror/state';
+import { EditorSelection, Facet, Prec, RangeSet, RangeValue, StateField } from '@codemirror/state';
 import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
-import { analyzeDoc, mathSkipsRange, overlapsMath, latexSourceDecorations } from './latexSource';
-import { containsRange, firstRangeEndingAfter, overlapsRange } from './rangeSearch';
+import { analyzeDoc, mathSkipsRange, latexSourceDecorations } from './latexSource';
+import { containsRange, firstRangeEndingAfter } from '../utils/rangeSearch';
 import { parseListMarker } from './lists';
 import type { ListMarker } from './lists';
 import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
 import { ImageWidget, imageEmbedActions, imageEmbedKeymap } from './imageWidget';
 import type { ImageContext, ImageEmbedActions } from './imageWidget';
-import { embedPattern } from '../utils/assets';
 import { TableWidget } from './tableWidget';
 import { tableReadingSelection } from './tableReadingSelection';
-import { blankRowText, cellAt, delimiterCellText, findTables, parseTableLayout, rowColumnCount, tableLayoutAt } from './tableModel';
+import { blankRowText, cellAt, delimiterCellText, parseTableLayout, rowColumnCount, tableLayoutAt } from './tableModel';
 import { focusTableCell, tableDomAt } from './tableEdit';
 import { MermaidWidget } from './mermaidWidget';
 import { HIDE } from './hiddenMarker';
@@ -223,7 +226,7 @@ function externalLinkMark(href: string): Decoration {
 function linkTextMark(state: EditorState, url: SyntaxNode | null, readMode: boolean): Decoration {
     if (!readMode || !url) return LINK_MARK;
     // CommonMark allows an angle-bracket wrapper on the destination: [a](<b c>).
-    const dest = state.doc.sliceString(url.from, url.to).replace(/^<([^]*)>$/, '$1');
+    const dest = previewSlice(state, url.from, url.to).replace(/^<([^]*)>$/, '$1');
     const href = externalHref(dest);
     return href ? externalLinkMark(href) : LINK_MARK;
 }
@@ -270,9 +273,6 @@ function insideLinkLabel(node: SyntaxNode): boolean {
     return false;
 }
 
-/** The single-argument, curried asset resolver the editor subsystem consumes. */
-type GetAssetUrl = (fileName: string) => Promise<string | null>;
-
 /** Structural shim for buildDecorations: the factory passes `{ state }`, not a full EditorView. */
 type StateView = { state: EditorState };
 
@@ -307,8 +307,10 @@ interface LivePreview {
     deco: DecorationSet;
     atoms: RangeSet<AtomicRange>;
     imageSelected: boolean;
+    images: readonly { from: number; to: number }[];
     tables: readonly { from: number; to: number }[];
     tableSelected: boolean;
+    analysisRev: number;
 }
 
 /**
@@ -338,7 +340,17 @@ function cursorOnLine(state: EditorState, from: number, to: number): boolean {
  * The Live Preview plugin — hides markdown syntax when cursor is away
  * and renders styled content, KaTeX math widgets, and Image widgets.
  */
-function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: EditorMode): LivePreview {
+function previewSlice(state: EditorState, from: number, to: number): string {
+    if (__BME_BENCH__) countEditorSlice(to - from);
+    return state.sliceDoc(from, to);
+}
+
+function* inWindow<T extends { from: number; to: number }>(items: readonly T[], window: PreviewWindow): Iterable<T> {
+    for (let i = firstRangeEndingAfter(items, window.from); i < items.length && items[i].from < window.to; i++) yield items[i];
+}
+
+function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: EditorMode,
+    window: PreviewWindow = { from: 0, to: view.state.doc.length + 1 }): LivePreview {
     const { state } = view;
     const decorations: Range<Decoration>[] = [];
     const atoms: Range<AtomicRange>[] = [];
@@ -351,18 +363,10 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // selection-only rebuild — which is every arrow key and click in edit mode
     // — reuses them instead of re-flattening the document and re-scanning it.
     const analysis = analyzeDoc(state);
-    const { doc, codeRanges, mathRegions } = analysis;
-    const intersectsMath = (a: number, b: number) => overlapsMath(analysis, a, b);
-    // The same question asked of code, named for the same reason: four regex
-    // passes below need it, and a hand-copied half-open comparison at each is
-    // how the copies drift apart. The highlight pass is the evidence — it never
-    // had a copy at all, so `==x==` inside backticks rendered as a highlight and
-    // no note could print the syntax it was documenting. The table pass keeps
-    // its own CONTAINMENT test: a different question, and it says so where it
-    // asks it.
-    const intersectsCode = (a: number, b: number) => overlapsRange(codeRanges, a, b);
+    const { mathRegions } = analysis;
 
     syntaxTree(state).iterate({
+        from: window.from, to: Math.min(state.doc.length, window.to),
         enter(node) {
             const { type, from, to } = node;
             const name = type.name;
@@ -484,7 +488,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
             // === INLINE CODE ===
             if (name === 'InlineCode') {
                 // Find backtick boundaries
-                const content = state.doc.sliceString(from, to);
+                const content = previewSlice(state, from, to);
                 const openTicks = content.match(/^`+/)?.[0].length || 1;
                 const closeTicks = openTicks;
 
@@ -517,37 +521,36 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 if (opening.to > startLine.to) return false;
                 const closed = closing !== null && endLine.number > startLine.number && closing.to <= endLine.to;
 
-                const firstContent = startLine.number + 1;
-                const lastContent = closed ? endLine.number - 1 : endLine.number;
-                const code = firstContent <= lastContent
-                    ? state.doc.sliceString(state.doc.line(firstContent).from, state.doc.line(lastContent).to)
-                    : '';
-
                 // === MERMAID DIAGRAMS ===
                 // A closed mermaid fence renders as a diagram widget while
                 // the cursor is elsewhere; editing anywhere in it falls back
                 // to the ordinary code panel so the source stays editable.
                 const lang = startLine.text.trim().match(/^(?:`{3,}|~{3,})\s*(\S*)/)?.[1]?.toLowerCase() ?? '';
-                if (lang === 'mermaid' && closed && code.trim() &&
-                    (editorMode === 'read' || !cursorOnLine(state, from, to))) {
-                    decorations.push(
-                        Decoration.replace({ widget: new MermaidWidget(code) }).range(startLine.from, endLine.to)
-                    );
-                    return false;
+                if (lang === 'mermaid' && closed && (editorMode === 'read' || !cursorOnLine(state, from, to))) {
+                    const firstContent = startLine.number + 1, lastContent = endLine.number - 1;
+                    const code = firstContent <= lastContent
+                        ? previewSlice(state, state.doc.line(firstContent).from, state.doc.line(lastContent).to) : '';
+                    if (code.trim()) {
+                        decorations.push(
+                            Decoration.replace({ widget: new MermaidWidget(code) }).range(startLine.from, endLine.to)
+                        );
+                        return false;
+                    }
                 }
 
                 // Copy button, pinned to the panel's top-right. The fence row
                 // hosts it in every state (hidden = padding row, revealed =
                 // the source fence line), so it never displaces code text.
                 decorations.push(
-                    Decoration.widget({ widget: new CopyCodeWidget(code), side: -1 }).range(startLine.from)
+                    Decoration.widget({ widget: new CopyCodeWidget(), side: -1 }).range(startLine.from)
                 );
 
                 // The panel is permanent — every line gets it, fence lines
                 // included, so the block reads as ONE rectangle whose (hidden)
                 // fence rows double as top/bottom padding. Start/end classes
                 // round just the outer corners.
-                for (let i = startLine.number; i <= endLine.number; i++) {
+                for (let i = Math.max(startLine.number, state.doc.lineAt(window.from).number);
+                    i <= Math.min(endLine.number, state.doc.lineAt(Math.min(state.doc.length, window.to - 1)).number); i++) {
                     const line = state.doc.line(i);
                     const bits = (i === startLine.number ? 1 : 0) | (i === endLine.number ? 2 : 0);
                     decorations.push(CODEBLOCK_LINE[bits].range(line.from));
@@ -699,7 +702,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 // level further out — see insideLinkLabel.
                 if (insideLinkLabel(node.node)) return false;
 
-                const href = externalHref(state.doc.sliceString(from, to));
+                const href = externalHref(previewSlice(state, from, to));
                 if (href) decorations.push(externalLinkMark(href).range(from, to));
                 return false;
             }
@@ -712,7 +715,8 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 const startLine = state.doc.lineAt(from).number;
                 const endLine = state.doc.lineAt(to).number;
 
-                for (let i = startLine; i <= endLine; i++) {
+                for (let i = Math.max(startLine, state.doc.lineAt(window.from).number);
+                    i <= Math.min(endLine, state.doc.lineAt(Math.min(state.doc.length, window.to - 1)).number); i++) {
                     const line = state.doc.line(i);
                     const lineText = line.text;
                     const quotePrefix = lineText.match(/^>\s?/);
@@ -813,10 +817,9 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // Regions come from findMathRegions (computed above). Cursor outside →
     // rendered KaTeX widget; cursor inside → the raw source stays visible and
     // gets Obsidian-style LaTeX syntax highlighting in Fira Code.
-    let match: RegExpExecArray | null;
-    for (const region of mathRegions) {
+    for (const region of inWindow(mathRegions, window)) {
         if (editorMode !== 'read' && cursorInRange(state, region.from, region.to)) {
-            decorations.push(...latexSourceDecorations(doc.slice(region.from, region.to), region.from));
+            decorations.push(...latexSourceDecorations(previewSlice(state, region.from, region.to), region.from));
             continue;
         }
         decorations.push(
@@ -829,26 +832,19 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // ($$, $$$$ — even) and stays plain while unbalanced ($, $$$ — odd), so
     // you can see whether the next keystroke lands inside math mode.
     if (editorMode !== 'read') {
-        const dollarRunRegex = /\$+/g;
-        while ((match = dollarRunRegex.exec(doc)) !== null) {
-            const from = match.index;
-            const to = from + match[0].length;
-            if (match[0].length % 2 !== 0) continue;
-            if (doc[from - 1] === '\\') continue; // \$ — literal dollar
-            if (intersectsMath(from, to)) continue;
-            if (intersectsCode(from, to)) continue;
+        for (const match of inWindow(analysis.dollarRuns, window)) {
+            const { from, to } = match;
+            if (!match.accepted) continue;
             decorations.push(LATEX_DELIM.range(from, to));
         }
     }
 
     // === HIGHLIGHTS (==text==) ===
     // Matches: ==highlighted text==
-    const highlightRegex = /(?<!=)==(?!=)(.+?)(?<!=)==(?!=)/g;
-    while ((match = highlightRegex.exec(doc)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
+    for (const match of inWindow(analysis.highlights, window)) {
+        const { from, to } = match;
 
-        if (intersectsMath(from, to)) continue;
+        if (!match.accepted) continue;
         // The third regex pass that has to re-derive by hand what the parser
         // already knows: Lezer does not inline-parse inside a code span, so the
         // TREE branches get code-skipping for free, but a regex over the raw
@@ -856,7 +852,6 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         // this, `==x==` written in code rendered as a highlight — so the one
         // note that most needs to print the syntax, the Help guide's own
         // Markdown reference, was the one note that could not.
-        if (intersectsCode(from, to)) continue;
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 
         // Hide ==
@@ -875,29 +870,26 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // as one, and the markdown behind it is not something the reader edits (see
     // imageWidget.ts). The single exception is a caret already strictly inside
     // — only reachable while typing the embed, which has to stay visible.
-    const imageRegex = embedPattern();
     const selection = state.selection.main;
     const editable = editorMode !== 'read';
     let imageSelected = false;
+    const images: { from: number; to: number }[] = [];
     const tables: { from: number; to: number }[] = [];
     let tableSelected = false;
-    while ((match = imageRegex.exec(doc)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
-        const filename = match[1].trim();
-        const width = match[2] ? parseInt(match[2].trim(), 10) : null;
+    for (const match of inWindow(analysis.objects.embeds, window)) {
+        const { from, to, filename, width } = match;
 
-        if (intersectsMath(from, to)) continue;
+        if (!match.accepted) continue;
         // An embed written INSIDE code is being quoted, not embedded — a note
         // (the Help guide among them) documenting `![[picture.png]]` means the
         // text. It matters more here than for the other constructs: an image is
         // never revealed by the cursor and its range is atomic, so a quoted
         // embed rendered as a picture could not be read or edited back at all.
-        if (intersectsCode(from, to)) continue;
         if (editorMode !== 'read' && caretInsideRange(state, from, to)) continue;
 
         const selected = imageCtx.editable && selection.from === from && selection.to === to;
         imageSelected ||= selected;
+        images.push({ from, to });
         decorations.push(
             Decoration.replace({ widget: new ImageWidget(filename, width, imageCtx, selected) }).range(from, to)
         );
@@ -909,23 +901,19 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // === WIKILINKS (Obsidian Syntax) ===
     // Matches: [[Note]], [[Note|alias]], [[Note#heading]]
     // The leading (!?) lets us skip image embeds ![[file.png]] (handled above).
-    const wikiRegex = /(!?)\[\[([^\]\n]+?)\]\]/g;
-    while ((match = wikiRegex.exec(doc)) !== null) {
-        if (match[1] === '!') continue; // image embed, not a note link
+    for (const match of inWindow(analysis.wikilinks, window)) {
+        if (!match.accepted) continue;
 
-        const from = match.index;
-        const to = from + match[0].length;
-        const inner = match[2];
+        const { from, to } = match;
+        const inner = match.groups[1];
         const pipeIndex = inner.indexOf('|');
         const target = (pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner).split('#')[0].trim();
 
-        if (intersectsMath(from, to)) continue;
         // A wikilink written inside code is being QUOTED, not linked — the same
         // rule the image pass above applies, and for a weaker but real version
         // of the same reason: a note documenting the syntax (the Help guide is
         // one) would otherwise show the rendered link where the brackets it is
         // explaining ought to be, and the reader is never shown what to type.
-        if (intersectsCode(from, to)) continue;
         // While editing, reveal the raw syntax when the cursor is inside it.
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 
@@ -962,7 +950,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // the atom below and the editable widget in step: an atomic, never-revealed
     // range with no contenteditable cell in it would be a block of the user's
     // own text with no way to put a caret in it at all.
-    for (const span of findTables(doc)) {
+    for (const span of inWindow(analysis.objects.tables, window)) {
         // A table written inside code is being QUOTED, not tabulated — and it
         // matters more here than for any other construct, exactly as it does
         // for images: an object that is never revealed and whose range is
@@ -973,7 +961,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         // lines — so an intersection test would reject any table with one
         // `code` span in one cell. A fence contains the whole table; an inline
         // span inside a cell never can.
-        if (containsRange(codeRanges, span.from, span.to)) continue;
+        if (!span.accepted) continue;
         // No math guard, deliberately: overlapsMath is an intersection too, so
         // it would reject any table containing $x$, and a containment version
         // could only fire for a table wholly inside a math region, which cannot
@@ -982,7 +970,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         tableSelected ||= selected;
         decorations.push(
             Decoration.replace({
-                widget: new TableWidget(doc.slice(span.from, span.to), editable, selected,
+                widget: new TableWidget(previewSlice(state, span.from, span.to), editable, selected,
                     state.facet(readingEmphasisFacet)),
             }).range(span.from, span.to)
         );
@@ -991,16 +979,18 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     }
 
     return {
-        deco: Decoration.set(decorations, true),
+        deco: Decoration.set(decorations.filter(range => range.from >= window.from && range.from < window.to), true),
         // SORTED: images and tables are each a left-to-right pass, but tables
         // are appended after images, so the two runs interleave in the document
         // and the combined array is not in order. (This comment used to say the
         // opposite and was right at the time — it is exactly the kind of stale
         // claim that would make a later reader delete the `true`.)
-        atoms: RangeSet.of(atoms, true),
+        atoms: RangeSet.of(atoms.filter(range => range.from >= window.from && range.from < window.to), true),
         imageSelected,
+        images,
         tables,
         tableSelected,
+        analysisRev: analysis.rev,
     };
 }
 
@@ -1165,35 +1155,56 @@ export function readingProseRuns(state: EditorState, from: number, to: number): 
     return result;
 }
 
-/**
- * Factory for creating the Live Preview CM6 extension.
- * Uses a StateField (not ViewPlugin) so that decorations are allowed
- * to replace ranges that span across line breaks (block math, images, code blocks).
- * Decorations are computed in update() and passively read via from() to avoid
- * viewport destabilization loops.
- */
-import { StateField } from '@codemirror/state';
+function splicePreview(previous: LivePreview, tr: Transaction, windows: readonly PreviewWindow[],
+    parts: readonly LivePreview[], imageCtx: ImageContext, editorMode: EditorMode): LivePreview {
+    let deco = previous.deco.map(tr.changes), atoms = previous.atoms.map(tr.changes);
+    let images = previous.images.map(span => ({ from: tr.changes.mapPos(span.from, 1), to: tr.changes.mapPos(span.to, -1) }));
+    let tables = previous.tables.map(span => ({ from: tr.changes.mapPos(span.from, 1), to: tr.changes.mapPos(span.to, -1) }));
+    for (let i = 0; i < windows.length; i++) {
+        const w = windows[i], part = parts[i], limit = Math.min(tr.state.doc.length, w.to);
+        const additions: Range<Decoration>[] = [], atomAdditions: Range<AtomicRange>[] = [];
+        part.deco.between(w.from, limit, (from, to, value) => { additions.push(value.range(from, to)); });
+        part.atoms.between(w.from, limit, (from, to, value) => { atomAdditions.push(value.range(from, to)); });
+        const keep = (from: number) => from < w.from || from >= w.to;
+        deco = deco.update({ filterFrom: w.from, filterTo: limit, filter: keep, add: additions, sort: true });
+        atoms = atoms.update({ filterFrom: w.from, filterTo: limit, filter: keep, add: atomAdditions, sort: true });
+        images = images.filter(span => keep(span.from)).concat(part.images.filter(span => !keep(span.from)));
+        tables = tables.filter(span => keep(span.from)).concat(part.tables.filter(span => !keep(span.from)));
+    }
+    images.sort((a, b) => a.from - b.from); tables.sort((a, b) => a.from - b.from);
+    const selection = tr.state.selection.main;
+    const atSelection = (spans: readonly { from: number; to: number }[]) => {
+        let lo = 0, hi = spans.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (spans[mid].from < selection.from) lo = mid + 1; else hi = mid; }
+        const span = spans[lo];
+        return !!span && span.from === selection.from && span.to === selection.to;
+    };
+    return { deco, atoms, images, tables, imageSelected: imageCtx.editable && atSelection(images),
+        tableSelected: editorMode !== 'read' && atSelection(tables), analysisRev: tr.state.field(docAnalysisField).rev };
+}
 
-export function createLivePreviewPlugin(
-    getAssetUrl: GetAssetUrl,
-    editorMode: EditorMode,
-    actions: ImageEmbedActions,
-): Extension {
-    // One per plugin instance, and compared by identity inside ImageWidget.eq —
-    // which is why `getAssetUrl` and `actions` must themselves be stable for the
-    // life of the pane (see EditorPane).
-    const imageCtx: ImageContext = { getAssetUrl, actions, editable: editorMode !== 'read' };
+// The field survives compartment reconfiguration and cached-state adoption.
+// Context objects are stable per pane and mode; equal identities need no work.
+export const imageContextFacet = Facet.define<ImageContext, ImageContext | null>({
+    combine: values => values[0] ?? null,
+});
+const modeOf = (state: EditorState): EditorMode => state.facet(EditorView.editable) ? 'edit' : 'read';
 
-    const field = StateField.define<LivePreview>({
+export const livePreviewField = StateField.define<LivePreview>({
         create(state: EditorState) {
             const viewShim = { state };
+            const imageCtx = state.facet(imageContextFacet)!;
+            const editorMode = modeOf(state);
             if (__BME_BENCH__) {
-                return measureEditorRender(state, true, () => buildDecorations(viewShim, imageCtx, editorMode));
+                return measureEditorRender(state, 'create', state.doc.length, () => buildDecorations(viewShim, imageCtx, editorMode));
             }
             return buildDecorations(viewShim, imageCtx, editorMode);
         },
         update(decorations: LivePreview, tr: Transaction) {
             if (__BME_BENCH__) { countEditorTransaction(tr.state); }
+            const imageCtx = tr.state.facet(imageContextFacet)!;
+            const editorMode = modeOf(tr.state);
+            const modeChanged = editorMode !== modeOf(tr.startState);
             // Markdown parses asynchronously: on a large document the tree only
             // covers a prefix when the file opens, and the parser keeps advancing
             // in idle time, dispatching otherwise-empty transactions as it goes.
@@ -1206,12 +1217,45 @@ export function createLivePreviewPlugin(
             // editorMode !== 'read' — so skip rebuilds from selection-only changes.
             // Restating the same selection cannot change a construct's reveal state.
             const selectionChanged = editorMode !== 'read' && !tr.state.selection.eq(tr.startState.selection);
-            if (tr.docChanged || treeAdvanced || selectionChanged) {
-                const viewShim = { state: tr.state };
-                if (__BME_BENCH__) {
-                    return measureEditorRender(tr.state, false, () => buildDecorations(viewShim, imageCtx, editorMode));
+            if (tr.docChanged || treeAdvanced || selectionChanged || modeChanged) {
+                const state = tr.state, viewShim = { state };
+                const full = (reason: 'mode' | 'coverage' | 'revGap' | 'error') => __BME_BENCH__
+                    ? measureEditorRender(state, reason, state.doc.length, () => buildDecorations(viewShim, imageCtx, editorMode))
+                    : buildDecorations(viewShim, imageCtx, editorMode);
+                if (modeChanged) return full('mode');
+                if (!incrementalEditorEnabled() || imageCtx !== tr.startState.facet(imageContextFacet) ||
+                    state.facet(readingEmphasisFacet) !== tr.startState.facet(readingEmphasisFacet)) return full('coverage');
+                const analysis = state.field(docAnalysisField, false);
+                if (!analysis || analysis.rev < decorations.analysisRev || analysis.rev > decorations.analysisRev + 1 ||
+                    (analysis.rev !== decorations.analysisRev && analysis.delta?.forRev !== analysis.rev)) return full('revGap');
+                try {
+                    const windows = planPreviewWindows(tr, analysis, editorMode !== 'read', analysis.rev !== decorations.analysisRev);
+                    if (windows.reduce((sum, window) => sum + window.to - window.from, 0) > (state.doc.length + 1) / 2) return full('coverage');
+                    const render = () => {
+                        const parts = windows.map(window => {
+                            if (__BME_BENCH__) countEditorWindow(window.to - window.from);
+                            return buildDecorations(viewShim, imageCtx, editorMode, window);
+                        });
+                        return splicePreview(decorations, tr, windows, parts, imageCtx, editorMode);
+                    };
+                    return __BME_BENCH__ ? measureEditorWork(state, render) : render();
+                } catch {
+                    return full('error');
                 }
-                return buildDecorations(viewShim, imageCtx, editorMode);
+            }
+            if (imageCtx !== tr.startState.facet(imageContextFacet)) {
+                let deco = decorations.deco;
+                for (const span of decorations.images) {
+                    let image: ImageWidget | undefined;
+                    deco.between(span.from, span.to, (from, to, value) => {
+                        if (from === span.from && to === span.to && value.spec.widget instanceof ImageWidget) image = value.spec.widget;
+                    });
+                    if (!image) continue;
+                    const next = Decoration.replace({ widget: new ImageWidget(image.filename, image.width, imageCtx, image.selected) }).range(span.from, span.to);
+                    deco = deco.update({ filterFrom: span.from, filterTo: span.to,
+                        filter: (from, to, value) => !(from === span.from && to === span.to && value.spec.widget instanceof ImageWidget), add: [next] });
+                }
+                decorations = { ...decorations, deco };
             }
             if (tr.state.facet(readingEmphasisFacet) !== tr.startState.facet(readingEmphasisFacet)) {
                 // Preference-only changes reuse all image/math/link decorations.
@@ -1263,13 +1307,14 @@ export function createLivePreviewPlugin(
         }
     });
 
+export function createLivePreviewPlugin(imageCtx: ImageContext, actions: ImageEmbedActions): Extension {
     return [
-        field,
+        imageContextFacet.of(imageCtx),
         tableReadingSelection,
         imageEmbedActions.of(actions),
         imageEmbedKeymap,
-        tableEntryKeymap(field),
-        tableAdoptListener(field),
+        tableEntryKeymap(),
+        tableAdoptListener(),
     ];
 }
 
@@ -1289,8 +1334,19 @@ function loneCaret(state: EditorState): number | null {
     return main.head;
 }
 
-function tablesIn(view: EditorView, field: StateField<LivePreview>): readonly { from: number; to: number }[] {
-    return view.state.field(field, false)?.tables ?? [];
+function tableAt(view: EditorView, position: number, edge: 'from' | 'to' | 'inside') {
+    const tables = analyzeDoc(view.state).objects.tables;
+    let lo = 0, hi = tables.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const key = edge === 'from' ? tables[mid].from : tables[mid].to;
+        if (key < position || (edge === 'inside' && key === position)) lo = mid + 1;
+        else hi = mid;
+    }
+    const table = tables[lo];
+    if (!table?.accepted) return undefined;
+    if (edge === 'inside') return table.from < position && position < table.to ? table : undefined;
+    return table[edge] === position ? table : undefined;
 }
 
 /** Put the caret in a cell of the table drawn at `from`, choosing the column
@@ -1327,7 +1383,7 @@ function enterTable(view: EditorView, from: number, edge: 'first' | 'last', x: n
  * "a click selects the object" treatment a picture gets; a second press then
  * deletes the selection through the default command.
  */
-function tableEntryKeymap(field: StateField<LivePreview>): Extension {
+function tableEntryKeymap(): Extension {
     /**
      * Would an ordinary ArrowDown/ArrowUp leave this LOGICAL line?
      *
@@ -1358,7 +1414,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         const line = view.state.doc.lineAt(pos);
         if (line.number >= view.state.doc.lines) return false;
         const next = view.state.doc.line(line.number + 1).from;
-        const table = tablesIn(view, field).find(t => t.from === next);
+        const table = tableAt(view, next, 'from');
         if (!table || !leavesLine(view, pos, true)) return false;
         return enterTable(view, table.from, 'first', view.coordsAtPos(pos)?.left ?? null);
     };
@@ -1370,7 +1426,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         const line = view.state.doc.lineAt(pos);
         if (line.number <= 1) return false;
         const previous = view.state.doc.line(line.number - 1).to;
-        const table = tablesIn(view, field).find(t => t.to === previous);
+        const table = tableAt(view, previous, 'to');
         if (!table || !leavesLine(view, pos, false)) return false;
         return enterTable(view, table.from, 'last', view.coordsAtPos(pos)?.left ?? null);
     };
@@ -1379,7 +1435,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         if (!canWrite(view.state)) return false;
         const pos = loneCaret(view.state);
         if (pos === null) return false;
-        const table = tablesIn(view, field).find(t => (side === 'from' ? t.from : t.to) === pos);
+        const table = tableAt(view, pos, side);
         if (!table) return false;
         return enterTable(view, table.from, side === 'from' ? 'first' : 'last', null);
     };
@@ -1390,7 +1446,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         // Already exactly a table? Then this is the second press: let the
         // default command delete the selection.
         if (pos === null) return false;
-        const table = tablesIn(view, field).find(t => (side === 'to' ? t.to : t.from) === pos);
+        const table = tableAt(view, pos, side);
         if (!table) return false;
         view.dispatch({ selection: EditorSelection.single(table.from, table.to) });
         return true;
@@ -1471,7 +1527,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
  * Legal to dispatch from here: updateListener handlers run after CodeMirror has
  * reset updateState to Idle, unlike updateDOM and destroy.
  */
-function tableAdoptListener(field: StateField<LivePreview>): Extension {
+function tableAdoptListener(): Extension {
     return EditorView.updateListener.of((update) => {
         const { view } = update;
         // hasFocus requires the contentDOM to be the active element, so this is
@@ -1479,18 +1535,18 @@ function tableAdoptListener(field: StateField<LivePreview>): Extension {
         // including the moment right after a write-back, when Chromium has
         // blurred the cell to BODY and the repair has not run yet.
         if (!view.hasFocus || !canWrite(view.state)) return;
-        const tables = view.state.field(field, false)?.tables ?? [];
-        if (tables.length === 0) return;
         const pos = loneCaret(view.state);
         if (pos === null) return;
 
-        for (const table of tables) {
-            if (pos <= table.from || pos >= table.to) continue;
+        {
+            const table = tableAt(view, pos, 'inside');
+            if (table) {
             const dom = tableDomAt(view, table.from);
             const layout = dom ? parseTableLayout(view.state.doc, table.from) : null;
             const cell = layout ? cellAt(layout, pos) : null;
-            if (dom && cell) focusTableCell(dom, cell.row, cell.col, 'end');
-            return;
+                if (dom && cell) focusTableCell(dom, cell.row, cell.col, 'end');
+                return;
+            }
         }
 
         if (!update.transactions.some(tr => tr.isUserEvent('input.type'))) return;
@@ -1498,8 +1554,9 @@ function tableAdoptListener(field: StateField<LivePreview>): Extension {
         for (const tr of update.transactions) {
             tr.changes.iterChanges((_fromA, _toA, _fromB, toB) => { insertionEnds.add(toB); });
         }
-        for (const table of tables) {
-            if (pos !== table.to || !insertionEnds.has(table.to)) continue;
+        {
+            const table = tableAt(view, pos, 'to');
+            if (!table || !insertionEnds.has(table.to)) return;
             const dom = tableDomAt(view, table.from);
             const layout = dom ? parseTableLayout(view.state.doc, table.from) : null;
             const lastRow = layout?.rows[layout.rows.length - 1];

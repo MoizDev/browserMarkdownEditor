@@ -51,9 +51,9 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 ## Architecture: what every change must respect
 
 - **The four layers, and what may not cross between them.** `src/context/` is the only code that touches
-  the File System Access API; its index worker (`vaultIndex/reader.ts`) only READS handles
-  `vaultIndex/client.ts` sends it; writes stay in `FileSystemContext`. `src/editor/` is CodeMirror land
-  and is **React-free**, reached through facets and plain callbacks, never by importing a component or a
+  the File System Access API. Its index worker (`vaultIndex/reader.ts`) reads only file handles sent by
+  `vaultIndex/client.ts`; listing, prompts and all mutations stay on the main thread in `FileSystemContext`.
+  `src/editor/` is CodeMirror land and is **React-free**, reached through facets and plain callbacks, never by importing a component or a
   hook. `src/components/` is React; `src/utils/` is pure or DOM-light. An import crossing those lines is
   the change to rethink. `shared/` is pure data and types the app and `helper/` (Bun) both import.
 - **Nothing the user made is destroyed outright.** A deleted file is *moved* to `.Garbage`, an
@@ -93,17 +93,18 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **Loaded representation authorizes content operations**, never extension alone (`documentReading.ts`).
   EPUB is binary/read-only; sentinels never enter text saves/assets/tools (`epub-reader`). Word emphasis
   stays in the original PDF/EPUB view; Text is explicit. Images/tables keep source Markdown (`markdown-tables`).
-- **The app draws its own context menu, `confirm()`, `prompt()` and tooltips (`data-tooltip`, `utils/tooltip.ts`;
-  lint bans `title`); the ONLY native one left is `beforeunload`'s, while a save is pending. Keep it so.**
+- **The app draws its own context menu, dialogs and tooltips (`data-tooltip`, `utils/tooltip.ts`; lint bans
+  `title`). The only native exception is browser-controlled `beforeunload` for pending document work
+  and non-macOS terminal Ctrl+W. Never reintroduce native confirm, prompt, alert or tooltip.**
 - **TWO places turn note text into DOM `innerHTML`, safe for different reasons** — `tableWidget`'s
   `renderCellContent` (attribute-free allowlist; one sink AND one write site, KaTeX splices in built DOM,
   never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'` DOMPurify pass).
   This origin holds the vault's handle — and, through the terminal, a shell. Do not open a third.
-- **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
-  (`utils/graph.ts`, `utils/vaultSearch.ts`) and a bounded pool (`utils/pool.ts`; ONE `Limiter` across
-  the tree walk's whole recursion), never `Promise.all`, and nothing the reader waits for queues behind
-  it (the first graph build runs `onIdle`). **A CACHE HIT IS NOT FREE** — a `getFile()` round trip PER
-  NOTE — so a save never walks: it primes the cache (`primeLinks`) and revalidates nothing.
+- **Anything that walks the whole vault uses a `(lastModified, size)`-validated index and a bounded
+  pool** (ONE `Limiter` across the tree walk's whole recursion), never unbounded `Promise.all`, and
+  nothing the reader waits for queues behind it. The worker index (`context/vaultIndex/`) starts on
+  idle, yields to document IO and primes saved text; a save never revalidates the vault. A cache hit
+  still costs a `getFile()` round trip per note, so a save must not walk even cached entries.
 - **A MOUNTED-BUT-HIDDEN PANE MUST BE TOLD.** Panes stay mounted, hidden with `visibility`, so anything
   that holds memory or runs work needs an `isVisible` and has to let go — a hidden PDF held 62MB of
   page bitmaps (`pdf-and-drawings`). `isActive` is keyboard focus and is NOT this.
@@ -133,8 +134,8 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
   entry-style, create-request, file-times and **active-file** stores. `FileExplorer`/`TreeNode` are
   `React.memo`'d: never thread such a value through, nor an inline arrow — one un-`useCallback`'d prop in
   `App.tsx` defeats the memo. Rows subscribe to a BOOLEAN ("am I active?"), so a switch re-renders two.
-- **Anything repeated thousands of times carries `content-visibility: auto`** (`.tree-item`,
-  `.pdf-viewer-page`) plus a known box — or all of them lay out and paint on every ancestor's frame.
+- **Large repeated views need a bounded layout cost.** The file tree windows its flattened, fixed-height
+  rows; PDF pages use `content-visibility: auto` plus a known box so offscreen pages do not paint.
 - **The path-keyed records** (`fileScrollAnchors`, `pdf`/`canvasViewPositions`, `collapsedHeadings`) live
   parsed in memory (`utils/storage.ts`) per-vault `scopedKey`; never pruned (capping was **rejected**).
 - **Settings → CSS variables** on `document.documentElement`, persisted to `localStorage` — except **Tab

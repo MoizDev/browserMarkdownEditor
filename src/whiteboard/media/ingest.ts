@@ -1,12 +1,13 @@
 import type { Op, TransactionOrigin } from '../change/ops';
 import type { ParentId, NodeId } from '../model/ids';
 import { newNodeId } from '../model/ids';
-import type { MediaEntry, MediaId, MediaMime } from '../model/media';
+import { isSafeMediaFile, type MediaEntry, type MediaId, type MediaMime } from '../model/media';
 import { createClip, createPicture, type Crop } from '../model/nodes';
 import { keysBetween } from '../model/orderKey';
 import type { BoardSession } from '../session/BoardSession';
 import { checkMediaBytes, checkMediaDimensions, SECURITY_LIMITS } from '../security/limits';
 import type { JobAuthority, JobContext } from '../security/admission';
+import type { BoardJobIdentity } from '../workers/protocol';
 
 export interface InspectedMedia {
     readonly id: MediaId;
@@ -20,13 +21,21 @@ export interface InspectedMedia {
 // The inspector is the bounded worker/isolated-profile admission boundary. The host
 // store is the sole authority that can write an asset or stage a PDF attachment.
 export interface MediaIngestHost {
-    inspectMedia(blob: Blob, options: { signal: AbortSignal }): Promise<InspectedMedia>;
+    inspectMedia(blob: Blob, options: { signal: AbortSignal; identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean }): Promise<InspectedMedia>;
     storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
     rememberMedia(id: MediaId, blob: Blob): void;
+    /** Commit the active gesture before capturing the paste target. */
+    finishGesture(): void;
     isCurrent(): boolean;
     select(ids: readonly NodeId[]): void;
+    noticeRefused(files: readonly { readonly name: string; readonly reason: string }[]): void;
 }
-export interface MediaSource { readonly blob: Blob; readonly name: string }
+export interface MediaSource {
+    readonly blob: Blob;
+    readonly name: string;
+    /** Accepted only for our private PNG clipboard type, after its pHYs is checked. */
+    readonly pixelsPerWorldUnit?: number;
+}
 export interface MediaPlacement {
     readonly parent: ParentId;
     readonly page: number;
@@ -59,7 +68,7 @@ function replacementCrop(crop: Crop | null, old: MediaEntry, next: InspectedMedi
 
 function checkResult(info: InspectedMedia): void {
     if (!/^sha256:[0-9a-f]{64}$/.test(info.id) || !Object.hasOwn(EXTENSIONS, info.mime)
-        || !checkMediaDimensions(info.width, info.height).ok
+        || !checkMediaDimensions(info.width, info.height).ok || info.width > 1_000_000 || info.height > 1_000_000
         || typeof info.animated !== 'boolean'
         || (info.duration !== null && (!Number.isFinite(info.duration) || info.duration < 0))
         || (info.mime.startsWith('video/') !== (info.duration !== null))) {
@@ -67,43 +76,61 @@ function checkResult(info: InspectedMedia): void {
     }
 }
 
-function safeLeaf(name: string | null): boolean {
-    return name === null || (name.length > 0 && name.length <= 255 && name !== '.' && name !== '..'
-        && !/[\\/\0]/.test(name));
-}
-
 function box(info: InspectedMedia): { w: number; h: number } {
     const scale = Math.min(1, 5000 / Math.max(info.width, info.height));
     return { w: info.width * scale, h: info.height * scale };
 }
 
-interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob }
+interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null }
+export interface MediaLocationWriter { setFile(id: MediaId, file: string | null): void }
+
+function setMediaFile(id: MediaId, file: string | null): Op {
+    return { t: 'media', op: 'set-file', id, file };
+}
+
+// Call synchronously inside the session's save/gesture queue after storing bytes.
+export function updateMediaFile(session: BoardSession, locations: MediaLocationWriter, id: MediaId, file: string | null): void {
+    if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
+    const existing = session.doc.media.get(id);
+    if (!existing) throw new Error('Media no longer belongs to this board');
+    if (existing.file !== file) {
+        const applied = session.apply({ ops: [setMediaFile(id, file)], origin: 'host', label: 'Restore media' });
+        applied.release();
+    }
+    locations.setFile(id, file);
+}
 
 export class MediaIngestor {
-    constructor(private readonly session: BoardSession, private readonly host: MediaIngestHost, private readonly jobs: JobAuthority) {}
+    constructor(private readonly session: BoardSession, private readonly host: MediaIngestHost,
+        private readonly jobs: JobAuthority, private readonly locations: MediaLocationWriter) {}
 
     ingest(sources: readonly MediaSource[], options: MediaIngestOptions): Promise<readonly NodeId[]> {
         if (!sources.length || sources.length > SECURITY_LIMITS.mediaBatch) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
+        this.host.finishGesture();
         const bytes = sources.reduce((sum, source) => sum + source.blob.size, 0);
         const deadlineMs = Math.max(30000, Math.ceil(bytes / (100 * 1024 * 1024)) * 30000);
         return this.jobs.run(context => this.run(sources, options, context), { signal: options.signal, deadlineMs });
     }
 
     replace(id: NodeId, source: MediaSource, options: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }): Promise<void> {
+        this.host.finishGesture();
         return this.jobs.run(context => this.runReplace(id, source, options, context), { signal: options.signal, deadlineMs: 30000 });
     }
 
     private async runReplace(id: NodeId, source: MediaSource, options: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }, context: JobContext): Promise<void> {
         const signal = context.signal;
+        const identity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision: this.session.doc.rev };
+        const isCurrent = (): boolean => this.jobs.isCurrent(context.job) && this.host.isCurrent() && this.session.doc.rev === identity.revision;
         const current = (): void => {
             context.assertCurrent();
-            if (!this.host.isCurrent()) throw new DOMException('Board session ended', 'AbortError');
+            if (!isCurrent()) throw new DOMException('Board session ended or changed', 'AbortError');
         };
         current();
         const initial = this.session.doc.nodes.get(id);
         if (!initial || initial.kind !== 'picture' || initial.locked || !initial.media) throw new Error('Picture cannot be replaced');
+        if (source.name.length > 10000) throw new RangeError('Media name is too long');
         if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
-        const info = await this.host.inspectMedia(source.blob, { signal });
+        const info = await this.host.inspectMedia(source.blob, { signal, identity, isCurrent });
         current();
         checkResult(info);
         if (!info.mime.startsWith('image/')) throw new Error('Replacement must be a picture');
@@ -115,13 +142,14 @@ export class MediaIngestor {
         };
         const file = await this.host.storeMedia(entry, source.blob, signal);
         current();
-        if (!safeLeaf(file)) throw new Error('Invalid stored media name');
+        if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
         const node = this.session.doc.nodes.get(id);
         if (!node || node.kind !== 'picture' || node.locked || node.media !== initial.media) throw new Error('Picture changed during replacement');
         const old = this.session.doc.media.get(initial.media);
         if (!old) throw new Error('Original picture is missing');
         const ops: Op[] = [];
         if (!this.session.doc.media.has(info.id)) ops.push({ t: 'media', op: 'add', entry: { ...entry, file } });
+        else if (entry.file !== file) ops.push(setMediaFile(info.id, file));
         ops.push({ t: 'set', id, key: 'media', value: info.id });
         ops.push({ t: 'set', id, key: 'crop', value: replacementCrop(node.crop, old, info) });
         if (initial.media !== info.id && this.session.doc.mediaRefs.get(initial.media)?.size === 1
@@ -130,36 +158,54 @@ export class MediaIngestor {
         }
         this.host.rememberMedia(info.id, source.blob);
         current();
-        const applied = this.session.apply({ ops, origin: options.origin, label: 'Replace media' });
-        applied.release();
+        await this.session.enqueueAfterGesture(signal, () => {
+            current();
+            this.session.history.open('Replace media');
+            try {
+                const applied = this.session.apply({ ops, origin: options.origin, label: 'Replace media' });
+                this.locations.setFile(info.id, file);
+                applied.release();
+            } finally { this.session.history.close(); }
+        });
     }
 
     private async run(sources: readonly MediaSource[], options: MediaIngestOptions, context: JobContext): Promise<readonly NodeId[]> {
         const signal = context.signal;
+        const identity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision: this.session.doc.rev };
+        const isCurrent = (): boolean => this.jobs.isCurrent(context.job) && this.host.isCurrent() && this.session.doc.rev === identity.revision;
         const current = (): void => {
             context.assertCurrent();
-            if (!this.host.isCurrent()) throw new DOMException('Board session ended', 'AbortError');
+            if (!isCurrent()) throw new DOMException('Board session ended or changed', 'AbortError');
         };
         const staged: Staged[] = [];
+        const refused: { name: string; reason: string }[] = [];
         {
             for (const source of sources) {
                 current();
-                if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
-                const info = await this.host.inspectMedia(source.blob, { signal });
-                current();
-                checkResult(info);
-                if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
-                const old = this.session.doc.media.get(info.id);
-                const entry: MediaEntry = old ?? {
-                    id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,
-                    duration: info.duration, animated: info.animated, name: source.name, file: null, ext: null,
-                };
-                const file = await this.host.storeMedia(entry, source.blob, signal);
-                current();
-                if (!safeLeaf(file)) throw new Error('Invalid stored media name');
-                staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob });
+                try {
+                    if (source.name.length > 10000) throw new RangeError('Media name is too long');
+                    if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
+                    const info = await this.host.inspectMedia(source.blob, { signal, identity, isCurrent });
+                    current();
+                    checkResult(info);
+                    if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
+                    const old = this.session.doc.media.get(info.id);
+                    const entry: MediaEntry = old ?? {
+                        id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,
+                        duration: info.duration, animated: info.animated, name: source.name, file: null, ext: null,
+                    };
+                    const file = await this.host.storeMedia(entry, source.blob, signal);
+                    current();
+                    if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
+                    staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file });
+                } catch (error) {
+                    current();
+                    refused.push({ name: source.name, reason: error instanceof Error ? error.message : 'Media could not be read' });
+                }
             }
             current();
+            if (refused.length) this.host.noticeRefused(refused);
+            if (!staged.length) return [];
             const { parent, page, x, y } = options.placement;
             if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Invalid placement');
             const sizes = staged.map(item => box(item.info));
@@ -169,9 +215,16 @@ export class MediaIngestor {
             const ids: NodeId[] = [];
             const ops: Op[] = [];
             const added = new Set<MediaId>();
+            const files = new Map<MediaId, string | null>();
             for (let i = 0; i < staged.length; i++) {
-                const { info, entry, blob } = staged[i];
+                const { info, entry, blob, file } = staged[i];
                 const { w, h } = sizes[i];
+                if (files.has(info.id) && files.get(info.id) !== file) throw new Error('Media location changed during insertion');
+                if (!files.has(info.id)) {
+                    files.set(info.id, file);
+                    const existing = this.session.doc.media.get(info.id);
+                    if (existing && existing.file !== file) ops.push(setMediaFile(info.id, file));
+                }
                 if (!this.session.doc.media.has(info.id) && !added.has(info.id)) {
                     ops.push({ t: 'media', op: 'add', entry });
                     added.add(info.id);
@@ -187,10 +240,17 @@ export class MediaIngestor {
                 this.host.rememberMedia(info.id, blob);
             }
             current();
-            const applied = this.session.apply({ ops, origin: options.origin, label: 'Insert media' });
-            applied.release();
-            this.host.select(ids);
-            return ids;
+            return await this.session.enqueueAfterGesture(signal, () => {
+                current();
+                this.session.history.open('Insert media');
+                try {
+                    const applied = this.session.apply({ ops, origin: options.origin, label: 'Insert media' });
+                    for (const item of staged) this.locations.setFile(item.info.id, item.file);
+                    applied.release();
+                    this.host.select(ids);
+                    return ids;
+                } finally { this.session.history.close(); }
+            });
         }
     }
 }

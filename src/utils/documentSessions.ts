@@ -1,4 +1,5 @@
 import type { ContentSource, DocumentBuffer, SourceOwner } from './documentBuffers';
+import type { JournalCapture } from './recoveryFunnel';
 
 // Share the source types without a runtime dependency; App's bindings are the
 // only runtime bridge, so two stores cannot drift into separate ownership rules.
@@ -17,6 +18,10 @@ export interface SessionAdapter {
      *  Before E4's journal, a miss keeps the edit in the buffer, the tab dirty and the leave prompt
      *  armed; a later save retries. It never abandons the edit or marks it saved. */
     drain?(): Promise<void>;
+    /** Immutable, structured-cloneable unsaved changes, pinned to this session and revision. */
+    journalDelta?(): JournalCapture | undefined;
+    /** Apply a validated, matching-baseline recovery as one undoable change. */
+    recover?(payload: unknown): void | Promise<void>;
     /** App subscribes once when the session is created, never through the lifetime of a pane. */
     onChange(listener: (source: ContentSource) => void): () => void;
 }
@@ -31,6 +36,9 @@ export interface SessionEntry<A extends SessionAdapter = SessionAdapter> {
     readonly adapter: A;
     /** App bumps this only for reload, rotation or a byte swap, never rename/move/text save. */
     bytesGeneration: number;
+    /** Opaque engine-owned state follows the session, not its panes. */
+    getSlot<T>(key: symbol): T | undefined;
+    setSlot<T>(key: symbol, value: T, dispose?: (value: T) => void | Promise<void>): void;
     /** Defined here: buffer.revision > savedRevision OR adapter.hasPendingEdits(). */
     hasPendingEdits(): boolean;
 }
@@ -51,6 +59,9 @@ export interface DocumentSessionStore {
 
     get(documentId: string): SessionEntry | undefined;
     entries(): IterableIterator<SessionEntry>;
+    subscribe(listener: () => void): () => void;
+    /** Wait for every slot teardown started for this document, including replacements. */
+    settled(documentId: string): Promise<void>;
 
     /** Called only on first pane mount/visibility or first programmatic edit, never on tab restore.
      *  Existing same-kind entries are reused (including StrictMode); create receives its live owner.
@@ -96,12 +107,34 @@ let nextSerial = 0;
 interface RegisteredSession {
     entry: SessionEntry;
     unsubscribe?: () => void;
+    disposeSlots(): void;
 }
 
 /** App owns exactly one instance for its life; bindings keep the stores runtime-independent.
  *  Still unwired: C-20 owns barriers, baseline updates, lazy creation and bytesGeneration changes. */
 export function createDocumentSessions(bindings: SessionStoreBindings): DocumentSessionStore {
     const sessions = new Map<string, RegisteredSession>();
+    const listeners = new Set<() => void>();
+    const disposals = new Map<string, Set<Promise<void>>>();
+    const disposeSlot = (documentId: string, dispose?: () => void | Promise<void>) => {
+        if (!dispose) return;
+        try {
+            const result = dispose();
+            if (result) {
+                let pendingSet = disposals.get(documentId);
+                if (!pendingSet) disposals.set(documentId, pendingSet = new Set());
+                const set = pendingSet;
+                const pending = Promise.resolve(result).catch(error => { console.error('Session slot disposal failed:', error); });
+                set.add(pending);
+                void pending.then(() => { set.delete(pending); if (!set.size && disposals.get(documentId) === set) disposals.delete(documentId); });
+            }
+        } catch (error) { console.error('Session slot disposal failed:', error); }
+    };
+    const notify = () => {
+        for (const listener of [...listeners]) {
+            try { listener(); } catch (error) { console.error('Session subscriber failed:', error); }
+        }
+    };
     const ledgerPending = (documentId: string): boolean => {
         const buffer = bindings.bufferState(documentId);
         return !!buffer && buffer.revision > buffer.savedRevision;
@@ -114,7 +147,7 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
         sessions.delete(documentId);
         const unsubscribe = registered.unsubscribe;
         registered.unsubscribe = undefined;
-        unsubscribe?.();
+        try { unsubscribe?.(); } finally { registered.disposeSlots(); notify(); }
         return true;
     };
     const register = <A extends SessionAdapter>(
@@ -126,12 +159,30 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
         if (nextSerial === Number.MAX_SAFE_INTEGER) throw new RangeError('Session serial exhausted');
         const serial = ++nextSerial;
         const adapter = create(Object.freeze({ documentId, session: serial }));
+        const slots = new Map<symbol, { value: unknown; dispose?: () => void | Promise<void> }>();
+        let generation = bytesGeneration;
+        let closed = false;
         const entry: SessionEntry<A> = {
-            documentId, serial, kind, bytesGeneration, adapter,
+            documentId, serial, kind, adapter,
+            get bytesGeneration() { return generation; },
+            set bytesGeneration(value) { if (generation !== value) { generation = value; notify(); } },
+            getSlot<T>(key: symbol) { return slots.get(key)?.value as T | undefined; },
+            setSlot<T>(key: symbol, value: T, dispose?: (value: T) => void | Promise<void>) {
+                if (closed) throw new Error('Cannot set a slot on a released session');
+                const previous = slots.get(key);
+                slots.delete(key);
+                disposeSlot(documentId, previous?.dispose);
+                slots.set(key, { value, dispose: dispose ? () => dispose(value) : undefined });
+            },
             hasPendingEdits: () => ledgerPending(documentId) || adapter.hasPendingEdits(),
         };
-        const registered: RegisteredSession = { entry };
+        const registered: RegisteredSession = { entry, disposeSlots() {
+            closed = true;
+            const values = [...slots.values()]; slots.clear();
+            for (const slot of values) disposeSlot(documentId, slot.dispose);
+        } };
         sessions.set(documentId, registered);
+        notify();
         try {
             const unsubscribe = adapter.onChange(source => {
                 if (sessions.get(documentId) === registered) bindings.reportChange(documentId, source);
@@ -141,7 +192,7 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
             if (sessions.get(documentId) === registered) registered.unsubscribe = unsubscribe;
             else unsubscribe();
         } catch (error) {
-            if (sessions.get(documentId) === registered) sessions.delete(documentId);
+            if (sessions.get(documentId) === registered) { sessions.delete(documentId); registered.disposeSlots(); notify(); }
             throw error;
         }
         return entry;
@@ -150,6 +201,10 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
     return {
         get size() { return sessions.size; },
         get: documentId => sessions.get(documentId)?.entry,
+        subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+        async settled(documentId) {
+            while (disposals.has(documentId)) await Promise.all([...disposals.get(documentId)!]);
+        },
         *entries() {
             for (const registered of sessions.values()) yield registered.entry;
         },
@@ -194,7 +249,9 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
                 registered.unsubscribe = undefined;
                 try { unsubscribe?.(); }
                 catch (error) { errors.push(error); }
+                finally { registered.disposeSlots(); }
             }
+            if (outgoing.length) notify();
             if (errors.length) throw new AggregateError(errors, 'Could not detach every document session');
         },
     };

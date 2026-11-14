@@ -3260,6 +3260,11 @@ body.is-resizing-panes * {
   line-height: 1.4;
 }
 
+.recovery-bar { flex: none; background: var(--background-primary); }
+.recovery-copies { padding: 6px 12px; font-size: 12.5px; border-bottom: 1px solid var(--background-modifier-border); }
+.recovery-copies summary { cursor: pointer; }
+.recovery-copy { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 6px; overflow-wrap: anywhere; }
+
 .disk-bar-message {
   min-width: 0;
   flex: 1 1 220px;
@@ -3644,6 +3649,24 @@ body.is-resizing-panes * {
   z-index: 4;
   top: 8px;
   right: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pdf-pane-print:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.pdf-pane-print:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
 }
 
 .pdf-viewer-controls {
@@ -6074,10 +6097,15 @@ li[aria-selected] .cm-completionMatchedText {
 /* "This row opens something." Pushed to the right edge by the row's own flex,
    and faint because it is a hint about the row rather than part of its name. */
 .context-menu-item-arrow {
-  margin-left: auto;
+  margin-inline-start: auto;
   color: var(--text-faint);
   font-size: 11px;
   line-height: 1;
+}
+
+.context-menu[dir="rtl"] .context-menu-item,
+.context-menu-panel[dir="rtl"] .context-menu-item {
+  text-align: right;
 }
 
 /* The flyout beside the menu — the table size picker lives in one. Chrome only:

@@ -40,15 +40,21 @@ Modern browsers require you to explicitly grant permission every time you open a
 ### The Sidebar
 Along the top of the sidebar sit two tabs — **Files** (the folder) shows the file tree and **Search** (the magnifying glass) searches the vault — with the button that hides the sidebar at the right-hand end (\`Cmd + \\\` / \`Ctrl + \\\` does the same; the button left behind on the thin strip brings it back).
 
+If the search index loses access to the vault, a notice appears above the workspace. Choose **Retry** to grant access again and refresh the index; your notes stay untouched. The index keeps a browser-local copy of note text and links to make reopening faster; removing a vault from the recent list also removes its index. If an outside edit kept exactly the same file size and modification time, open the vault menu and choose **Rebuild index** to read the files again.
+
 Under the tabs, while the file tree is showing, is a row of buttons for the tree itself: **New note**, **New folder**, the **pencil** (its menu holds **New Drawing** and **New Notebook**), **Change sort order**, **Auto-reveal current file** and **Expand all** / **Collapse all** (see *Sorting and Finding Your Place* below).
 
 At the bottom, a row of five icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **AI agent** (the sparkles — see section 9), the **Terminal** (see section 10), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
 
-In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; changes apply when you next open a pane. Only engines included in this build are offered. Turning developer settings off restores the normal engine choices without deleting your saved selections.
+In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; engine changes apply when you next open a pane. **PDF platform layer** previews the new renderer in the classic PDF viewer; the classic view remains available if the preview cannot attach. Only engines included in this build are offered. An emergency read-only switch for each native canvas kind permits viewing, copying and export but prevents edits and saves. **Incremental live preview** can be turned off to recalculate a whole note on each change. Turning developer settings off restores the normal engine choices without deleting your saved selections.
+
+To recover a converted canvas's old file, right-click it and choose **Restore the copy from before conversion**. The app finds the matching backup in Trash and restores a separate file under a free name; it leaves the converted file and backup alone. For a converted PDF, open its annotation view first. In Trash, **Restore a copy** likewise copies a selected file back without consuming it or replacing an existing file.
+
+**Settings → Editing → Board dictionary → Manage** lists the words saved for board spelling in this browser. Use **Remove** beside a word to remove it; the list is shared by boards across vaults, not saved inside a vault.
 
 When a newer app version is available, a notice offers **Reload**. Save your edits and resolve any disk conflicts first; the app will not reload from the notice while a document still has unsaved changes.
 
-In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
+In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. **Indexing your notes…** means the graph is being built; **Updating…** marks a graph while its index catches up. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
 
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
@@ -59,6 +65,8 @@ The left sidebar displays your vault's folder structure. You can click on any no
 **Custom** is your own order: drag files and folders into whatever arrangement you like, folders mixed in among the files if you want (see *Drag and Drop*). Until you move something, a folder looks just as it does under File name (A to Z). Anything added later — a new note, something put back from the Trash — appears at the end of its folder until you place it. The order is kept in the hidden \`.appearance.json\` inside each folder you have arranged, so it travels with the vault and with the folder; choosing another sort order leaves it untouched, and choosing **Custom** again brings it straight back.
 
 **Auto-reveal current file** is an on/off switch, off to begin with. While it is on (its button stays shaded), whatever you switch to in the editor is found in the tree for you: the folders it is in open, and its row scrolls into view. It acts when you change notes (and when you turn it on, or come back to Files from Search) — never on its own after that, so a folder you close yourself stays closed.
+
+Tab to the file tree and use the **Up** and **Down** arrows to move between rows. **Right** opens a folder or moves into it; **Left** closes it or moves to its parent. **Enter** or **Space** opens a file or toggles a folder.
 
 **Expand all** opens every folder in the vault, at every depth. Once any folder is open the same button becomes **Collapse all**, which closes them all again.
 
@@ -120,7 +128,7 @@ The **Search** tab at the top of the sidebar looks through every note in the
 vault — file names *and* the text inside them — and replaces the file tree while
 it is open; the **Files** tab beside it brings the tree back. Picking a result
 opens that note and scrolls to the line it matched, then puts the tree back. EPUBs, notebooks, drawings and PDFs match on their names only, since what is in
-them is not text.
+them is not text. Results appear as the vault is searched. **Indexing — n of N** shows progress while the index or first text search loads. An open note's current text is searched before its saved version, and results refresh as you edit; saved changes remain searchable after the note closes.
 
 ### Drag and Drop
 Files dropped on an area that does not handle them are refused rather than opened in a browser tab. Links dropped outside editable fields are likewise refused when no area handles them. Dropping a Markdown file onto an editable note can replace its text, as described below.
@@ -275,6 +283,7 @@ Your notes are ordinary files, so other programs can change them too — a \`git
 - **A note you have open updates by itself** when its file changes and you have nothing unsaved in it. Your cursor and scroll position stay where they were, and \`Cmd + Z\` / \`Ctrl + Z\` steps back to the text you had before. Drawings, notebooks and PDFs reload the same way.
 - **If you were in the middle of editing it**, neither version wins silently. A bar appears at the top of the note — "*changed on disk while you had unsaved edits*" — with two buttons. **Reload** shows the version on disk and keeps yours beside it as \`name (conflict).md\`; **Keep mine** saves your version and keeps the one from disk beside it as \`name (conflict).md\`. (If that name is taken, the copy is called \`name (conflict 2).md\`, and so on.) Until you choose, the note is not saved, but you can keep reading and editing it; its tab carries a warning sign meanwhile, so a note waiting on you is easy to spot behind other tabs.
 - **Even when a change could not be noticed as it happened**, every save first checks that the file is still the one you opened. If it is not, nothing is written and the same bar appears. A change that only touched the file's date (\`touch\`, or a checkout that wrote the very same text) is not counted as a change.
+- **After an interruption**, if this browser has recovered changes for the file you open, a bar offers **Recover** or **Discard**. Changes for a missing or changed file, and older changes from another window, appear under **Recovered changes available as copies**; choose **Save a copy** to keep them without replacing the file. These recovery records are stored in this browser, not in the vault, and can be lost if browser storage is cleared.
 - **If the file is deleted**, the bar says so, and typing does not quietly bring the file back: **Save again** writes your note back where it was (folders included), and **Close** closes the tab — asking first if it holds edits that exist nowhere else. Closing a note whose file changed or vanished in any other way (the × on its tab, say) keeps your unsaved edits beside it as a \`(conflict)\` copy rather than dropping them.
 - **Changing a document’s kind by renaming its extension** first preserves pending source edits. Edits made during the move are kept in a \`(conflict)\` copy with the original extension before the destination is reopened. A failed preservation keeps the original editor open.
 - **If the file is renamed or moved**, its tab follows it to the new name, and a renamed folder keeps its icon, colour, custom order and whether it was expanded — when your system reports the change as a rename. A sync service that copies and then deletes, or a folder renamed on Windows, looks like a new folder: open notes inside are followed when their contents match, but the folder's look starts fresh. When the app cannot be sure where a file went, the tab shows it as deleted rather than guess.
@@ -299,7 +308,7 @@ Right-clicking in a note, or anywhere in the file tree, opens the application's 
 - *Move to Trash* asks first and names where the item is going, exactly as the row's own trash button does.
 - A row you are in the middle of renaming keeps the browser's menu, because what you want there is its Paste.
 
-A **drawing** keeps tldraw's own menu and a **PDF** keeps the browser's, since both of those already have menus that fit what they are.
+A **drawing** keeps its canvas controls. PDFs use their in-app reader and annotation controls.
 
 ---
 
@@ -376,9 +385,10 @@ file starts at the width you were last using, since that is usually the one you
 want again.
 
 ### Drawings
-A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endless
-sheet in every direction, for diagrams and thinking rather than for a page you
-intend to hand in.
+A **drawing** is a canvas with no pages at all — an endless sheet in every
+direction, for diagrams and thinking rather than for a page you intend to hand
+in. New drawings use \`.drawing\` when the new whiteboard engine is selected;
+otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
@@ -412,7 +422,9 @@ The **Word emphasis** button in a reading header, its **⋯** row, and **Setting
 It leaves the source, save state, undo history and copied text intact. PDF and EPUB emphasis paints eligible glyphs in the same document view, preserving original layout, artwork and reading position. Switching it Off restores the original paint. Image-only pages and unsupported text profiles remain unchanged and show why the control is inactive, while retaining your preference. Source editing and code/TeX keep their existing presentation. Notes, TXT and extensionless files keep their existing Markdown presentation and editor typography. Toggle with Enter/Space or a pointer; no new global shortcut is added. Reading preferences are stored in your browser, never in the vault.
 
 ### PDFs
-Use **Print…** in a PDF pane (or \`Cmd + P\` / \`Ctrl + P\` while the PDF has focus) to save pending annotations and open the saved PDF in a new browser tab. Print from the browser’s PDF viewer there. An encrypted PDF may ask for its password again. To print a notebook, export it to PDF first.
+PDFs open **inside the app** in their own pane. **Original PDF** shows the original page layout, **Read extracted text** is an optional text view, and **Annotate** lets you draw on eligible PDFs. Returning to Original after saving shows the actual saved pages with ink; Annotate rebuilds them from the embedded pristine source and editable marks, not from an already-stamped copy.
+
+Use **Print…** in a PDF pane (or \`Cmd + P\` / \`Ctrl + P\` while the PDF has focus), choose **Prepare PDF** to save pending annotations, then **Open PDF** to open the exact saved file in a new browser tab. Print from the browser’s PDF viewer there. A blocked pop-up or changed file is reported; resolve the notice or allow pop-ups and try again. An encrypted PDF may ask for its password again in that viewer. To print a notebook, export it to PDF first.
 
 The pane header’s **Word emphasis** toggle paints supported glyphs directly on the original PDF page, including while annotating. It keeps the same tab, page layout, camera, links and annotations; switching Off restores the original paint. It never opens extracted text or performs OCR. Image-only scans, hidden OCR, fully clipped or covered text, missing font mappings and unsupported painting routes stay original. The header reports availability for the current page. **Aa** does not replace the native PDF’s fonts or geometry.
 
@@ -420,13 +432,17 @@ The **⋯ → Read extracted text** action is a separate, manual reading choice 
 
 **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically.
 
+In the tiled PDF reader, screen-reader landmarks name every physical page. Moving to a page landmark brings that page into view and loads its text and the neighboring pages; use **Read this PDF as text** at the start of the viewer for the whole-document accessible view.
+
 When switching PDF engines, saved Text passages are matched by their words and surrounding context; an approximate match is labelled. A position from a newer app restores only its page and surface, with a notice. Merely opening, resizing or hiding a PDF does not replace another engine's saved position: it is updated only after you navigate.
 
 **Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
 
 If the PDF reader's code cannot load, its column offers **Retry**. This retries
 the reader, not your files. If the browser retains the loading failure, reload
-the app to try again.
+the app to try again. A password-protected PDF may report that it needs a password;
+the current reader does not yet provide an unlock prompt or store passwords. Editing
+and rotation of encrypted PDFs are refused so the encrypted file is not rewritten.
 
 In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, including pages you have never opened. A short single-line selection pre-fills the bar; otherwise it keeps this pane's last query. Matching ignores case and accents, folds ligatures, and matches across line breaks, hyphenated line ends and PDF text-item boundaries. The count shows progress and stops at **10,000+** matches. Scans without selectable text are not OCR'd.
 - In the input, \`Enter\` / \`Shift + Enter\` move to the next / previous match. \`Cmd + G\` / \`Ctrl + G\` and their Shift forms do the same from the bar or PDF page. Next waits for an unfinished scan rather than wrapping early.
@@ -434,7 +450,7 @@ In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, incl
 - Chrome's **Edit → Find** menu still opens Chrome's own bar, which sees only built text layers, not necessarily every page. Use the keyboard shortcut for complete PDF find.
 
 A PDF opens in a reader: scroll it, select its text, search every page with the
-app's \`Cmd + F\` / \`Ctrl + F\`, follow its links, and jump to a page with the box at the bottom.
+app's \`Cmd + F\` / \`Ctrl + F\`, follow its links, and jump to a physical page by typing its number in the box at the bottom and pressing \`Enter\`. The thumbnails use those same page numbers; the current page is highlighted. \`Home\` and \`End\` go to the first and last page, and \`Page Up\` / \`Page Down\` scroll by a screenful.
 Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
 beside the page box opens a **strip of page thumbnails** down the left; click one
 to go to that page. The button next to it **inverts the pages** so they are easy on the
@@ -461,6 +477,8 @@ whose page is unknown appears above the document. Its thumbnail says
 **Thumbnail unavailable**, rather than pretending to be a blank page.
 **Try again** reopens the PDF; it does not repair or change the original file.
 In Annotate, switch to View to retry without disturbing your ink.
+
+**PDF limitations.** The current reader has page thumbnails but no outline/bookmark panel. Open **PDF features** or **PDF limitations** for the file's known restrictions. Encrypted files are read-only; a PDF that forbids copying cannot be selected, copied, searched as text or read as text by the agent. Form fields show saved appearances and cannot be edited; XFA may be missing. PDF scripts, form submission and launch actions do not run. Scanned pictures are not OCR'd. An unusual PDF using \`/UserUnit\` may display at a different relative size in another PDF engine; check its Original pages when comparing viewers.
 
 If rendering makes no progress for a while, **This PDF is taking longer than usual**
 lets you keep waiting or choose **Try again** to restart the renderer. Slow scans
@@ -517,7 +535,9 @@ saying it is read-only; drawing and saving change nothing in it. You can still
 read, select, copy and find in it, and open its Text. Choose **Retry** if an
 attachment could not be read; otherwise open it in a version of the app that wrote
 it, or recover the annotations first. Never delete attachments from your only copy
-just to make the note go away. Existing attachments are retained when you save;
+just to make the note go away. If one PDF page cannot be rendered, its notice offers
+Retry while the other pages remain available. Very long PDFs initially use estimated
+page sizes; those estimates adjust as you visit pages. Existing attachments are retained when you save;
 if different attachments have the same name, a notice gives the recovered names
 used to keep both. If attachment repair or its verification fails, nothing is written.
 
@@ -557,7 +577,7 @@ Every folder gets its own \`.Assets\`, and a note only ever shows pictures from 
 Your notes are still ordinary Markdown: what is actually written in the file is \`![[filename.png]]\`, and a resized picture records its width as \`![[filename.png|320]]\`. Anything else that reads Markdown sees exactly that. The editor simply spares you from typing it.
 
 ### Removing an Image
-Deleting a picture — with the bin, with \`Backspace\`, or just by deleting the text around it — also retires the image file: a second later it moves out of \`.Assets\` and into that folder's \`.Garbage\`, so your folders don't slowly fill up with pictures nothing shows any more.
+Deleting a picture — with the bin, with \`Backspace\`, or just by deleting the text around it — also retires the image file: a second later it moves out of \`.Assets\` and into that folder's \`.Garbage\`, so your folders don't slowly fill up with pictures nothing shows any more. A picture shared with another note or a board in the folder stays until neither needs it; if a board cannot be read, the app keeps the picture rather than guessing.
 
 Nothing is lost by this:
 - An image another note **in the same folder** still shows is left exactly where it is.
@@ -565,7 +585,7 @@ Nothing is lost by this:
 - And anything that was retired is still sitting in \`.Garbage\`: it is listed in the Trash bin like anything else, and putting it back returns it to \`.Assets\`, where your notes can show it again.
 
 ### Opening Media
-If you click on \`.pdf\`, \`.jpg\`, \`.jpeg\`, or \`.png\` files directly within the file tree, they will automatically open in a new browser tab for viewing rather than attempting to load as text.
+Click a \`.pdf\` in the file tree to open it in the app's PDF pane, not as text. Images such as \`.jpg\`, \`.jpeg\`, and \`.png\` open in a browser tab.
 
 ### The Trash System
 To prevent accidental permanent data loss, deleting a file does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Garbage\` folder located in the same directory as the file — deleting \`Maths/Calculus/notes.md\` puts it in \`Maths/Calculus/.Garbage\`, so a deletion stays next to the notes it came from. Deleting the same name twice keeps both copies (the second becomes \`notes (1).md\`).
@@ -749,7 +769,7 @@ Each chat keeps its own conversation. The chat list at the top lets you go back 
 ### What the agent can see
 You never need to tell it what you are looking at. With **every** message it is told, fresh, which tabs and panes you have open, which one you are in, and exactly where you are in each: the lines on screen and your selection in a note (unsaved edits included), the page, zoom and selected text in a PDF, and what is in view on a drawing or notebook page. When the tab you are in is a drawing, notebook or PDF, a picture of what is on screen goes along too — but only when it changed since your last message. Scroll, switch tabs or keep writing between messages and the next message knows.
 
-It can also look things up on the web.
+It can also look things up on the web. With VaultAgent 0.2.2 or newer, the agent can page through a large board's shapes instead of stopping at the first 200; if the board changes between pages, it starts the listing again.
 
 ### What the agent can change
 It can read and search every file in the vault, edit notes, create notes and folders, rename and move things, and delete them — to the Trash, never for good. On drawings, notebooks and PDFs it can add text, sticky notes, shapes, arrows and freehand strokes, and move, restyle or remove shapes. Every change happens straight away and shows in the chat as a card (with the lines it changed); the card's **Open** takes you to the file. A change made in a note you have open appears in it live, and \`Cmd + Z\` undoes it like your own typing. A drawing, notebook or PDF it works on opens **beside** what you are doing, without taking you away from it.

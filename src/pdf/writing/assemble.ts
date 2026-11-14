@@ -2,6 +2,7 @@ import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFRawStream, PD
 import { NOTEBOOK_SOURCE_ATTACHMENT } from '../../utils/pdfFormat';
 import type { DisplayPdfInput } from './types';
 import { emitDocument } from './emit';
+import { validNotebookSourcePath } from './notebookPointer';
 import type { WorkerContext } from '../../platform/workers/serve';
 
 /** This accepts generated pages only; no imported PDF can enter the fresh-document route. */
@@ -9,8 +10,8 @@ export async function assembleDisplayPdf(input: DisplayPdfInput, context: Worker
     if (!input || input.schema !== 1) throw new Error('Unsupported display-list schema');
     if (input.notebookSource) {
         const path = input.notebookSource.path;
-        if (typeof path !== 'string' || !path || path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..') || path.includes('\\')) {
-            throw new Error('Notebook source must be a vault-root-relative path');
+        if (!validNotebookSourcePath(path)) {
+            throw new Error('Notebook source must be a vault-root-relative notebook path');
         }
     }
     const { bytes: generated } = await emitDocument(input.pages, context);

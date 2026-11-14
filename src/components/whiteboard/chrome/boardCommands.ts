@@ -47,6 +47,7 @@ export interface BoardContextMenuSource extends BoardCommandSource {
     readonly noPagesReason: string;
     toggleTransparent(): void;
     readonly pages: readonly { id: string; label: string; enabled: boolean; reason?: string }[];
+    readonly extraEntries?: readonly ContextMenuEntry[];
     moveToPage(id: string): void;
 }
 
@@ -80,7 +81,7 @@ export function contextEntries(source: BoardContextMenuSource): ContextMenuEntry
         }))),
     ] : [];
     return [
-        ...selected, ...common, copyAs,
+        ...selected, ...(source.extraEntries ?? []), ...common, copyAs,
         ...(source.selectedCount ? [menu('exportAs', rows(['exportPng', 'exportSvg']))] : []),
         ...rows(['selectAll']),
     ];

@@ -48,6 +48,9 @@ export interface AgentHostDeps {
     handleIO: import('../types').VaultHandleIO;
     ensureVaultId: import('../types').FileSystemContextValue['ensureVaultId'];
     root: FileSystemDirectoryHandle | null;
+    searchToken: object;
+    searchAgent: VaultToolHost['searchAgent'];
+    closedPdfAgent?: VaultToolHost['closedPdfAgent'];
     fileTree: FileTreeNode[];
     tabs: OpenTab[];
     layout: TabLayout;
@@ -56,17 +59,23 @@ export interface AgentHostDeps {
     stateCache: Map<string, EditorState>;
     readFile(handle: FileSystemFileHandle): Promise<string>;
     readFileVersioned: import('../types').FileSystemContextValue['readFileVersioned'];
+    statFile: import('../types').FileSystemContextValue['statFile'];
     writeFileVersioned: import('../types').FileSystemContextValue['writeFileVersioned'];
     readFileBytes(handle: FileSystemFileHandle): Promise<Uint8Array>;
     writeFile(handle: FileSystemFileHandle, content: string): Promise<void>;
     createFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle>;
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
     nameTaken: import('../types').FileSystemContextValue['nameTaken'];
+    /** Offscreen, session-owned native-board projection; never reads through a mounted view. */
+    canvasShapePage?: VaultToolHost['canvasShapePage'];
+    /** The App-lifetime, path-explicit readable buffer accessor. */
+    contentOf(path: string): string | undefined;
+    snapshotOf(path: string): import('./documentBuffers').BufferSnapshot | undefined;
     /** The save funnel (App.updateTabContent). */
     updateTabContent(path: string, content: string): void;
     /** Everything a save does after its write, for a file written with no tab
      *  open: file time, asset reconcile, graph, search epoch. */
-    afterWrite(file: ActiveFile, before: string, after: string): void;
+    afterWrite(file: ActiveFile, before: string, after: string, version?: import('./diskVersion').DiskStat): void;
     renameEntry(node: FileTreeNode, newName: string): Promise<boolean>;
     moveEntry(node: FileTreeNode, target: FileSystemDirectoryHandle, targetPath: string): Promise<boolean>;
     /** Confirm-free trash (App.trashEntry). */
@@ -144,16 +153,15 @@ function rememberedPosition(deps: AgentHostDeps, path: string): RememberedPositi
     }
     if (!canReadTabText(tab)) return null;
     const anchor = readRecord<unknown>(SCROLL_ANCHORS_KEY)[scopedKey(path)];
-    return isScrollAnchor(anchor) ? { kind: 'markdown', line: lineAt(tab.content, anchor.pos) } : null;
+    const text = deps.contentOf(path);
+    return isScrollAnchor(anchor) && text !== undefined ? { kind: 'markdown', line: lineAt(text, anchor.pos) } : null;
 }
 
-/** The live text of an open, readable, text document: the mounted editor first
- *  (it is ahead of `tab.content` by at most the commit in flight), else the tab
- *  buffer. Undefined for anything else — a PDF's buffer is a tldraw snapshot. */
+/** Live readable text, or undefined when the loaded representation has no text authority. */
 function liveText(deps: AgentHostDeps, path: string): string | undefined {
     const tab = openTabAt(deps, path);
     if (!tab || !canReadTabText(tab)) return undefined;
-    return getView(path)?.getText?.() ?? tab.content;
+    return getView(path)?.getText?.() ?? deps.contentOf(path);
 }
 
 function applyToText(text: string, changes: TextChange[]): string {
@@ -208,8 +216,10 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const treeQueues = new Map<string, ReturnType<typeof queue>>();
 
     const toolHost: VaultToolHost = {
-        vaultToken: () => getDeps().root,
-        readSnapshot: handle => getDeps().handleIO.file(handle),
+        vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchToken : null; },
+        searchAgent: (config, signal) => getDeps().searchAgent(config, signal),
+        get canvasShapePage() { return getDeps().canvasShapePage; },
+        closedPdfAgent: () => getDeps().closedPdfAgent?.() ?? null,
 
         getFileTree: () => getDeps().fileTree,
 
@@ -285,7 +295,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                         return { ok: false, reason: 'stale' };
                     }
                 }
-                if (tab.content !== expected) return { ok: false, reason: 'stale' };
+                if (deps.contentOf(path) !== expected) return { ok: false, reason: 'stale' };
                 // Open but not on screen: the document's cached EditorState is what
                 // its next pane adopts, text AND undo history — update it so the
                 // agent's edit is one ⌘Z there too, and never leave it disagreeing
@@ -310,13 +320,15 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (getDeps().root !== deps.root) return {ok:false,reason:'error',message:'The vault changed.'};
             if (read.text !== expected) return { ok: false, reason: 'stale' };
             const next = applyToText(expected, changes);
+            let written: import('./diskVersion').DiskStat;
             try {
                 const result=await deps.writeFileVersioned(found.handle,next,read.version);
                 if(result.status!=='written')return {ok:false,reason:'stale'};
+                written = result.version;
             } catch {
                 return { ok: false, reason: 'error', message: 'The file could not be written.' };
             }
-            deps.afterWrite({ name: found.name, path, kind: 'file', handle: found.handle, parentHandle: found.parentHandle }, expected, next);
+            deps.afterWrite({ name: found.name, path, kind: 'file', handle: found.handle, parentHandle: found.parentHandle }, expected, next, written);
             return { ok: true };
         },
 
@@ -337,7 +349,9 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 const handle = await deps.createFile(parent, name);
                 if (content) {
                     await deps.writeFile(handle, content);
-                    deps.afterWrite({ name, path, kind: 'file', handle, parentHandle: parent }, '', content);
+                    let version: import('./diskVersion').DiskStat | undefined;
+                    try { version = await deps.statFile(handle) ?? undefined; } catch { /* The write succeeded; retry indexing later. */ }
+                    deps.afterWrite({ name, path, kind: 'file', handle, parentHandle: parent }, '', content, version);
                 }
                 return { ok: true };
             } catch (err) {
@@ -418,6 +432,11 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 : { ok: false, reason: 'error', message: 'Nothing was moved; something inside may be in use.' };
         },
 
+        canvasWritable(path) {
+            const tab = openTabAt(getDeps(), path);
+            return !!tab && !tab.readError && tab.representation.status === 'ready' && !tab.representation.emergencyReadOnly;
+        },
+
         async openCanvasForAgent(path) {
             const deps = getDeps();
             const open = openTabAt(deps,path);
@@ -427,7 +446,10 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const route = routeEngines().canvas[pdf ? 'pdfInk' : isNotebookFile(path) ? 'notebook' : 'drawing'];
             if (route.engine !== 'tldraw') throw new Error('The selected canvas engine does not yet support agent editing.');
             if (!pdf) {
-                let text = open?.content;
+                const captured = open ? deps.snapshotOf(path) : undefined;
+                if (open && captured && typeof captured.data !== 'string') return null;
+                let text = typeof captured?.data === 'string' ? captured.data : open ? deps.contentOf(path) : undefined;
+                if (open && text === undefined) return null;
                 if (text === undefined) {
                     const found = deps.root && await fileAt(deps.root, path);
                     if (!found) return null;

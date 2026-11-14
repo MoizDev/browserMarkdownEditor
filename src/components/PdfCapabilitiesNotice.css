@@ -1,0 +1,16 @@
+.pdf-capabilities-notice {
+  position: absolute;
+  z-index: 12;
+  right: 12px;
+  top: 12px;
+  max-width: min(360px, calc(100% - 24px));
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  padding: 5px 9px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.pdf-capabilities-notice summary { cursor: pointer; color: var(--text-normal); }
+.pdf-capabilities-notice > div { margin-top: 4px; }

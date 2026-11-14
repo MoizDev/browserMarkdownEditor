@@ -1,90 +1,39 @@
 import { intersects, validBox, writeBox } from './bounds';
-
-export const INDEX_FANOUT = 16;
+import { PackedBuildJob } from './packedBuild';
+import type { PackedSnapshot, PackedTreeData } from './packedBuild';
+export { INDEX_FANOUT, PackedBuildJob } from './packedBuild';
+export type { PackedSnapshot, PackedTreeData } from './packedBuild';
 const ACTIVE = 0x80000000;
 const GENERATION = 0x7fffffff;
 const NONE = -1;
 
-// Kamel/Faloutsos, "On Packing R-trees", CIKM 1993: order rectangle centres by Hilbert
-// position and bulk-pack bottom-up. Own bitwise quadrant construction, no library implementation.
-function hilbert(x: number, y: number): number {
-    let position = 0;
-    for (let bit = 32768; bit; bit >>= 1) {
-        const right = x & bit ? 1 : 0, top = y & bit ? 1 : 0;
-        position += bit * bit * ((3 * right) ^ top);
-        if (!top) {
-            if (right) { x = 65535 - x; y = 65535 - y; }
-            const swap = x; x = y; y = swap;
-        }
-    }
-    return position >>> 0;
-}
-export interface PackedSnapshot {
-    readonly slots: Uint32Array;
-    readonly generations: Uint32Array;
-    readonly versions: Uint32Array;
-    readonly bounds: Float64Array;
-    readonly revision: number;
-}
 export class PackedTree {
-    readonly count: number;
-    readonly root: number;
-    readonly bounds: Float64Array;
-    readonly slots: Uint32Array;
-    readonly generations: Uint32Array;
-    readonly versions: Uint32Array;
-    readonly starts: Uint32Array;
-    readonly counts: Uint8Array;
+    readonly revision!: number;
+    readonly membership!: Uint32Array;
+    readonly count!: number;
+    readonly root!: number;
+    readonly bounds!: Float64Array;
+    readonly slots!: Uint32Array;
+    readonly generations!: Uint32Array;
+    readonly versions!: Uint32Array;
+    readonly starts!: Uint32Array;
+    readonly counts!: Uint8Array;
     constructor(snapshot: PackedSnapshot) {
-        const n = snapshot.slots.length;
-        if (snapshot.generations.length !== n || snapshot.versions.length !== n || snapshot.bounds.length !== 4 * n) throw new RangeError('Invalid packed scene snapshot');
-        this.count = n;
-        let internal = 0, level = n;
-        while (level > 1) { level = Math.ceil(level / INDEX_FANOUT); internal += level; }
-        this.bounds = new Float64Array(4 * (n + internal)); this.slots = new Uint32Array(n);
-        this.generations = new Uint32Array(n); this.versions = new Uint32Array(n);
-        this.starts = new Uint32Array(internal); this.counts = new Uint8Array(internal);
-        if (!n) { this.root = NONE; return; }
-        const keys = new Uint32Array(n), order = new Uint32Array(n);
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (let i = 0; i < n; i++) {
-            if (!validBox(snapshot.bounds, 4 * i)) throw new RangeError('Invalid packed scene bounds');
-            const x = snapshot.bounds[4 * i] / 2 + snapshot.bounds[4 * i + 2] / 2;
-            const y = snapshot.bounds[4 * i + 1] / 2 + snapshot.bounds[4 * i + 3] / 2;
-            minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-        }
-        for (let i = 0; i < n; i++) {
-            const x = snapshot.bounds[4 * i] / 2 + snapshot.bounds[4 * i + 2] / 2;
-            const y = snapshot.bounds[4 * i + 1] / 2 + snapshot.bounds[4 * i + 3] / 2;
-            const qx = maxX === minX ? 0 : Math.max(0, Math.min(65535, Math.floor((x - minX) / (maxX - minX) * 65535)));
-            const qy = maxY === minY ? 0 : Math.max(0, Math.min(65535, Math.floor((y - minY) / (maxY - minY) * 65535)));
-            keys[i] = hilbert(qx, qy); order[i] = i;
-        }
-        order.sort((a, b) => keys[a] - keys[b] || snapshot.slots[a] - snapshot.slots[b]);
-        for (let i = 0; i < n; i++) {
-            const source = order[i];
-            this.slots[i] = snapshot.slots[source]; this.generations[i] = snapshot.generations[source]; this.versions[i] = snapshot.versions[source];
-            for (let k = 0; k < 4; k++) this.bounds[4 * i + k] = snapshot.bounds[4 * source + k];
-        }
-        let begin = 0, length = n, target = n;
-        while (length > 1) {
-            const parents = Math.ceil(length / INDEX_FANOUT), next = target;
-            for (let i = 0; i < parents; i++, target++) {
-                const first = begin + i * INDEX_FANOUT, count = Math.min(INDEX_FANOUT, length - i * INDEX_FANOUT);
-                this.starts[target - n] = first; this.counts[target - n] = count;
-                let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-                for (let child = first; child < first + count; child++) {
-                    x0 = Math.min(x0, this.bounds[4 * child]); y0 = Math.min(y0, this.bounds[4 * child + 1]);
-                    x1 = Math.max(x1, this.bounds[4 * child + 2]); y1 = Math.max(y1, this.bounds[4 * child + 3]);
-                }
-                writeBox(this.bounds, 4 * target, x0, y0, x1, y1);
-            }
-            begin = next; length = parents;
-        }
-        this.root = begin;
+        const job = new PackedBuildJob(snapshot);
+        while (job.step(4096) === 'pending') { /* Synchronous bounded-data convenience only. */ }
+        Object.assign(this, job.result);
     }
+    /** Worker results transfer these arrays; adoption is O(1), never another N-item build. */
+    static fromData(data: PackedTreeData): PackedTree {
+        const n = data.count, total = data.bounds.length / 4;
+        if (!Number.isSafeInteger(n) || n < 0 || data.slots.length !== n || data.generations.length !== n || data.versions.length !== n
+            || total < n || !Number.isInteger(total) || data.starts.length !== total - n || data.counts.length !== total - n
+            || data.root !== (n ? total - 1 : -1) || !Number.isSafeInteger(data.revision) || data.revision < 0) throw new RangeError('Invalid packed tree transport');
+        return Object.assign(Object.create(PackedTree.prototype) as PackedTree, data);
+    }
+    hasSlot(slot: number): boolean { return !!(this.membership[slot >>> 5] & (1 << (slot & 31))); }
     get byteLength(): number {
-        return this.bounds.byteLength + this.slots.byteLength + this.generations.byteLength + this.versions.byteLength + this.starts.byteLength + this.counts.byteLength;
+        return this.bounds.byteLength + this.slots.byteLength + this.generations.byteLength + this.versions.byteLength + this.starts.byteLength + this.counts.byteLength + this.membership.byteLength;
     }
 }
 
@@ -186,6 +135,12 @@ class EditTree {
             node = this.parent[node];
         }
     }
+    trimEmpty(): void {
+        if (this.leaves || this.slot.length === 16) return;
+        this.bounds = new Float64Array(64); this.left = new Int32Array(16); this.right = new Int32Array(16);
+        this.parent = new Int32Array(16); this.slot = new Int32Array(16); this.height = new Uint8Array(16);
+        this.next = 0; this.free = NONE; this.root = NONE;
+    }
     get byteLength(): number { return this.bounds.byteLength + this.left.byteLength + this.right.byteLength + this.parent.byteLength + this.slot.byteLength + this.height.byteLength; }
 }
 
@@ -200,14 +155,33 @@ export class HybridIndex {
     private free = NONE;
     private active = 0;
     private cleanup = 0;
+    private cleanupWord = 0;
+    private seeded = 0;
+    private dirty = new Uint32Array(1);
+    private dirtyCount = 0;
     private queryLeases = 0;
     epoch = 0;
     get capacity(): number { return this.generations.length; }
     get count(): number { return this.active; }
     get highWater(): number { return this.next; }
-    get byteLength(): number { return this.packed.byteLength + this.edits.byteLength + this.generations.byteLength + this.versions.byteLength + this.dynamic.byteLength; }
-    get needsRebuild(): boolean { return this.cleanup >= this.packed.count && this.edits.leaves > Math.max(2048, this.active * 0.05); }
-    get needsCleanup(): boolean { return this.queryLeases === 0 && this.edits.leaves > 0 && this.cleanup < this.packed.count; }
+    get ready(): boolean { return this.seeded === 0; }
+    get byteLength(): number { return this.packed.byteLength + this.edits.byteLength + this.generations.byteLength + this.versions.byteLength + this.dynamic.byteLength + this.dirty.byteLength; }
+    get needsRebuild(): boolean { return this.cleanup >= this.packed.count && this.cleanupWord >= this.dirty.length && this.dirtyCount > Math.max(2048, this.active * 0.05); }
+    get needsCleanup(): boolean { return this.queryLeases === 0 && (this.cleanup < this.packed.count || this.cleanupWord < this.dirty.length); }
+    private markDirty(slot: number): void {
+        const word = slot >>> 5, bit = 1 << (slot & 31);
+        if (!(this.dirty[word] & bit)) { this.dirty[word] |= bit; this.dirtyCount++; }
+    }
+    private clearDirty(slot: number): void {
+        const word = slot >>> 5, bit = 1 << (slot & 31);
+        if (this.dirty[word] & bit) { this.dirty[word] &= ~bit; this.dirtyCount--; }
+    }
+    // Only cold construction uses this: no binary tree ever reserves 2N nodes just to discard
+    // them after packing. Queries and edits wait until the matching seed snapshot is published.
+    seedBounds(slot: number): void {
+        if (!this.alive(slot) || this.dynamic[slot] !== -2 || this.packed.count || this.edits.leaves || this.queryLeases) throw new Error('Invalid cold index seed');
+        this.dynamic[slot] = NONE; this.seeded++; this.epoch++;
+    }
     reserve(count: number): void {
         if (count <= this.capacity) return;
         let capacity = this.capacity;
@@ -215,6 +189,8 @@ export class HybridIndex {
         const generations = new Uint32Array(capacity); generations.set(this.generations); this.generations = generations;
         const versions = new Uint32Array(capacity); versions.set(this.versions); this.versions = versions;
         const dynamic = new Int32Array(capacity).fill(-2); dynamic.set(this.dynamic); this.dynamic = dynamic;
+        const dirty = new Uint32Array(Math.ceil(capacity / 32)); dirty.set(this.dirty); this.dirty = dirty;
+        if (!this.dirtyCount) this.cleanupWord = dirty.length;
     }
     allocate(): number {
         let slot: number;
@@ -236,19 +212,22 @@ export class HybridIndex {
         this.dynamic[slot] = this.free; this.free = slot; this.active--; this.epoch++;
     }
     upsert(slot: number, box: ArrayLike<number>, zoom: number): void {
+        if (this.seeded) throw new Error('Publish the cold seed snapshot before editing');
         if (!this.alive(slot) || !validBox(box) || !Number.isFinite(zoom) || zoom <= 0) throw new RangeError('Invalid live spatial entry');
         if (this.versions[slot] === 0xffffffff) throw new RangeError('Scene spatial version exhausted; rebuild the scene session');
-        this.versions[slot]++; this.epoch++;
+        this.versions[slot]++; this.epoch++; this.markDirty(slot);
         const leaf = this.dynamic[slot];
         if (leaf >= 0 && this.edits.contains(leaf, box)) return;
         if (leaf >= 0) this.edits.remove(leaf);
         this.dynamic[slot] = this.edits.insert(slot, box, zoom);
     }
     removeBounds(slot: number): void {
-        if (!this.alive(slot)) return;
+        if (this.seeded) throw new Error('Publish the cold seed snapshot before editing');
+        if (!this.alive(slot) || this.dynamic[slot] === -2) return;
+        if (this.versions[slot] === 0xffffffff) throw new RangeError('Scene spatial version exhausted');
         const leaf = this.dynamic[slot];
         if (leaf >= 0) this.edits.remove(leaf);
-        this.dynamic[slot] = -2; this.versions[slot]++; this.epoch++;
+        this.markDirty(slot); this.dynamic[slot] = -2; this.versions[slot]++; this.epoch++;
     }
     packedLeafValid(leaf: number): boolean {
         const p = this.packed, slot = p.slots[leaf];
@@ -258,26 +237,38 @@ export class HybridIndex {
         const slot = this.edits.slot[leaf];
         return slot >= 0 && this.alive(slot) && this.dynamic[slot] === leaf;
     }
-    acquireQuery(): void { this.queryLeases++; }
-    releaseQuery(): void { this.queryLeases--; }
+    acquireQuery(): void { if (!this.ready) throw new Error('Cold spatial index is not published'); this.queryLeases++; }
+    releaseQuery(): void { if (this.queryLeases <= 0) throw new Error('Unbalanced spatial query lease'); this.queryLeases--; }
     publish(packed: PackedTree): boolean {
         // A source snapshot may be old: versions mask removed/changed entries and every newer
         // edit stays in the overlay. No replay is lost. Topology swaps wait for active cursors.
-        if (this.queryLeases) return false;
-        this.packed = packed; this.cleanup = 0; this.epoch++;
-        if (!this.edits.leaves) this.cleanup = packed.count;
+        if (this.queryLeases || packed.revision < this.packed.revision || packed.revision > this.epoch) return false;
+        if (this.seeded && (packed.revision !== this.epoch || packed.count !== this.seeded)) return false;
+        this.packed = packed; this.seeded = 0; this.cleanup = this.dirtyCount ? 0 : packed.count;
+        this.cleanupWord = this.dirtyCount ? 0 : this.dirty.length; this.epoch++;
         return true;
     }
     cleanupStep(maxVisits: number): boolean {
+        if (!Number.isSafeInteger(maxVisits) || maxVisits <= 0) throw new RangeError('Invalid spatial cleanup slice');
         if (this.queryLeases) return false;
-        for (let i = 0; i < maxVisits && this.cleanup < this.packed.count && this.edits.leaves; i++) {
-            const leaf = this.cleanup++, slot = this.packed.slots[leaf], dynamic = this.dynamic[slot];
-            if (dynamic >= 0 && this.alive(slot) && this.generation(slot) === this.packed.generations[leaf] && this.version(slot) === this.packed.versions[leaf]) {
-                this.edits.remove(dynamic); this.dynamic[slot] = NONE;
-            }
+        for (let i = 0; i < maxVisits; i++) {
+            if (this.cleanup < this.packed.count) {
+                const leaf = this.cleanup++, slot = this.packed.slots[leaf], dynamic = this.dynamic[slot];
+                if (this.alive(slot) && this.generation(slot) === this.packed.generations[leaf] && this.version(slot) === this.packed.versions[leaf]) {
+                    if (dynamic >= 0) this.edits.remove(dynamic);
+                    if (dynamic !== -2) this.dynamic[slot] = NONE;
+                    this.clearDirty(slot);
+                }
+            } else if (this.cleanupWord < this.dirty.length) {
+                const word = this.cleanupWord++, bits = this.dirty[word];
+                if (bits) for (let bit = 0; bit < 32; bit++) {
+                    const slot = word * 32 + bit;
+                    if ((bits & (1 << bit)) && (!this.alive(slot) || this.dynamic[slot] < 0) && !this.packed.hasSlot(slot)) this.clearDirty(slot);
+                }
+            } else break;
         }
-        if (!this.edits.leaves) this.cleanup = this.packed.count;
-        return this.cleanup >= this.packed.count;
+        this.edits.trimEmpty();
+        return !this.needsCleanup;
     }
     overlapsPacked(node: number, box: ArrayLike<number>): boolean { return intersects(this.packed.bounds, 4 * node, box, 0); }
 }

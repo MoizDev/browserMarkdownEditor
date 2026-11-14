@@ -5,6 +5,8 @@ import type {
 import { paintCanvasIsolation } from './canvas2dContext';
 import { paintPageScope, paintWorldScope, projectPage } from './compositorProjection';
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
+import { GpuIsolationPlan } from './gpuIsolationPlan';
+import { IsolationShortfall } from './gfx/webgl2Isolation';
 import type { ClipToken, FrameEncoder, GpuPass, GroupToken, PipelineHandle, RectI, SamplerHandle, TextureHandle, UniformSlice } from './gfx/api';
 import type { Webgl2Owner } from './gfx/webgl2';
 import type { PageStack } from './pageStack';
@@ -93,12 +95,14 @@ export class GpuCompositor implements PaneCompositor {
     #surfaceGeneration = allocateSurfaceGeneration();
     #host: PaneSurfaceHost | null = null;
     #layers: readonly CompositorLayer[] = [];
-    readonly #isolationInventory: IsolationReservation[] = [];
     #layout: Readonly<PageStack> | null = null;
     #appearance: CompositorAppearance = { background: [0, 0, 0, 1], inverted: false };
     #metrics: ReadySurfaceMetrics | null = null;
     #snapshot: Snapshot | null = null;
     #prepared: Prepared | null = null;
+    #isolationPlan: GpuIsolationPlan | null = null;
+    #isolationReadyFrame = -1;
+    #shortfalls: IsolationShortfall[] = [];
     #active: DrawScope | null = null;
     #quad: PipelineHandle | null = null;
     #nearest: SamplerHandle | null = null;
@@ -122,10 +126,9 @@ export class GpuCompositor implements PaneCompositor {
         const currentDevice = () => !this.#disposed && this.#available ? options.owner.resources : null;
         this.resources = Object.freeze({ owner: this,
             get device() { return currentDevice(); },
-            reserveIsolation: (request: IsolationReservation) => {
-                this.#check();
-                this.#isolationInventory.push(Object.freeze({ ...request, bounds: Object.freeze({ ...request.bounds }),
-                    targets: request.targets ? Object.freeze({ ...request.targets, bounds: Object.freeze({ ...request.targets.bounds }) }) : undefined }));
+            reserveIsolation: (reservation: IsolationReservation) => {
+                if (!this.#isolationPlan) throw new ArenaError('invalid-input');
+                this.#isolationPlan.declare(reservation);
             },
             paintIsolation: paintCanvasIsolation,
             uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
@@ -134,7 +137,6 @@ export class GpuCompositor implements PaneCompositor {
 
     get surfaceGeneration(): number { return this.#surfaceGeneration; }
     get retryPending(): boolean { return this.#retryPending; }
-    get isolationInventory(): readonly IsolationReservation[] { return this.#isolationInventory; }
 
     attach(host: PaneSurfaceHost): void {
         this.#check();
@@ -210,13 +212,38 @@ export class GpuCompositor implements PaneCompositor {
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
         this.#check();
         const view = frame.view;
-        this.#isolationInventory.length = 0;
         const snapshot = this.#snapshot;
-        if (!snapshot || snapshot.view !== view || budget.cameraEpoch !== view.epoch ||
+        this.#isolationPlan = null;
+        this.#isolationReadyFrame = -1;
+        if (!snapshot || !snapshot.metrics || snapshot.view !== frame.view || budget.cameraEpoch !== frame.view.epoch ||
+            budget.frameId !== frame.frameId || !sameToken(budget.token, frame.token) ||
             budget.token.deviceGeneration !== this.target.generation) return;
         this.#prepared = { frameId: budget.frameId, token: Object.freeze({ ...budget.token }), snapshot };
-        try { this.#prepareQuad(); }
+        const plan = new GpuIsolationPlan(snapshot.metrics.backingWidth, snapshot.metrics.backingHeight);
+        const isolated = snapshot.layers.some(layer => !!layer.isolation);
+        plan.own((snapshot.appearance.inverted ? 1 : 0) + (isolated ? 1 : 0),
+            snapshot.layers.some(layer => layer.isolation?.blend === 'multiply'));
+        for (const shortfall of this.#shortfalls) plan.shortfall(shortfall);
+        this.#isolationPlan = plan;
+        try { this.#options.owner.prepareFrameResources(); this.#prepareQuad(); }
         catch (error) { this.#failure(error); }
+    }
+
+    finishPrepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
+        const plan = this.#isolationPlan;
+        this.#isolationPlan = null;
+        if (!plan || !this.#prepared || this.#prepared.frameId !== frame.frameId || !sameToken(this.#prepared.token, frame.token)) return;
+        if (budget.shouldYield()) { this.#options.invalidate('isolation-admission-deferred'); return; }
+        try {
+            if (!this.#options.owner.admitIsolation(plan.finish())) {
+                this.#options.onError(new ArenaError('out-of-budget'));
+                return;
+            }
+            this.#isolationReadyFrame = frame.frameId;
+        } catch (error) {
+            if (error instanceof ArenaError && error.code === 'out-of-budget') this.#options.onError(error);
+            else this.#failure(error);
+        }
     }
 
     encode(frame: ScheduledFrame): ScheduledEncoding | null {
@@ -224,7 +251,7 @@ export class GpuCompositor implements PaneCompositor {
         const prepared = this.#prepared;
         const snapshot = this.#snapshot;
         if (!prepared || !snapshot || !this.#quad || !this.#nearest || !this.#linear || !snapshot.metrics ||
-            prepared.snapshot !== snapshot || snapshot.view !== frame.view || prepared.frameId !== frame.frameId ||
+            prepared.snapshot !== snapshot || snapshot.view !== frame.view || prepared.frameId !== frame.frameId || this.#isolationReadyFrame !== frame.frameId ||
             !sameToken(prepared.token, frame.token) || !this.#drawable(snapshot, frame)) return null;
         let encoder: FrameEncoder | null = null;
         try {
@@ -277,6 +304,7 @@ export class GpuCompositor implements PaneCompositor {
                         done = true;
                         this.#encodings.delete(owned);
                         this.#retryPending = false;
+                        this.#shortfalls = [];
                         this.#report = Object.freeze({ frameId: frame.frameId, token: Object.freeze({ ...frame.token }), presented: true,
                             complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp && !item.staleVersion),
                             staleVersion: coverage.some(item => item.staleVersion),
@@ -387,7 +415,8 @@ export class GpuCompositor implements PaneCompositor {
         this.#retryPending = false;
         for (const encoder of this.#encodings) this.#options.owner.discardFrame(encoder);
         this.#encodings.clear();
-        this.#active = null; this.#prepared = null; this.#snapshot = null; this.#report = null; this.#metrics = null;
+        this.#active = null; this.#prepared = null; this.#isolationPlan = null; this.#isolationReadyFrame = -1;
+        this.#shortfalls = []; this.#snapshot = null; this.#report = null; this.#metrics = null;
         if (reason === 'context-lost') { this.#quad = null; this.#linear = null; this.#nearest = null; this.#compiling = null; }
     }
 
@@ -427,6 +456,12 @@ export class GpuCompositor implements PaneCompositor {
             });
     }
     #failure(error: unknown): void {
+        if (error instanceof IsolationShortfall) {
+            this.#shortfalls.push(error);
+            this.#retryPending = true;
+            this.#options.invalidate('isolation-shortfall');
+            return;
+        }
         if (error instanceof ArenaError && ['aborted', 'lost', 'out-of-budget'].includes(error.code)) {
             this.#retryPending = error.code === 'out-of-budget';
             this.#options.onDeferred?.();

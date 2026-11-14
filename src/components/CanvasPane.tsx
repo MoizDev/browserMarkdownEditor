@@ -17,7 +17,10 @@ import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 import { isNotebookFile } from '../utils/fileTypes';
 import { routeEngines } from '../utils/engineRouting';
+import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
+import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import type { ActiveFile, ContentChangeOptions, DiskAction, Theme } from '../types';
+import type { DocumentRepresentation } from '../types/reading';
 
 // tldraw is a heavy dependency (canvas engine + its own UI); loading it lazily
 // keeps it out of the initial bundle, so a markdown-only session never pays for
@@ -28,7 +31,12 @@ const NotebookPane = lazy(() => import('./NotebookPane'));
 export interface CanvasPaneProps {
     file: ActiveFile;
     /** OpenTab.id, forwarded by EditorPane independently of the mutable file path. */
-    documentId?: string;
+    documentId: string;
+    representation: DocumentRepresentation;
+    /** Called by a native host on session acquisition, before it enables edits. */
+    onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
+    /** Attaches the native adapter to App's current document session. */
+    attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     /** Is this document some column's showing tab right now? */
     isVisible: boolean;
     /** The column it stands over: the index addresses the editor's CSS
@@ -54,9 +62,14 @@ export interface CanvasPaneProps {
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
 }
 
-function CanvasPane({ file, documentId, isVisible, slotIndex, slotLeft, slotWidth, onFocusPane, registerKeyboardTarget, content, onContentChange, onConfirm, theme, disk, onDiskAction }: CanvasPaneProps) {
+function CanvasPane({ file, documentId, representation, isVisible, slotIndex, slotLeft, slotWidth, onFocusPane, registerKeyboardTarget, content, onContentChange, onConfirm, theme, disk, onDiskAction }: CanvasPaneProps) {
     const activated = useActivated(isVisible);
-    const [routes] = useState(routeEngines);
+    // The loaded content, not its extension, decides whether legacy code may
+    // ever be imported. Routes remain pinned for this document's pane lifetime.
+    const [sniff] = useState(() => sniffCanvas(content, file.name));
+    const [routes] = useState(() => routeEngines(sniff.format === 'native'
+        ? sniff.kind === 'notebook' ? 'notebook' : sniff.kind === 'pdf-ink' ? 'pdfInk' : 'drawing'
+        : undefined));
     const rootRef = useRef<HTMLDivElement>(null);
 
     // tldraw's own container is what its shortcuts listen on, and it carries a
@@ -68,6 +81,7 @@ function CanvasPane({ file, documentId, isVisible, slotIndex, slotLeft, slotWidt
     }), [file.path, registerKeyboardTarget]);
     const slotStyle = useFloatingSlot(isVisible, slotIndex, slotLeft, slotWidth);
     const isNotebook = isNotebookFile(file.name);
+    const legacyAllowed = representation.status === 'ready' && (representation.loadedKind === 'drawing' || representation.loadedKind === 'notebook');
     const label = isNotebook ? 'Loading notebook…' : 'Loading whiteboard…';
 
     return (
@@ -84,8 +98,9 @@ function CanvasPane({ file, documentId, isVisible, slotIndex, slotLeft, slotWidt
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the canvas and undo everything this float is for. */}
             <div className="canvas-pane-body">
-                {activated && routes.canvas[isNotebook ? 'notebook' : 'drawing'].engine !== 'tldraw' && <div role="status">The selected whiteboard engine is unavailable.</div>}
-                {activated && routes.canvas[isNotebook ? 'notebook' : 'drawing'].engine === 'tldraw' && (
+                {activated && canvasReadOnlyReason(sniff) && <CanvasReadOnlyNotice sniff={sniff} />}
+                {activated && !canvasReadOnlyReason(sniff) && (!legacyAllowed || routes.canvas[isNotebook ? 'notebook' : 'drawing'].engine !== 'tldraw') && <div role="status">The selected whiteboard engine is unavailable.</div>}
+                {activated && legacyAllowed && !canvasReadOnlyReason(sniff) && routes.canvas[isNotebook ? 'notebook' : 'drawing'].engine === 'tldraw' && (
                     <Suspense fallback={<div className="drawing-pane drawing-pane-loading">{label}</div>}>
                         {isNotebook ? (
                             <NotebookPane

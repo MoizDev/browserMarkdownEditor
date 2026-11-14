@@ -37,6 +37,11 @@ import type { EmphasisAvailability } from '../types/reading';
 const PdfAnnotateCanvas = lazy(() => import('./PdfAnnotateCanvas'));
 
 export interface PdfPaneProps {
+    documentId: string;
+    /** Native ink acquisition publishes its owner and receives write authority. */
+    onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
+    /** Native ink attaches to the same App-owned session as its reader. */
+    attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     reading?: PdfReadingBinding;
     file: ActiveFile;
     /**
@@ -47,6 +52,7 @@ export interface PdfPaneProps {
      * tldraw instance, and unmounting it is also what flushes strokes).
      */
     isVisible: boolean;
+    retainClosing?: boolean;
     /**
      * Whether this is the FOCUSED pane, which is a narrower thing than being on
      * screen once tabs can hold several documents: two PDFs may be visible side
@@ -121,7 +127,7 @@ interface PdfSource {
  */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     const root = useRef<HTMLDivElement>(null), viewerActions = useRef<PdfViewerHandle>(null);
     const [print, setPrint] = useState<'closed' | 'confirm' | 'preparing' | 'ready'>('closed');
@@ -214,7 +220,6 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const writeState = useRef({ isDirty, disk, onAnnotationPreflight });
     useLayoutEffect(() => { binding.current = reading; writeState.current = { isDirty, disk, onAnnotationPreflight }; });
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
-    const documentId = reading?.identity.documentId;
     const [rotationPreview, setRotationPreview] = useState(() => documentId ? peekPdfRotation(documentId) : undefined);
     const discardRotationPreview = useCallback(() => {
         setRotationPreview(previous => {
@@ -730,12 +735,12 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
             // unmounting it is what flushes pending strokes to disk.
-            body = isVisible ? (
+            body = (isVisible || retainClosing) ? (
                 <Suspense fallback={<div className="pdf-pane-message">Loading annotation tools…</div>}>
                     <PdfAnnotateCanvas
                         key={file.path}
                         filePath={file.path}
-                        documentId={reading?.identity.documentId}
+                        documentId={documentId}
                         original={editableSource.original}
                         session={loadedSource.session}
                         onRenderHealth={reportRenderHealth}

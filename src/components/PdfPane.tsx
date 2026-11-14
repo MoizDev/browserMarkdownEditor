@@ -141,6 +141,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             return undefined;
         });
     }, [documentId]);
+    useEffect(() => { if (!isVisible && rotationPreview) discardRotationPreview(); }, [isVisible, rotationPreview, discardRotationPreview]);
     const pageDigest = useRef<string | undefined>(undefined);
     const restoredRecord = useRef(false);
     const [roleRetry, setRoleRetry] = useState(0);

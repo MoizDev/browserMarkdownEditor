@@ -2,11 +2,13 @@ import type { PageGeometry } from '../../platform/types';
 import type { RenderToken } from '../../platform/render';
 import type { PdfPageLink } from '../pdfLinkModel';
 import type { PdfTileProducer } from '../layer/tileLayer';
+import type { PdfPoolDocument } from '../pool/types';
 import { stablePdfBlob } from './stableBlob';
 
 /** The pool adapter is the only engine-specific half of this session. */
 export interface OpenTiledDocument {
     readonly pages: readonly PageGeometry[];
+    readonly poolDocument: PdfPoolDocument;
     readonly producer: PdfTileProducer;
     links(page: number, signal: AbortSignal): Promise<readonly PdfPageLink[]>;
     close(): Promise<void>;

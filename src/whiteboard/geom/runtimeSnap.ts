@@ -3,6 +3,7 @@ import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { Vec2 } from './path';
+import { collectSnapCandidates, createSnapVisibility } from './snapCandidates';
 
 export interface BoardSnapGuide {
     readonly axis: 'x' | 'y';
@@ -64,57 +65,10 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
             || !scene?.ready || scene.revision !== revision) throw new DOMException('Snap source changed', 'AbortError');
     };
     check();
-    const selected = new Set(options.selected), ancestors = new Set<NodeId>(); let visited = 0;
-    for (const id of selected) {
-        let node = doc.nodes.get(id);
-        for (let depth = 0; node && depth < 64; depth++) { ancestors.add(node.id); node = doc.nodes.get(node.parent as NodeId); }
-        if (++visited % 256 === 0) { await cooperate(); check(); }
-    }
-    const excluded = (id: NodeId) => {
-        if (ancestors.has(id)) return true;
-        let node = doc.nodes.get(id);
-        for (let depth = 0; node && depth < 64; depth++) { if (selected.has(node.id)) return true; node = doc.nodes.get(node.parent as NodeId); }
-        return false;
-    };
     const xs = [bounds.x, bounds.x + bounds.width / 2, bounds.x + bounds.width];
     const ys = [bounds.y, bounds.y + bounds.height / 2, bounds.y + bounds.height];
-    const candidates = new Set<NodeId>();
-    for (const [axis, values] of [['x', xs], ['y', ys]] as const) for (const value of values) {
-        check();
-        const cursor = scene!.spatialCursor({ sheetId: state.sheet, purpose: 'selectable', request: { kind: 'strip', axis, value, maxDistance: threshold } });
-        try {
-            for (;;) {
-                check();
-                const status = cursor.resume({ deadline: performance.now() + 3, maxVisits: 256 }, ref => {
-                    const resolved = scene!.resolveSpatial(ref);
-                    if (!resolved) throw new DOMException('Snap candidate expired', 'AbortError');
-                    if (!excluded(resolved.id)) candidates.add(resolved.id);
-                });
-                if (status === 'complete') break;
-                if (status !== 'pending') throw new DOMException('Snap traversal expired', 'AbortError');
-                await cooperate();
-            }
-        } finally { cursor.cancel(); }
-    }
-    // Default, calibration cut by owner: equal-gap candidates require perpendicular overlap.
-    for (const [axis, value, distance] of [
-        ['y', bounds.y + bounds.height / 2, bounds.height / 2 + threshold],
-        ['x', bounds.x + bounds.width / 2, bounds.width / 2 + threshold],
-    ] as const) {
-        check(); const cursor = scene!.spatialCursor({ sheetId: state.sheet, purpose: 'selectable',
-            request: { kind: 'strip', axis, value, maxDistance: distance } });
-        try {
-            for (;;) {
-                check(); const status = cursor.resume({ deadline: performance.now() + 3, maxVisits: 256 }, ref => {
-                    const resolved = scene!.resolveSpatial(ref); if (!resolved) throw new DOMException('Snap candidate expired', 'AbortError');
-                    if (!excluded(resolved.id)) candidates.add(resolved.id);
-                });
-                if (status === 'complete') break;
-                if (status !== 'pending') throw new DOMException('Snap traversal expired', 'AbortError');
-                await cooperate();
-            }
-        } finally { cursor.cancel(); }
-    }
+    const candidates = await collectSnapCandidates({ runtime, scene: scene!, doc, sheet: state.sheet, focus: state.focus,
+        selected: options.selected, bounds, threshold, signal, cooperate, current: () => { try { check(); return true; } catch { return false; } } });
     check();
     if (!candidates.size) return { delta: { x: 0, y: 0 }, guides: [] };
     const scope = await acquireBoardGeometryScope(runtime, candidates, { signal, cooperate, current: () => {
@@ -131,10 +85,13 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
         const candidateBounds: Readonly<Rect>[] = [];
         const nearer = (value: Neighbour, old: Neighbour | undefined) => !old || value.distance < old.distance
             || (value.distance === old.distance && (value.rank > old.rank || (value.rank === old.rank && value.id < old.id)));
-        visited = 0;
+        let visited = 0; const visibility = createSnapVisibility(doc);
         for (const id of candidates) {
             check(); if (++visited % 256 === 0) { await cooperate(); check(); }
-            const other = scope.logicalBounds(id), rank = scope.rank(id); candidateBounds.push(other);
+            const other = scope.logicalBounds(id), relation = visibility(id, other);
+            if (relation === 'hidden') continue;
+            if (relation === 'partial') throw new Error('Frame-clipped snap target requires visible geometry');
+            const rank = scope.rank(id); candidateBounds.push(other);
             const overlapY = Math.min(other.y + other.height, bounds.y + bounds.height) - Math.max(other.y, bounds.y);
             const overlapX = Math.min(other.x + other.width, bounds.x + bounds.width) - Math.max(other.x, bounds.x);
             if (overlapY >= 0) {

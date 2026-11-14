@@ -51,6 +51,7 @@ export class DenseTileJob {
     }
     get result(): DenseTileBitmap { if (!this.resultValue) throw new Error('Dense tile is not complete'); return this.resultValue; }
     get isEmpty(): boolean { return this.phase === 'empty'; }
+    get isComplete(): boolean { return this.phase === 'complete'; }
     get memoryBytes(): number { return (this.scratch?.bytes ?? 0) + (this.bitmapLease?.bytes ?? 0) + (this.pathLease?.bytes ?? 0)
         + (this.bitmapHeld ? BITMAP_BYTES : 0); }
     get cpuWorkingSet(): number {

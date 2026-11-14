@@ -16,7 +16,7 @@ type Plan = {
     source: PaintFrame; view: string; scale: number; live: ReadonlySet<string> | undefined;
     phase: 'partition' | 'raster' | 'direct' | 'complete'; band: PaintBand; index: number; run: number;
     commands: Command[]; command: number; outputs: Record<PaintBand, PaintItem[]>; direct: Record<PaintBand, PaintItem[]>;
-    directAdapter: CanvasPaintAdapter | null; directLease: ByteLease | null; directEstimate: number;
+    directAdapter: CanvasPaintAdapter | null; directLease: ByteLease | null; directEstimate: number; directDemandPublished: boolean;
     estimateBand: PaintBand; estimateItem: number; estimateClip: number; estimateChunk: number;
     tile: DenseTileJob | null; tileX: number; tileY: number; x0: number; x1: number; y0: number; y1: number;
     bitmaps: Map<string, DenseTileBitmap>; blocks: ByteLease[]; used: number; pending: number;
@@ -65,7 +65,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Dense viewport grid overflows');
         const p: Plan = { source: frame, view: projection(view), scale, live, phase: 'partition', band: 'underlay', index: 0, run: 0,
             commands: [], command: 0, outputs: { underlay: [], content: [] }, direct: { underlay: [], content: [] },
-            directAdapter: null, directLease: null, directEstimate: 0, estimateBand: 'underlay', estimateItem: 0, estimateClip: 0, estimateChunk: 0,
+            directAdapter: null, directLease: null, directEstimate: 0, directDemandPublished: false, estimateBand: 'underlay', estimateItem: 0, estimateClip: 0, estimateChunk: 0,
             tile: null, tileX: x0, tileY: y0, x0, x1, y0, y1, bitmaps: new Map(), blocks: [], used: 0, pending: 0,
             retired: false, blocked: false, prepared: null, resources };
         p.resources = { ...resources, images: { acquire(key, token, signal) {
@@ -134,8 +134,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         p.tile ??= new DenseTileJob(p.resources, host, report, p.source, items, rect, p.scale, command);
         p.tile.prepare(view, budget);
         if (!p.tile.isEmpty) {
-            let bitmap: DenseTileBitmap;
-            try { bitmap = p.tile.result; } catch { return; }
+            if (!p.tile.isComplete) return;
+            const bitmap = p.tile.result;
             if (!reserveEntry(p)) return;
             const key = `dense/${++serial}`;
             const image: PaintImageItem = { kind: 'image', key, geometryKey: key, imageKey: key, nodeId: key,
@@ -148,7 +148,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     };
     const adapter: CanvasPaintAdapter & {
         prepare(view: ViewState, budget: FrameBudget, liveNodes?: ReadonlySet<string>): void;
-        coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean };
+        coverage(view: ViewState, liveNodes?: ReadonlySet<string>): { complete: boolean; sharp: boolean; staleVersion?: boolean };
         retainedFrames(): ReadonlySet<PaintFrame>;
         cpuWorkingSet(): number;
     } = {
@@ -172,6 +172,9 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                     } else if (p.phase === 'direct') {
                         if (!p.directAdapter) {
                             if (!estimateDirect(p)) continue;
+                            if (!p.directDemandPublished && p.directEstimate) {
+                                p.directDemandPublished = true; host.invalidate('dense-live-demand-ready'); return;
+                            }
                             const lease = host.allocator.cpu.reserve(Math.max(1, p.directEstimate));
                             if (!lease) { p.blocked = true; return; }
                             p.directLease = lease;
@@ -217,8 +220,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 } finally { ctx.restore(); }
             }
         },
-        coverage(view) {
-            const complete = !!ready && ready.view === projection(view);
+        coverage(view, liveNodes) {
+            const complete = !!ready && ready.view === projection(view) && ready.live === liveNodes;
             return { complete, sharp: complete, ...(ready?.source !== resources.frames.readFrame() ? { staleVersion: true } : {}) };
         },
         retainedFrames: () => new Set([...plans].map(p => p.source)),

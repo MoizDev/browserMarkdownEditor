@@ -156,8 +156,8 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const currentTiledSource = tiledSource && appSession && tiledSource.session.token.vaultEpoch === reading?.identity.vaultEpoch &&
         tiledSource.session.token.documentId === documentId && tiledSource.session.token.session === appSession.serial &&
         tiledSource.session.token.bytesGeneration === appSession.bytesGeneration ? tiledSource : null;
-    const printOwner = useRef({ tiled, source: currentTiledSource, identity: reading?.identity });
-    printOwner.current = { tiled, source: currentTiledSource, identity: reading?.identity };
+    const printOwner = useRef({ tiled, mode, source: currentTiledSource, identity: reading?.identity });
+    printOwner.current = { tiled, mode, source: currentTiledSource, identity: reading?.identity };
     const root = useRef<HTMLDivElement>(null), viewerActions = useRef<PdfViewerHandle>(null);
     const [print, setPrint] = useState<'closed' | 'confirm' | 'preparing' | 'ready'>('closed');
     const [printError, setPrintError] = useState('');
@@ -185,10 +185,17 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         setPrint('preparing'); setPrintError('');
         try {
             const source = tiled ? currentTiledSource : null, identity = reading?.identity;
+            const nativeIdentity = mode === 'edit' ? nativeCanvasHost?.identity(documentId) : undefined;
             const checkPolicy = () => {
                 const live = printOwner.current;
-                if (live.tiled !== tiled) throw new Error('The PDF viewer changed. Prepare it again before printing.');
+                if (live.tiled !== tiled || live.mode !== mode) throw new Error('The PDF viewer changed. Prepare it again before printing.');
                 if (!tiled) return;
+                if (mode === 'edit') {
+                    // Native Annotate has no tiled source to read /P from. Only a source the host can write is
+                    // admitted, and write safety refuses encrypted files, so such a file carries no print restriction.
+                    if (!nativeIdentity || !nativeCanvasHost?.canWrite(nativeIdentity)) throw new Error('Print this PDF from its Original view; annotation printing needs an editable, verified copy.');
+                    return;
+                }
                 const current = live.identity;
                 if (!source || !identity || !live.tiled || live.source !== source || !current ||
                     current.vaultId !== identity.vaultId || current.vaultEpoch !== identity.vaultEpoch ||

@@ -227,15 +227,16 @@ A cache HIT still costs a `getFile()` — one browser round trip per note. Measu
 vault paid 1,004 of them every time the autosave landed, because `buildGraph` re-validated the whole
 vault to discover nothing had changed. So:
 
-- **`flushTab` primes rather than re-reads.** `graph.primeLinks(session, path, mtime, size, text)` puts the
-  text the app just wrote into that activation's link cache and returns whether that note's links MOVED.
-  Capture the session before IO; a closing save still preserves the old document but never primes the
-  incoming index. Graph/search share `IndexSessionGuard` path tokens; graph membership belongs only to
-  the committed tree, and both build completion and React's updater recheck publication authority. They
-  usually have not, and then no rebuild runs at all. When they have, `rebuildGraph(false)` runs
-  without revalidating: pure arithmetic over what is in memory.
-- **`revalidate: true` is for somebody ELSE's write** — a tree change, a watcher rescan, a vault
-  open. Never for one of ours.
+- **`flushTab` primes rather than re-reads.** Capture `indexGraphRef.current` before IO and, only
+  while that root/activation still owns it, call `client.prime(path, mtime, size, text)`. The worker
+  reserves the path revision before extracting; an older read cannot overwrite that prime. Unchanged
+  links do not rebuild the graph, and a changed link uses cached facts without a vault-wide stat.
+  A closing save still preserves its document, but never primes the incoming activation.
+- **Graph publication has two fences**: worker session/tree/graph generation at receipt, then the
+  captured live-owner predicate inside React's updater. Recovery epochs cannot reuse old publication
+  authority. Only a committed whole tree owns membership; a finishing build never prunes it.
+- **Sweeps are for somebody ELSE's write** — a tree change, watcher rescan or vault open, never one
+  of ours. Newer work survives a failed older sweep.
 - **No `Promise.all` over the vault.** `utils/pool.ts` (`mapPool`, `Limiter`, `VAULT_CONCURRENCY`)
   bounds it; `Limiter` is counted across a whole recursion, which is what the tree walk needs.
 - **The first full index runs `onIdle`**, behind the notes the reader actually asked for.
@@ -426,7 +427,7 @@ raising the setting later still has history to show.
   No picker: the handle is already in hand, so one would only ask the user to find the folder they
   just right-clicked. It records the vault, so the way back is the vault menu. App does no flushing
   or tab-closing of its own — setting `rootHandle` is the switch, and the vault-switch effect already
-  flushes every open tab before emptying the workspace. It **holds an in-flight ref** covering the
+  drains and saves every open tab before the provider commits the new root, then empties the workspace. It **holds an in-flight ref** covering the
   switch AND its error dialog, so a second right-click cannot stack a second question.
 - **ONE vault switch at a time, across every raiser — `switchInFlightRef`, in the provider.**
   `refreshTree` is not serialized, so two switches at once are two vault walks racing and the
@@ -445,8 +446,8 @@ raising the setting later still has history to show.
 - **A vault switch WALKS BEFORE IT COMMITS, and commits in one synchronous burst.** `loadTree` (the
   walk, `null` on failure) is separate from `refreshTree` (the walk that leaves the current tree
   standing on failure) for exactly this: `openVaultHandle` and `pickDirectory` both call `loadTree`
-  first, and only then do `set(IDB_KEY)` → `setRootHandle` → `setFileTree` with no await between the
-  setters, so React batches them and `rootHandle` and `fileTree` are never seen describing different
+  first, then save the handle and await App's registered pre-root-change drain before committing
+  `setRootHandle` → `setFileTree` with no await between the setters, so React batches them and `rootHandle` and `fileTree` are never seen describing different
   vaults. `setRootHandle` first and `await refreshTree` after left the app split for the WHOLE walk —
   the header, IndexedDB and `currentVaultId` on vault B, the sidebar still listing A's rows, nothing
   covering the tree — and `App.handleFileClick` on one of those rows opens A's handle under B's path.

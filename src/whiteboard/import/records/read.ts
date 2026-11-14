@@ -5,7 +5,7 @@ import { sheetId, type NodeId, type SheetId } from '../../model/ids';
 import type { MediaId } from '../../model/media';
 import type { Node } from '../../model/nodes';
 import type { SampleLease } from '../../model/samples';
-import type { ImportRichText } from '../../text/rich';
+import { convertLegacyRichText } from '../../text/rich';
 import { SampleStore } from '../../ink/samples';
 import { ReportBuilder, type ImportReport } from '../report';
 import { scaleImportedNode } from '../scale';
@@ -23,7 +23,6 @@ import { readStroke } from './stroke';
 export interface LegacyRecordOptions {
     readonly kind: 'whiteboard' | 'notebook' | 'pdf-ink';
     readonly samples: SampleStore;
-    readonly rich: ImportRichText;
     readonly admitMedia: AdmitLegacyMedia;
     readonly signal?: AbortSignal;
     readonly assertCurrent: () => void;
@@ -176,9 +175,9 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                 }
                 node = readBasicShape(shape, base) ?? readPictureShape(shape, base, assetIds, bookmarks)
                     ?? readLabelledShape(shape, base, (value, owner) => {
-                        const rich = options.rich(value);
+                        const rich = convertLegacyRichText(value);
                         for (const reason of rich.repairs) report.repair(owner, reason);
-                        if (rich.unrepresentable.length) preserve(shape.source, owner, 'rich-text');
+                        if (rich.repairs.length || rich.unrepresentable.length) preserve(shape.source, owner, 'rich-text');
                         for (const reason of rich.unrepresentable) report.refuse(owner, reason);
                         return rich.text;
                     }, endpoints);

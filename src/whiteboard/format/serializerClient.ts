@@ -85,15 +85,11 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
         const identity: BoardJobIdentity = { session, epoch, revision };
         try {
             const reply = await client.request<BoardWorkerEnvelope<SerializerReply<T>>>(op, { identity, payload: args },
-                { priority, signal, transfer, deadlineMs: 120_000 });
+                { priority, signal, transfer, deadlineMs: 120_000, terminateOnDeadline: true });
             if (!boardEnvelope(reply) || !matchingIdentity(identity, reply.identity)) throw new WorkerHostError('Protocol', 'Invalid serializer reply identity');
             if (disposed || signal?.aborted) throw new WorkerHostError('Cancelled', 'Board serializer is no longer current');
             return take(reply.payload);
-        } catch (error) {
-            loaded = undefined;
-            if (error instanceof Error && error.name === 'Deadline') void client.recycle('serializer deadline', { lazy: true }).catch(() => {});
-            throw error;
-        }
+        } catch (error) { loaded = undefined; throw error; }
     }
     async function sync(target: Revision, signal?: AbortSignal, priority: 0 | 2 = 2): Promise<void> {
         if (loadedGeneration !== client.generation) loaded = undefined;

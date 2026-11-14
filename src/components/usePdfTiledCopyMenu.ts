@@ -11,12 +11,20 @@ import { hitTextPoint } from '../pdf/text/hitTest';
 import { bindPdfTextCopy } from '../pdf/overlay/textCopy';
 import type { PdfTextCopyBinding } from '../pdf/overlay/textCopy';
 import { openPdfTextMenu } from '../pdf/overlay/textMenu';
+import type { PdfTextReader } from '../utils/pdfReadingText';
+
+// P5's resident find index may expose canonical text without a worker trip.
+function peekText(reader: PdfTextReader | undefined, page: number): string | undefined {
+    const engine = reader?.findEngine as (PdfTextReader['findEngine'] & { peekPageText?(index: number): { text: string } | undefined }) | undefined;
+    return engine?.peekPageText?.(page)?.text;
+}
 
 export interface PdfTiledCopyMenuOptions {
     /** Common ancestor of the canvas and accessibility mirror. */
     element: HTMLElement | null;
     document: PdfPoolDocument;
     geometry?: PdfSelectionGeometryCache;
+    reader?: PdfTextReader;
     selection: PdfSelectionState;
     fileName: string;
     filePath: string;
@@ -40,7 +48,7 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
         const copy = bindPdfTextCopy(element, {
             selection: () => selection.getSnapshot().selection,
             pageCount: () => document.info.pageCount,
-            cachedText: page => geometry.cached(page)?.text,
+            cachedText: page => geometry.cached(page)?.text ?? peekText(live.current.reader, page),
             text: async (page, signal) => {
                 const reply = await document.text(page, 'text', { priority: 1, signal });
                 if (signal.aborted || document.closed || reply.docKey !== document.docKey || reply.page !== page || reply.schema !== 2)
@@ -92,7 +100,7 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
                 const first = selected.wholeDocument ? 0 : Math.max(0, Math.min(count - 1, range.start.page));
                 const last = selected.wholeDocument ? count - 1 : Math.max(first, Math.min(count - 1, range.end.page));
                 for (let page = first; page <= last; page++) {
-                    const cached = cache.cached(page)?.text;
+                    const cached = cache.cached(page)?.text ?? peekText(live.current.reader, page);
                     const reply = cached === undefined ? await current.document.text(page, 'text', { priority: 1, signal: task.signal }) : undefined;
                     if (reply && (reply.docKey !== key || reply.page !== page || reply.schema !== 2)) throw new Error('The PDF text worker returned a stale page.');
                     const text = cached ?? reply!.text;
@@ -126,7 +134,16 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
     const selectedText = useCallback(() => {
         const current = live.current, selection = current.selection.getSnapshot().selection;
         if (!selection || !current.geometry) return { text: '', incomplete: false };
-        return cachedSelectionText(selection, current.document.info.pageCount, current.geometry.cachedTextPages());
+        const count = current.document.info.pageCount, range = selectionRange(selection);
+        const first = selection.wholeDocument ? 0 : Math.max(0, Math.min(count - 1, range.start.page));
+        const last = selection.wholeDocument ? count - 1 : Math.max(first, Math.min(count - 1, range.end.page));
+        const pages = new Map(current.geometry.cachedTextPages());
+        let available = 0;
+        for (let page = first; page <= last && available < 20_000; page++) {
+            const text = pages.get(page) ?? peekText(current.reader, page);
+            if (text !== undefined) { pages.set(page, text); available += text.length; }
+        }
+        return cachedSelectionText(selection, count, pages);
     }, []);
     return { openMenu, cancelCopy, selectedText };
 }

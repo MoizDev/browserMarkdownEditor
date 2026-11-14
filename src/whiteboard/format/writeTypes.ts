@@ -26,22 +26,36 @@ export function writeFailure<T>(code: WriteRefusal['code'], reason: string, fiel
     return { ok: false, error: { code, reason, ...(field === undefined ? {} : { field }) } };
 }
 
-export function utf8Length(text: string, limit: number): WriteResult<number> {
+function* utf8LengthWork(text: string, limit: number): Generator<void, WriteResult<number>> {
     if (text.length > limit) return writeFailure('limit', 'Encoded line exceeds its byte limit');
-    let bytes = 0;
+    let bytes = 0, sinceYield = 0;
     for (let i = 0; i < text.length; i++) {
         const code = text.charCodeAt(i);
         if (code === 10 || code === 13) return writeFailure('invalid', 'Encoded records must occupy one physical line');
         if (code >= 0xd800 && code <= 0xdbff) {
+            if (sinceYield >= 8191) { sinceYield = 0; yield; }
             const next = text.charCodeAt(++i);
             if (!(next >= 0xdc00 && next <= 0xdfff)) return writeFailure('invalid', 'Encoded line contains an unpaired surrogate');
-            bytes += 4;
+            bytes += 4; sinceYield++;
         } else if (code >= 0xdc00 && code <= 0xdfff) {
             return writeFailure('invalid', 'Encoded line contains an unpaired surrogate');
-        } else {
-            bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : 3;
-        }
+        } else bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : 3;
         if (bytes > limit) return writeFailure('limit', 'Encoded line exceeds its byte limit');
+        if (++sinceYield >= 8192) { sinceYield = 0; yield; }
     }
     return { ok: true, value: bytes };
+}
+export function utf8Length(text: string, limit: number): WriteResult<number> {
+    const work = utf8LengthWork(text, limit);
+    for (;;) { const step = work.next(); if (step.done) return step.value; }
+}
+export async function utf8LengthAsync(text: string, limit: number, options: {
+    readonly signal?: AbortSignal; cooperate(): Promise<void>;
+}): Promise<WriteResult<number>> {
+    const work = utf8LengthWork(text, limit);
+    for (;;) {
+        options.signal?.throwIfAborted();
+        const step = work.next(); if (step.done) return step.value;
+        await options.cooperate();
+    }
 }

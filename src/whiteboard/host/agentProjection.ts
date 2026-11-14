@@ -112,12 +112,12 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
         apply(ops, options) {
             if (!Array.isArray(ops) || ops.length < 1 || ops.length > 200) return Promise.reject(new RangeError('Expected 1 to 200 canvas operations'));
             // The caller cannot change a queued transaction after admission begins.
-            let captured: CanvasOp[];
-            try { captured = structuredClone(ops); }
+            let captured: CanvasOp[], sheet: ReturnType<AgentAdapterHost['sheet']>, page: number;
+            try { captured = structuredClone(ops); sheet = host.sheet(); page = host.page(); }
             catch (error) { return Promise.reject(error); }
             return authority.run(async context => {
                 authority.assertContext(context);
-                const sheet = host.sheet(), page = host.page();
+                if (!host.isCurrent() || host.sheet() !== sheet || host.page() !== page) throw new DOMException('Agent target view changed', 'AbortError');
                 const result = await adapter.apply(captured, {
                     signal: context.signal,
                     isCurrent: () => {

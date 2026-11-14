@@ -7,17 +7,30 @@ import { pdfPageLayerDefinition } from '../pdf/layer/definition';
 import type { PdfMirrorPixels, PdfSessionMirrors } from '../pdf/layer/tileMirror';
 import { PdfLinkOverlay } from '../pdf/overlay/links';
 import type { PdfLinkTarget } from '../pdf/pdfLinkModel';
+import type { MirrorSelection } from '../pdf/overlay/textMirror';
 import { flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, recordPdfNavigation, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen } from '../utils/pdfViewState';
 import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { ThumbnailsToggle, type PdfThumbnailsHandle } from './PdfThumbnails';
 import { usePlatformPane } from './platformPane/usePlatformPane';
+import { usePdfTextMirror } from './usePdfTextMirror';
+import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import '../pdf/overlay/links.css';
 import './PdfTiledView.css';
 
 const INSETS = { left: 28, right: 28, top: 16, bottom: 0 };
 const LIMITS = { min: 0.4, max: 4 };
 let nextViewLease = 0;
+
+async function bitmapPng(bitmap: ImageBitmap): Promise<Blob> {
+    try {
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('PDF capture canvas is unavailable');
+        context.drawImage(bitmap, 0, 0);
+        return await canvas.convertToBlob({ type: 'image/png' });
+    } finally { bitmap.close(); }
+}
 
 function paneBackground(): readonly [number, number, number, number] {
     const value = getComputedStyle(document.documentElement).getPropertyValue('--background-primary').trim();
@@ -35,15 +48,16 @@ interface Props {
     readonly isFocused: boolean;
     readonly mirror: PdfSessionMirrors;
     readonly mirrorCoverage: NonNullable<PlatformPaneOptions<PdfMirrorPixels>['mirrorCoverage']>;
-    readonly renderThumbnail: (index: number, scale: number) => Promise<string>;
     readonly onRotate?: (delta: number, pageIndex?: number) => void;
+    readonly onOpenTextView: () => void;
+    readonly onMirrorSelection: (selection: MirrorSelection) => void;
     readonly onNotice: (message: string) => void;
 }
 
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
 export default function PdfTiledView({ session, document: pdf, filePath, isVisible, isFocused,
-    mirror, mirrorCoverage, renderThumbnail, onRotate, onNotice }: Props) {
+    mirror, mirrorCoverage, onRotate, onOpenTextView, onMirrorSelection, onNotice }: Props) {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
     const [lease] = useState(() => ++nextViewLease);
@@ -60,11 +74,13 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
     const initialized = useRef(false);
     const interacting = useRef(false);
     const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const positionFlush = useRef<ReturnType<typeof setTimeout> | null>(null);
     const paneRef = useRef<ReturnType<typeof usePlatformPane<PdfMirrorPixels>> | null>(null);
     const thumbsRef = useRef<PdfThumbnailsHandle | null>(null);
     const links = useRef<PdfLinkOverlay | null>(null);
     const loadedLinks = useRef(new Set<number>());
     const linkTasks = useRef(new Map<number, AbortController>());
+    const thumbnailTasks = useRef(new Set<AbortController>());
     const active = useRef({ isVisible, isFocused });
     active.current = { isVisible, isFocused };
     const velocity = useRef({ x: 0, y: 0 });
@@ -74,6 +90,8 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         const pos = pagedPosition(camera.current, viewport.current, stack, INSETS);
         if (!pos) return;
         writePdfViewPos(filePath, pos, false);
+        if (positionFlush.current) clearTimeout(positionFlush.current);
+        positionFlush.current = setTimeout(flushPdfViewPositions, 400);
         setPage(previous => previous === pos.page ? previous : pos.page);
         setZoom(previous => Math.abs(previous - pos.zoom) < 0.001 ? previous : pos.zoom);
         thumbsRef.current?.setCurrentPage(pos.page);
@@ -98,6 +116,26 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
             paneRef.current?.current?.invalidate('pdf-camera-settled');
         }, 180);
     }, [clamp, persist]);
+
+    const renderThumbnail = useCallback(async (index: number, scale: number): Promise<string> => {
+        const page = pdf.pages[index];
+        if (!page || !active.current.isVisible || !session.isCurrent()) throw new DOMException('Thumbnail cancelled', 'AbortError');
+        const controller = new AbortController(); thumbnailTasks.current.add(controller);
+        try {
+            const size = Math.max(1, Math.min(512, Math.ceil(Math.max(page.width, page.height) * scale)));
+            const bitmap = await pdf.poolDocument.thumbnail(index, size, { variant: 'plain', profileKey: 'plain', signal: controller.signal });
+            try {
+                if (controller.signal.aborted || !session.isCurrent() || !active.current.isVisible) throw new DOMException('Thumbnail cancelled', 'AbortError');
+                const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+                const context = canvas.getContext('2d');
+                if (!context) throw new Error('Thumbnail canvas is unavailable');
+                context.drawImage(bitmap, 0, 0);
+                const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.82 });
+                if (controller.signal.aborted || !session.isCurrent() || !active.current.isVisible) throw new DOMException('Thumbnail cancelled', 'AbortError');
+                return URL.createObjectURL(blob);
+            } finally { bitmap.close(); }
+        } finally { thumbnailTasks.current.delete(controller); }
+    }, [pdf, session]);
 
     const goPage = useCallback((index: number) => {
         const target = stack.rects[Math.max(0, Math.min(stack.rects.length - 1, index))];
@@ -149,6 +187,9 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
     const mirrorView = useCallback((view: ViewState) => ({ token: session.token, sourceRole: session.source,
         contentRevision: 'plain', colourVersion: 0, geometryDigest, nominalDpr: Math.min(view.viewport.dpr, 2), view }),
         [session, geometryDigest]);
+    const textMirror = usePdfTextMirror({ host: overlay, visible: isVisible, fileName: filePath.split('/').at(-1) ?? filePath,
+        document: pdf, session, pageRects: stack.rects, focusPage: goPage, selectionChanged: onMirrorSelection,
+        openTextView: onOpenTextView, onError: () => onNotice('Accessible PDF text is unavailable on this page.') });
     const pageLayer = useMemo(() => pdfPageLayerDefinition({
         producer: pdf.producer, isCurrent: () => session.isCurrent() && active.current.isVisible,
         mirror: { store: mirror, view: mirrorView },
@@ -175,11 +216,14 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         cancelViewWork: () => {
             for (const task of linkTasks.current.values()) task.abort();
             linkTasks.current.clear();
+            for (const task of thumbnailTasks.current) task.abort();
+            thumbnailTasks.current.clear();
             for (const index of loadedLinks.current) links.current?.removePage(index);
             loadedLinks.current.clear(); pageLayer.current()?.hide();
         },
         writeOverlays: frame => {
             links.current?.setView(frame.view, stack.rects);
+            textMirror.updateView(frame.view);
             const top = frame.view.camera.y, bottom = top + frame.view.viewport.height / frame.view.camera.z;
             const visible = new Set<number>();
             for (let index = Math.max(0, pageAt(stack, top)); index < stack.rects.length; index++) {
@@ -199,7 +243,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         },
         onPresentation: () => {}, onError: error => onNotice(error instanceof Error ? error.message : 'PDF viewer is unavailable.'),
         onNotice: message => onNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.' : 'PDF rendering switched to a compatible mode.'),
-    }), [lease, mirror, mirrorView, mirrorCoverage, onNotice, pageLayer, pdf, session, stack]);
+    }), [lease, mirror, mirrorView, mirrorCoverage, onNotice, pageLayer, pdf, session, stack, textMirror.updateView]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
     paneRef.current = platformPane;
@@ -298,13 +342,66 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         };
     }, [host, clamp, constraint, filePath, goPage, onRotate, persist, platformPane, stack, updateCamera]);
 
+    useEffect(() => registerView(filePath, {
+        kind: 'pdf',
+        describe(): PdfViewInfo {
+            const position = pagedPosition(camera.current, viewport.current, stack, INSETS) ?? { page: 0, offset: 0, zoom: 1 };
+            const bottom = camera.current.y + viewport.current.height / camera.current.z;
+            const visiblePages: number[] = [];
+            for (let index = Math.max(0, pageAt(stack, camera.current.y)); index < stack.rects.length; index++) {
+                if (stack.rects[index].y >= bottom) break;
+                visiblePages.push(index + 1);
+            }
+            return { kind: 'pdf', surface: 'original', pageCount: pdf.pages.length, page: position.page + 1,
+                offset: position.offset, zoom: position.zoom, visiblePages, selectedText: null, inverted: getPdfInverted() };
+        },
+        async capture(maxSide) {
+            const pane = platformPane.current, current = camera.current, size = viewport.current;
+            if (!pane || !active.current.isVisible || !session.isCurrent() || !Number.isFinite(maxSide) || maxSide <= 0 || !size.width || !size.height) return null;
+            const snapshot = { ...current };
+            const bitmap = await pane.captureRegion({ x: current.x, y: current.y, width: size.width / current.z, height: size.height / current.z },
+                Math.min(maxSide, 4096), { layers: ['pdf-page'], theme: 'light', inverted: false, policy: 'exact' });
+            const output = await bitmapPng(bitmap);
+            const now = camera.current;
+            return session.isCurrent() && active.current.isVisible && snapshot.x === now.x && snapshot.y === now.y && snapshot.z === now.z ? output : null;
+        },
+        async renderPage(pageNumber, maxSide) {
+            const index = pageNumber - 1, page = pdf.pages[index];
+            if (!Number.isInteger(pageNumber) || !page || !Number.isFinite(maxSide) || maxSide <= 0 || !session.isCurrent()) return null;
+            const scale = Math.min(maxSide, 4096) / Math.max(page.width, page.height);
+            const bitmap = await pdf.poolDocument.renderPage(index, scale, { priority: 0, variant: 'plain', profileKey: 'plain', maxPixels: 4096 * 4096 });
+            const output = await bitmapPng(bitmap);
+            return session.isCurrent() ? output : null;
+        },
+        async pdfText(pages) {
+            const result: Array<{ page: number; text: string }> = [];
+            for (const page of pages) {
+                if (!Number.isInteger(page) || page < 1 || page > pdf.pages.length) continue;
+                const reply = await pdf.poolDocument.text(page - 1, 'text', { priority: 0 });
+                if (!session.isCurrent() || reply.docKey !== pdf.poolDocument.docKey || reply.page !== page - 1 || reply.schema !== 2) {
+                    throw new Error('PDF text changed during the request.');
+                }
+                if (reply.quality === 'partial') throw new Error(`PDF text on page ${page} is incomplete.`);
+                result.push({ page, text: reply.text });
+            }
+            return result;
+        },
+    }), [filePath, pdf, platformPane, session, stack]);
     useEffect(() => { platformPane.current?.invalidate('pdf-invert'); }, [inverted, platformPane]);
     useEffect(() => {
         const observer = new MutationObserver(() => platformPane.current?.invalidate('pdf-theme'));
         observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-theme'] });
         return () => observer.disconnect();
     }, [platformPane]);
-    useEffect(() => () => { if (settle.current) clearTimeout(settle.current); flushPdfViewPositions(); }, []);
+    useEffect(() => {
+        window.addEventListener('pagehide', flushPdfViewPositions);
+        return () => {
+            window.removeEventListener('pagehide', flushPdfViewPositions);
+            if (settle.current) clearTimeout(settle.current);
+            if (positionFlush.current) clearTimeout(positionFlush.current);
+            flushPdfViewPositions();
+        };
+    }, []);
     const zoomBy = (factor: number) => {
         const old = camera.current, z = constraint.clampZoom(old.z * factor, viewport.current);
         const x = viewport.current.width / 2, y = viewport.current.height / 2;
@@ -312,7 +409,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
     };
 
     return <div className={`pdf-viewer pdf-tiled-view${thumbs ? ' has-thumbs' : ''}`}>
-        {thumbs && <PdfThumbnails ref={thumbsRef} sizes={pdf.pages} renderThumbnail={renderThumbnail} onSelect={goPage} initialPage={page} />}
+        {thumbs && isVisible && <PdfThumbnails ref={thumbsRef} sizes={pdf.pages} renderThumbnail={renderThumbnail} onSelect={goPage} initialPage={page} />}
         <div className="pdf-tiled-content"><div className="pdf-tiled-surface" ref={setHost} tabIndex={0} aria-label="PDF pages" />
             <div className="pdf-tiled-overlays" ref={setOverlay} /></div>
         <div className="pdf-viewer-controls">

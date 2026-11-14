@@ -190,6 +190,7 @@ export default defineConfig([
           dark: true,
           // PdfTiledView is itself a lazy switch target; its engine imports must
           // stay behind that boundary rather than moving into PdfPane/App.
+          // usePdfTextMirror is reached only through the lazy PdfTiledView chunk.
           darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts'],
           // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
           // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.

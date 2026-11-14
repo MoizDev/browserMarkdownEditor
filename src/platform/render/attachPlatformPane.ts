@@ -43,6 +43,10 @@ function sameDocument(a: RenderToken, b: RenderToken): boolean {
         a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 }
 
+function sameFrame(a: FrameToken, b: FrameToken): boolean {
+    return sameDocument(a, b) && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
+}
+
 /** View lifetime only: the session, its source and its mirrors survive disposal. */
 export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: HTMLElement, options: PlatformPaneOptions<T>) => {
     if (!cpuFactory) throw new Error('Register the 2D compositor before attaching a platform pane');
@@ -271,14 +275,13 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     presented = encoding?.submit();
                                     if (!presented) return null;
                                     const coverage = drawing.coverage(frame);
-                                    if (!coverage.presented) return null;
+                                    if (!coverage.presented || coverage.frameId !== frame.frameId || !sameFrame(coverage.token, frame.token)) return null;
                                     complete = coverage.complete;
                                     sharp = coverage.sharp;
                                     qualityScale = coverage.qualityScale;
                                 }
                                 const current = token();
-                                if (!complete || !current || !sameDocument(current, frame.token) || current.viewLease !== frame.token.viewLease ||
-                                    current.deviceGeneration !== frame.token.deviceGeneration || options.revision() !== revision) return null;
+                                if (!complete || !current || !sameFrame(current, frame.token) || options.revision() !== revision) return null;
                                 if (drawing === compositor) {
                                     lifecycle?.note2DPresented(frame.token, revision);
                                     cpuPresented = true;

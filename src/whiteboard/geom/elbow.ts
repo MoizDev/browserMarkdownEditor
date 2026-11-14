@@ -17,6 +17,10 @@ export interface ElbowRequest {
 }
 export type ElbowRoute = { readonly status: 'ready'; readonly points: readonly Vec2[]; readonly length: number }
     | { readonly status: 'unroutable' };
+export interface ElbowStepRequest extends Omit<ElbowRequest, 'validPort' | 'crossesForbidden'> {
+    validPort(points: readonly Vec2[], terminal: 'start' | 'end'): Generator<void, boolean>;
+    crossesForbidden(points: readonly Vec2[]): Generator<void, boolean>;
+}
 function finitePoint(p: Vec2): boolean { return !!p && Number.isFinite(p.x) && Number.isFinite(p.y); }
 function simplify(input: readonly Vec2[]): Vec2[] {
     const result: Vec2[] = [];
@@ -46,7 +50,7 @@ function directionMatches(direction: Vec2 | undefined, from: Vec2, toward: Vec2 
 }
 
 /** No least-bad fallback: terminal and target checks admit before any ranking. */
-export function routeElbow(request: ElbowRequest): ElbowRoute {
+export function* routeElbowSteps(request: ElbowStepRequest): Generator<void, ElbowRoute> {
     const { start, end, mid, escape } = request;
     if (!finitePoint(start) || !finitePoint(end) || !Number.isFinite(mid) || mid < 0 || mid > 1
         || !escape || ![escape.x, escape.y, escape.width, escape.height].every(Number.isFinite)
@@ -60,18 +64,26 @@ export function routeElbow(request: ElbowRequest): ElbowRoute {
     const startSide = Math.abs(start.x - left) <= Math.abs(start.x - right) ? left : right;
     const endSide = startSide === left ? right : left;
     const escapeY = Math.abs(start.y - top) + Math.abs(end.y - top) <= Math.abs(start.y - bottom) + Math.abs(end.y - bottom) ? top : bottom;
-    const candidates: readonly (readonly Vec2[])[] = [
+    const candidates: Vec2[][] = [
         [start, { x, y: start.y }, { x, y: end.y }, end],
         [start, { x: start.x, y }, { x: end.x, y }, end],
         [start, { x: startSide, y: start.y }, { x: startSide, y: escapeY },
             { x: endSide, y: escapeY }, { x: endSide, y: end.y }, end],
     ];
+    // Both ways around the terminal union must be admitted before ranking;
+    // the geometrically shorter side can be forbidden by a port or target.
+    for (const a of [left, right]) for (const b of [left, right]) for (const outside of [top, bottom])
+        candidates.push([start, { x: a, y: start.y }, { x: a, y: outside },
+            { x: b, y: outside }, { x: b, y: end.y }, end]);
+    for (const a of [top, bottom]) for (const b of [top, bottom]) for (const outside of [left, right])
+        candidates.push([start, { x: start.x, y: a }, { x: outside, y: a },
+            { x: outside, y: b }, { x: end.x, y: b }, end]);
     let best: { points: Vec2[]; bends: number; length: number; id: number } | undefined;
     for (let id = 0; id < candidates.length; id++) {
         const points = simplify(candidates[id]);
         if (!points.every(finitePoint) || !directionMatches(request.startDirection, points[0], points[1])
-            || !directionMatches(request.endDirection, points[points.length - 1], points[points.length - 2])
-            || !request.validPort(points, 'start') || !request.validPort(points, 'end') || request.crossesForbidden(points)) continue;
+            || !directionMatches(request.endDirection, points[points.length - 1], points[points.length - 2])) continue;
+        if (!(yield* request.validPort(points, 'start')) || !(yield* request.validPort(points, 'end')) || (yield* request.crossesForbidden(points))) continue;
         let length = 0;
         for (let i = 1; i < points.length; i++) length += Math.abs(points[i].x - points[i - 1].x) + Math.abs(points[i].y - points[i - 1].y);
         if (!Number.isFinite(length)) continue;
@@ -82,4 +94,14 @@ export function routeElbow(request: ElbowRequest): ElbowRoute {
     }
     if (!best) return { status: 'unroutable' };
     return { status: 'ready', points: best.points, length: best.length };
+}
+
+// A synchronous validator is one step of the generator-shaped request routeElbowSteps takes.
+function* completed<T>(value: T): Generator<void, T> { yield; return value; }
+
+export function routeElbow(request: ElbowRequest): ElbowRoute {
+    const steps = routeElbowSteps({ ...request,
+        validPort: (points, terminal) => completed(request.validPort(points, terminal)),
+        crossesForbidden: points => completed(request.crossesForbidden(points)) });
+    for (;;) { const next = steps.next(); if (next.done) return next.value; }
 }

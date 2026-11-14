@@ -2,8 +2,7 @@ import { exactAffinePoint } from './exactAffine';
 import type { ExactPoint } from './homogeneous';
 import { sameExactPoint } from './homogeneous';
 import { createCurveCircleRootsJob, type CircleRootBox } from './curveCircleRoots';
-import { createContourBoxClearJob } from './contourBoxClearJob';
-import { createFillPointJob } from './fillPoint';
+import { createContourBoxFillJob } from './contourBoxFillJob';
 import { certifiedAngleBox, certifiedPi, certifiedSinCos } from './certifiedAngle';
 import { add, divide, dyadic, dyadicSubtract, interval, multiply, subtract, type Interval } from './numeric';
 import type { ExactCurve } from './exactCurve';
@@ -125,27 +124,18 @@ export function* certifiedConnectorArcCrossings(arc: ArcGeometry, length: number
         const box = { x: add(interval(arc.centre.x), multiply(interval(arc.radius), trig.cos)),
             y: add(interval(arc.centre.y), multiply(interval(arc.radius), trig.sin)) };
         if (![box.x.lo, box.x.hi, box.y.lo, box.y.hi].every(Number.isFinite)) throw new RangeError('Connector arc sample overflows');
-        const point = { x: box.x.lo / 2 + box.x.hi / 2, y: box.y.lo / 2 + box.y.hi / 2 };
-        if (point.x < box.x.lo || point.x > box.x.hi || point.y < box.y.lo || point.y > box.y.hi) throw new RangeError('Connector arc sample cannot be represented');
         let inside = true;
         for (const contour of contours) {
-            const clear = createContourBoxClearJob(contour.outline, contour.localToWorld, box, { maxCommands: maxPieces });
+            const fill = createContourBoxFillJob(contour.outline, contour.localToWorld, box, { maxCommands: maxPieces });
             try {
                 for (;;) {
-                    const result = clear.step({ deadline: performance.now() + 3, maxWork: 1 });
+                    const result = fill.step({ deadline: performance.now() + 3, maxWork: 1 });
                     if (result.status === 'pending') { yield; continue; }
                     if (result.status === 'uncertain') throw new RangeError(result.reason);
+                    if (result.status === 'outside') inside = false;
                     break;
                 }
-            } finally { clear.cancel(); }
-            const fill = createFillPointJob([contour.outline], point, 'nonzero', { localToWorld: contour.localToWorld, maxCommands: maxPieces });
-            for (;;) {
-                const result = fill.step({ deadline: performance.now() + 3, maxWork: 1 });
-                if (result.status === 'pending') { yield; continue; }
-                if (result.status === 'uncertain') throw new RangeError(result.reason);
-                if (result.status === 'outside') inside = false;
-                break;
-            }
+            } finally { fill.cancel(); }
             yield; if (!inside) break;
         }
         states.push(inside); yield;

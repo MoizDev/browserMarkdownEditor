@@ -50,7 +50,7 @@ class PdfiumDocument implements BackendDoc {
         const signatures = runtime.call('FPDF_GetSignatureCount', document);
         if (!Number.isSafeInteger(signatures) || signatures < 0) throw new PdfEngineError('FileError', 'PDF signature inventory is unavailable');
         const type = runtime.call('FPDF_GetFormType', document);
-        const formType = type === 0 ? 'none' : type === 1 ? 'acroform' : type === 2 || type === 3 ? 'xfa' : 'unknown';
+        const formType = type === 0 ? 'none' : type === 1 ? 'acroform' : type === 2 ? 'xfa-full' : type === 3 ? 'xfa-foreground' : 'unknown';
         const version = withPdfiumMemory(runtime, 4, pointer => runtime.call('FPDF_GetFileVersion', document, pointer)
             ? heapView(runtime, pointer, 4).getInt32(0, true) : null);
         const attachments = this.inventory();

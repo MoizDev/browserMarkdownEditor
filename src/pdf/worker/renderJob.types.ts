@@ -5,6 +5,7 @@ import type { DeviceRect } from '../engine/types';
 export interface RenderSliceHooks {
     readonly signal: AbortSignal;
     heartbeat(): void;
+    cooperate?(): Promise<void>;
 }
 export interface CopiedTile {
     readonly pixels: ArrayBuffer;

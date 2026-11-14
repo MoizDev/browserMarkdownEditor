@@ -15,10 +15,9 @@ import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
 import { ImageWidget, imageEmbedActions, imageEmbedKeymap } from './imageWidget';
 import type { ImageContext, ImageEmbedActions } from './imageWidget';
-import { embedPattern } from '../utils/assets';
 import { TableWidget } from './tableWidget';
 import { tableReadingSelection } from './tableReadingSelection';
-import { blankRowText, cellAt, delimiterCellText, findTables, parseTableLayout, rowColumnCount, tableLayoutAt } from './tableModel';
+import { blankRowText, cellAt, delimiterCellText, parseTableLayout, rowColumnCount, tableLayoutAt } from './tableModel';
 import { focusTableCell, tableDomAt } from './tableEdit';
 import { MermaidWidget } from './mermaidWidget';
 import { HIDE } from './hiddenMarker';
@@ -349,7 +348,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // selection-only rebuild — which is every arrow key and click in edit mode
     // — reuses them instead of re-flattening the document and re-scanning it.
     const analysis = analyzeDoc(state);
-    const { doc, codeRanges, mathRegions } = analysis;
+    const { codeRanges, mathRegions } = analysis;
     const intersectsMath = (a: number, b: number) => overlapsMath(analysis, a, b);
     // The same question asked of code, named for the same reason: four regex
     // passes below need it, and a hand-copied half-open comparison at each is
@@ -809,10 +808,9 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // Regions come from findMathRegions (computed above). Cursor outside →
     // rendered KaTeX widget; cursor inside → the raw source stays visible and
     // gets Obsidian-style LaTeX syntax highlighting in Fira Code.
-    let match: RegExpExecArray | null;
     for (const region of mathRegions) {
         if (editorMode !== 'read' && cursorInRange(state, region.from, region.to)) {
-            decorations.push(...latexSourceDecorations(doc.slice(region.from, region.to), region.from));
+            decorations.push(...latexSourceDecorations(state.sliceDoc(region.from, region.to), region.from));
             continue;
         }
         decorations.push(
@@ -825,12 +823,10 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // ($$, $$$$ — even) and stays plain while unbalanced ($, $$$ — odd), so
     // you can see whether the next keystroke lands inside math mode.
     if (editorMode !== 'read') {
-        const dollarRunRegex = /\$+/g;
-        while ((match = dollarRunRegex.exec(doc)) !== null) {
-            const from = match.index;
-            const to = from + match[0].length;
-            if (match[0].length % 2 !== 0) continue;
-            if (doc[from - 1] === '\\') continue; // \$ — literal dollar
+        for (const match of analysis.lines.dollars) {
+            const { from, to } = match;
+            if ((to - from) % 2 !== 0) continue;
+            if (state.sliceDoc(Math.max(0, from - 1), from) === '\\') continue; // \$ — literal dollar
             if (intersectsMath(from, to)) continue;
             if (intersectsCode(from, to)) continue;
             decorations.push(LATEX_DELIM.range(from, to));
@@ -839,10 +835,8 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
 
     // === HIGHLIGHTS (==text==) ===
     // Matches: ==highlighted text==
-    const highlightRegex = /(?<!=)==(?!=)(.+?)(?<!=)==(?!=)/g;
-    while ((match = highlightRegex.exec(doc)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
+    for (const match of analysis.lines.highlights) {
+        const { from, to } = match;
 
         if (intersectsMath(from, to)) continue;
         // The third regex pass that has to re-derive by hand what the parser
@@ -871,26 +865,21 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // as one, and the markdown behind it is not something the reader edits (see
     // imageWidget.ts). The single exception is a caret already strictly inside
     // — only reachable while typing the embed, which has to stay visible.
-    const imageRegex = embedPattern();
     const selection = state.selection.main;
     const editable = editorMode !== 'read';
     let imageSelected = false;
     const images: { from: number; to: number }[] = [];
     const tables: { from: number; to: number }[] = [];
     let tableSelected = false;
-    while ((match = imageRegex.exec(doc)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
-        const filename = match[1].trim();
-        const width = match[2] ? parseInt(match[2].trim(), 10) : null;
+    for (const match of analysis.objects.embeds) {
+        const { from, to, filename, width } = match;
 
-        if (intersectsMath(from, to)) continue;
+        if (!match.accepted) continue;
         // An embed written INSIDE code is being quoted, not embedded — a note
         // (the Help guide among them) documenting `![[picture.png]]` means the
         // text. It matters more here than for the other constructs: an image is
         // never revealed by the cursor and its range is atomic, so a quoted
         // embed rendered as a picture could not be read or edited back at all.
-        if (intersectsCode(from, to)) continue;
         if (editorMode !== 'read' && caretInsideRange(state, from, to)) continue;
 
         const selected = imageCtx.editable && selection.from === from && selection.to === to;
@@ -907,13 +896,11 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // === WIKILINKS (Obsidian Syntax) ===
     // Matches: [[Note]], [[Note|alias]], [[Note#heading]]
     // The leading (!?) lets us skip image embeds ![[file.png]] (handled above).
-    const wikiRegex = /(!?)\[\[([^\]\n]+?)\]\]/g;
-    while ((match = wikiRegex.exec(doc)) !== null) {
-        if (match[1] === '!') continue; // image embed, not a note link
+    for (const match of analysis.lines.wikilinks) {
+        if (match.groups[0] === '!') continue; // image embed, not a note link
 
-        const from = match.index;
-        const to = from + match[0].length;
-        const inner = match[2];
+        const { from, to } = match;
+        const inner = match.groups[1];
         const pipeIndex = inner.indexOf('|');
         const target = (pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner).split('#')[0].trim();
 
@@ -960,7 +947,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // the atom below and the editable widget in step: an atomic, never-revealed
     // range with no contenteditable cell in it would be a block of the user's
     // own text with no way to put a caret in it at all.
-    for (const span of findTables(doc)) {
+    for (const span of analysis.objects.tables) {
         // A table written inside code is being QUOTED, not tabulated — and it
         // matters more here than for any other construct, exactly as it does
         // for images: an object that is never revealed and whose range is
@@ -971,7 +958,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         // lines — so an intersection test would reject any table with one
         // `code` span in one cell. A fence contains the whole table; an inline
         // span inside a cell never can.
-        if (containsRange(codeRanges, span.from, span.to)) continue;
+        if (!span.accepted) continue;
         // No math guard, deliberately: overlapsMath is an intersection too, so
         // it would reject any table containing $x$, and a containment version
         // could only fire for a table wholly inside a math region, which cannot
@@ -980,7 +967,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         tableSelected ||= selected;
         decorations.push(
             Decoration.replace({
-                widget: new TableWidget(doc.slice(span.from, span.to), editable, selected,
+                widget: new TableWidget(state.sliceDoc(span.from, span.to), editable, selected,
                     state.facet(readingEmphasisFacet)),
             }).range(span.from, span.to)
         );
@@ -1275,8 +1262,8 @@ export function createLivePreviewPlugin(imageCtx: ImageContext, actions: ImageEm
         tableReadingSelection,
         imageEmbedActions.of(actions),
         imageEmbedKeymap,
-        tableEntryKeymap(livePreviewField),
-        tableAdoptListener(livePreviewField),
+        tableEntryKeymap(),
+        tableAdoptListener(),
     ];
 }
 
@@ -1296,8 +1283,19 @@ function loneCaret(state: EditorState): number | null {
     return main.head;
 }
 
-function tablesIn(view: EditorView, field: StateField<LivePreview>): readonly { from: number; to: number }[] {
-    return view.state.field(field, false)?.tables ?? [];
+function tableAt(view: EditorView, position: number, edge: 'from' | 'to' | 'inside') {
+    const tables = analyzeDoc(view.state).objects.tables;
+    let lo = 0, hi = tables.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const key = edge === 'from' ? tables[mid].from : tables[mid].to;
+        if (key < position || (edge === 'inside' && key === position)) lo = mid + 1;
+        else hi = mid;
+    }
+    const table = tables[lo];
+    if (!table?.accepted) return undefined;
+    if (edge === 'inside') return table.from < position && position < table.to ? table : undefined;
+    return table[edge] === position ? table : undefined;
 }
 
 /** Put the caret in a cell of the table drawn at `from`, choosing the column
@@ -1334,7 +1332,7 @@ function enterTable(view: EditorView, from: number, edge: 'first' | 'last', x: n
  * "a click selects the object" treatment a picture gets; a second press then
  * deletes the selection through the default command.
  */
-function tableEntryKeymap(field: StateField<LivePreview>): Extension {
+function tableEntryKeymap(): Extension {
     /**
      * Would an ordinary ArrowDown/ArrowUp leave this LOGICAL line?
      *
@@ -1365,7 +1363,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         const line = view.state.doc.lineAt(pos);
         if (line.number >= view.state.doc.lines) return false;
         const next = view.state.doc.line(line.number + 1).from;
-        const table = tablesIn(view, field).find(t => t.from === next);
+        const table = tableAt(view, next, 'from');
         if (!table || !leavesLine(view, pos, true)) return false;
         return enterTable(view, table.from, 'first', view.coordsAtPos(pos)?.left ?? null);
     };
@@ -1377,7 +1375,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         const line = view.state.doc.lineAt(pos);
         if (line.number <= 1) return false;
         const previous = view.state.doc.line(line.number - 1).to;
-        const table = tablesIn(view, field).find(t => t.to === previous);
+        const table = tableAt(view, previous, 'to');
         if (!table || !leavesLine(view, pos, false)) return false;
         return enterTable(view, table.from, 'last', view.coordsAtPos(pos)?.left ?? null);
     };
@@ -1386,7 +1384,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         if (!canWrite(view.state)) return false;
         const pos = loneCaret(view.state);
         if (pos === null) return false;
-        const table = tablesIn(view, field).find(t => (side === 'from' ? t.from : t.to) === pos);
+        const table = tableAt(view, pos, side);
         if (!table) return false;
         return enterTable(view, table.from, side === 'from' ? 'first' : 'last', null);
     };
@@ -1397,7 +1395,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
         // Already exactly a table? Then this is the second press: let the
         // default command delete the selection.
         if (pos === null) return false;
-        const table = tablesIn(view, field).find(t => (side === 'to' ? t.to : t.from) === pos);
+        const table = tableAt(view, pos, side);
         if (!table) return false;
         view.dispatch({ selection: EditorSelection.single(table.from, table.to) });
         return true;
@@ -1478,7 +1476,7 @@ function tableEntryKeymap(field: StateField<LivePreview>): Extension {
  * Legal to dispatch from here: updateListener handlers run after CodeMirror has
  * reset updateState to Idle, unlike updateDOM and destroy.
  */
-function tableAdoptListener(field: StateField<LivePreview>): Extension {
+function tableAdoptListener(): Extension {
     return EditorView.updateListener.of((update) => {
         const { view } = update;
         // hasFocus requires the contentDOM to be the active element, so this is
@@ -1486,18 +1484,18 @@ function tableAdoptListener(field: StateField<LivePreview>): Extension {
         // including the moment right after a write-back, when Chromium has
         // blurred the cell to BODY and the repair has not run yet.
         if (!view.hasFocus || !canWrite(view.state)) return;
-        const tables = view.state.field(field, false)?.tables ?? [];
-        if (tables.length === 0) return;
         const pos = loneCaret(view.state);
         if (pos === null) return;
 
-        for (const table of tables) {
-            if (pos <= table.from || pos >= table.to) continue;
+        {
+            const table = tableAt(view, pos, 'inside');
+            if (table) {
             const dom = tableDomAt(view, table.from);
             const layout = dom ? parseTableLayout(view.state.doc, table.from) : null;
             const cell = layout ? cellAt(layout, pos) : null;
-            if (dom && cell) focusTableCell(dom, cell.row, cell.col, 'end');
-            return;
+                if (dom && cell) focusTableCell(dom, cell.row, cell.col, 'end');
+                return;
+            }
         }
 
         if (!update.transactions.some(tr => tr.isUserEvent('input.type'))) return;
@@ -1505,8 +1503,9 @@ function tableAdoptListener(field: StateField<LivePreview>): Extension {
         for (const tr of update.transactions) {
             tr.changes.iterChanges((_fromA, _toA, _fromB, toB) => { insertionEnds.add(toB); });
         }
-        for (const table of tables) {
-            if (pos !== table.to || !insertionEnds.has(table.to)) continue;
+        {
+            const table = tableAt(view, pos, 'to');
+            if (!table || !insertionEnds.has(table.to)) return;
             const dom = tableDomAt(view, table.from);
             const layout = dom ? parseTableLayout(view.state.doc, table.from) : null;
             const lastRow = layout?.rows[layout.rows.length - 1];

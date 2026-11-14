@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useRef } from 'react';
 import { copyText, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
 import { closeContextMenu, getContextMenu } from '../utils/contextMenu';
-import { COPY_TOO_LARGE, MAX_COPY_UTF16_UNITS, normalizeForClipboard } from '../pdf/text/copy';
+import { cachedSelectionText, COPY_TOO_LARGE, MAX_COPY_UTF16_UNITS, normalizeForClipboard } from '../pdf/text/copy';
 import { selectionContains, selectionRange } from '../pdf/text/selection';
 import { PdfSelectionGestures } from '../pdf/text/selectionGestures';
 import type { PdfSelectionState } from '../pdf/text/selectionState';
@@ -122,5 +122,11 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
             });
         })().catch(error => { if (!task.signal.aborted) live.current.notice(error instanceof Error ? error.message : 'Could not open PDF text menu.'); });
     }, []);
-    return { openMenu };
+    const cancelCopy = useCallback(() => binding.current?.cancel() ?? false, []);
+    const selectedText = useCallback(() => {
+        const current = live.current, selection = current.selection.getSnapshot().selection;
+        if (!selection || !current.geometry) return { text: '', incomplete: false };
+        return cachedSelectionText(selection, current.document.info.pageCount, current.geometry.cachedTextPages());
+    }, []);
+    return { openMenu, cancelCopy, selectedText };
 }

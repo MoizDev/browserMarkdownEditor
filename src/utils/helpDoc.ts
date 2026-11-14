@@ -438,7 +438,7 @@ In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, incl
 - Chrome's **Edit → Find** menu still opens Chrome's own bar, which sees only built text layers, not necessarily every page. Use the keyboard shortcut for complete PDF find.
 
 A PDF opens in a reader: scroll it, select its text, search every page with the
-app's \`Cmd + F\` / \`Ctrl + F\`, follow its links, and jump to a page with the box at the bottom.
+app's \`Cmd + F\` / \`Ctrl + F\`, follow its links, and jump to a physical page by typing its number in the box at the bottom and pressing \`Enter\`. The thumbnails use those same page numbers; the current page is highlighted. \`Home\` and \`End\` go to the first and last page, and \`Page Up\` / \`Page Down\` scroll by a screenful.
 Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
 beside the page box opens a **strip of page thumbnails** down the left; click one
 to go to that page. The button next to it **inverts the pages** so they are easy on the
@@ -466,7 +466,7 @@ whose page is unknown appears above the document. Its thumbnail says
 **Try again** reopens the PDF; it does not repair or change the original file.
 In Annotate, switch to View to retry without disturbing your ink.
 
-**PDF limitations.** The current reader has page thumbnails but no outline/bookmark panel. Form fields and XFA are not interactive here; scripts and active PDF content do not run. Scanned pictures are not OCR'd. An unusual PDF using \`/UserUnit\` may display at a different relative size in another PDF engine; check its Original pages when comparing viewers.
+**PDF limitations.** The current reader has page thumbnails but no outline/bookmark panel. Open **PDF features** or **PDF limitations** for the file's known restrictions. Encrypted files are read-only; a PDF that forbids copying cannot be selected, copied, searched as text or read as text by the agent. Form fields show saved appearances and cannot be edited; XFA may be missing. PDF scripts, form submission and launch actions do not run. Scanned pictures are not OCR'd. An unusual PDF using \`/UserUnit\` may display at a different relative size in another PDF engine; check its Original pages when comparing viewers.
 
 If rendering makes no progress for a while, **This PDF is taking longer than usual**
 lets you keep waiting or choose **Try again** to restart the renderer. Slow scans

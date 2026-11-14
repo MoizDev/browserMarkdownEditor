@@ -139,8 +139,8 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `import/segments.ts` | w-o | IMP-2, E-IMP-15 | import §3; current-format §2.3 | Documented legacy point layout and corpus facts; no old canvas or tldraw source | none | 2026-11-13 |
-| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping, sheet-aware asynchronous geometry preparation, notebook and saved PDF backdrop layout | none | 2026-11-13 |
-| `import/worldBounds.ts` | w-o | IMP-3, E-IMP-4/7/9 | import §3.1; text §6 | Public text layout/geometry scale contract; world-space figure provider, orphan roots, parent transforms and group bounds | none | 2026-11-13 |
+| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping, bounds-error ambiguity refusal, notebook and saved PDF backdrop layout | none | 2026-11-13 |
+| `import/worldBounds.ts` | w-o | IMP-3, E-IMP-4/7/9 | import §3.1; text §6 | Public text layout/geometry scale contract; w-h world-space figure provider and certified error, orphan roots and group bounds | none | 2026-11-13 |
 | `import/report.ts` | w-o | IMP-5 | import §§1,6 | Import report and notice contract | none | 2026-11-13 |
 | `import/records/envelope.ts` | w-o | IMP-1, E-IMP-1/2/4 | import §§2,6; current-format §§1–3 | Observed envelopes, bounded admission, schema counters and metadata retention | none | 2026-11-13 |
 | `import/preflight.ts` | w-o | IMP-1, E-IMP-1, SEC-W1 | security §§3–4 | Independent UTF-8 byte counting and JSON nesting budget | none | 2026-11-13 |
@@ -152,7 +152,7 @@ third-party code included (normally "none") · date.
 | `import/records/bindings.ts` | w-o | IMP-1, E-IMP-5 | import §§3,6 | Documented connector bindings and dangling-target rule | none | 2026-11-13 |
 | `import/records/fields.ts` | w-o | IMP-1, E-IMP-3 | import §§2–3,6 | Observed common/shape properties and unknown-field refusal | none | 2026-11-13 |
 | `import/records/labelled.ts` | w-o | IMP-1 | import §3; geometry §3.2 | Documented figure, text, note and connector fields; shared style metrics; rich reader injected | none | 2026-11-13 |
-| `import/records/media.ts` | w-o | IMP-1, E-IMP-6 | import §3; security §4 | Inline asset format and w-q SEC-W4 admission seam | none | 2026-11-13 |
+| `import/records/media.ts` | w-o | IMP-1, E-IMP-6 | import §3; security §4 | Inline asset format, retained original non-source metadata and w-q SEC-W4 admission seam | none | 2026-11-13 |
 | `import/records/pictures.ts` | w-o | IMP-1 | import §3; current-format §2; media §11 | Observed picture, video and bookmark fields; inert remote preview URLs never fetched on import | none | 2026-11-13 |
 | `import/records/view.ts` | w-o | IMP-1 | import §3; current-format §§2,6 | Documented session, camera and UI fields | none | 2026-11-13 |
 | `import/scale.ts` | w-o | IMP-3, E-IMP-9 | import §3.1; contracts C2.3 | Uniform page-local transformation of public model records, text/sticky scale applied once | none | 2026-11-13 |
@@ -189,6 +189,7 @@ third-party code included (normally "none") · date.
 | `export/streamPdf.ts` | lane w-k | F-EXPORT-004/005; EX-2/3/4 | export §§2, 6; PDF writing §3 | One pinned revision, incrementally assembled page display lists and injected PDF writer; no tldraw source | none | 2026-11-13 |
 | `export/snapshot.ts` | lane w-k | F-EXPORT-001/002/003/004; EX-2/3/5 | export §2 | One revision/media lease, identity validation and cleanup across asynchronous capture; no tldraw source | none | 2026-11-13 |
 | `export/snapshotExport.ts` | lane w-k | F-EXPORT-001/002/003; EX-2/3/5 | export §§2–5 | Pinned snapshot to shared-worker raster PNG and streamed SVG; no tldraw source | none | 2026-11-13 |
+| `export/scope.ts` | lane w-k | F-EXPORT-001/002/003/005/006; EX-2/3 | export §§1–2, 8 | Menu versus selection scope, paged backdrop choice and deterministic timestamped download names; no tldraw source | none | 2026-11-13 |
 | `export/rasterWire.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3; platform C5 | Cloneable shared-painter geometry and owned bitmap transfer contract; no tldraw source | none | 2026-11-13 |
 | `export/rasterWorkerHandler.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Sliced worker-safe OffscreenCanvas shared painter, padded tiles and streaming PNG; no tldraw source | none | 2026-11-13 |
 | `export/streamRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3; platform C5 | Pinned paint stream, shared ink outline, chunked geometry and owned bitmap transfers; no tldraw source | none | 2026-11-13 |

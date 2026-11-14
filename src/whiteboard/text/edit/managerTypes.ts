@@ -3,6 +3,8 @@ import type { TextNode } from '../../model/nodes';
 import type { NodeId } from '../../model/ids';
 import type { EditSelection } from './host';
 import type { EditableSessionPort, TextEditBinding, TextEditBindingOptions } from './bindingTypes';
+import type { Modifiers, RealSample } from '../../input/tool';
+import type { PointerRoute } from '../../input/pointerRouter';
 
 export interface TextEditingManagerPorts {
     readonly session: EditableSessionPort;
@@ -18,7 +20,18 @@ export interface TextInputBridge {
     type(text: string): boolean;
     enter(): boolean;
     doubleClick(clientX: number, clientY: number): boolean;
+    /** Close on click-away or return a gesture owner for selection inside the edited text. */
+    pointer(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<unknown> | null;
     flush(): void;
+}
+export interface TextInputRoutingPorts {
+    readonly manager: TextEditingManager;
+    selected(): NodeId | null;
+    /** null means a non-text hit; 'blank' permits double-click creation. */
+    locate(clientX: number, clientY: number): { readonly node: NodeId; readonly offset: number } | 'blank' | null;
+    containsActive(clientX: number, clientY: number): boolean;
+    clientToWorld(clientX: number, clientY: number): { readonly x: number; readonly y: number };
+    worldToClient(x: number, y: number): { readonly x: number; readonly y: number };
 }
 export interface TextEditingManager {
     readonly current: TextEditBinding | null;

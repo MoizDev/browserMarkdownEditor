@@ -138,7 +138,7 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
             canvas.height = Math.ceil(viewport.height);
             const context = canvas.getContext('2d');
             let rendering: import('pdfjs-dist').RenderTask | undefined;
-            let emphasis: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
+            let emphasis: ReturnType<typeof bindPdfNativeEmphasis> | undefined;
             const cancel = () => rendering?.cancel();
             signal?.addEventListener('abort', cancel);
             try {
@@ -148,7 +148,7 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
                 const verdict = session.emphasisVerdicts.getVerdict(key);
                 const useOn = emphasisEnabled && verdict.kind === 'verified' && verdict.result.supported && verdict.result.eligible > 0;
                 let plan = useOn ? getPdfEmphasisPlan(page) : undefined;
-                if (plan) emphasis = await bindPdfNativeEmphasis(page, context, true, plan);
+                if (plan) emphasis = bindPdfNativeEmphasis(page, context, plan);
                 rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis?.operationsFilter });
                 await rendering.promise;
                 signal?.throwIfAborted();
@@ -161,7 +161,7 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
                             : !rememberPdfEmphasisPlan(page, plan) ? 'page-budget' : undefined;
                         if (reason) session.emphasisVerdicts.rejectPlan(key, reason);
                         else {
-                            emphasis = await bindPdfNativeEmphasis(page, context, true, plan);
+                            emphasis = bindPdfNativeEmphasis(page, context, plan);
                             rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis.operationsFilter });
                             await rendering.promise;
                             signal?.throwIfAborted();

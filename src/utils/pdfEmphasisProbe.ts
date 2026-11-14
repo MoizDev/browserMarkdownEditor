@@ -39,7 +39,7 @@ export async function probeClassicPdfEmphasis(page: PDFPageProxy, signal: AbortS
         throw new Error('Could not allocate PDF emphasis probe');
     }
     let task: RenderTask | undefined;
-    let binding: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
+    let binding: ReturnType<typeof bindPdfNativeEmphasis> | undefined;
     const cancel = () => task?.cancel();
     signal.addEventListener('abort', cancel);
     try {
@@ -53,7 +53,7 @@ export async function probeClassicPdfEmphasis(page: PDFPageProxy, signal: AbortS
         const plan = suppliedPlan ?? makePdfEmphasisPlan(list);
         if (!plan.result.supported) throw new Error(plan.result.reason ?? 'glyph-data');
         if (!rememberPdfEmphasisPlan(page, plan)) throw new Error('page-budget');
-        binding = await bindPdfNativeEmphasis(page, onCtx, true, plan);
+        binding = bindPdfNativeEmphasis(page, onCtx, plan);
         signal.throwIfAborted();
         task = page.render({ canvas: on, canvasContext: onCtx, viewport, operationsFilter: binding.operationsFilter });
         await guard(task.promise);

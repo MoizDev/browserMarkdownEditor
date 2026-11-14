@@ -54,14 +54,13 @@ export function stageInkCreate(op: InkCreate, context: InkCreateContext): Create
                     pressure ? (a.p ?? 0.5) + ((b.p ?? 0.5) - (a.p ?? 0.5)) * t : undefined);
             }
         }
+        // The batch keeps this lease until its commit has retained the payload; releasing it here would delete the sample.
         const lease = context.admit(samples);
-        try {
-            const width = styleGeometryMetrics.actualWidth('stroke:pen', op.size ?? 's', 1);
-            const node = createStroke({ ...base, x: origin.x, y: origin.y, tool: 'pen', samples: lease.ref,
-                pressure: pressure ? 'real' : 'none', widthModel: pressure ? { id: 'pressure-linear-v1', rMin: 0, rMax: width / 2 } : { id: 'uniform' },
-                geomVersion: 1, fairTol: 0, closed: op.closed ?? false, width, color: op.color ?? 'black' });
-            builder.push({ t: 'create', node });
-        } finally { lease.release(); }
+        const width = styleGeometryMetrics.actualWidth('stroke:pen', op.size ?? 's', 1);
+        const node = createStroke({ ...base, x: origin.x, y: origin.y, tool: 'pen', samples: lease.ref,
+            pressure: pressure ? 'real' : 'none', widthModel: pressure ? { id: 'pressure-linear-v1', rMin: 0, rMax: width / 2 } : { id: 'uniform' },
+            geomVersion: 1, fairTol: 0, closed: op.closed ?? false, width, color: op.color ?? 'black' });
+        builder.push({ t: 'create', node });
     }
     return { id, notes: target.notes };
 }

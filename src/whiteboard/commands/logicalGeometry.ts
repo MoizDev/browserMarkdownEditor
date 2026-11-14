@@ -3,10 +3,11 @@ import type { WorldPose } from '../change/coordinates';
 import { compose } from '../geom/affine';
 import { transformBox, validBox, type Box } from '../geom/bounds';
 import { polylinePath } from '../geom/polylines';
+import { isAttachedPolyline } from '../geom/polylineResolve';
 import { transformedPathBounds } from '../geom/providers';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
-import type { Node } from '../model/nodes';
+import type { Node, Point } from '../model/nodes';
 
 // C8 / geometry scope: the ONE logical-box formula. The async scope
 // (commands/geometryScope.ts) and the synchronous staged reader used by the
@@ -34,6 +35,8 @@ export function rectBox(rect: { readonly x: number; readonly y: number; readonly
 /** The caller owns fencing: `check` throws when the candidate it reads has changed. */
 export interface LogicalSource {
     prepared(id: NodeId): LogicalPrepared | undefined;
+    /** Resolved local points of an attached polyline; undefined when the reader cannot resolve them. */
+    polylinePoints(id: NodeId): readonly Point[] | undefined;
     children(id: NodeId): readonly Node[];
     pose(id: NodeId): WorldPose;
     check(): void;
@@ -73,7 +76,10 @@ export function* logicalLeafBox(source: LogicalSource, node: Readonly<Node>, tar
             for (let i = 0; i < part.discs.length; i += 3) { point(part.discs[i], part.discs[i + 1], part.discs[i + 2]); if (due()) yield; }
         }
     } else if (node.kind === 'polyline') {
-        const bounds = transformedPathBounds(polylinePath(node), nodeToTarget);
+        // An attached polyline's ends are a resolved product, never its persisted interior points alone.
+        const resolved = source.polylinePoints(node.id);
+        if (!resolved && isAttachedPolyline(node)) throw new Error(`Attached polyline geometry is unresolved: ${node.id}`);
+        const bounds = transformedPathBounds(polylinePath(resolved ? { ...node, points: [...resolved] } : node), nodeToTarget);
         if (bounds) box = rectBox(bounds);
     } else {
         if (!value.vector) throw new Error(`Vector geometry unavailable: ${node.id}`);

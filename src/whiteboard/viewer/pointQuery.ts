@@ -1,16 +1,27 @@
 import type { Affine, Rect, ViewState } from '../../platform/types';
 import { cameraTransform, worldToSurface } from '../../platform/render/camera';
-import { worldToLocal } from '../change/coordinates';
+import { worldPose, worldToLocal } from '../change/coordinates';
 import { compose } from '../geom/affine';
 import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
-import { pointPath } from '../geom/pick';
+import { createAttachmentPointJob } from '../geom/attachmentPointJob';
+import { createClippedInkPointJob } from '../geom/clippedInkJobs';
+import { createPointPathJob, type PointPathJobResult } from '../geom/pointPathJob';
+import { createClippedPointPathJob, type PointClipContour } from '../geom/clippedPointPathJob';
+import { createClippedFilledPointJob } from '../geom/clippedFilledPointJob';
+import type { PathPickOptions } from '../geom/pick';
+import { pointInTransformedFrame } from '../geom/frameContainment';
+import { boardFrameAncestors } from '../geom/ancestorFrames';
+import { resolvePolylineAttachments } from '../geom/polylineAttachments';
+import { preparePolylineGeometry } from '../geom/providers';
+import { createVectorPointJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
+import { createClippedVectorPointJob } from '../geom/clippedVectorPointJob';
 import type { InputKind, NarrowResult, PointQuery } from '../geom/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { InkCoverage } from '../ink/outline';
 import { InkPickJob } from '../ink/pick';
 import type { NodeId } from '../model/ids';
-import type { Node, ConnectorNode } from '../model/nodes';
+import type { Attachment, Node, ConnectorNode } from '../model/nodes';
 import type { SpatialRef } from '../pick';
 import type { BoardVectorGeometry } from '../render/vectorGeometry';
 import { selectableAtFocus } from '../selection';
@@ -37,35 +48,67 @@ function rectPath(rect: { x: number; y: number; width: number; height: number })
     return [{ op: 'M', p: { x: rect.x, y: rect.y } }, { op: 'L', p: { x: rect.x + rect.width, y: rect.y } },
         { op: 'L', p: { x: rect.x + rect.width, y: rect.y + rect.height } }, { op: 'L', p: { x: rect.x, y: rect.y + rect.height } }, { op: 'Z' }];
 }
-const interior = (path: readonly PathOp[], query: PointQuery) => pointPath([], query,
-    { interiorPaths: [path], strokeRadiusLocal: 0, marginCss: 0, errorCss: 0.01, maxSegments: 8192 }).hit;
-function connectorPoint(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, worldToSurface: Affine,
-    point: Vec2, input: InputKind): { result: NarrowResult; uncertain: boolean } {
+async function connectorPoint(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, worldToSurface: Affine,
+    point: Vec2, input: InputKind, frames: readonly PointClipContour[], tick: () => Promise<void>): Promise<{ result: NarrowResult; uncertain: boolean }> {
+    const run = async (paths: readonly (readonly PathOp[])[], query: PointQuery, options: PathPickOptions): Promise<Exclude<PointPathJobResult, { readonly status: 'pending' }>> => {
+        const job = createPointPathJob(paths, query, options);
+        try {
+            for (;;) {
+                const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                if (value.status !== 'pending') return value;
+                await tick();
+            }
+        } finally { job.cancel(); }
+    };
+    const base = { strokeRadiusLocal: 0, marginCss: 0, errorCss: 0.01, maxSegments: 8192 };
+    const clippedPart = async (path: readonly PathOp[], query: PointQuery, fill: boolean, strokeRadiusLocal: number, marginCss: number) => {
+        const job = createClippedFilledPointJob(path, query, { frames, fill, strokeRadiusLocal, marginCss });
+        try {
+            for (;;) {
+                const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                if (value.status !== 'pending') return value;
+                await tick();
+            }
+        } finally { job.cancel(); }
+    };
     if (geometry.label) {
-        const query = { point, input, localToSurface: compose(worldToSurface, geometry.label.localToWorld) };
-        if (interior(rectPath(geometry.label.paint.ink), query)) return { result: { hit: true, distanceCss: 0, part: 'label' }, uncertain: false };
+        const query = { point, input: 'mouse' as const, localToSurface: compose(worldToSurface, geometry.label.localToWorld) };
+        const path = rectPath(geometry.label.paint.ink);
+        const hit = frames.length ? await clippedPart(path, query, true, 0, 0) : await run([], query, { ...base, interiorPaths: [path] });
+        if (hit.status === 'hit') return { result: { hit: true, distanceCss: hit.distanceCss, part: 'label' }, uncertain: false };
+        if (hit.status === 'uncertain') return { result: { hit: true, distanceCss: 0, part: 'label' }, uncertain: true };
     }
     const query: PointQuery = { point, input, localToSurface: worldToSurface };
-    const options = { strokeRadiusLocal: node.width / 2, marginCss: 4, errorCss: 0.01, maxSegments: 8192 };
+    const options = { ...base, strokeRadiusLocal: node.width / 2, marginCss: 4 };
+    let uncertainHead = false;
     for (const head of geometry.heads) {
         const closed = head.at(-1)?.op === 'Z';
-        const hit = pointPath([head], query, { ...options, ...(closed ? { interiorPaths: [head] } : {}) });
-        if (hit.hit) return { result: { ...hit, part: 'head' }, uncertain: false };
+        const hit = frames.length ? await clippedPart(head, query, closed, node.width / 2, 4)
+            : await run([head], query, { ...options, ...(closed ? { interiorPaths: [head] } : {}) });
+        if (hit.status === 'hit') return { result: { hit: true, distanceCss: hit.distanceCss, part: 'head' }, uncertain: false };
+        if (hit.status === 'uncertain') uncertainHead = true;
     }
-    if (node.dash === 'none' || !geometry.body.length) return { result: miss, uncertain: false };
-    const hit = pointPath([geometry.body], query, options);
-    if (!hit.hit) return { result: miss, uncertain: false };
-    let excluded = false, nearBoundary = false;
-    for (const clip of geometry.bodyExclusions) {
-        const local = { point, input, localToSurface: compose(worldToSurface, clip.localToWorld) };
-        if (interior(clip.outline, local)) excluded = !excluded;
-        const radius = (input === 'touch' ? 8 : 4) + node.width * Math.hypot(worldToSurface[0], worldToSurface[1]) / 2;
-        if (pointPath([clip.outline], local, { strokeRadiusLocal: 0, marginCss: radius, errorCss: 0.01, maxSegments: 8192 }).hit) nearBoundary = true;
+    if (node.dash === 'none' || !geometry.body.length) return uncertainHead
+        ? { result: { hit: true, distanceCss: 0, part: 'head' }, uncertain: true } : { result: miss, uncertain: false };
+    const hit = await run([geometry.body], query, options);
+    if (hit.status === 'miss') return uncertainHead
+        ? { result: { hit: true, distanceCss: 0, part: 'head' }, uncertain: true } : { result: miss, uncertain: false };
+    if (hit.status === 'uncertain') return { result: { hit: true, distanceCss: 0, part: 'body' }, uncertain: true };
+    if (frames.length || geometry.bodyExclusions.length) {
+        const exclusions = geometry.bodyExclusions.map(clip => ({ outline: clip.outline, localToSurface: compose(worldToSurface, clip.localToWorld) }));
+        const job = createClippedPointPathJob([geometry.body], query, { strokeRadiusLocal: node.width / 2, marginCss: 4, frames, exclusions });
+        try {
+            for (;;) {
+                const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                if (value.status === 'pending') { await tick(); continue; }
+                if (value.status === 'hit') return { result: { hit: true, distanceCss: value.distanceCss, part: 'body' }, uncertain: false };
+                if (value.status === 'miss') return uncertainHead
+                    ? { result: { hit: true, distanceCss: 0, part: 'head' }, uncertain: true } : { result: miss, uncertain: false };
+                return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: true };
+            }
+        } finally { job.cancel(); }
     }
-    // Near an exclusion the uncut witness might be hidden. Only a point farther
-    // than its full CSS hit radius from every boundary certifies the same hit.
-    return excluded || nearBoundary ? { result: { ...hit, part: 'body' }, uncertain: true }
-        : { result: { ...hit, part: 'body' }, uncertain: false };
+    return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: false };
 }
 
 /** Queries one published Scene revision, not a second index or live paint cache. */
@@ -111,34 +154,47 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 const matrix = cameraTransform(camera), surface = worldToSurface(point, camera);
                 cursor = scene.spatialCursor({ sheetId: selection.sheet, purpose: 'selectable', includeLocked: targetMode,
                     request: { kind: 'point', x: point.x, y: point.y, maxDistance: 8 / camera.z } });
-                const refs: SpatialRef[] = [];
-                for (;;) {
-                    check();
-                    const status = cursor.resume({ maxVisits: 128, deadline: performance.now() + 3 }, ref => refs.push(ref));
-                    if (status === 'complete') break;
-                    if (status !== 'pending') throw cancelled();
-                    await tick();
-                }
-                let winner: Candidate | null = null;
+                const selectionResult: { winner: Candidate | null } = { winner: null };
+                // Only the strongest two distinct ids can challenge the final winner:
+                // at most one of them can be the winner's own promoted group.
                 const uncertain: Candidate[] = [];
-                for (const ref of refs) {
+                const stronger = (a: Candidate, b: Candidate) => targetMode ? a.rank > b.rank : better(a, b);
+                const rememberUncertain = (candidate: Candidate) => {
+                    const existing = uncertain.findIndex(value => value.id === candidate.id);
+                    if (existing >= 0) { if (stronger(candidate, uncertain[existing])) uncertain[existing] = candidate; }
+                    else uncertain.push(candidate);
+                    uncertain.sort((a, b) => stronger(a, b) ? -1 : stronger(b, a) ? 1 : a.id.localeCompare(b.id));
+                    if (uncertain.length > 2) uncertain.pop();
+                };
+                const visit = async (ref: SpatialRef): Promise<void> => {
                     check();
                     const resolved = scene.resolveSpatial(ref);
                     if (!resolved) throw cancelled();
                     const node = doc.nodes.get(resolved.id);
                     if (!node) throw cancelled();
-                    if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque')) continue;
+                    // Policy, not a gap: architecture/geometry.md §8.1 step 2 keeps stroke/polyline attachment
+                    // surfaces disabled until CONN defines their boundary/anchor; a bounding-rectangle guess is not
+                    // evidence. Connector/group/opaque targets are excluded by model V-8. Do not lift without that evidence.
+                    if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque'
+                        || node.kind === 'stroke' || node.kind === 'polyline')) return;
                     const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
-                    if (!selected || node.kind === 'group') continue;
-                    let parent = doc.nodes.get(node.parent as NodeId), clipped = false;
-                    for (let depth = 0; parent && depth < 64; depth++) {
-                        if (parent.kind === 'frame') {
-                            const local = worldToLocal(doc, parent, point);
-                            if (local.x < 0 || local.y < 0 || local.x > parent.w || local.y > parent.h) { clipped = true; break; }
+                    if (!selected || node.kind === 'group') return;
+                    let clipped = false, clipUncertain = false, outsideFrame = false;
+                    const frameClips: PointClipContour[] = [];
+                    for (const parent of boardFrameAncestors(doc, node)) {
+                        const pose = worldPose(doc, parent.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                        const frame: Affine = [c, s, -s, c, pose.x, pose.y];
+                        frameClips.push({ outline: rectPath({ x: 0, y: 0, width: parent.w, height: parent.h }), localToSurface: compose(matrix, frame) });
+                        if (!pointInTransformedFrame(point, { x: 0, y: 0, width: parent.w, height: parent.h }, frame)) {
+                            if (targetMode) { clipped = true; break; }
+                            outsideFrame = true; clipUncertain = true;
                         }
-                        parent = doc.nodes.get(parent.parent as NodeId);
+                        const local = worldToLocal(doc, parent, point);
+                        // A halo witness near the clip edge can belong entirely to hidden geometry.
+                        const halo = (input === 'touch' ? 8 : 4) + (node.kind === 'stroke' ? 4 : 0);
+                        if (Math.min(local.x, local.y, parent.w - local.x, parent.h - local.y) * camera.z <= halo) clipUncertain = true;
                     }
-                    if (clipped) continue;
+                    if (clipped) return;
                     const prepared = await options.geometry.prepareForPick(node, combined);
                     check();
                     if (!scene.ready || scene.resolveSpatial(ref)?.id !== resolved.id || scene.resolveSpatial(ref)?.rank !== resolved.rank) throw cancelled();
@@ -148,53 +204,118 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         if (!prepared.ink) throw new Error('Stroke picking geometry is unavailable');
                         let maybe = false;
                         for (const coverage of prepared.ink) {
-                            const job = new InkPickJob(coverage, localToSurface,
-                                { kind: 'point', x: surface.x, y: surface.y, pointer: input }, viewport.dpr);
-                            try {
-                                while (job.step(64) === 'pending') await tick();
-                                check();
-                                if (job.result.decision === 'hit') { result = { hit: true, distanceCss: 0, part: 'body' }; break; }
-                                if (job.result.decision === 'uncertain') maybe = true;
-                            } finally { job.cancel(); }
+                            if (frameClips.length && clipUncertain) {
+                                const job = createClippedInkPointJob(coverage, localToSurface,
+                                    { kind: 'point', x: surface.x, y: surface.y, pointer: input }, viewport.dpr, frameClips);
+                                try {
+                                    for (;;) {
+                                        const value = job.step({ deadline: performance.now() + 3, maxWork: 64 });
+                                        if (value.status === 'pending') { await tick(); continue; }
+                                        if (value.status === 'hit') { result = { hit: true, distanceCss: 0, part: 'body' }; clipUncertain = false; }
+                                        else if (value.status === 'uncertain') maybe = true;
+                                        break;
+                                    }
+                                } finally { job.cancel(); }
+                            } else {
+                                const job = new InkPickJob(coverage, localToSurface,
+                                    { kind: 'point', x: surface.x, y: surface.y, pointer: input }, viewport.dpr);
+                                try {
+                                    while (job.step(64) === 'pending') await tick();
+                                    check();
+                                    if (job.result.decision === 'hit') result = { hit: true, distanceCss: 0, part: 'body' };
+                                    else if (job.result.decision === 'uncertain') maybe = true;
+                                } finally { job.cancel(); }
+                            }
+                            if (result.hit) break;
                         }
                         if (!result.hit && maybe) { result = { hit: true, distanceCss: 0, part: 'body' }; ambiguous = true; }
                         if (targetMode && result.hit) ambiguous = true;
                     } else if (node.kind === 'connector') {
                         if (!prepared.connector) throw new Error('Connector picking geometry is unavailable');
-                        ({ result, uncertain: ambiguous } = connectorPoint(node, prepared.connector, matrix, surface, input));
+                        ({ result, uncertain: ambiguous } = await connectorPoint(node, prepared.connector, matrix, surface, input, frameClips, tick));
+                        if (!ambiguous) clipUncertain = false;
                     } else {
                         if (!prepared.vector) throw new Error('Vector picking geometry is unavailable');
+                        let vector = prepared.vector;
+                        const line = node.kind === 'polyline' ? node as typeof node & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null } : null;
+                        if (line && (line.startAttach || line.endAttach)) {
+                            const resolvedLine = await resolvePolylineAttachments(line, { runtime, doc, signal: combined, cooperate,
+                                current: () => { try { check(); return true; } catch { return false; } } });
+                            try {
+                                check(); vector = preparePolylineGeometry({ ...line, points: [...resolvedLine.points] }, { key: vector.key,
+                                    kernelVersion: 1, lengthError: 0.01, maxPieces: 8192, hitMarginCss: 4, hitErrorCss: 0.01 });
+                            } finally { resolvedLine.release(); }
+                        }
                         const query = { point: surface, localToSurface, input };
-                        const attachment = prepared.vector.attachments;
+                        const attachment = vector.attachments;
                         if (targetMode && attachment) {
-                            result = pointPath([attachment.outline], query, { interiorPaths: [attachment.outline], strokeRadiusLocal: 0,
-                                marginCss: 4, errorCss: 0.01, maxSegments: 8192 });
-                            if (result.hit) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
+                            // The boundary and interior attach; the exterior selection halo does not.
+                            const job = createAttachmentPointJob(attachment.outline, query, { maxCommands: 8192 });
+                            try {
+                                for (;;) {
+                                    const state = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                    if (state.status === 'pending') { await tick(); continue; }
+                                    if (state.status !== 'miss') {
+                                        result = { hit: true, distanceCss: 0, part: 'body' }; ambiguous = state.status === 'uncertain';
+                                    }
+                                    break;
+                                }
+                            } finally { job.cancel(); }
+                            if (result.hit && !ambiguous) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
                         } else {
-                            result = prepared.vector.point(query);
+                            void vector.key;
+                            const descriptor = vectorNarrowDescriptor(vector);
+                            if (descriptor) {
+                                const job = frameClips.length ? createClippedVectorPointJob(descriptor, query, frameClips) : createVectorPointJob(descriptor, query);
+                                try {
+                                    for (;;) {
+                                        const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                        if (value.status === 'pending') { await tick(); continue; }
+                                        if (value.status === 'hit') { result = value.result; if (frameClips.length) clipUncertain = false; }
+                                        else if (value.status === 'uncertain') { result = { hit: true, distanceCss: 0, part: value.part }; ambiguous = true; }
+                                        break;
+                                    }
+                                } finally { job.cancel(); }
+                            } else result = vector.point(query);
                             if (targetMode && result.hit) ambiguous = true;
                         }
                     }
                     check();
                     if (result.hit) {
+                        // A zero-distance vector witness is the pointer itself and survives every containing clip.
+                        ambiguous ||= !targetMode && clipUncertain && (outsideFrame || node.kind === 'stroke' || result.distanceCss !== 0);
                         const candidate = { id: selected, rank: resolved.rank, result, ...(target ? { target } : {}) };
-                        if (ambiguous) uncertain.push(candidate);
-                        else if (!winner || (targetMode ? candidate.rank > winner.rank : better(candidate, winner))) winner = candidate;
+                        if (ambiguous) rememberUncertain(candidate);
+                        else if (!selectionResult.winner || (targetMode ? candidate.rank > selectionResult.winner.rank : better(candidate, selectionResult.winner))) selectionResult.winner = candidate;
                     }
                     await tick();
+                };
+                const refs: SpatialRef[] = []; let complete = false, index = 0;
+                while (!complete || index < refs.length) {
+                    check();
+                    if (index === refs.length && !complete) {
+                        refs.length = 0; index = 0;
+                        const status = cursor.resume({ maxVisits: 128, deadline: performance.now() + 3 }, ref => refs.push(ref));
+                        if (status !== 'pending' && status !== 'complete') throw cancelled();
+                        complete = status === 'complete';
+                    }
+                    const ref = index < refs.length ? refs[index++] : undefined;
+                    if (ref) await visit(ref);
+                    else if (!complete) await tick();
                 }
                 check();
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
                 for (let i = 0; i < uncertain.length; i++) {
                     if ((i & 127) === 0) await tick();
                     const candidate = uncertain[i];
+                    const winner = selectionResult.winner;
                     if (!winner || (candidate.id !== winner.id && !(targetMode ? winner.rank > candidate.rank : better(winner, candidate)))) {
                         throw new Error('Point hit is geometrically uncertain');
                     }
                 }
                 check();
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
-                return winner;
+                return selectionResult.winner;
             } catch (error) {
                 if (!(error instanceof DOMException && error.name === 'AbortError')) {
                     try { options.onError(error); } catch { /* Preserve the query error. */ }

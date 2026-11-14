@@ -38,7 +38,8 @@ export class ResizePlan {
                 x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
             }
         }
-        if (![x0, y0, x1, y1, down.x, down.y].every(Number.isFinite) || x1 <= x0 || y1 <= y0) throw new RangeError('Invalid resize bounds');
+        if (![x0, y0, x1, y1, down.x, down.y].every(Number.isFinite) || x1 < x0 || y1 < y0 || (x1 === x0 && y1 === y0))
+            throw new RangeError('Invalid resize bounds');
         this.startBox = { origin: { x: c * x0 - s * y0, y: s * x0 + c * y0 }, width: x1 - x0, height: y1 - y0, rotation };
     }
     private check(signal?: AbortSignal): void {
@@ -71,6 +72,7 @@ export class ResizePlan {
         this.check();
         if (!this.services.kinds || !this.services.place) throw new Error('This resize plan requires asynchronous geometry');
         const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.forceAspect), ops: Op[] = [];
+        if (frame.scaleX === 1 && frame.scaleY === 1) return { frame, ops };
         for (const { snapshot, centre, factors } of this.targets(frame, zeroSignX, zeroSignY)) {
             const patch = resizeKind(snapshot.node, factors, this.services.kinds);
             for (const op of patch) ops.push(op);
@@ -82,6 +84,7 @@ export class ResizePlan {
         zeroSignX: -1 | 1 = 1, zeroSignY: -1 | 1 = 1): Promise<SelectionResizePreview> {
         this.check(signal);
         const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.forceAspect), ops: Op[] = [];
+        if (frame.scaleX === 1 && frame.scaleY === 1) return { frame, ops };
         if (this.services.planAllAsync) {
             const all = await this.services.planAllAsync([...this.targets(frame, zeroSignX, zeroSignY)], frame, signal);
             this.check(signal); return { frame, ops: all };

@@ -174,6 +174,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             if (shape.type === 'draw' || shape.type === 'highlight') {
                 const stroke = readStroke(shape, base, options.samples);
                 leases.push(stroke.lease); node = stroke.node;
+                if (stroke.dropped) report.repair(shape.id, `Dropped ${stroke.dropped} non-finite stroke point${stroke.dropped === 1 ? '' : 's'}`);
             } else {
                 const ends = bindingEnds.get(base.id);
                 const start = shape.props.start, end = shape.props.end;

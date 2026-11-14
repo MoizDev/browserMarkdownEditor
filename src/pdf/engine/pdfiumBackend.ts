@@ -61,7 +61,7 @@ class PdfiumDocument implements BackendDoc {
             permissions: runtime.call('FPDF_GetDocPermissions', document) >>> 0, signatureCount: signatures,
             tagged: runtime.call('FPDFCatalog_IsTagged', document) !== 0, hasForms: type !== 0,
             attachments, pdfVersion: version, repairStatus: 'unknown', formType,
-            attachmentInventory: 'name-tree-params-only', javascript: 'unknown', actions: 'unknown' } as DocInfo;
+            attachmentInventory: 'name-tree-params-only', javascript: 'unknown', actions: 'unknown' };
         this.forms = createPdfiumForms(runtime, document, index => this.pages.get(index)?.handle ?? 0,
             () => this.pages.get(this.current)?.handle ?? 0,
             handle => ([...this.pages.values()].find(page => page.handle === handle)?.geometry.rotate ?? 0) / 90);
@@ -106,7 +106,7 @@ class PdfiumDocument implements BackendDoc {
             const descMarker = item.description?.startsWith('local-vault-pdf/') ? item.description.split('\n', 1)[0] : undefined;
             const marker = descMarker && item.paramsMarker && descMarker !== item.paramsMarker ? undefined : descMarker ?? item.paramsMarker;
             return { index: item.index, name: item.name, size: null, ...(item.description ? { desc: item.description } : {}),
-                ...(marker ? { localVaultMarker: marker } : {}) } as unknown as PdfAttachmentInfo;
+                ...(marker ? { localVaultMarker: marker } : {}) };
         });
     }
     info(): DocInfo { this.ensure(); return this.documentInfo; }
@@ -119,8 +119,16 @@ class PdfiumDocument implements BackendDoc {
         if (!page.checked) { pdfiumComplexity(this.runtime, page.handle, this.limits); page.checked = true; }
         this.checkAccess();
         const holder: { job?: RenderJob } = {};
-        const job = createPdfiumRenderJob(this.runtime, page.handle, this.forms.handle, page.geometry, request, this.limits,
+        const native = createPdfiumRenderJob(this.runtime, page.handle, this.forms.handle, page.geometry, request, this.limits,
             () => { if (holder.job) this.jobs.delete(holder.job); });
+        const job: RenderJob = {
+            step: budget => {
+                try { const state = native.step(budget); this.checkAccess(); return state; }
+                catch (error) { native.abort(); throw error; }
+            },
+            result: () => { this.checkAccess(); return native.result(); },
+            abort: () => native.abort(),
+        };
         holder.job = job;
         this.jobs.add(job);
         return job;

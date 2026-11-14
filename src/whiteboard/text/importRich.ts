@@ -5,7 +5,7 @@ import { normalizeRichTextSteps, type Block, type Marks, type RichText, type Run
 import type { RichImportResult } from './rich';
 import { repairLegacyCharacterSteps } from './repair';
 import type { PlainTextOptions } from './plainText';
-import { materializeLegacySpan, RichImportSchedulerError } from './legacySpanMaterialize';
+import { materializeLegacySpan, RichImportSchedulerError, type LegacyFields } from './legacySpanMaterialize';
 import { encodeOpaqueJsonSteps } from './opaqueJson';
 
 type RecordValue = Record<string, unknown>;
@@ -39,7 +39,7 @@ function validLink(value: unknown): value is string {
     } catch { return false; }
 }
 /** Data-only ProseMirror mapping; unrepresentable input must keep its legacy source read-only. */
-function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): ImportSteps<RichImportResult> {
+function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>, sourceFields?: LegacyFields): ImportSteps<RichImportResult> {
     const repairs: string[] = [], unrepresentable: string[] = [], blocks: Block[] = [];
     let visited = 0, work = 0, total = 0, replaced = 0, controls = 0, preservedFields = 0, preservedBytes = 0;
     const fail = (message: string): never => { throw new Error(message); };
@@ -74,7 +74,17 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
             if (size > MAX_TEXT_LENGTH * 4 - preservedBytes) fail('Unsupported rich node fields exceed preservation limit');
             fields.push(field);
         };
-        if (original && typeof original !== 'string' && original.kind === 'object') {
+        const indexed = sourceFields?.get(object);
+        if (indexed) {
+            for (const field of indexed) {
+                if ((++work & 255) === 0) yield;
+                if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
+                if (keep(field.key, object[field.key])) {
+                    const encoded = requireRaw(yield { kind: 'raw', span: field.span });
+                    add(field.prefix + encoded);
+                }
+            }
+        } else if (original && typeof original !== 'string' && original.kind === 'object') {
             let previous = original.start + 1;
             for (const [key, span] of original.fields()) {
                 if ((++work & 255) === 0) yield;
@@ -422,5 +432,5 @@ export async function convertLegacyRichSpanCooperative(root: JsonSpan, options: 
         return { text: { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] },
             repairs: [], unrepresentable: [error instanceof Error ? error.message : 'Rich text could not be represented'] };
     }
-    return finishCooperative(convertSteps(materialized.value, materialized.originals), options);
+    return finishCooperative(convertSteps(materialized.value, materialized.originals, materialized.fields), options);
 }

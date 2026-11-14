@@ -1,5 +1,6 @@
 import { Sha256 } from '../../utils/sha256';
 import type { AttachmentInput } from './protocol';
+import { validateBoardWriteIdentity } from './boardIdentity';
 
 const FENCE = '{"document":{"schema":{"schemaVersion":999},"store":{}},"fence":"compat-1: compatibility fence, holds no content, so that builds of this app from before the guard release refuse to edit this file"}';
 const MAX_ATTACHMENTS = 100_000;
@@ -30,7 +31,7 @@ async function blobHash(blob: Blob, cooperate: () => Promise<void>): Promise<str
 
 /** Checks a frozen input before native attachment mutation. Unknown files retain
  * their own metadata and are never assigned an app marker by this writer. */
-export async function validateBoardAttachments(attachments: readonly AttachmentInput[], format: string,
+export async function validateBoardAttachments(attachments: readonly AttachmentInput[], format: string, writeId: string,
     cooperate: () => Promise<void>): Promise<void> {
     if (!Array.isArray(attachments) || attachments.length > MAX_ATTACHMENTS || !format) throw new Error('Invalid board attachment set');
     const seen = new Set<string>();
@@ -46,7 +47,10 @@ export async function validateBoardAttachments(attachments: readonly AttachmentI
             attachmentMarker(entry.role, format);
         }
         switch (entry.role) {
-            case 'editable': if (entry.name !== 'board.json' || ++board !== 1) throw new Error('Invalid editable board attachment'); break;
+            case 'editable':
+                if (entry.name !== 'board.json' || ++board !== 1) throw new Error('Invalid editable board attachment');
+                await validateBoardWriteIdentity(entry.bytes, format, writeId, cooperate);
+                break;
             case 'fence':
                 if (entry.name !== 'tldraw-snapshot.json' || ++fence !== 1 || entry.bytes.size !== new TextEncoder().encode(FENCE).length || await entry.bytes.text() !== FENCE) throw new Error('Invalid compatibility fence');
                 break;

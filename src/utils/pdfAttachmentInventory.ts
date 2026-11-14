@@ -84,7 +84,7 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
             try {
                 const pointer = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)) as { path?: unknown; exportedAt?: unknown };
                 if (typeof pointer.path !== 'string' || !pointer.path || pointer.path.startsWith('/') ||
-                    /^[a-z][a-z\d+.-]*:/i.test(pointer.path) || /[\\\u0000-\u001f]/.test(pointer.path) ||
+                    /^[a-z][a-z\d+.-]*:/i.test(pointer.path) || pointer.path.includes('\\') || [...pointer.path].some(c => c.charCodeAt(0) < 32) ||
                     (pointer.exportedAt !== undefined && (typeof pointer.exportedAt !== 'number' || !Number.isFinite(pointer.exportedAt)))) return unreadable(NOTEBOOK_SOURCE_ATTACHMENT, 'corrupt');
                 const parts = pointer.path.split('/');
                 if (parts.some(p => p === '..' || ['.Assets', '.Garbage', '.VaultAgent', '.appearance.json'].includes(p))) return unreadable(NOTEBOOK_SOURCE_ATTACHMENT, 'corrupt');

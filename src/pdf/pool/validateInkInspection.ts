@@ -1,5 +1,6 @@
 import type { PdfInkInspection, PdfInkInspectionFailure, PdfInkMediaDescriptor } from '../writing/inkInspection.types';
 import { invalidPdfReply, record, text } from './validationCommon';
+import { validNotebookSourcePath } from '../writing/notebookPointer';
 
 const LIMIT = 0x7fffffff, BOARD_LIMIT = 32 * 1024 * 1024;
 const HASH = /^[0-9a-f]{64}$/, ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -12,8 +13,16 @@ function blob(value: unknown, max: number, empty: boolean): Blob {
     return value.slice(0, value.size, value.type);
 }
 export function validatePdfInkInspection(value: unknown): PdfInkInspection {
-    const top = record(value, ['kind', 'reason', 'id', 'outerFingerprint', 'pristine', 'pristineFingerprint', 'board', 'media', 'writeId', 'formatId']);
+    const top = record(value, ['kind', 'reason', 'id', 'outerFingerprint', 'pristine', 'pristineFingerprint', 'board', 'media', 'writeId', 'formatId', 'notebookSource']);
     if (top.kind === 'read-only') {
+        if (top.reason === 'notebook-source') {
+            record(value, ['kind', 'reason', 'outerFingerprint', 'notebookSource']);
+            const pointer = record(top.notebookSource, ['path', 'exportedAt']), path = text(pointer.path, 4096);
+            if (!validNotebookSourcePath(path) || (pointer.exportedAt !== undefined &&
+                (typeof pointer.exportedAt !== 'number' || !Number.isFinite(pointer.exportedAt) || pointer.exportedAt < 0))) invalidPdfReply();
+            return { kind: 'read-only', reason: 'notebook-source', outerFingerprint: hash(top.outerFingerprint),
+                notebookSource: { path, ...(pointer.exportedAt !== undefined ? { exportedAt: pointer.exportedAt as number } : {}) } };
+        }
         record(value, ['kind', 'reason']);
         if (typeof top.reason !== 'string' || !REASONS.includes(top.reason as PdfInkInspectionFailure)) invalidPdfReply();
         return { kind: 'read-only', reason: top.reason as PdfInkInspectionFailure };

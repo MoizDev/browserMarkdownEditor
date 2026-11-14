@@ -6,4 +6,5 @@ export type PdfInkInspection =
         media: []; formatId: 'board' }
     | { kind: 'native'; id: string; outerFingerprint: string; pristine: Blob; pristineFingerprint: string; board: Blob;
         writeId: string; media: PdfInkMediaDescriptor[]; formatId: 'board' }
-    | { kind: 'read-only'; reason: PdfInkInspectionFailure };
+    | { kind: 'read-only'; reason: PdfInkInspectionFailure }
+    | { kind: 'read-only'; reason: 'notebook-source'; outerFingerprint: string; notebookSource: { path: string; exportedAt?: number } };

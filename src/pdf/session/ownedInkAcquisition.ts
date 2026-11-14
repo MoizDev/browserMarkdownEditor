@@ -2,7 +2,8 @@ import { acquirePdfInkSource } from './inkAcquisition';
 import type { PdfEditableInkSource, PdfInkAcquisitionOptions } from './inkAcquisition.types';
 
 export type PreparedOwnedPdfInk =
-    | { readonly kind: 'read-only'; readonly reason: string; dispose(): Promise<void> }
+    | { readonly kind: 'read-only'; readonly reason: string; readonly notebookSource?: { readonly path: string; readonly exportedAt?: number };
+        readonly outerFingerprint?: string; isCurrent?(): boolean; dispose(): Promise<void> }
     | { readonly kind: 'ready'; take(): PdfEditableInkSource; dispose(): Promise<void> };
 
 /** The pane cancels preparation, but an accepted source belongs to the App session. */
@@ -27,7 +28,12 @@ export async function prepareOwnedPdfInk(
     } catch (error) { detach(); scope.abort(); throw error; }
     if (acquired.kind === 'read-only') {
         detach();
-        return { kind: 'read-only', reason: acquired.reason, dispose: () => acquired.release() };
+        return { kind: 'read-only', reason: acquired.reason,
+            ...(acquired.notebookSource && acquired.outerFingerprint && acquired.isCurrent ? {
+                notebookSource: acquired.notebookSource, outerFingerprint: acquired.outerFingerprint,
+                isCurrent: () => current() && acquired.isCurrent!(),
+            } : {}),
+            dispose: () => { disposed = true; scope.abort(); return acquired.release(); } };
     }
     const source = acquired;
     let release: Promise<void> | undefined;

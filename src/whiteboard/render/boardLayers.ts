@@ -1,4 +1,4 @@
-import type { ViewState } from '../../platform/types';
+import type { Affine, ViewState } from '../../platform/types';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
@@ -67,6 +67,9 @@ class OmittedSnapshot implements ReadonlySet<string> {
     forEach(callback: (value: string, value2: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
         for (const value of this.valuesSet) callback.call(thisArg, value, value, this);
     }
+}
+function sameTransform(a: Affine | null | undefined, b: Affine | null): boolean {
+    return a === b || !!a && !!b && a.every((value, index) => value === b[index]);
 }
 function sameOmission(a: ReadonlySet<string> | null, b: ReadonlySet<string> | null): boolean {
     if (a === b) return true;
@@ -158,7 +161,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const underlay = bands.get('underlay'), content = bands.get('content');
         if (!underlay || !content || underlay.frame !== content.frame || underlay.omit !== content.omit || underlay.ink !== content.ink
             || underlay.context.frameId !== content.context.frameId || !sameView(underlay.context.view, content.context.view)
-            || !sameOmission(underlay.context.omittedNodeIds, content.context.omittedNodeIds)) return;
+            || !sameTransform(underlay.context.paneTransform, content.context.paneTransform) || !sameOmission(underlay.context.omittedNodeIds, content.context.omittedNodeIds)) return;
         const old = announced.get(prepareToken);
         if (old?.underlay === underlay && old.content === content) return;
         announced.set(prepareToken, { underlay, content });
@@ -307,13 +310,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (!drawnBand || !frame || !ink || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
         const context = drawnBand.context;
         if (ackFrame !== frame || ackOmit !== omit || ackInk !== ink || ackToken !== token || ackContext?.frameId !== context.frameId
-            || !sameView(ackContext?.view, context.view) || !sameOmission(ackContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
+            || !sameView(ackContext?.view, context.view) || !sameTransform(ackContext?.paneTransform, context.paneTransform)
+            || !sameOmission(ackContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
             ackFrame = frame; ackOmit = omit; ackInk = ink; ackToken = token; ackContext = context; ackMask = 0;
         }
         ackMask |= band === 'underlay' ? 1 : 2;
         if (ackMask !== 3) return;
         if (presented === frame && presentedOmit === omit && presentedInk === ink && presentedContext?.frameId === context.frameId
-            && sameView(presentedContext?.view, context.view)
+            && sameView(presentedContext?.view, context.view) && sameTransform(presentedContext?.paneTransform, context.paneTransform)
             && sameOmission(presentedContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
             ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token); return;
         }
@@ -341,7 +345,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const omit = options.omitNodes?.(frame) ?? null;
                     const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
                     if (!prepareToken) return;
-                    const context = Object.freeze({ view: copyView(view), frameId: prepareFrameId,
+                    const actualView = copyView(view);
+                    const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
+                        paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
                         retain: () => options.frames.retain(frame) });
                     gpu!.drawGpu(pass, view, band, omit ?? undefined);
@@ -353,7 +359,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const omit = options.omitNodes?.(frame) ?? null;
                     const ink = adapter!.borrowPrepared()?.frame.inkNodeIds ?? frame.inkNodeIds;
                     if (!prepareToken) return;
-                    const context = Object.freeze({ view: copyView(view), frameId: prepareFrameId,
+                    const actualView = copyView(view);
+                    const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
+                        paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
                         retain: () => options.frames.retain(frame) });
                     adapter!.draw2d(ctx, view, band, omit ?? undefined);

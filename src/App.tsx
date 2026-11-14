@@ -2307,18 +2307,27 @@ export default function App() {
     trashInFlightRef.current = true;
     const activation = getVaultActivation();
     const controller = new AbortController();
-    const pdfTab = isPdfFile(node.name) ? tabsRef.current.find(t => t.file.path === node.path) : undefined;
-    const current = () => getVaultActivation() === activation && (!pdfTab || (pdfTab.representation.nativeCanvasKind === 'pdfInk'
-      && pdfTab.representation.nativeCanvasSession !== undefined && getSessionIdentity(pdfTab.id)?.serial === pdfTab.representation.nativeCanvasSession
-      && tabsRef.current.some(t => t.id === pdfTab.id && t.file.path === node.path && t.representation.generation === pdfTab.representation.generation && t.representation.legacyOriginalSha256 === pdfTab.representation.legacyOriginalSha256)));
+    const nativeKind = isPdfFile(node.name) ? 'pdfInk' : isNativeDrawingFile(node.name) ? 'drawing' : undefined;
+    const nativeTab = nativeKind ? tabsRef.current.find(t => t.file.path === node.path) : undefined;
+    const current = () => {
+      if (getVaultActivation() !== activation) return false;
+      if (!nativeKind) return true;
+      if (!nativeTab) return false;
+      const policy = nativePoliciesRef.current.get(nativeTab.id), session = documentSessions.get(nativeTab.id);
+      return nativeTab.representation.nativeCanvasKind === nativeKind && nativeTab.representation.nativeCanvasSession !== undefined
+        && policy?.kind === nativeKind && policy.activation === activation && policy.session === nativeTab.representation.nativeCanvasSession
+        && session?.serial === policy.session && session.bytesGeneration === policy.retainedThroughGeneration
+        && hasHostedNativeOwner(session, nativeTab.id)
+        && tabsRef.current.some(t => t.id === nativeTab.id && t.file.path === node.path && t.file.handle === nativeTab.file.handle
+          && t.representation.generation === nativeTab.representation.generation && t.representation.legacyOriginalSha256 === nativeTab.representation.legacyOriginalSha256);
+    };
     try {
       await reconcileQueueRef.current;
-      if (isPdfFile(node.name) && (!pdfTab || !current())) { notify('Open the converted PDF annotation view first to locate its pre-conversion copy.'); return; }
-      if (isNativeDrawingFile(node.name)) { notify('No pre-conversion copy is recorded for this native drawing.'); return; }
-      const source = pdfTab ? null : await readFileVersioned(node.handle);
-      const digest = pdfTab ? pdfTab.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
+      if (nativeKind && (!nativeTab || !current())) { notify('Open the converted document in its native view first to locate its pre-conversion copy.'); return; }
+      const source = nativeKind ? null : await readFileVersioned(node.handle);
+      const digest = nativeKind ? nativeTab?.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
       if (!digest || !/^[a-f0-9]{64}$/.test(digest)) {
-        notify('No pre-conversion copy is recorded for this file. For a converted PDF, open its annotation view first.');
+        notify('No pre-conversion copy is recorded for this file.');
         return;
       }
       const items = await listTrash();
@@ -2352,7 +2361,7 @@ export default function App() {
       controller.abort();
       trashInFlightRef.current = false;
     }
-  }, [announce, getVaultActivation, handleIO, listTrash, notify, readFileVersioned, restoreConversionCopy, rootHandle]);
+  }, [announce, documentSessions, getVaultActivation, handleIO, listTrash, notify, readFileVersioned, restoreConversionCopy, rootHandle]);
   useEffect(() => registerConversionRestore(node => { void restoreBeforeConversion(node); }), [restoreBeforeConversion]);
 
   // Shared destination transaction for a staged notebook PDF. The source owner

@@ -50,7 +50,7 @@ export class PreviewScene {
         // Viewer sync can precede ResizeObserver and the actor's first grant. Copy only from
         // the scheduled preparation phase, after that observation has installed pane demand.
         this.layer.setExpected(new Map(snapshot.pages.map(page => [page.index, {
-            rect: page.pageRect, key: page.rasterKey === null ? '' : JSON.stringify([page.rasterKey, page.canvasRect]),
+            rect: page.pageRect, key: page.rasterKey === null ? '' : JSON.stringify([page.rasterKey, page.canvasRect]), current: page.current,
         }])));
         this.layer.queueCpuPrepare(view => this.copyVisible(snapshot, view));
         this.invalidate();
@@ -68,8 +68,8 @@ export class PreviewScene {
         for (const page of snapshot.pages) {
             live.add(page.index);
             const key = page.rasterKey === null ? '' : JSON.stringify([page.rasterKey, page.canvasRect]);
-            expected.set(page.index, { rect: page.pageRect, key });
-            if (!page.canvas || !page.rasterKey) continue;
+            expected.set(page.index, { rect: page.pageRect, key, current: page.current });
+            if (!page.canvas || !page.rasterKey || !page.current()) continue;
             const needed = intersect(viewport, page.pageRect);
             // The preview's optional margin is cut first: copy only the mandatory visible crop.
             const interest = needed && intersect(needed, page.canvasRect);
@@ -91,7 +91,10 @@ export class PreviewScene {
                     if (copied || this.requests.get(page.index) !== next || !page.current()) return;
                     // Replacement can exceed the grant while the old crop is still held.
                     // Fall back to the classic canvas, free it and retry once without it.
-                    if (!this.layer.bitmaps.entries.has(page.index)) { this.onPressure(); return; }
+                    if (!this.layer.bitmaps.entries.has(page.index)) {
+                        this.layer.deferCpuPrepare(view => this.copyVisible(snapshot, view));
+                        this.onPressure(); return;
+                    }
                     this.requests.delete(page.index);
                     this.layer.bitmaps.remove(page.index);
                     this.sync(this.snapshotValue);
@@ -117,6 +120,7 @@ export class PreviewScene {
             this.requests.clear();
             this.snapshotValue = null;
             this.layer.queueCpuPrepare(null);
+            this.layer.setExpected(new Map());
             this.layer.bitmaps.setVisible(false);
         } else this.layer.bitmaps.setVisible(true);
     }

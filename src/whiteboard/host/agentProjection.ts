@@ -6,6 +6,7 @@ import type { SampleStore } from '../ink/samples';
 import type { PngCapture } from '../export/capturePng';
 import type { BoardSession } from '../session/BoardSession';
 import type { SheetId } from '../model/ids';
+import type { Node } from '../model/nodes';
 import type { DrawingViewInfo, NotebookViewInfo, PdfViewInfo } from '../../utils/viewRegistry';
 import { acquireNativeBoard } from './nativeAcquisition';
 import type { AgentApplyResult } from '../agent/transaction';
@@ -17,7 +18,7 @@ function yieldAgentWork(): Promise<void> {
 }
 
 async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometry: AgentGeometry, query: ShapeQuery,
-    revision: number, labelled: boolean, guard: () => void, include?: (summary: ShapeSummary) => boolean): Promise<ShapePage> {
+    revision: number, labelled: boolean, guard: () => void, include?: (node: Node, page: number | undefined) => boolean): Promise<ShapePage> {
     const page = query.page, requested = query.offset ?? 0, limit = query.limit ?? 200;
     if (!Number.isSafeInteger(revision) || revision < 0 || !Number.isSafeInteger(requested) || requested < 0
         || !Number.isSafeInteger(limit) || limit < 1 || limit > 200
@@ -41,10 +42,9 @@ async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometr
             if (children.length) stack.push({ nodes: children, index: 0 });
             const nodePage = doc.kind === 'whiteboard' ? undefined : geometry.page(node);
             if (page !== undefined && nodePage !== page) continue;
-            const projected = include ? summarizeAgentNode(node, geometry, nodePage) : undefined;
-            if (projected && !include!(projected)) continue;
+            if (include && !include(node, nodePage)) continue;
             if (total >= offset && shapes.length < limit && !exhausted) {
-                const summary = projected ?? summarizeAgentNode(node, geometry, nodePage), size = JSON.stringify(summary).length + 1;
+                const summary = summarizeAgentNode(node, geometry, nodePage), size = JSON.stringify(summary).length + 1;
                 if (chars + size > 58_500) exhausted = true;
                 else {
                     if (labelled && !started) { sections.push({ offset: total, name: sheet.name, index: doc.sheetOrder.indexOf(sheet) }); started = true; }
@@ -182,12 +182,12 @@ export async function describeLiveAgentView(options: {
         const kind = options.session.doc.kind;
         if ((view.kind === 'drawing' && kind !== 'whiteboard') || (view.kind === 'notebook' && kind !== 'notebook')
             || (view.kind === 'pdf-annotate' && kind !== 'pdf-ink')) throw new TypeError('View kind does not match the board');
-        const visible = (shape: ShapeSummary) => {
+        const visible = (node: Node, page: number | undefined) => {
             if (view.kind === 'drawing') {
-                const r = view.viewport;
-                return shape.x <= r.x + r.w && shape.x + shape.w >= r.x && shape.y <= r.y + r.h && shape.y + shape.h >= r.y;
+                const r = view.viewport, bounds = options.geometry.bounds(node);
+                return bounds.x <= r.x + r.w && bounds.x + bounds.w >= r.x && bounds.y <= r.y + r.h && bounds.y + bounds.h >= r.y;
             }
-            return shape.page !== undefined && view.visiblePages.includes(shape.page);
+            return page !== undefined && view.visiblePages.includes(page);
         };
         const page = await listPinnedShapes(options.session.doc, [sheet], options.geometry, {}, revision, false, guard, visible);
         guard();

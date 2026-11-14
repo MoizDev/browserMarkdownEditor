@@ -142,6 +142,7 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
   (`utils/terminalSettings.ts`), all clamped on read (`localStorage` is user-editable), and **Vault name
   as tab title**. Theme is `data-theme` on `<html>` (**absent = dark**); custom accent/code colors are
   inline `<html>` overrides that intentionally outrank both theme blocks.
+- **Register browser settings in `utils/storage.ts`** — values AND removals are mirrored into IndexedDB.
 - **ESLint's relaxations are intentional**, each explained in `eslint.config.ts` — do not tighten them.
 - **Match the house comment style.** Explain *why*, beside the code, with the measured evidence that
   forced it ("measured: 7 tabs → 0"); a comment restating what the line does is not it.

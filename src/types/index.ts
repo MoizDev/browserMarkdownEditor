@@ -312,7 +312,8 @@ export interface RecentVault extends StoredVault {
  *  FileSystemContext's switchInFlightRef): nothing happened and nothing is
  *  wrong, but nothing happening is exactly what a caller with somewhere to say
  *  it must still say — a control that greys and un-greys reads as broken. */
-export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy';
+export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy'
+    | { status: 'error'; message: string };
 
 /* ─────────────────────────────────────────────────────────────────────────
  * TRASH

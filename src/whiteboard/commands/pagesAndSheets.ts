@@ -167,10 +167,13 @@ export function lastPageContents(doc: BoardDoc): readonly Node[] {
         const node = doc.nodes.get(id);
         if (!node) throw new StructureRefused('Content no longer exists');
         if (node.locked) return;
+        if (node.kind === 'opaque') throw new StructureRefused(`Unsupported item ${id} prevents page deletion`);
         for (const child of childrenOf(doc, id)) visit(child.id);
         contents.push(node);
     };
-    for (const id of doc.byPage.get(paper.pageCount - 1) ?? []) visit(id);
+    for (const id of doc.byPage.get(paper.pageCount - 1) ?? []) {
+        if (doc.nodes.get(id)?.kind !== 'opaque') visit(id);
+    }
     return contents;
 }
 

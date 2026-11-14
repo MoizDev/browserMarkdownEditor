@@ -8,6 +8,8 @@ export function createPaneSurfaceHost(element: HTMLElement): PaneSurfaceHost {
     let current: HTMLCanvasElement | null = null;
     return Object.freeze({
         attach(canvas: HTMLCanvasElement): void {
+            // Semantic text and input remain in the host's DOM overlay, not the pixel surface.
+            canvas.setAttribute('aria-hidden', 'true');
             if (current === canvas && canvas.parentNode === element) return;
             if (current?.parentNode === element) current.replaceWith(canvas);
             else element.insertBefore(canvas, element.firstChild);

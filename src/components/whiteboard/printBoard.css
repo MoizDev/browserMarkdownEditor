@@ -1,0 +1,17 @@
+.board-print-frame {
+    position: fixed;
+    width: 1px;
+    height: 1px;
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.board-print-pages { display: none; }
+
+@media print {
+    body:has(> .board-print-pages) > :not(.board-print-pages) { display: none !important; }
+    body > .board-print-pages { display: block; }
+    .board-print-pages img { display: block; max-width: 100%; max-height: 100vh; break-after: page; }
+    .board-print-pages img:last-child { break-after: auto; }
+}

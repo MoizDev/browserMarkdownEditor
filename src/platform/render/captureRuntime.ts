@@ -59,7 +59,7 @@ export function createPlatformCapturer(options: PlatformCapturerOptions): {
     captureRegion(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<ImageBitmap>;
     captureBlob(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<Blob>;
     captureExportBlob(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob>;
-    dispose(): void;
+    dispose(): Promise<void>;
 } {
     const now = performance.now();
     let live = 0;
@@ -82,11 +82,11 @@ export function createPlatformCapturer(options: PlatformCapturerOptions): {
             }
             return null;
         } });
-    let disposed = false;
+    let closing: Promise<void> | null = null;
     return {
         captureRegion: (rect, maxSide, request) => capturer.captureRegion(rect, maxSide, request),
         captureBlob: (rect, maxSide, request) => capturer.captureBlob(rect, maxSide, request),
         captureExportBlob: (rect, maxSide, request) => capturer.captureExportBlob(rect, maxSide, request),
-        dispose: () => { if (!disposed) { disposed = true; capturer.dispose(); cache.close(); } },
+        dispose: () => closing ??= capturer.dispose().finally(() => cache.close()),
     };
 }

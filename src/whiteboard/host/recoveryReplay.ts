@@ -149,10 +149,13 @@ export async function recoverBoardJournal(payload: unknown, options: {
                 if (!desired.nodes.has(node.id)) removed[depth(doc, node)].push(node);
             }
             for (let d = 64; d >= 1; d--) for (const node of removed[d]) { if (due()) await cooperate(); ops.push({ t: 'delete', id: node.id }); }
+            // Free removed sheet identities after their old children have moved or gone,
+            // before a recovered node may claim one of those identities.
+            for (const sheet of doc.sheets.values()) { if (due()) await cooperate(); if (!desired.sheets.has(sheet.id)) ops.push({ t: 'sheet', op: 'delete', id: sheet.id }); }
             for (const node of desired.nodes.values()) {
                 if (due()) await cooperate();
                 if (!doc.nodes.has(node.id)) {
-                    if (doc.sheets.has(node.id as unknown as SheetId)) throw new Error('Recovery node identity conflicts with a current sheet');
+                    if (desired.sheets.has(node.id as unknown as SheetId)) throw new Error('Recovery node identity conflicts with a target sheet');
                     added[depth(desired, node)].push(node);
                 }
             }
@@ -184,7 +187,6 @@ export async function recoverBoardJournal(payload: unknown, options: {
             ops.push({ t: 'ext', target: 'pen', value: desired.ui.ext }, { t: 'ext', target: 'view', value: desired.view.ext });
             if (desired.host.kind === 'notebook') ops.push({ t: 'ext', target: 'paper', value: desired.host.ext });
             else if (desired.host.kind === 'pdf-ink') ops.push({ t: 'ext', target: 'host', value: desired.host.ext });
-            for (const sheet of doc.sheets.values()) { if (due()) await cooperate(); if (!desired.sheets.has(sheet.id)) ops.push({ t: 'sheet', op: 'delete', id: sheet.id }); }
             for (const entry of doc.media.values()) { if (due()) await cooperate(); if (!desiredMedia.has(entry.id)) ops.push({ t: 'media', op: 'drop', id: entry.id, restoreMissing: true }); }
             check();
             await options.assertDiskBaseline(signal);

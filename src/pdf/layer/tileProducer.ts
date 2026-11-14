@@ -2,6 +2,7 @@ import { renderTokenKey, tileKeyString } from '../../platform/render';
 import type { Priority } from '../../platform/workers/envelope';
 import type { PageTileArgs, PageTileResult } from '../worker/protocol';
 import type { WithoutDocKey } from '../pool/types';
+import { getPdfFontEpoch, pdfVariantRevision } from '../fonts/profiles';
 import type { PdfTileRequest } from './tileDemand';
 import type { CreatePdfTileProducer, PdfTileProducerOptions } from './tileProducer.types';
 
@@ -37,7 +38,8 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
             if (document.closed || !options.isCurrent() || request.key.documentToken !== renderTokenKey(document.token) ||
                 request.key.sourceRole !== document.source) return Promise.reject(new DOMException('Stale PDF tile', 'AbortError'));
             const variant = options.variant(request);
-            if (variant.variant !== request.key.contentRevision) return Promise.reject(new Error('PDF tile variant changed'));
+            const epoch = getPdfFontEpoch(document.docKey);
+            if (pdfVariantRevision(variant.variant, epoch) !== request.key.contentRevision) return Promise.reject(new DOMException('Stale PDF tile profile', 'AbortError'));
             const requestedPriority = priority(request, options.isFocused());
             const key = JSON.stringify([tileKeyString(request.key), variant, options.annotations, options.forms]);
             let flight = flights.get(key);
@@ -108,13 +110,13 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
                         !(result.pixels instanceof ArrayBuffer) || result.pixels.byteLength !== width * height * 4) {
                         throw new Error('PDF tile reply does not match its request');
                     }
-                    if (!options.isCurrent() || document.closed) throw new DOMException('Stale PDF tile', 'AbortError');
+                    if (!options.isCurrent() || document.closed || getPdfFontEpoch(document.docKey) !== epoch) throw new DOMException('Stale PDF tile', 'AbortError');
                     converting = true;
                     const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(result.pixels), width, height),
                         { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'none' });
-                    if (signal.aborted || !options.isCurrent() || document.closed || !finish()) {
+                    if (signal.aborted || !options.isCurrent() || document.closed || getPdfFontEpoch(document.docKey) !== epoch || !finish()) {
                         bitmap.close();
-                        if (finish()) reject(abortError(signal));
+                        if (finish()) reject(signal.aborted ? abortError(signal) : new DOMException('Stale PDF tile', 'AbortError'));
                         return;
                     }
                     resolve(bitmap);

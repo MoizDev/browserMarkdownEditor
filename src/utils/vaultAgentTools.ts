@@ -40,7 +40,7 @@ import { creationDiff, lineDiff } from './agentDiff';
 import { AGENT_IMAGE_MAX_SIDE, blobBytes, imageMimeFor, prepareImageForAgent, sha256Hex } from './agentMedia';
 import { formatShape, summarizeCanvasFile, type FileShape } from './canvasFileSummary';
 import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
-import { createVaultTextCache, isTextFile } from './vaultSearch';
+import { isTextFile } from './vaultSearch';
 import { collectFiles } from './tree';
 import { isEpubFile, isCanvasFile, isNativeDrawingFile, isImageFile, isNotebookFile, isPdfFile } from './fileTypes';
 import { ASSETS_DIR, TRASH_DIR } from './assets';
@@ -684,12 +684,6 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
 
 /* ───────────────────────── vault_search ───────────────────────── */
 
-// Module-level, like the sidebar's: repeat searches in a run (and across runs)
-// re-read only files whose (lastModified, size) changed. Emptied when the vault
-// changes, because two vaults share paths freely.
-const searchCache = createVaultTextCache();
-let searchCacheToken: object | null = null;
-
 async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const query = String(a.query);
     const scope = a.path !== undefined ? ctx.path(a.path) : '';
@@ -703,12 +697,12 @@ async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
                 const kind = await ctx.host.entryKind(scope);
                 if (!kind) throw new ToolError(`"${scope}" does not exist.`);
             }
-            if (token !== searchCacheToken) { searchCache.clear(); searchCacheToken = token; }
             const inScope = (p: string) => !scope || p === scope || p.startsWith(`${scope}/`);
-            const files = collectFiles(ctx.host.getFileTree()).filter(f => inScope(f.path));
-            // Keep scope/cache admission here; the disposable worker receives no file handles.
-            const textFiles = files.filter(f => isTextFile(f.name) && !isCanvasFile(f.name));
-            const index = await searchCache.sync(textFiles, handle => ctx.host.readSnapshot(handle));
+            const allFiles = collectFiles(ctx.host.getFileTree());
+            const files = allFiles.filter(f => inScope(f.path));
+            const allTextFiles = allFiles.filter(f => isTextFile(f.name) && !isCanvasFile(f.name));
+            const textFiles = allTextFiles.filter(f => inScope(f.path));
+            const index = await ctx.host.searchTextIndex(allTextFiles, textFiles.map(f => f.path));
             ctx.ensureLive();
             textFileCount = textFiles.length;
             const textPaths = new Set(textFiles.map(f => f.path));

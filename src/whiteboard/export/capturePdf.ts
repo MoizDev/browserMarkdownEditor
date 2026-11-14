@@ -24,9 +24,13 @@ export async function capturePdf(
 ): Promise<Uint8Array> {
   if (!pages.length || !Number.isFinite(scale) || scale <= 0) throw new RangeError('Invalid PDF capture')
   const output: Array<{ width: number; height: number; displayList: PageDisplayList; paper?: PageDisplayList }> = []
+  const first = pages[0].frame
   for (let page = 0; page < pages.length; page++) {
     signal.throwIfAborted()
     const { frame, world, paper } = pages[page]
+    const a = first.token, b = frame.token
+    if (frame.sceneRevision !== first.sceneRevision || a.vaultEpoch !== b.vaultEpoch || a.documentId !== b.documentId
+        || a.bytesGeneration !== b.bytesGeneration || a.session !== b.session) throw new Error('PDF pages must share one pinned revision')
     if (![world.x, world.y, world.width, world.height].every(Number.isFinite) || world.width <= 0 || world.height <= 0) throw new RangeError('Invalid PDF page extent')
     if (paper && paper.page !== page) throw new RangeError('Paper page does not match output page')
     const list = await paintFrameDisplayList(frame, page, scale, images, signal)

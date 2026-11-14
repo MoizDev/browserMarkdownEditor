@@ -1,4 +1,8 @@
 import type { RichSelection } from './rich';
+import type { RichText } from './richText';
+import { projectionLength } from './projection';
+import { textBoundaries } from './boundaries';
+import { deriveRichTextChange, deriveRichTextChangeCooperative, type RichTextChange, type RichTextDiffOptions } from './richDiff';
 
 export type TextAffinity = 'before' | 'after';
 export interface TextSpliceMap {
@@ -16,7 +20,7 @@ function validate(map: TextSpliceMap): void {
 /** Maps a UTF-16 boundary across one splice; affinity controls insertions at that boundary. */
 export function mapTextOffset(offset: number, map: TextSpliceMap, affinity: TextAffinity = 'after'): number {
     validate(map);
-    if (!Number.isSafeInteger(offset) || offset < 0) throw new RangeError('Invalid text offset');
+    if (!Number.isSafeInteger(offset) || offset < 0 || (affinity !== 'before' && affinity !== 'after')) throw new RangeError('Invalid text offset or affinity');
     if (offset < map.from) return offset;
     if (offset > map.to) {
         const result = offset + map.insertedLength - (map.to - map.from);
@@ -42,4 +46,65 @@ export function mapTextSelection(selection: RichSelection, map: TextSpliceMap): 
 /** Maps are applied in transaction order: every later map is in its preceding result's coordinates. */
 export function mapTextSelectionThrough(selection: RichSelection, maps: readonly TextSpliceMap[]): RichSelection {
     return maps.reduce(mapTextSelection, selection);
+}
+
+function validateSelection(text: RichText, selection: RichSelection): void {
+    const length = projectionLength(text);
+    if (!Number.isSafeInteger(selection.anchor) || !Number.isSafeInteger(selection.focus)
+        || selection.anchor < 0 || selection.focus < 0 || selection.anchor > length || selection.focus > length)
+        throw new RangeError('Text selection exceeds projection');
+}
+
+/**
+ * A selection never cuts a grapheme, even if the edit joins characters across
+ * a former run or block boundary. Expanded selections keep their direction;
+ * a collapsed caret uses the requested insertion affinity.
+ */
+export function normalizeTextSelection(text: RichText, selection: RichSelection, affinity: TextAffinity = 'after'): RichSelection {
+    validateSelection(text, selection);
+    if (affinity !== 'before' && affinity !== 'after') throw new RangeError('Invalid text affinity');
+    if (selection.anchor === selection.focus) {
+        const offset = textBoundaries.snap(text, selection.anchor, affinity === 'before' ? -1 : 1);
+        return { anchor: offset, focus: offset };
+    }
+    const forward = selection.anchor < selection.focus;
+    const low = textBoundaries.snap(text, Math.min(selection.anchor, selection.focus), -1);
+    const high = textBoundaries.snap(text, Math.max(selection.anchor, selection.focus), 1);
+    return forward ? { anchor: low, focus: high } : { anchor: high, focus: low };
+}
+
+/** Map an old selection through a known splice and normalize in the new value. */
+export function mapTextSelectionTo(selection: RichSelection, map: TextSpliceMap, after: RichText,
+    affinity: TextAffinity = 'after'): RichSelection {
+    if (selection.anchor === selection.focus) {
+        const offset = mapTextOffset(selection.anchor, map, affinity);
+        return normalizeTextSelection(after, { anchor: offset, focus: offset }, affinity);
+    }
+    return normalizeTextSelection(after, mapTextSelection(selection, map), affinity);
+}
+
+export interface MappedRichTextChange {
+    readonly change: RichTextChange | null;
+    readonly selection: RichSelection;
+}
+
+function mappedChange(before: RichText, after: RichText, selection: RichSelection,
+    change: RichTextChange | null, affinity: TextAffinity): MappedRichTextChange {
+    validateSelection(before, selection);
+    return { change, selection: change ? mapTextSelectionTo(selection, change.map, after, affinity)
+        : normalizeTextSelection(after, selection, affinity) };
+}
+
+/** Derive an external text change and preserve a valid directional selection. */
+export function mapRichTextChange(before: RichText, after: RichText, selection: RichSelection,
+    affinity: TextAffinity = 'after'): MappedRichTextChange {
+    validateSelection(before, selection);
+    return mappedChange(before, after, selection, deriveRichTextChange(before, after), affinity);
+}
+
+export async function mapRichTextChangeCooperative(before: RichText, after: RichText, selection: RichSelection,
+    options: RichTextDiffOptions, affinity: TextAffinity = 'after'): Promise<MappedRichTextChange> {
+    validateSelection(before, selection);
+    const change = await deriveRichTextChangeCooperative(before, after, options);
+    return mappedChange(before, after, selection, change, affinity);
 }

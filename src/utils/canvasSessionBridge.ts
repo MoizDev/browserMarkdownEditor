@@ -4,7 +4,9 @@ import type { DocumentSessionStore, SessionAdapter } from './documentSessions';
 /** The identity belongs to App even before an editable canvas host is ready. */
 export interface CanvasSessionBridge extends SessionAdapter {
     /** StrictMode and additional panes attach to the same engine session. */
-    attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A): A;
+    attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A, commit?: (adapter: A, owner: SourceOwner) => void): A;
+    /** Rejected provisional engines retire before another preparation or owner release. */
+    settled(): Promise<void>;
     peek<A extends SessionAdapter>(): A | undefined;
     dispose(): Promise<void>;
 }
@@ -12,6 +14,7 @@ export interface CanvasSessionBridge extends SessionAdapter {
 export type AttachCanvasSession = <A extends SessionAdapter>(
     documentId: string,
     create: (owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean) => A,
+    commit?: (adapter: A, owner: SourceOwner) => void,
 ) => A;
 
 /** Attach only through App's already-created entry, never from a parallel pane-owned store. */
@@ -19,6 +22,7 @@ export function attachCanvasSession<A extends SessionAdapter>(
     sessions: DocumentSessionStore,
     documentId: string,
     create: (owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean) => A,
+    commit?: (adapter: A, owner: SourceOwner) => void,
 ): A {
     const entry = sessions.get(documentId);
     if (!entry || !('attach' in entry.adapter) || typeof entry.adapter.attach !== 'function') {
@@ -27,9 +31,11 @@ export function attachCanvasSession<A extends SessionAdapter>(
     const isLiveOwner = (owner: SourceOwner) => sessions.isLiveOwner(documentId, owner);
     return (entry.adapter as CanvasSessionBridge).attach(owner => {
         if (!isLiveOwner(owner)) throw new DOMException('Canvas session ended', 'AbortError');
-        const adapter = create(owner, isLiveOwner);
+        return create(owner, isLiveOwner);
+    }, (adapter, owner) => {
         if (!isLiveOwner(owner)) throw new DOMException('Canvas session ended', 'AbortError');
-        return adapter;
+        commit?.(adapter, owner);
+        if (!isLiveOwner(owner)) throw new DOMException('Canvas session ended', 'AbortError');
     });
 }
 
@@ -45,6 +51,19 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
     let disposeAdapter: (() => void | Promise<void>) | undefined;
     let releaseWork: Promise<void> | undefined;
     let disposed = false;
+    const retiring = new Set<Promise<void>>();
+    let retirementFailed = false, retirementError: unknown;
+    const retire = (dispose: () => void | Promise<void>) => {
+        const work = Promise.resolve().then(dispose);
+        retiring.add(work);
+        void work.then(() => { retiring.delete(work); }, error => {
+            retiring.delete(work); retirementFailed = true; retirementError ??= error;
+        });
+    };
+    const settled = async () => {
+        while (retiring.size) await Promise.allSettled([...retiring]);
+        if (retirementFailed) throw retirementError;
+    };
     const listeners = new Set<(source: ContentSource) => void>();
     const pendingListeners = new Set<() => void>();
     const emitPending = () => { if (!disposed) for (const listener of [...pendingListeners]) listener(); };
@@ -58,26 +77,35 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
     };
     return {
         peek<A extends SessionAdapter>() { return disposed ? undefined : adapter as A | undefined; },
-        attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A): A {
+        settled,
+        attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A, commit?: (adapter: A, owner: SourceOwner) => void): A {
             if (disposed) throw new Error('Cannot attach a released canvas session');
             if (adapter) return adapter as A;
+            if (retiring.size || retirementFailed) throw new Error('A rejected canvas engine has not retired');
             const next = create(owner);
             adapter = next;
             const disposable = next as SessionAdapter & { dispose?: () => void | Promise<void> };
             disposeAdapter = disposable.dispose?.bind(next);
+            let committed = false, stagedSource: ContentSource | undefined;
             try {
-                const detach = next.onChange(emit);
+                const detach = next.onChange(source => {
+                    if (committed) emit(source); else stagedSource = source;
+                });
                 // A synchronous first report can cause App to release the
                 // entry before onChange returns its cleanup.
                 if (disposed) { detach(); throw new Error('Canvas session was released during attachment'); }
                 unsubscribe = detach;
-                const detachPending = next.onPending?.(emitPending);
+                const detachPending = next.onPending?.(() => { if (committed) emitPending(); });
                 if (detachPending) {
                     if (disposed) { detachPending(); throw new Error('Canvas session was released during attachment'); }
                     unsubscribePending = detachPending;
                 }
-                emitPending();
                 if (disposed) throw new Error('Canvas session was released during attachment');
+                // A cold dirty source may change during C5 preparation. Peek is provisional
+                // here so App can authorize its exact checkpoint; failed CAS keeps coldSource.
+                commit?.(next, owner);
+                if (disposed) throw new Error('Canvas session was released during attachment');
+                committed = true;
             } catch (error) {
                 const detach = unsubscribe, detachPending = unsubscribePending;
                 unsubscribe = undefined;
@@ -87,9 +115,13 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
                 adapter = undefined;
                 const dispose = disposeAdapter;
                 disposeAdapter = undefined;
-                if (dispose) void Promise.resolve().then(dispose).catch(() => {});
+                if (dispose) retire(dispose);
                 throw error;
             }
+            // Once the buffer accepted this engine, a notification failure must not
+            // roll it back and leave the retained source pointing at a disposed runtime.
+            if (stagedSource !== undefined) emit(stagedSource);
+            emitPending();
             return next;
         },
         hasPendingEdits: () => adapter?.hasPendingEdits() ?? false,
@@ -120,8 +152,11 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
                 let disposeFailed = false;
                 let disposeError: unknown;
                 try { await dispose?.(); } catch (error) { disposeFailed = true; disposeError = error; }
+                let retireFailed = false, retireError: unknown;
+                try { await settled(); } catch (error) { retireFailed = true; retireError = error; }
                 if (detachError !== undefined) throw detachError;
                 if (disposeFailed) throw disposeError;
+                if (retireFailed) throw retireError;
             });
             return releaseWork;
         },

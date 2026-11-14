@@ -55,6 +55,7 @@ async function plain(value: string, signal: AbortSignal): Promise<ClipboardClass
     return { kind: 'text', text: parts.join('') };
 }
 async function leading(value: string, signal: AbortSignal): Promise<number> {
+    if (value.length > SECURITY_LIMITS.clipboardExpandedBytes) throw new RangeError('Clipboard text is too large');
     let index = 0;
     while (index < value.length && /\s/u.test(value[index])) {
         if ((++index & 65535) === 0) { signal.throwIfAborted(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }

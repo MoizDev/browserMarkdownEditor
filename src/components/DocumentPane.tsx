@@ -18,6 +18,7 @@ import { search, searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
 import { createLivePreviewPlugin, livePreviewField } from '../editor/livePreview';
+import { docAnalysisField } from '../editor/docAnalysis';
 import { markEditorModeRender } from '../editor/editorPerf';
 import type { ImageDeleteRequest, ImageEmbedActions } from '../editor/imageWidget';
 import { markdownFormatExtension } from '../editor/formatKeymap';
@@ -941,7 +942,7 @@ function DocumentPane({
             ...(isCode ? [] : [
                 tabIntoText,
                 wikiLinkAutocomplete(() => getTargetsRef.current()),
-                ...(isTex ? [] : [livePreviewField]),
+                ...(isTex ? [] : [docAnalysisField, livePreviewField]),
                 livePreviewCompartment.of(livePreviewFor(mode)),
                 // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
                 // that, which would forget every collapsed section (headingFold.ts).

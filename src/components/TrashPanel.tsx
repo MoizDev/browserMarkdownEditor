@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FileText, FolderIcon, RotateCcw, Trash2 } from './icons';
+import { FileText, FolderIcon, PenTool, RotateCcw, Trash2 } from './icons';
 import { dropTrashSubtree, formatDeletedAt, formatTrashSize } from '../utils/trash';
-import { isCanvasFile, isImageFile } from '../utils/fileTypes';
+import { isCanvasFile, isDrawingFile, isNativeDrawingFile, isImageFile } from '../utils/fileTypes';
 import { isTextFile } from '../utils/vaultSearch';
 import { ASSETS_DIR } from '../utils/assets';
 import type { TrashItem, TrashRestoreResult } from '../types';
@@ -380,7 +380,9 @@ export default function TrashPanel({ onClose, onCrawl, onRestore, onDelete, onEm
                 onKeyDown={rowKeyHandler(activate)}
             >
                 <span className={`tree-item-icon ${item.kind === 'directory' ? 'folder-icon' : 'file-icon'}`}>
-                    {item.kind === 'directory' ? <FolderIcon size={14} /> : <FileText size={14} />}
+                    {item.kind === 'directory' ? <FolderIcon size={14} />
+                        : isDrawingFile(item.name) || isNativeDrawingFile(item.name) ? <PenTool size={14} />
+                            : <FileText size={14} />}
                 </span>
                 <span className="trash-row-name">{item.name}</span>
                 <span className="trash-row-dir">{restoreLabel(item)}</span>

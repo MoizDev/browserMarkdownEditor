@@ -1,10 +1,49 @@
 import js from '@eslint/js'
+import { readFileSync } from 'node:fs'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 import { bmePlugin } from './eslint.rules.ts'
+
+// ONE native map feeds the backend, linker and lint. Refuse a damaged map
+// rather than quietly widening the prebuilt development engine's surface.
+const pdfiumMap = JSON.parse(readFileSync(new URL('./src/pdf/engine/pdfium/exports.json', import.meta.url), 'utf8')) as {
+  rows: { exports: string[] }[];
+}
+const pdfiumNativeExports = pdfiumMap.rows.flatMap(row => row.exports)
+if (pdfiumNativeExports.length !== 136 || new Set(pdfiumNativeExports).size !== 136) throw new Error('The canonical PDFium map must declare 136 unique native exports')
+
+// The tooltip rule's selectors (explained where the rule is set, below). Named, because
+// a later block that sets no-restricted-syntax replaces the whole option array and must
+// repeat them, never silently drop them.
+const tooltipRestrictions = [
+  {
+    selector: 'JSXOpeningElement[name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
+    message: 'Use data-tooltip (utils/tooltip.ts draws the app\'s own tooltip) — never the native title attribute.',
+  },
+  {
+    selector: 'AssignmentExpression[left.type="MemberExpression"][left.property.name="title"]:not([left.object.name="document"])',
+    message: 'Set dataset.tooltip (utils/tooltip.ts), not .title.',
+  },
+  {
+    selector: 'AssignmentExpression[left.type="MemberExpression"][left.computed=true][left.property.value="title"]',
+    message: 'Set dataset.tooltip (utils/tooltip.ts), not [\'title\'].',
+  },
+  {
+    selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.value="title"]',
+    message: 'Use data-tooltip, not the title attribute.',
+  },
+  {
+    selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.type="TemplateLiteral"][arguments.0.quasis.0.value.raw="title"]',
+    message: 'Use data-tooltip, not the title attribute.',
+  },
+  {
+    selector: 'CallExpression[callee.property.name="setAttributeNS"][arguments.1.value="title"]',
+    message: 'Use data-tooltip, not the title attribute.',
+  },
+]
 
 export default defineConfig([
   // `planning/` is git-ignored and exists only in the main checkout: its evidence
@@ -45,31 +84,18 @@ export default defineConfig([
       // it, late and unthemed. Intrinsic elements only (lowercase name): a
       // component's `title` prop (ConfirmDialog's) is data, and an SVG `<title>` is a
       // child, not an attribute. `document.title` is the tab title, not a tooltip.
-      'no-restricted-syntax': ['error',
-        {
-          selector: 'JSXOpeningElement[name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
-          message: 'Use data-tooltip (utils/tooltip.ts draws the app\'s own tooltip) — never the native title attribute.',
-        },
-        {
-          selector: 'AssignmentExpression[left.type="MemberExpression"][left.property.name="title"]:not([left.object.name="document"])',
-          message: 'Set dataset.tooltip (utils/tooltip.ts), not .title.',
-        },
-        {
-          selector: 'AssignmentExpression[left.type="MemberExpression"][left.computed=true][left.property.value="title"]',
-          message: 'Set dataset.tooltip (utils/tooltip.ts), not [\'title\'].',
-        },
-        {
-          selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.value="title"]',
-          message: 'Use data-tooltip, not the title attribute.',
-        },
-        {
-          selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.type="TemplateLiteral"][arguments.0.quasis.0.value.raw="title"]',
-          message: 'Use data-tooltip, not the title attribute.',
-        },
-        {
-          selector: 'CallExpression[callee.property.name="setAttributeNS"][arguments.1.value="title"]',
-          message: 'Use data-tooltip, not the title attribute.',
-        },
+      'no-restricted-syntax': ['error', ...tooltipRestrictions],
+    },
+  },
+  {
+    // D7 R7: the old optional-break regex backtracked exponentially. PDF find and
+    // its anchors keep the bounded automaton, never a regular expression.
+    files: ['src/utils/pdfFind.ts', 'src/utils/pdfTextAnchors.ts'],
+    rules: {
+      'no-restricted-syntax': ['error', ...tooltipRestrictions,
+        { selector: 'Literal[regex]', message: 'PDF find/anchors use the bounded matcher, never a regular expression (D7 R7).' },
+        { selector: 'NewExpression[callee.name="RegExp"]', message: 'PDF find/anchors use the bounded matcher, never RegExp (D7 R7).' },
+        { selector: 'CallExpression[callee.name="RegExp"]', message: 'PDF find/anchors use the bounded matcher, never RegExp (D7 R7).' },
       ],
     },
   },
@@ -122,6 +148,10 @@ export default defineConfig([
       // G-INV-04. The owner's ban on code-based tests, everywhere.
       'bme/no-tests': 'error',
     },
+  },
+  {
+    files: ['src/pdf/**/*.{ts,tsx}'],
+    rules: { 'bme/pdfium-boundaries': ['error', pdfiumNativeExports] },
   },
   {
     files: ['src/**/*.{ts,tsx}', 'shared/**/*.ts'],

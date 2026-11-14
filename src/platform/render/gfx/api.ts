@@ -115,6 +115,9 @@ export interface ShaderModule {
 }
 
 // rendering-design.md:130–136: explicit padded packing/bindings keep backend layouts compatible.
+// WebGL2 linking convention (vr-lead ruling): block binding N names GfxUniformsN;
+// sampler binding N names gfxTextureN. A declared binding missing from GLSL rejects
+// the pipeline. These names bind the manifest, without adding backend objects to it.
 export interface ShaderLayout {
     uniforms: readonly { binding: number; byteSize: number }[];
     textures: readonly { binding: number; format: TextureFormat }[];

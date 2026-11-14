@@ -25,5 +25,5 @@
     // node_modules, and its `Bun` globals must never type-check in browser code.
     "types": ["node"]
   },
-  "include": ["src", "shared", "vite.config.ts", "eslint.config.ts", "eslint.rules.ts"]
+  "include": ["src", "shared", "build", "vite.config.ts", "eslint.config.ts", "eslint.rules.ts"]
 }

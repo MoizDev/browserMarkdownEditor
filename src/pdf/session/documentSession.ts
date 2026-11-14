@@ -38,7 +38,7 @@ export class PdfTiledDocumentSession {
     private closed = false;
 
     constructor(readonly token: RenderToken, readonly source: 'outer' | 'original',
-        private readonly file: File, private readonly pool: TiledDocumentPool,
+        private readonly file: Blob, private readonly pool: TiledDocumentPool,
         private readonly isTokenCurrent: (token: RenderToken) => boolean) {}
 
     open(): Promise<OpenTiledDocument> {

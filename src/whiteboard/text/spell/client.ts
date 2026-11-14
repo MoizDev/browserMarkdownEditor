@@ -114,6 +114,7 @@ export class BoardSpellClient {
     }
 
     async suggest(word: string): Promise<readonly string[]> {
+        if (!word || word.length > 64) return [];
         await this.start();
         const value = await this.request<unknown>({ kind: 'suggest', word }, 250);
         if (!Array.isArray(value) || value.length > 5 || value.some(item => typeof item !== 'string' || item.length > 256))

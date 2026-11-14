@@ -108,7 +108,19 @@ export async function convertLegacyAttachmentUnion(input: LegacyConversionInput,
                     target = alias(name, n);
                 }
                 reserved.add(target);
-                named.push({ name: PDFHexString.fromText(target), raw });
+                let targetRaw = raw;
+                if (target !== name) {
+                    // PDFium reports Filespec /UF rather than the name-tree key.
+                    // Clone only that spec so an existing AF reference stays
+                    // attached to the untouched original, with other metadata intact.
+                    const spec = pristine.context.lookup(raw);
+                    if (!(spec instanceof PDFDict)) throw new Error('Cannot alias an unreadable Filespec');
+                    const renamed = spec.clone();
+                    renamed.set(key('F'), PDFHexString.fromText(target));
+                    renamed.set(key('UF'), PDFHexString.fromText(target));
+                    targetRaw = pristine.context.register(renamed);
+                }
+                named.push({ name: PDFHexString.fromText(target), raw: targetRaw });
                 preserved.push({ originalName: name, name: target, sha256 });
             }
         }

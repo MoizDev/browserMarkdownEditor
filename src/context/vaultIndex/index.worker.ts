@@ -176,8 +176,8 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         return null;
     },
     fgio(value) {
-        const { session, active } = value as SessionArgs & { active: number };
-        current(session)?.foregroundIO(active);
+        const { session, active, revision } = value as SessionArgs & { active: number; revision: number };
+        current(session)?.foregroundIO(active, revision);
         return null;
     },
     async sweepBatch(value, context) {

@@ -93,8 +93,9 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **Loaded representation authorizes content operations**, never extension alone (`documentReading.ts`).
   EPUB is binary/read-only; sentinels never enter text saves/assets/tools (`epub-reader`). Word emphasis
   stays in the original PDF/EPUB view; Text is explicit. Images/tables keep source Markdown (`markdown-tables`).
-- **The app draws its own context menu, `confirm()`, `prompt()` and tooltips (`data-tooltip`, `utils/tooltip.ts`;
-  lint bans `title`); the ONLY native one left is `beforeunload`'s, while a save is pending. Keep it so.**
+- **The app draws its own context menu, dialogs and tooltips (`data-tooltip`, `utils/tooltip.ts`; lint bans
+  `title`). The only native exception is browser-controlled `beforeunload` for pending document work
+  and non-macOS terminal Ctrl+W. Never reintroduce native confirm, prompt, alert or tooltip.**
 - **TWO places turn note text into DOM `innerHTML`, safe for different reasons** — `tableWidget`'s
   `renderCellContent` (attribute-free allowlist; one sink AND one write site, KaTeX splices in built DOM,
   never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'` DOMPurify pass).

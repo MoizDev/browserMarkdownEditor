@@ -79,7 +79,8 @@ serve({
             await context.slice();
             const id = await hashMedia(blob, undefined, () => context.slice());
             await context.slice();
-            return { id, mime, width: header.width, height: header.height, animated: header.animated };
+            return { id, mime, width: header.width, height: header.height, animated: header.animated,
+                decodePixels: header.decodePixels ?? header.width * header.height };
         },
     },
 });

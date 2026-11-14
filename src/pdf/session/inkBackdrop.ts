@@ -127,6 +127,23 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
             rasterScale: view.camera.z * Math.min(view.viewport.dpr, 2), fitWidthZoom: fitWidthZ(view.viewport, stack, { left: 0, right: 0, top: 0, bottom: 0 }),
             nominalDpr: Math.min(view.viewport.dpr, 2), moving: view.moving, velocity: { x: 0, y: 0 }, direction: { x: 0, y: 0 } };
     } });
+    const setVisible = (visible: boolean, focused = false) => {
+        if (disposed) return;
+        lease.visible = visible; lease.focused = visible && focused;
+        if (!visible) { lease.pages = []; lease.focusPage = -1; }
+        focus.setFocused(lease.visible && lease.focused);
+        sync();
+        if (!visible) layer.current()?.hide();
+        else layer.current()?.retry();
+    };
+    const definition = { ...layer.definition, create(host: Parameters<typeof layer.definition.create>[0]) {
+        const instance = layer.definition.create(host), release = instance.releaseGpu.bind(instance);
+        instance.releaseGpu = reason => {
+            if (reason === 'hidden') setVisible(false);
+            release(reason);
+        };
+        return instance;
+    } };
     const refresh = () => { if (isCurrent()) layer.current()?.retry(); };
     const unsubscribeFont = subscribePdfFontEpoch(pdf.docKey, refresh), unsubscribeEmphasis = emphasis.subscribe(refresh);
     const check = (signal?: AbortSignal) => { signal?.throwIfAborted(); if (!isCurrent() || pdf.closed) throw stale(); };
@@ -135,7 +152,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         const bitmap = await capturer.captureRegion(rect, Math.min(maxSide, 1568), { layers: ['pdf-page'], theme: 'light', inverted: false, signal });
         try { check(signal); return bitmap; } catch (error) { bitmap.close(); throw error; }
     };
-    return { pages: document.pages.map(page => ({ width: page.width, height: page.height })), layers: [layer.definition],
+    return { pages: document.pages.map(page => ({ width: page.width, height: page.height })), layers: [definition], setVisible,
         async resolveGeometry(page, signal) {
             check(signal);
             const geometry = await pdf.resolveGeometry(page, { priority: 0, signal });

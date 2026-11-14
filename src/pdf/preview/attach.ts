@@ -52,7 +52,7 @@ export function createPdfPreview(options: PreviewOptions): PdfPreview {
         id: 'classic-pdf-pages', group: 'document',
         create(layerHost) {
             const layer = new PreviewBitmapLayer(layerHost);
-            scene = new PreviewScene(layer, () => pane?.invalidate('pdf-preview-scene'));
+            scene = new PreviewScene(layer, () => { conceal(); pane?.invalidate('pdf-preview-scene'); });
             return layer;
         },
         revision: () => scene?.revision ?? 0,

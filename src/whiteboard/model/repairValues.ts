@@ -128,6 +128,20 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
                 mediaChanged = true;
             }
         }
+        if (node.kind === 'linkcard' && node.preview) {
+            const preview = node.preview;
+            const image = preview.image !== null && !mediaIds.has(preview.image) ? null : preview.image;
+            const favicon = preview.favicon !== null && !mediaIds.has(preview.favicon) ? null : preview.favicon;
+            if (image !== preview.image || favicon !== preview.favicon) {
+                const raw = new Map(node.ext?.raw);
+                if (raw.has('preview')) refusal = `Repair would override preserved preview on node ${node.id}`;
+                else {
+                    raw.set('preview', JSON.stringify(preview) as RawJson);
+                    node = { ...node, preview: { ...preview, image, favicon }, ext: { fields: node.ext?.fields ?? new Map(), raw } };
+                    mediaChanged = true;
+                }
+            }
+        }
         result.push(node);
         if (numericChanged || mediaChanged) changed.add(i);
         if (numericChanged) notice('numeric', node.id);

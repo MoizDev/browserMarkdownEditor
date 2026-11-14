@@ -9,6 +9,7 @@ import { matchingIdentity, type BoardJobIdentity } from '../workers/protocol';
 import { mediaRasterGeometry, parseMediaTileKey } from './mips';
 import { createSvgAdmissionProfile, rasterSvgInProfile } from './svgProfile';
 import { svgFrameFactory } from './svgFrameHost';
+import { svgParseBudget } from './svgBudget';
 
 export interface MediaRasterSource {
     readonly blob: Blob;
@@ -198,15 +199,20 @@ export class MediaResidency implements PaintImageProvider {
         if (source.mime === 'image/svg+xml') {
             let bytes = this.svgBytes.get(tile.id);
             if (bytes === undefined) {
-                const typed = source.blob.slice(0, source.blob.size, 'image/svg+xml');
-                await this.worker.request<boolean>('svgPreflight', { blob: typed }, job.identity,
-                    { priority: 1, deadlineMs: 5000, signal }, () => current());
-                const profile = createSvgAdmissionProfile(svgFrameFactory, job.identity, () => current());
-                const dimensions = await profile.header(typed, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
-                if (!current()) throw new DOMException('Stale media request', 'AbortError');
-                if (dimensions.width !== source.width || dimensions.height !== source.height) throw new Error('SVG dimensions do not match admitted media');
-                bytes = dimensions.rgbaBytes;
-                this.svgBytes.set(tile.id, bytes);
+                const parsing = this.host.memory.reserve(svgParseBudget(source.blob.size));
+                if (!parsing) throw new Error('Not enough memory to inspect this SVG');
+                try {
+                    const typed = source.blob.slice(0, source.blob.size, 'image/svg+xml');
+                    const passed = await this.worker.request<boolean>('svgPreflight', { blob: typed }, job.identity,
+                        { priority: 1, deadlineMs: 5000, signal }, () => current());
+                    if (passed !== true) throw new Error('Invalid SVG preflight response');
+                    const profile = createSvgAdmissionProfile(svgFrameFactory, job.identity, () => current());
+                    const dimensions = await profile.header(typed, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+                    if (!current()) throw new DOMException('Stale media request', 'AbortError');
+                    if (dimensions.width !== source.width || dimensions.height !== source.height) throw new Error('SVG dimensions do not match admitted media');
+                    bytes = dimensions.rgbaBytes;
+                    this.svgBytes.set(tile.id, bytes);
+                } finally { this.host.memory.release(parsing); }
             }
             intermediate = bytes;
         }
@@ -217,10 +223,16 @@ export class MediaResidency implements PaintImageProvider {
             this.host.memory.release(memory);
             throw new Error('Not enough memory to decode this picture');
         }
-        let outputHeld = true, scratchHeld = !!scratch;
+        const svgScratch = source.mime === 'image/svg+xml' ? this.host.memory.reserve(svgParseBudget(source.blob.size)) : null;
+        if (source.mime === 'image/svg+xml' && !svgScratch) {
+            this.host.memory.release(memory); if (scratch) this.host.memory.release(scratch);
+            throw new Error('Not enough memory to rasterize this SVG');
+        }
+        let outputHeld = true, scratchHeld = !!scratch, svgHeld = !!svgScratch;
         const releaseMemory = () => {
             if (outputHeld) { outputHeld = false; this.host.memory.release(memory); }
             if (scratchHeld && scratch) { scratchHeld = false; this.host.memory.release(scratch); }
+            if (svgHeld && svgScratch) { svgHeld = false; this.host.memory.release(svgScratch); }
         };
         let bitmap: ImageBitmap | undefined, durationMs = 0, frameCount = 1;
         try {

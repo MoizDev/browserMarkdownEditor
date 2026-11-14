@@ -2,6 +2,8 @@ import { cpuGovernor, createWorkerClient } from '../../platform/workers';
 import type { WorkerClient } from '../../platform/workers';
 import type { InspectedMedia } from './ingest';
 import type { SafeFullFrameLease } from './paintImages';
+import { svgParseBudget } from './svgBudget';
+import { boardWorker } from '../workers/client';
 import { boardEnvelope, closeWorkerResult, matchingIdentity, validBoardIdentity } from '../workers/protocol';
 import type { BoardJobIdentity } from '../workers/protocol';
 
@@ -29,28 +31,39 @@ export function createBoardFullFrameDecoder(options: FullFrameDecoderOptions): B
         signal.throwIfAborted();
         if (disposed || !matchingIdentity(owner, identity) || !options.isCurrent(owner)) throw new DOMException('Stale full-frame request', 'AbortError');
         if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File) || blob.size > 10 * 1024 * 1024
-            || !/^sha256:[0-9a-f]{64}$/.test(info.id) || !Number.isSafeInteger(info.width) || !Number.isSafeInteger(info.height)
+            || info.mime === 'image/svg+xml' && blob.size > 5 * 1024 * 1024 || !/^sha256:[0-9a-f]{64}$/.test(info.id) || !Number.isSafeInteger(info.width) || !Number.isSafeInteger(info.height)
             || info.width <= 0 || info.height <= 0 || info.width > (2 ** 26) / info.height) throw new TypeError('Invalid full-frame source');
         const bytes = info.width * info.height * 4;
         const output = options.reserveCpu(bytes);
         if (!output) throw new Error('Insufficient memory for full-frame image');
-        // AVIF and SVG can require a larger decoded intermediate than their output.
-        const scratchBytes = info.mime === 'image/avif' || info.mime === 'image/svg+xml' ? 4 * (2 ** 26) : bytes;
-        const scratch = options.reserveCpu(scratchBytes);
-        if (!scratch) { output.release(); throw new Error('Insufficient memory for full-frame decoding'); }
-        // The isolated SVG profile may hold an image bitmap and an OffscreenCanvas
-        // backing at once in addition to the transferred output and decoded input.
-        const canvas = info.mime === 'image/svg+xml' ? options.reserveCpu(bytes) : null;
-        if (info.mime === 'image/svg+xml' && !canvas) { scratch.release(); output.release(); throw new Error('Insufficient memory for SVG canvas'); }
+        const parsing = info.mime === 'image/svg+xml' ? options.reserveCpu(svgParseBudget(blob.size)) : null;
+        if (info.mime === 'image/svg+xml' && !parsing) { output.release(); throw new Error('Insufficient memory for SVG parsing'); }
         const controller = new AbortController(); aborters.add(controller);
         const combined = AbortSignal.any([signal, controller.signal]);
         let worker: WorkerClient | undefined, bitmap: ImageBitmap | undefined, outputOwned = true;
+        let scratch: { release(): void } | null = null, canvas: { release(): void } | null = null;
         const check = () => {
             combined.throwIfAborted();
             if (disposed || !options.isCurrent(owner)) throw new DOMException('Stale full-frame request', 'AbortError');
         };
         try {
+            let scratchBytes = info.mime === 'image/avif' ? 4 * (2 ** 26) : bytes;
             if (info.mime === 'image/svg+xml') {
+                const preflight = await boardWorker('decode').request<boolean>('svgPreflight', { blob }, owner,
+                    { priority: 0, deadlineMs: 5000, signal: combined }, options.isCurrent);
+                check(); if (preflight !== true) throw new Error('Invalid SVG preflight response');
+                const [{ createSvgAdmissionProfile }, { svgFrameFactory }] = await Promise.all([import('./svgProfile'), import('./svgFrameHost')]);
+                check();
+                const header = await createSvgAdmissionProfile(svgFrameFactory, owner, options.isCurrent).header(blob, combined);
+                check();
+                if (header.width !== info.width || header.height !== info.height) throw new Error('Full-frame SVG header mismatch');
+                scratchBytes = header.rgbaBytes;
+            }
+            scratch = options.reserveCpu(scratchBytes);
+            if (!scratch) throw new Error('Insufficient memory for full-frame decoding');
+            if (info.mime === 'image/svg+xml') {
+                canvas = options.reserveCpu(bytes);
+                if (!canvas) throw new Error('Insufficient memory for SVG canvas');
                 const svg = options.svg ?? (await import('./svgProfile')).createIsolatedFullFrameSvgDecoder(options.isCurrent);
                 check(); bitmap = await svg(blob, info, owner, combined);
             }
@@ -83,7 +96,7 @@ export function createBoardFullFrameDecoder(options: FullFrameDecoderOptions): B
         } catch (error) { bitmap?.close(); throw error; }
         finally {
             worker?.dispose(); if (worker) workers.delete(worker);
-            aborters.delete(controller); canvas?.release(); scratch.release(); if (outputOwned) output.release();
+            aborters.delete(controller); parsing?.release(); canvas?.release(); scratch?.release(); if (outputOwned) output.release();
         }
     };
     return Object.assign(run, { dispose() {

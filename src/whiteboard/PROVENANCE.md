@@ -198,6 +198,7 @@ third-party code included (normally "none") · date.
 | `geom/metrics.ts` | lane w-g | GE-1 | geometry §2.4 | Design; chord/control-polygon length enclosure, greatest-uncertainty heap and bounded inversion | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
+| `selection.ts` | lane w-g | GE-3; F-SEL-002/005/006/007 | geometry §5.3; selection spec | Design; model child and sheet indexes; session-only selection and group promotion | none | 2026-11-13 |
 
 ## Figures and geometry providers (lane w-h)
 

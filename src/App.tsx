@@ -6388,6 +6388,17 @@ export default function App() {
         if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
         const pending = runtime.media.get(entry.id);
         if (pending) return pending;
+        if (kind === 'pdf') {
+          // A PDF's embedded media lives only in its owned source, read through the lease-checked facade
+          // (same as the view and clipboard). It never goes through the drawing asset path below.
+          const { getPdfInkSourceState } = await import('./whiteboard/host/preparePdfInkSession');
+          const state = getPdfInkSourceState(identity.documentId);
+          if (!state) throw new DOMException('Canvas session ended', 'AbortError');
+          const blob = await state.readMedia(entry.id, mediaSignal);
+          mediaSignal.throwIfAborted();
+          if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+          return blob;
+        }
         const result = await nativeCanvasHost.readMedia(identity, { hash: entry.id.slice(7), preferredName: entry.file }, mediaSignal);
         mediaSignal.throwIfAborted();
         if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');

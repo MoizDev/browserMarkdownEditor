@@ -73,7 +73,7 @@ async function privatePngDensity(blob: Blob, signal: AbortSignal): Promise<numbe
             const data = new DataView(bytes.buffer), x = data.getUint32(4), y = data.getUint32(8);
             const density = x * 0.0254 / 72;
             return data.getUint32(13) === ((crc ^ 0xffffffff) >>> 0) && bytes[12] === 1 && x === y
-                && density >= 0.25 && density <= 8 ? density : null;
+                && Number.isFinite(density) && density > 0 ? density : null;
         }
         offset += size + 12;
     }
@@ -199,16 +199,16 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 const placement = planBoardClipboardPlacement({ receivingBoardId: identity.documentId, target, source: { from: null, bounds: { x: 0, y: 0, w: 0, h: 0 } },
                     containsFrame: false, doc, cameraZoom: zoom, intent });
                 const centre = placement.worldCentre, stack = boardPageStack(doc.host);
-                let page = -1, x = centre.x, y = centre.y;
+                let page = -1, x = centre.x, y = centre.y, rotation = 0;
                 if (isSheetParent(doc, placement.parent)) {
                     if (stack) { page = pageAt(stack, y); const box = stack.rects[page]; if (!box) throw new Error('Target page is unavailable'); x -= box.x; y -= box.y; }
                 } else {
-                    const pose = worldPose(doc, placement.parent);
-                    if (pose.rotation !== 0) throw new Error('Pasting media into a rotated frame is not yet available');
-                    x -= pose.x; y -= pose.y;
+                    const pose = worldPose(doc, placement.parent), dx = x - pose.x, dy = y - pose.y;
+                    const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                    x = c * dx + s * dy; y = -s * dx + c * dy; rotation = -pose.rotation;
                 }
                 check();
-                await options.ingestor.ingestInJob(sources, { origin: 'paste', placement: { parent: placement.parent, page, x, y }, signal: context.signal }, context);
+                await options.ingestor.ingestInJob(sources, { origin: 'paste', placement: { parent: placement.parent, page, x, y, rotation }, signal: context.signal }, context);
                 return;
             }
             if (classified.kind !== 'empty') throw new Error(`Clipboard ${classified.kind} conversion is not yet available`);

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { availableBoardLocales, translateBoard, type BoardLanguageState } from '../../whiteboard/chrome/language';
 import type { BoardPreferenceState } from '../../whiteboard/chrome/preferences';
 import { createBoardStyleControls } from '../../whiteboard/host/styleControls';
@@ -25,6 +25,8 @@ type Styles = ReturnType<typeof createBoardStyleControls>;
 /** Chrome observes the exact document-owned tool, selection, preferences and view. */
 export function NativeBoardChrome(props: NativeBoardChromeProps) {
     const { runtime, engine, language, currentOwner, reportError, onStyles } = props;
+    const tools = useMemo(() => ({ getSnapshot: runtime.tools.getSnapshot, subscribe: runtime.tools.subscribe,
+        setTool(id: string, variant?: string) { if (currentOwner()) runtime.tools.setTool(id, variant); } }), [runtime, currentOwner]);
     if (engine.session !== runtime.session) throw new Error('Board chrome needs the attached board session');
     const [owned, setOwned] = useState<{ runtime: BoardRuntime; engine: ViewerEngine; language: BoardLanguageState; styles: Styles } | null>(null);
     useEffect(() => {
@@ -35,10 +37,12 @@ export function NativeBoardChrome(props: NativeBoardChromeProps) {
         return () => { onStyles(null); styles.dispose(); };
     }, [runtime, engine, language, currentOwner, reportError, onStyles]);
     if (!owned || owned.runtime !== runtime || owned.engine !== engine || owned.language !== language) return null;
-    return <AttachedNativeBoardChrome {...props} styles={owned.styles} />;
+    return <AttachedNativeBoardChrome {...props} styles={owned.styles} tools={tools} />;
 }
 
-function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onReady, onStyles: _onStyles, styles, ...props }: NativeBoardChromeProps & { styles: Styles }) {
+function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onReady, onStyles: _onStyles, styles, tools, ...props }: NativeBoardChromeProps & {
+    styles: Styles; tools: Pick<NativeBoardChromeProps['runtime']['tools'], 'getSnapshot' | 'subscribe' | 'setTool'>;
+}) {
     const lang = useSyncExternalStore(language.subscribe, language.getSnapshot, language.getSnapshot);
     const local = useSyncExternalStore(preferences.subscribe, preferences.getSnapshot, preferences.getSnapshot);
     const panel = useSyncExternalStore(styles.subscribe, styles.getSnapshot, styles.getSnapshot);
@@ -56,7 +60,7 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
     };
     return <SessionBoardChrome {...props} kind={runtime.session.doc.kind} locale={lang.locale} direction={lang.table.dir}
         translate={(key, values) => translateBoard(lang.table, key, values)} languages={availableBoardLocales()}
-        selectLanguage={locale => language.select(locale)} toolState={runtime.tools} toolShortcut={tooltip} shortcuts={shortcutGroups(mac)}
+        selectLanguage={locale => language.select(locale)} toolState={tools} toolShortcut={tooltip} shortcuts={shortcutGroups(mac)}
         localPreferences={{ ...local, setView: (key, value) => { if (props.currentOwner()) preferences.setView(key, value); },
             setSession: (key, value) => preferences.setSession(key, value) }} penPanel={panel} />;
 }

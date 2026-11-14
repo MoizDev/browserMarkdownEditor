@@ -27,7 +27,7 @@ import { subscribeRenderStatus } from './utils/renderStatus';
 import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
-import { ASSETS_DIR, TRASH_DIR, assetEmbeds } from './utils/assets';
+import { ASSETS_DIR, TRASH_DIR, assetEmbeds, assetReferences } from './utils/assets';
 import { BoardSaveBaselines, RetirementBacklog, boardMediaDiff, decideAssetRetirement, mediaChanges, resolveBoardMedia } from './utils/assetRetirement';
 import { boardMediaRefs } from './utils/boardMediaRefs';
 import { setTerminalStartSource } from './utils/terminalStart';
@@ -1324,14 +1324,14 @@ export default function App() {
   // Seeded when a tab opens (below), because otherwise the first edit after
   // opening a note — the likeliest one to remove a picture — would have
   // nothing to compare against.
-  const assetRefsRef = useRef<Map<string, { saved: Set<string> }>>(new Map());
+  const assetRefsRef = useRef<Map<string, { saved: Set<string>; references: Set<string> }>>(new Map());
   const boardBaselinesRef = useRef(new BoardSaveBaselines());
   const unsavedBoardContentRef = useRef(new Map<string, string>());
   const fileTreeRef = useRef<FileTreeNode[]>(fileTree);
   useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
 
   const rememberAssetRefs = useCallback((file: ActiveFile, content: string) => {
-    if (tracksAssets(file)) assetRefsRef.current.set(file.path, { saved: assetEmbeds(content) });
+    if (tracksAssets(file)) assetRefsRef.current.set(file.path, { saved: assetEmbeds(content), references: assetReferences(content) });
     else if (!file.isHelp && isCanvasFile(file.name)) boardBaselinesRef.current.seed(file.path, content);
   }, []);
 
@@ -1422,6 +1422,7 @@ export default function App() {
     activation: number; path: string; parentHandle: FileSystemDirectoryHandle | null;
     text: string; before: ReadonlySet<string>; after: ReadonlySet<string>;
     measuredNames?: string[];
+    restore?: ReadonlySet<string>;
     board?: { before: string; after: string };
   }
   const assetActivationsRef = useRef(new WeakMap<FileSystemDirectoryHandle, number>());
@@ -1517,8 +1518,7 @@ export default function App() {
       // a second before the file it wants came back, so it is holding an
       // "Image not found" it has no reason to re-check on its own.
       let reclaimed = false;
-      for (const name of after) {
-        if (before.has(name)) continue;
+      for (const name of new Set([...after].filter(name => !before.has(name)).concat([...(job.restore ?? [])]))) {
         if (!attached()) return 'skipped-detached';
         if (await restoreAsset(name, dir, attached)) reclaimed = true;
       }
@@ -2523,6 +2523,7 @@ export default function App() {
     const boardBaseline = !nativeSource && !isPdf && isCanvasFile(file.name) ? boardBaselinesRef.current.capture(path) : undefined;
     const assetBaseline = !nativeSource && !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
     const embedsAfter = assetBaseline && assetEmbeds(snapshot);
+    const referencesAfter = assetBaseline && assetReferences(snapshot);
 
     const write = async (): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
       try {
@@ -2577,11 +2578,13 @@ export default function App() {
         // and a save's "Saved" status (and the graph rebuild below) should not
         // wait on that — but two of them must not interleave either.
         requeueAssetsAffected(path);
-        if (assetBaseline && embedsAfter) {
+        if (assetBaseline && embedsAfter && referencesAfter) {
           const before = assetBaseline.saved;
+          const restore = new Set([...referencesAfter].filter(name => !assetBaseline.references.has(name)));
           assetBaseline.saved = embedsAfter;
+          assetBaseline.references = referencesAfter;
           queueReconcile({ activation: activationAtCall, path, parentHandle: file.parentHandle ?? null,
-            text: snapshot, before, after: embedsAfter });
+            text: snapshot, before, after: embedsAfter, restore });
         }
         if (boardBaseline) queueReconcile({
           activation: activationAtCall,
@@ -5575,7 +5578,8 @@ export default function App() {
         if (isCanvasFile(file.name)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
           text: after, before: new Set(), after: new Set(), board: { before, after } });
         if (tracksAssets(file)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
-          text: after, before: assetEmbeds(before), after: assetEmbeds(after) });
+          text: after, before: assetEmbeds(before), after: assetEmbeds(after),
+          restore: new Set([...assetReferences(after)].filter(name => !assetReferences(before).has(name))) });
         const graphOwner = indexGraphRef.current;
         if (graphOwner && graphOwner.root === rootHandle && graphOwner.activation === activation && activation === getVaultActivation()) {
           if (version) {

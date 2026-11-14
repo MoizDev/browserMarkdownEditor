@@ -65,8 +65,9 @@ export class PersistSession {
         void navigator.locks.request(`bme-index:${this.vaultId}`, { signal: this.abort.signal }, async () => {
             if (this.closed) return;
             this.held = true;
+            const released = new Promise<void>(resolve => { this.release = resolve; });
             await this.flush();
-            await new Promise<void>(resolve => { this.release = resolve; });
+            await released;
             await this.flush();
             this.held = false;
         }).catch(() => {});
@@ -74,7 +75,10 @@ export class PersistSession {
     private layout: unknown;
     mark(path: string, record: FileRecord | null, text?: string): void {
         if (this.closed) return;
-        this.dirty.set(path, { record, text: record && record.size <= 4 * 1024 * 1024 ? text : undefined });
+        const previous = this.dirty.get(path);
+        const version = previous?.textVersion ?? previous?.record;
+        const kept = record && version?.mtime === record.mtime && version.size === record.size ? previous?.text : undefined;
+        this.dirty.set(path, { record, text: record && record.size <= 4 * 1024 * 1024 ? text ?? kept : undefined });
         this.schedule();
     }
     markText(path: string, mtime: number, size: number, text: string): void {

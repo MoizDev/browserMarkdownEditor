@@ -62,14 +62,22 @@ export type PathCommand =
     | ['C', x1: number, y1: number, x2: number, y2: number, x: number, y: number]
     | ['Z'];
 
-/** Resolution-free page-local output, shared by paper, ink and the writer (C2.4:373–390, C3:449–453). */
-export interface PageDisplayList {
-    page: number;
-    items: Array<
+/** Ordered output. Ordinary ancestor opacity is resolved into leaf alpha; only effects
+ * requiring compositing as a single unit use isolation. A group's transform maps its
+ * local coordinates to its parent; the clip and children are in those local coordinates. */
+export type PageDisplayItem =
+        | {
+            kind: 'group';
+            items: PageDisplayItem[];
+            transform?: Affine;
+            clip?: { d: PathCommand[]; fillRule?: 'nonzero' | 'evenodd' };
+            isolation?: { opacity: number; blend: 'normal' | 'multiply' };
+        }
         | {
             kind: 'path';
             d: PathCommand[];
             fill?: Rgba;
+            fillRule?: 'nonzero' | 'evenodd';
             stroke?: {
                 color: Rgba;
                 width: number;
@@ -77,6 +85,8 @@ export interface PageDisplayList {
                 join: LineJoin;
                 /** C2.4:380; contract silent on shape, vr-lead ruling: read-only dash lengths. */
                 dash?: readonly number[];
+                miterLimit?: number;
+                dashPhase?: number;
             };
             blend?: 'normal' | 'multiply';
         }
@@ -86,9 +96,15 @@ export interface PageDisplayList {
             transform: Affine;
             bytes: Uint8Array;
             mime: 'image/png' | 'image/jpeg';
+            opacity?: number;
+            blend?: 'normal' | 'multiply';
         }
-        | { kind: 'raster'; rect: Rect; png: Uint8Array }
-    >;
+        | { kind: 'raster'; rect: Rect; png: Uint8Array; opacity?: number; blend?: 'normal' | 'multiply' };
+
+/** Resolution-free page-local output, shared by paper, ink and the writer (C2.4:373–390, C3:449–453). */
+export interface PageDisplayList {
+    page: number;
+    items: PageDisplayItem[];
 }
 
 /** Immutable, revision-pinned source; read is synchronous and side-effect free (C7.1:886–891). */

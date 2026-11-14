@@ -1206,7 +1206,7 @@ export default function App() {
         } finally { snapshot.dispose(); }
       },
       async appendJournal(identity, source, capture) {
-        if (!current(identity) || !writable(identity) || typeof source === 'string'
+        if (!current(identity) || !writable(identity) || typeof source === 'string' || source.kind !== 'deferred'
           || source.owner.documentId !== identity.documentId || source.owner.session !== identity.session
           || !documentSessions.isLiveOwner(identity.documentId, source.owner)) {
           throw new DOMException('Canvas session ended or read-only', 'AbortError');

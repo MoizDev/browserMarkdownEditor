@@ -57,11 +57,19 @@ export class MediaStore {
 
     // The host re-verifies disk bytes and streams only missing assets. Its
     // collision policy remains authoritative; this class never receives handles.
-    async restoreReferenced(entries: Iterable<MediaEntry>, restore: (entry: MediaEntry, bytes: Blob) => Promise<void>, signal: AbortSignal): Promise<void> {
-        for (const entry of entries) {
+    async restoreReferenced(entries: Iterable<MediaEntry>, restore: (entry: MediaEntry, bytes: Blob) => Promise<string | null>,
+        updateFile: (id: MediaId, file: string | null) => void, signal: AbortSignal): Promise<void> {
+        for (const entry of Array.from(entries)) {
             signal.throwIfAborted();
             const bytes = this.get(entry.id);
-            if (bytes) await restore(entry, bytes);
+            if (!bytes) continue;
+            const file = await restore(entry, bytes);
+            signal.throwIfAborted();
+            if (file !== null && (!file || file === '.' || file === '..' || file.length > 255 || /[\\/\0]/.test(file))) {
+                throw new Error('Invalid stored media name');
+            }
+            if (entry.file !== file) updateFile(entry.id, file);
+            this.setFile(entry.id, file);
         }
         signal.throwIfAborted();
     }

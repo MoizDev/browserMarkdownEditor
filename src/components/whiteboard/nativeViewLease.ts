@@ -1,4 +1,4 @@
-import type { PlatformPane } from '../../platform/render/attachPlatformPane.types';
+import type { PlatformLayerDefinition, PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { PageGeometry, Rect } from '../../platform/types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
@@ -8,6 +8,7 @@ import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
 import { createNotebookPaperLayer, type NotebookPaperSnapshot } from '../../whiteboard/host/notebookPaperLayer';
 import { createBoardHostImages } from '../../whiteboard/media/hostImages';
 import { boardPageStack } from '../../whiteboard/model/pages';
+import type { MediaId } from '../../whiteboard/model/media';
 import { DEFAULT_BOARD_PALETTES } from '../../whiteboard/render/palette';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { attachView } from '../../whiteboard/viewer/attachView';
@@ -15,6 +16,14 @@ import { createBoardNavigationHost } from '../../whiteboard/viewer/navigationHos
 import type { ViewerViewParams } from '../../whiteboard/viewer/types';
 import type { BoardViewLease, BoardViewParameters, BoardViewSnapshot } from './boardHostRuntime';
 import { createNativeViewPlatform } from './nativeViewPlatform';
+
+export interface NativePdfBackdrop {
+    readonly layers: readonly PlatformLayerDefinition[];
+    readonly pages: readonly { readonly width: number; readonly height: number }[];
+    setVisible(visible: boolean, focused: boolean): void;
+    notePresentation?(): void;
+    dispose(): void;
+}
 
 export interface NativeNavigationSnapshot { readonly page: number; readonly zoom: number }
 export interface NativeViewLease extends BoardViewLease<object> {
@@ -25,6 +34,7 @@ export interface NativeViewLease extends BoardViewLease<object> {
     zoomBy(factor: number): void;
     reveal(rect: Rect): void;
     changed(): void;
+    replaceBackdrop(backdrop: NativePdfBackdrop): void;
 }
 let serial = 0;
 
@@ -37,17 +47,24 @@ export function createNativeViewLease(options: {
     identity: NativeCanvasIdentity;
     limits: ZoomLimits;
     insets: ViewportInsets;
+    pdfBackdrop?: NativePdfBackdrop;
+    readPdfMedia?(id: MediaId, signal: AbortSignal): Promise<Blob>;
     onError(error: unknown): void;
     onNotice(message: string): void;
 }): NativeViewLease {
     const { board, host, identity, limits, insets } = options;
-    if (options.parameters.mode !== 'view' || !board.isReadOnly) throw new Error('The native viewer requires read-only session authority');
+    if (options.parameters.mode !== 'view') throw new Error('The native viewer requires view mode');
+    if (board.doc.kind === 'pdf-ink' && (!options.pdfBackdrop || !options.readPdfMedia)) {
+        throw new Error('The PDF viewer requires its acquired backdrop and media reader');
+    }
+    if (board.doc.kind !== 'pdf-ink' && options.pdfBackdrop) throw new Error('A PDF backdrop requires a PDF ink session');
     const runtime = getBoardRuntime(board);
     if (!runtime || runtime.session !== board) throw new Error('Native viewer requires its acquired runtime');
     const token = Object.freeze({ vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
         session: identity.session, bytesGeneration: identity.bytesGeneration });
     const viewLease = ++serial, listeners = new Set<() => void>();
     let parameters = { ...options.parameters }, disposed = false, platformPane: PlatformPane | null = null;
+    let backdrop = options.pdfBackdrop;
     let surface: HTMLElement | null = null;
     const current = () => !disposed && host.isCurrent(identity);
     const publish = () => { if (!disposed) for (const listener of [...listeners]) listener(); };
@@ -85,6 +102,10 @@ export function createNativeViewLease(options: {
         async readBlob(id, signal) {
             const cached = runtime.media.get(id);
             if (cached) return cached;
+            if (board.doc.kind === 'pdf-ink') {
+                if (!options.readPdfMedia) throw new Error('PDF media reader is unavailable');
+                return options.readPdfMedia(id, signal);
+            }
             const entry = board.doc.media.get(id);
             if (!entry) throw new Error(`Missing media descriptor: ${id}`);
             const found = await host.readMedia(identity, { hash: id.slice(7), preferredName: runtime.media.currentFile(id) ?? entry.file }, signal);
@@ -92,11 +113,13 @@ export function createNativeViewLease(options: {
             return found.blob;
         }, onError: options.onError });
     const viewParameters = (): ViewerViewParams => ({ ...parameters, sheetId: runtime.selection.getSnapshot().sheet,
-        ...(paper ? { backdrops: [paper] } : {}) });
+        ...(backdrop ? { backdrops: backdrop.layers, pages: backdrop.pages } : paper ? { backdrops: [paper] } : {}) });
     let viewer: ReturnType<typeof attachView>;
     const reveal = (rect: Rect) => { camera.bringIntoView(rect, 24); cameraOwner.changed(); };
-    try { viewer = attachView({ session: board, token, view: viewParameters(), images, reveal, onError: options.onError }); }
-    catch (error) { images.dispose(); cameraOwner.dispose(); throw error; }
+    try {
+        backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
+        viewer = attachView({ session: board, token, view: viewParameters(), images, reveal, onError: options.onError });
+    } catch (error) { backdrop?.dispose(); images.dispose(); cameraOwner.dispose(); throw error; }
     const navigation = createBoardNavigationHost({ camera, viewport: refreshViewport, platform: () => platformPane,
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), invalidate, onError: options.onError,
@@ -107,7 +130,12 @@ export function createNativeViewLease(options: {
         ports: { consumeInput: timestamp => navigation.consumeInput(timestamp), isInteracting: () => navigation.isInteracting(),
             setInputEnabled: enabled => navigation.setInputEnabled(enabled), cancelViewWork: reason => navigation.cancelViewWork(reason),
             writeOverlays: frame => { refreshViewport(); navigation.writeOverlays(frame); },
-            onPresentation: presentation => navigation.onPresentation(presentation), onError: options.onError, onNotice: options.onNotice } });
+            onPresentation: presentation => {
+                navigation.onPresentation(presentation);
+                if (presentation && parameters.visible && current() && presentation.token.documentId === token.documentId &&
+                    presentation.token.session === token.session && presentation.token.vaultEpoch === token.vaultEpoch &&
+                    presentation.token.bytesGeneration === token.bytesGeneration) backdrop?.notePresentation?.();
+            }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.
     const platform = { ...services, camera, readCamera: () => { refreshViewport(); return camera.camera; } };
@@ -126,6 +154,15 @@ export function createNativeViewLease(options: {
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
     const lease: NativeViewLease = {
         runtime, camera, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
+        replaceBackdrop(next) {
+            if (disposed || board.doc.kind !== 'pdf-ink' || !current()) throw new Error('PDF view is not current');
+            if (next === backdrop) return;
+            next.setVisible(parameters.visible, parameters.visible && parameters.focused);
+            const old = backdrop; backdrop = next;
+            try { viewer.setView(viewParameters()); platformPane?.setLayers(viewer.getSnapshot().layers); }
+            catch (error) { backdrop = old; next.dispose(); viewer.setView(viewParameters()); platformPane?.setLayers(viewer.getSnapshot().layers); throw error; }
+            old?.dispose();
+        },
         jump(page) {
             const stack = boardPageStack(board.doc.host);
             if (!stack || !Number.isInteger(page) || page < 0 || page >= stack.rects.length) return;
@@ -142,6 +179,7 @@ export function createNativeViewLease(options: {
             accessibility: viewer.accessibility, subscribe: listener => lease.subscribe(listener),
             setView(next) {
                 parameters = { ...parameters, ...next };
+                backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
                 viewer.setView(viewParameters());
                 navigation.setInputEnabled(next.visible && !!platformPane);
             },
@@ -176,7 +214,7 @@ export function createNativeViewLease(options: {
         dispose() {
             if (disposed) return;
             disposed = true; stopSelection(); stopViewer(); detachSurface();
-            navigation.dispose(); cameraOwner.dispose(); viewer.dispose(); images.dispose(); listeners.clear(); platformPane = null;
+            navigation.dispose(); cameraOwner.dispose(); viewer.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
         },
     };
     return lease;

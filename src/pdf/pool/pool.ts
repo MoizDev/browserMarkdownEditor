@@ -55,6 +55,12 @@ type Job = { doc: Doc; lease?: Lease; op: PdfEngineOp; args: Record<string, unkn
 const abortError = () => new DOMException('PDF request cancelled', 'AbortError');
 const deadlineError = () => new DOMException('PDF request deadline expired', 'TimeoutError');
 const pageKey = (key: string, page: number) => `${key}\0${page}`;
+function sameGeometry(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>): boolean {
+    return !!a && !!b && a.index === b.index && a.width === b.width && a.height === b.height &&
+        a.rotate === b.rotate && a.userUnit === b.userUnit && Array.isArray(a.toUserSpace) && Array.isArray(b.toUserSpace) &&
+        a.toUserSpace.length === 6 && b.toUserSpace.length === 6 &&
+        [0, 1, 2, 3, 4, 5].every(index => Number.isFinite(a.toUserSpace[index]) && a.toUserSpace[index] === b.toUserSpace[index]);
+}
 let poolSerial = 0;
 
 type BootstrapPort = ContainedPort & { readonly engine: EngineInitArgs; compiled(): Promise<void> };
@@ -740,9 +746,11 @@ class Pool implements PdfPool {
                     const input = args as WriterOperations['writer.stageAnnotated']['args'];
                     const output = result as WriterOperations['writer.stageAnnotated']['result'];
                     const prepared = sources.get(input.writerSession);
-                    if (!prepared || output.sourceFingerprint !== prepared.sourceFingerprint ||
-                        JSON.stringify(output.geometryEngine) !== JSON.stringify(prepared.source.geometryEngine) ||
-                        JSON.stringify(input.geometries) !== JSON.stringify(prepared.inspection.geometries)) invalidPdfReply();
+                    const engine = prepared?.source.geometryEngine, actual = output.geometryEngine;
+                    if (!prepared || !engine || output.sourceFingerprint !== prepared.sourceFingerprint ||
+                        actual.id !== engine.id || actual.build !== engine.build || actual.generation !== engine.generation ||
+                        !Array.isArray(input.geometries) || input.geometries.length !== prepared.inspection.geometries.length ||
+                        !prepared.inspection.geometries.every((page, index) => sameGeometry(input.geometries[index], page))) invalidPdfReply();
                     stages.set(output.stageId, { sourceFingerprint: prepared.sourceFingerprint, pageCount: prepared.inspection.pageCount, revision: input.revision, formatId: prepared.source.formatId });
                 } else if (op === 'writer.finishAnnotated') {
                     const input = args as WriterOperations['writer.finishAnnotated']['args'];

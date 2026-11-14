@@ -1,4 +1,4 @@
-import { pageAt, pagePresentation, tileKeyString } from '../../platform/render';
+import { pageAt, pagePresentation, renderTokenKey, tileKeyString } from '../../platform/render';
 import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, MirrorView, Rect, TextureHandle, ViewState } from '../../platform/render';
 import type { PdfMirrorPixels, PdfSessionMirrors } from './tileMirror';
 import type { PdfVersionBridge } from './versionBridge';
@@ -44,6 +44,11 @@ interface Entry {
 function contentFamily(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): string {
     const { vaultEpoch, documentId, session } = input.token;
     return JSON.stringify([vaultEpoch, documentId, session, input.source, pdfVariantRevision(input.variant, input.fontEpoch ?? 0), input.geometryDigest]);
+}
+
+function mirrorViewKey(snapshot: MirrorView): string {
+    return JSON.stringify([snapshot.token, snapshot.sourceRole, snapshot.contentRevision, snapshot.colourVersion,
+        snapshot.geometryDigest, snapshot.nominalDpr, snapshot.view.camera, snapshot.view.viewport]);
 }
 
 function rect(request: PdfTileRequest): Rect {
@@ -415,13 +420,25 @@ export class PdfTileLayer implements Layer {
         }
     }
 
+    private mirrorJobCurrent(job: MirrorJob): boolean {
+        if (this.disposed || !this.isCurrent() || !this.latestView || !this.mirror) return false;
+        const current = this.mirror.view(this.latestView);
+        if (!current || mirrorViewKey(current) !== job.key) return false;
+        const input = this.demand(this.latestView), token = renderTokenKey(input.token);
+        if (renderTokenKey(current.token) !== token || current.sourceRole !== input.source ||
+            current.geometryDigest !== input.geometryDigest || current.colourVersion !== 0 ||
+            !current.contentRevision.startsWith(`${pdfVariantRevision(input.variant, input.fontEpoch ?? 0)}:proof:`)) return false;
+        return job.entries.every(({ request }) => request.key.documentToken === token && request.key.sourceRole === input.source &&
+            request.key.colourVersion === current.colourVersion && request.key.contentRevision === pdfVariantRevision(
+                input.variant === 'plain' ? 'plain' : input.pageVariant?.(request.page) ?? input.variant, input.fontEpoch ?? 0));
+    }
+
     private prepareMirror(view: ViewState, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
         requests: readonly PdfTileRequest[], budget: FrameBudget): void {
         const mirror = this.mirror;
         const snapshot = mirror?.view(view);
         if (!mirror || !snapshot || input.moving || this.disposed) { this.mirrorJob = null; return; }
-        const key = JSON.stringify([snapshot.token, snapshot.sourceRole, snapshot.contentRevision, snapshot.colourVersion,
-            snapshot.geometryDigest, snapshot.nominalDpr, snapshot.view.camera, snapshot.view.viewport]);
+        const key = mirrorViewKey(snapshot);
         if (key === this.mirrorKey) return;
         if (this.mirrorJob?.key !== key) {
             const exact = requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport));
@@ -435,6 +452,7 @@ export class PdfTileLayer implements Layer {
         }
         const job = this.mirrorJob;
         if (!job || job.pending || budget.shouldYield()) return;
+        if (!this.mirrorJobCurrent(job)) { this.mirrorJob = null; return; }
         if (job.index === job.entries.length) {
             const mirrors = mirror.store.mirrors;
             mirrors.commitFrame(job.view, job.ids, true, job.lowIds);
@@ -468,7 +486,7 @@ export class PdfTileLayer implements Layer {
         job.pending = true;
         // One cropped allocation per preparation slice; an obsolete view cannot publish (design §6.4:649).
         void createImageBitmap(bitmap, sx, sy, width, height).then(copy => {
-            if (this.mirrorJob !== job || this.disposed || !this.isCurrent() || contentFamily(this.demand(view)) !== contentFamily(input)) {
+            if (this.mirrorJob !== job || !this.mirrorJobCurrent(job)) {
                 copy.close(); this.host.allocator.cpu.release(lease); return;
             }
             const world = { x: left, y: top, width: right - left, height: bottom - top };
@@ -477,7 +495,7 @@ export class PdfTileLayer implements Layer {
                 width: world.width * scale, height: world.height * scale };
             let id: string | null;
             try {
-                id = mirror.store.publish({ token: job.view.token, key: entry.request.key,
+                id = mirror.store.publish({ token: job.view.token, key: { ...entry.request.key, contentRevision: job.view.contentRevision },
                     geometryDigest: job.view.geometryDigest, tier: entry.request.level === 'low' ? 'low' : 'exact', neededByCurrentFrame: true,
                     pixels: { bitmap: copy, world, source, page }, lease });
             } catch (error) {

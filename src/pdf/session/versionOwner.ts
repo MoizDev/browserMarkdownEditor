@@ -5,12 +5,18 @@ import type { PdfVersionBridge } from '../layer/versionBridge';
 import type { PdfSessionMirrors } from '../layer/tileMirror';
 import { pdfGeometryDigest } from './documentSession';
 import type { OpenTiledDocument, PdfTiledDocumentSession } from './documentSession';
+import { pdfVariantRevision } from '../fonts/profiles';
+
+export function pdfMirrorRevision(enabled: boolean, fontEpoch: number, proofRevision: number): string {
+    return `${pdfVariantRevision(enabled ? 'emphasis' : 'plain', fontEpoch)}:proof:${enabled ? proofRevision : 0}`;
+}
 
 type Role = 'outer' | 'original';
 type Source = { session: PdfTiledDocumentSession; document: OpenTiledDocument; mirror: PdfSessionMirrors };
 export interface PdfVersionTransitionOwner {
-    adopt(value: Source, variant: string, signal: AbortSignal): Promise<PdfVersionBridge | null>;
+    adopt(value: Source, variant: string | (() => string), signal: AbortSignal): Promise<PdfVersionBridge | null>;
     subscribe(listener: () => void): () => void;
+    isActive(bridge: PdfVersionBridge): boolean;
     dispose(): void;
 }
 const outerSlot = Symbol('outer PDF version transition'), originalSlot = Symbol('original PDF version transition');
@@ -77,7 +83,7 @@ export function pdfVersionTransitionOwner(documentId: string, source: Role): Pdf
                         guard();
                         if (attempt !== serial || candidate !== bridge) throw stale();
                     }
-                    accepted = finishPdfVersionBridge({ bridge, token, source, variant,
+                    accepted = finishPdfVersionBridge({ bridge, token, source, variant: typeof variant === 'function' ? variant() : variant,
                         geometryDigest: pdfGeometryDigest(value.document.pages), pageCount: pdf.info.pageCount,
                         geometry: page => pdf.peekGeometry(page) });
                 } catch { accepted = null; }
@@ -89,6 +95,7 @@ export function pdfVersionTransitionOwner(documentId: string, source: Role): Pdf
             return accepted;
         },
         subscribe(listener) { if (disposed) return () => {}; listeners.add(listener); return () => { listeners.delete(listener); }; },
+        isActive(bridge) { return !disposed && candidate === bridge; },
         dispose() { if (disposed) return; disposed = true; serial++; unsubscribe(); drop(); active = undefined; listeners.clear(); },
     };
     try { identity.setSlot(slot, owner, value => value.dispose()); }

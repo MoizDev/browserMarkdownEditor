@@ -1,4 +1,4 @@
-import type { ContentSource, SourceOwner } from '../../utils/documentBuffers';
+import type { SourceOwner } from '../../utils/documentBuffers';
 import type { SessionAdapter } from '../../utils/documentSessions';
 import type { JournalCapture } from '../../utils/recoveryFunnel';
 import type { Applied, TouchedSet, Transaction } from '../change/ops';
@@ -16,7 +16,7 @@ import type { MediaId } from '../model/media';
 import type { SampleStoreReader } from '../model/samples';
 import type { SelectionState } from '../selection';
 import type { PinnedBoardBuild } from './contentSource';
-import type { BoardSession } from './BoardSession';
+import type { BoardContentSource, BoardSession } from './BoardSession';
 
 /** Recovery owns its journal transport and retained media/sample payloads; callbacks are synchronous
  * until the returned append or drain, so pagehide captures a fixed revision without waiting. */
@@ -26,7 +26,7 @@ export interface BoardBuildCapture {
 }
 export interface BoardJournalPort {
     record(applied: Applied, revision: number): void;
-    capture(source: ContentSource, context: unknown): () => void | Promise<void>;
+    capture(source: BoardContentSource, context: unknown): (() => void | Promise<void>) & { cancel?: () => void };
     delta(context: unknown): JournalCapture | undefined;
     recover(payload: unknown, apply: (transaction: Transaction) => Applied): void | Promise<void>;
     acknowledge(revision: number, baseline?: SerializerPrime): void;

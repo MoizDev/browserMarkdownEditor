@@ -31,6 +31,7 @@ export function createBoardBuildPinning(ports: BoardBuildPorts): BoardBuildPinni
             pending.add(cancel);
             return {
                 revision,
+                release,
                 async build(signal) {
                     signal.throwIfAborted();
                     if (result) return result;

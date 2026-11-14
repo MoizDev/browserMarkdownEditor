@@ -28,7 +28,7 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), node = doc.nodes.get(options.id), controller = new AbortController();
     if (!node || node.kind !== 'connector' || isLocked(doc, node) || session.isReadOnly) throw new Error('Connector endpoint is not editable');
-    let sample = first, keys = modifiers, generation = 0, ended = false, cleaned = false;
+    let sample = first, keys = modifiers, generation = 0, ended = false, cleaned = false, lastMovedAt = first.time;
     let request: AbortController | undefined, scope: BoardGeometryScope | undefined, unregister: (() => void) | undefined;
     let font: number | undefined;
     const release = options.hold();
@@ -54,7 +54,8 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             if (!scope) await source;
             check();
             const attachment = input.accel ? null : await options.resolveAttachment(point, localRequest.signal,
-                { precise: input.shift, exact: input.alt, input: point.source === 'keyboard' ? 'mouse' : point.source });
+                { precise: input.shift || point.time - lastMovedAt >= 1000, exact: input.alt,
+                    input: point.source === 'keyboard' ? 'mouse' : point.source });
             check();
             const local = worldToLocal(doc, node, point), terminal = options.terminal;
             const ops: NodeSetOp[] = [{ t: 'set', id: node.id, key: terminal, value: { x: local.x, y: local.y, attach: attachment } }];
@@ -84,7 +85,10 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
         kind: 'node-edit', pointerIds: new Set([first.pointerId]),
         update(samples, next) {
             if (ended || !current()) { if (!ended) cancel(); return; }
-            keys = next; for (const value of samples) if (value.pointerId === first.pointerId) sample = value;
+            keys = next; for (const value of samples) if (value.pointerId === first.pointerId) {
+                if (value.x !== sample.x || value.y !== sample.y) lastMovedAt = value.time;
+                sample = value;
+            }
             void render(false);
         },
         finish(reason: FinishReason) { if (ended) return; if (reason !== 'up' || !current()) { cancel(); return; } ended = true; void render(true); },

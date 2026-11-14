@@ -60,6 +60,7 @@ class CreationGesture implements GestureOwner {
     private fontEpoch: number | undefined;
     private previewRequest: AbortController | undefined;
     private previewGeneration = 0;
+    private lastMovedAt: number;
     private sample: RealSample;
     private readonly downModifiers: Modifiers;
     private modifiers: Modifiers;
@@ -67,7 +68,7 @@ class CreationGesture implements GestureOwner {
     private released = false;
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
-        this.pointerIds = new Set([down.pointerId]); this.sample = down; this.downModifiers = modifiers; this.modifiers = modifiers;
+        this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
         this.revision = doc.rev; this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
         const parent = doc.nodes.get(this.parent as Node['id']);
         if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame'))) throw new Error('Creation focus is not a live container');
@@ -168,7 +169,10 @@ class CreationGesture implements GestureOwner {
         if (this.ended) return;
         if (!this.valid()) { this.cancel('invalidated'); return; }
         this.modifiers = modifiers;
-        for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) this.sample = sample;
+        for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) {
+            if (sample.x !== this.sample.x || sample.y !== this.sample.y) this.lastMovedAt = sample.time;
+            this.sample = sample;
+        }
         try { this.draw(); } catch (error) { this.cancel('invalidated'); this.context.onError(error); }
     }
     finish(reason: FinishReason): void {
@@ -218,16 +222,17 @@ class CreationGesture implements GestureOwner {
         const { render, runtime } = this.context, signal = this.controller.signal;
         let node = await this.snapped(this.sample, this.modifiers, signal);
         if (node.kind === 'connector') {
-            const request = (sample: RealSample, keys: Modifiers): AttachmentRequest => ({ precise: keys.shift, exact: keys.alt,
+            const request = (sample: RealSample, keys: Modifiers, dwell: boolean): AttachmentRequest => ({ precise: keys.shift || dwell, exact: keys.alt,
                 input: sample.source === 'keyboard' ? 'mouse' : sample.source });
             const world = (point: { x: number; y: number }) => {
                 const pose = this.parentPose, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
                 const x = node.x + point.x, y = node.y + point.y;
                 return { x: pose.x + c * x - s * y, y: pose.y + s * x + c * y };
             };
-            const start = this.downModifiers.accel ? null : await this.context.resolveAttachment(world(node.start), signal, request(this.down, this.downModifiers));
+            const start = this.downModifiers.accel ? null : await this.context.resolveAttachment(world(node.start), signal, request(this.down, this.downModifiers, false));
             if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
-            const end = this.modifiers.accel ? null : await this.context.resolveAttachment(world(node.end), signal, request(this.sample, this.modifiers));
+            const end = this.modifiers.accel ? null : await this.context.resolveAttachment(world(node.end), signal,
+                request(this.sample, this.modifiers, this.sample.time - this.lastMovedAt >= 1000));
             node = { ...node, start: { ...node.start, attach: start }, end: { ...node.end, attach: end } };
         }
         if ('font' in node && !await render.text.fonts.load({ family: node.font, bold: false, italic: false })) throw new Error('The creation font could not be loaded');

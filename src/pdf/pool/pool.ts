@@ -40,13 +40,17 @@ function reportMemory(client: WorkerClient, bytes: number): void {
 
 type Doc = { key: PdfDocKey; source: 'outer' | 'original'; blob: Blob; password?: string; refs: number; controller: AbortController;
     info?: DocInfo; signature?: string; opening?: Promise<DocInfo>; geometry: Map<number, Readonly<PageGeometry>>;
-    pending: Set<Promise<unknown>>; leases: Set<Lease>; closing: boolean; fonts: Set<PdfFontId>; regions: Map<number, Promise<void>>; regionsReady: Set<number> };
+    pending: Set<Promise<unknown>>; leases: Set<Lease>; closing: boolean; fonts: Set<PdfFontId>; regions: Map<number, Promise<void>>;
+    regionRequests: Map<number, { client: WorkerClient; request: Promise<unknown>; priority: Priority }>; regionsReady: Set<number>;
+    rasterFailures: Set<number>; rasterEpoch: number };
 type Slot = { id: number; client: WorkerClient; generation: number; opens: Map<string, Promise<DocInfo>>;
+    openRequests: Map<string, { request: Promise<unknown>; priority: Priority }>;
     pages: Set<string>; inFlight: number; heapBytes: number; retiring: boolean; idleAt: number;
     fonts: Map<PdfFontId, Promise<void>>; needed: Map<PdfDocKey, PdfFontId[]>; fontEpoch: number };
 type Job = { doc: Doc; lease?: Lease; op: PdfEngineOp; args: Record<string, unknown>; priority: Priority; signal: AbortSignal;
     asked: number; timeoutMs?: number; deadline?: number; controller: AbortController; resolve: (value: unknown) => void; reject: (error: unknown) => void;
-    abort: () => void; timer?: ReturnType<typeof setTimeout>; posted?: Promise<unknown>; slot?: Slot; attempts: number; settled: boolean; progress?: { finish(): void } };
+    abort: () => void; timer?: ReturnType<typeof setTimeout>; posted?: Promise<unknown>; slot?: Slot;
+    attempt?: { controller: AbortController; preempted: boolean }; attempts: number; settled: boolean; rasterEpoch: number; progress?: { finish(): void } };
 const abortError = () => new DOMException('PDF request cancelled', 'AbortError');
 const deadlineError = () => new DOMException('PDF request deadline expired', 'TimeoutError');
 const pageKey = (key: string, page: number) => `${key}\0${page}`;
@@ -193,7 +197,7 @@ class Pool implements PdfPool {
     private slot(): Slot {
         const id = ++this.nextSlot;
         const client = pdfClient(this.options, `pdf-render-${this.serial}-${id}`, 'render', id, heap => { slot.heapBytes = heap; });
-        const slot: Slot = { id, client, generation: 0, opens: new Map(), pages: new Set(), inFlight: 0, heapBytes: 0, retiring: false, idleAt: Date.now(), fonts: new Map(), needed: new Map(), fontEpoch: 0 };
+        const slot: Slot = { id, client, generation: 0, opens: new Map(), openRequests: new Map(), pages: new Set(), inFlight: 0, heapBytes: 0, retiring: false, idleAt: Date.now(), fonts: new Map(), needed: new Map(), fontEpoch: 0 };
         client.on('font.needed', value => {
             try {
                 const data = record(value, ['ids', 'docKey', 'page']);
@@ -202,7 +206,7 @@ class Pool implements PdfPool {
                     data.ids.some(id => typeof id !== 'string' || !Object.hasOwn(PDF_FONT_CATALOGUE, id))) invalidPdfReply();
                 if (data.page !== undefined) integer(data.page, 0, this.docs.get(data.docKey)!.info!.pageCount - 1);
                 slot.needed.set(data.docKey, [...new Set(data.ids as PdfFontId[])]);
-            } catch { void client.recycle('Invalid PDF font request').catch(() => {}); }
+            } catch { slot.openRequests.clear(); void client.recycle('Invalid PDF font request').catch(() => {}); }
         });
         client.on('page.geometry', value => {
             if (!value || typeof value !== 'object') return;
@@ -210,14 +214,14 @@ class Pool implements PdfPool {
             const page = event.geometry;
             if (!doc?.info || !page || !Number.isSafeInteger(page.index) || page.index < 0 || page.index >= doc.info.pageCount ||
                 !slot.opens.has(doc.key)) {
-                void client.recycle('Invalid PDF geometry event').catch(() => {});
+                slot.openRequests.clear(); void client.recycle('Invalid PDF geometry event').catch(() => {});
                 return;
             }
             try { rememberGeometry(doc, page, page.index); }
             catch (error) {
                 this.failedDocs.add(doc.key);
                 for (const job of [...this.queue]) if (job.doc === doc) this.finish(job, error);
-                void client.recycle('Invalid PDF geometry event').catch(() => {});
+                slot.openRequests.clear(); void client.recycle('Invalid PDF geometry event').catch(() => {});
             }
         });
         this.slots.push(slot);
@@ -225,16 +229,28 @@ class Pool implements PdfPool {
         return slot;
     }
     private syncGeneration(slot: Slot): void {
-        if (slot.client.generation !== slot.generation) { slot.generation = slot.client.generation; slot.opens.clear(); slot.pages.clear(); slot.fonts.clear(); slot.needed.clear(); slot.fontEpoch = 0; }
+        if (slot.client.generation !== slot.generation || (slot.client.state === 'idle' && slot.generation !== 0)) {
+            slot.generation = slot.client.generation; slot.opens.clear(); slot.openRequests.clear(); slot.pages.clear(); slot.fonts.clear(); slot.needed.clear(); slot.fontEpoch = 0;
+        }
     }
-    private async openOn(slot: Slot, doc: Doc, priority: Priority, signal: AbortSignal): Promise<DocInfo> {
+    private promoteOpen(slot: Slot, key: string, priority: Priority): void {
+        const open = slot.openRequests.get(key);
+        if (!open || priority >= open.priority) return;
+        open.priority = priority;
+        slot.client.reprioritise(open.request, priority);
+    }
+    private async openOn(slot: Slot, doc: Doc, priority: () => Priority, signal: AbortSignal): Promise<DocInfo> {
         this.syncGeneration(slot);
-        for (const id of doc.fonts) await this.provideFont(slot, id, doc.controller.signal);
+        this.promoteOpen(slot, doc.key, priority());
+        for (const id of doc.fonts) await this.provideFont(slot, id, signal);
+        this.syncGeneration(slot);
         let pending = slot.opens.get(doc.key);
         if (!pending) {
-            pending = slot.client.request<unknown>('doc.open', { docKey: doc.key, source: doc.blob, size: doc.blob.size, ...(doc.password ? { password: doc.password } : {}) },
-                { priority, signal: doc.controller.signal, cpu: 'governed', key: doc.key, deadlineMs: 60_000, terminateOnDeadline: true })
-                .then(value => validators.document(value));
+            const currentPriority = priority();
+            const request = slot.client.request<unknown>('doc.open', { docKey: doc.key, source: doc.blob, size: doc.blob.size, ...(doc.password ? { password: doc.password } : {}) },
+                { priority: currentPriority, signal: doc.controller.signal, cpu: 'governed', key: doc.key, deadlineMs: 60_000, terminateOnDeadline: true });
+            slot.openRequests.set(doc.key, { request, priority: currentPriority });
+            pending = request.then(value => validators.document(value));
             slot.generation = slot.client.generation;
             slot.opens.set(doc.key, pending);
             const promise = pending;
@@ -244,8 +260,10 @@ class Pool implements PdfPool {
                 doc.signature ??= JSON.stringify(info);
                 doc.info ??= info;
                 slot.generation = slot.client.generation;
-            }).catch(() => { if (slot.opens.get(doc.key) === promise) slot.opens.delete(doc.key); });
-        }
+            }).catch(() => {
+                if (slot.opens.get(doc.key) === promise) { slot.opens.delete(doc.key); slot.openRequests.delete(doc.key); }
+            });
+        } else this.promoteOpen(slot, doc.key, priority());
         const info = await waitFor(pending, signal);
         if (!validInfo(info)) throw new PdfEngineError('EngineBroken', 'Invalid PDF document information');
         if (doc.signature && doc.signature !== JSON.stringify(info)) throw new PdfEngineError('EngineBroken', 'PDF workers disagree about this document');
@@ -261,11 +279,13 @@ class Pool implements PdfPool {
             bytesGeneration: options.token.bytesGeneration, source: options.source });
         let doc = this.docs.get(key);
         if (doc && (doc.blob.size !== options.blob.size || doc.password !== options.password || doc.closing)) throw new PdfEngineError('EngineBroken', 'Conflicting PDF source identity');
-        if (!doc) { doc = { key, source: options.source, blob: options.blob, password: options.password, refs: 0, controller: new AbortController(), geometry: new Map(), pending: new Set(), leases: new Set(), closing: false, fonts: new Set(), regions: new Map(), regionsReady: new Set() }; this.docs.set(key, doc); }
+        if (!doc) { doc = { key, source: options.source, blob: options.blob, password: options.password, refs: 0, controller: new AbortController(), geometry: new Map(), pending: new Set(), leases: new Set(), closing: false, fonts: new Set(), regions: new Map(), regionRequests: new Map(), regionsReady: new Set(), rasterFailures: new Set(), rasterEpoch: 0 }; this.docs.set(key, doc); }
         doc.refs++;
         const lease = new Lease(this, doc, options.token); doc.leases.add(lease);
         try {
             doc.opening ??= this.enqueue<DocInfo>(doc, undefined, 'doc.open', {}, { priority: options.priority });
+            const openingJob = this.jobs.get(doc.opening);
+            if (openingJob && options.priority < openingJob.priority) this.reprioritise(doc.opening, options.priority);
             await waitFor(doc.opening, options.signal);
             if (options.signal?.aborted || lease.closed) throw abortError();
             return lease;
@@ -283,7 +303,7 @@ class Pool implements PdfPool {
         }
         const asked = Date.now();
         const job: Job = { doc, lease, op, args, priority: options.priority, signal, asked, timeoutMs: options.deadlineMs, controller, resolve: value => resolve(value as T), reject,
-            abort: () => this.cancel(job, abortError()), attempts: 0, settled: false };
+            abort: () => this.cancel(job, abortError()), attempts: 0, settled: false, rasterEpoch: doc.rasterEpoch };
         this.jobs.set(promise, job); this.queue.push(job); doc.pending.add(promise);
         const cleanup = () => { doc.pending.delete(promise); };
         void promise.then(cleanup, cleanup);
@@ -300,7 +320,7 @@ class Pool implements PdfPool {
         if (job.settled) return;
         job.settled = true; job.signal.removeEventListener('abort', job.abort);
         job.progress?.finish();
-        if (error instanceof Error && job.op === 'page.tile' && Number.isSafeInteger(job.args.page) &&
+        if (error instanceof Error && job.op === 'page.tile' && job.rasterEpoch === job.doc.rasterEpoch && Number.isSafeInteger(job.args.page) &&
             !['AbortError', 'Cancelled'].includes(error.name)) failPdfPage(job.doc.key, job.args.page as number, 'failed', 'This page could not be drawn.');
         if (job.timer) clearTimeout(job.timer);
         const index = this.queue.indexOf(job); if (index >= 0) this.queue.splice(index, 1);
@@ -321,6 +341,31 @@ class Pool implements PdfPool {
         }
         return live.filter(slot => slot.inFlight < 2).sort((a, b) => a.inFlight - b.inFlight)[0];
     }
+    private promoteRegions(doc: Doc, page: number, priority: Priority): void {
+        const request = doc.regionRequests.get(page);
+        if (!request || priority >= request.priority) return;
+        request.priority = priority;
+        request.client.reprioritise(request.request, priority);
+    }
+    private preemptLower(slot: Slot, wanted: Job): void {
+        // A governor-paused render holds the worker's serial chain at slice(); only cancelling
+        // its native attempt releases the chain without cancelling the logical page request.
+        if (wanted.priority > 1) return;
+        for (const job of this.queue) {
+            const attempt = job.attempt;
+            if (job === wanted || job.slot !== slot || job.priority < 2 || job.settled || !job.posted || !attempt || attempt.preempted) continue;
+            attempt.preempted = true;
+            attempt.controller.abort();
+        }
+    }
+    private preemptForWanted(wanted: Job): void {
+        if (wanted.priority > 1) return;
+        const live = this.slots.filter(slot => !slot.retiring), page = wanted.args.page;
+        const slot = Number.isSafeInteger(page) && (page as number) >= 0
+            ? homeWorker(live, wanted.doc.key, page as number)
+            : live.find(candidate => this.queue.some(job => job.slot === candidate && job.priority >= 2 && job.attempt));
+        if (slot) this.preemptLower(slot, wanted);
+    }
     private pump(): void {
         if (this.disposed) return;
         if (this.pumping) { this.repump = true; return; }
@@ -335,11 +380,15 @@ class Pool implements PdfPool {
                 if (this.failedDocs.has(job.doc.key)) { this.finish(job, new PdfEngineError('EngineBroken', 'This PDF could not be displayed')); continue; }
                 if (Number.isSafeInteger(page) && this.quarantined.has(pageKey(job.doc.key, page as number))) { this.finish(job, new PdfEngineError('PageError', 'This page could not be drawn')); continue; }
                 if (job.op === 'page.tile') {
+                    if (Number.isSafeInteger(page) && job.doc.rasterFailures.has(page as number)) {
+                        this.finish(job, new PdfEngineError('PageError', 'This page could not be drawn. Retry to try it again.')); continue;
+                    }
                     const arrived = pdfTileArrivalCount();
                     if (arrived >= 64 || (arrived > 32 && job.priority >= 2)) continue;
                 }
                 const slot = this.pick(job);
-                if (!slot) { this.grow(job); continue; }
+                if (!slot) { this.preemptForWanted(job); this.grow(job); continue; }
+                this.preemptLower(slot, job);
                 let release: (() => void) | null = null;
                 try { if (job.op === 'page.tile') { release = this.credits.reserve({ ...job.args, docKey: job.doc.key } as PageTileArgs); if (!release) continue; } }
                 catch (error) { this.finish(job, error); continue; }
@@ -366,11 +415,14 @@ class Pool implements PdfPool {
         if (!job.progress && job.op === 'page.tile' && job.priority <= 1 && Number.isSafeInteger(job.args.page)) {
             job.progress = beginPdfPageWork(job.doc.key, job.args.page as number);
         }
-        slot.inFlight++; job.slot = slot;
+        const attempt = { controller: new AbortController(), preempted: false };
+        const signal = AbortSignal.any([job.signal, attempt.controller.signal]);
+        let rasterFailurePage: number | undefined;
+        slot.inFlight++; job.slot = slot; job.attempt = attempt;
         const task = (async () => {
-            const info = await this.openOn(slot, job.doc, job.priority, job.signal);
+            const info = await this.openOn(slot, job.doc, () => job.priority, signal);
             if (job.op === 'doc.open') return info;
-            if (job.signal.aborted || job.settled) throw abortError();
+            if (signal.aborted || job.settled) throw abortError();
             const payload = { ...job.args, docKey: job.doc.key };
             const page = job.args.page;
             const remaining = job.deadline === undefined ? 60_000 : Math.max(0, Math.min(60_000, job.deadline - Date.now()));
@@ -384,40 +436,66 @@ class Pool implements PdfPool {
                         }
                         let regions = job.doc.regions.get(page as number);
                         if (!regions) {
-                            regions = slot.client.request<unknown>('page.imageRegions', { docKey: job.doc.key, page },
-                                { priority: job.priority, signal: job.doc.controller.signal, cpu: 'governed', deadlineMs: remaining, terminateOnDeadline: true })
-                                .then(value => { setPdfPageRegions(job.doc.key, page as number, imageRegions(value)); job.doc.regionsReady.add(page as number); });
+                            const request = slot.client.request<unknown>('page.imageRegions', { docKey: job.doc.key, page },
+                                { priority: job.priority, signal, cpu: 'governed', deadlineMs: remaining, terminateOnDeadline: true });
+                            job.posted = request;
+                            job.doc.regionRequests.set(page as number, { client: slot.client, request, priority: job.priority });
+                            regions = request.then(value => { setPdfPageRegions(job.doc.key, page as number, imageRegions(value)); job.doc.regionsReady.add(page as number); });
                             job.doc.regions.set(page as number, regions);
                             const pending = regions;
-                            void regions.catch(() => { if (job.doc.regions.get(page as number) === pending) job.doc.regions.delete(page as number); });
+                            void regions.then(() => {
+                                if (job.doc.regionRequests.get(page as number)?.request === request) job.doc.regionRequests.delete(page as number);
+                            }, () => {
+                                if (job.doc.regions.get(page as number) === pending) job.doc.regions.delete(page as number);
+                                if (job.doc.regionRequests.get(page as number)?.request === request) job.doc.regionRequests.delete(page as number);
+                            });
+                        } else this.promoteRegions(job.doc, page as number, job.priority);
+                        try { await waitFor(regions, signal); }
+                        catch (error) {
+                            if (!signal.aborted && error instanceof Error && ['AbortError', 'Cancelled'].includes(error.name)) {
+                                if (job.doc.regions.get(page as number) === regions) job.doc.regions.delete(page as number);
+                                continue;
+                            }
+                            throw error;
                         }
-                        await waitFor(regions, job.signal);
                     }
                     if (Number.isSafeInteger(page) && !job.doc.geometry.has(page as number) &&
                         (job.op === 'page.links' || job.op === 'page.emphasisProbe' || (job.op === 'page.text' && job.args.detail !== 'text'))) {
                         const geometryRequest = slot.client.request<unknown>('page.geometry', { docKey: job.doc.key, page },
-                            { priority: job.priority, signal: job.signal, cpu: 'governed', deadlineMs: remaining, terminateOnDeadline: true });
+                            { priority: job.priority, signal, cpu: 'governed', deadlineMs: remaining, terminateOnDeadline: true });
                         job.posted = geometryRequest;
                         rememberGeometry(job.doc, await geometryRequest, page as number);
                     }
-                    const posted = slot.client.request<unknown>(job.op, payload, { priority: job.priority, signal: job.signal, deadlineMs: remaining,
+                    const posted = slot.client.request<unknown>(job.op, payload, { priority: job.priority, signal, deadlineMs: remaining,
                         terminateOnDeadline: true, cpu: 'governed', key: Number.isSafeInteger(page) ? pageKey(job.doc.key, page as number) : job.doc.key });
                     job.posted = posted;
-                    result = await posted; break;
+                    try { result = await posted; }
+                    catch (error) {
+                        if (job.op === 'page.tile' && !job.settled && !signal.aborted && job.rasterEpoch === job.doc.rasterEpoch &&
+                            Number.isSafeInteger(page) && (page as number) >= 0 && (page as number) < info.pageCount && error instanceof Error &&
+                            ['PageError', 'ResourceLimit', 'NotSupported'].includes(error.name)) rasterFailurePage = page as number;
+                        throw error;
+                    }
+                    break;
                 } catch (error) {
                     if (!(error instanceof Error) || error.name !== 'FontPending') throw error;
                     const ids = slot.needed.get(job.doc.key);
                     if (!ids?.length || ids.some(id => installed.has(id))) throw new PdfEngineError('NotSupported', 'A font needed by this page is unavailable');
                     for (const id of ids) {
                         installed.add(id); job.doc.fonts.add(id);
-                        try { await this.provideFont(slot, id, job.signal); notePdfFontProvided(job.doc.key, id); }
-                        catch { throw new PdfEngineError('NotSupported', 'A font needed by this page is unavailable'); }
+                        try { await this.provideFont(slot, id, signal); notePdfFontProvided(job.doc.key, id); }
+                        catch {
+                            if (signal.aborted) throw abortError();
+                            throw new PdfEngineError('NotSupported', 'A font needed by this page is unavailable');
+                        }
                     }
-                    job.signal.throwIfAborted();
+                    signal.throwIfAborted();
                 }
             }
+            if (job.settled || signal.aborted) throw abortError();
             if (job.op === 'page.tile') {
                 const args = payload as PageTileArgs;
+                if (job.doc.rasterFailures.has(args.page)) throw new PdfEngineError('PageError', 'This page could not be drawn. Retry to try it again.');
                 result = validators.tile(result, args);
                 if (!validTile(result, args)) throw new PdfEngineError('EngineBroken', 'Invalid PDF tile reply');
                 reportMemory(slot.client, result.heapBytes);
@@ -426,10 +504,11 @@ class Pool implements PdfPool {
                 const key = pageKey(job.doc.key, args.page);
                 this.footprints.set(key, Math.max(this.footprints.get(key) ?? 0, result.heapBytes - before));
                 slot.pages.add(key);
-                if (job.settled || job.signal.aborted) throw abortError();
+                if (job.settled || signal.aborted) throw abortError();
                 this.credits.publish(result, release!); release = null;
             } else {
-                result = await this.validateResult(slot, job, result);
+                result = await this.validateResult(slot, job, result, signal);
+                if (signal.aborted || job.settled) throw abortError();
                 if (Number.isSafeInteger(page)) {
                     const key = pageKey(job.doc.key, page as number);
                     if (job.op === 'page.release') slot.pages.delete(key); else slot.pages.add(key);
@@ -438,13 +517,28 @@ class Pool implements PdfPool {
             return result;
         })();
         job.posted = task;
-        void task.then(value => this.finish(job, undefined, value), error => {
-            if (!job.settled && this.workerFailure(error) && this.recordDeath(job) && job.attempts++ < 1) {
-                job.posted = undefined; job.slot = undefined; slot.opens.clear(); slot.pages.clear();
+        let requeue = false;
+        void task.then(value => {
+            if (attempt.preempted || job.settled || job.signal.aborted) {
+                if (job.op === 'page.tile') this.credits.release(value as PageTileResult);
+                if (attempt.preempted && !job.settled && !job.signal.aborted) requeue = true;
+                else if (!job.settled) this.finish(job, abortError());
+            } else this.finish(job, undefined, value);
+        }, error => {
+            if (!attempt.preempted && !job.settled && !job.signal.aborted && rasterFailurePage !== undefined && job.rasterEpoch === job.doc.rasterEpoch) {
+                job.doc.rasterFailures.add(rasterFailurePage);
+            }
+            if (attempt.preempted && !job.settled && !job.signal.aborted) requeue = true;
+            else if (!job.settled && this.workerFailure(error) && this.recordDeath(job) && job.attempts++ < 1) {
+                requeue = true; slot.opens.clear(); slot.openRequests.clear(); slot.pages.clear();
                 if (slot.client.state === 'failed') slot.client.reset();
-                this.pump();
             } else this.finish(job, error);
-        }).finally(() => { release?.(); slot.inFlight--; if (!slot.inFlight) slot.idleAt = Date.now(); this.maintain(); this.pump(); });
+        }).finally(() => {
+            release?.(); slot.inFlight--; if (!slot.inFlight) slot.idleAt = Date.now();
+            if (job.attempt === attempt) job.attempt = undefined;
+            if (requeue && !job.settled && !job.signal.aborted) { job.posted = undefined; job.slot = undefined; }
+            this.maintain(); this.pump();
+        });
     }
     private provideFont(slot: Slot, id: PdfFontId, signal: AbortSignal): Promise<void> {
         let pending = slot.fonts.get(id);
@@ -463,15 +557,23 @@ class Pool implements PdfPool {
             const installed = pending;
             void pending.catch(() => { if (slot.fonts.get(id) === installed) slot.fonts.delete(id); });
         }
-        return waitFor(pending, signal);
+        const shared = pending;
+        // The first waiter owns this shared installation; its preemption must not fail the others.
+        return waitFor(shared, signal).catch(error => {
+            if (!signal.aborted && error instanceof Error && ['AbortError', 'Cancelled'].includes(error.name)) {
+                if (slot.fonts.get(id) === shared) slot.fonts.delete(id);
+                return this.provideFont(slot, id, signal);
+            }
+            throw error;
+        });
     }
-    private async validateResult(slot: Slot, job: Job, value: unknown): Promise<unknown> {
+    private async validateResult(slot: Slot, job: Job, value: unknown, signal: AbortSignal): Promise<unknown> {
         const page = job.args.page as number;
         switch (job.op) {
             case 'page.geometry': return rememberGeometry(job.doc, value, page);
             case 'page.text': {
                 return rebuildPdfTextReply(value, { docKey: job.doc.key, page, detail: job.args.detail as PdfTextDetail,
-                    geometry: job.doc.geometry.get(page) }, job.signal);
+                    geometry: job.doc.geometry.get(page) }, signal);
             }
             case 'page.links': {
                 const geometry = job.doc.geometry.get(page);
@@ -519,7 +621,16 @@ class Pool implements PdfPool {
     }
     reprioritise(promise: Promise<unknown>, priority: Priority): void {
         const job = this.jobs.get(promise); if (!job || job.settled) return;
-        job.priority = priority; if (job.posted && job.slot) job.slot.client.reprioritise(job.posted, priority); this.pump();
+        job.priority = priority;
+        if (job.slot) {
+            this.promoteOpen(job.slot, job.doc.key, priority);
+            const region = job.op === 'page.tile' && Number.isSafeInteger(job.args.page) ? job.doc.regionRequests.get(job.args.page as number) : undefined;
+            if (region) this.promoteRegions(job.doc, job.args.page as number, priority);
+            if (job.posted && job.posted !== region?.request) job.slot.client.reprioritise(job.posted, priority);
+            const wanted = priority <= 1 ? job : this.queue.find(item => item.slot === job.slot && !item.settled && item.priority <= 1);
+            if (wanted) this.preemptLower(job.slot, wanted);
+        }
+        this.pump();
     }
     releaseTile(result: PageTileResult): void { this.credits.release(result); }
     async release(lease: Lease): Promise<void> {
@@ -531,17 +642,29 @@ class Pool implements PdfPool {
         if (doc.refs > 0 || this.docs.get(doc.key) !== doc) return;
         doc.closing = true;
         doc.controller.abort();
+        doc.regionRequests.clear();
         await Promise.allSettled([...doc.pending]);
         await Promise.allSettled(this.slots.map(async slot => {
+            slot.needed.delete(doc.key);
+            slot.openRequests.delete(doc.key);
+            for (const key of slot.pages) if (key.startsWith(doc.key + '\0')) slot.pages.delete(key);
             const opening = slot.opens.get(doc.key);
             if (!opening) return;
             await opening.catch(() => undefined);
             if (slot.opens.get(doc.key) !== opening) return;
             slot.opens.delete(doc.key);
-            for (const key of slot.pages) if (key.startsWith(doc.key + '\0')) slot.pages.delete(key);
-            await slot.client.request('doc.close', { docKey: doc.key }, { priority: 2, deadlineMs: 60_000 });
+            slot.openRequests.delete(doc.key);
+            slot.needed.delete(doc.key);
+            await slot.client.request('doc.close', { docKey: doc.key }, { priority: 0, cpu: 'light', deadlineMs: 60_000 });
         }));
-        if (this.docs.get(doc.key) === doc) { this.docs.delete(doc.key); releasePdfFontProfile(doc.key); releasePdfPageQuality(doc.key); releasePdfPageStatus(doc.key); }
+        if (this.docs.get(doc.key) === doc) {
+            this.docs.delete(doc.key);
+            this.deaths.delete(doc.key); this.failedDocs.delete(doc.key);
+            for (const key of this.footprints.keys()) if (key.startsWith(doc.key + '\0')) this.footprints.delete(key);
+            for (const key of this.pageDeaths.keys()) if (key.startsWith(doc.key + '\0')) this.pageDeaths.delete(key);
+            for (const key of this.quarantined) if (key.startsWith(doc.key + '\0')) this.quarantined.delete(key);
+            releasePdfFontProfile(doc.key); releasePdfPageQuality(doc.key); releasePdfPageStatus(doc.key);
+        }
         this.maintain();
     }
     private maintain(): void {
@@ -622,6 +745,8 @@ class Pool implements PdfPool {
     }
     async retry(docKey: PdfDocKey): Promise<void> {
         this.options.broker.reset?.();
+        const doc = this.docs.get(docKey);
+        if (doc) { doc.rasterEpoch++; doc.rasterFailures.clear(); }
         clearPdfPageFailure(docKey);
         this.deaths.delete(docKey);
         this.failedDocs.delete(docKey);

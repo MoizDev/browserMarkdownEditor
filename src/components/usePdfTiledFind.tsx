@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { Rect, ViewState } from '../platform/types';
 import type { PageStack } from '../platform/render';
 import { pageAt } from '../platform/render';
@@ -61,7 +61,7 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
             resource.highlights.dispose(); resource.geometry.dispose();
         });
     }, [resource]);
-    useEffect(() => {
+    useLayoutEffect(() => {
         resource.reader.setVisible(options.isVisible);
         resource.geometry.setVisible(options.isVisible);
         resource.highlights.setVisible(options.isVisible);

@@ -33,18 +33,22 @@ export function createPdfEmbeddedMediaStorage(options: {
         signal.throwIfAborted();
         if (proof.runtime !== runtime || entry.file !== null) throw new TypeError('PDF media has a foreign runtime or file location');
         runtime.jobs.assertContext(proof.context);
-        if (proof.context.signal !== signal || !host.canWrite(identity)) throw stale();
+        proof.context.assertCurrent();
+        proof.context.signal.throwIfAborted();
+        if (!host.canWrite(identity)) throw stale();
         const lease = sourceState.retainSource(), source = lease.source;
         let transferred = false;
         try {
             const token = Object.freeze({ ...source.source.token });
             const assertWritable = () => {
                 signal.throwIfAborted();
+                proof.context.signal.throwIfAborted();
                 if (!isCurrent(source) || !host.canWrite(identity)) throw stale();
             };
             assertWritable();
             const captureCurrentBytes = async (captureSignal: AbortSignal): Promise<CurrentDocumentBytes> => {
                 captureSignal.throwIfAborted();
+                proof.context.signal.throwIfAborted();
                 if (!isCurrent(source)) throw stale();
                 // checkpoint() captures the real PDF build, including the current embedded media;
                 // the caller may already hold runtime.jobs, so this must never enqueue another job.
@@ -58,8 +62,9 @@ export function createPdfEmbeddedMediaStorage(options: {
                     if (!build || typeof build !== 'object' || !('kind' in build) || build.kind !== 'build'
                         || build.revision !== revision) throw new Error('PDF checkpoint has no matching build');
                     if (!isCurrent(source) || board.doc.rev !== revision) throw stale();
-                    const result = await build.run(captureSignal);
+                    const result = await build.run(AbortSignal.any([captureSignal, proof.context.signal]));
                     captureSignal.throwIfAborted();
+                    proof.context.signal.throwIfAborted();
                     if (!isCurrent(source) || board.doc.rev !== revision) throw stale();
                     const bytes = result instanceof Blob ? result : result.slice();
                     let released = false;

@@ -3,6 +3,8 @@ import { clearRenderQuality, reportRenderPinned, reportRenderQuality } from '../
 import type { AttachPlatformPane, PlatformLayerDefinition, PlatformPaneOptions } from './attachPlatformPane.types';
 import { createPaneSurfaceHost, PaneBackendSwitch } from './backendSwitch';
 import { CameraController } from './camera';
+import { captureGpuOwner, registerCaptureGpu } from './captureRuntime';
+import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
 import { GpuPaneCandidate } from './gpuPaneCandidate';
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
@@ -39,6 +41,10 @@ const unconstrained: CameraConstraint = {
 function sameDocument(a: RenderToken, b: RenderToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId &&
         a.bytesGeneration === b.bytesGeneration && a.session === b.session;
+}
+
+function sameFrame(a: FrameToken, b: FrameToken): boolean {
+    return sameDocument(a, b) && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
 }
 
 /** View lifetime only: the session, its source and its mirrors survive disposal. */
@@ -143,13 +149,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const requestedPixels = size ? size.physical.width * size.physical.height : 0;
             return { paneId: options.paneId, visible, focused, requestedPixels,
                 gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) + requestedPixels * RENDER_CONSTANTS.surfaceReserveBytesPerPixel,
-                cpuNeedBytes: memory.reduce((sum, value) => sum + value.cpuBytes, 0), cpuPinned: false };
+                cpuNeedBytes: memory.reduce((sum, value) => sum + value.cpuBytes, 0),
+                cpuPinned: lifecycle?.surface.snapshot().state === 'cpu-pinned' };
         },
         interacting: options.isInteracting,
         notice: () => options.onNotice('memory-pressure'),
         error: options.onError,
     };
     const removeRuntime = runtime.add(options.paneId, runtimePane);
+    let removeCapture = (): void => {};
     registerWebgl2PaneFactory();
     const candidate = new GpuPaneCandidate({
         runtime, paneId: options.paneId, viewLease: options.viewLease, owner: options.documentToken,
@@ -267,14 +275,13 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     presented = encoding?.submit();
                                     if (!presented) return null;
                                     const coverage = drawing.coverage(frame);
-                                    if (!coverage.presented) return null;
+                                    if (!coverage.presented || coverage.frameId !== frame.frameId || !sameFrame(coverage.token, frame.token)) return null;
                                     complete = coverage.complete;
                                     sharp = coverage.sharp;
                                     qualityScale = coverage.qualityScale;
                                 }
                                 const current = token();
-                                if (!complete || !current || !sameDocument(current, frame.token) || current.viewLease !== frame.token.viewLease ||
-                                    current.deviceGeneration !== frame.token.deviceGeneration || options.revision() !== revision) return null;
+                                if (!complete || !current || !sameFrame(current, frame.token) || options.revision() !== revision) return null;
                                 if (drawing === compositor) {
                                     lifecycle?.note2DPresented(frame.token, revision);
                                     cpuPresented = true;
@@ -306,9 +313,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             setInputEnabled: options.setInputEnabled, cancelViewWork: options.cancelViewWork,
             recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms), now: () => performance.now(),
         });
+        removeCapture = registerCaptureGpu(options.paneId, () => {
+            if (disposed || !visible || !gpu || options.isInteracting() || surfaceHost.current !== gpu.bundle.compositor) return null;
+            const snapshot = lifecycle?.surface.snapshot();
+            if (snapshot?.state !== 'gpu-visible' || snapshot.gpuGeneration !== gpu.grant.generation) return null;
+            return captureGpuOwner(gpu.bundle.owner, gpu.bundle.compositor as GpuCompositor);
+        });
         runtime.start();
         observer.start();
     } catch (error) {
+        removeCapture(); lifecycle?.unmountPane();
         observer.dispose(); removeRuntime(); compositor.dispose();
         for (const cache of caches) { cache.cpu.close(); cache.gpu.close(); }
         throw error;
@@ -317,6 +331,12 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const setVisible = (next: boolean): void => {
         if (disposed || visible === next) return;
         visible = next;
+        if (!next) {
+            cpuPresented = false; gpuRequested = false; options.onPresentation(null);
+            lifecycle?.hidePane();
+            surfaceHost.clearStaged();
+            gpu = null;
+        }
         const now = performance.now();
         for (const cache of caches) for (const handle of [cache.cpu, cache.gpu]) {
             handle.updateActivity({ hiddenAt: next ? null : now, lastVisibleAt: now, lastUsedAt: now });
@@ -327,11 +347,6 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const size = observer.current;
             lifecycle?.showPane({ visible: true, focused, cssWidth: size?.cssWidth ?? 0, cssHeight: size?.cssHeight ?? 0, lastInputAt });
             observer.refresh();
-        } else {
-            cpuPresented = false; gpuRequested = false; options.onPresentation(null);
-            lifecycle?.hidePane();
-            surfaceHost.clearStaged();
-            gpu = null;
         }
     };
     setVisible(options.initialVisible);
@@ -375,6 +390,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             disposed = true;
             options.onPresentation(null);
             observer.dispose();
+            removeCapture();
             lifecycle?.unmountPane();
             surfaceHost.dispose();
             compositor.dispose();

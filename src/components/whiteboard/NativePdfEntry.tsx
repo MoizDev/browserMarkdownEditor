@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, rebindPdfInkSource, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
 import { prepareOwnedPdfInk } from '../../pdf/session/ownedInkAcquisition';
 import { getPdfInkSourceState, preparePdfInkSession } from '../../whiteboard/host/preparePdfInkSession';
@@ -13,10 +13,13 @@ export interface NativePdfEntryProps extends NativeCanvasEntryProps {
     readonly emphasisEnabled: boolean;
     readonly onViewOriginal: () => void;
     readonly onNotice: (message: string) => void;
+    readonly onOpenNotebookSource: (path: string) => void | Promise<void>;
 }
 
 /** Acquires the real document-owned PDF ink session; this host exposes viewing only. */
 export default function NativePdfEntry(props: NativePdfEntryProps) {
+    const latest = useRef(props);
+    useLayoutEffect(() => { latest.current = props; }, [props]);
     const { identity: incoming, nativeCanvasHost, documentId, attachCanvasSession, onNativeCanvasReady, deadlineMs, zMax } = props;
     const { session, vaultActivation, bytesGeneration, kind, path, name } = incoming;
     const identity = useMemo(() => ({ documentId, session, vaultActivation, bytesGeneration, kind, path, name }),
@@ -31,7 +34,17 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
             currentReadOnly: () => VIEW_REASON, onReadOnly: reason => setError(reason), onError,
             onHistoryLimit: () => setError('The board history limit was reached.') });
         if (result.kind === 'read-only') {
-            try { throw new Error(result.reason); } finally { await result.dispose(); }
+            try {
+                signal.throwIfAborted();
+                if (result.notebookSource && result.isCurrent?.() && latest.current.isVisible && latest.current.isFocused) {
+                    await latest.current.onOpenNotebookSource(result.notebookSource.path);
+                    signal.throwIfAborted();
+                    if (!result.isCurrent() || !latest.current.isVisible || !latest.current.isFocused) {
+                        throw new DOMException('PDF notebook handoff ended', 'AbortError');
+                    }
+                }
+                throw new Error(result.reason);
+            } finally { await result.dispose(); }
         }
         return result;
     }, [identity, documentId, nativeCanvasHost, deadlineMs, zMax, onError]);

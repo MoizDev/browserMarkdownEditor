@@ -101,7 +101,7 @@ export interface PdfPaneProps {
     onUnsignedPdfCopy?: (identity: ReaderIdentity, version: DiskVersion) => Promise<void>;
     /** This PDF is a notebook's export — open that notebook instead. Takes the
      *  PDF's own path too, so App can put its tab back into reading mode. */
-    onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void;
+    onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void | Promise<void>;
     /** Turn the pages a quarter and write the file (App.rotatePdf). Reading
      *  only: the annotate canvas draws against the pages as they are. */
     onRotate: (path: string, delta: number, pageIndex?: number) => void;
@@ -327,8 +327,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const foreignNotice = !foreignHeld ? undefined : source.writeMark.kind === 'foreign' && source.writeMark.reason === 'mismatch'
         ? 'This PDF was changed by another program after this app saved it. Annotate is read-only so rebuilding its pages does not discard those changes. You can still read the PDF.'
         : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
-    const nativeCandidate = mode === 'edit' && !disk && source?.kind === 'newer' && source.attachments.includes('board.json')
-        && pdfEngineAvailableInBuild() && !!nativeCanvasHost && !!attachCanvasSession && !!reading;
+    const nativeCandidate = mode === 'edit' && !disk && (source?.kind === 'notebookExport' ||
+        source?.kind === 'newer' && source.attachments.includes('board.json')) &&
+        pdfEngineAvailableInBuild() && !!nativeCanvasHost && !!attachCanvasSession && !!reading;
     const roleNotice = (source && !nativeCandidate && pdfRoleNotice(source)) || (!disk && !pdfRebuild ? foreignNotice : undefined);
     const readOnly = mode === 'edit' && (nativeCandidate || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const annotationMode = mode === 'edit' && !readOnly;
@@ -841,7 +842,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                no longer happens until you switch to annotate. Reading needs
                `viewBytes` and nothing else; that is the branch further down. */
             body = <div className="pdf-pane-message">Loading PDF…</div>;
-        } else if (mode === 'edit' && source?.kind === 'notebookExport') {
+        } else if (mode === 'edit' && source?.kind === 'notebookExport' && !nativeCandidate) {
             // A notebook's export. Annotating it would fork a third document
             // whose marks the notebook could neither see nor replace, so the
             // pane hands you back to the notebook instead of drawing anything.
@@ -866,6 +867,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                         zoomLimits={NATIVE_PDF_ZOOM} insets={NATIVE_PDF_INSETS} zMax={100} deadlineMs={30_000}
                         registerKeyboardTarget={reading.registerKeyboardTarget} onFocusPane={onFocusPane}
                         emphasisEnabled={reading.emphasisEnabled} onNotice={reading.onNotify}
+                        onOpenNotebookSource={path => onOpenNotebookSource(file.path, path)}
                         onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
                 </Suspense>
             ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;

@@ -106,6 +106,7 @@ export interface CaretIndex {
     /** Character boxes for an EditContext UTF-16 range, one box per code unit. */
     characterBounds(start: number, end: number): readonly Rect[];
     navigate?(position: CaretPosition, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end', goalX?: number): CaretStop;
+    navigateWord?(position: CaretPosition, direction: 'left' | 'right', boundary: number): CaretStop;
 }
 
 export interface TextPadding { readonly top: number; readonly right: number; readonly bottom: number; readonly left: number }

@@ -154,6 +154,12 @@ export function longAsciiCaretIndex(request: TextLayoutRequest, paint: TextPaint
             }
             return result;
         },
+        navigateWord(position, direction, boundary) {
+            const current = caret(position);
+            if ((direction === 'left' && boundary >= current.offset) || (direction === 'right' && boundary <= current.offset))
+                return result.navigate!(position, direction);
+            return caret({ offset: boundary, affinity: direction === 'left' ? 'downstream' : 'upstream' });
+        },
         navigate(position: CaretPosition, direction) {
             const current = caret(position);
             if (direction === 'line-start') return stopAt(0);

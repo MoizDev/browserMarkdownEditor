@@ -9,7 +9,8 @@ import { linkUrl, type ToggleMark } from './format';
 import { EditHost, type EditSelection, type TextChange } from './host';
 import { handleEditKey } from './keys';
 import { TextPointerSelection, type TextPointer } from './pointer';
-import { selectBlock, selectWord, wordBoundary } from './selection';
+import { RichWordNavigation } from './richWords';
+import { projectionLength } from '../projection';
 import type { NodeId } from '../../model/ids';
 import type { HistoryController } from '../../change/historyTypes';
 import { TypingHistory } from './typingHistory';
@@ -59,6 +60,7 @@ export class TextEditSession {
     readonly pointer: TextPointerSelection;
     readonly controller: TextEditController;
     private readonly typingHistory: TypingHistory;
+    private readonly words = new RichWordNavigation();
     private selection: EditSelection;
     private affinity: CaretPosition['affinity'];
     private goalX: number | undefined;
@@ -91,8 +93,8 @@ export class TextEditSession {
             selection: () => this.selection,
             setSelection: next => this.select(next),
             hit: (x, y) => { const layout = services.layout(); const p = point(layout.clientToLocal, x, y); return layout.caret.hitTest(p.x, p.y).offset; },
-            word: offset => selectWord(services.plainText(), offset),
-            block: offset => selectBlock(services.plainText(), offset),
+            word: offset => this.words.selectWord(services.readText(), offset),
+            block: offset => this.words.selectBlock(services.readText(), offset),
             autoScroll: (x, y) => services.autoScroll(x, y),
             stopAutoScroll: () => services.stopAutoScroll(),
             touchHandles: show => services.touchHandles(show),
@@ -187,19 +189,22 @@ export class TextEditSession {
         let stop: CaretStop;
         if (direction === 'word-left' || direction === 'word-right') {
             const step = direction === 'word-left' ? -1 : 1;
-            const text = this.services.plainText();
+            const text = this.services.readText(), direction = step < 0 ? 'left' : 'right';
             const current = layout.caret.caret(position);
-            const next = moveCaret(layout.caret, current, step < 0 ? 'left' : 'right');
+            const next = moveCaret(layout.caret, current, direction);
             const logicalStep = next.offset < current.offset ? -1 : 1;
-            const boundary = wordBoundary(text, offset, logicalStep);
-            let visual = current;
-            for (let n = 0; n <= text.length; n++) {
-                const candidate = moveCaret(layout.caret, visual, step < 0 ? 'left' : 'right');
-                if (candidate === visual) break;
-                visual = candidate;
-                if (visual.offset === boundary || (logicalStep < 0 ? visual.offset < boundary : visual.offset > boundary)) break;
+            const boundary = this.words.boundary(text, offset, logicalStep);
+            if (layout.caret.navigateWord) stop = layout.caret.navigateWord(current, direction, boundary);
+            else {
+                let visual = current;
+                for (let n = 0, length = projectionLength(text); n <= length; n++) {
+                    const candidate = moveCaret(layout.caret, visual, direction);
+                    if (candidate === visual) break;
+                    visual = candidate;
+                    if (visual.offset === boundary || (logicalStep < 0 ? visual.offset < boundary : visual.offset > boundary)) break;
+                }
+                stop = visual;
             }
-            stop = visual;
         } else {
             if (direction === 'up' || direction === 'down') this.goalX ??= layout.caret.caret(position).x;
             else this.goalX = undefined;
@@ -427,6 +432,7 @@ export class TextEditSession {
         if (this.blinkTimer !== null) clearTimeout(this.blinkTimer);
         this.blinkTimer = null;
         this.typingHistory.dispose();
+        this.words.clear();
         this.pointer.dispose(); this.host.dispose();
         if (this.services.alive() && this.services.isStandaloneText() && this.services.plainText().length === 0) {
             const history = this.services.history;

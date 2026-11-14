@@ -27,6 +27,7 @@ export const attachView: AttachView = options => {
     let interaction: ViewerInteractionPorts | null = null;
     let interactionLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
+    let previewCoverage: (() => Readonly<{ frame: PaintFrame; nodeIds: ReadonlySet<string> }> | null) | null = null;
     let clearPreview: (() => void) | null = null;
     const listeners = new Set<() => void>();
     const palettes = options.palette ?? DEFAULT_BOARD_PALETTES;
@@ -62,7 +63,15 @@ export const attachView: AttachView = options => {
     };
     const images = options.images ?? { acquire: async () => { throw new Error('This board view has no admitted image provider'); } };
     const frames = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
-    const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev,
+    const omitPreview = (dry: PaintFrame): ReadonlySet<string> | null => {
+        if (!previewLayers || !view.visible || disposed) return null;
+        const preview = previewCoverage?.();
+        if (!preview || preview.frame.sceneRevision !== dry.sceneRevision || dry.sceneRevision !== options.session.doc.rev) return null;
+        const a = preview.frame.token, b = dry.token;
+        return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration
+            && a.session === b.session ? preview.nodeIds : null;
+    };
+    const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
         beforePrepare(current, budget) {
             runtime.flushFrame(budget.frameId);
             if (runtime.scene && !runtime.scene.ready) runtime.scene.step(8, budget.prepareDeadline);
@@ -194,9 +203,19 @@ export const attachView: AttachView = options => {
             if (drawnFrame) ports.presented?.(drawnFrame.sceneRevision, drawnFrame.token, drawnFrame.frame);
             return () => { if (interaction === ports) { ports.finishGesture(); ports.finishComposition(); interaction = null; } };
         },
-        readyPaintFrame: () => disposed ? null : layers.readyFrame(),
+        readyPaintFrame: () => {
+            const frame = disposed ? null : layers.readyFrame();
+            if (!frame) return null;
+            const omitted = omitPreview(frame);
+            return omitted?.size ? { ...frame, occludedInkNodeIds: omitted } : frame;
+        },
         setInteractionLayers(next) { if (!disposed && interactionLayers !== next) { interactionLayers = next; publish(); layers.invalidate('board-interaction-layers'); } },
-        setPreviewLayers(next) { if (!disposed && previewLayers !== next) { previewLayers = next; publish(); layers.invalidate('board-preview-layers'); } },
+        setPreviewLayers(next, coverage) {
+            if (disposed) return;
+            previewCoverage = next ? coverage ?? null : null;
+            if (previewLayers !== next) { previewLayers = next; publish(); }
+            layers.invalidate('board-preview-layers');
+        },
         bindPreviewClear(clear) {
             if (disposed) throw new Error('Board view is disposed');
             clearPreview?.(); clearPreview = clear;

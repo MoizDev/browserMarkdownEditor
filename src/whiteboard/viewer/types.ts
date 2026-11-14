@@ -66,7 +66,8 @@ export interface ViewerEngine {
     bindInteractions(ports: ViewerInteractionPorts): () => void;
     readyPaintFrame(): PaintFrame | null;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
-    setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
+    setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,
+        coverage?: () => Readonly<{ frame: PaintFrame; nodeIds: ReadonlySet<string> }> | null): void;
     bindPreviewClear(clear: () => void): () => void;
     /** Detach the platform pane first: lifecycle disposes its layers. Releases only this view's
      * jobs/borrowed leases/listeners, NEVER the App-owned BoardSession or its undo/save state.

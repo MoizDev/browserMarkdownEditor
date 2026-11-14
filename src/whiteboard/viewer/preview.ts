@@ -6,7 +6,7 @@ import { compareOrder } from '../model/orderKey';
 import type { BoardRuntime } from '../host/runtime';
 import { createBoardLayers, type BoardLayerPair } from '../render/boardLayers';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
-import type { PaintNodeSource } from '../render/paintStream';
+import type { PaintFrame, PaintNodeSource } from '../render/paintStream';
 import type { PaintImageProvider } from '../render/resources';
 import type { ScenePaintRequest, SceneSnapshot } from '../scene/types';
 import type { ViewerEngine } from './types';
@@ -75,12 +75,14 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let disposed = false, generation = 0, pin: SceneSnapshot | null = null, document: Promise<BoardDoc> | null = null;
     let controller: AbortController | null = null, pendingRelease: (() => void) | null = null, pair: BoardLayerPair | null = null;
     let frames: ReturnType<typeof createPaintFrameAssembler> | null = null;
+    let requestedIds: ReadonlySet<string> | null = null;
+    const frameIds = new WeakMap<PaintFrame, ReadonlySet<string>>();
     const held = new Set<{ release(): void }>();
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting must not prevent release */ } };
     const release = (lease: { release(): void }) => { if (held.delete(lease)) { try { lease.release(); } catch (error) { report(error); } } };
     const clear = () => {
         generation++; controller?.abort(); controller = null; pendingRelease?.(); pendingRelease = null;
-        const oldFrames = frames; frames = null; pair = null;
+        const oldFrames = frames; frames = null; pair = null; requestedIds = null;
         try { oldFrames?.dispose(); } catch (error) { report(error); }
         for (const lease of [...held]) release(lease);
         const oldPin = pin; pin = null; document = null;
@@ -198,12 +200,22 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     try { check(); return source.isCurrent(); } catch { return false; }
                 } };
                 if (!frames || !pair) {
-                    const assembler = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report);
+                    const inner = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report);
+                    const assembler: typeof inner = { ...inner, prepare(budget) {
+                        inner.prepare(budget);
+                        const frame = inner.readFrame();
+                        if (frame && !frameIds.has(frame) && requestedIds) frameIds.set(frame, requestedIds);
+                    } };
                     const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
-                        content: { ...layers[1], id: 'board-preview-content' } });
+                        content: { ...layers[1], id: 'board-preview-content' } }, () => {
+                        const frame = layers.readyFrame();
+                        const ids = frame && frameIds.get(frame);
+                        return frame && ids && assembler.isCurrent(frame) ? { frame, nodeIds: ids } : null;
+                    });
                 }
+                requestedIds = candidates;
                 frames.request({ source: guarded, release: releaseLeases }); handedOff = true;
                 if (pendingRelease === releaseLeases) pendingRelease = null;
             } catch (error) {

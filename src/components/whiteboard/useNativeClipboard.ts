@@ -132,7 +132,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             const editingText = () => {
                 const focused = document.activeElement;
                 return focused instanceof HTMLElement && focused !== surface && surface.contains(focused)
-                    && (focused.isContentEditable || focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement);
+                    && (focused.isContentEditable || focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused.classList.contains('wb-edit-host'));
             };
             const controller = createNativeClipboardController({ runtime, host, identity, memory, ingestor, camera: lease.camera,
                 pasteAtCursor: () => preferences.getSnapshot().session.pasteAtCursor, pointer: () => pointer, surfacePoint, editingText, finishGesture,

@@ -13,6 +13,7 @@ const VIEW_REASON = 'PDF annotation tools are unavailable in this view.';
 export interface NativePdfEntryProps extends NativeCanvasEntryProps {
     /** Only an explicit legacy-conversion route may set this. */
     readonly legacyConversion?: boolean;
+    readonly onLegacyConversionRefused?: (message: string) => void;
     readonly emphasisEnabled: boolean;
     readonly onViewOriginal: () => void;
     readonly onNotice: (message: string) => void;
@@ -28,7 +29,13 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
     const identity = useMemo(() => ({ documentId, session, vaultActivation, bytesGeneration, kind, path, name }),
         [documentId, session, vaultActivation, bytesGeneration, kind, path, name]);
     const [error, setError] = useState<string | null>(null);
-    const onError = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)), []);
+    const onError = useCallback((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        if (latest.current.legacyConversion && latest.current.onLegacyConversionRefused) {
+            latest.current.onLegacyConversionRefused(message); return;
+        }
+        setError(message);
+    }, []);
     const prepare = useCallback(async (signal: AbortSignal) => {
         if (identity.documentId !== documentId || identity.kind !== 'pdfInk') throw new Error('PDF identity does not match this entry');
         const create = props.legacyConversion ? prepareLegacyPdfInkSession : preparePdfInkSession;

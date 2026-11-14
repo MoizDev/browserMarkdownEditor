@@ -4,6 +4,7 @@ import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { Vec2 } from './path';
 import { collectSnapCandidates, createSnapVisibility } from './snapCandidates';
+import { prepareVisibleSnapBounds } from './snapVisibleBounds';
 
 export interface BoardSnapGuide {
     readonly axis: 'x' | 'y';
@@ -88,9 +89,11 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
         let visited = 0; const visibility = createSnapVisibility(doc);
         for (const id of candidates) {
             check(); if (++visited % 256 === 0) { await cooperate(); check(); }
-            const other = scope.logicalBounds(id), relation = visibility(id, other);
+            const logical = scope.logicalBounds(id), relation = visibility(id, logical);
             if (relation === 'hidden') continue;
-            if (relation === 'partial') throw new Error('Frame-clipped snap target requires visible geometry');
+            const other = relation === 'partial' ? await prepareVisibleSnapBounds(doc, id, logical, { signal, cooperate,
+                current: () => { try { check(); return true; } catch { return false; } } }) : logical;
+            check(); if (!other) continue;
             const rank = scope.rank(id); candidateBounds.push(other);
             const overlapY = Math.min(other.y + other.height, bounds.y + bounds.height) - Math.max(other.y, bounds.y);
             const overlapX = Math.min(other.x + other.width, bounds.x + bounds.width) - Math.max(other.x, bounds.x);

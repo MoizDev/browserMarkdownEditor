@@ -104,6 +104,7 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
             });
             return releaseWork;
         },
+        mediaReferences() { return adapter?.mediaReferences?.(); },
         journalDelta() { return adapter?.journalDelta?.(); },
         async recover(payload) {
             if (!adapter?.recover) throw new Error('Canvas session is not ready for recovery');

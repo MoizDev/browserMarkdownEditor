@@ -18,6 +18,8 @@ export interface SessionAdapter {
      *  Before E4's journal, a miss keeps the edit in the buffer, the tab dirty and the leave prompt
      *  armed; a later save retries. It never abandons the edit or marks it saved. */
     drain?(): Promise<void>;
+    /** Current resolved asset names, or undefined while the engine cannot provide them. */
+    mediaReferences?(): readonly string[] | undefined;
     /** Immutable, structured-cloneable unsaved changes, pinned to this session and revision. */
     journalDelta?(): JournalCapture | undefined;
     /** Apply a validated, matching-baseline recovery as one undoable change. */

@@ -21,6 +21,7 @@ import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
 import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import type { ActiveFile, ContentChangeOptions, DiskAction, Theme } from '../types';
 import type { DocumentRepresentation } from '../types/reading';
+import type { NativeCanvasHost } from '../types/nativeCanvas';
 
 // tldraw is a heavy dependency (canvas engine + its own UI); loading it lazily
 // keeps it out of the initial bundle, so a markdown-only session never pays for
@@ -32,6 +33,7 @@ export interface CanvasPaneProps {
     file: ActiveFile;
     /** OpenTab.id, forwarded by EditorPane independently of the mutable file path. */
     documentId: string;
+    nativeCanvasHost: NativeCanvasHost;
     representation: DocumentRepresentation;
     /** Called by a native host on session acquisition, before it enables edits. */
     onNativeCanvasReady: import('../types/reading').NativeCanvasReady;

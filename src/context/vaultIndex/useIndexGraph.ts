@@ -31,12 +31,17 @@ export function useIndexGraph(options: {
     onSnapshot?(stale: boolean): void;
     onStatus?(status: IndexProgress): void;
     onTimes?(changes: [string, number, number][], sweepComplete: boolean): void;
+    mediaAssets?(tree: FileTreeNode[]): Promise<[string, string[]][]>;
+    onMediaChanged?(): void;
     onProblem(problem: unknown): void;
 }) {
     const { root, vaultId, activation, getActivation, autoStart, tree, resolve, stat, publish, onSnapshot, onStatus, onTimes, onProblem } = options;
     const active = useRef<ActiveIndexGraph | null>(null);
     const startRef = useRef<(() => Promise<ActiveIndexGraph>) | null>(null);
     const latestTree = useRef(tree);
+    const mediaOptions = useRef({ mediaAssets: options.mediaAssets, onMediaChanged: options.onMediaChanged });
+    const refreshMedia = useRef<((owner: ActiveIndexGraph, tree: FileTreeNode[]) => Promise<void>) | null>(null);
+    useLayoutEffect(() => { mediaOptions.current = { mediaAssets: options.mediaAssets, onMediaChanged: options.onMediaChanged }; });
     const publishedTree = useRef<IndexTreeFile[]>([]);
     const pendingMoves = useRef(new Map<string, { to: string; expires: number }>());
     useLayoutEffect(() => { latestTree.current = tree; }, [tree]);
@@ -46,6 +51,18 @@ export function useIndexGraph(options: {
         publish(null, activation, () => live && getActivation() === activation);
         if (!root) return () => { live = false; };
         let starting: Promise<ActiveIndexGraph> | undefined;
+        let unsubscribeMedia: (() => void) | undefined;
+        let mediaRequest = 0;
+        const refresh = async (owner: ActiveIndexGraph, treeAtCall: FileTreeNode[]) => {
+            const request = ++mediaRequest;
+            const acquire = mediaOptions.current.mediaAssets;
+            if (!acquire) return;
+            const entries = await acquire(treeAtCall);
+            if (request !== mediaRequest || !live || getActivation() !== activation || active.current !== owner || owner.root !== root
+                || latestTree.current !== treeAtCall) return;
+            await owner.client.setMediaAssets(entries);
+        };
+        refreshMedia.current = refresh;
         const start = () => {
             if (starting) return starting;
             starting = import('./client').then(({ VaultIndexClient }) => {
@@ -77,14 +94,26 @@ export function useIndexGraph(options: {
                 const owner: ActiveIndexGraph = { client, echo, root, activation,
                     async regrant() {
                         client.retry();
-                        const files = publishedTree.current = indexTree(latestTree.current);
+                        const treeAtCall = latestTree.current;
+                        const files = publishedTree.current = indexTree(treeAtCall);
                         await client.setTree(files);
+                        if (!live || getActivation() !== activation || active.current !== owner || latestTree.current !== treeAtCall) return;
+                        await refresh(owner, treeAtCall);
+                        if (!live || getActivation() !== activation || active.current !== owner || latestTree.current !== treeAtCall) return;
                         await client.sweep('user');
                     },
                 };
                 active.current = owner;
-                const files = publishedTree.current = indexTree(latestTree.current);
-                void client.setTree(files).then(() => client.sweep('open')).catch(() => {});
+                unsubscribeMedia = client.subscribeMedia(() => {
+                    if (live && getActivation() === activation && active.current === owner) mediaOptions.current.onMediaChanged?.();
+                });
+                const treeAtCall = latestTree.current;
+                const files = publishedTree.current = indexTree(treeAtCall);
+                void client.setTree(files).then(async () => {
+                    if (!live || getActivation() !== activation || active.current !== owner || latestTree.current !== treeAtCall) return;
+                    await refresh(owner, treeAtCall);
+                    if (live && getActivation() === activation && active.current === owner && latestTree.current === treeAtCall) await client.sweep('open');
+                }).catch(error => { if (live) console.error('Could not prepare the vault index:', error); });
                 return owner;
             }).catch(error => { starting = undefined; if (live) console.error('Could not start the vault index:', error); throw error; });
             return starting;
@@ -93,6 +122,8 @@ export function useIndexGraph(options: {
         return () => {
             live = false;
             pendingMoves.current.clear();
+            unsubscribeMedia?.();
+            if (refreshMedia.current === refresh) refreshMedia.current = null;
             if (startRef.current === start) startRef.current = null;
             const owner = active.current;
             if (owner?.root === root && owner.activation === activation) {
@@ -127,7 +158,11 @@ export function useIndexGraph(options: {
         const delta = indexTreeDelta(publishedTree.current, next, moves);
         for (const move of delta?.renamed ?? []) pendingMoves.current.delete(move.from);
         publishedTree.current = next;
-        if (delta) void owner.client.treeDelta(delta).catch(() => {});
+        if (!delta) owner.client.suspendMedia();
+        void (delta ? owner.client.treeDelta(delta) : Promise.resolve()).then(async () => {
+            if (active.current !== owner || owner.activation !== getActivation() || latestTree.current !== tree) return;
+            await refreshMedia.current?.(owner, tree);
+        }).catch(() => {});
     }, [tree, root, activation]);
     return Object.assign(active, {
         whenReady: () => active.current ? Promise.resolve(active.current)

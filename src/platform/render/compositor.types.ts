@@ -52,6 +52,8 @@ export interface LayerAllocators {
 export interface TexturedQuadOptions {
     readonly opacity: number;
     readonly sampling: 'nearest' | 'linear';
+    /** Classification of the pixels actually drawn; omitted means no coverage. */
+    readonly coverage?: 'current' | 'standin' | 'none';
 }
 
 /** Peak simultaneous inventory, declared during Layer.prepare. Masks share the target pool;

@@ -34,6 +34,8 @@ export interface PlatformPresentation extends LayerCoverage {
 /** All callbacks are current snapshots, not closures over the view that first mounted the pane. */
 export interface PlatformPaneOptions<T extends object> {
     readonly paneId: string;
+    /** Fixed for this attachment; defaults to auto. */
+    readonly backendPreference?: 'auto' | 'canvas2d';
     readonly viewLease: number;
     readonly documentToken: RenderToken;
     readonly session: {

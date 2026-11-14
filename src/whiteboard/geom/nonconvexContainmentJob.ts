@@ -124,12 +124,10 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
                 if (result === 'uncertain') return { status: 'uncertain', reason: 'Stroke meets a nonconvex lasso boundary' };
                 yield;
             }
-            for (const ops of part.options.interiorPaths ?? []) {
-                const result = yield* path(ops, 0, true);
-                if (result === 'outside') return { status: 'miss' };
-                if (result === 'uncertain') return { status: 'uncertain', reason: 'Fill meets a nonconvex lasso boundary' };
-                yield;
-            }
+            // A fill's subpaths can cancel by winding, so boundary containment
+            // alone cannot prove either visibility or a missing exterior part.
+            if (part.options.interiorPaths?.length)
+                return { status: 'uncertain', reason: 'Nonconvex filled containment needs a winding visibility witness' };
         }
         return { status: seen ? 'hit' : 'empty' };
     };

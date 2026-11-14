@@ -342,7 +342,8 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         ? 'This PDF was changed by another program after this app saved it. Annotate is read-only so rebuilding its pages does not discard those changes. You can still read the PDF.'
         : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
     const legacyOffer = tiled && mode === 'edit' && source?.kind === 'annotated';
-    const liveNativeIdentity = legacyOffer ? nativeCanvasHost?.identity(documentId) : undefined;
+    const plainNativeOffer = tiled && mode === 'edit' && source?.kind === 'plain';
+    const liveNativeIdentity = legacyOffer || plainNativeOffer ? nativeCanvasHost?.identity(documentId) : undefined;
     const canConvertLegacy = !!(legacyOffer && source.writeSafety.kind === 'safe' && !disk && !isDirty && !flushing
         && pdfEngineAvailableInBuild() && nativeCanvasHost && attachCanvasSession && reading && appSession && liveNativeIdentity
         && liveNativeIdentity.kind === 'pdfInk' && liveNativeIdentity.documentId === documentId
@@ -351,12 +352,18 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         && reading.identity.path === file.path && reading.identity.byteGeneration === appSession.bytesGeneration
         && nativeCanvasHost.isCurrent(liveNativeIdentity));
     const legacyConversion = legacyConversionEntry === annotateEntry && canConvertLegacy;
+    const nativePlain = !!(plainNativeOffer && source.writeSafety.kind === 'safe' && !disk && !isDirty && !flushing
+        && appSession && reading && liveNativeIdentity && nativeCanvasHost && liveNativeIdentity.kind === 'pdfInk'
+        && liveNativeIdentity.documentId === documentId && liveNativeIdentity.session === appSession.serial
+        && liveNativeIdentity.bytesGeneration === appSession.bytesGeneration && liveNativeIdentity.vaultActivation === reading.identity.vaultEpoch
+        && reading.identity.documentId === documentId && reading.identity.path === file.path
+        && reading.identity.byteGeneration === appSession.bytesGeneration && nativeCanvasHost.isCurrent(liveNativeIdentity));
     const nativeCandidate = mode === 'edit' && !disk && (source?.kind === 'notebookExport' ||
-        source?.kind === 'newer' && source.attachments.includes('board.json') || legacyConversion) &&
+        source?.kind === 'newer' && source.attachments.includes('board.json') || legacyConversion || nativePlain) &&
         pdfEngineAvailableInBuild() && !!nativeCanvasHost && !!attachCanvasSession && !!reading;
     const roleNotice = (source && !nativeCandidate && pdfRoleNotice(source)) || (!disk && !pdfRebuild ? foreignNotice : undefined)
         || (inspectedWriteRefused ? 'This PDF’s inspected permissions require read-only annotation. The original has not been changed.' : undefined);
-    const readOnly = mode === 'edit' && (legacyOffer || nativeCandidate || inspectedWriteRefused || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
+    const readOnly = mode === 'edit' && (legacyOffer || plainNativeOffer || nativeCandidate || inspectedWriteRefused || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const annotationMode = mode === 'edit' && !readOnly;
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
     const sessionVersion = useRef<string | undefined>(undefined);

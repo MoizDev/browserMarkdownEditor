@@ -123,16 +123,20 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
             if (!worldBox.every(Number.isFinite)) throw new RangeError('Board region bounds overflow');
             const worldToCss: Affine = [camera.z, 0, 0, camera.z, -camera.x * camera.z, -camera.y * camera.z];
             const queue: SpatialRef[] = [], hits = new Map<NodeId, number>();
+            const groups = new Map<NodeId, number>(), evaluated = new Map<NodeId, { readonly selected: NodeId; readonly hit: boolean; readonly rank: number }>();
             cursor = scene.spatialCursor({ sheetId: sheet, purpose: 'selectable', request: { kind: 'box', box: worldBox, order: 'forward' } });
             const narrow = async (ref: SpatialRef) => {
                 check();
                 const resolved = scene.resolveSpatial(ref);
                 if (!resolved) throw stale();
+                const cached = evaluated.get(resolved.id); if (cached) return cached;
                 const node = doc.nodes.get(resolved.id);
-                if (!node || node.kind === 'group') return;
+                if (!node) throw stale();
+                if (node.kind === 'group') return undefined;
                 const selected = selectableAtFocus(doc, node.id, focus, sheet);
-                if (!selected) return;
-                if (query.kind === 'polygon' && query.containment && selected !== node.id) throw new BoardRegionUncertain('Group containment requires all visible children');
+                if (!selected) return undefined;
+                if (query.kind === 'polygon' && query.containment && selected !== node.id)
+                    groups.set(selected, Math.max(groups.get(selected) ?? -Infinity, resolved.rank));
                 let localPoints: readonly Vec2[] = points, partialFrame = false;
                 const frameClips: PointClipContour[] = [];
                 let ancestor = doc.nodes.get(node.parent as NodeId);
@@ -154,7 +158,9 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                 const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },
                                     { x: ancestor.w, y: ancestor.h }, { x: 0, y: ancestor.h }].map(p => exactAffinePoint(frameCss, p));
                                 localPoints = clipPolygon(localPoints, polygon);
-                                if (!localPoints.length) return;
+                                if (!localPoints.length) {
+                                    const result = { selected, hit: false, rank: resolved.rank }; evaluated.set(node.id, result); return result;
+                                }
                                 if (localPoints.length < 3) throw new BoardRegionUncertain('Frame-clipped polygon has a degenerate intersection');
                             }
                         }
@@ -302,21 +308,74 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     }
                 } else throw new BoardRegionUncertain(`No real region geometry for ${node.kind}`);
                 check();
-                if (hit) hits.set(selected, Math.max(hits.get(selected) ?? -Infinity, resolved.rank));
+                const result = { selected, hit, rank: resolved.rank }; evaluated.set(node.id, result);
+                if (hit && !(query.kind === 'polygon' && query.containment && selected !== node.id))
+                    hits.set(selected, Math.max(hits.get(selected) ?? -Infinity, resolved.rank));
+                return result;
             };
-            let done = false;
-            while (!done || queue.length) {
+            let done = false, queueIndex = 0;
+            while (!done || queueIndex < queue.length) {
                 check();
-                if (!queue.length && !done) {
+                if (queueIndex === queue.length && !done) {
+                    queue.length = 0; queueIndex = 0;
                     const state = cursor.resume({ deadline: performance.now() + 3, maxVisits: 64 }, ref => queue.push(ref));
                     if (state === 'stale' || state === 'cancelled') throw stale();
                     done = state === 'complete';
                 }
-                const ref = queue.shift(); if (ref) await narrow(ref);
-                if (!done || queue.length) { await cooperate(); check(); }
+                const ref = queueIndex < queue.length ? queue[queueIndex++] : undefined; if (ref) await narrow(ref);
+                if (!done || queueIndex < queue.length) { await cooperate(); check(); }
+            }
+            if (query.kind === 'polygon' && query.containment) {
+                for (const [group, initialRank] of groups) {
+                    check(); const record = scene.worldBounds(group), bounds = record && (record.quality === BoundsQuality.Exact || record.quality === BoundsQuality.Conservative)
+                        ? record.selectable : null;
+                    if (!bounds || !bounds.every(Number.isFinite)) throw new BoardRegionUncertain('Group containment has no certified aggregate bounds');
+                    const members = scene.spatialCursor({ sheetId: sheet, purpose: 'selectable', request: { kind: 'box', box: bounds, order: 'forward' } });
+                    let complete = false, all = true, any = false, rank = initialRank, pendingIndex = 0;
+                    const pending: SpatialRef[] = [];
+                    try {
+                        while ((!complete || pendingIndex < pending.length) && all) {
+                            check();
+                            if (pendingIndex === pending.length && !complete) {
+                                pending.length = 0; pendingIndex = 0;
+                                const state = members.resume({ deadline: performance.now() + 3, maxVisits: 64 }, ref => pending.push(ref));
+                                if (state === 'stale' || state === 'cancelled') throw stale();
+                                complete = state === 'complete';
+                            }
+                            const ref = pendingIndex < pending.length ? pending[pendingIndex++] : undefined;
+                            if (ref) {
+                                const member = scene.resolveSpatial(ref); if (!member) throw stale();
+                                if (selectableAtFocus(doc, member.id, focus, sheet) === group) {
+                                    const result = await narrow(ref);
+                                    if (result) { any = true; all &&= result.hit; rank = Math.max(rank, result.rank); }
+                                }
+                            }
+                            if ((!complete || pendingIndex < pending.length) && all) { await cooperate(); check(); }
+                        }
+                    } finally { members.cancel(); }
+                    if (any && all) hits.set(group, rank);
+                }
             }
             check();
-            return Object.freeze([...hits].sort((a, b) => a[1] - b[1]).map(([id]) => id));
+            let ordered: [NodeId, number][] = [], buffer: [NodeId, number][] = [], work = 0, started = performance.now();
+            const yieldSort = async () => { await cooperate(); check(); work = 0; started = performance.now(); };
+            const due = () => ++work >= 256 || performance.now() - started >= 3;
+            for (const entry of hits) { ordered.push(entry); if (due()) await yieldSort(); }
+            buffer = new Array(ordered.length);
+            for (let width = 1; width < ordered.length; width *= 2) {
+                for (let start = 0; start < ordered.length; start += width * 2) {
+                    const middle = Math.min(start + width, ordered.length), end = Math.min(start + width * 2, ordered.length);
+                    let left = start, right = middle;
+                    for (let i = start; i < end; i++) {
+                        buffer[i] = left < middle && (right >= end || ordered[left][1] <= ordered[right][1]) ? ordered[left++] : ordered[right++];
+                        if (due()) await yieldSort();
+                    }
+                }
+                [ordered, buffer] = [buffer, ordered];
+            }
+            const result: NodeId[] = [];
+            for (const [id] of ordered) { result.push(id); if (due()) await yieldSort(); }
+            check(); return Object.freeze(result);
         } catch (error) {
             if (!(error instanceof DOMException && error.name === 'AbortError')) { try { options.onError(error); } catch { /* preserve query failure */ } }
             throw error;

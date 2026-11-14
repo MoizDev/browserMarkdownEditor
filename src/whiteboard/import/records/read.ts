@@ -128,7 +128,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         else ends.set(binding.terminal, binding);
     }
     const nodes: Node[] = [];
-    const roots = new Map<NodeId, { readonly page: number; readonly x: number; readonly y: number; readonly scale: number }>();
+    const roots = new Map<Node, { readonly page: number; readonly x: number; readonly y: number; readonly scale: number }>();
     for (const shape of shapes) {
         options.signal?.throwIfAborted();
         try {
@@ -182,7 +182,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             report.refuse(shape.id, error instanceof Error ? error.message : 'Invalid shape');
         }
     }
-    if (options.kind !== 'whiteboard') {
+    if (options.kind !== 'whiteboard' && nodes.length) {
         if (!options.preparePages) throw new Error('Paged import requires page geometry');
         const pageForRoot = await options.preparePages(shapes, nodes, sheets);
         options.signal?.throwIfAborted();
@@ -192,7 +192,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             try {
                 const position = pageForRoot(node);
                 if (position.pastEnd) report.repair(node.id, 'Content past the last page retained on the last page');
-                if (!roots.has(node.id)) roots.set(node.id, position);
+                roots.set(node, position);
             } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Cannot map page'); }
         }
     }
@@ -201,11 +201,11 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     const mappedNodes = nodes.map(node => {
         let ancestor = node;
         for (let depth = 0; depth <= 64; depth++) {
-            const mapped = roots.get(ancestor.id);
+            const mapped = roots.get(ancestor);
             if (mapped) {
                 try {
                     const scaled = scaleImportedNode(node, mapped.scale);
-                    return node.id === ancestor.id ? { ...scaled, x: mapped.x, y: mapped.y, page: mapped.page } : scaled;
+                    return node === ancestor ? { ...scaled, x: mapped.x, y: mapped.y, page: mapped.page } : scaled;
                 } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Invalid page scale'); return node; }
             }
             const parent = byId.get(ancestor.parent as NodeId);

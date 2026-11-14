@@ -8,6 +8,7 @@ import { get, set } from 'idb-keyval';
 import { forgetVault, labelVaults, loadRecentVaults, rememberVault, setVaultPinned, withVaultPaths } from './recentVaults';
 import { ensureVaultId } from './agentVault';
 import { requestPersistentStorage } from '../utils/storagePersistence';
+import { forgetRecoveryVault } from '../utils/recoveryJournal';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
@@ -1160,6 +1161,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const forgetRecentVault = useCallback(async (id: string) => {
         try {
             await publishVaults(await forgetVault(id), rootHandleRef.current);
+            try { await forgetRecoveryVault(id); }
+            catch (error) { console.warn('Could not remove forgotten vault recovery records:', error); }
             return true;
         } catch (err) {
             console.warn('Could not drop the vault from the recent list:', err);
@@ -2381,14 +2384,23 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         }
     }, []);
 
-    const writeNotebookExport = useCallback((dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null) => withMutation(async (): Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' }> => {
+    const writeNotebookExport = useCallback((dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null, isCurrent: () => boolean) => withMutation(async (): Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' | 'cancelled' }> => {
         const root = rootHandleRef.current;
+        const current = () => root === rootHandleRef.current && isCurrent();
+        if (!current()) return { status: 'cancelled' };
         if (!expected) {
             // FSA has no exclusive create; the final name check is the narrowest
             // possible window, and counts folders as well as files.
             if (await entryExists(dir, name)) return { status: 'changed' };
+            if (!current()) return { status: 'cancelled' };
             const handle = await dir.getFileHandle(name, { create: true });
-            await writeAllBytes(handle, bytes);
+            if (!current()) return { status: 'cancelled' };
+            const writable = await handle.createWritable();
+            try {
+                await writable.write(bytes as Uint8Array<ArrayBuffer>);
+                if (!current()) { await writable.abort(); return { status: 'cancelled' }; }
+                await writable.close();
+            } catch (error) { await writable.abort().catch(() => {}); throw error; }
             if (root && rootHandleRef.current === root) await patchTreeDirs(root, [parentPath]);
             return { status: 'written', version: await versionAfterWrite(handle, bytes) };
         }
@@ -2403,7 +2415,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         // Keep the snapshot even if a later write fails: it is the last known
         // complete version and the existing file is never truncated first.
         await copyFileInto(trash, backupName, file);
-        const result = await writeFileVersioned(handle, bytes, observed);
+        if (!current()) return { status: 'cancelled' };
+        const after = await readSnapshot(handle);
+        const afterVersion = await versionOfSnapshot(after.file, after.buf);
+        if (afterVersion.hash !== observed.hash) return { status: 'changed' };
+        if (!current()) return { status: 'cancelled' };
+        const result = await writeFileVersioned(handle, bytes, afterVersion);
         if (result.status !== 'written') return { status: 'changed' };
         return { status: 'written', version: result.version };
     }), [patchTreeDirs, withMutation, writeFileVersioned]);

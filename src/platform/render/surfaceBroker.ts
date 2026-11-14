@@ -128,6 +128,12 @@ class SurfaceBroker {
                 updateToken: token => this.updateToken(entry, token),
                 requestGpu: (canvas, stamp) => this.requestGpu(entry, canvas, stamp),
                 markPresented: (stamp, generation) => this.markPresented(entry, stamp, generation),
+                failGpu: (stamp, generation, reason) => {
+                    if (!this.matches(entry, stamp) || entry.reservation?.generation !== generation) return;
+                    this.abandon(entry, 'creation-failed');
+                    entry.failed = reason;
+                    if (drawable(entry)) this.fallback(entry, reason);
+                },
                 retry: () => {
                     if (!this.current(entry) || entry.circuit.pinned || entry.reservation) return;
                     entry.failed = null;

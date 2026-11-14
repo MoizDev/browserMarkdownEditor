@@ -159,8 +159,8 @@ IntersectionObserver — a problem set is hundreds of formulae, and KaTeX is ~0.
   `\begin{equation|align|gather}` onto KaTeX-supported forms), `MermaidWidget` (async render but sync
   DOM → SVG cached by `theme+source`, bounded; a `MutationObserver` re-renders on theme flip),
   `TableWidget`, `ImageWidget` (async `getAssetUrl`; the only one that is interactive and updates in
-  place), `CopyCodeWidget`, `HorizontalRuleWidget` (whose `eq()` is unconditionally `true` — every
-  instance is interchangeable, which is only sound while the widget carries no varying state).
+  place), `CopyCodeWidget` (reads current fence text on click), and `HorizontalRuleWidget`.
+  Both latter widgets have unconditional `eq()` because neither carries varying state.
   `ignoreEvent()` returning **`false`** is what makes a widget clickable-into: `MathWidget`,
   `MermaidWidget` and `HorizontalRuleWidget` do; `CopyCodeWidget` returns `true` to keep its button's
   clicks; `TableWidget` deliberately keeps the default (see `markdown-tables`).

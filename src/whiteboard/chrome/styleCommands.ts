@@ -60,6 +60,33 @@ export class BoardStyleCommands {
         return values.every(value => Math.abs(value - values[0]) < 1e-9) ? values[0] : null;
     }
 
+    sampleStyle(id: NodeId): void {
+        this.endWidth();
+        const doc = this.session.doc, node = doc.nodes.get(id);
+        if (!node) return;
+        const next = { ...doc.ui.next };
+        if ('color' in node && node.color !== null) {
+            if (node.kind === 'stroke' && node.tool === 'highlighter') next.highlighterColor = node.color;
+            else next.color = node.color;
+        }
+        if ('fill' in node && node.kind !== 'stroke') next.fill = node.fill;
+        if ('dash' in node) next.dash = node.dash;
+        if ('size' in node) next.size = node.size;
+        if ('font' in node) next.font = node.font;
+        if (node.kind === 'text') next.textAlign = node.align;
+        else if (node.kind === 'figure' || node.kind === 'sticky') next.align = node.align;
+        if ('valign' in node) next.valign = node.valign;
+        if (node.kind === 'connector') {
+            next.headStart = node.headStart;
+            next.headEnd = node.headEnd;
+            next.route = node.route;
+        }
+        if (node.kind === 'polyline') next.spline = node.spline;
+        if (Object.keys(next).some(key => next[key as keyof typeof next] !== doc.ui.next[key as keyof typeof next])) {
+            apply(this.session, 'Sample style', [{ t: 'board', key: 'ui.next', value: next }]);
+        }
+    }
+
     setColor(color: Swatch): void {
         this.endWidth();
         const doc = this.session.doc, next = doc.ui.next;

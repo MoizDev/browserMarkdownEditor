@@ -3,6 +3,7 @@ import type { WorkerContext } from '../../platform/workers/serve'
 import { Path2dJob } from '../render/reference/coverage2d'
 import { paintItem2d } from '../render/reference/paint2d'
 import type { PaintResources2d, PreparedPath2d } from '../render/reference/paint2d'
+import { BoardFonts } from '../text/fonts'
 import { encodePng } from './png'
 import { exportRows } from './tiles'
 import type { RasterWireImage, RasterWireItem } from './rasterWire'
@@ -12,6 +13,7 @@ interface Key { streamId: string }
 interface Chunk extends Key { items: RasterWireItem[]; images: RasterWireImage[] }
 interface Encode extends Key { width: number; height: number; world: Rect; scale: number; background?: string; clipboard?: boolean }
 const streams = new Map<string, Entry>()
+let fonts: BoardFonts | undefined
 function key(args: unknown): string {
   const id = (args as Key | null)?.streamId
   if (typeof id !== 'string' || !id) throw new Error('Invalid raster stream identity')
@@ -70,6 +72,11 @@ export async function rasterEncode(args: unknown, context: WorkerContext): Promi
       context.signal.throwIfAborted()
       for (const clip of item.clips) if (!clips.has(clip.key)) clips.set(clip.key, await prepare(clip.d))
       if (item.kind === 'path') paths.set(item, await prepare(item.d))
+      else if (item.kind === 'text') {
+        fonts ??= new BoardFonts((globalThis as unknown as { fonts: FontFaceSet }).fonts)
+        for (const face of item.faces.faces) if (face.loaded && !await fonts.load(face.key)) throw new Error('Export font could not be loaded')
+        context.signal.throwIfAborted()
+      }
       if (++preparedCount % 128 === 0) await context.slice()
     }
     const resources: PaintResources2d = {

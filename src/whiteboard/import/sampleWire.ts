@@ -1,13 +1,9 @@
-import { encodePoints, inspectPoints, pointExponent, type PointInspectionHeader, type SegmentRuns } from '../format/points';
+import { encodePoints, inspectPoints, pointExponent, type SegmentRuns } from '../format/points';
 import type { SampleStore } from '../ink/samples';
 import type { StrokeNode } from '../model/nodes';
-import type { SampleRef } from '../model/samples';
+import type { LoadSampleWire } from '../model/loadTypes';
 
-export interface LegacySampleWire {
-    readonly workerRef: SampleRef;
-    readonly pts: string;
-    readonly header: PointInspectionHeader;
-}
+export type LegacySampleWire = LoadSampleWire;
 
 // R-W29/31: worker-local handles never cross realms; the host admits this native payload anew.
 export function encodeLegacySample(node: StrokeNode, samples: SampleStore, declaredMaxScale: number): LegacySampleWire {

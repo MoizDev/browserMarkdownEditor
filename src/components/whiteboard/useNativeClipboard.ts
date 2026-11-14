@@ -26,6 +26,7 @@ interface ViewBinding {
     readonly surface: HTMLElement;
     readonly theme: () => 'light' | 'dark';
     readonly notice: (message: string) => void;
+    readonly writable: () => boolean;
 }
 export interface NativeClipboardBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
@@ -41,7 +42,7 @@ export interface NativeClipboardService {
     readonly storeMedia: StoreMedia;
     theme(): 'light' | 'dark';
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
-        inputHandled?: boolean): NativeClipboardBinding;
+        inputHandled?: boolean, writable?: () => boolean): NativeClipboardBinding;
 }
 const services = new WeakMap<BoardRuntime, NativeClipboardService>();
 let serial = 0;
@@ -109,6 +110,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     let commands: ReturnType<typeof createNativeClipboardCommands>;
     try {
         commands = createNativeClipboardCommands({ runtime, token, memory, cache: host.clipboard, current,
+            captureWriteAuthority: () => { const captured = active; return () => !!captured && bindings.has(captured) && captured.writable(); },
             prepareExport: (route, signal) => prepareNativeExport({ runtime, route, signal,
                 boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
                 transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
@@ -138,8 +140,10 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     const service: NativeClipboardService = {
         preferences, memory, readMedia, storeMedia,
         theme: () => active?.theme() ?? 'light',
-        attach(surface, lease, theme, notice, inputHandled = false) {
+        attach(surface, lease, theme, notice, inputHandled = false, writable) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
+            let detached = false;
+            const canWriteView = () => !detached && current() && !!writable?.() && host.canWrite(identity);
             let pointer: { x: number; y: number } | null = null;
             const surfacePoint = (x: number, y: number) => {
                 const bounds = surface.getBoundingClientRect(), viewport = lease.camera.viewport;
@@ -152,15 +156,15 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     && (focused.isContentEditable || focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused.classList.contains('wb-edit-host'));
             };
             const controller = createNativeClipboardController({ runtime, host, identity, memory, ingestor, camera: lease.camera,
-                pasteAtCursor: () => preferences.getSnapshot().session.pasteAtCursor, pointer: () => pointer, surfacePoint, editingText, finishGesture,
+                pasteAtCursor: () => preferences.getSnapshot().session.pasteAtCursor, pointer: () => pointer, surfacePoint, editingText, canWriteView, finishGesture,
                 pinClipboard: () => commands.clipboardCopy.pin(), readMedia, storeMedia, notice: report, onError: fail });
             controllers.add(controller);
-            const binding: ViewBinding = { controller, surface, theme, notice }; bindings.add(binding); active = binding;
+            const binding: ViewBinding = { controller, surface, theme, notice, writable: canWriteView }; bindings.add(binding); active = binding;
             const focus = () => { active = binding; };
             const move = (event: PointerEvent) => { focus(); try { pointer = surfaceToWorld(surfacePoint(event.clientX, event.clientY), lease.camera.camera); } catch { pointer = null; } };
             const copy = (event: ClipboardEvent) => { if (!editingText()) { event.preventDefault(); focus(); commands.copyEvent(event); } };
-            const cut = (event: ClipboardEvent) => { if (!editingText()) { event.preventDefault(); focus(); commands.copyEvent(event, true); } };
-            const paste = (event: ClipboardEvent) => { if (!runtime.session.isReadOnly) { focus(); controller.pasteEvent(event); } };
+            const cut = (event: ClipboardEvent) => { if (!editingText()) { event.preventDefault(); if (canWriteView()) { focus(); commands.copyEvent(event, true); } } };
+            const paste = (event: ClipboardEvent) => { if (canWriteView()) { focus(); controller.pasteEvent(event); } };
             const keydown = (event: KeyboardEvent) => {
                 if (editingText()) return;
                 focus();
@@ -172,18 +176,18 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'c') {
                     event.preventDefault(); event.stopPropagation(); void commands.copyAsPng(); return;
                 }
-                if (!runtime.session.isReadOnly) {
+                if (canWriteView()) {
                     if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'd') {
                         event.preventDefault(); event.stopPropagation(); void commands.duplicate(); return;
                     }
                     controller.keydown(event);
                 }
             };
-            const dragover = (event: DragEvent) => { if (!runtime.session.isReadOnly) controller.dragover(event); };
-            const drop = (event: DragEvent) => { if (!runtime.session.isReadOnly) { focus(); controller.drop(event); } };
+            const dragover = (event: DragEvent) => { if (canWriteView()) controller.dragover(event); };
+            const drop = (event: DragEvent) => { if (canWriteView()) { focus(); controller.drop(event); } };
             const menu = (event: MouseEvent) => {
                 event.preventDefault(); event.stopPropagation(); focus();
-                const selected = runtime.selection.getSnapshot().selected.length > 0, readonly = runtime.session.isReadOnly;
+                const selected = runtime.selection.getSnapshot().selected.length > 0, readonly = !canWriteView();
                 const disabled = !selected, why = 'Select content to copy.';
                 openContextMenu({ x: event.clientX, y: event.clientY, label: 'Canvas', opener: surface, entries: [
                     { kind: 'command', id: 'copy', label: 'Copy', disabled, ...(disabled ? { reason: why } : {}), run: commands.copy },
@@ -201,7 +205,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 surface.addEventListener('paste', paste);
                 surface.addEventListener('dragover', dragover); surface.addEventListener('drop', drop); surface.addEventListener('contextmenu', menu);
             }
-            let detached = false;
             return { controller, commands, openMenu: menu, focus, detach() {
                 if (detached) return; detached = true;
                 bindings.delete(binding); if (active === binding) active = bindings.values().next().value;

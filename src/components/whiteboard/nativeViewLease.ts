@@ -52,6 +52,7 @@ export interface NativeViewLease extends BoardViewLease<object> {
     changed(): void;
     /** An outer source owner can fence input while its real view is covered or rebinding. */
     setInputPermitted(permitted: boolean): void;
+    canMutateView(): boolean;
     refreshAuthority(): void;
     replaceBackdrop(backdrop: NativePdfBackdrop): void;
 }
@@ -149,7 +150,8 @@ export function createNativeViewLease(options: {
         camera, viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
             candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
         visible: () => parameters.visible, focused: () => parameters.focused, paged: board.doc.kind !== 'whiteboard',
-        host, identity, clipboard: edit.clipboard, bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true),
+        host, identity, clipboard: edit.clipboard, bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
+            () => parameters.mode === 'edit' && edit.canMutate()),
         toolOptions: { runtime, engine: viewer, images, camera, token,
             inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
             view: () => { if (!presentedView) throw new Error('The board has not presented its input mapping'); return presentedView; },
@@ -290,17 +292,19 @@ export function createNativeViewLease(options: {
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
+    const sourceCurrent = () => {
+        if (!backdrop?.sourceToken) return true;
+        try { return backdrop.isCurrentSource?.() === true; }
+        catch (error) { options.onError(error); return false; }
+    };
     const updateInput = () => {
-        let sourceCurrent = true;
-        if (backdrop?.sourceToken) {
-            try { sourceCurrent = backdrop.isCurrentSource?.() === true; }
-            catch (error) { sourceCurrent = false; options.onError(error); }
-        }
-        navigation.setInputEnabled(inputPermitted && sourceCurrent && parameters.visible && !!platformPane);
+        navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
     };
     const lease: NativeViewLease = {
         runtime, engine: viewer, camera, editing, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
         setInputPermitted(permitted) { if (!disposed) { inputPermitted = permitted; updateInput(); } },
+        canMutateView() { return !disposed && !!editing && !!edit && inputPermitted && sourceCurrent() && parameters.visible && !!platformPane &&
+            current() && edit.canMutate() && !board.isReadOnly && host.canWrite(identity); },
         refreshAuthority() { if (!disposed) { updateInput(); viewer.setView(viewParameters()); invalidate(); } },
         captureRegion: (rect, maxSide, signal) => captureRegion(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         captureBlob: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),

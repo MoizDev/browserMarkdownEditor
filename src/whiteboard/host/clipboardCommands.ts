@@ -37,6 +37,8 @@ export interface NativeClipboardCommandsOptions {
     prepareExport(route: 'copy' | 'context' | 'menu', signal: AbortSignal): Promise<NativeExportJob>;
     duplicate(snapshot: CopySnapshot): Promise<void>;
     current(): boolean;
+    /** Captures the originating view, so an async cut cannot borrow a different pane's authority. */
+    captureWriteAuthority(): () => boolean;
     notice(message: string): void;
     onError(error: unknown): void;
     copyPng(capture: Promise<Blob>): Promise<void>;
@@ -52,7 +54,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
     let textAuthority: NativeTextClipboardAuthority | undefined;
     const current = () => !disposed && options.current() && board.owner.documentId === token.documentId && board.owner.session === token.session;
     const guard = () => { if (!current()) throw new DOMException('Board session ended', 'AbortError'); };
-    const writable = () => { guard(); if (board.isReadOnly) throw new Error(board.readOnlyReason ?? 'Board is read-only'); };
+    const writable = () => { guard(); if (board.isReadOnly || !options.captureWriteAuthority()()) throw new Error(board.readOnlyReason ?? 'Board view is read-only'); };
     const snapshotCurrent = (snapshot: CopySnapshot) => {
         if (!current() || board.doc.rev !== snapshot.revision || runtime.selection.getSnapshot().sheet !== snapshot.payload.from.sheet) return false;
         if (snapshot.textSelection) return textAuthority?.isCurrent(snapshot) ?? false;
@@ -73,9 +75,13 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         isCurrent: snapshotCurrent,
         prepareCut(snapshot) {
             writable();
+            const authority = options.captureWriteAuthority();
+            const assertWrite = () => { writable(); if (!authority()) throw new Error('The original board view is no longer editable'); };
+            assertWrite();
             if (snapshot.textSelection) {
                 if (!textAuthority || !textAuthority.isCurrent(snapshot)) throw new Error('Text selection changed; cut again');
-                return textAuthority.prepareCut(snapshot);
+                const cut = textAuthority.prepareCut(snapshot);
+                return { commit() { assertWrite(); cut.commit(); }, release: () => cut.release() };
             }
             const product = selectedProduct, receipt = product?.cutReceipt;
             if (product?.snapshot !== snapshot || !receipt) throw product?.cutFailure ?? new Error('Cut geometry is unavailable');
@@ -100,7 +106,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             catch (error) { proof.release(); throw error; }
             return {
                 commit() {
-                    writable(); receipt.assertCurrent();
+                    assertWrite(); receipt.assertCurrent();
                     if (!snapshotCurrent(snapshot)) throw new Error('Selection changed; nothing was cut');
                     if (proof.ops.length) { const applied = board.apply({ ops: proof.ops, origin: 'host', label: 'Cut' }); applied.release(); }
                     if (result.kept.length) options.notice('Locked content was copied but kept in place.');

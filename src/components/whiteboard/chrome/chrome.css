@@ -95,7 +95,7 @@
     position: absolute;
     z-index: 1;
     bottom: calc(100% + 6px);
-    left: 0;
+    inset-inline-start: 0;
     flex-wrap: wrap;
     width: min(360px, 90vw);
     max-height: min(50vh, 360px);

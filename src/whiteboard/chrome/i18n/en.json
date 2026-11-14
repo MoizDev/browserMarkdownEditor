@@ -177,6 +177,11 @@
     "preferences.keyboardShortcutsEnabled": "Enable keyboard shortcuts",
     "preferences.enhancedAccessibility": "Enhanced accessibility",
     "preferences.debugMode": "Debug mode",
-    "preferences.mouseRequired": "Available when mouse input is selected"
+    "preferences.mouseRequired": "Available when mouse input is selected",
+    "shortcutGroups.style": "Style",
+    "shortcuts.style.white": "White",
+    "shortcuts.style.fill": "Fill",
+    "shortcuts.style.linedFill": "Lined fill",
+    "shortcuts.style.sample": "Sample style"
   }
 }

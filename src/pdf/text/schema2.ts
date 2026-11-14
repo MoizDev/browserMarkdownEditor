@@ -45,7 +45,7 @@ export function buildPdfiumPageText(raw: RawPageText, geometry: Schema2Geometry)
     for (let i = 0; i < raw.n; i++) {
         const flags = raw.flags[i], cp = raw.codepoints[i], generated = !!(flags & GENERATED);
         if (flags & INVISIBLE) reasons.add('Includes invisible text (likely OCR); highlights may not match the image.');
-        if (flags & UNICODE_ERROR || !cp) reasons.add('Encoding may be incomplete or incorrect.');
+        if (flags & UNICODE_ERROR || (!cp && !generated)) reasons.add('Encoding may be incomplete or incorrect.');
         if (generated && (cp === 13 || cp === 10)) {
             flush(); charU16[i] = length;
             if (!(cp === 10 && i > 0 && (raw.flags[i - 1] & GENERATED) && raw.codepoints[i - 1] === 13)) synthetic('\n', true);

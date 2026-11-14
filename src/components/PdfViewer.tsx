@@ -36,7 +36,7 @@ import { createPdfFindHighlights, pdfFindBreaks, pdfFindRange, pdfFindSpan } fro
 import type { PdfFindBoundary, PdfFindMemory, PdfFindTextLayer, PdfFindTextSpan } from '../utils/pdfFindHighlight';
 import type { TextContent } from 'pdfjs-dist/types/src/display/api';
 import { usePdfPlatformPreview } from './usePdfPlatformPreview';
-import type { PreviewSnapshot } from '../pdf/preview/contracts';
+import type { PreviewSnapshot } from '../utils/pdfPreviewTypes';
 
 export interface PdfViewerHandle { openFind(): void }
 const findKey = (hit: PdfFindHit) => `${hit.page}:${hit.from}:${hit.to}`;

@@ -1,3 +1,5 @@
+import type { Affine, PathCommand } from '../../platform/types';
+import { worldPose } from '../change/coordinates';
 import type { Op } from '../change/ops';
 import { sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId, ParentId } from '../model/ids';
@@ -6,7 +8,9 @@ import { compareOrder } from '../model/orderKey';
 import type { BoardRuntime } from '../host/runtime';
 import { createBoardLayers, type BoardLayerPair } from '../render/boardLayers';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
-import type { PaintFrame, PaintNodeSource } from '../render/paintStream';
+import type { PaintClip, PaintFrame, PaintNodeSource, PaintTextItem } from '../render/paintStream';
+import { textPaintMaterial } from '../render/textGeometry';
+import type { FaceTable, TextPaint } from '../text/paint';
 import type { PaintImageProvider } from '../render/resources';
 import type { ScenePaintRequest, SceneSnapshot } from '../scene/types';
 import type { ViewerEngine } from './types';
@@ -25,6 +29,7 @@ export interface BoardPreviewOptions {
 export interface BoardPreview {
     show(nodes: readonly Node[]): void;
     showOps(ops: readonly Op[]): void;
+    showTextPaint(node: Node, paint: TextPaint, faces: FaceTable, localToWorld: Affine): void;
     clear(): void;
     dispose(): void;
 }
@@ -90,7 +95,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         engine.setPreviewLayers(null);
     };
     const unbind = engine.bindPreviewClear(clear);
-    const start = (changes: Map<NodeId, Node>) => {
+    const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>) => {
         if (disposed) throw new Error('Preview is disposed');
         if (!changes.size) { clear(); return; }
         if (!options.current() || !engine.getView().visible) throw new Error('Preview view is not current and visible');
@@ -196,9 +201,35 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 }
                 const source = await render.prepareOverlay(doc, { sheetId: sheet, theme: view.theme }, ids, job.signal);
                 check();
-                const guarded: PaintNodeSource = { ...source, isCurrent: () => {
-                    try { check(); return source.isCurrent(); } catch { return false; }
-                } };
+                let textItem: PaintTextItem | null = null, textIndex = -1;
+                if (textOverlay) {
+                    textIndex = ids.indexOf(textOverlay.node);
+                    if (textIndex < 0 || source.nodeCount !== ids.length) throw new Error('Text preview source order changed');
+                    const node = nodes.get(textOverlay.node);
+                    if (!node || !textOverlay.localToWorld.every(Number.isFinite)) throw new Error('Text preview placement is invalid');
+                    let opacity = node.opacity, parent = nodes.get(node.parent as NodeId);
+                    const clips: PaintClip[] = [];
+                    for (let depth = 0; parent && depth < 64; depth++) {
+                        opacity *= parent.opacity;
+                        if (parent.kind === 'frame') {
+                            const pose = worldPose(doc, parent.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                            const d: PathCommand[] = [['M', 0, 0], ['L', parent.w, 0], ['L', parent.w, parent.h], ['L', 0, parent.h], ['Z']];
+                            clips.push({ key: `frame:${parent.id}`, d, fillRule: 'nonzero', localToWorld: [c, s, -s, c, pose.x, pose.y] });
+                        }
+                        parent = nodes.get(parent.parent as NodeId);
+                    }
+                    clips.reverse();
+                    textItem = { kind: 'text', key: `${node.id}:composition:${textOverlay.paint.key}`,
+                        nodeId: node.id, geometryKey: `composition:${textOverlay.paint.key}`, localToWorld: textOverlay.localToWorld,
+                        clips, paint: textOverlay.paint, faces: textOverlay.faces,
+                        material: textPaintMaterial(textOverlay.paint, engine.getSnapshot().palette, opacity) };
+                }
+                const guarded: PaintNodeSource = { ...source,
+                    readNode(index) {
+                        const item = source.readNode(index);
+                        return textItem && index === textIndex ? { ...item, content: [...item.content.filter(part => part.kind !== 'text'), textItem] } : item;
+                    },
+                    isCurrent: () => { try { check(); return source.isCurrent(); } catch { return false; } } };
                 if (!frames || !pair) {
                     const inner = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report);
                     const assembler: typeof inner = { ...inner, prepare(budget) {
@@ -238,6 +269,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             } catch (error) { clear(); report(error); }
         },
         showOps(ops) { try { start(operationNodes(runtime.session.doc, ops)); } catch (error) { clear(); report(error); } },
+        showTextPaint(node, paint, faces, localToWorld) {
+            try { const copy = copyNode(node); start(new Map([[copy.id, copy]]), { node: copy.id, paint, faces, localToWorld: [...localToWorld] as unknown as Affine }); }
+            catch (error) { clear(); report(error); }
+        },
         clear,
         dispose() { if (!disposed) { clear(); disposed = true; unbind(); } },
     };

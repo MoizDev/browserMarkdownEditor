@@ -260,6 +260,7 @@ third-party code included (normally "none") · date.
 | `input/pointer.ts` | lane w-f | F-INPUT-001/005/008; R-19 | input §§3–4 | Input architecture; browser Pointer Events APIs; no tldraw source | none | 2026-11-13 |
 | `input/prediction.ts` | lane w-f | F-INPUT-001; R-19 | input §4 | Input architecture; browser Pointer Events and Ink APIs; no tldraw source | none | 2026-11-13 |
 | `input/frame.ts` | lane w-f | F-INPUT-001; R-19 | input §4 | Input architecture and shared scheduler contract; no tldraw source | none | 2026-11-13 |
+| `input/liveInk.ts` | lane w-f | F-INK-001/006/007; R-19 | ink §§3,7; input §§4,9 | Ink design and public SampleBuilder; no tldraw source | none | 2026-11-13 |
 | `input/navigation.ts` | lane w-f | F-INPUT-002/003/004/005; F-CAM-001/009 | input §§5–6 | Input design and public platform CameraController; no tldraw source | none | 2026-11-13 |
 
 ## Pages and paged hosts (lane w-l)

@@ -213,6 +213,12 @@ third-party code included (normally "none") · date.
 | `media/svgProfile.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §§5–6 | Separate opaque XML/image profiles and fixed-shape response requirements | none | 2026-11-13 |
 | `media/svgXmlRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Worker XML preflight; SVG parsing and dimensions in isolated realm only | none | 2026-11-13 |
 | `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context rasterization, isolated image profile only | none | 2026-11-13 |
+| `media/svgFrameRuntime.ts` | lane w-q | SEC-3/4 | security §§5–6 | Token-bound sequential bounded transfer within opaque profile | none | 2026-11-13 |
+| `media/svgXmlEntry.ts` | lane w-q | SEC-3/4 | security §6 | Network-denied XML profile entry | none | 2026-11-13 |
+| `media/svgImageEntry.ts` | lane w-q | SEC-3/4 | security §6 | Network-denied blob-image profile entry | none | 2026-11-13 |
+| `media/svgFrameHost.ts` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 frame API, token validation, bounded acknowledged transfer | none | 2026-11-13 |
+| `media/svgFrames.d.ts` | lane w-q | SEC-3/4 | security §6 | Build-time virtual fixed-frame declarations | none | 2026-11-13 |
+| `build/whiteboardSvgFrames.mjs` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 exact-byte hashing/bundling helper; strict separate profile CSPs | none | 2026-11-13 |
 
 ## Text editing and spelling (lane w-i)
 

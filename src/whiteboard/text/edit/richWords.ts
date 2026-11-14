@@ -72,14 +72,17 @@ export class RichWordNavigation {
         const length = projectionLength(text), cursor = this.offset(text, offset);
         if (direction < 0 && cursor === 0) return 0;
         if (direction > 0 && cursor === length) return length;
-        const point = projectionPosition(text, cursor), entry = this.block(point.block);
+        const point = projectionPosition(text, cursor);
         if (direction < 0 && point.offset === 0) {
             if (point.index === 0) return 0;
-            const previous = this.block(text.blocks[point.index - 1]);
-            return point.start - (previous.text.endsWith('\r') ? 2 : 1);
+            const runs = text.blocks[point.index - 1].runs;
+            let previous = '';
+            for (let i = runs.length - 1; i >= 0 && !previous; i--) previous = runs[i].text;
+            return point.start - (previous.endsWith('\r') ? 2 : 1);
         }
-        if (direction > 0 && point.offset === entry.text.length)
+        if (direction > 0 && point.offset === point.length)
             return point.index + 1 < text.blocks.length ? cursor + 1 : length;
+        const entry = this.block(point.block);
         const segments = entry.graphemes ??= this.graphemeSegmenter.segment(entry.text);
         const part = segments.containing(direction < 0 ? point.offset - 1 : point.offset);
         if (!part) return cursor;

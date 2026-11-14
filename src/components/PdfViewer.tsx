@@ -15,7 +15,7 @@ import { bindPdfNativeEmphasis, makePdfEmphasisPlan, pdfNativeEmphasisNotice } f
 import { completedClassicDisplayList } from '../utils/pdfClassicDisplayList';
 import { classicEmphasisPageKey, classicEmphasisPlanKey } from '../utils/pdfEmphasisProfile';
 import { getPdfEmphasisPlan, rememberPdfEmphasisPlan } from '../utils/pdfEmphasisPlanCache';
-import { watchPdfEmphasis } from '../utils/pdfEmphasisWatch';
+import { afterPdfPaint, watchPdfEmphasis } from '../utils/pdfEmphasisWatch';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { LEFT, RIGHT } from '../utils/pdfRotation';
@@ -1179,6 +1179,8 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     // Show the ordinary stand-in first, then rebuild from this
                     // very display list without repeating the capability proof.
                     if (useOn && !plan) {
+                        await afterPdfPaint(controller.signal);
+                        if (!current()) continue;
                         const list = completedClassicDisplayList(task);
                         if (!list) session.emphasisVerdicts.rejectPlan(key, 'renderer-version');
                         else {

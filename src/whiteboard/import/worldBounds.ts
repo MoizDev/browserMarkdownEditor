@@ -34,6 +34,8 @@ function union(a: Box | undefined, b: Box): Box {
 export async function legacyWorldBounds(nodes: readonly Node[], sheets: ReadonlySet<SheetId>,
     text: LegacyTextLayout, geometry: LegacyGeometry): Promise<(node: Node) => LegacyWorldBounds> {
     const children = new Map<ParentId, Node[]>();
+    const byId = new Map<Node['id'], Node>();
+    for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
     for (const node of nodes) {
         let group = children.get(node.parent);
         if (!group) children.set(node.parent, group = []);
@@ -53,7 +55,8 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
     }
     const result = new Map<Node, LegacyWorldBounds>();
     for (const root of nodes) {
-        if (!sheets.has(root.parent as SheetId)) continue;
+        const parent = byId.get(root.parent as Node['id']);
+        if (!sheets.has(root.parent as SheetId) && parent && (parent.kind === 'group' || parent.kind === 'frame')) continue;
         let box: Box | undefined;
         const pending: { node: Node; parent: Affine; depth: number }[] = [{ node: root, parent: IDENTITY, depth: 0 }];
         const seen = new Set<Node>();
@@ -66,7 +69,6 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
             if (current.node.kind === 'text') part = transformed(textBoxes.get(current.node)!, transform);
             else if (current.node.kind === 'sticky') part = transformed([0, 0, 200 * current.node.scale,
                 (200 + current.node.growY) * current.node.scale], transform);
-            else if (current.node.kind === 'figure') part = transformed([0, 0, current.node.w, current.node.h + current.node.growY], transform);
             else if (current.node.kind === 'frame' || current.node.kind === 'picture' || current.node.kind === 'clip'
                 || current.node.kind === 'linkcard' || current.node.kind === 'embed') {
                 part = transformed([0, 0, current.node.w, current.node.h], transform);

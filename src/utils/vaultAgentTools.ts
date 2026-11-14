@@ -34,7 +34,7 @@ import { CANVAS_PAGING_VERSION, MAX_TOOL_TEXT_CHARS, compareVersions, type Canva
 import { VAULT_TOOLS, type ToolDef } from '../../shared/vaultAgentTools';
 import type { AgentChange, HostResult, VaultToolHost } from '../types/vaultAgent';
 import type { FileTreeNode } from '../types';
-import { getView, type CanvasApplyResult, type ShapeSummary, type TextChange, type ViewReporter } from './viewRegistry';
+import { getView, type CanvasApplyResult, type CanvasShapePage, type ShapeSummary, type TextChange, type ViewReporter } from './viewRegistry';
 import { validateAgainstSchema } from './agentSchema';
 import { creationDiff, lineDiff } from './agentDiff';
 import { AGENT_IMAGE_MAX_SIDE, blobBytes, imageMimeFor, prepareImageForAgent, sha256Hex } from './agentMedia';
@@ -515,6 +515,20 @@ function shapeLines(shapes: Array<ShapeSummary & { sizeUnknown?: boolean }>, bud
     return out;
 }
 
+function pagedShapeLines(result: CanvasShapePage, offset: number, budget: number): { lines: string[]; count: number } {
+    const lines: string[] = [];
+    let used = 0, count = 0, section = 0;
+    for (const shape of result.shapes) {
+        const label = result.sections?.[section];
+        const heading = label?.offset === offset + count ? `— sheet "${label.name.replace(/[\r\n]/gu, ' ')}" (${label.index + 1})` : '';
+        const line = formatShape(shape), added = line.length + 1 + (heading ? heading.length + 1 : 0);
+        if (used + added > budget) break;
+        if (heading) { lines.push(heading); section++; }
+        lines.push(line); used += added; count++;
+    }
+    return { lines, count };
+}
+
 const COORDS_PAGED = 'Coordinates are page-relative: x/y in points from the top-left corner of `page`.';
 const COORDS_DRAWING = 'Coordinates are the canvas\'s own units.';
 
@@ -553,8 +567,8 @@ async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | u
             const head = [`path: ${path}`, `${notebook ? 'notebook' : 'drawing'}, read from the board session`,
                 `${result.total} shape${result.total === 1 ? '' : 's'}${page ? ` on page ${page}` : ''}`,
                 notebook ? COORDS_PAGED : COORDS_DRAWING];
-            const lines = shapeLines(result.shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to narrow the result');
-            if (result.nextOffset !== undefined) lines.push(`…[${result.total - result.nextOffset} more shapes not shown]`);
+            const shown = pagedShapeLines(result, 0, MAX_TOOL_TEXT_CHARS - 1500), lines = shown.lines;
+            if (shown.count < result.total) lines.push(`…[${result.total - shown.count} more shapes not shown]`);
             return { head, lines };
         }
     }
@@ -983,14 +997,8 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
         if (!result) throw new ToolError(isPdfFile(path)
             ? 'Open the PDF in annotation mode to page its shapes.' : 'Shape paging is unavailable for this board.');
         const offset = result.revisionChanged ? 0 : query.offset ?? 0;
-        const lines: string[] = [];
-        let used = 0;
-        for (const shape of result.shapes) {
-            const line = formatShape(shape);
-            if (used + line.length + 1 > MAX_TOOL_TEXT_CHARS - 1500) break;
-            lines.push(line); used += line.length + 1;
-        }
-        const next = offset + lines.length;
+        const shown = pagedShapeLines(result, offset, MAX_TOOL_TEXT_CHARS - 1500), lines = shown.lines;
+        const next = offset + shown.count;
         const head = [`path: ${path}`, `revision: ${result.revision}`, `total: ${result.total}`,
             ...(result.revisionChanged ? ['Revision changed; restarted at offset 0.'] : []),
             ...(next < result.total ? [`nextOffset: ${next}`] : []),

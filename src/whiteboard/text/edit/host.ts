@@ -1,6 +1,6 @@
 import type { Block, RichText } from '../richText';
 import { isGraphemeBoundary } from '../graphemes';
-import { textWindow, type TextWindow } from './window';
+import { richTextWindow, type TextWindow } from './window';
 
 interface TextUpdate extends Event {
     readonly updateRangeStart: number;
@@ -36,10 +36,6 @@ export interface EditHostCallbacks {
     keydown(event: KeyboardEvent): void;
     contextMenu(x: number, y: number): void;
     characterBounds(start: number, end: number): DOMRect[];
-}
-
-function projection(text: RichText): string {
-    return text.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
 }
 
 function difference(base: TextWindow, value: string, selection: EditSelection): TextChange {
@@ -142,7 +138,7 @@ export class EditHost {
                 else this.callbacks.change(change);
             }
             finally {
-                this.window = { ...this.window, text: value };
+                this.window = { ...this.window, end: this.window.start + value.length, text: value };
                 this.sync();
             }
         }
@@ -183,8 +179,7 @@ export class EditHost {
     sync(): void {
         if (this.composing) return;
         const { text, selection } = this.callbacks.snapshot();
-        const plain = projection(text);
-        const next = textWindow(plain, selection.anchor, selection.focus, this.window);
+        const next = richTextWindow(text, selection.anchor, selection.focus, this.window);
         if (this.context) {
             if (this.window.text !== next.text) this.context.updateText(0, this.window.text.length, next.text);
             this.context.updateSelection(Math.min(selection.anchor, selection.focus) - next.start, Math.max(selection.anchor, selection.focus) - next.start);
@@ -199,14 +194,15 @@ export class EditHost {
                 const fragment = document.createDocumentFragment();
                 for (const block of text.blocks) {
                     const paragraph = document.createElement('p');
-                    paragraph.append(document.createTextNode(block.runs.map(run => run.text).join('')));
+                    paragraph.append(document.createTextNode(block.runs.length === 1 ? block.runs[0].text : block.runs.map(run => run.text).join('')));
                     fragment.append(paragraph);
                 }
                 this.mirror.replaceChildren(fragment);
             } else {
                 for (let i = 0; i < text.blocks.length; i++) {
                     if (text.blocks[i] !== this.mirrorBlocks[i]) {
-                        this.mirror.children[i].firstChild!.textContent = text.blocks[i].runs.map(run => run.text).join('');
+                        const runs = text.blocks[i].runs;
+                        this.mirror.children[i].firstChild!.textContent = runs.length === 1 ? runs[0].text : runs.map(run => run.text).join('');
                     }
                 }
             }

@@ -134,10 +134,11 @@ export const attachView: AttachView = options => {
             paintJob = null; publish();
         }, error => { pin.release(); if (!controller.signal.aborted) report(error); });
     }
+    const cancelReveal = () => { const job = revealJob; revealJob = null; job?.abort(); };
     const reveal = (ids: ReadonlySet<NodeId>) => {
-        revealJob?.abort();
-        const controller = new AbortController(); revealJob = controller;
+        cancelReveal();
         if (disposed || !view.visible || !ids.size) return;
+        const controller = new AbortController(); revealJob = controller;
         void (async () => {
             const ready = await runtime.ready;
             let box: readonly [number, number, number, number] | null = null;
@@ -149,7 +150,8 @@ export const attachView: AttachView = options => {
             if (!disposed && view.visible && revealJob === controller && !controller.signal.aborted && box) {
                 options.reveal({ x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1] });
             }
-        })().catch(error => { if (!controller.signal.aborted) report(error); });
+        })().catch(error => { if (!controller.signal.aborted) report(error); })
+            .finally(() => { if (revealJob === controller) revealJob = null; });
     };
     const unbind = runtime.bindView({ visible: () => view.visible, focused: () => view.focused,
         invalidate() { layers.invalidate('board-session'); publish(); },
@@ -166,7 +168,7 @@ export const attachView: AttachView = options => {
     const stopSelection = runtime.selection.subscribe(() => {
         const currentSheet = sheet();
         if (currentSheet !== previousSheet) { previousSheet = currentSheet; clearPreview?.(); }
-        revealJob?.abort(); publish(); requestPaint();
+        cancelReveal(); publish(); requestPaint();
     });
     let previousRevision = options.session.doc.rev;
     const stopSession = options.session.subscribe(() => {
@@ -177,7 +179,7 @@ export const attachView: AttachView = options => {
     const dispose = () => {
         if (disposed) return;
         clearPreview?.(); clearPreview = null;
-        disposed = true; paintJob?.abort(); revealJob?.abort(); interaction?.finishGesture(); interaction?.finishComposition();
+        disposed = true; paintJob?.abort(); cancelReveal(); interaction?.finishGesture(); interaction?.finishComposition();
         unbind(); stopScene?.(); stopSelection(); stopSession(); accessibility.dispose(); frames.dispose(); listeners.clear(); interaction = null;
         options.signal?.removeEventListener('abort', dispose);
     };
@@ -191,7 +193,7 @@ export const attachView: AttachView = options => {
             if (disposed) return;
             const old = view; view = { ...next }; previousSheet = sheet();
             if (view.visible && (old.theme !== view.theme || old.sheetId !== view.sheetId)) clearPreview?.();
-            if (!view.visible) { clearPreview?.(); paintJob?.abort(); revealJob?.abort(); frames.clear(); drawnFrame = null; interaction?.finishGesture(); interaction?.finishComposition(); }
+            if (!view.visible) { clearPreview?.(); paintJob?.abort(); cancelReveal(); frames.clear(); drawnFrame = null; interaction?.finishGesture(); interaction?.finishComposition(); }
             publish();
             if (view.visible && (!old.visible || view.theme !== old.theme || view.sheetId !== old.sheetId)) requestPaint();
             layers.invalidate('board-view');
@@ -200,6 +202,7 @@ export const attachView: AttachView = options => {
             if (disposed || !options.session.doc.nodes.has(id as NodeId)) return;
             runtime.selection.replace([id as NodeId]); reveal(new Set([id as NodeId]));
         },
+        cancelReveal,
         bindInteractions(ports) {
             if (disposed) throw new Error('Board view is disposed');
             interaction?.finishGesture(); interaction?.finishComposition(); interaction = ports;

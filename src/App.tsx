@@ -2204,6 +2204,10 @@ export default function App() {
         // Only while the document is still open: a close drops its entry, and
         // this must not put one back (getBaseline is set from open to close).
         if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
+        if (isPdf && data instanceof Uint8Array) {
+          const aliases = (await import('./utils/pdfBuildClient')).pdfBuildAliases(data);
+          if (aliases.length) notifyRef.current(`Attachments with conflicting names were preserved under recovered names: ${aliases.join(', ')}.`);
+        }
         if (pdfEntry && pdfRebuildRef.current.get(id) === pdfEntry) {
           pdfEntry.baseline = result.version;
           setPdfRebuildNotice(id, { state: 'kept', generation: pdfEntry.value.role.generation, approved: pdfEntry.approved, copyName: pdfEntry.copyName });
@@ -2249,6 +2253,7 @@ export default function App() {
       } catch (err) {
         if (err instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(err.message); return 'skipped'; }
         console.error('Auto-save failed:', err);
+        if (isPdf) notifyRef.current(`The PDF was not saved: ${describeReadError(err)}`);
         return 'failed';
       }
     };

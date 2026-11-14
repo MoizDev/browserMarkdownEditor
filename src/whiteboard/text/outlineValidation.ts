@@ -22,14 +22,15 @@ export function validOutlineRequest(value: unknown): value is OutlineWorkerReque
     for (let i = 0; i < paint.decorations.length; i++) if (!rectangle(paint.decorations[i]) || !color(material.decorations[i])) return false;
     let glyphs = 0, textLength = 0;
     for (const line of paint.lines) {
-        if (!object(line) || !finite(line.baseline) || !Array.isArray(line.fragments)) return false;
+        if (!object(line) || !finite(line.top) || !finite(line.bottom) || line.bottom < line.top || !finite(line.baseline) || !Array.isArray(line.fragments)) return false;
         for (const fragment of line.fragments) {
             if (!object(fragment) || typeof fragment.text !== 'string' || !finite(fragment.x) || !finite(fragment.width) || fragment.width < 0
                 || typeof fragment.rtl !== 'boolean' || typeof fragment.systemFallback !== 'boolean' || !Number.isSafeInteger(fragment.face)
                 || (fragment.face as number) < 0 || (fragment.face as number) >= faces.faces.length || !color(material.glyphs[glyphs])) return false;
             const face = faces.faces[fragment.face as number];
             if (!object(face) || !object(face.key) || typeof face.loaded !== 'boolean' || typeof face.css !== 'string'
-                || !finite(face.size) || face.size <= 0 || typeof face.key.bold !== 'boolean' || typeof face.key.italic !== 'boolean'
+                || !finite(face.size) || face.size <= 0 || !finite(face.ascent) || !finite(face.descent)
+                || typeof face.key.bold !== 'boolean' || typeof face.key.italic !== 'boolean'
                 || !['draw', 'sans', 'serif', 'mono'].includes(face.key.family as string)) return false;
             glyphs++; textLength += fragment.text.length;
             if (textLength > 8_000_000) return false;

@@ -20,18 +20,20 @@ function nonempty(data: Uint8ClampedArray): boolean {
 }
 
 /** Each fallback bitmap stays small even when one source fragment spans a very wide page. */
-export async function* rasterTextFragment(fragment: PaintFragment, face: Face, baseline: number, color: Rgba, pageScale: number,
-    blend: 'normal' | 'multiply', fonts: BoardFonts, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
+export async function* rasterTextFragment(fragment: PaintFragment, face: Face, baseline: number, lineTop: number, lineBottom: number,
+    color: Rgba, pageScale: number, blend: 'normal' | 'multiply', fonts: BoardFonts, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
     if (face.loaded && !await fonts.load(face.key)) throw new Error('Export canvas font could not be loaded');
     context.signal.throwIfAborted();
     const probe = new OffscreenCanvas(1, 1), measuring = probe.getContext('2d');
     if (!measuring) throw new Error('Export canvas is unavailable');
     configure(measuring, fragment, face);
-    const metrics = measuring.measureText(fragment.text), factor = face.size / 64;
-    const left = fragment.x - Math.max(0, metrics.actualBoundingBoxLeft * factor) - factor * 2;
-    const top = baseline - metrics.actualBoundingBoxAscent * factor - factor * 2;
-    const width = Math.max(factor, (metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight) * factor + factor * 4);
-    const height = Math.max(factor, (metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent) * factor + factor * 4);
+    const metrics = measuring.measureText(fragment.text), factor = face.size / 64, padding = factor * 2;
+    const inkLeft = Math.min(fragment.x, fragment.x - metrics.actualBoundingBoxLeft * factor);
+    const inkRight = Math.max(fragment.x + fragment.width, fragment.x + metrics.actualBoundingBoxRight * factor);
+    const ascent = Math.max(0, metrics.actualBoundingBoxAscent * factor, face.ascent, baseline - lineTop);
+    const descent = Math.max(0, metrics.actualBoundingBoxDescent * factor, face.descent, lineBottom - baseline);
+    const left = inkLeft - padding, top = baseline - ascent - padding;
+    const width = Math.max(factor, inkRight - inkLeft + 2 * padding), height = Math.max(factor, ascent + descent + 2 * padding);
     const density = 4 * pageScale, pixelWidth = Math.max(1, Math.ceil(width * density)), pixelHeight = Math.max(1, Math.ceil(height * density));
     if (![left, top, width, height, density].every(Number.isFinite) || !(factor > 0 && density > 0)
         || !Number.isSafeInteger(pixelWidth) || !Number.isSafeInteger(pixelHeight)) throw new RangeError('Text raster geometry is out of range');

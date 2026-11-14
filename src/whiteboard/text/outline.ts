@@ -30,7 +30,7 @@ export async function* streamTextOutline(payload: unknown, context: WorkerContex
             if (!fragment.text) continue;
             const commands = await shapeTextFragment(fragment, face, line.baseline, context);
             if (commands !== null) yield { kind: 'path', d: commands, fill: color, blend: material.blend };
-            else yield* rasterTextFragment(fragment, face, line.baseline, color, pageScale, material.blend, fonts, context);
+            else yield* rasterTextFragment(fragment, face, line.baseline, line.top, line.bottom, color, pageScale, material.blend, fonts, context);
             await context.slice();
         }
         for (let i = 0; i < paint.decorations.length; i++) {

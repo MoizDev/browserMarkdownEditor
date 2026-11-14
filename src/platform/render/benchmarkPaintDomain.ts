@@ -1,5 +1,6 @@
 import type { Rect } from '../types';
 import type { CompositorLayer } from './compositor.types';
+import { projectPage } from './compositorProjection';
 import type { RectI } from './gfx/api';
 import type { PageStack } from './pageStack';
 import { pageAt } from './pageStack';
@@ -31,15 +32,15 @@ export function benchmarkPaintDomain(snapshot: { readonly layout: Readonly<PageS
     }
     const layout = snapshot.layout;
     if (layout) {
-        const scale = view.camera.z * view.viewport.dpr;
         const bottom = view.camera.y + view.viewport.height / view.camera.z;
         for (let index = Math.max(0, pageAt(layout, view.camera.y)); index < layout.rects.length; index++) {
             const rect = layout.rects[index];
             if (rect.y > bottom) break;
-            append({ x: (rect.x - view.camera.x) * scale, y: (rect.y - view.camera.y) * scale,
-                width: rect.width * scale, height: rect.height * scale });
+            const page = projectPage(layout, view, index);
+            if (page) append(page.outline);
         }
-        return Object.freeze({ vector: false, rects: Object.freeze(rects) });
+        return Object.freeze({ vector: !snapshot.layers.some(layer => layer.group === 'document' && layer.layer.benchmarkRaster),
+            rects: Object.freeze(rects) });
     }
     // An infinite vector document has no raster denominator or page gaps. Object fidelity
     // remains the separate canonical painter's responsibility, never a cache-coverage claim.

@@ -12,7 +12,12 @@ const enabled: State = Object.freeze({ enabled: true });
 const disabled = (reason: string): State => ({ enabled: false, reason });
 
 /** UI operations delegate geometry, transaction and receipt ownership to the arrangement backend. */
-export function createArrangementCommandOperations(options: { readonly runtime: BoardRuntime; readonly current: () => boolean }) {
+export function createArrangementCommandOperations(options: {
+    readonly runtime: BoardRuntime;
+    readonly current: () => boolean;
+    /** This view's own editable state; a mutating arrangement re-checks it at run time, not only when shown. */
+    readonly canWrite: () => boolean;
+}) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     const commands = createBoardArrangementCommands(options);
     let cached: { selection: SelectionSnapshot; revision: number; count: number; problem?: string } | undefined;
@@ -39,6 +44,7 @@ export function createArrangementCommandOperations(options: { readonly runtime: 
     const state = (minimum: number): State => {
         if (!options.current()) return disabled('Board session has ended');
         if (session.isReadOnly) return disabled(session.readOnlyReason ?? 'Board is read-only');
+        if (!options.canWrite()) return disabled('Board view is read-only');
         if (session.isGestureActive) return disabled('Finish the current gesture first');
         const eligible = eligibility();
         if (eligible.problem) return disabled(eligible.problem);

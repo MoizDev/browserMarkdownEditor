@@ -12,6 +12,7 @@ export interface GpuPaneServicesOptions {
     readonly now: number;
     onFailure(code: GfxError): void;
     onFenceAge(ageMs: number): void;
+    onGpuTiming(p95Ms: number, samples: number, disjoint: boolean): void;
     evict(): void;
 }
 
@@ -47,6 +48,7 @@ export class GpuPaneServices {
                 recordUpload: (bytes, ms) => options.scheduler.recordUpload(bytes, ms),
                 recordUniformUpload: (bytes, ms) => options.scheduler.recordUniformUpload(bytes, ms),
                 observeFenceAge: options.onFenceAge,
+                observeGpuTiming: options.onGpuTiming,
             };
         } catch (error) {
             for (const handle of opened) handle.close();

@@ -10,6 +10,7 @@ import { loadHelpDoc } from './utils/helpDocLoader';
 import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
+import { subscribeRenderStatus } from './utils/renderStatus';
 import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
@@ -904,6 +905,7 @@ export default function App() {
     setSaveStatus(message);
     saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 5000);
   }, []);
+  useEffect(() => subscribeRenderStatus(announce), [announce]);
   useEffect(() => {
     const showRestoreNotice = () => {
       const notice = takeRestoreNotice();

@@ -1,7 +1,7 @@
 {
   "package": "W-12",
   "sourceSha256": "650e5a030da4dc19f2eb952939aeac34678f2e28bc78679a6404a38cba2d2614",
-  "status": "waiting-startup-seam-replay",
+  "status": "available-proofs-complete-cancel-not-covered",
   "checks": {
     "penAndLifetime": true,
     "noFilterMutant": true,
@@ -10,7 +10,7 @@
     "eagerImportMutant": true,
     "idleTouchMutant": true
   },
-  "seamVerified": false,
+  "seamVerified": true,
   "trustedCancel": {
     "status": "NOT COVERED",
     "routesAttempted": 12,
@@ -11253,15 +11253,2382 @@
     },
     "seam": {
       "name": "seam",
-      "results": [],
+      "results": [
+        {
+          "arm": "notebook-lift-during-pinch-1",
+          "passed": true,
+          "failures": [],
+          "witness": {
+            "host": "notebook",
+            "order": "lift-during-pinch",
+            "beforeZoom": 192,
+            "duringZoom": 192,
+            "penUpZoom": 192,
+            "heldTouchZoom": 192,
+            "persistedPinchStrokes": 2,
+            "persistedNextStrokes": 3,
+            "allPinchStrokesComplete": true,
+            "freshPinchRatio": 2,
+            "laterListenerBlockedReceipts": 0,
+            "leakedReceiptsAfterPenUp": 0,
+            "laterListenerFreshReceipts": 32
+          },
+          "identity": {
+            "build": {
+              "commit": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "ref": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "sourceMode": "unmodified-seam-ref",
+              "mode": "production",
+              "variant": "candidate",
+              "overlays": [],
+              "installPatchApplied": false,
+              "installPatchSha256": "c136cf5d992579a2159ffee89e448e7afb80831a74216f65a784ded87a48c2d4",
+              "mutation": null,
+              "filterSha256": "650e5a030da4dc19f2eb952939aeac34678f2e28bc78679a6404a38cba2d2614",
+              "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61"
+            },
+            "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61",
+            "chrome": "157.0.8103.39",
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            },
+            "dpr": 1,
+            "engine": "legacy-tldraw",
+            "versionMarkers": [
+              "@tldraw/utils@5.2.4",
+              "@tldraw/state@5.2.4",
+              "@tldraw/state-react@5.2.4",
+              "@tldraw/store@5.2.4",
+              "@tldraw/validate@5.2.4",
+              "@tldraw/tlschema@5.2.4",
+              "@tldraw/editor@5.2.4"
+            ],
+            "chunks": [
+              {
+                "url": "http://localhost:6500/assets/NotebookPane-BC5HM_DS.js",
+                "status": 200,
+                "size": 11333,
+                "sha256": "1724564ad809fd75a911d6436717a669a2f2465b1e5dd29047bc8ad0ac7af745"
+              },
+              {
+                "url": "http://localhost:6500/assets/canvasAgentOps-DHI18laZ.js",
+                "status": 200,
+                "size": 1761135,
+                "sha256": "256f9b160eca525871c36fc7e708a550d9fd7d4db946dc2d2580669f02e4b03b"
+              }
+            ],
+            "maxTouchPoints": 1,
+            "backend": "DOM/SVG legacy board; only actual HTML canvas contexts counted",
+            "contexts": [
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 300,
+                "height": 150
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              }
+            ]
+          },
+          "errors": [],
+          "windowTouchRegistrations": {
+            "beforePen": [],
+            "armed": [
+              {
+                "key": "touchstart:2:true",
+                "type": "touchstart",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2227.5999999940395
+              },
+              {
+                "key": "touchmove:2:true",
+                "type": "touchmove",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2227.5999999940395
+              },
+              {
+                "key": "touchend:2:true",
+                "type": "touchend",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2227.5999999940395
+              },
+              {
+                "key": "touchcancel:2:true",
+                "type": "touchcancel",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2227.5999999940395
+              }
+            ],
+            "after": []
+          }
+        },
+        {
+          "arm": "notebook-move-after-pinch-1",
+          "passed": true,
+          "failures": [],
+          "witness": {
+            "host": "notebook",
+            "order": "move-after-pinch",
+            "beforeZoom": 192,
+            "duringZoom": 192,
+            "penUpZoom": 192,
+            "heldTouchZoom": 192,
+            "persistedPinchStrokes": 2,
+            "persistedNextStrokes": 3,
+            "allPinchStrokesComplete": true,
+            "freshPinchRatio": 2,
+            "laterListenerBlockedReceipts": 0,
+            "leakedReceiptsAfterPenUp": 0,
+            "laterListenerFreshReceipts": 32
+          },
+          "identity": {
+            "build": {
+              "commit": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "ref": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "sourceMode": "unmodified-seam-ref",
+              "mode": "production",
+              "variant": "candidate",
+              "overlays": [],
+              "installPatchApplied": false,
+              "installPatchSha256": "c136cf5d992579a2159ffee89e448e7afb80831a74216f65a784ded87a48c2d4",
+              "mutation": null,
+              "filterSha256": "650e5a030da4dc19f2eb952939aeac34678f2e28bc78679a6404a38cba2d2614",
+              "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61"
+            },
+            "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61",
+            "chrome": "157.0.8103.39",
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            },
+            "dpr": 1,
+            "engine": "legacy-tldraw",
+            "versionMarkers": [
+              "@tldraw/utils@5.2.4",
+              "@tldraw/state@5.2.4",
+              "@tldraw/state-react@5.2.4",
+              "@tldraw/store@5.2.4",
+              "@tldraw/validate@5.2.4",
+              "@tldraw/tlschema@5.2.4",
+              "@tldraw/editor@5.2.4"
+            ],
+            "chunks": [
+              {
+                "url": "http://localhost:6500/assets/NotebookPane-BC5HM_DS.js",
+                "status": 200,
+                "size": 11333,
+                "sha256": "1724564ad809fd75a911d6436717a669a2f2465b1e5dd29047bc8ad0ac7af745"
+              },
+              {
+                "url": "http://localhost:6500/assets/canvasAgentOps-DHI18laZ.js",
+                "status": 200,
+                "size": 1761135,
+                "sha256": "256f9b160eca525871c36fc7e708a550d9fd7d4db946dc2d2580669f02e4b03b"
+              }
+            ],
+            "maxTouchPoints": 1,
+            "backend": "DOM/SVG legacy board; only actual HTML canvas contexts counted",
+            "contexts": [
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 300,
+                "height": 150
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              }
+            ]
+          },
+          "errors": [],
+          "windowTouchRegistrations": {
+            "beforePen": [],
+            "armed": [
+              {
+                "key": "touchstart:2:true",
+                "type": "touchstart",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2228.4000000059605
+              },
+              {
+                "key": "touchmove:2:true",
+                "type": "touchmove",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2228.5
+              },
+              {
+                "key": "touchend:2:true",
+                "type": "touchend",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2228.5
+              },
+              {
+                "key": "touchcancel:2:true",
+                "type": "touchcancel",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2228.5
+              }
+            ],
+            "after": []
+          }
+        },
+        {
+          "arm": "pdf-lift-during-pinch-1",
+          "passed": true,
+          "failures": [],
+          "witness": {
+            "host": "pdf",
+            "order": "lift-during-pinch",
+            "beforeZoom": 192,
+            "duringZoom": 192,
+            "penUpZoom": 192,
+            "heldTouchZoom": 192,
+            "persistedPinchStrokes": 2,
+            "persistedNextStrokes": 3,
+            "allPinchStrokesComplete": true,
+            "freshPinchRatio": 2,
+            "laterListenerBlockedReceipts": 0,
+            "leakedReceiptsAfterPenUp": 0,
+            "laterListenerFreshReceipts": 32
+          },
+          "identity": {
+            "build": {
+              "commit": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "ref": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "sourceMode": "unmodified-seam-ref",
+              "mode": "production",
+              "variant": "candidate",
+              "overlays": [],
+              "installPatchApplied": false,
+              "installPatchSha256": "c136cf5d992579a2159ffee89e448e7afb80831a74216f65a784ded87a48c2d4",
+              "mutation": null,
+              "filterSha256": "650e5a030da4dc19f2eb952939aeac34678f2e28bc78679a6404a38cba2d2614",
+              "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61"
+            },
+            "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61",
+            "chrome": "157.0.8103.39",
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            },
+            "dpr": 1,
+            "engine": "legacy-tldraw",
+            "versionMarkers": [
+              "@tldraw/utils@5.2.4",
+              "@tldraw/state@5.2.4",
+              "@tldraw/state-react@5.2.4",
+              "@tldraw/store@5.2.4",
+              "@tldraw/validate@5.2.4",
+              "@tldraw/tlschema@5.2.4",
+              "@tldraw/editor@5.2.4"
+            ],
+            "chunks": [
+              {
+                "url": "http://localhost:6500/assets/PdfAnnotateCanvas-D2TEpFgS.js",
+                "status": 200,
+                "size": 11164,
+                "sha256": "f62a8d86dd6bdb5c02736caaad97f0042bf9607eb3bbe0d870f54a49984e161b"
+              },
+              {
+                "url": "http://localhost:6500/assets/canvasAgentOps-DHI18laZ.js",
+                "status": 200,
+                "size": 1761135,
+                "sha256": "256f9b160eca525871c36fc7e708a550d9fd7d4db946dc2d2580669f02e4b03b"
+              }
+            ],
+            "maxTouchPoints": 1,
+            "backend": "DOM/SVG legacy board; only actual HTML canvas contexts counted",
+            "contexts": [
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 300,
+                "height": 150
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 300,
+                "height": 150
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1224,
+                "height": 1584
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1224,
+                "height": 1584
+              },
+              {
+                "kind": "2d",
+                "width": 1224,
+                "height": 1584
+              },
+              {
+                "kind": "2d",
+                "width": 1224,
+                "height": 1584
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              }
+            ]
+          },
+          "errors": [],
+          "windowTouchRegistrations": {
+            "beforePen": [],
+            "armed": [
+              {
+                "key": "touchstart:2:true",
+                "type": "touchstart",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 4211.0999999940395
+              },
+              {
+                "key": "touchmove:2:true",
+                "type": "touchmove",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 4211.199999988079
+              },
+              {
+                "key": "touchend:2:true",
+                "type": "touchend",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 4211.199999988079
+              },
+              {
+                "key": "touchcancel:2:true",
+                "type": "touchcancel",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 4211.199999988079
+              }
+            ],
+            "after": []
+          }
+        },
+        {
+          "arm": "pdf-move-after-pinch-1",
+          "passed": true,
+          "failures": [],
+          "witness": {
+            "host": "pdf",
+            "order": "move-after-pinch",
+            "beforeZoom": 192,
+            "duringZoom": 192,
+            "penUpZoom": 192,
+            "heldTouchZoom": 192,
+            "persistedPinchStrokes": 2,
+            "persistedNextStrokes": 3,
+            "allPinchStrokesComplete": true,
+            "freshPinchRatio": 2,
+            "laterListenerBlockedReceipts": 0,
+            "leakedReceiptsAfterPenUp": 0,
+            "laterListenerFreshReceipts": 32
+          },
+          "identity": {
+            "build": {
+              "commit": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "ref": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "sourceMode": "unmodified-seam-ref",
+              "mode": "production",
+              "variant": "candidate",
+              "overlays": [],
+              "installPatchApplied": false,
+              "installPatchSha256": "c136cf5d992579a2159ffee89e448e7afb80831a74216f65a784ded87a48c2d4",
+              "mutation": null,
+              "filterSha256": "650e5a030da4dc19f2eb952939aeac34678f2e28bc78679a6404a38cba2d2614",
+              "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61"
+            },
+            "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61",
+            "chrome": "157.0.8103.39",
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            },
+            "dpr": 1,
+            "engine": "legacy-tldraw",
+            "versionMarkers": [
+              "@tldraw/utils@5.2.4",
+              "@tldraw/state@5.2.4",
+              "@tldraw/state-react@5.2.4",
+              "@tldraw/store@5.2.4",
+              "@tldraw/validate@5.2.4",
+              "@tldraw/tlschema@5.2.4",
+              "@tldraw/editor@5.2.4"
+            ],
+            "chunks": [
+              {
+                "url": "http://localhost:6500/assets/PdfAnnotateCanvas-D2TEpFgS.js",
+                "status": 200,
+                "size": 11164,
+                "sha256": "f62a8d86dd6bdb5c02736caaad97f0042bf9607eb3bbe0d870f54a49984e161b"
+              },
+              {
+                "url": "http://localhost:6500/assets/canvasAgentOps-DHI18laZ.js",
+                "status": 200,
+                "size": 1761135,
+                "sha256": "256f9b160eca525871c36fc7e708a550d9fd7d4db946dc2d2580669f02e4b03b"
+              }
+            ],
+            "maxTouchPoints": 1,
+            "backend": "DOM/SVG legacy board; only actual HTML canvas contexts counted",
+            "contexts": [
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 300,
+                "height": 150
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1120,
+                "height": 1449
+              },
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 300,
+                "height": 150
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1224,
+                "height": 1584
+              },
+              {
+                "kind": "2d",
+                "width": 1224,
+                "height": 1584
+              },
+              {
+                "kind": "2d",
+                "width": 1224,
+                "height": 1584
+              },
+              {
+                "kind": "2d",
+                "width": 1224,
+                "height": 1584
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              }
+            ]
+          },
+          "errors": [],
+          "windowTouchRegistrations": {
+            "beforePen": [],
+            "armed": [
+              {
+                "key": "touchstart:2:true",
+                "type": "touchstart",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 4214.5999999940395
+              },
+              {
+                "key": "touchmove:2:true",
+                "type": "touchmove",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 4214.5999999940395
+              },
+              {
+                "key": "touchend:2:true",
+                "type": "touchend",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 4214.5999999940395
+              },
+              {
+                "key": "touchcancel:2:true",
+                "type": "touchcancel",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 4214.5999999940395
+              }
+            ],
+            "after": []
+          }
+        },
+        {
+          "arm": "whiteboard-lift-during-pinch-1",
+          "passed": true,
+          "failures": [],
+          "witness": {
+            "host": "whiteboard",
+            "order": "lift-during-pinch",
+            "beforeZoom": 100,
+            "duringZoom": 100,
+            "penUpZoom": 100,
+            "heldTouchZoom": 100,
+            "persistedPinchStrokes": 2,
+            "persistedNextStrokes": 3,
+            "allPinchStrokesComplete": true,
+            "freshPinchRatio": 2,
+            "laterListenerBlockedReceipts": 0,
+            "leakedReceiptsAfterPenUp": 0,
+            "laterListenerFreshReceipts": 32
+          },
+          "identity": {
+            "build": {
+              "commit": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "ref": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "sourceMode": "unmodified-seam-ref",
+              "mode": "production",
+              "variant": "candidate",
+              "overlays": [],
+              "installPatchApplied": false,
+              "installPatchSha256": "c136cf5d992579a2159ffee89e448e7afb80831a74216f65a784ded87a48c2d4",
+              "mutation": null,
+              "filterSha256": "650e5a030da4dc19f2eb952939aeac34678f2e28bc78679a6404a38cba2d2614",
+              "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61"
+            },
+            "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61",
+            "chrome": "157.0.8103.39",
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            },
+            "dpr": 1,
+            "engine": "legacy-tldraw",
+            "versionMarkers": [
+              "@tldraw/utils@5.2.4",
+              "@tldraw/state@5.2.4",
+              "@tldraw/state-react@5.2.4",
+              "@tldraw/store@5.2.4",
+              "@tldraw/validate@5.2.4",
+              "@tldraw/tlschema@5.2.4",
+              "@tldraw/editor@5.2.4"
+            ],
+            "chunks": [
+              {
+                "url": "http://localhost:6500/assets/DrawingPane-D78evKR3.js",
+                "status": 200,
+                "size": 3123,
+                "sha256": "5fb90942f6cb85050c7403339a3d397d231d40b423746ea106f66f2fc7563d31"
+              },
+              {
+                "url": "http://localhost:6500/assets/canvasAgentOps-DHI18laZ.js",
+                "status": 200,
+                "size": 1761135,
+                "sha256": "256f9b160eca525871c36fc7e708a550d9fd7d4db946dc2d2580669f02e4b03b"
+              }
+            ],
+            "maxTouchPoints": 1,
+            "backend": "DOM/SVG legacy board; only actual HTML canvas contexts counted",
+            "contexts": [
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 300,
+                "height": 150
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              }
+            ]
+          },
+          "errors": [],
+          "windowTouchRegistrations": {
+            "beforePen": [],
+            "armed": [
+              {
+                "key": "touchstart:2:true",
+                "type": "touchstart",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2227.2999999821186
+              },
+              {
+                "key": "touchmove:2:true",
+                "type": "touchmove",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2227.2999999821186
+              },
+              {
+                "key": "touchend:2:true",
+                "type": "touchend",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2227.2999999821186
+              },
+              {
+                "key": "touchcancel:2:true",
+                "type": "touchcancel",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2227.2999999821186
+              }
+            ],
+            "after": []
+          }
+        },
+        {
+          "arm": "whiteboard-move-after-pinch-1",
+          "passed": true,
+          "failures": [],
+          "witness": {
+            "host": "whiteboard",
+            "order": "move-after-pinch",
+            "beforeZoom": 100,
+            "duringZoom": 100,
+            "penUpZoom": 100,
+            "heldTouchZoom": 100,
+            "persistedPinchStrokes": 2,
+            "persistedNextStrokes": 3,
+            "allPinchStrokesComplete": true,
+            "freshPinchRatio": 2,
+            "laterListenerBlockedReceipts": 0,
+            "leakedReceiptsAfterPenUp": 0,
+            "laterListenerFreshReceipts": 32
+          },
+          "identity": {
+            "build": {
+              "commit": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "ref": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "sourceMode": "unmodified-seam-ref",
+              "mode": "production",
+              "variant": "candidate",
+              "overlays": [],
+              "installPatchApplied": false,
+              "installPatchSha256": "c136cf5d992579a2159ffee89e448e7afb80831a74216f65a784ded87a48c2d4",
+              "mutation": null,
+              "filterSha256": "650e5a030da4dc19f2eb952939aeac34678f2e28bc78679a6404a38cba2d2614",
+              "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61"
+            },
+            "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61",
+            "chrome": "157.0.8103.39",
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            },
+            "dpr": 1,
+            "engine": "legacy-tldraw",
+            "versionMarkers": [
+              "@tldraw/utils@5.2.4",
+              "@tldraw/state@5.2.4",
+              "@tldraw/state-react@5.2.4",
+              "@tldraw/store@5.2.4",
+              "@tldraw/validate@5.2.4",
+              "@tldraw/tlschema@5.2.4",
+              "@tldraw/editor@5.2.4"
+            ],
+            "chunks": [
+              {
+                "url": "http://localhost:6500/assets/DrawingPane-D78evKR3.js",
+                "status": 200,
+                "size": 3123,
+                "sha256": "5fb90942f6cb85050c7403339a3d397d231d40b423746ea106f66f2fc7563d31"
+              },
+              {
+                "url": "http://localhost:6500/assets/canvasAgentOps-DHI18laZ.js",
+                "status": 200,
+                "size": 1761135,
+                "sha256": "256f9b160eca525871c36fc7e708a550d9fd7d4db946dc2d2580669f02e4b03b"
+              }
+            ],
+            "maxTouchPoints": 1,
+            "backend": "DOM/SVG legacy board; only actual HTML canvas contexts counted",
+            "contexts": [
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 1,
+                "height": 1
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 8,
+                "height": 8
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 16,
+                "height": 16
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 32,
+                "height": 32
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 64,
+                "height": 64
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 128,
+                "height": 128
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 256,
+                "height": 256
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 512,
+                "height": 512
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 1024,
+                "height": 1024
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 2048,
+                "height": 2048
+              },
+              {
+                "kind": "2d",
+                "width": 300,
+                "height": 150
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              },
+              {
+                "kind": "2d",
+                "width": 1176,
+                "height": 928
+              }
+            ]
+          },
+          "errors": [],
+          "windowTouchRegistrations": {
+            "beforePen": [],
+            "armed": [
+              {
+                "key": "touchstart:2:true",
+                "type": "touchstart",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2217.800000011921
+              },
+              {
+                "key": "touchmove:2:true",
+                "type": "touchmove",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2217.9000000059605
+              },
+              {
+                "key": "touchend:2:true",
+                "type": "touchend",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2217.9000000059605
+              },
+              {
+                "key": "touchcancel:2:true",
+                "type": "touchcancel",
+                "capture": true,
+                "passive": false,
+                "source": "Error\n    at descriptor (<anonymous>:14:15)\n    at proto.addEventListener (<anonymous>:19:21)\n    at p (http://localhost:6500/assets/index-CeZZL9jT.js:78:80385)\n    at u (http://localhost:6500/assets/index-CeZZL9jT.js:78:79718)",
+                "at": 2217.9000000059605
+              }
+            ],
+            "after": []
+          }
+        }
+      ],
       "faults": [],
-      "artifacts": []
+      "artifacts": [
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-lift-during-pinch-1/after-control.png",
+          "bytes": 46976,
+          "sha256": "bfa66e56edeced17fb865d6323d687503b8b29090936d9623a5aad5faffdbf94"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-lift-during-pinch-1/after-next-Reference.notebook",
+          "bytes": 3575,
+          "sha256": "51c041bb33386c86928c82b5b681518e95d9e92d6d1a290106d20046f7958273"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-lift-during-pinch-1/after-pinch-Reference.notebook",
+          "bytes": 3122,
+          "sha256": "8a594e6c0e405d9f824200506c5a171ed783b5fd7280b8dcba1c997a9d04ad75"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-lift-during-pinch-1/baseline-Reference.notebook",
+          "bytes": 2676,
+          "sha256": "192888cfd1a0f909a97a69abd3373b0192fea1ec34abdafa6e8589c1695445b0"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-lift-during-pinch-1/reference-after-pen-up.png",
+          "bytes": 432,
+          "sha256": "aaf38fcb5462c3711b58d6cb2cc54d61b3871c59fa21945d59f99fc67115fd62"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-lift-during-pinch-1/reference-before.png",
+          "bytes": 432,
+          "sha256": "aaf38fcb5462c3711b58d6cb2cc54d61b3871c59fa21945d59f99fc67115fd62"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-lift-during-pinch-1/reference-during.png",
+          "bytes": 432,
+          "sha256": "aaf38fcb5462c3711b58d6cb2cc54d61b3871c59fa21945d59f99fc67115fd62"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-lift-during-pinch-1/result.json",
+          "bytes": 110230,
+          "sha256": "89689db7cac10a831ab7b2300168b62c72b23112d81d8ac834754196f6d23a24"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-move-after-pinch-1/after-control.png",
+          "bytes": 47104,
+          "sha256": "1fd8c7be9e77c1164f8ec6f6834c7da8ddf8fa0b565c09fcf2106d11852dd703"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-move-after-pinch-1/after-next-Reference.notebook",
+          "bytes": 3582,
+          "sha256": "34b7907f31272c8b54896f7c98aaa0c4de9b434f56c945d791b0287b8d730ace"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-move-after-pinch-1/after-pinch-Reference.notebook",
+          "bytes": 3129,
+          "sha256": "981ec7bb54b2c8c04dec58edea8a36badc631e6b6d106100d327135c1ea6e933"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-move-after-pinch-1/baseline-Reference.notebook",
+          "bytes": 2675,
+          "sha256": "cd04add47fe529275fbc9630d0e8838c34a45305b4d3a9370821a6b40578e008"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-move-after-pinch-1/reference-after-pen-up.png",
+          "bytes": 432,
+          "sha256": "aaf38fcb5462c3711b58d6cb2cc54d61b3871c59fa21945d59f99fc67115fd62"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-move-after-pinch-1/reference-before.png",
+          "bytes": 432,
+          "sha256": "aaf38fcb5462c3711b58d6cb2cc54d61b3871c59fa21945d59f99fc67115fd62"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-move-after-pinch-1/reference-during.png",
+          "bytes": 432,
+          "sha256": "aaf38fcb5462c3711b58d6cb2cc54d61b3871c59fa21945d59f99fc67115fd62"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/notebook-move-after-pinch-1/result.json",
+          "bytes": 109947,
+          "sha256": "ef38762ac90448fe89c6ad4bf8e1252dc36dbfe4c703877fb24c544421a1de95"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-lift-during-pinch-1/after-control.png",
+          "bytes": 40694,
+          "sha256": "bb2c1dda73a93de81c0582288d5d8b4a0a59fed6ddb30bd5906e76d5337fc93e"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-lift-during-pinch-1/after-next-Reference.pdf",
+          "bytes": 3921,
+          "sha256": "35445160103c5e4ff88283b5a346c5fbc84632754a32c764aa4f78b76afe65a4"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-lift-during-pinch-1/after-pinch-Reference.pdf",
+          "bytes": 3816,
+          "sha256": "64fb0f5013df92662a2e2fd3ebecd4959a2190318fef9e078db0f63757cb7f95"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-lift-during-pinch-1/baseline-Reference.pdf",
+          "bytes": 3701,
+          "sha256": "e70ab5e9a3b1ac9f407ef62a0c4084a24ca7cea4413806502ce23d649bfa50b9"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-lift-during-pinch-1/reference-after-pen-up.png",
+          "bytes": 367,
+          "sha256": "16651514e8241ca1698ae404f4f0d1446f2a150c414df95a0312a2a16b3700a4"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-lift-during-pinch-1/reference-before.png",
+          "bytes": 367,
+          "sha256": "16651514e8241ca1698ae404f4f0d1446f2a150c414df95a0312a2a16b3700a4"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-lift-during-pinch-1/reference-during.png",
+          "bytes": 367,
+          "sha256": "16651514e8241ca1698ae404f4f0d1446f2a150c414df95a0312a2a16b3700a4"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-lift-during-pinch-1/result.json",
+          "bytes": 111850,
+          "sha256": "0b7733e42ad3d7ad4b2ca752c5ccf7be76dec4489e66f0aaa62bca0afc4ff80f"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-move-after-pinch-1/after-control.png",
+          "bytes": 40818,
+          "sha256": "c3d2d510f6ba408416e101df2e13b546599aa2e6a930bd4c3fd355e120024235"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-move-after-pinch-1/after-next-Reference.pdf",
+          "bytes": 3949,
+          "sha256": "e3d22ac2c111ac0eac7564ce5825e5bbe4b680f26eddead53e80150e67845306"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-move-after-pinch-1/after-pinch-Reference.pdf",
+          "bytes": 3842,
+          "sha256": "3085844cb590f25239095181199b9680b1fd344652d142d54d3b79c5151ae6e0"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-move-after-pinch-1/baseline-Reference.pdf",
+          "bytes": 3701,
+          "sha256": "b960a8c6296bd1bbdc66e75005d0c8bd19824b02ead48d8ac4ca39e7096b21ab"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-move-after-pinch-1/reference-after-pen-up.png",
+          "bytes": 367,
+          "sha256": "16651514e8241ca1698ae404f4f0d1446f2a150c414df95a0312a2a16b3700a4"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-move-after-pinch-1/reference-before.png",
+          "bytes": 367,
+          "sha256": "16651514e8241ca1698ae404f4f0d1446f2a150c414df95a0312a2a16b3700a4"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-move-after-pinch-1/reference-during.png",
+          "bytes": 367,
+          "sha256": "16651514e8241ca1698ae404f4f0d1446f2a150c414df95a0312a2a16b3700a4"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/pdf-move-after-pinch-1/result.json",
+          "bytes": 112400,
+          "sha256": "757f4a8bc21747dfe5b8c8388e61ac46616c73446e85ab18c8192db729a054c9"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-lift-during-pinch-1/after-control.png",
+          "bytes": 38850,
+          "sha256": "bebd24b40ed94d66532b3f9b315127131e125d0ae4e8f5950efde9c717e425e5"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-lift-during-pinch-1/after-next-Reference.tldraw",
+          "bytes": 2840,
+          "sha256": "0a971d8efb0790d7ed1749daff793e2570b6c4715caf516cc56e0d3f4fe981b1"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-lift-during-pinch-1/after-pinch-Reference.tldraw",
+          "bytes": 2388,
+          "sha256": "96fc90705dd44a1ca1ffb7ec96f715f3903a3e0c0fdfd313f4c73df4ee232c90"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-lift-during-pinch-1/baseline-Reference.tldraw",
+          "bytes": 1944,
+          "sha256": "6b6f4f8d6980ca27d23ae88554c51ca4d16a36405946e83f3173ccc1dccef7da"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-lift-during-pinch-1/reference-after-pen-up.png",
+          "bytes": 322,
+          "sha256": "9441f4f30b5b26726289238efd2e42fb7a32394c87b773236339d086cc91f16b"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-lift-during-pinch-1/reference-before.png",
+          "bytes": 322,
+          "sha256": "9441f4f30b5b26726289238efd2e42fb7a32394c87b773236339d086cc91f16b"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-lift-during-pinch-1/reference-during.png",
+          "bytes": 322,
+          "sha256": "9441f4f30b5b26726289238efd2e42fb7a32394c87b773236339d086cc91f16b"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-lift-during-pinch-1/result.json",
+          "bytes": 104779,
+          "sha256": "04596818dac913beef6dd4caef52c1d09312f6d5873a7ff43b33b4e0eaa5e027"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-move-after-pinch-1/after-control.png",
+          "bytes": 38970,
+          "sha256": "76a9c86c1941a193f206e5b0a6749a68a52b6b66ddc027b723562f6200706c65"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-move-after-pinch-1/after-next-Reference.tldraw",
+          "bytes": 2848,
+          "sha256": "c087659c4396770c4c9957547f584c695e23e63ddd89a362b9002ad665e491d3"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-move-after-pinch-1/after-pinch-Reference.tldraw",
+          "bytes": 2396,
+          "sha256": "759fab5cbc35fcc282a95684bc4b87b0214c12f30e3e12ace8b02713f33f06c2"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-move-after-pinch-1/baseline-Reference.tldraw",
+          "bytes": 1944,
+          "sha256": "8df0ffb667a8392c7a6485c0046b301a659ff5c9db03ab678c27ea8886672f34"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-move-after-pinch-1/reference-after-pen-up.png",
+          "bytes": 322,
+          "sha256": "9441f4f30b5b26726289238efd2e42fb7a32394c87b773236339d086cc91f16b"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-move-after-pinch-1/reference-before.png",
+          "bytes": 322,
+          "sha256": "9441f4f30b5b26726289238efd2e42fb7a32394c87b773236339d086cc91f16b"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-move-after-pinch-1/reference-during.png",
+          "bytes": 322,
+          "sha256": "9441f4f30b5b26726289238efd2e42fb7a32394c87b773236339d086cc91f16b"
+        },
+        {
+          "path": "evidence/seam/reference/W-12/gate/whiteboard-move-after-pinch-1/result.json",
+          "bytes": 105197,
+          "sha256": "550000c28467def3f6cc278826ab2c85e2431cbdba1832212db23f9aca07aa37"
+        }
+      ]
     },
     "seam-lazy": {
       "name": "seam-lazy",
-      "results": [],
+      "results": [
+        {
+          "arm": "markdown-only-1",
+          "passed": true,
+          "witness": {
+            "outsidePenTouchesDelivered": 4,
+            "legacyRoots": 0,
+            "noteWrites": 0,
+            "idleNonPassiveWindowTouchListeners": 0
+          },
+          "identity": {
+            "build": {
+              "commit": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "ref": "b326afdeb55b979403936341f9c3ca46432e87d5",
+              "sourceMode": "unmodified-seam-ref",
+              "mode": "production",
+              "variant": "candidate",
+              "overlays": [],
+              "installPatchApplied": false,
+              "installPatchSha256": "c136cf5d992579a2159ffee89e448e7afb80831a74216f65a784ded87a48c2d4",
+              "mutation": null,
+              "filterSha256": "650e5a030da4dc19f2eb952939aeac34678f2e28bc78679a6404a38cba2d2614",
+              "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61"
+            },
+            "indexSha256": "74cf5f0999469d0894b9f255d99f72c478bf08007fb4e267df53ce49ad2c9c61",
+            "chrome": "157.0.8103.39",
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            },
+            "dpr": 1,
+            "engine": "not-loaded",
+            "versionMarkers": [],
+            "chunks": [],
+            "maxTouchPoints": 1,
+            "backend": "no canvas engine mounted",
+            "contexts": []
+          },
+          "errors": []
+        }
+      ],
       "faults": [],
-      "artifacts": []
+      "artifacts": [
+        {
+          "path": "evidence/seam-lazy/reference/W-12-lazy/gate/markdown-only-1/markdown-only.png",
+          "bytes": 30036,
+          "sha256": "955ce0ef6ee56e66cd0e961c20200fe35556ba385678f426c50aeb2a1e1ab7af"
+        },
+        {
+          "path": "evidence/seam-lazy/reference/W-12-lazy/gate/markdown-only-1/result.json",
+          "bytes": 10279,
+          "sha256": "992fa187220bfa557f1197930aa1e9d17157cabe161cc5967368ed54057eea54"
+        },
+        {
+          "path": "evidence/seam-lazy/reference/W-12-lazy/gate/markdown-only-1/window-touch-registrations.json",
+          "bytes": 4365,
+          "sha256": "2045b226ad60594599286a60e062122b99d8a72e3fc6e956f9dac7f7c3d54a5d"
+        }
+      ]
     }
   },
   "scripts": [

@@ -28,6 +28,8 @@ Switching vaults puts away the notes you had open (saving anything unsaved first
 
 Because all of that lives in this browser rather than on a server, a browser short of space is allowed to clear it: your vault list (the permission to reach those folders, which is the part you cannot simply retype), your open tabs and your settings. **Settings → Vault → "Keep this data on this device"** says which footing you are on and asks the browser to keep it. Browsers grant that to sites you use often rather than on request, so if it says no, it is worth asking again after a few more visits, or installing this app from the address bar. Your folders themselves are never at risk — they are files on your disk, and the worst case is finding them in the folder picker again.
 
+If another window resets this app’s local settings, a separate browser-local backup restores your settings, open-tab sessions and saved reading positions automatically. A status-line message says **Settings restored after another tab reset them**; a reset discovered while opening the app may reload it once before your workspace appears. This backup does not survive clearing all of the site’s browser data.
+
 ### Security & Permissions
 Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
 
@@ -369,6 +371,12 @@ Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
 switch tabs, close the file or reload the app.
 
+A drawing or notebook this version cannot read safely — an unreadable file, one
+written in a newer format, or one that is not the kind its name says — **opens
+read-only**: neither drawing on it nor Save can overwrite the original file. An
+empty file is still a valid new board, and every supported drawing and notebook
+opens and saves as usual.
+
 ### Inverting a Picture You Brought Over
 Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
 
@@ -432,7 +440,9 @@ back where it started.
 
 A PDF you have already written on is left alone, with a note saying so. Your
 marks are drawn against the pages as they are, and turning the paper would move
-every one of them — so straighten a scan before you start annotating it.
+every one of them — so straighten a scan before you start annotating it. Only a
+plain PDF turns: a notebook's export, or a PDF whose embedded attachments are not
+ones this app can read, is left alone too, and its note says what to do instead.
 
 \`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
 **writing on it** — the same toggle every other file has. Draw on it as you would
@@ -454,6 +464,16 @@ which is what lets you come back days later and move, recolour or erase a mark
 rather than being stuck with it. It is also why annotating never builds up:
 every save redraws from that pristine copy, so the marks never thicken or
 double no matter how many times you edit.
+
+**A PDF that cannot be written on safely stays read-only.** Before the pen opens,
+the app checks what the file actually carries, not its name. A PDF holding an
+unrelated \`original.pdf\`, attachments that cannot be read or that contradict each
+other, or annotations written by a newer version stays in the reader with a note
+saying it is read-only; drawing and saving change nothing in it. You can still
+read, select, copy and find in it, and open its Text. Choose **Retry** if an
+attachment could not be read; otherwise open it in a version of the app that wrote
+it, or recover the annotations first. Never delete attachments from your only copy
+just to make the note go away.
 
 Everything around a page — the toolbars, the pen panel, the space the pages sit
 on — follows the app's theme, so a notebook or a PDF is dark at night like the

@@ -67,7 +67,8 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             try {
                 accessible = createBoardAccessibilityDom({ runtime: options.runtime, engine: options.engine, surface, overlay,
                     current: () => options.current(options.token), visible: options.visible,
-                    schedule: callback => input.schedule(callback), reveal: id => { if (id) options.engine.focusNode(id); }, error: options.onError });
+                    schedule: callback => input.schedule(callback), reveal: id => { if (id) options.engine.focusNode(id); },
+                    contextMenu: event => binding!.openMenu(event), error: options.onError });
                 importer = createNativeImportAdapter(binding, options.runtime, () => options.current(options.token) && options.host.canWrite(options.identity), options.onError);
                 const keyboardNavigation = createBoardKeyboardNavigation({ runtime: options.runtime, camera: options.camera,
                     viewport: options.viewport, paged: options.paged, current: () => options.current(options.token) && options.visible(),

@@ -1,6 +1,7 @@
 import { LocalCurveBuilder, type CurvePublication } from '../ink/curve'
 import type { SampleBuilder, SampleBuilderOptions, SampleSequence } from '../ink/samples'
 import type { FinishReason, GestureOwner, Modifiers, RealSample, Tool } from './tool'
+import type { PredictedPoint } from './prediction'
 
 export interface InkIdentity {
   readonly nodeId: string
@@ -96,6 +97,20 @@ export class LiveInk implements GestureOwner {
     this.snapshot = this.builder.publish(predicted ?? undefined)
     this.dirty = false
     this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, curve: this.snapshot, dry: null })
+  }
+
+  suspend(): void { this.publish(null) }
+
+  publishPrediction(points: readonly PredictedPoint[]): void {
+    if (this.ended || !this.last) return
+    if (!points.length) { this.publish(null); return }
+    const last = this.last
+    const local = points.map(point => this.context.toLocal({ ...last, x: point.x, y: point.y, time: point.time }))
+    const predicted: SampleSequence = {
+      count: local.length, x: i => local[i].x, y: i => local[i].y,
+      pressure: () => undefined, segmentKind: () => 'freehand',
+    }
+    this.publish(predicted)
   }
 
   finish(reason: FinishReason): void {

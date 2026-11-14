@@ -54,6 +54,7 @@ export class InputRouter<Context> {
   suspendInk(token: InputToken, pan: InkPanSuspension): boolean {
     if (!this.isCurrent(token) || this.owner?.kind !== 'ink' || !this.lastReal || this.suspended) return false
     pan.begin(this.lastReal)
+    this.owner.suspend?.()
     this.suspended = pan
     return true
   }

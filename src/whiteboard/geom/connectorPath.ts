@@ -4,6 +4,7 @@ import { ContourClipper, type ClipInterval } from './clip';
 import type { AttachmentSurface, ConnectorBody } from './connectorTypes';
 import { connectorBodyPoint, connectorBodyTangent } from './connectors';
 import { arcToCubics, type PathOp, type Vec2 } from './path';
+import { areSimpleConnectorPolygons, exactConnectorLineCrossings } from './connectorExactClip';
 
 export function bodyLength(body: ConnectorBody): number {
     if (!Number.isFinite(body.length) || body.length < 0) throw new RangeError('Invalid connector body length');
@@ -80,6 +81,8 @@ export function* bodyCrossingSteps(body: ConnectorBody, surface: AttachmentSurfa
         result.push({ distance, entering });
     };
     if (body.kind === 'line') {
+        const contours = [surface, ...surface.clips];
+        if (yield* areSimpleConnectorPolygons(contours)) return yield* exactConnectorLineCrossings(body.start, body.end, length, contours, error, maxPieces);
         const intervals = clipped(body.start, body.end, surfaces, maxPieces);
         for (let i = 0; i < intervals.length; i++) {
             const interval = intervals[i];

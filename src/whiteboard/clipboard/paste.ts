@@ -5,6 +5,7 @@ import { decodeLegacyClipboard, type LegacyClipboardDecodeLease } from '../host/
 import { readExcalidrawClipboard } from '../host/excalidrawClipboard';
 import { inspectMedia } from '../media/inspect';
 import type { MediaIngestor } from '../media/ingest';
+import type { EmbedManifest } from '../media/embed';
 import type { MediaEntry, MediaId } from '../model/media';
 import { newSheetId, type NodeId } from '../model/ids';
 import type { Attachment } from '../model/nodes';
@@ -46,6 +47,7 @@ export interface BoardClipboardPasteHost {
     readonly receivingBoardId: string;
     readonly cameraZoom: number;
     readonly embedEnvironment?: UrlEnvironment;
+    readonly embedManifest?: EmbedManifest;
     current(target: Readonly<ClipboardTarget>): boolean;
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
@@ -82,7 +84,7 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
         const noticeMissing = (ids: readonly MediaId[]) => host.notice(`${ids.length} clipboard media item(s) are missing; placeholders were pasted.`);
         const base = { runtime, target: captured, intent, current: host.current, receivingBoardId: host.receivingBoardId,
             cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment ?? { appOrigin: host.classifier.appOrigin },
-            noticeMissing, cooperate: host.cooperate };
+            embedManifest: host.embedManifest, noticeMissing, cooperate: host.cooperate };
         if (classification.kind === 'private') return pastePrivateClipboardInJob({ ...base, memory: host.memory, encoded: classification.encoded,
             plain: copied.text ?? '', cache: host.cache, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
         if (classification.kind === 'text' || classification.kind === 'url') {

@@ -58,6 +58,7 @@ export interface BoardSessionFactoryOptions {
     /** Pin media restoration and, for PDF ink, display lists against the same revision synchronously. */
     readonly captureBuild?: (revision: number) => BoardBuildCapture;
     readonly pinBuild: (base: SerializerCheckpoint, revision: number, context: unknown) => PinnedBoardBuild;
+    readonly afterWritten?: (revision: number, context: unknown) => void | Promise<void>;
     readonly onFailure: (error: unknown) => void;
 }
 

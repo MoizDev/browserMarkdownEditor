@@ -27,7 +27,7 @@ export class ScenePackedRebuild {
 
     constructor(private readonly index: HybridIndex, private readonly columns: SceneColumns,
         private readonly unbounded: ReadonlySet<number>, private readonly identity: { session: string; epoch: number },
-        private readonly onError: (error: unknown) => void) {
+        private readonly onError: (error: unknown) => void, private readonly onReady?: () => void) {
         if (!validBoardIdentity({ ...identity, revision: 0 })) throw new TypeError('Invalid scene worker identity');
         this.client = createWorkerClient({ name: `scene-packed-${++nextRebuild}`, protocol: 1,
             spawn: () => new Worker(new URL('../workers/geometry.worker.ts', import.meta.url), { type: 'module' }) });
@@ -38,16 +38,22 @@ export class ScenePackedRebuild {
         this.slots = undefined; this.generations = undefined; this.versions = undefined; this.bounds = undefined; this.ready = undefined;
         this.phase = 'idle';
     }
+    private report(error: unknown): void {
+        try { this.onError(error); } catch { /* a reporting callback cannot reject a worker promise */ }
+    }
+    private wake(): void {
+        try { this.onReady?.(); } catch (error) { this.report(error); }
+    }
     private fail(error: unknown): void {
         this.sequence++;
         this.controller?.abort();
         this.clear();
-        this.onError(error);
+        this.report(error); this.wake();
     }
     start(signal?: AbortSignal): void {
         if (this.disposed) throw new Error('Scene rebuild is disposed');
         if (this.phase !== 'idle') throw new Error('Scene rebuild is already active');
-        if (signal?.aborted) { this.onError(signal.reason ?? new DOMException('Scene rebuild cancelled', 'AbortError')); return; }
+        if (signal?.aborted) { this.fail(signal.reason ?? new DOMException('Scene rebuild cancelled', 'AbortError')); return; }
         this.sequence++;
         this.controller = new AbortController();
         this.external = signal;
@@ -82,6 +88,7 @@ export class ScenePackedRebuild {
             }
             this.ready = PackedTree.fromData(data);
             this.phase = 'ready';
+            this.wake();
         }).catch(error => { if (!this.disposed && sequence === this.sequence) this.fail(error); });
     }
     step(maxWork: number): 'idle' | 'pending' | 'complete' {

@@ -95,9 +95,9 @@ and **one** module-level store; `App` reads it with `useSyncExternalStore` and r
   attempted.
 - **A menu row closes over a view or a tree node**, so `App` closes the menu whenever `mainView` or
   `rootHandle` changes — both of those unmount the things the rows act on.
-- **The flyout hosts TWO pickers now** — `kind: 'grid'` (table size) and
-  `kind: 'entry-style'` (a file's or folder's icon and colour), so the state is `flyout`, not `grid`, and the
-  row branch takes both kinds while the panel branch chooses the component. Entry types stay PLAIN
+- **The flyout hosts two pickers and command submenus** — `kind: 'grid'` (table size),
+  `kind: 'entry-style'` (a file's or folder's icon and colour), and `kind: 'submenu'` (plain command
+  rows used by board menus). The row branch opens the flyout and the panel branch chooses its content. Entry types stay PLAIN
   DATA: `utils/contextMenu.ts` is React-free because `src/editor/` raises this menu, so a row carries
   values and a callback, never a node to render. The style picker is `React.lazy` — it is the only
   route to the 1,818-icon Lucide set, and that is what keeps it out of the main bundle. It also does

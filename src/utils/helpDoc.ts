@@ -320,7 +320,9 @@ A notebook scrolls like a PDF: swipe up and down to move through the pages, and
 pinch to zoom. At full width the page fills the screen edge to edge, and the
 pages can never be swiped off screen. The page box at the bottom right jumps to
 a page, and the button beside it opens a **strip of page thumbnails** down the
-left, showing what is written on each one.
+left, showing what is written on each one. The canvas sheet menu offers separate
+sheets of ink; each sheet shows the notebook's same paper underneath. PDF
+annotation sheets similarly share the original PDF pages.
 
 The bar across the top of a notebook is its paper:
 

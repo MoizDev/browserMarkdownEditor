@@ -11,6 +11,8 @@ import type { ScheduledFrame } from './scheduler';
 
 type Domain = { readonly rects: readonly Readonly<RectI>[]; readonly vector: boolean };
 type Kind = 'current' | 'standin' | 'none';
+export const managers = new WeakMap<object, BenchmarkCanvas2D>();
+export const coverageKinds = new WeakMap<object, Kind>();
 interface Witness {
     readonly canvas: HTMLCanvasElement;
     readonly context: CanvasRenderingContext2D;

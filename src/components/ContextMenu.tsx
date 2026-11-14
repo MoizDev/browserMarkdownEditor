@@ -409,6 +409,8 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                 className="context-menu"
                 role="menu"
                 aria-label={request.label}
+                lang={request.lang}
+                dir={request.dir}
                 // Focusable only as the fallback for a menu whose every row is
                 // disabled; -1 keeps it out of the Tab order.
                 tabIndex={-1}
@@ -521,6 +523,8 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                     <div
                         ref={panelRef}
                         className="context-menu-panel"
+                        lang={request.lang}
+                        dir={request.dir}
                         style={{
                             position: 'fixed',
                             left: panelPos ? panelPos.left : 0,

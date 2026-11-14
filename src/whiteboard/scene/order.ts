@@ -109,6 +109,32 @@ export class PaintOrder {
             if (parent < sheet.fenwick.length) sheet.fenwick[parent] += sheet.fenwick[index];
         }
     }
+    /** Cold construction only; callers seal before exposing ranks or accepting edits. */
+    appendBootstrap(sheetId: number, input: ArrayLike<number>, first: number, count: number): void {
+        if (!Number.isInteger(count) || count < 0 || count > PAINT_ORDER_CHUNK || first < 0 || first + count > input.length) throw new RangeError('Invalid bootstrap order chunk');
+        if (!count) return;
+        let sheet = this.sheets.get(sheetId);
+        if (!sheet) { sheet = { blocks: [], fenwick: new Uint32Array(1), size: 0 }; this.sheets.set(sheetId, sheet); }
+        if (this.nextBlock > 0x7fffffff) throw new RangeError('Paint-order chunk identifiers exhausted');
+        const slots = new Uint32Array(PAINT_ORDER_CHUNK), id = this.nextBlock++;
+        for (let i = 0; i < count; i++) {
+            const slot = input[first + i];
+            if (!Number.isInteger(slot) || slot < 0 || slot > 0x7fffffff || this.has(slot)) throw new RangeError('Duplicate or invalid bootstrap slot');
+            this.reserve(slot + 1); slots[i] = slot; this.locations[slot] = id; this.offsets[slot] = i;
+        }
+        const block: Block = { id, sheet: sheetId, slots, count, index: sheet.blocks.length };
+        sheet.blocks.push(block); sheet.size += count; this.blocks.set(id, block);
+    }
+    sealBootstrap(sheetId: number): void {
+        const sheet = this.sheets.get(sheetId);
+        if (!sheet) return;
+        sheet.fenwick = new Uint32Array(sheet.blocks.length + 1);
+        for (let i = 0; i < sheet.blocks.length; i++) {
+            const index = i + 1, parent = index + (index & -index);
+            sheet.fenwick[index] += sheet.blocks[i].count;
+            if (parent < sheet.fenwick.length) sheet.fenwick[parent] += sheet.fenwick[index];
+        }
+    }
     remove(sheet: number, first: number, count: number): void { this.splice(sheet, first, count, EMPTY); }
     *chunks(sheet: number): Iterable<PaintOrderChunk> {
         for (const block of this.sheets.get(sheet)?.blocks ?? []) yield block;

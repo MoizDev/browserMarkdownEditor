@@ -24,8 +24,18 @@ import { inspectPdfVisualDoc } from './pdfVisualPreflight';
 import type { PdfInkSourceLease } from './pdfInkSourceOwner';
 import type { BoardRuntime } from './runtime';
 
+/** The canonical parts an export reads: a live BoardRuntime supplies them, and so does an immutable closed
+ * source with its own real scene, render services and media. Nothing here needs a camera or a live store. */
+export type NativeExportRuntime = Readonly<{
+    session: Pick<BoardRuntime['session'], 'doc' | 'owner'>;
+    scene: BoardRuntime['scene'];
+    selection: Pick<BoardRuntime['selection'], 'getSnapshot'>;
+    render: BoardRuntime['render'];
+    media: BoardRuntime['media'];
+}>;
+
 export interface NativeExportOptions {
-    readonly runtime: BoardRuntime;
+    readonly runtime: NativeExportRuntime;
     readonly route: Extract<ExportRoute, 'copy' | 'context' | 'menu'>;
     readonly boardName: string;
     readonly theme: 'light' | 'dark';

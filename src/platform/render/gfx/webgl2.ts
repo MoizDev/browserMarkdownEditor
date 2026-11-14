@@ -714,13 +714,20 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.#usable();
             if (combined.aborted) throw new ArenaError('aborted');
             const straight = new Uint8ClampedArray(rect.width * rect.height * 4);
+            let deadline = performance.now() + RENDER_CONSTANTS.frameTargetMaxMs;
             for (let y = 0; y < rect.height; y++) {
+                if (combined.aborted) throw new ArenaError('aborted');
                 for (let x = 0; x < rect.width; x++) {
                     const from = (y * rect.width + x) * 4;
                     const to = ((rect.height - 1 - y) * rect.width + x) * 4;
                     const alpha = raw.bytes[from + 3];
                     for (let c = 0; c < 3; c++) straight[to + c] = alpha ? Math.min(255, Math.round(raw.bytes[from + c] * 255 / alpha)) : 0;
                     straight[to + 3] = alpha;
+                }
+                if (y + 1 < rect.height && performance.now() >= deadline) {
+                    await this.#nextPoll(combined);
+                    this.#usable();
+                    deadline = performance.now() + RENDER_CONSTANTS.frameTargetMaxMs;
                 }
             }
             const bitmap = await createImageBitmap(new ImageData(straight, rect.width, rect.height, { colorSpace: 'srgb' }), {

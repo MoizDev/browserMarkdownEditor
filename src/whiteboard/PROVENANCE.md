@@ -70,7 +70,7 @@ third-party code included (normally "none") · date.
 | `agent/createInk.ts` | w-p | F-AGENT-002/003/013/015, C8 | integration §9, ink §2 | Agent spec, sample store and public geometry/model APIs; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/update.ts` | w-p | F-AGENT-004/012, WB-D10, C8 | integration §9, document-model §§3/7 | Agent specification and model/change/style metrics APIs; placement delegated to authoritative staged geometry; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/stage.ts` | w-p, w-j | F-AGENT-002/003/004/005/012, WB-D10, R-11, C8 | integration §9 | Agent specification and public model/change APIs, refuses unchanged updates and delegates protected deletion and authoritative geometry; no tldraw or old canvas source | none | 2026-11-13 |
-| `agent/closed.ts` | w-p | F-AGENT-001/011, WB-D11, C8 | integration §9, native-format read | Agent specification and native reader/sample lease APIs; C5 admission supplied by session host; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/closed.ts` | w-p, w-j | F-AGENT-001/011, WB-D11, C8 | integration §9, native-format read | Agent specification and native reader/sample lease APIs; asynchronous C5 admission supplied by session host, with lease cleanup on cancellation; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/adapter.ts` | w-p, w-j | F-AGENT-001/002/003/004/005/012/013, WB-D10/11/12, C8 | integration §9 | Agent specification and session, change and scene provider contracts with post-commit projection; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/camera.ts` | w-p | F-AGENT-010, C8, C1 | integration §9; platform camera contract | Agent and platform camera conventions; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/placement.ts` | w-p | F-AGENT-004/013, WB-D10, C8 | integration §9; document-model transform | C8 centre-based rectangle semantics and public model/page APIs; local box supplied by shared geometry; no tldraw or old canvas source | none | 2026-11-13 |
@@ -194,11 +194,12 @@ third-party code included (normally "none") · date.
 | `export/prepareRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; rendering §3 | Shared reference geometry jobs, text passthrough and image leases; cancellable pinned resources; no tldraw source | none | 2026-11-13 |
 | `export/capturePng.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; pinned capture preparation, worker identity and lease cleanup; no tldraw source | none | 2026-11-13 |
 | `export/exportImage.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §5 | Export design; admitted origin-clean image leases, embedded source or normalized PNG, baked inversion; no tldraw source | none | 2026-11-13 |
-| `export/captureSvg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5 | Pinned frame, optional opaque background and self-contained SVG serialization; no tldraw source | none | 2026-11-13 |
-| `export/capturePdf.ts` | lane w-k | F-EXPORT-004/005; EX-2/3/4 | export §§2, 6; PDF writing §3 | One pinned revision across all pages, page-local projection and injected PDF domain writer; no tldraw source | none | 2026-11-13 |
+| `export/captureSvg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5 | Pinned frame, explicit TX-6 text port, optional background and SVG serialization; no tldraw source | none | 2026-11-13 |
+| `export/capturePdf.ts` | lane w-k | F-EXPORT-004/005; EX-2/3/4 | export §§2, 6; PDF writing §3 | Pinned revision, TX-6 text port, page-local projection and injected PDF domain writer; no tldraw source | none | 2026-11-13 |
 | `export/captureFrame.ts` | lane w-k | F-EXPORT-001/002/003/004; EX-2/3/5 | export §§2–3; rendering §3 | Shared paint stream, immutable scene capture, sliced admission and stale/cancelled partial-frame rejection; no tldraw source | none | 2026-11-13 |
-| `export/streamPage.ts` | lane w-k | F-EXPORT-003/004/005; EX-2/3/4 | export §§2, 6; rendering §3 | Bounded paint-stream chunks, explicit TX-6 port, page clipping and ordered one-page output; no tldraw source | none | 2026-11-13 |
-| `export/streamSvg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; platform C5 | Bounded paint-stream conversion, transferable image copies, stale and cancellation cleanup; no tldraw source | none | 2026-11-13 |
+| `export/streamPage.ts` | lane w-k | F-EXPORT-003/004/005; EX-2/3/4 | export §§2, 6; rendering §3 | Bounded paint chunks, TX-6 worker text, page clipping and ordered one-page output; no tldraw source | none | 2026-11-13 |
+| `export/streamSvg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; platform C5 | Bounded paint chunks, TX-6 worker text, transferable images and cancellation cleanup; no tldraw source | none | 2026-11-13 |
+| `export/textResolver.ts` | lane w-k | F-EXPORT-001/003/004; EX-2/3/4 | export §§4, 6; text §8; platform C5 | Revision-pinned TX-6 worker text outline and fallback port; no tldraw source | none | 2026-11-13 |
 | `export/streamPdf.ts` | lane w-k | F-EXPORT-004/005; EX-2/3/4 | export §§2, 6; PDF writing §3 | One pinned revision, incrementally assembled page display lists and injected PDF writer; no tldraw source | none | 2026-11-13 |
 | `export/snapshot.ts` | lane w-k | F-EXPORT-001/002/003/004; EX-2/3/5 | export §2 | One revision/media lease, identity validation and cleanup across asynchronous capture; no tldraw source | none | 2026-11-13 |
 | `export/snapshotExport.ts` | lane w-k | F-EXPORT-001/002/003; EX-2/3/5 | export §§2–5 | Pinned snapshot to shared-worker raster PNG and streamed SVG; no tldraw source | none | 2026-11-13 |
@@ -260,6 +261,7 @@ third-party code included (normally "none") · date.
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |
 | `geom/arrange.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7; arrange spec | Design; world bounds, equal edge gaps, stable shelf pack with max-capacity tree | none | 2026-11-13 |
 | `geom/arrangement.types.ts` | lane w-g | GE-4; F-ARR-006/007/009/010 | geometry §6.6–6.7 | Design; selection bounds and shared page geometry service contracts | none | 2026-11-13 |
+| `geom/arrangement.ts` | lane w-g | GE-4; F-ARR-006/007/009/010 | geometry §6.6–6.7 | Design; roots-only world placement compiled into one ordinary transaction | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 | `ink/pick.ts` | lane w-g | GE-3 | geometry §5.2; ink §6.2 | Export existing w-e affine capsule-distance primitive for shared path picking | none | 2026-11-13 |
@@ -285,6 +287,7 @@ third-party code included (normally "none") · date.
 | `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector body, arrowhead, incident-end, atomic-detach and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
 | `geom/heads.ts` | lane w-h | F-CONN-001, WB-D20, E-GEO-5/25 | geometry §8.3 | Independent head recipes, shared width metric and certified arc conversion; no tldraw source | none | 2026-11-13 |
 | `geom/connectors.ts` | lane w-h | F-CONN-001, E-GEO-5/6 | geometry §8.2 | Signed-sagitta circle construction and shared certified arc conversion from design; no tldraw source | none | 2026-11-13 |
+| `geom/attachments.ts` | lane w-h | F-CONN-004, E-GEO-14/16 | geometry §§8.1, 8.5 | Model-owned reverse index and last-painted-tip detach transaction contract; no tldraw source | none | 2026-11-13 |
 | `geom/polylines.ts` | lane w-h | F-LINE-001/003/004 | geometry §9 | Independent chord-weighted Hermite recipe from design, ordered model handles; no tldraw source | none | 2026-11-13 |
 | `geom/providers.ts` | lane w-h | F-FIG-001, F-STICKY-001, F-FRAME-001, F-LINE-001/003/004, WB-D20/24, E-GEO-8/35 | geometry §§1, 3, 5, 9; text §6 | Figure, polyline and container geometry, font-epoch pending geometry, transformed contour bounds, text-owned layout, ink-owned resumable picking, node-local hatch, platform path conversion and scene bounds; no tldraw source | none | 2026-11-13 |
 
@@ -315,6 +318,8 @@ third-party code included (normally "none") · date.
 | `media/residency.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §§4–5/8–9; C4 | Renderer PaintImageProvider, local-only source validation, shared worker priorities and memory leases | none | 2026-11-13 |
 | `media/animation.ts` | lane w-q | F-MEDIA-011; SEC-4 | media §5 | Largest-eight visible animation scheduler; hide pauses until current frame reloads | none | 2026-11-13 |
 | `clipboard/types.ts` | lane w-q | F-CLIP-002/003/005/010; F-DROP-001/005; SEC-8 | clipboard §§3–6/9 | Fixed-shape transfer, placement and text-editor interfaces | none | 2026-11-13 |
+| `clipboard/transfer.ts` | lane w-q | F-DROP-001/003/005/007; SEC-8 | clipboard §§3/9 | Synchronous browser transfer capture and Files/URI drag acceptance | none | 2026-11-13 |
+| `clipboard/classify.ts` | lane w-q | F-CLIP-005/007/012; F-DROP-003/004; SEC-8 | clipboard §3 | Classification order, security URL policy and isolated HTML/worker ports | none | 2026-11-13 |
 | `clipboard/rendition.ts` | lane w-q | F-CLIP-001; SEC-10 | clipboard §2.3; text §4.1 | Fixed-shape rich text projection with inert DOM node construction | none | 2026-11-13 |
 | `clipboard/snapshot.ts` | lane w-q | F-CLIP-001/004; SEC-8/10 | clipboard §§2.1–2.3/2.5 | Model graph, native encoder, sample/media leases, revision and text-selection guards; opaque exclusion ruling | none | 2026-11-13 |
 | `clipboard/encode.ts` | lane w-q | F-CLIP-001; SEC-10 | clipboard §§2.1–2.3/7 | Native payload, bounded inline bytes, browser CompressionStream and opaque cache-only ruling | none | 2026-11-13 |

@@ -184,7 +184,9 @@ export class BoardTextLayout implements TextLayoutEngine {
                 }
                 const pieces = this.visual(last.block, last.from, fit, this.pieces(last.block, last.from, fit, request, size, last.heading));
                 const item: TextItem = { from: fit, to: fit, level: last.block.bidi.level, marks: {} };
-                const marker: Piece = { from: fit, to: fit, item, face, ink: style.ink, text: ellipsis, width: ellipsisWidth, fallback: true };
+                const ellipsisFace = this.faces[face];
+                const marker: Piece = { from: fit, to: fit, item, face, ink: style.ink, text: ellipsis, width: ellipsisWidth,
+                    fallback: !ellipsisFace.loaded || !fontSupports(ellipsisFace.key, ellipsis) };
                 if (last.block.bidi.level & 1) pieces.unshift(marker); else pieces.push(marker);
                 drafts[drafts.length - 1] = { ...last, to: fit, pieces, width: pieces.reduce((sum, piece) => sum + piece.width, 0) };
             }
@@ -218,7 +220,8 @@ export class BoardTextLayout implements TextLayoutEngine {
                 const markerWidth = metric.width * scale;
                 left = Math.min(left, markerX - metric.left * scale); right = Math.max(right, markerX + metric.right * scale);
                 top = Math.min(top, baseline - metric.ascent * scale); bottom = Math.max(bottom, baseline + metric.descent * scale);
-                fragments.push({ text: draft.marker, x: markerX, width: markerWidth, rtl: false, face: draft.markerFace, ink: style.ink, systemFallback: true, src: [draft.block.offset + draft.from, draft.block.offset + draft.from] });
+                fragments.push({ text: draft.marker, x: markerX, width: markerWidth, rtl: false, face: draft.markerFace, ink: style.ink,
+                    systemFallback: !markerFace.loaded || !fontSupports(markerFace.key, draft.marker), src: [draft.block.offset + draft.from, draft.block.offset + draft.from] });
             }
             for (const piece of draft.pieces) {
                 const f = this.faces[piece.face], scale = f.size / 64;

@@ -81,7 +81,10 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     }
     let markers: HtmlClipboardMarkers | null = null;
     if (input.html !== null) {
-        if (new Blob([input.html]).size > SECURITY_LIMITS.clipboardHtmlBytes) throw new RangeError('Clipboard HTML is too large');
+        if (new Blob([input.html]).size > SECURITY_LIMITS.clipboardHtmlBytes) {
+            if (input.text !== null && new Blob([input.text]).size <= 1024 * 1024) return plain(input.text, signal);
+            throw new RangeError('Clipboard HTML is too large');
+        }
         markers = await host.markers(input.html, signal);
         signal.throwIfAborted();
         if (markers.hasPrivate) return { kind: 'private', encoded: markers.privatePayload ?? '' };

@@ -212,15 +212,8 @@ export default defineConfig([
         { file: 'src/editor/copyCodeWidget.ts', names: ['innerHTML'], rhs: 'constant' },
         { file: 'src/epub/bridge.ts', names: ['srcdoc'], rhs: 'constant', identifiers: ['frameHTML'] },
       ]],
-      // G-INV-FS. Baseline: the files that call the File System Access API
-      // outside src/context/ today (invariants §1 item 2). It may only shrink.
-      'bme/fs-access': ['error', [
-        'src/App.tsx',
-        'src/utils/agentHost.ts',
-        'src/utils/entryNames.ts',
-        'src/utils/recentVaults.ts',
-        'src/utils/vaultAgentStore.ts',
-      ]],
+      // G-INV-FS: all File System Access calls stay in src/context/.
+      'bme/fs-access': ['error', []],
     },
   },
 ])

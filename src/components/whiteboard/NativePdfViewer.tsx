@@ -176,7 +176,7 @@ function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, s
         <ViewerHost name={props.file.name} documentId={props.identity.documentId} vaultEpoch={props.identity.vaultActivation}
             isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
             view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
-            readOnly={readOnly} readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
+            readOnly={readOnly} externalAccessibility={editingChrome !== undefined} readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
             chrome={<>{editingChrome}<div className="native-canvas-navigation" role="toolbar" aria-label="PDF navigation">
                 <label>Page <input type="number" min={1} max={pages} value={navigation.page + 1} onChange={event => {
                     const page = event.currentTarget.valueAsNumber;

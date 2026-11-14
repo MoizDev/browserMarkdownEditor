@@ -369,6 +369,12 @@ Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
 switch tabs, close the file or reload the app.
 
+A drawing or notebook this version cannot read safely — an unreadable file, one
+written in a newer format, or one that is not the kind its name says — **opens
+read-only**: neither drawing on it nor Save can overwrite the original file. An
+empty file is still a valid new board, and every supported drawing and notebook
+opens and saves as usual.
+
 ### Inverting a Picture You Brought Over
 Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
 

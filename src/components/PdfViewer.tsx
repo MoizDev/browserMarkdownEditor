@@ -13,7 +13,7 @@ import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
 import { bindPdfNativeEmphasis, makePdfEmphasisPlan, pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
 import { completedClassicDisplayList } from '../utils/pdfClassicDisplayList';
-import { classicEmphasisPageKey } from '../utils/pdfEmphasisProfile';
+import { classicEmphasisPageKey, classicEmphasisPlanKey } from '../utils/pdfEmphasisProfile';
 import { getPdfEmphasisPlan, rememberPdfEmphasisPlan } from '../utils/pdfEmphasisPlanCache';
 import { watchPdfEmphasis } from '../utils/pdfEmphasisWatch';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
@@ -1137,7 +1137,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     const key = classicEmphasisPageKey(session.emphasisIdentity.token, i, page);
                     const verdict = session.emphasisVerdicts.getVerdict(key);
                     const useOn = target.emphasis && verdict.kind === 'verified' && verdict.result.supported && verdict.result.eligible > 0;
-                    const plan = useOn ? getPdfEmphasisPlan(page) : undefined;
+                    const plan = useOn ? getPdfEmphasisPlan(page, classicEmphasisPlanKey(key)) : undefined;
                     if (plan) emphasis = bindPdfNativeEmphasis(page, ctx, plan);
                     if (!current()) continue;
                     const task = page.render({ operationsFilter: emphasis?.operationsFilter,
@@ -1164,9 +1164,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                         const list = completedClassicDisplayList(task);
                         if (!list) session.emphasisVerdicts.rejectPlan(key, 'renderer-version');
                         else {
-                            const rebuilt = makePdfEmphasisPlan(list);
+                            const rebuilt = makePdfEmphasisPlan(list, undefined, key.locale || undefined);
                             const reason = !rebuilt.result.supported ? rebuilt.result.reason ?? 'glyph-data'
-                                : !rememberPdfEmphasisPlan(page, rebuilt) ? 'page-budget' : undefined;
+                                : !rememberPdfEmphasisPlan(page, rebuilt, classicEmphasisPlanKey(key)) ? 'page-budget' : undefined;
                             if (reason) session.emphasisVerdicts.rejectPlan(key, reason);
                             else st.rendered = undefined;
                         }

@@ -23,6 +23,7 @@ import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGestur
 import type { createBoardRenderServices } from '../render/services';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import { boardSelectTool, type BoardSelectGestureContext } from '../input/selectGesture';
+import { enterGroupAtPoint } from '../input/groupFocus';
 import type { createBoardPointQuery } from './pointQuery';
 import type { createBoardRegionQuery } from './regionQuery';
 import { createBoardAttachmentResolver } from './attachments';
@@ -418,10 +419,13 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         void stickyHandles.activate(direction, true).finally(() => { try { unregister?.(); } finally { release(); } });
         return true;
     };
-    const doubleClickHandle = (surface: Vec2): boolean => {
+    const doubleClickHandle = (surface: Vec2, world: Vec2): boolean => {
         if (!mutable()) return false;
         const hit = shapeHandles.hit(surface);
-        return hit ? shapeHandles.toggleHead(hit) : false;
+        if (hit && shapeHandles.toggleHead(hit)) return true;
+        if (!selectionHandles.contains(world)) return false;
+        return enterGroupAtPoint({ runtime, point: world, current: mutable, hold: () => session.beginGesture(), registerPending,
+            hit: (point, signal) => options.point.hit(point, 'mouse', signal), error: report });
     };
     const handleCommand = (id: string, sample: RealSample): boolean => {
         if (id !== 'delete' || sample.source !== 'keyboard' || !mutable()) return false;

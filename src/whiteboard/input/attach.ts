@@ -59,7 +59,7 @@ export interface BoardInputServices {
   keyboardCursorVisible?(point: Point): Point
   resolveKeyboardTool?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
   keyboardHandleCommand?(id: string, sample: RealSample): boolean
-  handleDoubleClick?(surface: Point): boolean
+  handleDoubleClick?(surface: Point, world: Point): boolean
   keyboardNavigation?(keyboardCursorActive: boolean): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
@@ -290,7 +290,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!current() || !editable() || event.button !== 0) return
     let handled = false
     try {
-      if (services.handleDoubleClick) handled = services.handleDoubleClick(view.mappings.surface(event.timeStamp, event.clientX, event.clientY))
+      if (services.handleDoubleClick) handled = services.handleDoubleClick(
+        view.mappings.surface(event.timeStamp, event.clientX, event.clientY), view.mappings.map(event.timeStamp, event.clientX, event.clientY))
       if (!handled) handled = services.textInput?.doubleClick(event.clientX, event.clientY) ?? false
     } catch (error) { services.error(error) }
     if (handled) { event.preventDefault(); event.stopPropagation() }

@@ -78,6 +78,12 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
     refresh();
     return {
         refresh,
+        contains(world: Vec2): boolean {
+            if (!current() || !box || !Number.isFinite(world.x) || !Number.isFinite(world.y)) return false;
+            const dx = world.x - box.origin.x, dy = world.y - box.origin.y, c = Math.cos(box.rotation), s = Math.sin(box.rotation);
+            const x = c * dx + s * dy, y = -s * dx + c * dy, margin = 8 / options.camera().camera.z;
+            return Number.isFinite(margin) && x >= -margin && x <= box.width + margin && y >= -margin && y <= box.height + margin;
+        },
         hit(surface: Vec2, coarse = false): SelectionHandleHit | null {
             if (!current() || !box || !Number.isFinite(surface.x) || !Number.isFinite(surface.y)) return null;
             // Default, calibration cut by owner: resize precedes the outward rotation hotspot.

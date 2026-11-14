@@ -10,7 +10,11 @@ const object = (value: unknown): value is ObjectValue => typeof value === 'objec
 const kinds = new Set(['p', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 const flags = ['b', 'i', 'u', 's', 'code', 'hl'] as const;
 const safeLink = (value: unknown): value is string => {
-    if (typeof value !== 'string' || value.length > 2048 || /[\x00-\x1f\x7f-\x9f]/.test(value)) return false;
+    if (typeof value !== 'string' || value.length > 2048) return false;
+    for (let i = 0; i < value.length; i++) {
+        const code = value.charCodeAt(i);
+        if (code < 32 || (code >= 127 && code <= 159)) return false;
+    }
     try { const url = new URL(value); return !url.username && !url.password && ['http:', 'https:', 'mailto:'].includes(url.protocol); }
     catch { return false; }
 };

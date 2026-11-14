@@ -138,6 +138,8 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 if (!selected) return undefined;
                 if (query.kind === 'polygon' && query.containment && selected !== node.id)
                     groups.set(selected, Math.max(groups.get(selected) ?? -Infinity, resolved.rank));
+                const prepared = await options.geometry.prepareForPick(node, signal); check();
+                const hasCertifiedVector = !!prepared.vector && !!vectorNarrowDescriptor(prepared.vector);
                 let localPoints: readonly Vec2[] = points, partialFrame = false;
                 const frameClips: PointClipContour[] = [];
                 for (const ancestor of boardFrameAncestors(doc, node)) {
@@ -151,7 +153,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         const frame = ancestor;
                         const fullyVisible = corners.every(p => p.x.lo > 0 && p.y.lo > 0 && p.x.hi < frame.w && p.y.hi < frame.h);
                         if (!fullyVisible) {
-                            if (node.kind === 'connector' || node.kind === 'figure') partialFrame = true;
+                            if (node.kind === 'connector' || node.kind === 'figure' || hasCertifiedVector) partialFrame = true;
                             else {
                                 if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
                                 const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },
@@ -164,7 +166,6 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                             }
                         }
                 }
-                const prepared = await options.geometry.prepareForPick(node, signal); check();
                 const localToSurface = compose(worldToCss, ref.localToWorld);
                 const localQuery: RegionQuery = query.kind === 'polygon'
                     ? { kind: 'polygon', points: localPoints, localToSurface, containment: query.containment }

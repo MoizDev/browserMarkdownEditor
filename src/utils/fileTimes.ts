@@ -18,6 +18,7 @@ import type { FileTreeFileNode } from '../types';
 let times = new Map<string, number>();
 const lastWrites = new Map<string, number>();
 let version = 0;
+let indexTimesReady = false;
 const listeners = new Set<() => void>();
 
 // Bumped by resetFileTimes: a walk that began in the previous vault must not
@@ -55,6 +56,11 @@ export function getFileTimesVersion(): number {
 /** Path → `lastModified` (ms). A path absent from it is not yet known. */
 export function getFileTimes(): ReadonlyMap<string, number> {
     return times;
+}
+
+export function areIndexTimesReady(): boolean { return indexTimesReady; }
+export function markIndexTimesReady(): void {
+    if (!indexTimesReady) { indexTimesReady = true; notify(); }
 }
 
 /** Called by the save funnel after a write it just made, so a sort reacts to a
@@ -95,6 +101,7 @@ export function resetFileTimes(): void {
     generation++;
     walksInFlight.clear();
     lastWrites.clear();
+    indexTimesReady = false;
     times = new Map();
     notify();
 }

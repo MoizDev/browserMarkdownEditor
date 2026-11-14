@@ -9,6 +9,7 @@ import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
+import type { IndexProgress } from './context/vaultIndex/useIndexGraph';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { subscribeRenderStatus } from './utils/renderStatus';
@@ -490,6 +491,15 @@ export default function App() {
   // The link graph powering the Neural Brain view and backlinks panel
   const [graphState, setGraphState] = useState<{ activation: number; value: GraphData }>(() => ({ activation: searchActivation, value: EMPTY_GRAPH }));
   const graph = graphState.activation === searchActivation ? graphState.value : EMPTY_GRAPH;
+  const [graphFreshness, setGraphFreshness] = useState<{ activation: number; stale: boolean } | null>(null);
+  const [indexProgressState, setIndexProgressState] = useState<{ activation: number; value: IndexProgress } | null>(null);
+  const indexProgress = indexProgressState?.activation === searchActivation ? indexProgressState.value : null;
+  const reportGraphFreshness = useCallback((stale: boolean) => {
+    if (getVaultActivation() === searchActivation) setGraphFreshness({ activation: searchActivation, stale });
+  }, [getVaultActivation, searchActivation]);
+  const reportIndexProgress = useCallback((value: IndexProgress) => {
+    if (getVaultActivation() === searchActivation) setIndexProgressState({ activation: searchActivation, value });
+  }, [getVaultActivation, searchActivation]);
   const publishIndexGraph = useCallback((next: GraphData | null) => {
     if (getVaultActivation() !== searchActivation) return;
     const value = next ?? EMPTY_GRAPH;
@@ -503,7 +513,7 @@ export default function App() {
   }, [getVaultActivation]);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
     getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
-    publish: publishIndexGraph, onProblem: reportIndexProblem });
+    publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem });
   const retryIndex = useCallback(async () => {
     const owner = indexGraphRef.current;
     if (!owner || !indexProblem || owner.activation !== indexProblem.activation || owner.activation !== getVaultActivation()) return;
@@ -5537,6 +5547,8 @@ export default function App() {
           <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView
             key={searchActivation}
+            indexing={graphFreshness?.activation !== searchActivation}
+            updating={(graphFreshness?.activation === searchActivation && graphFreshness.stale) || indexProgress?.phase === 'sweeping'}
             nodes={graph.nodes}
             links={graph.links}
             activeFilePath={activeFile?.path || null}

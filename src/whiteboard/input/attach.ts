@@ -65,7 +65,7 @@ export interface BoardInputServices {
   contextMenu?(event: MouseEvent): void
   drop?(event: DragEvent): void
   linkAt?(sample: RealSample): (() => void) | null
-  continueInk?(sample: RealSample): ((endpoint: RealSample) => boolean) | null
+  continueInk?(sample: RealSample): ((endpoint: RealSample, signal: AbortSignal) => Promise<boolean>) | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   persistToolLock?(locked: boolean): void
@@ -107,6 +107,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let pendingPrediction: readonly PredictedPoint[] | undefined
   let suppressMenu = false
   const touchAdmission = new Map<number, boolean>()
+  const pendingContinuations = new Set<() => void>()
+  const cancelContinuations = (): boolean => {
+    const pending = [...pendingContinuations]
+    for (const cancel of pending) cancel()
+    return pending.length > 0
+  }
   const handContext: HandContext = {
     toSurface: view.sampleToSurface,
     panBy: delta => view.camera.panBy(delta),
@@ -138,6 +144,26 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     const tool = sessionInkTool(id, handover)
     return { id, begin: (sample, modifiers) => tool.begin(sample, modifiers, { ...services.ink(id, sample), session, tool: id, clearRedoAtDown: () => services.history.clearRedo() }) }
   }
+  const continuationTool = (sample: RealSample, commit: (endpoint: RealSample, signal: AbortSignal) => Promise<boolean>): Tool<unknown> => ({
+    id: 'continue-ink', begin: () => {
+      let endpoint = sample, ended = false, running = false, cleaned = false
+      const controller = new AbortController(), release = session.beginGesture()
+      const cleanup = () => { if (cleaned) return; cleaned = true; pendingContinuations.delete(cancel); release() }
+      const cancel = () => { if (cleaned) return; ended = true; controller.abort(); if (!running) cleanup() }
+      pendingContinuations.add(cancel)
+      return { kind: 'node-edit', pointerIds: new Set([sample.pointerId]),
+        update: samples => { if (!ended) for (const point of samples) if (point.pointerId === sample.pointerId) endpoint = point },
+        finish: reason => {
+          if (ended) return
+          if (reason !== 'up') { cancel(); return }
+          ended = true; running = true
+          void commit(endpoint, controller.signal).catch(error => {
+            if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) services.error(error)
+          }).finally(cleanup)
+        },
+        cancel, discard: cancel }
+    },
+  })
   const claim = (): boolean => {
     if (gestureOwner.has(session) || session.isGestureActive) return false
     gestureOwner.set(session, owner)
@@ -199,20 +225,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       completeTool = true
       if (choice.id === 'pen' && modifiers.shift) {
         const commit = services.continueInk?.(sample)
-        if (commit) {
-          const continuation: Tool<unknown> = { id: 'continue-ink', begin: () => {
-            let endpoint = sample, ended = false
-            return { kind: 'ink', pointerIds: new Set([sample.pointerId]),
-              update: samples => { for (const point of samples) if (point.pointerId === sample.pointerId) endpoint = point },
-              finish: reason => {
-                if (ended) return
-                ended = true
-                try { if (commit(endpoint) && reason === 'undo') services.history.undo() } catch (error) { services.error(error) }
-              },
-              cancel: () => { ended = true }, discard: () => { ended = true }, }
-          } }
-          return { tool: continuation, context: undefined }
-        }
+        if (commit) return { tool: continuationTool(sample, commit), context: undefined }
       }
       if (choice.id === 'pen' || choice.id === 'highlighter') return { tool: ink(choice.id), context: undefined }
       return services.resolveTool(choice, sample, modifiers, event)
@@ -343,9 +356,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       keyboardStart = services.tools.getSnapshot()
       try {
         const choice = keyboardStart.active
-        const route = choice.id === 'pen' || choice.id === 'highlighter'
-          ? { tool: ink(choice.id), context: undefined }
-          : services.resolveKeyboardTool?.(choice, sample, modifiers)
+        const continued = choice.id === 'pen' && modifiers.shift ? services.continueInk?.(sample) : null
+        const route = continued ? { tool: continuationTool(sample, continued), context: undefined }
+          : choice.id === 'pen' || choice.id === 'highlighter'
+            ? { tool: ink(choice.id), context: undefined }
+            : services.resolveKeyboardTool?.(choice, sample, modifiers)
         if (!route || !router.begin(view.token, route.tool, sample, modifiers, route.context)) { keyboardStart = null; releaseClaim(); return false }
         return true
       } catch (error) { keyboardStart = null; releaseClaim(); services.error(error); return false }
@@ -359,6 +374,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     undo() { try { router.interrupt(view.token, 'undo') } finally { keyboardStart = null; releaseClaim() } },
   })
   const flush = () => {
+    cancelContinuations()
     services.cancelPendingGestures()
     cursor.escape()
     pointer.interrupt('flush')
@@ -379,16 +395,16 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cursor, navigation: services.keyboardNavigation, gestureActive: () => router.activeOwner !== null,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { services.textInput?.cancelPending(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
+    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
       if (id === 'escape') {
-        const cancelled = services.cancelPendingGestures()
-        if (pointer.interrupt('escape') || cancelled) return true
+        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+        if (pointer.interrupt('escape') || cancelled || continuationCancelled) return true
       }
       if (id === 'undo') {
-        const cancelled = services.cancelPendingGestures()
-        if (pointer.interrupt('undo') || cancelled) return true
+        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+        if (pointer.interrupt('undo') || cancelled || continuationCancelled) return true
         if (editable()) { services.history.undo(); return true }
       }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
@@ -414,7 +430,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (id === 'zoom.hold') { zoomHeld = true; return true }
       if (id === 'zoom.release') { zoomHeld = false; return true }
       if (id.startsWith('tool.') && editable()) {
-        services.cancelPendingGestures()
+        cancelContinuations(); services.cancelPendingGestures()
         const tool = id.slice(5)
         if (services.tools.getRegistration(tool)) { services.tools.setTool(tool); return true }
       }
@@ -427,7 +443,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (snapshot.selectionEpoch !== toolEpoch) {
       toolEpoch = snapshot.selectionEpoch
       services.textInput?.cancelPending()
-      services.cancelPendingGestures()
+      cancelContinuations(); services.cancelPendingGestures()
       if (cursor.active) cursor.escape()
       pointer.interrupt('flush')
     }

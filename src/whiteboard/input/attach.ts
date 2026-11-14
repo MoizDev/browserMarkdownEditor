@@ -226,7 +226,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       activeSource = null
     },
     prediction(id, event) {
-      if (!current() || router.inkSuspended || !(router.activeOwner instanceof LiveInk) || !router.activeOwner.pointerIds.has(id)) return
+      if (!current() || router.inkSuspended || !(router.activeOwner instanceof LiveInk)
+        || !router.activeOwner.allowsPrediction || !router.activeOwner.pointerIds.has(id)) return
       pendingPrediction = event ? predictedTail(event, view.predictionMapping(), 16) : []
       view.wet.invalidate()
     },

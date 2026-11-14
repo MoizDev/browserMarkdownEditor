@@ -16,12 +16,17 @@
 .pdf-render-notice-copy { display: flex; flex: 1 1 180px; min-width: 0; flex-direction: column; gap: 3px; }
 .pdf-render-notice code { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
 .pdf-render-notice .pdf-pane-action { flex-shrink: 0; }
+/* The paper can be wider than its scroll box (zoom, or the thumbnail strip's
+   resize debounce). Its notice must not push Retry beyond the viewport edge. */
+.pdf-viewer-scroll:has(.pdf-render-notice.is-page) { container-type: inline-size; }
 .pdf-render-notice.is-page {
   position: absolute;
   z-index: 5;
   top: 12px;
   left: 12px;
-  right: 12px;
+  width: calc(100% - 24px);
+  max-width: calc(100cqw - 24px);
+  box-sizing: border-box;
 }
 .pdf-render-document-notice { position: absolute; z-index: 15; inset: 12px 12px auto; }
 .pdf-render-failed { height: 100%; display: grid; align-content: start; padding: 16px; }

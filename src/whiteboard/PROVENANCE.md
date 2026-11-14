@@ -184,6 +184,7 @@ third-party code included (normally "none") · date.
 | `export/streamPage.ts` | lane w-k | F-EXPORT-003/004/005; EX-2/3/4 | export §§2, 6; rendering §3 | Bounded paint-stream chunks, page-local clipping and ordered one-page output; no tldraw source | none | 2026-11-13 |
 | `export/streamSvg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; platform C5 | Bounded paint-stream conversion, transferable image copies, worker identity and cancellation; no tldraw source | none | 2026-11-13 |
 | `export/streamPdf.ts` | lane w-k | F-EXPORT-004/005; EX-2/3/4 | export §§2, 6; PDF writing §3 | One pinned revision, incrementally assembled page display lists and injected PDF writer; no tldraw source | none | 2026-11-13 |
+| `host/notebookCommands.ts` | lane w-k | F-EXPORT-004/005; C7.2 | export §6; integration §4 | Pinned notebook command, App-authorized staged write and user-clicked print handoff; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 
@@ -242,7 +243,7 @@ third-party code included (normally "none") · date.
 | `geom/figures.ts` | lane w-h | F-FIG-001/002/003/004 | geometry §3 | Independent shape recipes and local semantic bounds; FIG creation ratios and seed-centred gestures; kernel-certified arc conversion and analytic cloud with fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe, shared cubic length/splitting kernel, and continuous dash/dot phase; no tldraw source | none | 2026-11-13 |
 | `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; boundary membership, node-local hatch clipping and reflected phase; no tldraw source | none | 2026-11-13 |
-| `geom/providers.ts` | lane w-h | F-FIG-001, F-STICKY-001, F-FRAME-001, WB-D20/24, E-GEO-8/35 | geometry §§1, 3, 5; text §6 | Figure and container geometry, text-owned paint/layout, ink-owned coverage and resumable picking, bounded node-local hatch expansion, shared path picker and scene local bounds; no tldraw source | none | 2026-11-13 |
+| `geom/providers.ts` | lane w-h | F-FIG-001, F-STICKY-001, F-FRAME-001, WB-D20/24, E-GEO-8/35 | geometry §§1, 3, 5; text §6 | Figure and container geometry, whole-object containment, text-owned paint/layout, ink-owned coverage and resumable picking, bounded node-local hatch expansion, shared path picker and scene local bounds; no tldraw source | none | 2026-11-13 |
 
 ## Media and clipboard (lane w-q)
 
@@ -274,7 +275,7 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design and Intl.Segmenter grapheme boundaries; no tldraw source | none | 2026-11-13 |
 | `text/edit/host.ts` | w-i | T-4, F-TEXT-006/016, WB-D15, E-TXT-2/10/12/15/21/22 | text §§5.1–5.3, 5.6, 5.10 | Design, browser EditContext and textarea APIs, window-relative IME formats, fallback directional selection, refused-input and selection-only resync, app-menu forwarding | none | 2026-11-13 |
-| `text/edit/session.ts` | w-i | T-4, F-TEXT-003/006/011/015/016/018, WB-D15/16/26, E-TXT-1/2/4/5/10/12/15/21 | text §§5.1–5.7, 5.9–5.10; clipboard §3 | Design and TX-2/TX-3 public types; injected model, history and view services; visual selection, IME chrome, touch handles, replay selection, refused-edit notice, empty-node finish and rich clipboard port | none | 2026-11-13 |
+| `text/edit/session.ts` | w-i | T-4, F-TEXT-003/006/011/015/016/018, WB-D15/16/26, E-TXT-1/2/4/5/10/12/15/21 | text §§5.1–5.7, 5.9–5.10; clipboard §3 | Design and TX-2/TX-3 public types; HistoryController-backed typing bursts, model and view services; visual selection, IME chrome, touch handles, replay selection, refused-edit notice and rich clipboard port | none | 2026-11-13 |
 | `text/edit/controller.ts` | w-i | T-5, F-TEXT-011/012/015/016, WB-D26 | text §§4–5; change-and-history §4.3 | Design, public change operations and history-marked input transformations, explicit burst completion | none | 2026-11-13 |
 | `text/edit/typingHistory.ts` | w-i | F-TEXT-005/011/016, H-5 | text §§5.4/5.7; change-and-history §4.3 | Design and w-n HistoryController; time and adjacency burst boundaries, IME and rule savepoints | none | 2026-11-13 |
 | `text/edit/format.ts` | w-i | WB-D26, E-TXT-14 | text §§4.1, 5.9 | Design and URL platform API | none | 2026-11-13 |

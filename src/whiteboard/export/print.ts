@@ -72,7 +72,10 @@ export async function printBoard(options: BoardPrintOptions): Promise<void> {
                 container.appendChild(image);
             }
             document.head.appendChild(style); document.body.appendChild(container);
-            await Promise.all(Array.from(container.querySelectorAll('img'), image => image.decode()));
+            for (const image of container.querySelectorAll('img')) {
+                options.signal.throwIfAborted();
+                await image.decode();
+            }
             options.signal.throwIfAborted();
             window.addEventListener('afterprint', cleanup, { once: true });
             timer = setTimeout(cleanup, 60_000);

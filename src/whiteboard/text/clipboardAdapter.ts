@@ -70,9 +70,10 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
             };
         },
         /** ClipboardInput is sampled by Core during the event, before DataTransfer expires. */
-        /** A Core-supplied pin transfers to this call; otherwise capture synchronously at paste entry. */
-        async paste(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal, captured?: ClipboardCachePin | null): Promise<boolean> {
-            const cache = captured === undefined ? options.copy.pin() : captured;
+        /** Call at the OS gesture; the caller releases this pin if acquisition fails before paste is invoked. */
+        capturePaste(): ClipboardCachePin | null { return options.copy.pin(); },
+        /** The pin captured at the gesture transfers to this call, including an explicit null. */
+        async paste(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal, cache: ClipboardCachePin | null): Promise<boolean> {
             let controller: AbortController | undefined;
             try {
                 if (disposed) return false;

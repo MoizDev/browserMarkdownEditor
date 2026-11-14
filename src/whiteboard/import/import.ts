@@ -1,3 +1,4 @@
+import { normalizePaper, paperPageSize, type NotebookPaper } from '../../utils/paper';
 import { NATIVE_VERSION } from '../format/schema';
 import { parseJson } from '../format/jsonRead';
 import type { RawJson } from '../model/json';
@@ -43,13 +44,19 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
     const report = new ReportBuilder();
     let draft: Awaited<ReturnType<typeof readLegacyRecords>> = null;
     try {
-        if (options.kind !== 'whiteboard' && options.pageSource?.kind !== options.kind) {
-            throw new Error('Paged import requires matching host geometry');
+        if (options.kind === 'pdf-ink' && options.pageSource?.kind !== 'pdf-ink') {
+            throw new Error('PDF import requires display page geometry');
         }
-        const preparePages: LegacyRecordOptions['preparePages'] = options.pageSource
-            ? createPagePreparation(options.pageSource, (nodes, sheets) => legacyWorldBounds(nodes,
-                new Set(sheets.map(sheet => sheet.id)), options.textLayout, basicLegacyGeometry(options.samples, options.geometry)))
-            : undefined;
+        const preparePages: LegacyRecordOptions['preparePages'] = options.kind === 'whiteboard' ? undefined
+            : (shapes, nodes, sheets, rawPaper) => {
+                const paper = normalizePaper((rawPaper ?? undefined) as Partial<NotebookPaper> | undefined);
+                const dimensions = paperPageSize(paper);
+                const source = options.kind === 'notebook'
+                    ? { kind: 'notebook' as const, ...dimensions, count: paper.pageCount } : options.pageSource!;
+                return createPagePreparation(source, (all, allSheets) => legacyWorldBounds(all,
+                    new Set(allSheets.map(sheet => sheet.id)), options.textLayout,
+                    basicLegacyGeometry(options.samples, options.geometry)))(shapes, nodes, sheets);
+            };
         draft = await readLegacyRecords(text, { ...options, preparePages });
     }
     catch (error) {
@@ -71,12 +78,23 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
             const nodes = options.repair(draft.nodes, sheets, options.kind, options.repairRoot, report);
             const view = readLegacyView(draft.envelope.session);
             savedView = view.camera;
+            let host = options.host;
+            if (host.kind === 'notebook') {
+                const raw = draft.envelope.paper;
+                const paper = normalizePaper((raw ?? undefined) as Partial<NotebookPaper> | undefined);
+                if (raw && Object.keys(paper).some(key => Object.hasOwn(raw, key)
+                    && raw[key] !== paper[key as keyof NotebookPaper])) report.repair(null, 'Notebook paper settings normalized');
+                if (raw) for (const key of Object.keys(raw)) {
+                    if (!Object.hasOwn(paper, key)) report.refuse(null, `Unknown notebook paper field ${key}`);
+                }
+                host = { ...host, paper };
+            }
             const fields = new Map<string, RawJson>();
             if (Object.keys(draft.envelope.extras).length) fields.set('legacyEnvelope', parseJson(JSON.stringify(draft.envelope.extras)).raw());
             if (Object.keys(draft.envelope.documentExtras).length) fields.set('legacyDocument', parseJson(JSON.stringify(draft.envelope.documentExtras)).raw());
             board = options.admit({ kind: options.kind, sheets, nodes,
                 media: media.map(item => item.entry), ui: readLegacyUi(draft.envelope.ui), view: view.flags,
-                host: options.host, preserved: { version: NATIVE_VERSION, fields,
+                host, preserved: { version: NATIVE_VERSION, fields,
                     records: draft.preservedRecords, end: null }, preservedMediaRefs: new Map() }, options.samples);
         } catch (error) { report.refuse(null, error instanceof Error ? error.message : 'Import could not be admitted'); }
     }

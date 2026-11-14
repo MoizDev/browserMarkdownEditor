@@ -28,7 +28,7 @@ export interface SessionSceneOptions {
     retainNode(node: Readonly<Node>): { release(): void };
     retainRenderer?(): { release(): void };
     realize(node: Readonly<Node>, signal: AbortSignal): Promise<LocalGeometryBounds>;
-    preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal): Promise<PaintNodeSource>;
+    preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, token?: RenderToken): Promise<PaintNodeSource>;
     /** Requests bounded platform work; never starts a private animation loop. */
     invalidate(): void;
     onError(error: unknown): void;
@@ -54,6 +54,7 @@ export class SessionScene implements SceneSpatial {
     private pages = false;
     private serial = 0;
     private disposed = false;
+    private futurePaintToken: RenderToken;
     private active: { readonly serial: number; readonly dirty: SceneDirty; readonly job: Generator<void, BootstrappedScene> } | undefined;
     private readonly live: LiveSceneView;
     private readonly rebuild: ScenePackedRebuild;
@@ -61,6 +62,7 @@ export class SessionScene implements SceneSpatial {
     private readonly stopInvalidation: (() => void) | undefined;
     private constructor(private readonly options: SessionSceneOptions, private state: BootstrappedScene,
         private readonly records: SceneRecordStore, private readonly metadata: SceneMetadataStore) {
+        this.futurePaintToken = Object.freeze({ ...options.token });
         this.live = new LiveSceneView(options.doc, state);
         this.boundsVersions = new BoundsVersions(options.doc.rev);
         const provider: BoundsProvider = {
@@ -223,9 +225,21 @@ export class SessionScene implements SceneSpatial {
         if (!this.ready) throw new Error('Scene publication is pending');
         return this.live.spatialCursor(options);
     }
+    /** Stage only a same-owner future identity; existing scene pins keep their token. */
+    stagePaintSourceToken(token: RenderToken): () => void {
+        const current = this.futurePaintToken;
+        if (this.disposed || !token || typeof token.documentId !== 'string' || !token.documentId || token.documentId !== current.documentId ||
+            !Number.isSafeInteger(token.session) || token.session < 0 || token.session !== current.session ||
+            !Number.isSafeInteger(token.vaultEpoch) || token.vaultEpoch < 0 || token.vaultEpoch !== current.vaultEpoch ||
+            !Number.isSafeInteger(token.bytesGeneration) || token.bytesGeneration < 0 || token.bytesGeneration < current.bytesGeneration) {
+            throw new Error('Invalid scene paint source rebind');
+        }
+        const next: RenderToken = Object.freeze({ ...token });
+        return () => { if (!this.disposed && next.bytesGeneration >= this.futurePaintToken.bytesGeneration) this.futurePaintToken = next; };
+    }
     pin(): SceneSnapshot {
         if (this.disposed) throw new Error('Scene is disposed');
-        return createSceneSnapshot({ token: this.options.token, revision: this.options.doc.rev, records: this.records.pin(),
+        return createSceneSnapshot({ token: this.futurePaintToken, revision: this.options.doc.rev, records: this.records.pin(),
             metadata: this.metadata.pin(), ...(this.ready ? { bounds: this.boundsVersions.pin() } : {}),
             renderer: this.options.retainRenderer?.(), prepare: this.options.preparePaint,
             cooperate: this.options.cooperate ?? yieldToHost, onError: this.options.onError });

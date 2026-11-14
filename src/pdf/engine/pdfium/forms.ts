@@ -6,7 +6,7 @@ export interface PdfiumForms { readonly handle: number; close(): void }
 
 /** Form appearance drawing only: no JS platform or action callback is installed. */
 export function createPdfiumForms(runtime: PdfiumRuntime, document: number,
-    pageFor: (index: number) => number, currentPage: () => number): PdfiumForms {
+    pageFor: (index: number) => number, currentPage: () => number, rotationFor: (page: number) => number): PdfiumForms {
     const layout = runtime.abi.structs.formFillInfo;
     const pointer = runtime.malloc(layout.size), callbacks: number[] = [];
     let handle = 0, closed = false;
@@ -16,7 +16,7 @@ export function createPdfiumForms(runtime: PdfiumRuntime, document: number,
         callbacks.push(getPage);
         const getCurrent = runtime.addFunction((_self, doc) => (doc >>> 0) === document ? currentPage() : 0, 'iii');
         callbacks.push(getCurrent);
-        const getRotation = runtime.addFunction((_self, page) => page ? runtime.call('FPDFPage_GetRotation', page >>> 0) : 0, 'iii');
+        const getRotation = runtime.addFunction((_self, page) => rotationFor(page >>> 0), 'iii');
         callbacks.push(getRotation);
         const view = heapView(runtime, pointer, layout.size);
         view.setInt32(layout.offsets.version, 1, true);

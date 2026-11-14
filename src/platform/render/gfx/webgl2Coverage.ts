@@ -1,4 +1,5 @@
-import type { ArenaEncoding } from '../resourceArena';
+import { ArenaError } from '../resourceArena';
+import type { ArenaEncoding, ArenaMemory } from '../resourceArena';
 import type { MemoryAllocator } from '../memoryGovernor';
 import type { ByteLease } from './api';
 import type { FrameToken } from '../types';
@@ -52,6 +53,7 @@ export class Webgl2Coverage {
     #poll: (() => void) | null = null;
     #prepared: { width: number; height: number; classify: ProgramUniforms; reduce: ProgramUniforms } | null = null;
     #closed = false;
+    #abandoned = false;
     #broken = false;
     #notified = false;
     #readback: Uint32Array | null = null;
@@ -60,10 +62,12 @@ export class Webgl2Coverage {
     constructor(private readonly options: Webgl2CoverageOptions) {
         this.#resources = new Webgl2CoverageResources({ generation: options.generation, gl: options.gl, memory: options.memory,
             completed: serial => serial <= this.#completed, schedulePoll: options.schedulePoll, reset: options.reset,
-            onDrained: () => this.#notify() });
+            onDrained: () => this.#notify(), onLost: () => this.abandon() });
     }
 
-    get drained(): boolean { return this.#closed && this.#tickets.size === 0 && this.#resources.drained; }
+    get drained(): boolean { return this.#closed && this.#tickets.size === 0 && this.#resources.drained && !this.#readbackLease; }
+    get cpuBytes(): number { return this.#readbackLease?.bytes ?? 0; }
+    memory(): ArenaMemory { return this.#resources.memory(); }
 
     prepare(width: number, height: number): boolean {
         if (this.#closed || this.#broken) return false;
@@ -157,28 +161,32 @@ export class Webgl2Coverage {
         this.#closed = true;
         this.#prepared = null;
         for (const ticket of this.#tickets) {
-            ticket.decision = 'cancelled';
+            if (ticket.decision === 'pending') ticket.decision = 'cancelled';
             if (ticket.done) this.#publish(ticket);
         }
-        this.#releaseReadback();
         this.#resources.dispose();
         this.#ensurePoll();
         this.#notify();
     }
 
     abandon(): void {
-        this.#closed = true; this.#prepared = null;
+        if (this.#abandoned) return;
+        this.#abandoned = true; this.#closed = true; this.#prepared = null;
         this.#poll?.(); this.#poll = null;
-        this.#tickets.clear(); this.#slots.clear();
-        this.#releaseReadback();
-        this.#resources.abandon();
-        this.#notify();
+        try {
+            for (const ticket of this.#tickets) if (!ticket.done && ticket.decision === 'committed') this.options.onDrop(ticket.tag);
+        } finally {
+            this.#tickets.clear(); this.#slots.clear();
+            this.#releaseReadback();
+            this.#resources.abandon();
+            this.#notify();
+        }
     }
 
     #decide(ticket: Ticket, decision: 'committed' | 'cancelled'): void {
         if (ticket.decision !== 'pending') return;
         ticket.decision = decision;
-        if (ticket.failed && decision === 'committed' && !this.#closed) {
+        if (ticket.failed && decision === 'committed' && !this.#abandoned) {
             this.options.onDrop(ticket.tag);
             ticket.decision = 'cancelled';
         }
@@ -188,7 +196,7 @@ export class Webgl2Coverage {
     #publish(ticket: Ticket): void {
         if (ticket.decision === 'pending') return;
         this.#tickets.delete(ticket);
-        if (!this.#closed && ticket.decision === 'committed' && ticket.counts && this.#readback) {
+        if (!this.#abandoned && ticket.decision === 'committed' && ticket.counts && this.#readback) {
             const counts = ticket.counts;
             this.#readback[0] = counts.outside; this.#readback[1] = counts.hole;
             this.#readback[2] = counts.standin; this.#readback[3] = counts.current;
@@ -203,7 +211,13 @@ export class Webgl2Coverage {
     }
 
     #collect(): void {
-        const gl = this.options.gl();
+        let gl: WebGL2RenderingContext;
+        try { gl = this.options.gl(); }
+        catch (error) {
+            if (!(error instanceof ArenaError) || error.code !== 'lost') throw error;
+            this.abandon();
+            return;
+        }
         try {
             for (const ticket of this.#tickets) {
                 if (ticket.done) continue;
@@ -224,7 +238,7 @@ export class Webgl2Coverage {
                 catch { status = gl.WAIT_FAILED; }
                 if (status === gl.WAIT_FAILED) {
                     ticket.failed = true;
-                    if (ticket.decision === 'committed' && !this.#closed) {
+                    if (ticket.decision === 'committed' && !this.#abandoned) {
                         this.options.onDrop(ticket.tag);
                         ticket.decision = 'cancelled';
                     }
@@ -232,7 +246,7 @@ export class Webgl2Coverage {
                 }
                 if (status !== gl.ALREADY_SIGNALED && status !== gl.CONDITION_SATISFIED) continue;
                 this.#completed = Math.max(this.#completed, ticket.serial);
-                if (!this.#closed && ticket.decision !== 'cancelled') {
+                if (ticket.decision !== 'cancelled') {
                     try {
                         const counts = this.#readback!;
                         gl.bindBuffer(gl.PIXEL_PACK_BUFFER, ticket.pack);
@@ -245,7 +259,7 @@ export class Webgl2Coverage {
                 this.#resources.cancel(ticket.read);
                 this.#slots.delete(ticket.slot);
                 ticket.done = true;
-                if (ticket.failed && ticket.decision === 'committed' && !this.#closed) {
+                if (ticket.failed && ticket.decision === 'committed' && !this.#abandoned) {
                     this.options.onDrop(ticket.tag);
                     ticket.decision = 'cancelled';
                 }
@@ -263,6 +277,7 @@ export class Webgl2Coverage {
     }
 
     #notify(): void {
+        if (this.#closed && this.#tickets.size === 0) this.#releaseReadback();
         if (this.drained && !this.#notified) { this.#notified = true; this.options.onDrained?.(); }
     }
 }

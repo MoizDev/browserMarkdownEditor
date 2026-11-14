@@ -1,6 +1,6 @@
 import { RENDER_CONSTANTS } from '../constants';
 import { ArenaError, ResourceArena } from '../resourceArena';
-import type { ArenaEncoding, ArenaResourceMap, ResourceArenaBackend } from '../resourceArena';
+import type { ArenaEncoding, ArenaMemory, ArenaResourceMap, ResourceArenaBackend } from '../resourceArena';
 import type { MemoryAllocator } from '../memoryGovernor';
 import type { BufferHandle, ByteLease, Handle, TargetHandle, TextureHandle } from './api';
 
@@ -25,6 +25,7 @@ export interface Webgl2CoverageResourcesOptions {
     schedulePoll: (callback: () => void) => () => void;
     reset: () => void;
     onDrained?: () => void;
+    onLost?: () => void;
 }
 
 /** Private benchmark storage; its leases remain fenced until submitted work retires. */
@@ -94,6 +95,7 @@ export class Webgl2CoverageResources {
     }
 
     get drained(): boolean { return this.#closed && !this.#allocation && this.#retired.size === 0; }
+    memory(): ArenaMemory { return this.#arena.memory(); }
 
     prepare(width: number, height: number): boolean {
         if (this.#closed || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 ||
@@ -156,7 +158,6 @@ export class Webgl2CoverageResources {
         if (this.#closed) return;
         this.#closed = true;
         if (this.#allocation) { this.#retire(this.#allocation); this.#allocation = null; }
-        this.#arena.releaseAll('hidden');
         this.#collect();
     }
 
@@ -177,7 +178,12 @@ export class Webgl2CoverageResources {
     }
 
     #collect(): void {
-        this.#arena.collect();
+        try { this.#arena.collect(); }
+        catch (error) {
+            if (!(error instanceof ArenaError) || error.code !== 'lost') throw error;
+            if (this.options.onLost) this.options.onLost(); else this.abandon();
+            return;
+        }
         for (const lease of this.#retired) if (this.#arena.leaseMemory(lease).returned) this.#retired.delete(lease);
         this.#notify();
         if (this.#retired.size && !this.#cancelPoll) {

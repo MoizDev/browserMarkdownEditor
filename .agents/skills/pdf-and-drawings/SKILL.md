@@ -26,8 +26,11 @@ as live tldraw shapes.
   snapshot is loaded into an isolated legacy store before mounting; a library rejection or render
   error revokes its exact source and replaces the editor with a read-only notice. An `original.pdf`
   alone does NOT make a file ours. A failed or partial read never falls back to `plain`; the outer
-  pages stay readable. The first save of a `plain` PDF adds the attachments, and files from the old
-  spawn-a-sibling behaviour still work. Only `plain` may be rotated (`canRotatePdfRole`).
+  pages stay readable. Marked legacy pairs and notebook pointers require exact compatible markers;
+  unknown namespace markers refuse editing. `pdfAttachmentTree` traverses mixed branches and
+  associated files, forks a sorted name tree and checks attachment hashes; current outer bytes stay
+  bound to the pristine capability so outer-only attachments survive rebuild. The first save of a
+  `plain` PDF adds the attachments. Only `plain` may be rotated (`canRotatePdfRole`).
 - **Save authority is the exact source, not the path.** `authorizePdfRole` admits an editable role's
   `original` bytes; `canRebuildAnnotatedPdf(original)` is checked in `flushTab` before the build AND
   again after every await, directly before `writeFileVersioned`, so a revoked role cannot write.

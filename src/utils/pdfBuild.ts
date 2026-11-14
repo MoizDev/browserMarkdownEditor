@@ -9,12 +9,13 @@
 
 import { PDFDict, PDFDocument, PDFName, PDFString, ParseSpeeds, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
 import type { PDFPage, PDFImage } from 'pdf-lib';
-import { NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT, type NotebookSource } from './pdfFormat';
+import { NOTEBOOK_SOURCE_ATTACHMENT, type NotebookSource } from './pdfFormat';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from './paper';
 import { isEmptyOverlay, type PageOverlay } from './pdfOverlay';
 import type { VectorOp } from './pdfVector';
 import { PDF_WRITE_MARK_PLACEHOLDER, sealPdfWriteMark } from './pdfWriteMark';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
+import { rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree';
 
 /**
  * pdf-lib's own pacing, switched off — for every load and save in the worker.
@@ -151,7 +152,8 @@ export async function buildAnnotatedPdf(
     original: Uint8Array,
     snapshot: string,
     overlays: Array<PageOverlay | undefined> = [],
-): Promise<Uint8Array> {
+    outer?: Uint8Array,
+): Promise<{ bytes: Uint8Array; aliases: string[] }> {
     const refusal = pdfSnapshotRefusal(snapshot);
     if (refusal) throw new PdfBuildRefused(refusal);
     // No defensive copy of `original`, on two independent grounds:
@@ -211,14 +213,8 @@ export async function buildAnnotatedPdf(
         page.pushOperators(popGraphicsState());
     }
 
-    doc.attach(original, ORIGINAL_ATTACHMENT, {
-        mimeType: 'application/pdf',
-        description: 'Unannotated source. Every save rebuilds from this, so strokes never compound.',
-    });
-    doc.attach(new TextEncoder().encode(snapshot), SNAPSHOT_ATTACHMENT, {
-        mimeType: 'application/json',
-        description: 'tldraw snapshot: the editable form of the annotations stamped on the pages.',
-    });
+    const outerDoc = outer ? await PDFDocument.load(outer, LOAD_WITHOUT_TICKS) : undefined;
+    const expected = await rebuildAttachmentTree(doc, outerDoc, original, new TextEncoder().encode(snapshot));
 
     // Flush deferred attachments/images BEFORE allocating the mark: pdf-lib
     // writes raw streams by object number, so our newest stream follows any
@@ -233,7 +229,9 @@ export async function buildAnnotatedPdf(
         LastModified: PDFString.fromDate(new Date()), Private: mark,
     }));
     doc.catalog.set(PDFName.of('PieceInfo'), pieces);
-    return sealPdfWriteMark(await doc.save(SAVE_WITHOUT_TICKS));
+    const result = await sealPdfWriteMark(await doc.save(SAVE_WITHOUT_TICKS));
+    await verifyAttachmentTree(result, expected);
+    return { bytes: result, aliases: expected.aliases };
 }
 
 /* ── Notebooks ──────────────────────────────────────────────────────────── */
@@ -307,7 +305,7 @@ export async function buildNotebookPdf(
         // PDF follows the pointer back rather than forking a third file.
         doc.attach(new TextEncoder().encode(JSON.stringify(source)), NOTEBOOK_SOURCE_ATTACHMENT, {
             mimeType: 'application/json',
-            description: 'The notebook this PDF was exported from. Edit that, then export again.',
+            description: 'local-vault-pdf/v1;role=notebook-source;format=notebook-source\nThe notebook this PDF was exported from. Edit that, then export again.',
         });
         // Said in the document properties too, where any PDF viewer will show
         // it — the attachment is for this app, this line is for a person.

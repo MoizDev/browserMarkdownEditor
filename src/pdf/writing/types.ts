@@ -10,6 +10,7 @@ export interface DisplayPdfPage {
 }
 
 export interface DisplayPdfInput {
+    schema: 1;
     pages: readonly DisplayPdfPage[];
     notebookSource?: { path: string };
 }
@@ -24,5 +25,5 @@ export interface InkPageInput {
 export interface InkPackage {
     schema: 1;
     bytes: Uint8Array;
-    pages: Array<{ sourcePage: number; inkPage: number; width: number; height: number }>;
+    pages: Array<{ sourcePage: number; inkPage: number; width: number; height: number; hash: string }>;
 }

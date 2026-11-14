@@ -121,6 +121,8 @@ opens that note and scrolls to the line it matched, then puts the tree back. EPU
 them is not text.
 
 ### Drag and Drop
+Files dropped on an area that does not handle them are refused rather than opened in a browser tab. Links dropped outside editable fields are likewise refused when no area handles them. Dropping a Markdown file onto an editable note can replace its text, as described below.
+
 You can drag and drop files and folders within the file tree to reorganize your vault:
 - Drag any item and drop it onto a folder to move it inside that folder.
 - Drag any item and drop it onto the empty space in the sidebar (the root level) to move it back to the main vault directory.
@@ -187,7 +189,7 @@ Under each pane's tabs is a row belonging to that pane: its file's name in the m
 With more than one pane, the pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F and ⌘S act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
 
 ### The Status Bar
-A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. It never takes a click meant for the note underneath it. A PDF, drawing, notebook or code file has no words worth counting, so there the bar shows only briefly, to say something was saved or moved to the Trash — and when a PDF or notebook is open in the right-most pane, the bar sits just above its page and zoom buttons rather than over them.
+A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. The counts follow your typing without delay. It never takes a click meant for the note underneath it. A PDF, drawing, notebook or code file has no words worth counting, so there the bar shows only briefly, to say something was saved or moved to the Trash — and when a PDF or notebook is open in the right-most pane, the bar sits just above its page and zoom buttons rather than over them.
 
 ### Giving One Pane More Room
 The line between two panes can be dragged. Pull it left or right and those two panes share the width between them — everything else stays exactly where you put it. A pane won't shrink past being readable, so you can always find the line again.
@@ -477,6 +479,7 @@ marks are drawn against the pages as they are, and turning the paper would move
 every one of them — so straighten a scan before you start annotating it. Only a
 plain PDF turns: a notebook's export, or a PDF whose embedded attachments are not
 ones this app can read, is left alone too, and its note says what to do instead.
+Encrypted PDFs are left unchanged rather than rewritten without their encryption.
 
 \`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
 **writing on it** — the same toggle every other file has. Draw on it as you would
@@ -511,7 +514,9 @@ saying it is read-only; drawing and saving change nothing in it. You can still
 read, select, copy and find in it, and open its Text. Choose **Retry** if an
 attachment could not be read; otherwise open it in a version of the app that wrote
 it, or recover the annotations first. Never delete attachments from your only copy
-just to make the note go away.
+just to make the note go away. Existing attachments are retained when you save;
+if different attachments have the same name, a notice gives the recovered names
+used to keep both. If attachment repair or its verification fails, nothing is written.
 
 Everything around a page — the toolbars, the pen panel, the space the pages sit
 on — follows the app's theme, so a notebook or a PDF is dark at night like the

@@ -919,6 +919,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
         const markUnsaved = () => {
             revision++;
             hasUnsavedRef.current = true;
+            onFlushStartRef.current();
             if (!firstPending) firstPending = performance.now();
             thumbsRef.current?.invalidate(boxes.map((_, i) => i));
             schedule();
@@ -957,9 +958,9 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
             // Write on the way out so the viewer (which re-reads immediately) sees
             // the strokes — but only if there are any. Flushing unconditionally
             // would rewrite the whole PDF every time the mode was toggled.
-            if (hasUnsavedRef.current) {
+            if (hasUnsavedRef.current || pendingFlush) {
                 onFlushStartRef.current();   // synchronous: beats the viewer's read
-                flushInBackground(true);
+                if (hasUnsavedRef.current) flushInBackground(true);
             }
             // An in-flight export can outlive the pane. Its finally releases
             // the registration only after the funnel owns the complete revision.

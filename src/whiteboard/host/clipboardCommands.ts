@@ -4,13 +4,11 @@ import type { RenderToken } from '../../platform/render/types';
 import { deleteNodes } from '../change/commands';
 import type { CommandBuilder, Op } from '../change/ops';
 import { ClipboardCopy } from '../clipboard/copy';
-import { prepareInlineMedia } from '../clipboard/encode';
 import { createBoardCopySnapshotNow, type BoardCopySnapshotNowResult } from '../clipboard/runtimeSnapshotNow';
 import { createBoardCopySnapshot } from '../clipboard/runtimeSnapshot';
 import type { CopySnapshot } from '../clipboard/snapshot';
 import { deletionContents } from '../commands/pagesAndSheets';
-import type { PinExportSnapshot } from '../export/snapshot';
-import { exportSnapshotPng, exportSnapshotSvg, type SnapshotExportBounds } from '../export/snapshotExport';
+import type { NativeExportJob } from './nativeExport';
 import { hashMedia } from '../media/sha256';
 import type { MediaId } from '../model/media';
 import type { BoardRuntime } from './runtime';
@@ -28,9 +26,8 @@ export interface NativeClipboardCommandsOptions {
     readonly token: RenderToken;
     readonly memory: MemoryAllocator;
     readonly cache: ClipboardCache;
-    exportPin(route: 'copy' | 'menu'): PinExportSnapshot;
-    exportBounds(route: 'copy' | 'menu'): SnapshotExportBounds;
-    exportFilename(extension: 'png' | 'svg'): string;
+    /** Starts synchronously: the producer pins the source before its first await. */
+    prepareExport(route: 'copy' | 'context' | 'menu', signal: AbortSignal): Promise<NativeExportJob>;
     duplicate(snapshot: CopySnapshot): Promise<void>;
     current(): boolean;
     notice(message: string): void;
@@ -83,15 +80,17 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             };
             const result = deleteNodes(board.doc, draft, snapshot.roots, receipt.geometry);
             receipt.assertCurrent();
-            return () => {
-                writable(); receipt.assertCurrent();
-                if (!snapshotCurrent(snapshot)) throw new Error('Selection changed; nothing was cut');
-                if (ops.length) {
-                    const builder = board.begin('host', 'Cut');
-                    try { for (const op of ops) builder.push(op); const applied = builder.commit(); applied.release(); }
-                    catch (error) { try { builder.abort(); } catch { /* Preserve the original commit failure. */ } throw error; }
-                }
-                if (result.kept.length) options.notice('Locked content was copied but kept in place.');
+            const proof = board.preflight({ ops, origin: 'host', label: 'Cut' });
+            try { receipt.assertCurrent(); }
+            catch (error) { proof.release(); throw error; }
+            return {
+                commit() {
+                    writable(); receipt.assertCurrent();
+                    if (!snapshotCurrent(snapshot)) throw new Error('Selection changed; nothing was cut');
+                    if (proof.ops.length) { const applied = board.apply({ ops: proof.ops, origin: 'host', label: 'Cut' }); applied.release(); }
+                    if (result.kept.length) options.notice('Locked content was copied but kept in place.');
+                },
+                release: () => proof.release(),
             };
         },
         duplicate: snapshot => options.duplicate(snapshot),
@@ -151,28 +150,22 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
     const run = async (work: () => Promise<void>) => {
         try { await work(); } catch (error) { options.onError(error); }
     };
-    const capture = (route: 'copy' | 'menu') => {
+    const capture = (extension: 'png' | 'svg', signal: AbortSignal) => {
         guard();
-        const revision = board.doc.rev, source = options.exportPin(route), bounds = options.exportBounds(route);
-        const pin: PinExportSnapshot = () => {
-            guard();
-            const snapshot = source(), actual = snapshot.token;
-            if (snapshot.revision !== revision || actual.documentId !== token.documentId || actual.session !== token.session
-                || actual.vaultEpoch !== token.vaultEpoch || actual.bytesGeneration !== token.bytesGeneration) {
-                snapshot.release(); throw new Error('Export snapshot does not match the current board');
-            }
-            return snapshot;
-        };
-        const validate = () => { guard(); if (board.doc.rev !== revision) throw new Error('Board changed during export'); };
-        return { bounds, pin, validate };
+        const prepared = options.prepareExport('copy', signal);
+        // ClipboardItem receives this promise immediately, while activation is
+        // still live. The frozen producer—not a later live revision—owns pixels.
+        return prepared.then(async job => {
+            try { return await job[extension](signal); } finally { job.release(); }
+        });
     };
-    const png = (route: 'copy' | 'menu', signal: AbortSignal) => {
-        const { bounds, pin, validate } = capture(route);
-        return exportSnapshotPng(pin, bounds, signal, { clipboard: route === 'copy' }).then(blob => { validate(); return blob; });
-    };
-    const svg = (route: 'copy' | 'menu', signal: AbortSignal) => {
-        const { bounds, pin, validate } = capture(route);
-        return exportSnapshotSvg(pin, bounds, signal).then(blob => { validate(); return blob; });
+    const download = async (extension: 'png' | 'svg', route: 'context' | 'menu', signal: AbortSignal) => {
+        guard();
+        const job = await options.prepareExport(route, signal);
+        try {
+            const blob = await job[extension](signal);
+            guard(); options.download(blob, job.filename(extension));
+        } finally { job.release(); }
     };
     const withController = async (work: (signal: AbortSignal) => Promise<void>) => {
         const owned = new AbortController(); active.add(owned);
@@ -187,29 +180,21 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             try { if (cut) writable(); prepare(cut); return copy.copyEvent(event, cut); }
             catch (error) { options.onError(error); return false; }
         },
-        copyAsPng: () => run(() => withController(signal => options.copyPng(png('copy', signal)))),
-        copyAsSvg: () => run(() => withController(signal => options.copySvg(svg('copy', signal)))),
-        copyAsJson: () => run(() => withController(async signal => {
-            const snapshot = selectedNow().snapshot, sizes = new Map(snapshot.media.map(entry => [entry.id, entry.bytes]));
-            const payload = (async () => {
-                try {
-                    const inline = await prepareInlineMedia(snapshot, async (id, mediaSignal) => {
-                        const blob = await verifyMedia(snapshot, id, mediaSignal);
-                        if (blob && blob.size !== sizes.get(id)) throw new Error('Clipboard media size mismatch');
-                        return blob;
-                    }, signal);
-                    if (!snapshotCurrent(snapshot)) throw new Error('Selection changed during copy');
-                    const complete = snapshot.media.every(entry => inline.has(entry.id)), media: Record<string, string> = Object.create(null);
-                    if (complete) for (const [id, bytes] of inline) media[id] = bytes;
-                    else options.notice('Media are referenced by hash; this JSON is not a portable asset bundle');
-                    return new Blob([JSON.stringify({ ...snapshot.payload, media })], { type: 'text/plain' });
-                } finally { for (const lease of snapshot.leases) lease.release(); }
-            })();
-            try { await navigator.clipboard.write([new ClipboardItem({ 'text/plain': payload })]); }
-            finally { void payload.catch(() => {}); }
-        })),
-        exportPng: () => run(() => withController(async signal => { const name = options.exportFilename('png'); const blob = await png('menu', signal); guard(); options.download(blob, name); })),
-        exportSvg: () => run(() => withController(async signal => { const name = options.exportFilename('svg'); const blob = await svg('menu', signal); guard(); options.download(blob, name); })),
+        copyAsPng: () => run(() => withController(signal => options.copyPng(capture('png', signal)))),
+        copyAsSvg: () => run(() => withController(signal => options.copySvg(capture('svg', signal)))), 
+        copyAsJson: () => run(async () => {
+            guard();
+            const state = runtime.selection.getSnapshot();
+            const selection = state.selected.length ? state.selected : [...(board.doc.bySheet.get(state.sheet) ?? [])];
+            const snapshot = ownMedia(createBoardCopySnapshotNow({ runtime, memory: options.memory, current, selection })).snapshot;
+            try {
+                const blob = new Blob([JSON.stringify(snapshot.payload.records)], { type: 'text/plain' });
+                await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+                if (snapshot.media.length) options.notice('Media are referenced by hash; this JSON is not a portable asset bundle');
+            } finally { for (const lease of snapshot.leases) lease.release(); }
+        }),
+        exportPng: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('png', route, signal))),
+        exportSvg: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('svg', route, signal))),
         dispose() { if (!disposed) { disposed = true; cancelBackground(); stopSelection(); stopChanges(); stopGeometry();
             selectedProduct = undefined; for (const owned of active) owned.abort(); active.clear(); copy.dispose(); } },
     };

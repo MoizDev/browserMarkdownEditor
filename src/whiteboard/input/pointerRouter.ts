@@ -52,7 +52,9 @@ export class PointerRouter<Context> {
               interrupt: reason => options.router.interrupt(options.token, reason),
               update: (samples, keys) => options.router.update(options.token, sample.pointerId, samples, keys),
               begin: (point, keys, source) => {
-                const next = options.resolve(point, keys, source)
+                // A resumed tip starts a fresh segment even if Shift remains held;
+                // resolving continuation here would bridge across the erased gap.
+                const next = options.resolve(point, { ...keys, shift: false }, source)
                 return !!next && options.router.begin(options.token, next.tool, point, keys, next.context)
               },
               settled: signal => options.settled!(signal),

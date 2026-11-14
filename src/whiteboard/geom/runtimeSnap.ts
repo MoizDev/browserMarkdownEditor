@@ -6,14 +6,15 @@ import type { Vec2 } from './path';
 import { collectSnapCandidates, createSnapVisibility } from './snapCandidates';
 import { prepareVisibleSnapBounds } from './snapVisibleBounds';
 import { compareSnapMagnitude, exactGapDisplacement, exactSnapDisplacement, snapWithin, type ExactSnapDelta } from './snapArithmetic';
+import { nearestBoardGridCoordinate, type BoardSnapGrid } from './gridSnap';
 
 export interface BoardSnapGuide {
     readonly axis: 'x' | 'y';
     readonly value: number;
     readonly from: number;
     readonly to: number;
-    readonly target: NodeId;
-    readonly kind?: 'alignment' | 'equal-gap';
+    readonly target?: NodeId;
+    readonly kind?: 'alignment' | 'equal-gap' | 'grid';
     readonly featureAxis?: 'x' | 'y';
 }
 export interface BoardSnapResult { readonly delta: Vec2; readonly guides: readonly BoardSnapGuide[] }
@@ -29,8 +30,10 @@ export interface BoardSnapOptions {
     readonly thresholdCss?: number;
     readonly allowX?: boolean;
     readonly allowY?: boolean;
+    /** Explicit authoring lattice; omitted when grid snapping is disabled. */
+    readonly grid?: BoardSnapGrid | null;
 }
-interface Winner { readonly delta: ExactSnapDelta; readonly guides: readonly BoardSnapGuide[]; readonly rank: number; readonly priority: number; readonly source: number; readonly edge: number }
+interface Winner { readonly delta: ExactSnapDelta; readonly guides: readonly BoardSnapGuide[]; readonly rank: number; readonly priority: number; readonly source: number; readonly edge: number; readonly coordinateRepresentable?: boolean }
 
 /** Complete Scene strip traversal followed by actual logical geometry, never a hint or a prefix. */
 export async function snapBoardBounds(options: BoardSnapOptions): Promise<BoardSnapResult> {
@@ -72,10 +75,10 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
     const candidates = await collectSnapCandidates({ runtime, scene: scene!, doc, sheet: state.sheet, focus: state.focus,
         selected: options.selected, bounds, threshold, signal, cooperate, current: () => { try { check(); return true; } catch { return false; } } });
     check();
-    if (!candidates.size) return { delta: { x: 0, y: 0 }, guides: [] };
-    const scope = await acquireBoardGeometryScope(runtime, candidates, { signal, cooperate, current: () => {
+    if (!candidates.size && !options.grid) return { delta: { x: 0, y: 0 }, guides: [] };
+    const scope = candidates.size ? await acquireBoardGeometryScope(runtime, candidates, { signal, cooperate, current: () => {
         try { check(); return true; } catch { return false; }
-    } });
+    } }) : null;
     try {
         check(); let x: Winner | undefined, y: Winner | undefined;
         const better = (candidate: Winner, old: Winner | undefined) => !old || compareSnapMagnitude(candidate.delta, old.delta) < 0
@@ -90,12 +93,12 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
         let visited = 0; const visibility = createSnapVisibility(doc);
         for (const id of candidates) {
             check(); if (++visited % 256 === 0) { await cooperate(); check(); }
-            const logical = scope.logicalBounds(id), relation = visibility(id, logical);
+            const logical = scope!.logicalBounds(id), relation = visibility(id, logical);
             if (relation === 'hidden') continue;
             const other = relation === 'partial' ? await prepareVisibleSnapBounds(doc, id, logical, { runtime, signal, cooperate,
                 current: () => { try { check(); return true; } catch { return false; } } }) : logical;
             check(); if (!other) continue;
-            const rank = scope.rank(id); candidateBounds.push(other); boundsById.set(id, other);
+            const rank = scope!.rank(id); candidateBounds.push(other); boundsById.set(id, other);
             const overlapY = Math.min(other.y + other.height, bounds.y + bounds.height) - Math.max(other.y, bounds.y);
             const overlapX = Math.min(other.x + other.width, bounds.x + bounds.width) - Math.max(other.x, bounds.x);
             if (overlapY >= 0) {
@@ -141,9 +144,28 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
                 if (better(winner, y)) y = winner;
             }
         }
+        if (options.grid) {
+            for (const [axis, features, origin, step] of [
+                ['x', xs, options.grid.origin.x, options.grid.step.x],
+                ['y', ys, options.grid.origin.y, options.grid.step.y],
+            ] as const) {
+                for (let source = 0; source < features.length; source++) {
+                    const grid = nearestBoardGridCoordinate(features[source], origin, step);
+                    if (!snapWithin(grid.delta, threshold)) continue;
+                    const guide: BoardSnapGuide = { axis, value: grid.coordinate, kind: 'grid',
+                        from: axis === 'x' ? bounds.y : bounds.x,
+                        to: axis === 'x' ? bounds.y + bounds.height : bounds.x + bounds.width };
+                    const winner: Winner = { delta: grid.delta, coordinateRepresentable: grid.coordinateRepresentable,
+                        guides: [guide], rank: -1, priority: 2, source, edge: 0 };
+                    if (axis === 'x') { if (better(winner, x)) x = winner; }
+                    else if (better(winner, y)) y = winner;
+                }
+            }
+        }
         if (options.allowX === false) x = undefined;
         if (options.allowY === false) y = undefined;
-        if ((x && !x.delta.representable) || (y && !y.delta.representable)) throw new RangeError('Snap displacement is not exactly representable');
+        if ((x && (!x.delta.representable || x.coordinateRepresentable === false)) || (y && (!y.delta.representable || y.coordinateRepresentable === false)))
+            throw new RangeError('Snap displacement or grid coordinate is not exactly representable');
         const dx = x?.delta.rounded ?? 0, dy = y?.delta.rounded ?? 0;
         const flank = (other: Readonly<Rect>, axis: 'x' | 'y', mx: number, my: number): -1 | 0 | 1 => {
             const horizontal = axis === 'x', start = horizontal ? bounds.x + mx : bounds.y + my;
@@ -166,7 +188,10 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
         }
         const adjusted = (guide: BoardSnapGuide): BoardSnapGuide => {
             if (guide.kind === 'equal-gap') return { ...guide, value: guide.value + (guide.axis === 'x' ? dx : dy) };
-            const target = boundsById.get(guide.target); if (!target) throw new Error('Snap guide target disappeared');
+            if (guide.kind === 'grid') return guide.axis === 'x'
+                ? { ...guide, from: bounds.y + dy, to: bounds.y + dy + bounds.height }
+                : { ...guide, from: bounds.x + dx, to: bounds.x + dx + bounds.width };
+            const target = guide.target && boundsById.get(guide.target); if (!target) throw new Error('Snap guide target disappeared');
             return guide.axis === 'x'
                 ? { ...guide, from: Math.min(bounds.y + dy, target.y), to: Math.max(bounds.y + dy + bounds.height, target.y + target.height) }
                 : { ...guide, from: Math.min(bounds.x + dx, target.x), to: Math.max(bounds.x + dx + bounds.width, target.x + target.width) };
@@ -174,5 +199,5 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
         const guides = [...(x?.guides ?? []), ...(y?.guides ?? [])].map(adjusted);
         if (guides.some(guide => ![guide.value, guide.from, guide.to].every(Number.isFinite))) throw new RangeError('Snap guide overflows');
         check(); return { delta: { x: dx, y: dy }, guides };
-    } finally { scope.release(); }
+    } finally { scope?.release(); }
 }

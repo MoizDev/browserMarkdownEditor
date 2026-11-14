@@ -11,6 +11,7 @@ import { projectFrameMembership } from './frameMembership';
 import { projectBoardTransformPreview } from './transformProjection';
 import type { Vec2 } from './path';
 import { snapBoardBounds, type BoardSnapGuide } from './runtimeSnap';
+import type { BoardSnapGrid } from './gridSnap';
 import { TranslationPlan } from './translation';
 import { constrainedTranslation } from './transforms';
 
@@ -20,6 +21,8 @@ export interface BoardTranslationOptions {
     readonly down: Vec2;
     readonly zoom: () => number;
     readonly alwaysSnap: () => boolean;
+    /** Explicit authoring grid supplied by the view, not the adaptive displayed grid. */
+    readonly grid?: () => BoardSnapGrid | null;
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
@@ -65,7 +68,7 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
     };
     let plan: TranslationPlan;
     try { plan = new TranslationPlan(doc, roots.map(node => node.id), geometry); } catch (error) { source.release(); throw error; }
-    let latest: { value: BoardTranslationPreview; scope: BoardGeometryScope; signal: AbortSignal; serial: number } | undefined;
+    let latest: { value: BoardTranslationPreview; scope: BoardGeometryScope; signal: AbortSignal; serial: number; snapFence?: () => boolean } | undefined;
     const clear = () => { const value = latest; latest = undefined; value?.scope.release(); };
     const close = () => { if (closed) return; closed = true; serial++; plan.cancel(); try { clear(); } finally { source.release(); } };
     return {
@@ -74,6 +77,7 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
             const turn = ++serial, active = () => current() && !request.aborted && turn === serial;
             const assert = () => { check(request); if (turn !== serial) throw new DOMException('Translation preview superseded', 'AbortError'); };
             let delta = constrainedTranslation({ x: point.x - options.down.x, y: point.y - options.down.y }, shift), guides: readonly BoardSnapGuide[] = [];
+            let snapFence: (() => boolean) | undefined;
             const project = (ops: readonly NodeSetOp[]) => projectBoardGeometrySets(doc, ops, { signal: request, current: active, cooperate: options.cooperate });
             const stage = async (movement: Vec2) => {
                 const initial: NodeSetOp[] = plan.preview(movement).ops.map(op => { if (op.t !== 'set') throw new Error('Translation produced a non-set operation'); return op; });
@@ -95,14 +99,22 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                 assert();
                 // Default, calibration cut by owner: snapping is off unless the modifier or Always Snap enables it.
                 if (options.alwaysSnap() !== accel) {
+                    const zoom = options.zoom(), configured = options.grid?.() ?? null;
+                    const grid = configured ? { origin: { ...configured.origin }, step: { ...configured.step } } : null;
+                    snapFence = () => {
+                        const now = options.grid?.() ?? null;
+                        return options.alwaysSnap() !== accel && options.zoom() === zoom && (grid === null ? now === null : !!now
+                            && now.origin.x === grid.origin.x && now.origin.y === grid.origin.y
+                            && now.step.x === grid.step.x && now.step.y === grid.step.y);
+                    };
                     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
                     for (const root of roots) { const b = staged.scope.logicalBounds(root.id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
                         x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); }
                     const useX = !shift || delta.x !== 0, useY = !shift || delta.y !== 0;
                     const result = await snapBoardBounds({ runtime, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
-                        selected: roots.map(node => node.id), zoom: options.zoom(), allowX: useX, allowY: useY,
-                        current: active, signal: request, cooperate: options.cooperate });
-                    assert();
+                        selected: roots.map(node => node.id), zoom, grid, allowX: useX, allowY: useY,
+                        current: () => active() && snapFence!(), signal: request, cooperate: options.cooperate });
+                    assert(); if (!snapFence()) throw new DOMException('Snap settings changed', 'AbortError');
                     const snapX = useX ? result.delta.x : 0, snapY = useY ? result.delta.y : 0;
                     guides = result.guides.filter(guide => (guide.featureAxis ?? guide.axis) === 'x' ? useX : useY);
                     if (snapX || snapY) { delta = { x: delta.x + snapX, y: delta.y + snapY }; staged.scope.release(); staged = await stage(delta); }
@@ -132,13 +144,15 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                 }
                 final = await acquireBoardGeometryScope(runtime, roots.map(root => root.id), { doc: finalDoc, signal: request, current: active, cooperate: options.cooperate }); assert();
                 const value = Object.freeze({ ops: Object.freeze(ops.map(op => Object.freeze(op))), doc: finalDoc, guides: Object.freeze([...guides]) });
-                clear(); latest = { value, scope: final, signal: request, serial: turn }; transferred = true; return value;
+                if (snapFence && !snapFence()) throw new DOMException('Snap settings changed', 'AbortError');
+                clear(); latest = { value, scope: final, signal: request, serial: turn, snapFence }; transferred = true; return value;
             } finally { try { if (!transferred) final?.release(); } finally { staged.scope.release(); } }
         },
         commit(value) {
             try {
                 check(); if (!latest || latest.value !== value || latest.serial !== serial) throw new DOMException('Translation preview is not current', 'AbortError');
-                latest.signal.throwIfAborted(); const transaction: Transaction = { origin: 'tool', label: 'Move selection', ops: value.ops };
+                latest.signal.throwIfAborted(); if (latest.snapFence && !latest.snapFence()) throw new DOMException('Snap settings changed', 'AbortError');
+                const transaction: Transaction = { origin: 'tool', label: 'Move selection', ops: value.ops };
                 if (transaction.ops.length) { const applied = session.apply(transaction); applied.release(); }
             } finally { close(); }
         },

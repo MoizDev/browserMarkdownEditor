@@ -13,10 +13,11 @@ export async function searchSidebar(session: IndexSession, queryId: number, quer
     files: readonly IndexFile[], text: SearchResidency, overlays: ReadonlyMap<string, SearchOverlay>,
     context: WorkerContext, current: () => boolean): Promise<void> {
     const overlayRevs = Object.fromEntries([...overlays].map(([path, overlay]) => [path, overlay.rev]));
-    let matches = 0, count = 0, clipped = false;
+    let matches = 0, count = 0, clipped = false, scanned = 0, lastProgress = performance.now();
     const emit = (batch: SearchRow[], done: boolean) => context.emit('results', {
-        session, queryId, overlayRevs, batch, done, clipped, matchCount: matches,
+        session, queryId, overlayRevs, batch, done, clipped, matchCount: matches, scanned, total: files.length,
     } satisfies SearchBatch);
+    emit([], false);
     for (let i = 0; i < files.length; i++) {
         if (context.cancelled || !current()) return;
         if (count >= 200) { clipped = true; break; }
@@ -40,6 +41,8 @@ export async function searchSidebar(session: IndexSession, queryId: number, quer
                 emit([{ path: file.path, nameMatch: row.nameMatch, matches: found, clipped: row.clipped || limited }], false);
             }
         }
+        scanned = i + 1;
+        if (performance.now() - lastProgress >= 250) { emit([], false); lastProgress = performance.now(); }
         await context.slice();
     }
     if (!context.cancelled && current()) emit([], true);

@@ -32,6 +32,9 @@ export interface IncrementalPdfWriter {
   open(options: { readonly revision: number; readonly pageCount: number; readonly notebookSource?: { readonly path: string } },
     signal: AbortSignal): Promise<IncrementalPdfSession>
 }
+export function isIncrementalPdfWriter(value: unknown): value is IncrementalPdfWriter {
+  return typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'incremental-pdf'
+}
 export interface IncrementalPdfPageSource {
   readonly source: PaintNodeSource
   readonly world: Readonly<Rect>
@@ -55,10 +58,22 @@ function validWorld(world: Readonly<Rect>): void {
   if (![world.x, world.y, world.width, world.height].every(Number.isFinite) || world.width <= 0 || world.height <= 0)
     throw new RangeError('Invalid PDF page extent')
 }
-function sameIdentity(first: PaintNodeSource, current: PaintNodeSource): boolean {
-  const a = first.token, b = current.token
-  return first.sceneRevision === current.sceneRevision && a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId
-    && a.bytesGeneration === b.bytesGeneration && a.session === b.session
+interface PdfSourceIdentity {
+  readonly revision: number
+  readonly vaultEpoch: PaintNodeSource['token']['vaultEpoch']
+  readonly documentId: PaintNodeSource['token']['documentId']
+  readonly bytesGeneration: PaintNodeSource['token']['bytesGeneration']
+  readonly session: PaintNodeSource['token']['session']
+}
+function sourceIdentity(source: PaintNodeSource): PdfSourceIdentity {
+  const token = source.token
+  return { revision: source.sceneRevision, vaultEpoch: token.vaultEpoch, documentId: token.documentId,
+    bytesGeneration: token.bytesGeneration, session: token.session }
+}
+function sameIdentity(first: PdfSourceIdentity, current: PaintNodeSource): boolean {
+  const token = current.token
+  return first.revision === current.sceneRevision && first.vaultEpoch === token.vaultEpoch && first.documentId === token.documentId
+    && first.bytesGeneration === token.bytesGeneration && first.session === token.session
 }
 function group(item: Extract<PageDisplayItem, { kind: 'group' }>): PdfGroupOpen {
   return { ...(item.transform ? { transform: item.transform } : {}), ...(item.clip ? { clip: item.clip } : {}),
@@ -215,7 +230,7 @@ export async function streamIncrementalPdf(source: IncrementalPdfSource, scale: 
       || !Number.isFinite(scale) || scale <= 0) throw new RangeError('Invalid incremental PDF source')
   signal.throwIfAborted()
   const output = await writer.open({ revision: source.revision, pageCount: source.pageCount, ...(notebookSource ? { notebookSource } : {}) }, signal)
-  let complete = false, first: PaintNodeSource | undefined
+  let first: PdfSourceIdentity | undefined
   try {
     for (let index = 0; index < source.pageCount; index++) {
       signal.throwIfAborted()
@@ -223,7 +238,7 @@ export async function streamIncrementalPdf(source: IncrementalPdfSource, scale: 
       validWorld(page.world)
       if (!Number.isFinite(size) || size <= 0 || page.source.sceneRevision !== source.revision) throw new Error('PDF page revision changed')
       if (first && !sameIdentity(first, page.source)) throw new Error('PDF pages must share one pinned revision')
-      first ??= page.source
+      first ??= sourceIdentity(page.source)
       guard(page.source, signal)
       const width = page.world.width * size, height = page.world.height * size
       if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new RangeError('Invalid PDF output size')
@@ -236,13 +251,9 @@ export async function streamIncrementalPdf(source: IncrementalPdfSource, scale: 
     const bytes = await output.finish(signal)
     signal.throwIfAborted()
     if (!(bytes instanceof Uint8Array)) throw new TypeError('Invalid incremental PDF output')
-    complete = true
     return bytes
   } catch (error) {
     try { await output.cancel() } catch (cleanup) { throw new AggregateError([error, cleanup], 'PDF export and cancellation failed') }
     throw error
-  } finally {
-    // A successful finish owns its returned bytes; every other path cancels above.
-    if (!complete) first = undefined
   }
 }

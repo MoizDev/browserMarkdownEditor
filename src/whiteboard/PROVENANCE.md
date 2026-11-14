@@ -17,6 +17,8 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `chrome/penWidth.ts` | w-j | F-STYLE-006/008, R-2 | integration §6; geometry §3.2 | Style specification endpoints and w-h's public StyleGeometryMetrics; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/theme.ts` | w-j | F-THEME-001/002/003/006, R-26, WB-D28 | integration §6; rendering §5 | Theme specification and host scope ruling; no tldraw or old canvas source | none | 2026-11-13 |
+| `chrome/preferences.ts` | w-j | F-PREF-002/003/005/006/008/012, WB-D30 | integration §§6–7 | Preference specification and public model view flags; session/view changes delegated to host persistence; no tldraw or old canvas source | none | 2026-11-13 |
+| `chrome/language.ts` | w-j | F-LANG-001/002/003/004/005 | integration §6.2 | Own English keys and locale manifest, Intl plural rules, input validation; no tldraw or old canvas source | none | 2026-11-13 |
 
 ## Model, changes, history and text (lane w-c)
 
@@ -151,6 +153,7 @@ third-party code included (normally "none") · date.
 | `export/displayList.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §3 | Shared paint frame, world-space clips, source-pixel image crop, cancellable shared ink outline and PDF display contract; no tldraw source | none | 2026-11-13 |
 | `export/svg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5 | Resolution-free shared display-list serialization, self-contained embedded images and local clip paths; no tldraw source | none | 2026-11-13 |
 | `export/pngWorkerProtocol.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; row backpressure protocol; no tldraw source | none | 2026-11-13 |
+| `export/pngWorkerHandler.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Platform-hosted pull-stream encoder handlers, bounded row transfer and cooperative cancellation; no tldraw source | none | 2026-11-13 |
 | `export/png.worker.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; dedicated streaming encoder and cancellation; no tldraw source | none | 2026-11-13 |
 | `export/pngWorkerClient.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; bounded-band producer and transferable owned rows; no tldraw source | none | 2026-11-13 |
 | `export/prepareRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; rendering §3 | Shared reference geometry jobs and image lease contract; cancellable pinned capture resources; no tldraw source | none | 2026-11-13 |
@@ -207,7 +210,7 @@ third-party code included (normally "none") · date.
 | `geom/styleMetrics.ts` | lane w-h | WB-D20 | geometry §3.2 | Geometry design and its provisional measurement table; finite metric admission; no tldraw source | none | 2026-11-13 |
 | `geom/figures.ts` | lane w-h | F-FIG-001/002/003/004 | geometry §3 | Independent shape recipes and local semantic bounds; FIG creation ratios and seed-centred gestures; kernel-certified arc conversion and analytic cloud with fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe and continuous dash phase; no tldraw source | none | 2026-11-13 |
-| `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; node-local hatch clipping; exhaustive path-op narrowing; no tldraw source | none | 2026-11-13 |
+| `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; node-local hatch clipping and reflected phase; no tldraw source | none | 2026-11-13 |
 
 ## Media and clipboard (lane w-q)
 
@@ -277,6 +280,7 @@ third-party code included (normally "none") · date.
 | `model/pages.ts` | lane w-l | M-6, E-DOC-12/13/14, C1.5, C2.3 | document-model §6 | Design; platform pageStack and geometry contract, cached by paper/page-list identity; no tldraw source | none | 2026-11-13 |
 | `commands/pagesAndSheets.ts` | lane w-l | F-SHEET-002/003/004/005/006, F-NB-002/003/004/006/007/008, R-11, R-24, WB-D29 | document-model §6; change-and-history §2 | Specs and own model/apply interfaces; no tldraw source | none | 2026-11-13 |
 | `host/notebookPaper.ts` | lane w-l | F-NB-002/003/004/014, C2.4 | notebook §F-NB-004 | Specs, platform display-list contract and paper.ts; no tldraw source | none | 2026-11-13 |
+| `host/notebookBackdrop.ts` | lane w-l | F-NB-004/005, C2.1 | notebook §F-NB-004; contracts C2.1 | Procedural paper and own paint-stream contracts; no tldraw source | none | 2026-11-13 |
 | `host/notebookExport.ts` | lane w-l | F-NB-014, F-SHEET-008, R-12, C2.4 | notebook §F-NB-014; sheets §F-SHEET-008 | Specs, platform display-list contract; no tldraw source | none | 2026-11-13 |
 | `host/pageDisplay.ts` | lane w-l | F-NB-014, F-SHEET-008, C2.4 | notebook §F-NB-014; contracts C2.4 | Specs, platform display list and paint-frame export; no tldraw source | none | 2026-11-13 |
 | `host/pdfAttachments.ts` | lane w-l | F-PINK-008, C2.4, R-W15 | pdf-ink §F-PINK-008; native-format §3.6 | Specs, owned fence and media hash APIs; no tldraw source | none | 2026-11-13 |

@@ -26,6 +26,7 @@ export interface CanvasKinds {
     epub: boolean;
     pdf: boolean;
     drawing: boolean;
+    nativeDrawing: boolean;
     notebook: boolean;
 }
 
@@ -47,7 +48,7 @@ function warm(key: string, load: () => Promise<unknown>): void {
  * once, and a vault holding none of these kinds does nothing at all.
  */
 export function prefetchPanes(kinds: CanvasKinds): void {
-    if (!kinds.epub && !kinds.pdf && !kinds.drawing && !kinds.notebook) return;
+    if (!kinds.epub && !kinds.pdf && !kinds.drawing && !kinds.nativeDrawing && !kinds.notebook) return;
 
     const run = () => {
         const route = routeEngines();
@@ -60,8 +61,9 @@ export function prefetchPanes(kinds: CanvasKinds): void {
             warm('pdf', loadPdfPane);
             warm('pdf-worker', () => import('../utils/pdfClassicOpen').then(m => { m.prefetchClassicPdf(); }));
         }
-        // A notebook IS a tldraw canvas, so either kind warms the big one.
+        // Legacy canvases warm tldraw; native drawings warm only their own entry.
         if (kinds.drawing && route.canvas.drawing.engine === 'tldraw') warm('drawing', () => import('./DrawingPane'));
+        if (kinds.nativeDrawing) warm('native-drawing', () => import('./whiteboard/NativeCanvasEntry'));
         if (kinds.notebook && route.canvas.notebook.engine === 'tldraw') warm('notebook', () => import('./NotebookPane'));
     };
 

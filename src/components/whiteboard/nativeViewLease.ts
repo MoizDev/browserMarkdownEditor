@@ -1,15 +1,17 @@
 import type { PlatformLayerDefinition, PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
-import type { PageGeometry, Rect } from '../../platform/types';
+import type { Rect } from '../../platform/types';
+import { createPlatformCapturer } from '../../platform/render/captureRuntime';
+import type { CompositorCaptureOptions } from '../../platform/render/compositor.types';
+import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
-import { paperPageSize } from '../../utils/paper';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
-import { createNotebookPaperLayer, type NotebookPaperSnapshot } from '../../whiteboard/host/notebookPaperLayer';
+import { createBoardCaptureSnapshot } from '../../whiteboard/export/runtimeSnapshot';
 import { createBoardHostImages } from '../../whiteboard/media/hostImages';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import type { MediaId } from '../../whiteboard/model/media';
-import { DEFAULT_BOARD_PALETTES } from '../../whiteboard/render/palette';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { attachView } from '../../whiteboard/viewer/attachView';
 import { createBoardNavigationHost } from '../../whiteboard/viewer/navigationHost';
@@ -20,6 +22,8 @@ import { createNativeViewPlatform } from './nativeViewPlatform';
 export interface NativePdfBackdrop {
     readonly layers: readonly PlatformLayerDefinition[];
     readonly pages: readonly { readonly width: number; readonly height: number }[];
+    captureSnapshot(request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot;
+    assertCaptureCurrent(): void;
     setVisible(visible: boolean, focused: boolean): void;
     notePresentation?(): void;
     dispose(): void;
@@ -33,6 +37,8 @@ export interface NativeViewLease extends BoardViewLease<object> {
     jump(page: number): void;
     zoomBy(factor: number): void;
     reveal(rect: Rect): void;
+    captureRegion(rect: Rect, maxSide: number, signal: AbortSignal): Promise<ImageBitmap>;
+    captureBlob(rect: Rect, maxSide: number, signal: AbortSignal): Promise<Blob>;
     changed(): void;
     replaceBackdrop(backdrop: NativePdfBackdrop): void;
 }
@@ -80,21 +86,6 @@ export function createNativeViewLease(options: {
         if (key !== viewportKey) { viewportKey = key; cameraOwner.resize(viewport); }
         return camera.viewport;
     };
-    let paperSnapshot: NotebookPaperSnapshot | undefined;
-    const paper = board.doc.kind === 'notebook' ? createNotebookPaperLayer({
-        read() {
-            const docHost = board.doc.host;
-            if (docHost.kind !== 'notebook') throw new Error('Notebook host changed kind');
-            if (!paperSnapshot || paperSnapshot.host.paper !== docHost.paper) {
-                const size = paperPageSize(docHost.paper);
-                const pages: PageGeometry[] = Array.from({ length: docHost.paper.pageCount }, (_, index) => ({ index,
-                    ...size, rotate: 0, userUnit: 1, toUserSpace: [1, 0, 0, -1, 0, size.height] }));
-                paperSnapshot = { revision: board.doc.rev, host: docHost, pages };
-            }
-            return paperSnapshot;
-        },
-        palette: () => DEFAULT_BOARD_PALETTES.light, onError: options.onError,
-    }) : undefined;
     const images = createBoardHostImages({ identity: { session: `${identity.documentId}:${identity.session}`,
         epoch: identity.vaultActivation, revision: board.doc.rev }, token, media: runtime.media,
         current: () => current() && parameters.visible,
@@ -113,7 +104,9 @@ export function createNativeViewLease(options: {
             return found.blob;
         }, onError: options.onError });
     const viewParameters = (): ViewerViewParams => ({ ...parameters, sheetId: runtime.selection.getSnapshot().sheet,
-        ...(backdrop ? { backdrops: backdrop.layers, pages: backdrop.pages } : paper ? { backdrops: [paper] } : {}) });
+        // attachView owns the notebook's actual paper layer; adding another one
+        // here gives the compositor two definitions with the same layer id.
+        ...(backdrop ? { backdrops: backdrop.layers, pages: backdrop.pages } : {}) });
     let viewer: ReturnType<typeof attachView>;
     const reveal = (rect: Rect) => { camera.bringIntoView(rect, 24); cameraOwner.changed(); };
     try {
@@ -124,8 +117,86 @@ export function createNativeViewLease(options: {
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), invalidate, onError: options.onError,
         mac: /Mac|iPhone|iPad/.test(navigator.platform) });
+    const paneId = `native-${identity.documentId}-${viewLease}`;
+    const withCapturer = <T,>(run: (capturer: ReturnType<typeof createPlatformCapturer>) => Promise<T>): Promise<T> => {
+        if (!current()) return Promise.reject(new Error('Native view capture is unavailable'));
+        const sheetId = runtime.selection.getSnapshot().sheet;
+        const blobs = new Map<MediaId, Blob>();
+        for (const id of board.doc.media.keys()) { const blob = runtime.media.get(id); if (blob) blobs.set(id, blob); }
+        const capturer = createPlatformCapturer({ paneId, owner: token, snapshot: (capture, memory) => {
+            if (!current()) throw new DOMException('Native view ended', 'AbortError');
+            const readMedia = async (entry: { readonly id: MediaId; readonly bytes: number }, signal: AbortSignal) => {
+                signal.throwIfAborted();
+                const blob = blobs.get(entry.id);
+                if (!blob || blob.size !== entry.bytes) throw new Error(`Captured board media is unavailable: ${entry.id}`);
+                return blob;
+            };
+            if (board.doc.kind !== 'pdf-ink') return createBoardCaptureSnapshot({ runtime, sheetId, request: capture, memory, onError: options.onError, readMedia });
+            const pdf = backdrop;
+            if (!pdf) throw new Error('PDF backdrop capture is unavailable');
+            pdf.assertCaptureCurrent();
+            const pdfIds = new Set(pdf.layers.map(layer => layer.id));
+            const pdfLayers = capture.layers.filter(id => pdfIds.has(id));
+            const boardLayers = capture.layers.filter(id => id === 'board-underlay' || id === 'board-content');
+            if (pdfLayers.length + boardLayers.length !== capture.layers.length || !capture.layers.length) throw new Error('PDF capture requested an unavailable layer');
+            const children: Array<{ snapshot: CaptureSnapshot; request: CaptureRequest }> = [];
+            const releaseChildren = () => { for (const child of children) { try { child.snapshot.release(); } catch (error) { try { options.onError(error); } catch { /* Continue releasing the other pins. */ } } } };
+            let identityPin: ReturnType<NonNullable<BoardRuntime['scene']>['pin']> | undefined;
+            try {
+                if (pdfLayers.length) {
+                    const request = { ...capture, layers: pdfLayers };
+                    children.push({ snapshot: pdf.captureSnapshot(request, memory), request });
+                }
+                if (boardLayers.length) {
+                    const request = { ...capture, layers: boardLayers };
+                    children.push({ snapshot: createBoardCaptureSnapshot({ runtime, sheetId, request, memory, onError: options.onError, readMedia }), request });
+                } else {
+                    if (!runtime.scene || runtime.scene.revision !== board.doc.rev) throw new Error('Board scene is not ready');
+                    identityPin = runtime.scene.pin();
+                }
+                const root = boardLayers.length ? children[children.length - 1].snapshot : identityPin!;
+                const controller = new AbortController();
+                let released = false;
+                return {
+                    token: root.token, revision: String(root.revision),
+                    signal: AbortSignal.any([controller.signal, ...children.map(child => child.snapshot.signal)]),
+                    layers: children.flatMap(child => child.snapshot.layers),
+                    get isolation() {
+                        return children.every(child => child.snapshot.isolation !== undefined)
+                            ? children.flatMap(child => child.snapshot.isolation ?? []) : undefined;
+                    },
+                    async prepare(_request, route, signal) {
+                        let result: 'exact' | 'standin' | 'incomplete' = 'exact';
+                        for (const child of children) {
+                            const status = await child.snapshot.prepare(child.request, route, signal);
+                            if (status === 'incomplete') return status;
+                            if (status === 'standin') result = status;
+                        }
+                        return result;
+                    },
+                    release() {
+                        if (released) return; released = true; controller.abort();
+                        try { releaseChildren(); } finally { identityPin?.release(); }
+                    },
+                };
+            } catch (error) {
+                try { releaseChildren(); } finally { identityPin?.release(); }
+                throw error;
+            }
+        } });
+        try { return run(capturer).finally(() => capturer.dispose()); }
+        catch (error) { capturer.dispose(); return Promise.reject(error); }
+    };
+    const captureRegion = (rect: Rect, maxSide: number, request: CompositorCaptureOptions) =>
+        withCapturer(capturer => capturer.captureRegion(rect, maxSide, request));
+    const captureBlob = (rect: Rect, maxSide: number, request: CompositorCaptureOptions) =>
+        withCapturer(capturer => capturer.captureBlob(rect, maxSide, request));
+    const captureLayers = () => board.doc.kind === 'notebook' ? ['notebook-paper', 'board-underlay', 'board-content']
+        : board.doc.kind === 'pdf-ink' ? [...(backdrop?.layers.map(layer => layer.id) ?? []), 'board-underlay', 'board-content']
+            : ['board-underlay', 'board-content'];
     const services = createNativeViewPlatform({ host, identity, board, viewer, camera,
-        paneId: `native-${identity.documentId}-${viewLease}`, viewLease,
+        paneId, viewLease,
+        captureRegion, captureBlob,
         readSheetId: () => runtime.selection.getSnapshot().sheet,
         ports: { consumeInput: timestamp => navigation.consumeInput(timestamp), isInteracting: () => navigation.isInteracting(),
             setInputEnabled: enabled => navigation.setInputEnabled(enabled), cancelViewWork: reason => navigation.cancelViewWork(reason),
@@ -154,6 +225,8 @@ export function createNativeViewLease(options: {
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
     const lease: NativeViewLease = {
         runtime, camera, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
+        captureRegion: (rect, maxSide, signal) => captureRegion(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
+        captureBlob: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         replaceBackdrop(next) {
             if (disposed || board.doc.kind !== 'pdf-ink' || !current()) throw new Error('PDF view is not current');
             if (next === backdrop) return;

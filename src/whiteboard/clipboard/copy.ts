@@ -1,6 +1,6 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { MediaId } from '../model/media';
-import type { BoardRuntime } from '../host/runtime';
+import type { ClipboardCache } from '../../utils/clipboardCache';
 import { compressClipboard, encodeClipboardNow, prepareInlineMedia, type ClipboardEnvelope } from './encode';
 import type { CopySnapshot } from './snapshot';
 
@@ -15,13 +15,12 @@ export interface CachedClipboard {
     readMedia?(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
 }
 export interface ClipboardCopyHost {
-    readonly runtime: BoardRuntime;
-    /** Shared session allocator; cache leases can outlive the originating pane. */
+    /** Shared allocator; frozen copy leases can outlive their document owner. */
     readonly memory: MemoryAllocator;
-    readMedia(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
+    readMedia(snapshot: CopySnapshot, id: MediaId, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(snapshot: CopySnapshot): boolean;
     /** Captures eligibility and an exact revision; it must refuse opaque deletions before clipboard write. */
-    prepareCut(snapshot: CopySnapshot): () => void;
+    prepareCut(snapshot: CopySnapshot): (() => void) & { release?(): void };
     duplicate(snapshot: CopySnapshot): Promise<void>;
     notice(message: string): void;
 }
@@ -63,15 +62,17 @@ function sameCapture(a: CopySnapshot, b: CopySnapshot): boolean {
         p.x === q.x && p.y === q.y && p.w === q.w && p.h === q.h;
     return boundsEqual(a.payload.bounds, b.payload.bounds) && a.textItems.every((item, index) => boundsEqual(item.bounds, b.textItems[index].bounds));
 }
-// Copy cache belongs to the window, not a pane; a vault switch must not invalidate its retained source.
-let windowWritten: { held: HeldSnapshot; envelope: ClipboardEnvelope; readMedia: ClipboardCopyHost['readMedia']; controller: AbortController } | null = null;
+class WrittenSnapshot {
+    constructor(readonly held: HeldSnapshot, readonly envelope: ClipboardEnvelope,
+        readonly readMedia: (id: MediaId, signal: AbortSignal) => Promise<Blob | null>) {}
+}
 
-/** One session-wide copy cache. A cache hit requires the immutable exact envelope,
- * not just the nonce; a cache-only marker additionally requires exact plain text. */
+/** Candidates belong to documents; successful copies belong to the App window.
+ * A cache hit proves the exact envelope, and cache-only also proves plain text. */
 export class ClipboardCopy {
     private candidate: Candidate | null = null;
     private disposed = false;
-    constructor(private readonly host: ClipboardCopyHost) {}
+    constructor(private readonly host: ClipboardCopyHost, private readonly cache: ClipboardCache) {}
 
     setSelection(snapshot: CopySnapshot | null): void {
         if (this.disposed) throw new Error('Clipboard cache is closed');
@@ -84,24 +85,24 @@ export class ClipboardCopy {
         catch (error) { release(held); throw error; }
         const candidate: Candidate = { held, controller, envelope };
         this.candidate = candidate;
-        void this.host.runtime.jobs.run(async context => {
+        void (async () => {
             const inline = snapshot.payload.records.reduce((sum, line) => sum + line.length, 0) > 48 * 1024 * 1024
-                ? new Map<MediaId, string>() : await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), context.signal);
-            context.assertCurrent();
+                ? new Map<MediaId, string>() : await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(snapshot, id, signal), controller.signal);
+            controller.signal.throwIfAborted();
             if (this.candidate !== candidate || !this.host.isCurrent(snapshot)) return;
             const next = encodeClipboardNow(snapshot, inline);
             candidate.envelope = next;
-            const compressed = await compressClipboard(snapshot, next, context.signal);
-            context.assertCurrent();
+            const compressed = await compressClipboard(snapshot, next, controller.signal);
+            controller.signal.throwIfAborted();
             if (this.candidate === candidate && this.host.isCurrent(snapshot)) candidate.envelope = compressed;
-        }, { signal: controller.signal, deadlineMs: 120_000 }).catch(() => {
+        })().catch(() => {
             // Copy still has the synchronous native records; missing bytes are resolved by hash on paste.
         });
     }
 
     match(encoded: string, plain: string): CachedClipboard | null {
-        const entry = windowWritten;
-        if (this.disposed || !entry || entry.envelope.encoded !== encoded || (entry.envelope.cacheOnly && entry.envelope.plain !== plain)) return null;
+        const entry = this.cache.match(encoded, plain);
+        if (!(entry instanceof WrittenSnapshot)) return null;
         return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly, readMedia: entry.readMedia };
     }
 
@@ -124,7 +125,7 @@ export class ClipboardCopy {
     copyEvent(event: ClipboardEvent, cut = false): boolean {
         const candidate = this.candidate;
         if (!candidate || !event.clipboardData) return false;
-        let commitCut: (() => void) | undefined;
+        let commitCut: ReturnType<ClipboardCopyHost['prepareCut']> | undefined;
         try {
             if (!this.host.isCurrent(candidate.held.snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && candidate.held.snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${candidate.held.snapshot.skippedOpaque.join(', ')}`);
@@ -141,52 +142,53 @@ export class ClipboardCopy {
         } catch (error) {
             this.host.notice(error instanceof Error ? error.message : 'Could not copy selection.');
             return false;
-        }
+        } finally { commitCut?.release?.(); }
     }
 
     /** C2 capture is asynchronous, but ClipboardItem promises are installed during the initiating gesture. */
     async copyMenuFresh(capture: (signal: AbortSignal) => Promise<CopySnapshot>, cut = false): Promise<void> {
         if (this.disposed) throw new Error('Clipboard cache is closed');
-        const runtime = this.host.runtime, controller = new AbortController(), session = runtime.session;
+        const controller = new AbortController();
         let held: HeldSnapshot | undefined, finished = false;
-        const prepared = runtime.jobs.run(async context => {
-            const snapshot = await capture(context.signal);
+        let commitCut: ReturnType<ClipboardCopyHost['prepareCut']> | undefined;
+        // A captured read-only copy does not belong to the live mutation queue:
+        // closing its pane/document cannot revoke the retained source midway.
+        const prepared = (async () => {
+            const snapshot = await capture(controller.signal);
             const owner = hold(snapshot, this.host.memory);
-            if (finished || this.disposed) { release(owner); throw new DOMException('Clipboard capture ended', 'AbortError'); }
+            if (finished) { release(owner); throw new DOMException('Clipboard capture ended', 'AbortError'); }
             held = owner;
-            context.assertCurrent();
-            if (runtime.session !== session || !this.host.isCurrent(snapshot)) throw new Error('Selection changed; copy again.');
+            controller.signal.throwIfAborted();
+            if (cut && !this.host.isCurrent(snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${snapshot.skippedOpaque.join(', ')}`);
-            const commitCut = cut ? this.host.prepareCut(snapshot) : undefined;
+            commitCut = cut ? this.host.prepareCut(snapshot) : undefined;
             let inline: ReadonlyMap<MediaId, string> = new Map();
             try {
                 if (snapshot.payload.records.reduce((sum, line) => sum + line.length, 0) <= 48 * 1024 * 1024) {
-                    inline = await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), context.signal);
+                    inline = await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(snapshot, id, signal), controller.signal);
                 }
-            }
-            catch { context.assertCurrent(); }
-            context.assertCurrent();
-            if (finished || this.disposed || runtime.session !== session || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
+            } catch { controller.signal.throwIfAborted(); }
             let envelope = encodeClipboardNow(snapshot, inline);
-            try { envelope = await compressClipboard(snapshot, envelope, context.signal); }
-            catch { context.assertCurrent(); }
-            context.assertCurrent();
-            if (finished || this.disposed || runtime.session !== session || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
-            return { owner, envelope, commitCut };
-        }, { signal: controller.signal, deadlineMs: 120_000 });
+            try { envelope = await compressClipboard(snapshot, envelope, controller.signal); }
+            catch { controller.signal.throwIfAborted(); }
+            controller.signal.throwIfAborted();
+            return { owner, envelope };
+        })();
         const plain = prepared.then(value => new Blob([value.envelope.plain], { type: 'text/plain' }));
         const html = prepared.then(value => new Blob([value.envelope.html], { type: 'text/html' }));
         void plain.catch(() => undefined); void html.catch(() => undefined);
         try {
             await navigator.clipboard.write([new ClipboardItem({ 'text/plain': plain, 'text/html': html })]);
             const result = await prepared;
-            if (this.disposed) return;
             this.remember(result.owner, result.envelope);
             if (result.envelope.cacheOnly) this.host.notice('This copy works only in this app window.');
             if (result.owner.snapshot.skippedOpaque.length) this.host.notice(`This version can't copy: ${result.owner.snapshot.skippedOpaque.join(', ')}`);
-            result.commitCut?.();
+            if (commitCut) {
+                if (!this.host.isCurrent(result.owner.snapshot)) throw new Error('Source changed; content was copied but not cut.');
+                commitCut();
+            }
         } catch (error) { this.host.notice(error instanceof Error ? error.message : 'Could not copy selection.'); }
-        finally { finished = true; controller.abort(); if (held) release(held); }
+        finally { finished = true; controller.abort(); commitCut?.release?.(); if (held) release(held); }
     }
 
     async copyMenu(cut = false): Promise<void> {
@@ -194,23 +196,24 @@ export class ClipboardCopy {
         if (!candidate) throw new Error('Nothing selected');
         const held = candidate.held;
         held.count++;
+        let commitCut: ReturnType<ClipboardCopyHost['prepareCut']> | undefined;
         try {
             if (!this.host.isCurrent(held.snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && held.snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${held.snapshot.skippedOpaque.join(', ')}`);
-            const commitCut = cut ? this.host.prepareCut(held.snapshot) : undefined;
+            commitCut = cut ? this.host.prepareCut(held.snapshot) : undefined;
             const envelope = candidate.envelope;
             await navigator.clipboard.write([new ClipboardItem({
                 'text/plain': new Blob([envelope.plain], { type: 'text/plain' }),
                 'text/html': new Blob([envelope.html], { type: 'text/html' }),
             })]);
-            if (this.disposed) return;
             this.remember(held, envelope);
             if (envelope.cacheOnly) this.host.notice('This copy works only in this app window.');
             if (held.snapshot.skippedOpaque.length) this.host.notice(`This version can't copy: ${held.snapshot.skippedOpaque.join(', ')}`);
+            if (commitCut && !this.host.isCurrent(held.snapshot)) throw new Error('Source changed; content was copied but not cut.');
             commitCut?.();
         } catch (error) {
             this.host.notice(error instanceof Error ? error.message : 'Could not copy selection.');
-        } finally { release(held); }
+        } finally { commitCut?.release?.(); release(held); }
     }
 
     async duplicate(): Promise<void> {
@@ -234,24 +237,9 @@ export class ClipboardCopy {
 
     private remember(held: HeldSnapshot, envelope: ClipboardEnvelope): void {
         held.count++;
-        if (windowWritten) { windowWritten.controller.abort(); release(windowWritten.held); }
-        const controller = new AbortController(), blobs = new Map<MediaId, Blob>(), read = this.host.readMedia.bind(this.host);
-        const entry = { held, envelope, controller, readMedia: async (id: MediaId, signal: AbortSignal) => {
-            signal.throwIfAborted();
-            return blobs.get(id) ?? await read(id, signal);
-        } };
-        windowWritten = entry;
-        // Retain Blob references while the source is alive; no decoded pixels or whole-batch byte copies.
-        void this.host.runtime.jobs.run(async context => {
-            for (const media of held.snapshot.media) {
-                context.assertCurrent();
-                if (windowWritten !== entry) break;
-                const blob = await read(media.id, context.signal);
-                context.assertCurrent();
-                if (windowWritten !== entry) break;
-                if (blob) blobs.set(media.id, new Blob([blob], { type: blob.type }));
-            }
-        }, { signal: controller.signal, deadlineMs: 120_000 }).catch(() => undefined);
+        const read = this.host.readMedia.bind(this.host);
+        this.cache.replace({ encoded: envelope.encoded, plain: envelope.plain, cacheOnly: envelope.cacheOnly,
+            value: new WrittenSnapshot(held, envelope, (id, signal) => read(held.snapshot, id, signal)), release: () => release(held) });
     }
     private dropCandidate(): void {
         if (!this.candidate) return;

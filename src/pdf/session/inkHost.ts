@@ -88,6 +88,14 @@ function metadata(acq: SourceBasis, writeId: string, migration?: Migration): Raw
     return parseJson(json).raw();
 }
 
+/** Historical metadata is not permission to convert or overwrite the original. */
+export function readPdfInkLegacyDigest(acq: PdfEditableInkSource, host: HostBlock): string | null {
+    if (acq.kind !== 'native' || !validHost(acq, host, true)) throw new Error('A current, validated native PDF ink host is required');
+    const value = fields(parseJson(host.pdf), ['schema', 'sourceFingerprint', 'geometryEngine', 'pages', 'writeId'], ['migration']);
+    const migration = value.get('migration');
+    return migration ? migrationValue(migration, acq.pages).legacyOuterFingerprint : null;
+}
+
 /** Plain PDFs alone may start a new board; native boards must retain their loaded host. */
 export function createPdfInkHost(acq: PdfEditableInkSource): PdfHost {
     if (acq.kind !== 'plain' || !acq.isCurrent()) throw new Error('A current plain PDF is required for a new ink board');

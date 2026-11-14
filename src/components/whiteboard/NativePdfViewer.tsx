@@ -13,7 +13,7 @@ export interface NativePdfViewerSource {
         readonly source: { createBackdrop(options: {
             readOnly: boolean; isVisible(): boolean; isFocused(): boolean; emphasisEnabled(): boolean;
             onError(error: unknown): void; onUpdating?(updating: boolean): void; signal?: AbortSignal;
-        }): Promise<NativePdfBackdrop> };
+        }): Promise<Omit<NativePdfBackdrop, 'assertCaptureCurrent'>> };
         readonly status: 'ready' | 'rebinding' | 'read-only' | 'failed';
         readonly reason?: string;
     };
@@ -70,8 +70,12 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
                     if (!alive || abort.signal.aborted) { backdrop.dispose(); return; }
                     if (sourceState.getSnapshot().source !== source) { backdrop.dispose(); continue; }
                     const current = latest.current;
+                    const paired: NativePdfBackdrop = { ...backdrop, assertCaptureCurrent() {
+                        const state = sourceState.getSnapshot();
+                        if (state.status !== 'ready' || state.source !== source || !host.isCurrent(latest.current.identity)) throw new Error('PDF backdrop source is updating');
+                    } };
                     try {
-                        view = createNativeViewLease({ board, host, identity: current.identity, pdfBackdrop: backdrop, readPdfMedia,
+                        view = createNativeViewLease({ board, host, identity: current.identity, pdfBackdrop: paired, readPdfMedia,
                             parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
                             limits: { min, max }, insets: { left, right, top, bottom }, onError: report, onNotice: message => latest.current.onNotice(message) });
                     } catch (cause) { backdrop.dispose(); throw cause; }
@@ -99,7 +103,11 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
             onError: report, onUpdating: value => { if (alive && sequence.current === generation) setUpdating(value); }, signal: abort.signal,
         }).then(backdrop => {
             if (!alive || abort.signal.aborted || sourceState.getSnapshot().source !== source || !host.isCurrent(latest.current.identity)) { backdrop.dispose(); return; }
-            try { lease.replaceBackdrop(backdrop); adopted = true; installed.current = source; setLoading(false); }
+            const paired: NativePdfBackdrop = { ...backdrop, assertCaptureCurrent() {
+                const state = sourceState.getSnapshot();
+                if (state.status !== 'ready' || state.source !== source || !host.isCurrent(latest.current.identity)) throw new Error('PDF backdrop source is updating');
+            } };
+            try { lease.replaceBackdrop(paired); adopted = true; installed.current = source; setLoading(false); }
             catch (cause) { backdrop.dispose(); report(cause); }
         }, cause => { if (alive && !abort.signal.aborted) report(cause); });
         return () => { alive = false; if (!adopted) abort.abort(); };

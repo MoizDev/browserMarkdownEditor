@@ -1,4 +1,5 @@
 import type { Op, TransactionOrigin } from '../change/ops';
+import { normalizedRotation } from '../change/coordinates';
 import type { ParentId, NodeId } from '../model/ids';
 import { newNodeId } from '../model/ids';
 import { isSafeMediaFile, type MediaEntry, type MediaId, type MediaMime } from '../model/media';
@@ -46,7 +47,7 @@ export interface MediaPlacement {
     readonly page: number;
     readonly x: number;
     readonly y: number;
-    /** Local rotation preserving a world-horizontal row inside a rotated frame. */
+    /** Parent-relative angle; the row and each media node share this orientation. */
     readonly rotation?: number;
 }
 export interface MediaIngestOptions {
@@ -85,9 +86,8 @@ function checkResult(info: InspectedMedia): void {
 
 function box(info: InspectedMedia, pixelsPerWorldUnit?: number): { w: number; h: number } {
     if (pixelsPerWorldUnit !== undefined && (info.mime !== 'image/png' || !Number.isFinite(pixelsPerWorldUnit) || pixelsPerWorldUnit <= 0)) throw new RangeError('Invalid private PNG density');
-    const density = pixelsPerWorldUnit ?? 1, width = info.width / density, height = info.height / density;
-    const scale = Math.min(1, 5000 / Math.max(width, height));
-    return { w: width * scale, h: height * scale };
+    const scale = pixelsPerWorldUnit === undefined ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1 / pixelsPerWorldUnit;
+    return { w: info.width * scale, h: info.height * scale };
 }
 
 interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null; readonly pixelsPerWorldUnit?: number }
@@ -211,10 +211,12 @@ export class MediaIngestor {
                 current();
                 try {
                     if (source.name.length > 10000) throw new RangeError('Media name is too long');
+                    if (source.pixelsPerWorldUnit !== undefined && (!Number.isFinite(source.pixelsPerWorldUnit) || source.pixelsPerWorldUnit <= 0)) throw new RangeError('Invalid media density');
                     if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
                     const info = await this.host.inspectMedia(source.blob, { signal, identity, isCurrent });
                     current();
                     checkResult(info);
+                    if (source.pixelsPerWorldUnit !== undefined && info.mime !== 'image/png') throw new TypeError('Density requires a PNG');
                     if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
                     const old = this.session.doc.media.get(info.id);
                     if (old && (old.mime !== info.mime || old.bytes !== source.blob.size || old.w !== info.width || old.h !== info.height
@@ -240,7 +242,7 @@ export class MediaIngestor {
             const { parent, page, x, y } = options.placement;
             if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Invalid placement');
             const doc = this.session.doc, sizes = staged.map(item => box(item.info, item.pixelsPerWorldUnit));
-            const totalWidth = sizes.reduce((sum, size) => sum + size.w, 0), angle = options.placement.rotation ?? 0;
+            const totalWidth = sizes.reduce((sum, size) => sum + size.w, 0), angle = normalizedRotation(options.placement.rotation ?? 0);
             if (!Number.isFinite(angle)) throw new RangeError('Invalid media placement rotation');
             let left = x - totalWidth / 2;
             const originalLeft = left, root = isSheetParent(doc, parent), stack = boardPageStack(doc.host);

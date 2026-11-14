@@ -354,7 +354,10 @@ The bar across the top of a notebook is its paper:
 Choose **⋯ → Export to PDF** in the notebook pane (or use its download button) to
 write a PDF beside the notebook — \`Assignment 3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
 drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
-the pages are ordinary PDF pages that anything can open.
+the pages are ordinary PDF pages that anything can open. Native notebooks can
+also export from their read-only viewer: every logical sheet is included on the
+physical pages, in order. If preserved content cannot be rendered faithfully,
+the export stops rather than silently leaving that artwork out.
 
 The notebook stays the original you keep writing in. Exporting again uses the
 same PDF name rather than leaving a pile of copies. An existing PDF is kept in

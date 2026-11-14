@@ -457,7 +457,8 @@ export function createNativeViewLease(options: {
     };
     function recordViewport() {
         if (!parameters.visible || !current() || !platformPane) return;
-        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused });
+        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused,
+            inverted: parameters.inverted });
     }
     const stopViewer = viewer.subscribe(invalidate);
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });

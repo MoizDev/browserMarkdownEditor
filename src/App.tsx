@@ -6449,6 +6449,19 @@ export default function App() {
     } catch (error) { closedCanvasReads.current.delete(read); throw error; }
   }, [closedCanvasVersions, documentSessions, getVaultActivation, handleIO, readFileSnapshot, statFile, verifyVaultFileIdentity]);
 
+  /** A closed board's embedded picture, read from its own folder's `.Assets` (the same reader recovery uses). */
+  const readClosedAgentCanvasMedia = useCallback<NonNullable<AgentHostDeps['readClosedCanvasMedia']>>(async (path, handle, entry, signal) => {
+    const root = rootHandleRef.current, activation = getVaultActivation();
+    if (!root) throw new DOMException('Vault is closed', 'AbortError');
+    const isCurrent = () => !signal.aborted && rootHandleRef.current === root && getVaultActivation() === activation;
+    const { parentHandle } = await resolveVaultFile(root, path);
+    if (!isCurrent()) throw new DOMException('Vault changed', 'AbortError');
+    const found = await readBoardAsset({ root, parent: parentHandle, owner: handle, hash: entry.id.slice(7),
+      preferredName: entry.file, signal, isCurrent });
+    if (!found) return null;
+    return new Response(found.blob.stream()).blob();
+  }, [getVaultActivation, readBoardAsset, resolveVaultFile]);
+
   const agentDepsRef = useRef<AgentHostDeps | null>(null);
   useLayoutEffect(() => {
     const activation = rootHandle ? assetActivationsRef.current.get(rootHandle) ?? -1 : -1;
@@ -6468,6 +6481,7 @@ export default function App() {
       readFileBytes,
       closedPdfAgent: () => routeEngines().pdfViewer === 'tiled' ? closedPdfAccess : null,
       acquireClosedCanvasSource: acquireClosedAgentCanvas,
+      readClosedCanvasMedia: readClosedAgentCanvasMedia,
       ensureNativeAgentRuntime,
       readFileVersioned,
       statFile,

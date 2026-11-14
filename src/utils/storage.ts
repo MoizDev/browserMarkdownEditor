@@ -5,6 +5,8 @@ import { createLocalStorageMirror } from './localStorageMirror';
 
 export const STORAGE_MIRROR_SENTINEL = 'bme.lsMirror';
 const MIRROR_VERSION = '1';
+const RESTORE_NOTICE = 'Settings restored after another tab reset them';
+const RELOAD_NOTICE_KEY = 'bme.lsMirror.restoreNotice';
 
 // Exact keys only: the old canvas library shares this origin, but restoring
 // its own state could bring back the state that caused its reset screen.
@@ -35,7 +37,7 @@ const mirror = createLocalStorageMirror({
     hasSentinel: () => localStorage.getItem(STORAGE_MIRROR_SENTINEL) === MIRROR_VERSION,
     stamp: () => { localStorage.setItem(STORAGE_MIRROR_SENTINEL, MIRROR_VERSION); },
     restored: () => {
-        restoreNotice = 'Settings restored after another tab reset them';
+        restoreNotice = RESTORE_NOTICE;
         for (const listener of restoreListeners) listener();
     },
 });
@@ -69,8 +71,16 @@ export function removeStoredValue(key: string): boolean {
 
 /** Consume once, including a restore completed before App mounted. */
 export function takeRestoreNotice(): string | null {
-    const notice = restoreNotice;
+    let notice = restoreNotice;
     restoreNotice = null;
+    // A startup recovery reloads module-scope stores. Keep its one-shot notice
+    // in this tab only; another window must not consume it first.
+    try {
+        if (sessionStorage.getItem(RELOAD_NOTICE_KEY) === '1') {
+            sessionStorage.removeItem(RELOAD_NOTICE_KEY);
+            notice ??= RESTORE_NOTICE;
+        }
+    } catch { /* recovery still works when session storage is unavailable */ }
     return notice;
 }
 
@@ -80,10 +90,16 @@ export function subscribeRestoreNotice(listener: () => void): () => void {
 }
 
 /** The normal boot pays ONE read, and no IndexedDB work before first render. */
-export function restoreStorageBeforeRender(): Promise<void> | undefined {
+export function restoreStorageBeforeRender(): Promise<boolean> | undefined {
     try {
         if (localStorage.getItem(STORAGE_MIRROR_SENTINEL) === MIRROR_VERSION) return;
-        return mirror.restore();
+        return mirror.restore().then(() => {
+            const restored = restoreNotice !== null;
+            if (restored) {
+                try { sessionStorage.setItem(RELOAD_NOTICE_KEY, '1'); } catch { /* notice only */ }
+            }
+            return restored;
+        });
     } catch (error) {
         console.warn('Browser settings are unavailable:', error);
     }

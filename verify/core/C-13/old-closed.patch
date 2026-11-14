@@ -1,0 +1,12 @@
+diff --git a/src/editor/livePreview.ts b/src/editor/livePreview.ts
+--- a/src/editor/livePreview.ts
++++ b/src/editor/livePreview.ts
+@@ -546,7 +546,7 @@
+                 const startLine = state.doc.lineAt(opening.from);
+                 const endLine = state.doc.lineAt(closing?.from ?? to);
+                 if (opening.to > startLine.to) return false;
+-                const closed = closing !== null && endLine.number > startLine.number && closing.to <= endLine.to;
++                const closed = endLine.number > startLine.number && endLine.text.trim().startsWith('```');
+
+                 const firstContent = startLine.number + 1;
+                 const lastContent = closed ? endLine.number - 1 : endLine.number;

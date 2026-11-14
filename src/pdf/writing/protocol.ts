@@ -105,8 +105,12 @@ export interface WriterOperations {
         result: { bytes: ArrayBuffer; sha256: string; path: string; geometries: PageGeometry[] };
     };
     'writer.rotate': {
-        args: { source: WriterSource; delta: 90 | -90; pageIndices?: number[] };
+        args: { source: WriterSource; delta: number; pageIndices?: number[] };
         result: { bytes: ArrayBuffer; sourceFingerprint: string; geometries: PageGeometry[] };
+    };
+    'writer.verifyRotation': {
+        args: { source: WriterSource; delta: number; pageIndices?: number[]; bytes: ArrayBuffer; expected: PageGeometry[] };
+        result: { bytes: ArrayBuffer; sourceFingerprint: string; outputSha: string; geometries: PageGeometry[] };
     };
     'writer.inspect': {
         args: { source: WriterSource; includeAttachments: boolean; signaturePolicy: 'refuse' | 'inspect' };

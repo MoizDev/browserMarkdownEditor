@@ -174,6 +174,8 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         try { await work(owned.signal); } finally { active.delete(owned); owned.abort(); }
     };
     return {
+        /** Borrowed by inline text clipboard adapters; this document remains its owner. */
+        clipboardCopy: copy,
         matchClipboard: (encoded: string, plain: string) => copy.match(encoded, plain),
         copy: () => run(async () => { prepare(); await copy.copyMenu(); }),
         cut: () => run(async () => { writable(); prepare(true); await copy.copyMenu(true); }),

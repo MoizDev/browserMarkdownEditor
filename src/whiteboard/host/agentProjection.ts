@@ -84,10 +84,11 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
         apply(ops, options) {
             return authority.run(async context => {
                 authority.assertContext(context);
+                const sheet = host.sheet(), page = host.page();
                 const result = await adapter.apply(ops, {
                     signal: context.signal,
                     isCurrent: () => {
-                        try { authority.assertContext(context); return host.isCurrent(); }
+                        try { authority.assertContext(context); return host.isCurrent() && host.sheet() === sheet && host.page() === page; }
                         catch { return false; }
                     },
                 });

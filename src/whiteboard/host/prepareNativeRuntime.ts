@@ -242,12 +242,14 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     transferred = true;
                     releaseCreators();
                     try { legacy?.dispose(); } finally { admitted.dispose(); }
-                    let closed = false;
+                    let closing: Promise<void> | undefined;
                     return { board: owned.board, dispose() {
-                        if (closed) return;
-                        closed = true;
-                        pinned.release();
-                        try { owned?.dispose(); } finally { render.dispose(); }
+                        // Revocation is immediate; the pinned native source and render services stay until the
+                        // runtime's builds have settled, because those builds read them.
+                        closing ??= (async () => {
+                            try { await owned?.dispose(); } finally { pinned.release(); render.dispose(); }
+                        })();
+                        return closing;
                     } };
                 } catch (error) { journal.dispose(); throw error; }
             },

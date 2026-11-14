@@ -21,11 +21,13 @@ export async function prepareBoardSession<A extends AdmittedNativeBoard>(
                 readOnlyReason: () => admitted.readOnlyReason ?? policy() ?? priorReason() },
                 builds: ports.builds(admitted, owner, isCurrent) });
             taken = true;
-            let released = false;
+            // The admitted original bytes and sample leases back the session's builds: release them only after retirement.
+            let releasing: Promise<void> | undefined;
             return { board: owned.board, dispose() {
-                if (released) return;
-                released = true;
-                try { owned.dispose(); } finally { admitted.dispose(); }
+                releasing ??= (async () => {
+                    try { await owned.dispose(); } finally { admitted.dispose(); }
+                })();
+                return releasing;
             } };
         },
         dispose() {

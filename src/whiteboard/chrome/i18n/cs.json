@@ -377,6 +377,7 @@
     "paper.deleteContents": "Tato stránka obsahuje {items}.",
     "paper.deleteConfirm": "Smazat stránku",
     "paper.cancel": "Zrušit",
-    "paper.keepProtected": "Uzamčený obsah bude zachován."
+    "paper.keepProtected": "Uzamčený obsah bude zachován.",
+    "chrome.readOnly": "Tato deska je pouze pro čtení."
   }
 }

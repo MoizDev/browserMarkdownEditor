@@ -377,6 +377,7 @@
     "paper.deleteContents": "Эта страница содержит {items}.",
     "paper.deleteConfirm": "Удалить страницу",
     "paper.cancel": "Отмена",
-    "paper.keepProtected": "Заблокированный контент будет сохранен."
+    "paper.keepProtected": "Заблокированный контент будет сохранен.",
+    "chrome.readOnly": "Эта доска доступна только для чтения."
   }
 }

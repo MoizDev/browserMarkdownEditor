@@ -2,17 +2,23 @@ import type { PathCommand } from '../../../platform/types';
 import { InkOutlineJob } from '../../ink/outline';
 import type { InkCoverage } from '../../ink/outline';
 
-/** Append absolute C2 path commands without invoking the browser's SVG parser. */
-export function appendPath2d(path: Path2D, command: Readonly<PathCommand>): void {
+export type PathOrigin2d = readonly [x: number, y: number];
+const ZERO_ORIGIN: PathOrigin2d = Object.freeze([0, 0]);
+
+/** Rebase in doubles before handing coordinates to the native path (rendering §2).
+ * The caller composes this origin into its local-to-device transform exactly once.
+ */
+export function appendPath2d(path: Path2D, command: Readonly<PathCommand>, origin: PathOrigin2d = ZERO_ORIGIN): void {
+    const [x, y] = origin;
     switch (command[0]) {
         case 'M':
-            path.moveTo(command[1], command[2]);
+            path.moveTo(command[1] - x, command[2] - y);
             break;
         case 'L':
-            path.lineTo(command[1], command[2]);
+            path.lineTo(command[1] - x, command[2] - y);
             break;
         case 'C':
-            path.bezierCurveTo(command[1], command[2], command[3], command[4], command[5], command[6]);
+            path.bezierCurveTo(command[1] - x, command[2] - y, command[3] - x, command[4] - y, command[5] - x, command[6] - y);
             break;
         case 'Z':
             path.closePath();
@@ -20,9 +26,9 @@ export function appendPath2d(path: Path2D, command: Readonly<PathCommand>): void
     }
 }
 
-export function path2d(commands: Iterable<Readonly<PathCommand>>): Path2D {
+export function path2d(commands: Iterable<Readonly<PathCommand>>, origin: PathOrigin2d = ZERO_ORIGIN): Path2D {
     const path = new Path2D();
-    for (const command of commands) appendPath2d(path, command);
+    for (const command of commands) appendPath2d(path, command, origin);
     return path;
 }
 
@@ -36,10 +42,13 @@ export class InkPath2dJob {
     private path: Path2D | null = new Path2D();
     private state: WorkState = 'pending';
     private count = 0;
+    readonly origin: PathOrigin2d;
 
-    constructor(coverage: InkCoverage, deviceScale: number) {
-        const path = this.path!;
-        this.outline = new InkOutlineJob(coverage, deviceScale, command => appendPath2d(path, command));
+    constructor(coverage: InkCoverage, deviceScale: number, origin: PathOrigin2d = ZERO_ORIGIN) {
+        if (!origin.every(Number.isFinite)) throw new RangeError('Ink path origin must be finite');
+        this.origin = Object.freeze([origin[0], origin[1]] as const);
+        const path = this.path!, localOrigin = this.origin;
+        this.outline = new InkOutlineJob(coverage, deviceScale, command => appendPath2d(path, command, localOrigin));
     }
 
     get result(): Path2D | null { return this.state === 'complete' ? this.path : null; }
@@ -74,8 +83,8 @@ export class InkPath2dJob {
 /** Cache by geometryKey + scale band and fill ONCE with nonzero, never capsule source-over.
  * Synchronous callers use this convenience entry; Layer.prepare advances InkPath2dJob instead.
  */
-export function inkPath2d(coverage: InkCoverage, deviceScale: number): Path2D {
-    const job = new InkPath2dJob(coverage, deviceScale);
+export function inkPath2d(coverage: InkCoverage, deviceScale: number, origin: PathOrigin2d = ZERO_ORIGIN): Path2D {
+    const job = new InkPath2dJob(coverage, deviceScale, origin);
     while (job.step(4096) === 'pending') { /* Bounded callers deliberately finish synchronously. */ }
     const result = job.result;
     if (!result) throw new Error('Ink path construction was cancelled');

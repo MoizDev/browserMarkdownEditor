@@ -34,7 +34,7 @@ function rectangle(w: number, h: number): readonly PathOp[] {
     return [{ op: 'M', p: { x: 0, y: 0 } }, { op: 'L', p: { x: w, y: 0 } },
         { op: 'L', p: { x: w, y: h } }, { op: 'L', p: { x: 0, y: h } }, { op: 'Z' }];
 }
-function clips(doc: BoardDoc, node: Readonly<Node>): AttachmentSurface['clips'] {
+export function polylineSurfaceClips(doc: BoardDoc, node: Readonly<Node>): AttachmentSurface['clips'] {
     const result: AttachmentSurface['clips'][number][] = [];
     let parent = doc.nodes.get(node.parent as NodeId);
     for (let depth = 0; parent && depth < 64; depth++) {
@@ -42,6 +42,38 @@ function clips(doc: BoardDoc, node: Readonly<Node>): AttachmentSurface['clips'] 
         parent = doc.nodes.get(parent.parent as NodeId);
     }
     return result.reverse();
+}
+
+/** Canonical terminal resolution shared by staged geometry and attachment gestures. */
+export async function resolvePolylinePoints(node: AttachedPolyline, doc: BoardDoc, surfaces: ReadonlyMap<NodeId, AttachmentSurface>, options: {
+    readonly tolerance: number; readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>; readonly check: () => void;
+}): Promise<readonly Point[]> {
+    const entries = [node.startAttach ?? null, node.endAttach ?? null] as const;
+    const localToWorld = matrix(doc, node.id), points = node.points.map(point => ({ ...point }));
+    if (points.length < 2) throw new RangeError('Invalid attached polyline');
+    const world = points.map(point => transformPoint(localToWorld, point));
+    const aim = (attachment: Attachment, surface: AttachmentSurface) => {
+        const box = surface.logicalBox, anchor = attachment.precise || attachment.exact ? attachment.anchor : { x: 0.5, y: 0.5 };
+        return transformPoint(surface.localToWorld, { x: box.x + box.width * anchor.x, y: box.y + box.height * anchor.y });
+    };
+    for (let side = 0; side < 2; side++) {
+        const entry = entries[side]; if (!entry) continue;
+        const surface = surfaces.get(entry.target); if (!surface) throw new Error('Polyline attachment surface disappeared');
+        world[side === 0 ? 0 : world.length - 1] = aim(entry, surface);
+    }
+    for (let side = 0; side < 2; side++) {
+        const entry = entries[side]; if (!entry) continue;
+        const index = side === 0 ? 0 : world.length - 1, neighbour = side === 0 ? 1 : world.length - 2;
+        let point = world[index];
+        if (!entry.exact) {
+            const body = connectorBody(point, world[neighbour], 0, options.tolerance);
+            const crossings = await bodyCrossings(body, surfaces.get(entry.target)!, options.tolerance, 65_536, options.cooperate, options.signal);
+            options.check(); const exit = crossings.find(value => !value.entering);
+            if (exit) point = pointAtLength(body, exit.distance);
+        }
+        points[index] = worldToLocal(doc, node, point);
+    }
+    options.check(); return Object.freeze(points.map(point => Object.freeze(point)));
 }
 
 /** Resolve both bindings against one staged document and the renderer's actual attachment surfaces. */
@@ -67,32 +99,11 @@ export async function resolvePolylineAttachments(node: AttachedPolyline, options
             const surface = geometry.vector?.attachments;
             if (!surface) throw new Error(`Polyline attachment target has no supported surface: ${id}`);
             surfaces.set(id, { target: id, outline: surface.outline, logicalBox: surface.logicalBox,
-                localToWorld: matrix(doc, id), clips: clips(doc, target), revision });
+                localToWorld: matrix(doc, id), clips: polylineSurfaceClips(doc, target), revision });
         }
-        const localToWorld = matrix(doc, node.id), points = node.points.map(point => ({ ...point }));
-        const world = points.map(point => transformPoint(localToWorld, point));
-        const aim = (attachment: Attachment, surface: AttachmentSurface) => {
-            const box = surface.logicalBox, anchor = attachment.precise || attachment.exact ? attachment.anchor : { x: 0.5, y: 0.5 };
-            return transformPoint(surface.localToWorld, { x: box.x + box.width * anchor.x, y: box.y + box.height * anchor.y });
-        };
-        for (let side = 0; side < 2; side++) {
-            const entry = entries[side]; if (!entry) continue;
-            world[side === 0 ? 0 : world.length - 1] = aim(entry, surfaces.get(entry.target)!);
-        }
-        for (let side = 0; side < 2; side++) {
-            const entry = entries[side]; if (!entry) continue;
-            const index = side === 0 ? 0 : world.length - 1, neighbour = side === 0 ? 1 : world.length - 2;
-            let point = world[index];
-            if (!entry.exact) {
-                const body = connectorBody(point, world[neighbour], 0, tolerance);
-                const crossings = await bodyCrossings(body, surfaces.get(entry.target)!, tolerance, 65_536, options.cooperate, signal);
-                check(); const exit = crossings.find(value => !value.entering);
-                if (exit) point = pointAtLength(body, exit.distance);
-            }
-            points[index] = worldToLocal(doc, node, point);
-        }
+        const points = await resolvePolylinePoints(node, doc, surfaces, { tolerance, signal, cooperate: options.cooperate, check });
         check();
-        return { points: Object.freeze(points.map(point => Object.freeze(point))), fontEpoch: epoch,
+        return { points, fontEpoch: epoch,
             release() { if (!released) { released = true; scope.release(); } } };
     } catch (error) { scope.release(); throw error; }
 }

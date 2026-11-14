@@ -4,6 +4,8 @@ import type { WorldPose } from '../change/coordinates';
 import { transformBox, validBox, type Box } from '../geom/bounds';
 import { compose, inverse } from '../geom/affine';
 import { polylinePath } from '../geom/polylines';
+import { polylineSurfaceClips, resolvePolylinePoints } from '../geom/polylineAttachments';
+import type { AttachmentSurface } from '../geom/connectorTypes';
 import { transformedPathBounds } from '../geom/providers';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardDoc } from '../model/doc';
@@ -160,7 +162,25 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
                     for (let i = 0; i < part.discs.length; i += 3) { point(part.discs[i], part.discs[i + 1], part.discs[i + 2]); if (due()) await tick(); }
                 }
             } else if (node.kind === 'polyline') {
-                const bounds = transformedPathBounds(polylinePath(node), nodeToTarget);
+                const line = node as Readonly<PolylineNode> & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
+                const attachments = [line.startAttach, line.endAttach].filter((entry): entry is Attachment => !!entry);
+                let actual = line;
+                if (attachments.length) {
+                    const surfaces = new Map<NodeId, AttachmentSurface>();
+                    for (const attachment of attachments) {
+                        if (surfaces.has(attachment.target)) continue;
+                        const target = doc.nodes.get(attachment.target); if (!target) throw new Error('Polyline attachment target disappeared');
+                        const preparedTarget = await runtime.render.prepareForPick(target, signal, doc); check();
+                        if (runtime.render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
+                        const surface = preparedTarget.vector?.attachments;
+                        if (!surface) throw new Error('Polyline attachment target has no supported surface');
+                        surfaces.set(target.id, { target: target.id, outline: surface.outline, logicalBox: surface.logicalBox,
+                            localToWorld: matrix(pose(target.id)), clips: polylineSurfaceClips(doc, target), revision });
+                    }
+                    const points = await resolvePolylinePoints(line, doc, surfaces, { tolerance: 0.01, signal, cooperate, check });
+                    actual = { ...line, points: [...points] };
+                }
+                const bounds = transformedPathBounds(polylinePath(actual), nodeToTarget);
                 if (bounds) box = rectBox(bounds);
             } else {
                 if (!value.vector) throw new Error(`Vector geometry unavailable: ${node.id}`);

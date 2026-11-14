@@ -17,7 +17,7 @@ import { classifyClipboard, type ClipboardClassifierHost } from './classify';
 import type { ClipboardCopy } from './copy';
 import type { ExcalidrawBindingRequest, FinalExcalidrawDraft } from './excalidraw';
 import type { ClipboardHtmlFrameHost } from './htmlFrameHost';
-import { pasteClipboardHtmlInJob } from './htmlPaste';
+import { pasteClipboardHtmlInJob, type HtmlClipboardSource } from './htmlPaste';
 import { insertNativeClipboard } from './insertNative';
 import { pasteClipboardMediaInJob } from './mediaPaste';
 import { planBoardClipboardPlacement } from './placement';
@@ -31,7 +31,8 @@ import type { ClipboardInput, ClipboardIntent, ClipboardTarget } from './types';
 export type ExternalClipboardSource =
     | { readonly kind: 'native-records'; readonly bytes: Blob }
     | { readonly kind: 'legacy'; readonly decoded: LegacyClipboardDecodeLease }
-    | { readonly kind: 'excalidraw'; readonly draft: FinalExcalidrawDraft };
+    | { readonly kind: 'excalidraw'; readonly draft: FinalExcalidrawDraft }
+    | { readonly kind: 'html'; readonly source: HtmlClipboardSource };
 export interface ExternalClipboardAdmission {
     readonly acquisition: BoardClipboardAcquisition;
     /** Actual canonical geometry of the admitted external source, in source world coordinates. */
@@ -93,7 +94,8 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
             return id ? [id as NodeId] : [];
         }
         if (classification.kind === 'html') return pasteClipboardHtmlInJob({ ...base, memory: host.memory, frame: host.html,
-            html: classification.html, storeMedia: host.storeMedia, noticeRefused: host.noticeRefused }, context);
+            html: classification.html, storeMedia: host.storeMedia, noticeRefused: host.noticeRefused,
+            admitSource: (source, owningContext, jobIdentity) => host.admitExternal({ kind: 'html', source }, owningContext, jobIdentity) }, context);
         if (classification.kind === 'files' || classification.kind === 'private-png' || classification.kind === 'svg') {
             const files = classification.kind === 'files' ? classification.files : classification.kind === 'svg'
                 ? [{ blob: new Blob([classification.text], { type: 'image/svg+xml' }), name: 'clipboard.svg', directory: false }] : [];

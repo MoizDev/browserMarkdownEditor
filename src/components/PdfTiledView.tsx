@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-export type { PdfTiledSource, PdfTiledSourceFactory } from '../pdf/session/hostTypes';
+export type { PdfTiledPresentation, PdfTiledSource, PdfTiledSourceFactory } from '../pdf/session/hostTypes';
 import PdfTiledPageField from './PdfTiledPageField';
 import PdfTiledRotateControls from './PdfTiledRotateControls';
 import PdfCapabilitiesNotice from './PdfCapabilitiesNotice';
 import { assertPdfCaptureAllowed, assertPdfCopyAllowed, assertPdfRenderAllowed, PDF_ENCRYPTED_READ_ONLY, tiledPdfCapabilities } from '../utils/pdfCapabilities';
 import { cameraForPagedPosition, fitWidthZ, pageAt, pagePresentation, pageStack, pagedConstraint, pagedPosition } from '../platform/render';
 import type { Camera, PlatformPaneOptions, Rect, Viewport, ViewState } from '../platform/render';
+import type { PlatformPresentation } from '../platform/render/attachPlatformPane.types';
+import type { PdfTiledPresentation } from '../pdf/session/hostTypes';
 import { pdfGeometryDigest, type OpenTiledDocument, type PdfTiledDocumentSession } from '../pdf/session/documentSession';
 import type { PdfSessionCapturer } from '../pdf/session/sessionCapture';
 import { pdfPageLayerDefinition } from '../pdf/layer/definition';
@@ -77,6 +79,7 @@ interface Props {
     readonly bridge: PdfVersionBridge | null;
     readonly capturer: PdfSessionCapturer;
     readonly sourceHash?: string;
+    readonly onPresentation?: (presentation: PdfTiledPresentation) => void;
     readonly onRotate?: (delta: number, pageIndex?: number, picture?: PdfRotationPicture) => void;
     readonly onSearchVault: (query: string) => void;
     readonly findMemory: PdfFindMemory;
@@ -91,7 +94,7 @@ interface Props {
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
 export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
-    mirror, transition, bridge, capturer, findMemory, selectionState, sourceHash, onSearchVault, onRotate, onOpenTextView, onNotice, onCapabilities, onOpenClassic }: Props) {
+    mirror, transition, bridge, capturer, findMemory, selectionState, sourceHash, onPresentation, onSearchVault, onRotate, onOpenTextView, onNotice, onCapabilities, onOpenClassic }: Props) {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
     const [contentHost, setContentHost] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
@@ -198,6 +201,10 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const rotationIdentity = useRef({ sourceHash, geometryDigest, session });
     rotationIdentity.current = { sourceHash, geometryDigest, session };
     const frameView = useRef<ViewState | null>(null);
+    const pendingPresentation = useRef<PlatformPresentation | null>(null);
+    const presentationPort = useRef({ sourceHash, onPresentation });
+    presentationPort.current = { sourceHash, onPresentation };
+    useEffect(() => { if (sourceHash && onPresentation) paneRef.current?.current?.invalidate('pdf-presentation-ready'); }, [sourceHash, onPresentation]);
     const touchHandler = useRef<(phase: 'down' | 'move' | 'up' | 'cancel', event: PointerEvent) => void>(() => {});
     const autoScroll = useRef({ x: 0, y: 0, time: 0 });
     const copyRef = useRef<ReturnType<typeof usePdfTiledCopyMenu> | null>(null);
@@ -514,6 +521,23 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         },
         writeOverlays: frame => {
             frameView.current = frame.view;
+            const presented = pendingPresentation.current;
+            pendingPresentation.current = null;
+            const hash = presentationPort.current.sourceHash;
+            if (presented && currentSharp.current && hash && /^[0-9a-f]{64}$/.test(hash) && mounted.current && liveSession.current === session &&
+                active.current.isVisible && session.isCurrent() && presented.complete && presented.sharp && !presented.staleVersion &&
+                presented.frameId === frame.frameId && presented.viewEpoch === frame.view.epoch &&
+                presented.token.vaultEpoch === frame.token.vaultEpoch && presented.token.documentId === frame.token.documentId &&
+                presented.token.bytesGeneration === frame.token.bytesGeneration && presented.token.session === frame.token.session &&
+                presented.token.viewLease === frame.token.viewLease && presented.token.deviceGeneration === frame.token.deviceGeneration &&
+                frame.token.viewLease === lease) {
+                const view = frame.view, left = view.camera.x, top = view.camera.y;
+                const right = left + view.viewport.width / view.camera.z, bottom = top + view.viewport.height / view.camera.z;
+                const pages = stack.rects.flatMap((rect, index) => rect.x < right && rect.x + rect.width > left &&
+                    rect.y < bottom && rect.y + rect.height > top ? [index] : []);
+                if (pages.length) presentationPort.current.onPresentation?.({ token: { ...presented.token }, resultHash: hash,
+                    frameId: presented.frameId, viewEpoch: presented.viewEpoch, pages, complete: true, sharp: true, staleVersion: false });
+            }
             links.current?.setView(frame.view, stack.rects);
             textMirror.updateView(frame.view);
             find.onView(frame.view);
@@ -543,6 +567,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             for (const [index, task] of linkTasks.current) if (!visible.has(index)) { task.abort(); linkTasks.current.delete(index); }
         },
         onPresentation: presentation => {
+            pendingPresentation.current = presentation;
             const token = presentation?.token;
             currentSharp.current = !!presentation && presentation.complete && presentation.sharp && !presentation.staleVersion && session.isCurrent() &&
                 token?.vaultEpoch === session.token.vaultEpoch && token.documentId === session.token.documentId &&

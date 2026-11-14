@@ -134,7 +134,9 @@ export class MirrorSet<T extends object> {
         this.currentToken = options.currentToken;
         if (!Number.isFinite(options.createdAt)) throw new RangeError('Invalid mirror creation time');
         this.hiddenAt = options.createdAt;
-        const scope = JSON.stringify([this.owner.vaultEpoch, this.owner.documentId, this.owner.session]);
+        // Reloaded byte generations and PDF roles share a logical owner while old borrows drain.
+        // Registration identity must be per instance; token/owner checks remain the authority.
+        const scope = `mirror-set:${crypto.randomUUID()}`;
         this.retained = this.governor.register({
             id: `${scope}:mirrors`, pool: 'cpu', kind: 'mirror', class: 'scene-cache', owner: this.owner,
             hiddenAt: this.hiddenAt, lastVisibleAt: 0, lastUsedAt: 0,

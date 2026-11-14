@@ -37,6 +37,7 @@ export function useIndexGraph(options: {
     const startRef = useRef<(() => Promise<ActiveIndexGraph>) | null>(null);
     const latestTree = useRef(tree);
     const publishedTree = useRef<IndexTreeFile[]>([]);
+    const pendingMoves = useRef(new Map<string, { to: string; expires: number }>());
     useLayoutEffect(() => { latestTree.current = tree; }, [tree]);
     useEffect(() => {
         let live = true;
@@ -91,6 +92,7 @@ export function useIndexGraph(options: {
         const cancelIdle = onIdle(() => { void start().catch(() => {}); });
         return () => {
             live = false;
+            pendingMoves.current.clear();
             if (startRef.current === start) startRef.current = null;
             cancelIdle();
             const owner = active.current;
@@ -105,10 +107,31 @@ export function useIndexGraph(options: {
         const owner = active.current;
         if (!owner || owner.root !== root || owner.activation !== activation) return;
         const next = indexTree(tree);
-        const delta = indexTreeDelta(publishedTree.current, next);
+        const now = performance.now();
+        const moves: { from: string; to: string }[] = [];
+        for (const [from, move] of pendingMoves.current) {
+            if (move.expires > now) moves.push({ from, to: move.to });
+            else pendingMoves.current.delete(from);
+        }
+        const delta = indexTreeDelta(publishedTree.current, next, moves);
+        for (const move of delta?.renamed ?? []) pendingMoves.current.delete(move.from);
         publishedTree.current = next;
         if (delta) void owner.client.treeDelta(delta).catch(() => {});
     }, [tree, root, activation]);
-    return Object.assign(active, { whenReady: () => active.current ? Promise.resolve(active.current)
-        : startRef.current ? startRef.current() : Promise.reject(new DOMException('Vault index unavailable', 'AbortError')) });
+    return Object.assign(active, {
+        whenReady: () => active.current ? Promise.resolve(active.current)
+            : startRef.current ? startRef.current() : Promise.reject(new DOMException('Vault index unavailable', 'AbortError')),
+        noteMoves: (moves: readonly { from: string; to: string }[]) => {
+            const owner = active.current;
+            if (!owner || owner.activation !== getActivation()) return () => {};
+            const recorded: [string, { to: string; expires: number }][] = [];
+            for (const { from, to } of moves) for (const file of publishedTree.current) {
+                if (file.path !== from && !file.path.startsWith(`${from}/`)) continue;
+                const move = { to: to + file.path.slice(from.length), expires: performance.now() + 60_000 };
+                pendingMoves.current.set(file.path, move);
+                recorded.push([file.path, move]);
+            }
+            return () => { for (const [path, move] of recorded) if (pendingMoves.current.get(path) === move) pendingMoves.current.delete(path); };
+        },
+    });
 }

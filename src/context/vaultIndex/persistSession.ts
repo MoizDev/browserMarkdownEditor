@@ -65,8 +65,9 @@ export class PersistSession {
         void navigator.locks.request(`bme-index:${this.vaultId}`, { signal: this.abort.signal }, async () => {
             if (this.closed) return;
             this.held = true;
+            const released = new Promise<void>(resolve => { this.release = resolve; });
             await this.flush();
-            await new Promise<void>(resolve => { this.release = resolve; });
+            await released;
             await this.flush();
             this.held = false;
         }).catch(() => {});

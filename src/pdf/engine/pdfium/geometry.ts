@@ -1,9 +1,30 @@
-import type { PageGeometry } from '../../../platform/types';
+import type { Affine, PageGeometry } from '../../../platform/types';
 import { PdfEngineError } from '../types';
 import type { PdfiumRuntime } from './loader';
 import { heapView, withPdfiumMemory } from './memory';
 
 export interface PdfiumPageSize { width: number; height: number }
+
+export function pdfiumUserToPage(geometry: PageGeometry): Affine {
+    const [a, b, c, d, e, f] = geometry.toUserSpace, determinant = a * d - b * c;
+    if (![a, b, c, d, e, f, determinant].every(Number.isFinite) || Math.abs(determinant) < 1e-12) {
+        throw new PdfEngineError('PageError', 'Invalid PDF page transform');
+    }
+    return [d / determinant, -b / determinant, -c / determinant, a / determinant,
+        (c * f - d * e) / determinant, (b * e - a * f) / determinant];
+}
+
+export function pdfiumTransformPoint(matrix: Affine, x: number, y: number): readonly [number, number] {
+    return [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
+}
+
+export function pdfiumTransformBox(matrix: Affine, left: number, bottom: number, right: number, top: number): readonly [number, number, number, number] {
+    const points = [pdfiumTransformPoint(matrix, left, bottom), pdfiumTransformPoint(matrix, left, top),
+        pdfiumTransformPoint(matrix, right, bottom), pdfiumTransformPoint(matrix, right, top)];
+    const xs = points.map(point => point[0]), ys = points.map(point => point[1]);
+    if (![...xs, ...ys].every(value => Number.isFinite(Math.fround(value)))) return [0, 0, 0, 0];
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
 
 /** Index-only sizes are estimates until the page's actual display transform is read. */
 export function pdfiumPageSize(runtime: PdfiumRuntime, document: number, index: number, maxPoints: number): PdfiumPageSize {

@@ -6,6 +6,8 @@ export interface PdfFindProgress {
 }
 export interface PdfFindPageText { text: string; tokenBreaks: readonly number[] | Uint32Array; quality: 'available' | 'partial' | 'none' }
 export interface PdfFindSource {
+    /** Identifies immutable bytes and extraction schema, never a path. */
+    readonly cacheKey?: string;
     pageCount(signal: AbortSignal): Promise<number>;
     page(index0: number, signal: AbortSignal): Promise<PdfFindPageText>;
 }
@@ -17,14 +19,23 @@ export interface PdfFindEngine {
     /** Canonical text is budgeted alongside keys so result snippets/refinements
      * do not cycle the reader's small geometry cache. */
     pageText(index0: number, signal: AbortSignal): Promise<PdfFindPageText>;
+    /** Synchronous clipboard path; callers must not mutate returned token breaks. */
+    peekPageText(index0: number): PdfFindPageText | undefined;
     clearIndex(): void;
+    setVisible(visible: boolean): void;
     dispose(): void;
 }
 export const TOKEN_BREAK = '\uE000', LINE_HYPHEN = '\uE001';
 const DOCUMENT_BYTES = 32 * 1024 * 1024, APP_BYTES = 64 * 1024 * 1024, HIT_LIMIT = 10_000;
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const abort = () => new DOMException('PDF find cancelled', 'AbortError');
-const yieldTask = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+const taskScheduler = (globalThis as typeof globalThis & { scheduler?: { postTask(callback: () => void, options: { priority: 'background' }): Promise<void> } }).scheduler;
+const yielding = new MessageChannel();
+const yieldQueue: Array<() => void> = [];
+yielding.port1.onmessage = () => { yieldQueue.shift()?.(); };
+const yieldTask = (): Promise<void> => taskScheduler
+    ? taskScheduler.postTask(() => {}, { priority: 'background' })
+    : new Promise<void>(resolve => { yieldQueue.push(resolve); yielding.port2.postMessage(0); });
 const isSpace = (c: string) => c.trim().length === 0;
 const isBreak = (c: string) => c === TOKEN_BREAK || c === LINE_HYPHEN;
 function droppedMark(code: number): boolean {
@@ -97,9 +108,10 @@ export function project(page: PdfFindPageText): { key: string; map: Uint32Array 
     return { key: keys.join(''), map: Uint32Array.from(offsets) };
 }
 
-type IndexedPage = { bytes: Uint8Array; canonical: Uint8Array; tokenBreaks: Uint32Array; runs: Uint32Array; length: number; canonicalLength: number;
+type IndexedPage = { bytes: Uint8Array; canonical: string; tokenBreaks: Uint32Array; runs: Uint32Array; length: number; canonicalLength: number;
     quality: PdfFindPageText['quality']; failed: boolean; cost: number };
-type DocumentCache = { pages: Map<number, IndexedPage>; bytes: number };
+type DocumentCache = { pages: Map<number, IndexedPage>; bytes: number; owners: Set<symbol>; visible: Set<symbol>; hiddenSince?: number };
+const keyedDocuments = new Map<string, DocumentCache>();
 // In insertion order: evict a whole document, not an arbitrary set of its pages.
 // The pane's visibility owner calls clearIndex after 60 s hidden; disposal of
 // the document session releases it immediately, including on a vault switch.
@@ -121,9 +133,9 @@ async function indexPage(page: PdfFindPageText, signal: AbortSignal): Promise<In
         if (performance.now() >= deadline) { await yieldTask(); deadline = performance.now() + 4; }
     }
     const bytes = encoder.encode(keys.join('')), compact = Uint32Array.from(runs);
-    const canonical = encoder.encode(page.text), tokenBreaks = Uint32Array.from(page.tokenBreaks);
+    const canonical = page.text, tokenBreaks = Uint32Array.from(page.tokenBreaks);
     return { bytes, canonical, tokenBreaks, runs: compact, length: position, canonicalLength: page.text.length,
-        quality: page.quality, failed: false, cost: bytes.byteLength + canonical.byteLength + tokenBreaks.byteLength + compact.byteLength + 64 };
+        quality: page.quality, failed: false, cost: bytes.byteLength + canonical.length * 2 + tokenBreaks.byteLength + compact.byteLength + 64 };
 }
 function canonicalAt(page: IndexedPage, position: number): number {
     if (position >= page.length) return page.canonicalLength;
@@ -199,30 +211,37 @@ export async function* matchPage(key: string, units: string, signal: AbortSignal
 }
 
 export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes: DOCUMENT_BYTES }): PdfFindEngine {
-    const cache: DocumentCache = { pages: new Map(), bytes: 0 };
+    const key = source.cacheKey;
+    let cache = key ? keyedDocuments.get(key) : undefined;
+    if (!cache) {
+        cache = { pages: new Map(), bytes: 0, owners: new Set(), visible: new Set() };
+        if (key) keyedDocuments.set(key, cache);
+    }
+    const retained = cache, owner = Symbol('PDF find consumer');
+    retained.owners.add(owner); retained.visible.add(owner); retained.hiddenSince = undefined;
     const lifetime = new AbortController();
     let current: AbortController | undefined, serial = 0;
     const maxBytes = Math.max(0, Math.min(DOCUMENT_BYTES, Number.isFinite(budget.indexBytes) ? budget.indexBytes : DOCUMENT_BYTES));
     async function getPage(index: number, signal: AbortSignal) {
-        const cached = cache.pages.get(index);
-        if (cached) { touch(cache); return cached; }
+        const cached = retained.pages.get(index);
+        if (cached) { touch(retained); return cached; }
         let page: IndexedPage;
         try { page = await indexPage(await source.page(index, signal), signal); }
         catch (error) {
             if (signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error;
-            page = { bytes: new Uint8Array(), canonical: new Uint8Array(), tokenBreaks: new Uint32Array(), runs: new Uint32Array(), length: 0, canonicalLength: 0, quality: 'none', failed: true, cost: 64 };
+            page = { bytes: new Uint8Array(), canonical: '', tokenBreaks: new Uint32Array(), runs: new Uint32Array(), length: 0, canonicalLength: 0, quality: 'none', failed: true, cost: 64 };
         }
         if (signal.aborted) throw abort();
-        const shared = cache.pages.get(index);
-        if (shared) { touch(cache); return shared; }
-        if (cache.bytes + page.cost <= maxBytes) {
-            touch(cache);
+        const shared = retained.pages.get(index);
+        if (shared) { touch(retained); return shared; }
+        if (!page.failed && retained.bytes + page.cost <= maxBytes) {
+            touch(retained);
             while (appBytes + page.cost > APP_BYTES) {
-                const victim = [...documents.keys()].find(document => document !== cache);
+                const victim = [...documents.keys()].find(document => document !== retained);
                 if (!victim) break;
                 clearCache(victim); documents.delete(victim);
             }
-            cache.pages.set(index, page); cache.bytes += page.cost; appBytes += page.cost;
+            retained.pages.set(index, page); retained.bytes += page.cost; appBytes += page.cost;
         }
         return page;
     }
@@ -232,9 +251,25 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
             const signal = AbortSignal.any([externalSignal, lifetime.signal]);
             const page = await getPage(index, signal);
             if (page.failed) throw new Error(`Could not read physical page ${index + 1}`);
-            return { text: decoder.decode(page.canonical), tokenBreaks: Array.from(page.tokenBreaks), quality: page.quality };
+            return { text: page.canonical, tokenBreaks: Array.from(page.tokenBreaks), quality: page.quality };
         },
-        clearIndex() { clearCache(cache); },
+        peekPageText(index) {
+            const page = retained.pages.get(index);
+            if (!page || page.failed) return undefined;
+            touch(retained);
+            return { text: page.canonical, tokenBreaks: page.tokenBreaks, quality: page.quality };
+        },
+        clearIndex() {
+            if (!retained.visible.size && retained.hiddenSince !== undefined && Date.now() - retained.hiddenSince >= 60_000) clearCache(retained);
+        },
+        setVisible(visible) {
+            if (visible) { retained.visible.add(owner); retained.hiddenSince = undefined; }
+            else {
+                const wasVisible = retained.visible.size > 0;
+                retained.visible.delete(owner);
+                if (wasVisible && !retained.visible.size) retained.hiddenSince = Date.now();
+            }
+        },
         async *search(query, startPage, externalSignal) {
             current?.abort();
             const controller = new AbortController(); current = controller;
@@ -277,6 +312,14 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
                 yield progress(true);
             } finally { if (current === controller) current = undefined; }
         },
-        dispose() { lifetime.abort(); current?.abort(); clearCache(cache); documents.delete(cache); },
+        dispose() {
+            lifetime.abort(); current?.abort();
+            retained.owners.delete(owner); retained.visible.delete(owner);
+            if (!retained.visible.size && retained.hiddenSince === undefined) retained.hiddenSince = Date.now();
+            if (!retained.owners.size) {
+                clearCache(retained); documents.delete(retained);
+                if (key && keyedDocuments.get(key) === retained) keyedDocuments.delete(key);
+            }
+        },
     };
 }

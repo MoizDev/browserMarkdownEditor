@@ -6,8 +6,8 @@ import type { PdfEmphasisPlan, PdfNativeEmphasisResult } from './pdfNativeEmphas
 
 /** One bounded, whole-page final-composition comparison. It owns its canvases
  * and render tasks; the caller must retain the page lease until it settles. */
-export async function probeClassicPdfEmphasis(page: PDFPageProxy, signal: AbortSignal, suppliedPlan?: PdfEmphasisPlan,
-    guard: <T>(work: Promise<T>) => Promise<T> = work => work, assertComplete: () => void = () => {}): Promise<PdfNativeEmphasisResult> {
+export async function probeClassicPdfEmphasis(page: PDFPageProxy, signal: AbortSignal, suppliedPlan: PdfEmphasisPlan | undefined,
+    locale: string | undefined, planProfile: string, guard: <T>(work: Promise<T>) => Promise<T> = work => work, assertComplete: () => void = () => {}): Promise<PdfNativeEmphasisResult> {
     signal.throwIfAborted();
     const base = page.getViewport({ scale: 1 });
     let scale = Math.min(1.5, Math.sqrt(2 ** 20 / (base.width * base.height)));
@@ -50,9 +50,9 @@ export async function probeClassicPdfEmphasis(page: PDFPageProxy, signal: AbortS
         signal.throwIfAborted();
         const list = completedClassicDisplayList(task);
         if (!list) throw new Error('renderer-version');
-        const plan = suppliedPlan ?? makePdfEmphasisPlan(list);
+        const plan = suppliedPlan ?? makePdfEmphasisPlan(list, undefined, locale);
         if (!plan.result.supported) throw new Error(plan.result.reason ?? 'glyph-data');
-        if (!rememberPdfEmphasisPlan(page, plan)) throw new Error('page-budget');
+        if (!rememberPdfEmphasisPlan(page, plan, planProfile)) throw new Error('page-budget');
         binding = bindPdfNativeEmphasis(page, onCtx, plan);
         signal.throwIfAborted();
         task = page.render({ canvas: on, canvasContext: onCtx, viewport, operationsFilter: binding.operationsFilter });

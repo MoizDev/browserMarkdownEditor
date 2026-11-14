@@ -22,7 +22,7 @@ import { bindPdfNativeEmphasis, makePdfEmphasisPlan } from './pdfNativeEmphasis'
 import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
 import { createPdfDocumentSession } from './pdfDocumentSession';
 import { completedClassicDisplayList } from './pdfClassicDisplayList';
-import { classicEmphasisPageKey } from './pdfEmphasisProfile';
+import { classicEmphasisPageKey, classicEmphasisPlanKey } from './pdfEmphasisProfile';
 import { getPdfEmphasisPlan, rememberPdfEmphasisPlan } from './pdfEmphasisPlanCache';
 import { watchPdfEmphasis } from './pdfEmphasisWatch';
 import { hashBytes } from './diskVersion';
@@ -147,7 +147,7 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
                 const key = classicEmphasisPageKey(identity.token, index, page);
                 const verdict = session.emphasisVerdicts.getVerdict(key);
                 const useOn = emphasisEnabled && verdict.kind === 'verified' && verdict.result.supported && verdict.result.eligible > 0;
-                let plan = useOn ? getPdfEmphasisPlan(page) : undefined;
+                let plan = useOn ? getPdfEmphasisPlan(page, classicEmphasisPlanKey(key)) : undefined;
                 if (plan) emphasis = bindPdfNativeEmphasis(page, context, plan);
                 rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis?.operationsFilter });
                 await rendering.promise;
@@ -156,9 +156,9 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
                     const list = completedClassicDisplayList(rendering);
                     if (!list) session.emphasisVerdicts.rejectPlan(key, 'renderer-version');
                     else {
-                        plan = makePdfEmphasisPlan(list);
+                        plan = makePdfEmphasisPlan(list, undefined, key.locale || undefined);
                         const reason = !plan.result.supported ? plan.result.reason ?? 'glyph-data'
-                            : !rememberPdfEmphasisPlan(page, plan) ? 'page-budget' : undefined;
+                            : !rememberPdfEmphasisPlan(page, plan, classicEmphasisPlanKey(key)) ? 'page-budget' : undefined;
                         if (reason) session.emphasisVerdicts.rejectPlan(key, reason);
                         else {
                             emphasis = bindPdfNativeEmphasis(page, context, plan);

@@ -1,7 +1,7 @@
 import { OPS, version } from 'pdfjs-dist';
 import type { PDFPageProxy } from 'pdfjs-dist';
 import type { EmphasisAvailability } from '../types/reading';
-import { emphasisRanges } from './readingEmphasis';
+import { EMPHASIS_ALGORITHM, emphasisRanges } from './readingEmphasis';
 
 /** This adapter is deliberately pinned: the public operator filter is stable,
  * but glyph payloads and the two canvas painting routes are pdf.js internals.
@@ -49,9 +49,10 @@ export interface PdfEmphasisPlan {
  * so TextItem merging/splitting and visual column order cannot move a prefix.
  * Ligatures are indivisible: a prefix ending INSIDE one leaves that glyph alone.
  * The shared Unicode policy currently selects Latin words only. */
-export function makePdfEmphasisPlan(list: Awaited<ReturnType<PDFPageProxy['getOperatorList']>>): PdfEmphasisPlan {
+export function makePdfEmphasisPlan(list: Awaited<ReturnType<PDFPageProxy['getOperatorList']>>,
+    algorithm: typeof EMPHASIS_ALGORITHM = EMPHASIS_ALGORITHM, locale?: string): PdfEmphasisPlan {
     const result: PdfNativeEmphasisResult = { glyphs: 0, candidates: 0, painted: 0, eligible: 0, skipped: 0,
-        supported: version === PDF_EMPHASIS_RENDERER_VERSION,
+        supported: version === PDF_EMPHASIS_RENDERER_VERSION && algorithm === EMPHASIS_ALGORITHM,
         reason: version === PDF_EMPHASIS_RENDERER_VERSION ? undefined : 'renderer-version' };
     const paints = new Map<number, Paint[]>();
     const fontIds = new Map<number, string>();
@@ -61,7 +62,7 @@ export function makePdfEmphasisPlan(list: Awaited<ReturnType<PDFPageProxy['getOp
             let annotation = false;
             const fonts: string[] = [];
             const flush = () => {
-                const ranges = emphasisRanges({ text, exclusions: [...text.matchAll(/\S+/gu)].filter(m => m[0].includes('\uFFFD')).map(m => ({ from: m.index, to: m.index + m[0].length })) });
+                const ranges = emphasisRanges({ text, locale, exclusions: [...text.matchAll(/\S+/gu)].filter(m => m[0].includes('\uFFFD')).map(m => ({ from: m.index, to: m.index + m[0].length })) });
                 let r = 0;
                 for (const g of glyphs) {
                     while (r < ranges.length && ranges[r].to <= g.from) r++;

@@ -1,7 +1,7 @@
 import type { PDFPageProxy } from 'pdfjs-dist';
 import type { PdfEmphasisPlan } from './pdfNativeEmphasis';
 
-type Entry = { plan?: PdfEmphasisPlan; bytes: number };
+type Entry = { plan?: PdfEmphasisPlan; bytes: number; profile: string };
 const pages = new WeakMap<PDFPageProxy, Entry>();
 const lru = new Map<Entry, number>();
 let used = 0;
@@ -9,14 +9,14 @@ const budget = 16 * 1024 * 1024;
 
 /** Entries contain only operation metadata, never a page, display list, font,
  * context or render cursor. The page owner invalidates at cleanup. */
-export function getPdfEmphasisPlan(page: PDFPageProxy): PdfEmphasisPlan | undefined {
+export function getPdfEmphasisPlan(page: PDFPageProxy, profile: string): PdfEmphasisPlan | undefined {
     const entry = pages.get(page);
-    if (!entry?.plan) return undefined;
+    if (!entry?.plan || entry.profile !== profile) return undefined;
     lru.delete(entry);
     lru.set(entry, entry.bytes);
     return entry.plan;
 }
-export function rememberPdfEmphasisPlan(page: PDFPageProxy, plan: PdfEmphasisPlan): boolean {
+export function rememberPdfEmphasisPlan(page: PDFPageProxy, plan: PdfEmphasisPlan, profile: string): boolean {
     forgetPdfEmphasisPlan(page);
     let bytes = 256;
     for (const font of plan.fontIds.values()) bytes += 80 + font.length * 2;
@@ -25,7 +25,7 @@ export function rememberPdfEmphasisPlan(page: PDFPageProxy, plan: PdfEmphasisPla
         for (const paint of paints) bytes += 64 + paint.char.length * 2;
     }
     if (bytes > budget) return false;
-    const entry: Entry = { plan, bytes };
+    const entry: Entry = { plan, bytes, profile };
     pages.set(page, entry);
     lru.set(entry, bytes);
     used += bytes;

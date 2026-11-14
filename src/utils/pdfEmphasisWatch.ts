@@ -1,5 +1,5 @@
 import type { PdfDocumentSession } from './pdfDocumentSession';
-import { classicEmphasisKey, classicEmphasisResult } from './pdfEmphasisProfile';
+import { classicEmphasisKey, classicEmphasisPlanKey, classicEmphasisResult } from './pdfEmphasisProfile';
 import { probeClassicPdfEmphasis } from './pdfEmphasisProbe';
 import { getPdfEmphasisPlan } from './pdfEmphasisPlanCache';
 import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
@@ -44,8 +44,8 @@ export function watchPdfEmphasis(session: PdfDocumentSession, identity: PdfEmpha
         release = session.emphasisVerdicts.ensureVerdict(key, async signal => {
             await afterPaint(signal);
             const lease = await session.acquireRender(index, signal);
-            try { return await probeClassicPdfEmphasis(lease.page, signal, getPdfEmphasisPlan(lease.page),
-                work => session.health.guard(work), () => session.health.assertComplete(index)); }
+            try { return await probeClassicPdfEmphasis(lease.page, signal, getPdfEmphasisPlan(lease.page, classicEmphasisPlanKey(key)),
+                key.locale || undefined, classicEmphasisPlanKey(key), work => session.health.guard(work), () => session.health.assertComplete(index)); }
             finally { lease.release(); }
         });
         void identity.hash.then(hash => {

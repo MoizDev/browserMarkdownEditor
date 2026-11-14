@@ -18,6 +18,10 @@ export function classicEmphasisKey(bytes: string, page: number, geometry: string
 export function classicEmphasisPageKey(bytes: string, index: number, page: PDFPageProxy): PdfEmphasisVerdictKey {
     return classicEmphasisKey(bytes, index, JSON.stringify([page.view, page.rotate, page.userUnit]));
 }
+export function classicEmphasisPlanKey(key: PdfEmphasisVerdictKey): string {
+    return JSON.stringify([key.algorithm, key.locale, key.planner, key.stroke, key.renderer, key.assets,
+        key.intent, key.annotations, key.optionalContent, key.geometry, key.background]);
+}
 export function classicEmphasisResult(state: PdfEmphasisVerdictState): PdfNativeEmphasisResult | undefined {
     if (state.kind === 'verified') return state.result;
     if (state.kind !== 'unavailable') return undefined;

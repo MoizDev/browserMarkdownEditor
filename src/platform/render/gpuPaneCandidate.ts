@@ -35,6 +35,7 @@ interface Generation {
     bundle: PreparedGpuPane | null;
     grant: GpuGrant | null;
     disposed: boolean;
+    failureReported: boolean;
 }
 
 /** Qualified devices are built against the broker's context and kept detached until the lifecycle
@@ -63,9 +64,10 @@ export class GpuPaneCandidate {
                     const interval = this.options.frameInterval();
                     if (interval !== null) this.options.runtime.observeGpuTiming(this.options.paneId, p95, interval, samples, disjoint);
                 },
+                onFramebufferFailure: () => this.options.runtime.trouble('framebuffer'),
                 evict: this.options.onEvict });
         } catch (error) { backing.close(); throw error; }
-        const generation: Generation = { preparation, services, backing, bundle: null, grant: null, disposed: false };
+        const generation: Generation = { preparation, services, backing, bundle: null, grant: null, disposed: false, failureReported: false };
         this.current = generation;
         try {
             const bundle = await factory({ preparation, services: services.services,
@@ -77,7 +79,15 @@ export class GpuPaneCandidate {
                     return backing.resize(width, height, grant.resizeSurface) ??
                         { width: 0, height: 0, complete: false, generation: preparation.generation };
                 },
-                invalidate: this.options.invalidate, onError: this.options.onError,
+                invalidate: this.options.invalidate,
+                onError: error => {
+                    try { this.options.onError(error); }
+                    finally {
+                        const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+                        this.failure(preparation.generation, code === 'allocation' || code === 'out-of-budget' ||
+                            code === 'unsupported' || code === 'lost' ? code : 'invalid-resource');
+                    }
+                },
                 onDeferred: () => this.options.invalidate('gpu-deferred'),
             });
             generation.bundle = bundle;
@@ -94,6 +104,12 @@ export class GpuPaneCandidate {
                 dispose: reason => this.disposeGeneration(generation, reason),
             };
         } catch (error) {
+            if (!preparation.signal.aborted && !generation.failureReported && typeof error === 'object' && error !== null && 'code' in error) {
+                const code = error.code;
+                if (code === 'unsupported' || code === 'allocation' || code === 'out-of-budget' || code === 'lost') {
+                    this.reportTrouble(generation, code);
+                }
+            }
             generation.disposed = true;
             generation.services.close();
             if (!preparation.canvas.width && !preparation.canvas.height) generation.backing.close();
@@ -107,6 +123,7 @@ export class GpuPaneCandidate {
         if (!generation || generation.disposed || !generation.bundle || generation.preparation.generation !== grant.generation ||
             generation.preparation.canvas !== grant.canvas) return;
         generation.grant = grant;
+        this.options.runtime.clearCapabilityFailure(this.options.paneId);
         this.options.onReady({ bundle: generation.bundle, grant, backing: generation.backing });
     }
 
@@ -118,10 +135,18 @@ export class GpuPaneCandidate {
         if (generation.disposed) generation.backing.close();
     }
 
+    private reportTrouble(generation: Generation, code: GfxError): void {
+        if (generation.failureReported) return;
+        generation.failureReported = true;
+        if (code === 'unsupported') this.options.runtime.observeCapabilityFailure(this.options.paneId);
+        else if (code === 'lost') this.options.runtime.trouble('context-loss');
+        else if (code === 'allocation' || code === 'out-of-budget') this.options.runtime.trouble('allocation');
+    }
+
     private failure(generation: number, code: GfxError): void {
-        if (code === 'lost' || code === 'allocation' || code === 'out-of-budget' || code === 'unsupported') {
-            this.options.runtime.trouble(code === 'lost' ? 'context-loss' : code === 'unsupported' ? 'capability' : 'allocation');
-        }
+        const current = this.current;
+        if (!current || current.preparation.generation !== generation) return;
+        this.reportTrouble(current, code);
         const surface = this.options.surface();
         if (!surface) return;
         surface.failGpu(surface.stamp, generation, code === 'out-of-budget' ? 'out-of-budget' : 'creation-failed');

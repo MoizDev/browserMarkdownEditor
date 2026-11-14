@@ -2,6 +2,7 @@ import type { PdfPoolDocument } from '../pool/types';
 import type { PageTextReply, PdfTextDetail } from '../worker/protocol';
 import type { PdfPoolTextSource } from './poolReader';
 import { validatePdfTextReply } from './validate';
+import { exactPdfTextGeometry } from './exactGeometry';
 
 /** The session's retained pool lease is the only engine-facing text source. */
 export function pdfPoolTextSource(document: PdfPoolDocument): PdfPoolTextSource {
@@ -11,7 +12,9 @@ export function pdfPoolTextSource(document: PdfPoolDocument): PdfPoolTextSource 
         const reply = await document.text(page, detail, { priority, signal });
         if (document.closed || signal.aborted) throw new DOMException('PDF text operation cancelled', 'AbortError');
         if (reply.docKey !== docKey || reply.page !== page || reply.schema !== 2) throw new Error('The PDF text worker returned a stale page.');
-        await validatePdfTextReply(reply, document.geometry(page), detail, signal);
+        const geometry = detail === 'text' ? undefined : await exactPdfTextGeometry(document, page, priority, signal);
+        await validatePdfTextReply(reply, geometry, detail, signal);
+        if (signal.aborted || document.closed || document.docKey !== docKey) throw new DOMException('PDF text operation cancelled', 'AbortError');
         return reply;
     };
     return {

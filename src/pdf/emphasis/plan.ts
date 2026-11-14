@@ -57,6 +57,8 @@ export function buildEmphasisPlan(raw: RawPageText, options: { locale: string; d
         }
     }
     if (!ranges.length) return { candidates: 0, eligibleGlyphs: 0, objectIndexes: new Int32Array(), cells: [] };
+    const candidateTokens = new Set<number>();
+    for (let i = 0; i < n; i++) if (selection[i] && tokens[i] >= 0) candidateTokens.add(tokens[i]);
 
     const finiteBox = (i: number): boolean => {
         const p = i * 4, b = raw.tight;
@@ -152,7 +154,7 @@ export function buildEmphasisPlan(raw: RawPageText, options: { locale: string; d
         active = remaining;
         if (pass === 15) throw new RangeError('Emphasis collision plan did not settle');
     }
-    return { candidates: ranges.length, eligibleGlyphs: active.reduce((sum, candidate) => sum + candidate.cells.length, 0),
+    return { candidates: candidateTokens.size, eligibleGlyphs: active.reduce((sum, candidate) => sum + candidate.cells.length, 0),
         objectIndexes: Int32Array.from(new Set(active.flatMap(candidate => candidate.objects))),
         cells: active.flatMap(candidate => candidate.cells) };
 }

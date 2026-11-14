@@ -1,6 +1,8 @@
 import { exactAffinePoint } from './exactAffine';
 import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
 import { exactSegmentsIntersect } from './exactSegments';
+import { createCubicLineCertificate } from './cubicLineCertificate';
+import type { ExactCurvePoint } from './cubicRootCertificate';
 import { createFillPointJob } from './fillPoint';
 import { add, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
 import { isUniformDistanceMatrix, splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
@@ -54,12 +56,13 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) throw new RangeError('Invalid sweep point');
         return { x: interval(p.x), y: interval(p.y) };
     };
-    const mapped = (p: { readonly x: number; readonly y: number }): BoundsPoint => exactPointIntervals(exactAffinePoint(matrix, p));
     let fill: ReturnType<typeof createFillPointJob> | undefined, fillUncertain = false, curveUncertain = false;
     const allPaths = [...paths, ...(options.interiorPaths ?? [])];
     let pathIndex = 0, commandIndex = 0, sweepIndex = 0;
     let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, segment: CertifiedCurve | undefined, segmentRadius = strokeRadius;
     let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined, segmentExact: readonly [ExactPoint, ExactPoint] | undefined;
+    let segmentCubic: readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
+    let lineCertificate: ReturnType<typeof createCubicLineCertificate> | undefined, deferred: Pair | undefined;
     const stack: Pair[] = [];
     const finish = (result: SweptPathResult): SweptPathResult => { finished = Object.freeze(result); return finished; };
     return {
@@ -77,6 +80,14 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                     if (state.status === 'inside') return finish({ status: 'hit' });
                     if (state.status === 'uncertain') fillUncertain = true;
                     fill = undefined; fillIndex++; continue;
+                }
+                if (lineCertificate) {
+                    const result = lineCertificate.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    lineCertificate.cancel(); lineCertificate = undefined;
+                    if (result.status === 'hit') return finish({ status: 'hit' });
+                    if (result.status === 'uncertain') curveUncertain = true;
+                    stack.push(deferred!); deferred = undefined; continue;
                 }
                 const pair = stack.pop();
                 if (pair) {
@@ -103,9 +114,13 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                         const a = point(first), b = point(last), depth = first.x === last.x && first.y === last.y ? maxDepth : 0;
                         if (segmentExact && exactSegmentsIntersect(segmentExact[0], segmentExact[1], exactPoint(first), exactPoint(last))) return finish({ status: 'hit' });
                         sweepIndex++; if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Swept path node limit exhausted' });
-                        stack.push({ path: segment, sweep: { points: [a, b], depth }, radius: segmentRadius }); continue;
+                        const pair: Pair = { path: segment, sweep: { points: [a, b], depth }, radius: segmentRadius };
+                        if (query.radiusCss === 0 && segmentCubic) {
+                            lineCertificate = createCubicLineCertificate(segmentCubic, exactPoint(first), exactPoint(last)); deferred = pair;
+                        } else stack.push(pair);
+                        continue;
                     }
-                    segment = undefined; segmentExact = undefined; sweepIndex = 0; continue;
+                    segment = undefined; segmentExact = undefined; segmentCubic = undefined; sweepIndex = 0; continue;
                 }
                 if (pathIndex >= allPaths.length) return finish(fillUncertain || curveUncertain
                     ? { status: 'uncertain', reason: 'Sweep touches an uncertified path boundary' } : { status: 'miss' });
@@ -127,12 +142,17 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                 if (!start || !previous) throw new RangeError('Swept path must begin with M');
                 const endExact = op.op === 'Z' ? startExact! : exactAffinePoint(matrix, op.p), end = exactPointIntervals(endExact);
                 segmentRadius = pathIndex < paths.length ? strokeRadius : fillRadius;
-                segment = { points: op.op === 'C' ? [previous, mapped(op.c1), mapped(op.c2), end] : [previous, end], depth: 0 };
-                segmentExact = op.op === 'C' ? undefined : [previousExact!, endExact];
+                if (op.op === 'C') {
+                    const c1 = exactAffinePoint(matrix, op.c1), c2 = exactAffinePoint(matrix, op.c2);
+                    segmentCubic = [previousExact!, c1, c2, endExact]; segmentExact = undefined;
+                    segment = { points: [previous, exactPointIntervals(c1), exactPointIntervals(c2), end], depth: 0 };
+                } else {
+                    segmentCubic = undefined; segmentExact = [previousExact!, endExact]; segment = { points: [previous, end], depth: 0 };
+                }
                 previous = end; previousExact = endExact;
             }
             return PENDING;
         },
-        cancel() { cancelled = true; stack.length = 0; },
+        cancel() { cancelled = true; lineCertificate?.cancel(); lineCertificate = undefined; deferred = undefined; stack.length = 0; },
     };
 }

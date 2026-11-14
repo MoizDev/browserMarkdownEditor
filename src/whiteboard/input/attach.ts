@@ -333,7 +333,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   })
   const flush = () => {
     services.cancelPendingGestures()
-    if (cursor.active) cursor.escape()
+    cursor.escape()
     pointer.interrupt('flush')
     services.textInput?.flush()
   }

@@ -8,6 +8,7 @@ import type { EngineInitArgs, PageTileArgs, PageTileResult, PdfArgs, PdfDocKey, 
 import type { RenderToken } from '../../platform/render/types';
 import type { WriterOperations } from '../writing/protocol';
 import { validatePdfWriterReply } from '../writing/validateReply';
+import { verifyPdfWriterOutput } from '../writing/verifyOutput';
 import type { PdfDocumentOp, PdfOpenOptions, PdfPageBitmapOptions, PdfPool, PdfPoolDocument, PdfRequestOptions, PdfWriterSession, WithoutDocKey } from './types';
 import type { PdfPoolOptions } from './broker.types';
 import { TileCredits } from './credits';
@@ -25,8 +26,8 @@ import { notePdfFontProvided, releasePdfFontProfile } from '../fonts/profiles';
 import { setPdfPageRegions, observePdfPageTile, releasePdfPageQuality, needsPdfPageRegions } from '../quality/store';
 import type { PdfiumJbig2Regions } from '../engine/pdfium/imageRegions.types';
 import { record, integer, boolean, invalidPdfReply } from './validationCommon';
-import { validatePdfTextReply } from '../text/validate';
-import type { PageTextReply, PdfTextDetail } from '../worker/protocol';
+import { rebuildPdfTextReply } from '../text/rebuildReply';
+import type { PdfTextDetail } from '../worker/protocol';
 import { reportWorkerMemory, releaseWorkerMemory } from '../../platform/render/workerMemory';
 
 const validators = createPdfReplyValidators();
@@ -469,11 +470,8 @@ class Pool implements PdfPool {
         switch (job.op) {
             case 'page.geometry': return rememberGeometry(job.doc, value, page);
             case 'page.text': {
-                const data = record(value, ['docKey', 'page', 'schema', 'text', 'tokenBreaks', 'quality', 'reasons', 'model', 'digest', 'sel']);
-                if (data.docKey !== job.doc.key || data.page !== page || data.schema !== 2) invalidPdfReply();
-                const reply = data as unknown as PageTextReply;
-                await validatePdfTextReply(reply, job.doc.geometry.get(page), job.args.detail as PdfTextDetail, job.signal);
-                return reply;
+                return rebuildPdfTextReply(value, { docKey: job.doc.key, page, detail: job.args.detail as PdfTextDetail,
+                    geometry: job.doc.geometry.get(page) }, job.signal);
             }
             case 'page.links': {
                 const geometry = job.doc.geometry.get(page);
@@ -572,15 +570,17 @@ class Pool implements PdfPool {
         const client = pdfClient(this.options, `pdf-writer-${this.serial}-${id}`, 'writer', id);
         this.writers.add(client);
         let closed = false;
+        const lifetime = new AbortController();
         const sources = new Map<string, WriterOperations['writer.prepareSource']['result'] & { source: WriterOperations['writer.prepareSource']['args']['source'] }>();
-        const stages = new Map<string, { sourceFingerprint: string; pageCount: number; revision: number }>();
-        const close = async () => { if (closed) return; closed = true; options.signal?.removeEventListener('abort', abort); this.writers.delete(client); client.dispose(); sources.clear(); stages.clear(); releaseTurn(); };
+        const stages = new Map<string, { sourceFingerprint: string; pageCount: number; revision: number; formatId: string }>();
+        const close = async () => { if (closed) return; closed = true; lifetime.abort(); options.signal?.removeEventListener('abort', abort); this.writers.delete(client); client.dispose(); sources.clear(); stages.clear(); releaseTurn(); };
         const abort = () => { void close(); };
         options.signal?.addEventListener('abort', abort, { once: true });
         return {
             request: async <K extends keyof WriterOperations>(op: K, args: WriterOperations[K]['args'], requestOptions: PdfRequestOptions) => {
                 if (closed) throw abortError();
-                const value = await client.request<unknown>(op, args, { ...requestOptions, cpu: 'governed',
+                const signal = AbortSignal.any([lifetime.signal, ...(options.signal ? [options.signal] : []), ...(requestOptions.signal ? [requestOptions.signal] : [])]);
+                const value = await client.request<unknown>(op, args, { ...requestOptions, signal, cpu: 'governed',
                     deadlineMs: Math.min(requestOptions.deadlineMs ?? 120_000, 120_000), terminateOnDeadline: true });
                 if (closed) throw abortError();
                 const result = validatePdfWriterReply(op, value, args);
@@ -594,13 +594,19 @@ class Pool implements PdfPool {
                     if (!prepared || output.sourceFingerprint !== prepared.sourceFingerprint ||
                         JSON.stringify(output.geometryEngine) !== JSON.stringify(prepared.source.geometryEngine) ||
                         JSON.stringify(input.geometries) !== JSON.stringify(prepared.inspection.geometries)) invalidPdfReply();
-                    stages.set(output.stageId, { sourceFingerprint: prepared.sourceFingerprint, pageCount: prepared.inspection.pageCount, revision: input.revision });
+                    stages.set(output.stageId, { sourceFingerprint: prepared.sourceFingerprint, pageCount: prepared.inspection.pageCount, revision: input.revision, formatId: prepared.source.formatId });
                 } else if (op === 'writer.finishAnnotated') {
                     const input = args as WriterOperations['writer.finishAnnotated']['args'];
                     const output = result as WriterOperations['writer.finishAnnotated']['result'];
                     const staged = stages.get(input.stageId); stages.delete(input.stageId);
-                    if (!staged || staged.sourceFingerprint !== output.sourceFingerprint || staged.pageCount !== output.verification.pageCount || staged.revision !== output.revision) invalidPdfReply();
+                    if (!staged || staged.sourceFingerprint !== output.sourceFingerprint || staged.pageCount !== output.verification.pageCount || staged.revision !== output.revision ||
+                        input.attachments.some(entry => entry.role === 'editable' && entry.format !== staged.formatId)) invalidPdfReply();
                 } else if (op === 'writer.release') sources.delete((args as WriterOperations['writer.release']['args']).writerSession);
+                if (op === 'writer.finishAnnotated') await verifyPdfWriterOutput(op,
+                    args as WriterOperations['writer.finishAnnotated']['args'], result as WriterOperations['writer.finishAnnotated']['result'], signal);
+                else if (op === 'writer.buildNotebook') await verifyPdfWriterOutput(op,
+                    args as WriterOperations['writer.buildNotebook']['args'], result as WriterOperations['writer.buildNotebook']['result'], signal);
+                signal.throwIfAborted();
                 return result;
             },
             reprioritise: (promise, priority) => client.reprioritise(promise, priority), close,
@@ -644,6 +650,7 @@ class Lease implements PdfPoolDocument {
     get signal(): AbortSignal { return this.controller.signal; }
     get docKey(): PdfDocKey { return this.doc.key; }
     get source(): 'outer' | 'original' { return this.doc.source; }
+    peekGeometry(page: number): Readonly<PageGeometry> | undefined { return this.closed ? undefined : this.doc.geometry.get(page); }
     get info(): Readonly<DocInfo> { if (!this.doc.info) throw new PdfEngineError('NotFoundError', 'PDF is not open'); return this.doc.info; }
     async resolveGeometry(page: number, options: PdfRequestOptions): Promise<Readonly<PageGeometry>> {
         if (!Number.isSafeInteger(page) || page < 0 || page >= this.info.pageCount) throw new RangeError('Invalid PDF page');

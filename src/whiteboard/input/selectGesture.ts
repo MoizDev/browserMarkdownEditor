@@ -88,7 +88,8 @@ class BoardSelectGesture implements GestureOwner {
         if (!this.valid() || this.hit === undefined || this.transform) return;
         if (this.hit !== null) {
             if (!this.context.selection.getSnapshot().selected.includes(this.hit)) {
-                this.context.selection.replace([this.hit]);
+                // Default: Shift-drag adds the hit before moving; Shift-click still toggles on release.
+                this.context.selection.replace(this.startKeys.shift ? [...this.initial, this.hit] : [this.hit]);
                 this.selectionFence = this.context.selection.getSnapshot();
             }
             this.transform = this.context.beginTransform(this.down, this.hit, this.startKeys);

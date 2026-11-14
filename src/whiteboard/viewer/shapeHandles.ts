@@ -7,18 +7,22 @@ import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { connectorBody, connectorBodyPoint } from '../geom/connectors';
 import type { ConnectorControl } from '../geom/connectorControls';
 import type { Vec2 } from '../geom/path';
+import type { BoardSnapGuide } from '../geom/runtimeSnap';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { polylinePath } from '../geom/polylines';
+import { preparePolylineControl } from '../geom/polylineControls';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
 import { connectorEndHandleGesture } from '../input/connectorHandles';
 import { connectorControlGesture } from '../input/connectorControlsGesture';
+import { toggleConnectorHead } from '../input/connectorHead';
+import { PresentedHistory } from '../input/presentedHistory';
 import { polylineHandleGesture } from '../input/polylineHandles';
 import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
 import type { NodeId } from '../model/ids';
 import type { AttachmentRequest } from './attachments';
 import type { Attachment } from '../model/nodes';
-import type { NodeSetOp } from '../change/ops';
+import type { Op } from '../change/ops';
 
 export type ShapeHandleHit = Readonly<{ kind: 'connector-end'; terminal: 'start' | 'end' }>
     | Readonly<{ kind: 'connector-control'; control: ConnectorControl }>
@@ -31,11 +35,14 @@ export interface ShapeHandleOptions {
     readonly current: () => boolean;
     readonly visible: () => boolean;
     readonly sampleToSurface: (sample: RealSample) => Vec2;
+    readonly alwaysSnap: () => boolean;
+    readonly guides: (guides: readonly BoardSnapGuide[]) => void;
     readonly invalidate: () => void;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
-    readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly show: (ops: readonly Op[]) => void;
     readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
+    readonly waitUntilIdle: (signal: AbortSignal) => Promise<void>;
     readonly armCommit: () => void;
     readonly finishCommit: () => void;
     readonly cancelCommit: () => void;
@@ -51,8 +58,12 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let handles: readonly Handle[] = [], selected: NodeId | null = null, generation = 0, disposed = false;
     let controller: AbortController | undefined, svg: SVGSVGElement | undefined;
+    let rendered: readonly Handle[] | null = null, renderedCount = 0, renderedCamera = '';
+    const presented = new PresentedHistory<{ camera: ViewState['camera']; handles: readonly Handle[]; count: number }>();
+    let controlPending: AbortController | undefined, headBusy = false;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
-    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; options.invalidate(); };
+    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined;
+        rendered = null; renderedCount = 0; renderedCamera = ''; presented.clear(); options.invalidate(); };
     const refresh = () => {
         const turn = ++generation; controller?.abort(); controller = new AbortController(); const signal = controller.signal;
         clear(); if (!current()) return;
@@ -74,6 +85,10 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                         const world = (p: Vec2) => ({ x: pose.x + c * p.x - s * p.y, y: pose.y + s * p.x + c * p.y });
                         for (let index = 0; index < actual.points.length; index++) {
                             next.push({ hit: { kind: 'polyline-vertex', index }, point: world(actual.points[index]) });
+                            if ((index & 127) === 127) {
+                                await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                                if (!active()) return;
+                            }
                         }
                         const path = polylinePath({ ...node, points: actual.points });
                         for (let index = 1; index < path.length; index++) {
@@ -84,6 +99,10 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                                 y: (a.y + 3 * segment.c1.y + 3 * segment.c2.y + segment.p.y) / 8 };
                             else continue;
                             next.push({ hit: { kind: 'polyline-midpoint', index }, point: world(p) });
+                            if ((index & 127) === 127) {
+                                await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                                if (!active()) return;
+                            }
                         }
                     } finally { actual.release(); }
                 } else {
@@ -114,11 +133,13 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     refresh();
     return {
         refresh,
-        hit(surface: Vec2, coarse = false): ShapeHandleHit | null {
+        hit(surface: Vec2, coarse = false, time?: number): ShapeHandleHit | null {
             if (!current() || ![surface.x, surface.y].every(Number.isFinite)) return null;
-            const view = options.view(), radius = coarse ? 16 : 7;
-            for (const handle of handles) {
-                const p = worldToSurface(handle.point, view.camera);
+            const state = presented.at(time), radius = coarse ? 16 : 7;
+            if (!state || state.handles !== handles) return null;
+            const camera = state.camera;
+            for (let index = 0; index < state.count; index++) {
+                const handle = handles[index], p = worldToSurface(handle.point, camera);
                 if (Math.hypot(surface.x - p.x, surface.y - p.y) <= radius) return handle.hit;
             }
             return null;
@@ -129,27 +150,84 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 show: options.show, waitUntilReady: options.waitUntilReady, armCommit: options.armCommit,
                 finishCommit: options.finishCommit, cancelCommit: options.cancelCommit,
                 clear: options.clear, error: options.error, cooperate: options.cooperate };
+            const snap = { zoom: () => options.view().camera.z, alwaysSnap: options.alwaysSnap, guides: options.guides };
             if (hit.kind === 'polyline-vertex' || hit.kind === 'polyline-midpoint') return polylineHandleGesture(sample, modifiers,
-                { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint' });
-            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal,
+                { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint', snap });
+            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, snap,
                 sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
             return connectorControlGesture(sample, modifiers, { ...common, control: hit.control });
         },
+        toggleHead(hit: ShapeHandleHit): boolean {
+            if (!current() || !selected || hit.kind !== 'connector-end') return false;
+            if (headBusy || controlPending) return true;
+            return toggleConnectorHead({ runtime, id: selected, terminal: hit.terminal, current,
+                hold: () => { const release = options.hold(); headBusy = true; return () => { headBusy = false; release(); }; },
+                registerPending: options.registerPending, show: options.show, waitUntilIdle: options.waitUntilIdle,
+                waitUntilReady: options.waitUntilReady, armCommit: options.armCommit, finishCommit: options.finishCommit,
+                cancelCommit: options.cancelCommit, clear: options.clear, error: options.error, cooperate: options.cooperate });
+        },
+        remove(hit: ShapeHandleHit): boolean {
+            if (!current() || !selected || hit.kind !== 'polyline-vertex') return false;
+            const node = doc.nodes.get(selected);
+            if (!node || node.kind !== 'polyline') return false;
+            if (node.points.length <= 2) { options.error(new Error('A line must retain at least two vertices')); return true; }
+            if (controlPending) return true;
+            const id = node.id, request = new AbortController(), release = options.hold();
+            const revision = doc.rev, owner = session.owner, selection = runtime.selection.getSnapshot();
+            const active = () => !request.signal.aborted && current() && session.owner === owner && doc.rev === revision
+                && runtime.selection.getSnapshot() === selection;
+            controlPending = request; let unregister: (() => void) | undefined;
+            try { unregister = options.registerPending(() => request.abort()); }
+            catch (error) { controlPending = undefined; release(); throw error; }
+            void (async () => {
+                await options.waitUntilIdle(request.signal);
+                request.signal.throwIfAborted(); if (!active()) throw new DOMException('Polyline edit became stale', 'AbortError');
+                const preview = await preparePolylineControl({ runtime, id, action: { kind: 'delete', index: hit.index },
+                    current: active, signal: request.signal, cooperate: options.cooperate });
+                try {
+                    request.signal.throwIfAborted(); if (!active()) throw new DOMException('Polyline edit became stale', 'AbortError');
+                    options.show(preview.ops); await options.waitUntilReady(request.signal);
+                    request.signal.throwIfAborted(); if (!active()) throw new DOMException('Polyline edit became stale', 'AbortError');
+                    options.armCommit();
+                    try { preview.commit(); options.finishCommit(); }
+                    catch (error) { options.cancelCommit(); throw error; }
+                } finally { preview.release(); }
+            })().catch(error => {
+                if (!request.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) options.error(error);
+            }).finally(() => {
+                if (controlPending === request) controlPending = undefined;
+                try { options.clear(); } finally { try { unregister?.(); } finally { release(); } }
+            }).catch(options.error);
+            return true;
+        },
         write(frame: ScheduledFrame) {
-            if (!current() || !handles.length) { svg?.remove(); svg = undefined; return; }
+            if (!current() || !handles.length) { svg?.remove(); svg = undefined; rendered = null; renderedCount = 0; presented.clear(); return; }
             if (!svg) {
                 svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
                 svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
             }
-            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'), parts: string[] = [];
-            for (const handle of handles) {
-                const p = worldToSurface(handle.point, frame.view.camera), r = handle.hit.kind === 'connector-control' || handle.hit.kind === 'polyline-midpoint' ? 3 : 5;
-                parts.push(`M ${p.x - r} ${p.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`);
+            const camera = frame.view.camera, key = `${camera.x}:${camera.y}:${camera.z}`;
+            if (rendered !== handles || renderedCamera !== key) {
+                svg.replaceChildren(); rendered = handles; renderedCount = 0; renderedCamera = key;
             }
-            path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');
-            path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5'); svg.replaceChildren(path);
+            // A large imported polyline cannot rebuild thousands of SVG commands in one frame.
+            const limit = Math.min(handles.length, renderedCount + 1024);
+            while (renderedCount < limit) {
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'), parts: string[] = [];
+                const end = Math.min(limit, renderedCount + 256);
+                while (renderedCount < end) {
+                    const handle = handles[renderedCount++], p = worldToSurface(handle.point, camera);
+                    const r = handle.hit.kind === 'connector-control' || handle.hit.kind === 'polyline-midpoint' ? 3 : 5;
+                    parts.push(`M ${p.x - r} ${p.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`);
+                }
+                path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');
+                path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5'); svg.append(path);
+            }
+            presented.present(frame.timestamp, { camera: { ...camera }, handles, count: renderedCount });
+            if (renderedCount < handles.length) options.invalidate();
         },
-        hide() { generation++; controller?.abort(); clear(); },
-        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); stopSelection(); stopSession(); svg?.remove(); svg = undefined; handles = []; selected = null; },
+        hide() { generation++; controller?.abort(); controlPending?.abort(); clear(); },
+        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); controlPending?.abort(); controlPending = undefined; stopSelection(); stopSession(); svg?.remove(); svg = undefined; handles = []; selected = null;
+            rendered = null; renderedCount = 0; presented.clear(); },
     };
 }

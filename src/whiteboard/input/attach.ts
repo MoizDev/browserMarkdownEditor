@@ -1,4 +1,5 @@
 import { surfaceToWorld, type CameraController, type Point } from '../../platform/render/camera'
+import type { TouchPanSample } from '../../platform/render/scheduler'
 import type { BoardSession } from '../session/BoardSession'
 import { TOOLS } from '../model/styles'
 import type { Op } from '../change/ops'
@@ -7,9 +8,14 @@ import { ToolState, type ToolStateSnapshot } from './gesture'
 import { installKeyboard } from './keyboard'
 import { createKeyboardCursor } from './keyboardCursor'
 import { LiveInk, WetInkHandover } from './liveInk'
+import { InkContinuationGesture } from './continueInkGesture'
+import type { InkContinuation } from './continueInk'
 import { installWheel, TouchArbiter, type ContactPoint } from './navigation'
 import { MappingHistory } from './pointer'
 import { PointerRouter, type PointerRoute } from './pointerRouter'
+import { EdgeScroll } from './edgeScroll'
+import { TouchDoubleTap } from './touchDoubleTap'
+import { DelegatedInkBridge, type PresentedWetSample } from './delegatedBridge'
 import { predictedTail, type PredictedPoint, type PredictionMapping } from './prediction'
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
@@ -23,6 +29,8 @@ export type Detach = () => void
 export interface BoardWetLayer {
   attach(handover: WetInkHandover): Detach
   onInputFrame(callback: () => void): Detach
+  /** Fires only after this exact real wet curve has been presented. */
+  onRealPresented?(callback: (sample: PresentedWetSample) => void): Detach
   invalidate(): void
 }
 export interface BoardInputView {
@@ -31,7 +39,7 @@ export interface BoardInputView {
   readonly wet: BoardWetLayer
   readonly token: InputToken
   readonly mappings: MappingHistory
-  readonly a11y: { toolState(snapshot: ToolStateSnapshot): void; bindKeyboardCursor?(activate: () => void): Detach; keyboardCursor?(point: Point | null, activeGesture: boolean): void }
+  readonly a11y: { toolState(snapshot: ToolStateSnapshot): void; bindKeyboardCursor?(activate: () => void): Detach; keyboardCursor?(point: Point | null, activeGesture: boolean): void; repeatAnnouncement?(): boolean }
   readonly bindFlush?: (flush: () => void) => Detach
   readonly sampleToSurface: (sample: RealSample) => Point
   readonly clientToSurface: (x: number, y: number) => Point
@@ -56,16 +64,22 @@ export interface BoardInputServices {
   keyboardCursorInitial?(): Point
   keyboardCursorVisible?(point: Point): Point
   resolveKeyboardTool?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
+  keyboardHandleCommand?(id: string, sample: RealSample): boolean
+  keyboardContextMenu?(surface: Point, world: Point): boolean
+  handleDoubleClick?(surface: Point, world: Point, time: number): boolean
   keyboardNavigation?(keyboardCursorActive: boolean): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
+  startFling?(samples: readonly TouchPanSample[]): void
+  cancelMotion?(): void
+  edgeScrolling?(): boolean
   error(error: unknown): void
   pointerChanged?(sample: RealSample): void
   hover?(event: PointerEvent): void
   contextMenu?(event: MouseEvent): void
   drop?(event: DragEvent): void
   linkAt?(sample: RealSample): (() => void) | null
-  continueInk?(sample: RealSample): ((endpoint: RealSample, signal: AbortSignal) => Promise<boolean>) | null
+  continueInk?(sample: RealSample): InkContinuation | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   persistToolLock?(locked: boolean): void
@@ -97,7 +111,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const pendingContinuations = new Set<() => void>()
   const cancelContinuations = (): boolean => {
     const pending = [...pendingContinuations]
-    for (const cancel of pending) cancel()
+    for (const cancel of pending) {
+      try { cancel() } catch (error) { try { services.error(error) } catch { /* Keep cancelling the remaining work. */ } }
+    }
     return pending.length > 0
   }
   const physicalSurface = (sample: RealSample) => sampleSurface(sample, view.sampleToSurface)
@@ -105,13 +121,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     toSurface: physicalSurface,
     panBy: delta => view.camera.panBy(delta),
     invalidate: services.cameraChanged,
+    startFling: services.startFling,
   }
   const hand: Tool<unknown> = { id: handTool.id, begin: (sample, modifiers) => handTool.begin(sample, modifiers, handContext) }
   const secondaryPan: Tool<unknown> = {
     id: 'secondary-pan',
     begin(sample, modifiers) {
       const origin = physicalSurface(sample)
-      const pan = handTool.begin(sample, modifiers, handContext)
+      const pan = handTool.begin(sample, modifiers, { ...handContext, flingEnabled: true })
       if (!pan) return null
       let dragging = false
       const owner: GestureOwner = {
@@ -132,31 +149,28 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     const tool = sessionInkTool(id, handover)
     return { id, begin: (sample, modifiers) => tool.begin(sample, modifiers, { ...services.ink(id, sample), session, tool: id, clearRedoAtDown: () => services.history.clearRedo() }) }
   }
-  const continuationTool = (sample: RealSample, commit: (endpoint: RealSample, signal: AbortSignal) => Promise<boolean>): Tool<unknown> => ({
-    id: 'continue-ink', begin: () => {
-      let endpoint = sample, ended = false, running = false, cleaned = false
-      const controller = new AbortController(), release = session.beginGesture()
-      const cleanup = () => { if (cleaned) return; cleaned = true; pendingContinuations.delete(cancel); release() }
-      const cancel = () => { if (cleaned) return; ended = true; controller.abort(); if (!running) cleanup() }
-      pendingContinuations.add(cancel)
-      return { kind: 'node-edit', pointerIds: new Set([sample.pointerId]),
-        update: samples => { if (!ended) for (const point of samples) if (point.pointerId === sample.pointerId) endpoint = point },
-        finish: reason => {
-          if (ended) return
-          if (reason !== 'up') { cancel(); return }
-          ended = true; running = true
-          void commit(endpoint, controller.signal).catch(error => {
-            if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) services.error(error)
-          }).finally(cleanup)
-        },
-        cancel, discard: cancel }
-    },
+  const continuationTool = (sample: RealSample, plan: InkContinuation): Tool<unknown> => ({
+    id: 'continue-ink', begin: () => new InkContinuationGesture(sample, plan, {
+      session, handover, invalidate: () => view.wet.invalidate(), error: services.error,
+      registerPending(cancel) { pendingContinuations.add(cancel); return () => { pendingContinuations.delete(cancel) } },
+    }),
   })
   const claim = (): boolean => services.tools.claimInput(owner, session.isGestureActive)
   const releaseClaim = (): void => { services.tools.releaseInput(owner) }
+  const delegated = session.doc.kind === 'whiteboard' && view.wet.onRealPresented ? new DelegatedInkBridge({
+    surface: view.surface, mappings: view.mappings, camera: () => view.camera.camera, current,
+    onRealPresented: callback => view.wet.onRealPresented!(callback),
+  }) : null
+  const edgeScroll = new EdgeScroll({ surface: view.surface, camera: view.camera, mappings: view.mappings, router, token: view.token,
+    mac: services.mac, current, enabled: () => services.edgeScrolling?.() ?? true, cameraChanged: services.cameraChanged,
+    onInputFrame: callback => view.wet.onInputFrame(callback), invalidate: () => view.wet.invalidate() })
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
-    sampleChanged: services.pointerChanged,
+    sampleChanged: sample => { edgeScroll.sample(sample); services.pointerChanged?.(sample) },
+    realEvent: (sample, event) => delegated?.observe(event, sample),
+    penTransitions: () => { const id = services.tools.getSnapshot().active.id; return id === 'pen' || id === 'highlighter' },
+    settled: signal => session.enqueueAfterGesture(signal, () => undefined),
+    cancelPending: services.cancelPendingGestures,
     hover: services.hover,
     claim, releaseClaim,
     resolve(sample, modifiers, event) {
@@ -165,12 +179,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       activeSource = sample.source
       const choice = start.active
       completeTool = false
-      if (sample.source === 'pen' && (event.button === 5 || (event.buttons & 32) !== 0)) {
+      if (sample.source === 'pen' && ((event.type === 'pointerdown' && event.button === 5) || (sample.buttons & 32) !== 0)) {
         return editable() ? services.resolveTool({ id: 'eraser' }, sample, modifiers, event) : null
       }
-      if (event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
-      if (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey)) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
-      if (event.button !== 0) return null
+      if (event.type === 'pointerdown' && event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
+      if (event.type === 'pointerdown' && (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey))) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
+      if (event.type === 'pointerdown' && event.button !== 0) return null
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
         const source = services.zoomBrush()
@@ -216,6 +230,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       return services.resolveTool(choice, sample, modifiers, event)
     },
     ended(reason) {
+      delegated?.clear()
       if (reason === 'up' && start && completeTool) services.tools.complete(start)
       completeTool = false
       temporaryPan = false
@@ -226,13 +241,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     prediction(id, event) {
       if (!current() || router.inkSuspended || !(router.activeOwner instanceof LiveInk)
         || !router.activeOwner.allowsPrediction || !router.activeOwner.pointerIds.has(id)) return
-      pendingPrediction = event ? predictedTail(event, view.predictionMapping(), 16) : []
+      pendingPrediction = event && !delegated?.ownsPrediction(id) ? predictedTail(event, view.predictionMapping(), 16) : []
       view.wet.invalidate()
     },
     contextMenu: event => { if (suppressMenu) suppressMenu = false; else services.contextMenu?.(event) },
     error: services.error,
   })
   let cancelKeyboardGesture = () => false
+  let dismissKeyboardCursor = () => {}
   const cancelForCamera = () => {
     cancelContinuations(); services.cancelPendingGestures()
     const active = router.activeOwner
@@ -257,38 +273,76 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     catch (error) { try { services.error(error) } catch { /* Other views must still receive the contact. */ } }
   })
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
+  let pointerClient: Point | null = null
+  const unbindPointer = services.tools.bindPresentedPointer(view.token, () => {
+    if (!current()) return null
+    const virtual = cursor.active ? cursor.currentSample() : null
+    if (virtual) return { x: virtual.x, y: virtual.y }
+    if (!pointerClient) return null
+    const mapping = view.mappings.latest()
+    return mapping ? mapping.clientToWorld(pointerClient.x, pointerClient.y) : null
+  })
+  const rememberPointer = (event: PointerEvent) => {
+    if (event.pointerType !== 'touch' && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) pointerClient = { x: event.clientX, y: event.clientY }
+  }
+  const forgetPointer = () => { pointerClient = null }
+  const doubleTap = new TouchDoubleTap({ doc: session.doc, camera: view.camera,
+    eligible: () => current() && !touch.penMode && !services.editing() && !services.modalOpen() && services.tools.getSnapshot().active.id === 'hand',
+    changed: services.cameraChanged })
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.mappings.surface(event.timeStamp, event.clientX, event.clientY),
     id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
+    rememberPointer(event)
     services.textInput?.cancelPending()
     if (!current()) return
-    if (event.pointerType === 'pen') services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp)
+    services.cancelMotion?.()
+    if (!router.activeOwner) { dismissKeyboardCursor(); cancelContinuations(); services.cancelPendingGestures() }
+    let focusSurface = event.pointerType !== 'touch'
+    if (event.pointerType === 'pen') { doubleTap.clear(); services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp) }
     else if (event.pointerType === 'touch') {
-      touchAdmission.set(event.pointerId, touch.touchDown(contact(event)))
-      try { view.surface.setPointerCapture(event.pointerId) } catch { /* A later cancel ends the contact. */ }
+      const point = contact(event), admitted = touch.touchDown(point); touchAdmission.set(event.pointerId, admitted); focusSurface = admitted
+      const target = event.target
+      const control = target instanceof Element && !!target.closest('button, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="menu"], [role="dialog"], [role="listbox"]')
+      doubleTap.down(event.pointerId, point, event.timeStamp, admitted && !control)
+      try { view.surface.setPointerCapture(event.pointerId) }
+      catch { doubleTap.up(event.pointerId, point, event.timeStamp, true); touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId); return }
+    }
+    const target = event.target
+    if (focusSurface && !services.editing() && target instanceof Element && view.surface.contains(target)
+      && !target.closest('button, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="menu"], [role="dialog"], [role="listbox"]')) {
+      view.surface.focus({ preventScroll: true })
     }
   }
   const move = (event: PointerEvent) => {
+    rememberPointer(event)
     services.textInput?.cancelPending()
     if (!current()) return
-    if (event.pointerType === 'touch') touch.touchMove(contact(event))
+    if (event.pointerType === 'touch') { const point = contact(event); doubleTap.move(event.pointerId, point); touch.touchMove(point) }
     else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover(event.timeStamp)
   }
   const up = (event: PointerEvent) => {
     if (event.pointerType === 'pen') services.tools.penUp(owner, event.pointerId, event.timeStamp)
-    else if (event.pointerType === 'touch') { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId) }
+    else if (event.pointerType === 'touch') {
+      doubleTap.up(event.pointerId, contact(event), event.timeStamp, event.type !== 'pointerup')
+      touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId)
+    }
   }
   // Deferred text hits must also stop before non-tool keys, touch navigation and wheel changes.
   const keyActivity = (event: KeyboardEvent) => {
     const cancelled = services.textInput?.cancelPending()
     if (cancelled && event.key === 'Escape') { event.preventDefault(); event.stopPropagation() }
   }
-  const wheelActivity = () => { services.textInput?.cancelPending() }
+  const wheelActivity = () => { services.textInput?.cancelPending(); services.cancelMotion?.() }
   const auxclick = (event: MouseEvent) => { if (event.button === 1 || event.button === 2) event.preventDefault() }
   const doubleClick = (event: MouseEvent) => {
-    if (current() && editable() && event.button === 0 && services.textInput?.doubleClick(event.clientX, event.clientY)) {
-      event.preventDefault(); event.stopPropagation()
-    }
+    if (!current() || !editable() || event.button !== 0) return
+    let handled = false
+    try {
+      if (services.handleDoubleClick) handled = services.handleDoubleClick(
+        view.mappings.surface(event.timeStamp, event.clientX, event.clientY), view.mappings.map(event.timeStamp, event.clientX, event.clientY), event.timeStamp)
+      if (!handled) handled = services.textInput?.doubleClick(event.clientX, event.clientY) ?? false
+    } catch (error) { services.error(error) }
+    if (handled) { event.preventDefault(); event.stopPropagation() }
   }
   const dragover = (event: DragEvent) => { event.preventDefault(); event.stopPropagation() }
   const drop = (event: DragEvent) => { event.preventDefault(); event.stopPropagation(); if (current() && editable()) services.drop?.(event) }
@@ -300,14 +354,30 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   view.surface.addEventListener('dblclick', doubleClick)
   view.surface.addEventListener('pointerdown', down, true)
   view.surface.addEventListener('pointermove', move, true)
+  view.surface.addEventListener('pointerleave', forgetPointer, true)
   view.surface.addEventListener('pointerup', up, true)
   view.surface.addEventListener('pointercancel', up, true)
   view.surface.addEventListener('lostpointercapture', up, true)
   const stopWet = view.wet.attach(handover)
   const stopFrame = view.wet.onInputFrame(() => {
+    if (current()) {
+      try { if (pointer.publishPendingInk()) view.wet.invalidate() }
+      catch (error) { pointer.interrupt('os-cancel'); services.error(error) }
+    }
     if (current() && router.activeOwner instanceof LiveInk) {
-      if (pendingPrediction && router.activeOwner.allowsPrediction) router.activeOwner.publishPrediction(pendingPrediction)
-      else router.activeOwner.publish()
+      const owner = router.activeOwner
+      // Delegate only after a real-only frame replaces any local prediction.
+      if (delegated?.wantsExclusive(owner.delegatedState)) owner.publishPrediction([])
+      else if (pendingPrediction && owner.allowsPrediction) owner.publishPrediction(pendingPrediction)
+      else owner.publish()
+      delegated?.submittedCurve(owner.delegatedCandidate)
+    } else if (current() && router.activeOwner instanceof InkContinuationGesture) {
+      const owner = router.activeOwner
+      try { owner.publish() }
+      catch (error) {
+        if (owner.pointerIds.has(-1)) cancelKeyboardGesture(); else pointer.interrupt('os-cancel')
+        services.error(error)
+      }
     }
     pendingPrediction = undefined
   })
@@ -355,6 +425,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     undo() { try { router.interrupt(view.token, 'undo') } finally { keyboardStart = null; releaseClaim() } },
   })
   cancelKeyboardGesture = () => cursor.active && cursor.escape()
+  dismissKeyboardCursor = () => { if (cursor.active) cursor.escape() }
   const flush = () => {
     cancelContinuations()
     services.cancelPendingGestures()
@@ -380,6 +451,15 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches?.() },
     run(id, event) {
       if (!current()) return false
+      if (id === 'accessibility.repeat' && view.a11y.repeatAnnouncement?.()) return true
+      if (id === 'accessibility.contextMenu' && services.keyboardContextMenu) {
+        const sample = cursor.active ? cursor.currentSample() : null
+        const viewport = view.camera.viewport
+        const surface = sample ? view.sampleToSurface(sample) : services.keyboardCursorInitial?.() ?? { x: viewport.width / 2, y: viewport.height / 2 }
+        if (![surface.x, surface.y, viewport.width, viewport.height].every(Number.isFinite) || viewport.width <= 0 || viewport.height <= 0) return false
+        const point = { x: Math.max(0, Math.min(viewport.width, surface.x)), y: Math.max(0, Math.min(viewport.height, surface.y)) }
+        return services.keyboardContextMenu(point, surfaceToWorld(point, view.camera.camera))
+      }
       if (id === 'escape') {
         const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
         if (pointer.interrupt('escape') || cancelled || continuationCancelled) return true
@@ -394,6 +474,16 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (cursor.active && router.activeOwner) { cursor.escape(); return true }
         if (pointer.interrupt('flush') || cancelled || continuationCancelled) return true
         services.history.redo(); return true
+      }
+      if (id === 'delete' && editable()) {
+        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+        if (router.activeOwner) {
+          if (cursor.active && router.activeOwner.pointerIds.has(-1)) cursor.escape(); else pointer.interrupt('os-cancel')
+          return true
+        }
+        if (cancelled || continuationCancelled) return true
+        const sample = cursor.currentSample()
+        if (sample && services.keyboardHandleCommand?.(id, sample)) return true
       }
       if (id === 'edit.start' && editable() && services.textInput?.enter()) return true
       if (id.startsWith('style.')) flush()
@@ -465,7 +555,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!live) return
     flush()
     window.removeEventListener('pagehide', pagehide)
-    stopFlush?.(); cursor.dispose(); stopCursor?.()
+    stopFlush?.(); delegated?.dispose(); unbindPointer(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('keydown', keyActivity, true)
@@ -476,6 +566,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('dblclick', doubleClick)
     view.surface.removeEventListener('pointerdown', down, true)
     view.surface.removeEventListener('pointermove', move, true)
+    view.surface.removeEventListener('pointerleave', forgetPointer, true)
     view.surface.removeEventListener('pointerup', up, true)
     view.surface.removeEventListener('pointercancel', up, true)
     view.surface.removeEventListener('lostpointercapture', up, true)

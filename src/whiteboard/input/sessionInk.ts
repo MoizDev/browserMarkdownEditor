@@ -49,7 +49,7 @@ export function sessionInkContext(first: RealSample, services: SessionInkService
     clearRedoAtDown: services.clearRedoAtDown,
     invalidate: services.invalidate,
     error: services.error,
-    commit(builder, identity, undoImmediately) {
+    commit(builder, identity, undoImmediately, closed) {
       if (!session.doc.sheets.has(sheet)) throw new Error('Ink target sheet no longer exists')
       const siblings = childrenOf(session.doc, sheet)
       const summary = builder.summary()
@@ -59,7 +59,7 @@ export function sessionInkContext(first: RealSample, services: SessionInkService
         const node: StrokeNode = createStroke({ id, parent: sheet, order: keyBetween(siblings.at(-1)?.order ?? null, null), page,
           x: origin.x, y: origin.y, ext: null, tool, samples: lease.ref, pressure: pressure ? 'real' : 'none',
           widthModel: { id: 'uniform' },
-          geomVersion: 1, fairTol, closed: false, width, color })
+          geomVersion: 1, fairTol, closed, width, color })
         if (!undoImmediately) wet = services.retainWet?.(lease.ref)
         const applied = session.apply({ origin: 'tool', label: tool === 'pen' ? 'Draw' : 'Highlight',
           ops: [{ t: 'create', node }, ...(services.planStroke?.(node, summary) ?? [])] })

@@ -1,6 +1,6 @@
 // Consumer-facing rendering types. This barrel has no runtime backend, broker or scheduler imports.
 export type { Camera, Rect, Viewport, ViewState } from '../types';
-export type { PlatformLayerDefinition, PlatformPane, PlatformPaneOptions, PlatformPresentation } from './attachPlatformPane.types';
+export type { AttachPlatformPane, PlatformLayerDefinition, PlatformPane, PlatformPaneOptions, PlatformPresentation } from './attachPlatformPane.types';
 export type { CompositorLayer, CompositorLayerGroup, LayerCoverage, LayerHost, TexturedQuadOptions } from './compositor.types';
 export type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } from './types';
 export type { PageStack } from './pageStack';
@@ -12,3 +12,6 @@ export { createPlatformMirrors } from './createPlatformMirrors';
 export { renderTokenKey, createTileGrid, intersectingTiles, makeTileKey, tileKeyString, exactScale, movingScale, lowCoveragePlan } from './tiles/geometry';
 export { tilePrefetchRegion } from './tiles/demand';
 export { pageStack, pageAt } from './pageStack';
+export { cameraForPagedPosition, pagedPosition, fitWidthZ, pagedConstraint } from './camera';
+export type { PagedPosition, ViewportInsets, ZoomLimits, CameraConstraint } from './camera';
+export { attachPlatformPane } from './attachPlatformPane';

@@ -24,18 +24,40 @@ export class PaneSizeObserver {
     private host: HTMLElement | null;
     private observer: ResizeObserver | null = null;
     private media: MediaQueryList | null = null;
+    private mediaDpr: number | null = null;
     private view: Window | null = null;
     private active = false;
     private content: ContentBox | null = null;
     private value: PaneSizeObservation | null = null;
     private generation = 0;
+    private pending = false;
+    private frameId = -1;
+    private frameValue: PaneSizeObservation | null = null;
 
     constructor(host: HTMLElement, private readonly onSize: (size: PaneSizeObservation) => void,
         private readonly onError: (error: unknown) => void) {
         this.host = host;
     }
 
+    /** Latest reported geometry; onSize wakes the actor but may report this batch more than once. */
     get current(): PaneSizeObservation | null { return this.value; }
+
+    /** Called by commitMetrics on an already-needed shared frame, never by a private poll/rAF.
+     * RO/media/window notifications share one generation until this read consumes their batch.
+     * A repeated read freezes the same observation even if synchronous callbacks report more.
+     */
+    readForFrame(frameId: number): PaneSizeObservation | null {
+        if (!Number.isSafeInteger(frameId) || frameId < 0 || frameId < this.frameId) {
+            throw new RangeError('Geometry frame ids must be monotonic nonnegative integers');
+        }
+        if (!this.active) return null;
+        if (frameId === this.frameId) return this.frameValue;
+        this.checkDpr();
+        this.frameId = frameId;
+        this.frameValue = this.value;
+        this.pending = false;
+        return this.frameValue;
+    }
 
     start(): void {
         if (this.active) return;
@@ -53,7 +75,9 @@ export class PaneSizeObserver {
             });
             this.observe();
             this.armDpr();
-            this.view.addEventListener('resize', this.windowResized);
+            this.view.addEventListener('resize', this.checkDpr);
+            this.view.addEventListener('pageshow', this.returned);
+            this.host.ownerDocument.addEventListener('visibilitychange', this.returned);
         } catch (error) { this.dispose(); throw error; }
     }
 
@@ -71,11 +95,16 @@ export class PaneSizeObserver {
         this.observer = null;
         this.media?.removeEventListener('change', this.dprChanged);
         this.media = null;
-        this.view?.removeEventListener('resize', this.windowResized);
+        this.mediaDpr = null;
+        this.view?.removeEventListener('resize', this.checkDpr);
+        this.view?.removeEventListener('pageshow', this.returned);
+        this.host?.ownerDocument.removeEventListener('visibilitychange', this.returned);
         this.view = null;
         this.host = null;
         this.content = null;
         this.value = null;
+        this.frameValue = null;
+        this.pending = false;
     }
 
     private observe(): void {
@@ -105,6 +134,7 @@ export class PaneSizeObserver {
         const fragments = entry.devicePixelContentBoxSize;
         const physical = fragments?.length ? devicePixelBox(fragments, vertical ? 'vertical' : 'horizontal') :
             cssFallbackBox(content.width, content.height, dpr);
+        if (this.mediaDpr !== dpr) this.armDpr();
         this.publish(physical, dpr, content, mode);
     }
 
@@ -113,7 +143,9 @@ export class PaneSizeObserver {
         if (previous && previous.physical.width === physical.width && previous.physical.height === physical.height &&
             previous.physical.fallbackSizing === physical.fallbackSizing && previous.nominalDpr === nominalDpr &&
             previous.contentX === content.x && previous.contentY === content.y && previous.writingMode === writingMode) return;
-        const value = Object.freeze({ generation: ++this.generation, physical, nominalDpr,
+        if (!this.pending) this.generation++;
+        this.pending = true;
+        const value = Object.freeze({ generation: this.generation, physical: Object.freeze({ ...physical }), nominalDpr,
             cssWidth: physical.width / nominalDpr, cssHeight: physical.height / nominalDpr,
             contentX: content.x, contentY: content.y, writingMode });
         this.value = value;
@@ -122,7 +154,8 @@ export class PaneSizeObserver {
 
     private armDpr(): void {
         this.media?.removeEventListener('change', this.dprChanged);
-        this.media = this.view?.matchMedia(`(resolution: ${this.nominalDpr()}dppx)`) ?? null;
+        this.mediaDpr = this.nominalDpr();
+        this.media = this.view?.matchMedia(`(resolution: ${this.mediaDpr}dppx)`) ?? null;
         this.media?.addEventListener('change', this.dprChanged);
     }
 
@@ -130,17 +163,26 @@ export class PaneSizeObserver {
         if (!this.active || !this.host || !this.view) return;
         try {
             const dpr = this.nominalDpr();
-            // A DPR notification can precede its new device box. Mark this transient estimate fallback.
-            if (this.content) this.publish(cssFallbackBox(this.content.width, this.content.height, dpr), dpr,
-                this.content, this.view.getComputedStyle(this.host).writingMode);
+            // Media can arrive before OR after RO. Estimate only in the former case;
+            // a late media event must never downgrade an already exact new-DPR box.
+            if (this.content && this.value?.nominalDpr !== dpr) {
+                this.publish(cssFallbackBox(this.content.width, this.content.height, dpr), dpr,
+                    this.content, this.view.getComputedStyle(this.host).writingMode);
+            }
             this.armDpr();
             this.refresh();
         } catch (error) { this.onError(error); }
     };
 
-    private readonly windowResized = (): void => {
+    private readonly checkDpr = (): void => {
         if (!this.active) return;
-        try { if (this.value?.nominalDpr !== this.nominalDpr()) this.dprChanged(); }
+        try { if (this.mediaDpr !== this.nominalDpr()) this.dprChanged(); }
         catch (error) { this.onError(error); }
+    };
+
+    private readonly returned = (): void => {
+        if (!this.active || this.host?.ownerDocument.hidden) return;
+        this.checkDpr();
+        this.refresh();
     };
 }

@@ -8,7 +8,7 @@ const flights = new Map<string, Flight>();
 
 async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisitionOptions<S>, signal: AbortSignal): Promise<AcquiredNativeBoard<S>> {
     const { documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady,
-        emergencyReadOnlyReason, prepare, acceptConvertedSource, currentOwner } = options;
+        emergencyReadOnlyReason, prepare, acceptConvertedSource, currentOwner, editingAuthorized } = options;
     const identity = getSessionIdentity(documentId);
     if (!identity) throw new DOMException('Board session ended', 'AbortError');
     const requireOwner = () => {
@@ -53,7 +53,11 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
                 return { ...hosted, activateEditing() {
                     if (!isLiveOwner(owner) || !currentOwner() || getSessionIdentity(documentId) !== identity) throw new DOMException('Board session ended', 'AbortError');
                     if (sealed) throw new Error(sealed);
-                    if (activated) return;
+                    if (activated) {
+                        try { if (!editingAuthorized()) throw new Error('Canvas editing is no longer authorized.'); }
+                        catch (cause) { reason = emergencyReadOnlyReason; activated = false; throw cause; }
+                        return;
+                    }
                     if (emergency) throw new Error(emergencyReadOnlyReason);
                     reason = null;
                     if (owned.board.isReadOnly) {
@@ -62,10 +66,17 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
                         throw new Error(denied);
                     }
                     try {
+                        if (!editingAuthorized()) throw new Error('Canvas editing is no longer authorized.');
+                    } catch (cause) {
+                        reason = emergencyReadOnlyReason;
+                        throw cause;
+                    }
+                    try {
                         if (conversionPending && !sourceAccepted) {
                             const source = hosted.checkpoint();
                             if (typeof source === 'string' || !digest || !acceptConvertedSource) throw new Error('Legacy conversion source is unavailable');
                             acceptConvertedSource(source, digest);
+                            sourceAccepted = true;
                         }
                         activated = true;
                     } catch (cause) {

@@ -25,6 +25,8 @@ export interface NativeBoardAcquisitionOptions<S extends BoardSessionPort> {
     readonly onNativeCanvasReady: NativeCanvasReady;
     readonly emergencyReadOnlyReason: string;
     currentOwner(): boolean;
+    /** Final App authority; checked only after the temporary view guard is lifted. */
+    editingAuthorized(): boolean;
     existing?(): AcquiredNativeBoard<S> | undefined;
     prepare(signal: AbortSignal): Promise<PreparedNativeBoard<S>>;
     acceptConvertedSource?: (source: DeferredSource, originalDigest: string) => void;

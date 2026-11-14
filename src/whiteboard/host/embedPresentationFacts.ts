@@ -1,5 +1,5 @@
 import type { PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
-import type { EmbedCoveragePath, EmbedLaterPaint, EmbedPresentationFrame, EmbedPresentationPort,
+import type { EmbedClippedCoverage, EmbedCoveragePath, EmbedLaterPaint, EmbedPresentationFrame, EmbedPresentationPort,
     EmbedPresentedNode } from '../../platform/render/embedPresentation.types';
 import type { RenderToken } from '../../platform/render/types';
 import type { Affine, PathCommand, Rect, ViewState } from '../../platform/types';
@@ -9,6 +9,7 @@ import { coverageOutline } from '../ink/outline';
 import { isSheetParent, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { EmbedNode } from '../model/nodes';
+import type { StrokeMaterial } from '../render/material';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
 import { inkCoverageChunks, type PaintClip, type PaintFrame, type PaintItem, type PaintNodeSource, type PaintTextItem } from '../render/paintStream';
 
@@ -19,8 +20,6 @@ export type NativeEmbedPresented = (revision: number, token: RenderToken, frame?
 
 export interface NativeEmbedPresentationOptions {
     readonly port: EmbedPresentationPort;
-    /** The compositor's snapped view-to-pane transform for a presented view, from the pane's own state; null until the pane has it. */
-    readonly paneTransform: (view: ViewState, frameId: number) => Affine | null;
     readonly onError: (error: unknown) => void;
 }
 export interface NativeEmbedPresentationProducer {
@@ -118,11 +117,18 @@ function laterCoverage(item: PaintItem, embedId: string, pane: Affine, deviceSca
             coverage: { path: { d: coverageOutline(chunk, deviceScale), fillRule: 'nonzero' as const, toPane }, clips } }));
     }
     if (item.kind !== 'path') throw new Error(`Later ${item.kind} paint over embed ${embedId} needs its canonical coverage producer`);
-    if (item.material.stroke) throw new Error(`Later stroked path over embed ${embedId} needs its expanded stroke outline`);
-    const fill = item.material.fill;
-    if (!fill || fill[3] < 1 || item.material.blend !== 'normal') return [{ opacity: 'translucent' }];
+    // Fill and stroke are one coverage: Render paints the same centreline path with fill?/stroke? in the path's own
+    // local units, exactly as the reference painter does (lineWidth and dash on the local transform). A width of 0
+    // paints nothing, so it is no stroke at all.
+    const { fill, stroke } = item.material, strokeOn = !!stroke && stroke.width > 0;
+    if (!fill && !strokeOn) return [];
+    if ((fill && fill[3] < 1) || (strokeOn && stroke.color[3] < 1) || item.material.blend !== 'normal') return [{ opacity: 'translucent' }];
     return [{ opacity: 'opaque', coverage: { path: { d: item.d, fillRule: item.fillRule, toPane: compose(pane, item.localToWorld) },
-        clips: clipsOf(item.clips, pane) } }];
+        fill: !!fill, ...(strokeOn ? { stroke: strokeParams(stroke) } : {}), clips: clipsOf(item.clips, pane) } }];
+}
+function strokeParams(stroke: StrokeMaterial): NonNullable<EmbedClippedCoverage['stroke']> {
+    return Object.freeze({ width: stroke.width, cap: stroke.cap, join: stroke.join, miterLimit: stroke.miterLimit,
+        ...(stroke.dash ? { dash: stroke.dash.array, dashPhase: stroke.dash.phase } : {}) });
 }
 
 function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<string> | null, pane: Affine, deviceScale: number,
@@ -187,8 +193,9 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
         try {
             const doc = frame.sourceDoc;
             if (!doc) throw new Error('Embed presentation needs the pinned source document of the presented frame');
-            const pane = options.paneTransform(context.view, context.frameId);
-            if (!pane) throw new Error('Embed presentation needs the snapped pane transform of the accepted frame');
+            // The retained draw's own matrix: the exact world-to-pane transform the band painted, never a later camera lookup.
+            const pane = context.paneTransform;
+            if (!pane) throw new Error('Embed presentation needs the pane transform of the retained draw');
             const deviceScale = context.view.camera.z * context.view.viewport.dpr;
             const source = frameSource(frame, () => !signal.aborted && !disposed);
             const glyphs = await prepareGlyphs(doc, frame, source, signal, deviceScale, pane);

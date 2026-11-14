@@ -28,6 +28,8 @@ export interface ViewerHostProps<T extends object> {
     readonly readOnlyNotice: string;
     /** A writable view must enforce the same authority in its session and input. */
     readonly readOnly?: boolean;
+    /** The editing input installs the same engine's accessible mirror itself. */
+    readonly externalAccessibility?: boolean;
     readonly view: ViewerViewHandle;
     /** Session-owned definitions and services are stable for this view lease. */
     readonly layers: UsePlatformPaneOptions<T>['layers'];
@@ -39,7 +41,7 @@ export interface ViewerHostProps<T extends object> {
 
 /** No engine import: the lazy route supplies the real session and view. */
 export default function ViewerHost<T extends object>({
-    name, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason, readOnlyNotice, readOnly = true,
+    name, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason, readOnlyNotice, readOnly = true, externalAccessibility = false,
     view, layers, platform, registerKeyboardTarget, onFocus, chrome,
 }: ViewerHostProps<T>) {
     const [surface, setSurface] = useState<HTMLDivElement | null>(null);
@@ -69,7 +71,8 @@ export default function ViewerHost<T extends object>({
     useLayoutEffect(() => registerKeyboardTarget(() => interactionRef.current?.focus()), [registerKeyboardTarget]);
 
     return <div className="board-viewer-host" onContextMenu={event => event.preventDefault()} onPointerDownCapture={() => { if (isVisible) onFocus(); }}>
-        <BoardAccessibility name={name} source={view.accessibility} isVisible={isVisible} readOnly={readOnly} interactionRef={captureInteraction}>
+        <BoardAccessibility name={name} source={view.accessibility} isVisible={isVisible} readOnly={readOnly}
+            mirrorEnabled={!externalAccessibility} interactionRef={captureInteraction}>
             <div className="board-viewer-surface" ref={setSurface} aria-hidden="true" />
             <div className="board-viewer-overlay" ref={setOverlay} />
         </BoardAccessibility>

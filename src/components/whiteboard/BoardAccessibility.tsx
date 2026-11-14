@@ -25,15 +25,16 @@ interface Props extends Omit<HTMLAttributes<HTMLDivElement>, 'children' | 'role'
     source: BoardAccessibilitySource;
     isVisible: boolean;
     readOnly: boolean;
+    mirrorEnabled?: boolean;
     interactionRef?: Ref<HTMLDivElement>;
     children: ReactNode;
 }
 
-export default function BoardAccessibility({ name, source, isVisible, readOnly, interactionRef, children, ...events }: Props) {
+export default function BoardAccessibility({ name, source, isVisible, readOnly, mirrorEnabled = true, interactionRef, children, ...events }: Props) {
     const prefix = useId();
     const [snapshot, setSnapshot] = useState<BoardAccessibilitySnapshot | null>(null);
     useEffect(() => {
-        if (!isVisible) { setSnapshot(null); return; }
+        if (!isVisible || !mirrorEnabled) { setSnapshot(null); return; }
         let frame = 0;
         let alive = true;
         const schedule = () => {
@@ -46,7 +47,7 @@ export default function BoardAccessibility({ name, source, isVisible, readOnly, 
         const unsubscribe = source.subscribe(schedule);
         schedule();
         return () => { alive = false; unsubscribe(); if (frame) cancelAnimationFrame(frame); };
-    }, [source, isVisible]);
+    }, [source, isVisible, mirrorEnabled]);
 
     const current = isVisible ? snapshot : null;
     const items = current?.items ?? [];
@@ -56,6 +57,11 @@ export default function BoardAccessibility({ name, source, isVisible, readOnly, 
     const moreSelected = Math.max(0, (current?.selectedCount ?? 0) - selectedListed);
     const summary = !current?.selectedCount ? 'Nothing selected' : `${current.selectedCount - moreSelected} selected${moreSelected ? ` and ${moreSelected} more selected` : ''}`;
     const description = `${prefix}-description`;
+
+    if (!mirrorEnabled) return <div className="board-a11y-group" role="group" aria-roledescription="board" aria-label={name} aria-readonly={readOnly}>
+        <div {...events} ref={interactionRef} className={`board-interaction-root${events.className ? ` ${events.className}` : ''}`}
+            role="group" tabIndex={0} aria-label="Board interaction">{children}</div>
+    </div>;
 
     return <div className="board-a11y-group" role="group" aria-roledescription="board" aria-label={`${name}: ${current?.sheetName ?? ''}`} aria-readonly={readOnly}>
         <div {...events} ref={interactionRef} className={`board-interaction-root${events.className ? ` ${events.className}` : ''}`}

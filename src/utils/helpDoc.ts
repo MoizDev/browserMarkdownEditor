@@ -415,6 +415,12 @@ nothing is selected. These operations
 and navigation do not edit the source; drawing, Cut and Paste remain unavailable
 in this native viewer.
 
+The agent's **canvas tools** use the document session rather than its viewer.
+They can change an eligible native drawing or notebook while its pane is hidden
+or unmounted; a batch is one undo step and follows the normal save path. A disk
+conflict, emergency read-only setting or unsupported native document still
+refuses changes. This does not enable the viewer's unfinished drawing tools.
+
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
 switch tabs, close the file or reload the app.

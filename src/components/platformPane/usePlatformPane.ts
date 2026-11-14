@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useSyncExternalStore, type RefObject } from 'react';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPaneOptions } from '../../platform/render';
+import type { RenderToken } from '../../platform/render/types';
 import { getSessionIdentity, subscribeSessionIdentity } from '../../utils/sessionIdentity';
 
 export interface UsePlatformPaneOptions<T extends object> {
@@ -8,6 +9,8 @@ export interface UsePlatformPaneOptions<T extends object> {
     readonly isFocused: boolean;
     readonly vaultEpoch: number;
     readonly documentId: string;
+    /** A session-owned source may outlive outer document byte swaps. */
+    readonly sourceToken?: RenderToken;
     readonly layers: readonly PlatformLayerDefinition[];
     /** Input borrows the attached pane for scheduler motion, never a second camera loop. */
     readonly onPane?: (pane: PlatformPane | null) => void;
@@ -20,11 +23,18 @@ export interface UsePlatformPaneOptions<T extends object> {
  * startup; cleanup cancels an unresolved import and disposes an attached pane (design §16.1 PL2).
  */
 export function usePlatformPane<T extends object>(options: UsePlatformPaneOptions<T>): RefObject<PlatformPane | null> {
-    const { host, isVisible, isFocused, vaultEpoch, documentId, layers, services } = options;
+    const { host, isVisible, isFocused, vaultEpoch, documentId, layers, services, sourceToken } = options;
+    const sourceDocument = sourceToken?.documentId, sourceSession = sourceToken?.session;
+    const sourceEpoch = sourceToken?.vaultEpoch, sourceGeneration = sourceToken?.bytesGeneration;
     const readIdentity = useCallback(() => {
         const identity = getSessionIdentity(documentId);
-        return identity ? `${identity.serial}:${identity.bytesGeneration}` : null;
-    }, [documentId]);
+        if (!identity) return null;
+        if (sourceGeneration !== undefined) {
+            if (sourceDocument !== documentId || sourceEpoch !== vaultEpoch || sourceSession !== identity.serial) return null;
+            return `${identity.serial}:${sourceGeneration}`;
+        }
+        return `${identity.serial}:${identity.bytesGeneration}`;
+    }, [documentId, vaultEpoch, sourceDocument, sourceEpoch, sourceSession, sourceGeneration]);
     const identity = useSyncExternalStore(subscribeSessionIdentity, readIdentity, readIdentity);
     const pane = useRef<PlatformPane | null>(null);
     const current = useRef({ isVisible, isFocused, layers });
@@ -42,14 +52,22 @@ export function usePlatformPane<T extends object>(options: UsePlatformPaneOption
     useLayoutEffect(() => {
         if (!host || identity === null) return;
         const [session, bytesGeneration] = identity.split(':').map(Number);
+        const token = { vaultEpoch, documentId, session, bytesGeneration };
+        const tokenCurrent = () => {
+            if (sourceGeneration === undefined) return true;
+            const live = getSessionIdentity(documentId), actual = services.currentToken();
+            return !!live && live.serial === session && !!actual && actual.documentId === documentId
+                && actual.vaultEpoch === vaultEpoch && actual.session === session && actual.bytesGeneration === bytesGeneration;
+        };
+        if (!tokenCurrent()) return;
         let cancelled = false;
         let owned: PlatformPane | null = null;
         void import('../../platform/render/cpuEntry').then(({ attachPlatformPane }) => {
-            if (cancelled) return;
+            if (cancelled || !tokenCurrent()) return;
             const state = current.current;
             const attached = attachPlatformPane(host, {
                 ...services,
-                documentToken: { vaultEpoch, documentId, session, bytesGeneration },
+                documentToken: token,
                 initialVisible: state.isVisible,
                 initialFocused: state.isFocused,
                 layers: state.layers,
@@ -73,7 +91,7 @@ export function usePlatformPane<T extends object>(options: UsePlatformPaneOption
             owned?.dispose();
             owned = null;
         };
-    }, [host, identity, vaultEpoch, documentId, services]);
+    }, [host, identity, vaultEpoch, documentId, services, sourceGeneration]);
 
     return pane;
 }

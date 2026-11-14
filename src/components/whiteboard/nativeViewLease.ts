@@ -138,6 +138,7 @@ export function createNativeViewLease(options: {
             else { camera.zoomTo(camera.camera.z * factor, { x: camera.viewport.width / 2, y: camera.viewport.height / 2 }); cameraOwner.changed(); }
         },
         view: {
+            sourceToken: token,
             accessibility: viewer.accessibility, subscribe: listener => lease.subscribe(listener),
             setView(next) {
                 parameters = { ...parameters, ...next };

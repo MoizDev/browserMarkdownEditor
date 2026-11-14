@@ -6,6 +6,7 @@ import { exactAffinePoint } from './exactAffine';
 import { exactPointIntervals } from './homogeneous';
 import { add, interval } from './numeric';
 import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { createClippedInkWitnessJob } from './clippedInkWitness';
 import { classifyCertifiedClipBox, expandCertifiedClipBox, preparePointClip, type CertifiedClipBox, type PointClipContour } from './clippedPointPathJob';
 import type { RegionQuery } from './types';
 
@@ -90,7 +91,8 @@ export function createClippedInkPointJob(coverage: InkCoverage, matrix: Affine, 
     if (query.kind !== 'point' || !matrix.every(Number.isFinite) || !Number.isFinite(dpr) || dpr <= 0 || frames.length > 64
         || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid clipped ink point query');
     const clips = frames.map(preparePointClip), iterator = primitives(coverage, matrix, true);
-    let active: InkPickJob | undefined, current: Primitive | undefined, relation: 'inside' | 'outside' | 'overlap' = 'outside', uncertain = false;
+    let active: InkPickJob | undefined, witness: ReturnType<typeof createClippedInkWitnessJob> | undefined;
+    let current: Primitive | undefined, relation: 'inside' | 'outside' | 'overlap' = 'outside', uncertain = false;
     const pending: Primitive[] = [];
     let spent = 0, cancelled = false, finished: ClippedInkResult | undefined;
     const finish = (value: ClippedInkResult): ClippedInkResult => { finished = Object.freeze(value); return finished; };
@@ -102,6 +104,15 @@ export function createClippedInkPointJob(coverage: InkCoverage, matrix: Affine, 
             try {
                 for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                     if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped ink point work limit exhausted' });
+                    if (witness) {
+                        const value = witness.step({ deadline: budget.deadline, maxWork: 1 });
+                        if (value.status === 'pending') continue;
+                        witness.cancel(); witness = undefined;
+                        if (value.status === 'hit') return finish({ status: 'hit' });
+                        const pieces = splitPrimitive(current!, matrix);
+                        if (pieces) pending.push(pieces[1], pieces[0]); else uncertain = true;
+                        current = undefined; continue;
+                    }
                     if (!active) {
                         current = pending.pop();
                         if (!current) {
@@ -118,15 +129,17 @@ export function createClippedInkPointJob(coverage: InkCoverage, matrix: Affine, 
                     const result = active.result; active.cancel(); active = undefined;
                     if (result.decision === 'hit' && relation === 'inside') return finish({ status: 'hit' });
                     if (result.decision !== 'miss') {
-                        const pieces = relation === 'overlap' ? splitPrimitive(current!, matrix) : null;
-                        if (pieces) pending.push(pieces[1], pieces[0]); else uncertain = true;
+                        if (relation === 'overlap') {
+                            witness = createClippedInkWitnessJob(current!.coverage, matrix, clips, { kind: 'point', point: query }); continue;
+                        }
+                        uncertain = true;
                     }
                     current = undefined;
                 }
                 return PENDING;
             } catch (error) { if (!(error instanceof RangeError)) throw error; return finish({ status: 'uncertain', reason: error.message }); }
         },
-        cancel() { cancelled = true; active?.cancel(); active = undefined; iterator.return(undefined); },
+        cancel() { cancelled = true; active?.cancel(); witness?.cancel(); active = undefined; witness = undefined; current = undefined; pending.length = 0; iterator.return(undefined); },
     };
 }
 
@@ -137,7 +150,8 @@ export function createClippedInkRegionJob(coverage: InkCoverage, matrix: Affine,
     if (!matrix.every(Number.isFinite) || !Number.isFinite(dpr) || dpr <= 0 || frames.length > 64
         || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid clipped ink region query');
     const clips = frames.map(preparePointClip), iterator = primitives(coverage, matrix, false), containment = query.kind === 'polygon' && query.containment;
-    let active: InkRegionPickJob | undefined, current: Primitive | undefined, relation: 'inside' | 'outside' | 'overlap' = 'outside';
+    let active: InkRegionPickJob | undefined, witness: ReturnType<typeof createClippedInkWitnessJob> | undefined;
+    let current: Primitive | undefined, relation: 'inside' | 'outside' | 'overlap' = 'outside';
     const pending: Primitive[] = [];
     let seen = false, uncertain = false, possibleContained = false, spent = 0, cancelled = false, finished: ClippedInkResult | undefined;
     const finish = (value: ClippedInkResult): ClippedInkResult => { finished = Object.freeze(value); return finished; };
@@ -149,6 +163,15 @@ export function createClippedInkRegionJob(coverage: InkCoverage, matrix: Affine,
             try {
                 for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                     if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped ink region work limit exhausted' });
+                    if (witness) {
+                        const value = witness.step({ deadline: budget.deadline, maxWork: 1 });
+                        if (value.status === 'pending') continue;
+                        witness.cancel(); witness = undefined;
+                        if (value.status === 'hit') return finish({ status: 'hit' });
+                        const pieces = splitPrimitive(current!, matrix);
+                        if (pieces) pending.push(pieces[1], pieces[0]); else uncertain = true;
+                        current = undefined; continue;
+                    }
                     if (!active) {
                         current = pending.pop();
                         if (!current) {
@@ -172,6 +195,7 @@ export function createClippedInkRegionJob(coverage: InkCoverage, matrix: Affine,
                         if (decision === 'uncertain') uncertain = true;
                     } else if (containment && decision === 'hit') possibleContained = true;
                     else if (containment || decision !== 'miss') {
+                        if (!containment) { witness = createClippedInkWitnessJob(current!.coverage, matrix, clips, { kind: 'region', region: query }); continue; }
                         const pieces = splitPrimitive(current!, matrix);
                         if (pieces) pending.push(pieces[1], pieces[0]); else uncertain = true;
                     }
@@ -180,6 +204,6 @@ export function createClippedInkRegionJob(coverage: InkCoverage, matrix: Affine,
                 return PENDING;
             } catch (error) { if (!(error instanceof RangeError)) throw error; return finish({ status: 'uncertain', reason: error.message }); }
         },
-        cancel() { cancelled = true; active?.cancel(); active = undefined; iterator.return(undefined); },
+        cancel() { cancelled = true; active?.cancel(); witness?.cancel(); active = undefined; witness = undefined; current = undefined; pending.length = 0; iterator.return(undefined); },
     };
 }

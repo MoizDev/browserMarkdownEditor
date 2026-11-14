@@ -214,6 +214,8 @@ third-party code included (normally "none") · date.
 | `host/saveBuildTypes.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned media restoration, atomic conditional set-file batch and PDF assembly ports; no tldraw source | none | 2026-11-13 |
 | `host/saveBuild.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned restore/build/assembly, location-change refusal, cancellation and release; no tldraw source | none | 2026-11-13 |
 | `host/pinMediaRestore.ts` | lane w-k | C7.1/5; F-INT-004 | integration §4; media §8 | Pinned media leases, revision-fenced restoration and atomic filename-change batch; no tldraw source | none | 2026-11-13 |
+| `host/ownedSessionTypes.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4 | Shared session factory and owner-lifetime pinned-build ports; no tldraw source | none | 2026-11-13 |
+| `host/ownedSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4 | One shared session factory with owner-fenced pinned builds and disposal; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 

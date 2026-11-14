@@ -57,6 +57,8 @@ export interface PaneMemoryDemand {
     readonly requestedPixels: number;
     readonly gpuNeedBytes: number;
     readonly cpuNeedBytes: number;
+    /** Visible working set; optional excess in cpuNeedBytes is shared only after mandatory demand. */
+    readonly cpuMandatoryBytes?: number;
     /** The broker/session owns the loss circuit; pressure cannot pin unrelated documents. */
     readonly cpuPinned: boolean;
 }

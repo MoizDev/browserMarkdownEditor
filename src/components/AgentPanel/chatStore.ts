@@ -13,6 +13,7 @@
 import { agentBridge, BridgeError, helperReady, isTerminalEvent } from '../../utils/agentBridge';
 import type { HelperEvent, HelperInfo } from '../../utils/agentBridge';
 import { executeTool } from '../../utils/vaultAgentTools';
+import { releaseAgentMatcher } from '../../utils/agentMatcher/client';
 import { buildAgentContext, stripAgentContext } from '../../utils/agentContext';
 import { getReplyModePref, resolveReplyMode } from '../../utils/agentReplyMode';
 import { AGENT_IDS, AGENT_LABELS, MAX_IMAGES_PER_MESSAGE } from '../../../shared/vaultAgentProtocol';
@@ -269,6 +270,7 @@ class ChatStore {
     private runUserNode: { key: string; nodeId: string } | null = null;
     /** Captured when the current run started (host.toolHost.vaultToken()). */
     private runVaultToken: object | null = null;
+    private runAbort: AbortController | null = null;
     private runImageHash: string | null = null;
     /** Tool calls run one at a time, in arrival order. OpenCode and Codex issue
      *  calls in parallel, and two edits racing through the stale check both
@@ -360,6 +362,7 @@ class ChatStore {
         if (key === this.state.vaultKey) return;
         this.indexVaultToken = host.toolHost.vaultToken();
         if (this.state.run) this.abandonRun('The vault changed, so the agent was stopped.');
+        releaseAgentMatcher();
         this.set({
             vaultKey: key,
             chats: [],
@@ -729,6 +732,7 @@ class ChatStore {
         this.setTeaching(key, mode === 'teach');
 
         this.runVaultToken = host.toolHost.vaultToken();
+        this.runAbort = new AbortController();
         this.runImageHash = null;
         this.releaseRun = agentBridge.retain();
         this.set({ run: { runId, chatId: existing?.id ?? DRAFT_KEY, phase: 'preparing', startedAt: Date.now() } });
@@ -864,6 +868,7 @@ class ChatStore {
     async stop(): Promise<void> {
         const run = this.state.run;
         if (!run) return;
+        this.runAbort?.abort();
         if (run.phase === 'preparing') {
             // Nothing reached the helper yet: just stop here.
             this.finishRun(run.chatId);
@@ -896,6 +901,8 @@ class ChatStore {
 
     /** Close whatever is still streaming, and free the run slot. */
     private finishRun(key: string): void {
+        this.runAbort?.abort();
+        this.runAbort = null;
         this.updateItems(key, items => items.map(item => {
             if (item.kind === 'assistant' && item.streaming) return { ...item, streaming: false };
             if (item.kind === 'reasoning' && item.streaming) return { ...item, streaming: false, endedAt: item.endedAt ?? Date.now() };
@@ -1073,13 +1080,15 @@ class ChatStore {
         let result: ToolResult;
         let change: AgentChange | undefined;
         try {
-            const execution = await executeTool(call.name, call.args, host.toolHost, { vaultToken: this.runVaultToken });
+            const execution = await executeTool(call.name, call.args, host.toolHost, { vaultToken: this.runVaultToken, signal: this.runAbort?.signal });
             result = execution.result;
             change = execution.change;
         } catch (e) {
             result = { content: [{ type: 'text', text: `The editor failed to run ${call.name}: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
         }
-        reply(result);
+        // A still-stopping helper may need the partial result. After run.done it does not, but
+        // the card must still record any change a mutating tool committed before the run closed.
+        if (this.state.run?.runId === call.runId) reply(result);
         const output = resultText(result);
         this.updateItems(key, items => items.map(item =>
             item.id === itemId && item.kind === 'tool'
@@ -1090,6 +1099,7 @@ class ChatStore {
     /** The helper removed itself: whatever was running is gone with it. */
     onUninstalled(): void {
         if (this.state.run) this.finishRun(this.state.run.chatId);
+        releaseAgentMatcher();
         this.set({ agents: [], agentsStatus: 'idle', models: {} });
     }
 }

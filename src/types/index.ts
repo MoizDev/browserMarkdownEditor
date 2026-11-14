@@ -309,7 +309,8 @@ export interface RecentVault extends StoredVault {
  *  FileSystemContext's switchInFlightRef): nothing happened and nothing is
  *  wrong, but nothing happening is exactly what a caller with somewhere to say
  *  it must still say — a control that greys and un-greys reads as broken. */
-export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy';
+export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy'
+    | { status: 'error'; message: string };
 
 /* ─────────────────────────────────────────────────────────────────────────
  * TRASH
@@ -464,7 +465,7 @@ export interface FileSystemContextValue {
    *  reference proof remain valid, including after the copy. */
   retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   /** The inverse, for when the reference comes back (undo, cut-and-paste). */
-  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
   /** Crawl every `.Garbage` in the vault and return the bin's flat root list,

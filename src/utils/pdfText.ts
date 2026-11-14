@@ -12,14 +12,13 @@
 // per run, and a held-open document would be a second copy of it in memory for
 // the rest of the session.
 
-import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { pdfPageGeometry, projectPdfPageV1 } from './pdfPageText';
-import { pdfWorker } from './pdfWorker';
+import { openClassicPdf } from './pdfClassicOpen';
 
 async function withPdf<T>(bytes: Uint8Array, read: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
     // pdf.js detaches the buffer it is handed; give it a copy.
-    const task = pdfjs.getDocument({ data: bytes.slice(), worker: pdfWorker() });
+    const task = await openClassicPdf({ bytes, purpose: 'agent' });
     try {
         return await read(await task.promise);
     } finally {

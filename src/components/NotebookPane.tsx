@@ -728,7 +728,7 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
     );
 
     return (
-        <div className={`drawing-pane notebook-pane${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`}>
+        <div className={`drawing-pane notebook-pane${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`} data-legacy-board="">
             {thumbsOpen && (
                 <PdfThumbnails
                     key={paperLook}

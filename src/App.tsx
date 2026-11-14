@@ -7,9 +7,10 @@ import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMe
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
-import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache, primeLinks } from './utils/graph';
-import { setRecordScope } from './utils/storage';
-import { perfRoot } from './utils/perfHooks';
+import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
+import { getNoteResolver } from './utils/noteResolver';
+import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice } from './utils/storage';
+import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
 import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
@@ -26,7 +27,7 @@ import { sameStat, type DiskVersion } from './utils/diskVersion';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
-import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
+import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -368,7 +369,7 @@ export default function App() {
     recentVaults,
     currentVaultId,
     getVaultActivation,
-    pickDirectory,
+    pickDirectory: pickDirectoryFromFileSystem,
     openRecentVault,
     openFolderAsVault,
     openLinkedVault,
@@ -833,6 +834,17 @@ export default function App() {
     void tell({ title: 'Could not continue', confirmLabel: 'OK', body: message });
   }, [tell]);
 
+  // Context reports the failure; only App owns the notice, including before a
+  // vault is open. Keep the legacy string result for the welcome/menu callers.
+  const pickDirectory = useCallback(async () => {
+    const result = await pickDirectoryFromFileSystem();
+    if (typeof result === 'object') {
+      notify(result.message);
+      return 'error' as const;
+    }
+    return result;
+  }, [notify, pickDirectoryFromFileSystem]);
+
   // The same voice, given to the editor subsystem: a refused clipboard read
   // inside a table cell is the only thing that uses it today. ONE call, at the
   // top level, into a module-level setter — src/editor/ must not learn about
@@ -894,6 +906,15 @@ export default function App() {
     setSaveStatus(message);
     saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 5000);
   }, []);
+  useEffect(() => {
+    const showRestoreNotice = () => {
+      const notice = takeRestoreNotice();
+      if (notice) announce(notice);
+    };
+    const unsubscribe = subscribeRestoreNotice(showRestoreNotice);
+    showRestoreNotice();
+    return unsubscribe;
+  }, [announce]);
   // A binary host acquires in its passive effect. Publish the new tab first;
   // lazy dev imports hid this parent/child effect ordering race in production.
   useLayoutEffect(() => { tabsRef.current = tabs; }, [tabs]);
@@ -1220,6 +1241,7 @@ export default function App() {
   const reconcileAssets = useCallback(async (job: ReconcileJob): Promise<AssetOutcome> => {
     const { activation, path, parentHandle: dir, before, after } = job;
     const attached = () => getVaultActivation() === activation;
+    if (!attached()) return 'skipped-detached';
     if (!dir) return 'kept';
 
     try {
@@ -1233,9 +1255,10 @@ export default function App() {
       let reclaimed = false;
       for (const name of after) {
         if (before.has(name)) continue;
-        if (await restoreAsset(name, dir)) reclaimed = true;
+        if (!attached()) return 'skipped-detached';
+        if (await restoreAsset(name, dir, attached)) reclaimed = true;
       }
-      if (reclaimed) retryMissingAssets();
+      if (reclaimed && attached()) retryMissingAssets();
 
       if (!attached()) return 'skipped-detached';
       const folder = parentVaultPath(path);
@@ -1652,6 +1675,9 @@ export default function App() {
             // OLD vault's tree. One writable replaces the file whole, atomically
             // on close.
             const handle = await dir.getFileHandle(ENTRY_STYLE_FILE, { create: true });
+            if (__BME_BENCH__) {
+              try { reportVault({ op: 'write', path: joinVaultPath(folder, ENTRY_STYLE_FILE), caller: 'appearance' }); } catch { /* Measurement must not interrupt a write. */ }
+            }
             await writeFile(handle, text);
           }
         } catch (err) {
@@ -1733,7 +1759,13 @@ export default function App() {
         exportedAt: Date.now(),
       });
       // createFile refreshes the tree, so the PDF shows up in the sidebar.
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export:create' }); } catch { /* Measurement must not interrupt a write. */ }
+      }
       const handle = await createFile(file.parentHandle, targetName);
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export' }); } catch { /* Measurement must not interrupt a write. */ }
+      }
       await writeFileBytes(handle, bytes);
       exportedNotebooksRef.current.add(targetName);
       void tell({
@@ -1748,13 +1780,12 @@ export default function App() {
     }
   }, [ask, createFile, notify, tell, writeFileBytes]);
 
-  // Flat index of markdown files for resolving wikilinks by note name. Read
-  // through a ref by openNoteByName below, which MUST stay stable: the editor
-  // bakes its wikilink handler into a document's EditorState, and that state
-  // outlives the pane that built it (see DocumentPane).
-  const mdFiles = useMemo(() => collectMarkdownFiles(fileTree), [fileTree]);
-  const mdFilesRef = useRef(mdFiles);
-  useEffect(() => { mdFilesRef.current = mdFiles; }, [mdFiles]);
+  // The graph and the click share one canonical resolver revision. Read it
+  // through an App-lifetime ref: the wikilink handler is baked into cached
+  // EditorStates, which outlive their panes (see DocumentPane).
+  const noteResolver = useMemo(() => getNoteResolver(fileTree), [fileTree]);
+  const noteResolverRef = useRef(noteResolver);
+  useEffect(() => { noteResolverRef.current = noteResolver; }, [noteResolver]);
 
   // A different vault may reuse paths — never resolve links from the old one's
   // cached extractions (mirrors FileExplorer clearing the search cache).
@@ -1889,6 +1920,9 @@ export default function App() {
     root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array,
   ) => {
     try {
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path, caller: 'closing-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
+      }
       const copy = await writeConflictCopyRef.current(path, data, root);
       // A dialog, not the status line: the tab is gone, and the edits are now in
       // a file the reader did not ask for — they must hear where.
@@ -1935,6 +1969,13 @@ export default function App() {
     // does: setTabs is async, so a caller that just produced new content would
     // otherwise race with React and write the previous buffer.
     const snapshot = contentOverride ?? tab.content;
+    if (__BME_BENCH__) {
+      try {
+        const root = perfRoot();
+        const funnel = (root.funnel ??= { reports: {}, rejected: {}, ownerlessReports: {}, reads: 0 }) as { reads: number };
+        funnel.reads++;
+      } catch { /* Measurement must not interrupt a save. */ }
+    }
     const { id, file } = tab;
     const handle = tab.file.handle as FileSystemFileHandle;
     const isPdf = isPdfFile(file.name);
@@ -1991,6 +2032,9 @@ export default function App() {
         const seed = pdfSeedsRef.current.get(id) ?? seedAtCall;
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? baselineAtCall ?? seeded ?? null;
+        if (__BME_BENCH__) {
+          try { reportVault({ op: 'write', path, caller: 'flushTab' }); } catch { /* Measurement must not interrupt a write. */ }
+        }
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
           // Nothing reached the disk, so the asset diff's baseline is still
@@ -2076,9 +2120,26 @@ export default function App() {
   // `fromDisk`: the text was just reloaded from the file (a reload in place —
   // editor/externalReload.ts). It is buffered like any edit, but it IS the file,
   // so the tab stays clean and nothing is scheduled to write it back.
+  const agentContentReportRef = useRef(false);
   const updateTabContent = useCallback((path: string, content: string, options?: ContentChangeOptions) => {
     const target = tabsRef.current.find(t => t.file.path === path);
-    if (!target || !canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')) return;
+    const accepted = !!target && canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user');
+    if (__BME_BENCH__) {
+      try {
+        const kind = target?.representation.loadedKind ?? 'unknown';
+        const caller = options?.fromDisk ? 'disk' : agentContentReportRef.current ? 'agent'
+          : `pane:${['markdown', 'text', 'code', 'tex'].includes(kind) ? 'note' : kind}`;
+        const root = perfRoot();
+        const funnel = (root.funnel ??= { reports: {}, rejected: {}, ownerlessReports: {}, reads: 0 }) as {
+          reports: Record<string, number>; rejected: Record<string, number>; ownerlessReports: Record<string, number>;
+        };
+        funnel.reports[caller] = (funnel.reports[caller] ?? 0) + 1;
+        // Today's string reporters have no session owner, including refusals.
+        funnel.ownerlessReports[caller] = (funnel.ownerlessReports[caller] ?? 0) + 1;
+        if (!accepted) funnel.rejected[caller] = (funnel.rejected[caller] ?? 0) + 1;
+      } catch { /* Measurement must not interrupt a content report. */ }
+    }
+    if (!accepted) return;
     assetReferenceRevisionRef.current++;
     latestContentRef.current.set(path, content);
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
@@ -2090,6 +2151,14 @@ export default function App() {
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     scheduleSave(path);
   }, [scheduleSave]);
+
+  const updateAgentTabContent = useCallback((path: string, content: string) => {
+    if (__BME_BENCH__) {
+      const previous = agentContentReportRef.current;
+      agentContentReportRef.current = true;
+      try { updateTabContent(path, content); } finally { agentContentReportRef.current = previous; }
+    }
+  }, [updateTabContent]);
 
   /**
    * Buffer an edit and write it NOW, skipping the save debounce.
@@ -2161,6 +2230,9 @@ export default function App() {
         const seed = pdfSeedForRef.current(id);
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? seeded ?? null;
+        if (__BME_BENCH__) {
+          try { reportVault({ op: 'write', path, caller: 'rotate' }); } catch { /* Measurement must not interrupt a write. */ }
+        }
         const result = await writeFileVersionedRef.current(handle, rotated, expected);
         if (result.status !== 'written') {
           setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
@@ -2497,13 +2569,12 @@ export default function App() {
   // rather than closed over. The editor bakes this into each document's
   // EditorState (DocumentPane's `mousedown` handler), outside any compartment,
   // and that state is cached and re-adopted by whichever pane shows the
-  // document next. Depending on `mdFiles` here froze the handler at whatever
+  // document next. Depending on `noteResolver` here would freeze the handler at whatever
   // the index held when the document's FIRST pane unmounted, so a wikilink to
   // any note created, renamed or moved after that silently did nothing.
   const openNoteByName = useCallback((name: string | null) => {
     if (!name) return;
-    const key = baseName(name).toLowerCase();
-    const match = mdFilesRef.current.find(f => baseName(f.name).toLowerCase() === key);
+    const match = noteResolverRef.current.resolveNode(name);
     if (match) {
       handleFileClick(match);
       setMainView('editor');
@@ -3054,7 +3125,7 @@ export default function App() {
       if (isEpubFile(file.name)) kinds.epub = true;
       else if (isPdfFile(file.name)) kinds.pdf = true;
       else if (isNotebookFile(file.name)) kinds.notebook = true;
-      else if (isCanvasFile(file.name)) kinds.drawing = true;
+      else if (isDrawingFile(file.name)) kinds.drawing = true;
       if (kinds.epub && kinds.pdf && kinds.drawing && kinds.notebook) break;
     }
     prefetchPanes(kinds);
@@ -3142,6 +3213,9 @@ export default function App() {
           body: <><strong>{name}</strong> already exists in <code>{where}</code>. Nothing was created — pick another name, or open the one that is there.</>,
         });
         return;
+      }
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path: joinVaultPath(parentPath, name), caller: 'create' }); } catch { /* Measurement must not interrupt a write. */ }
       }
       const newFileHandle = await createFile(parentHandle!, name);
       // Auto-open the newly created file straight into edit mode. Build the path
@@ -3803,6 +3877,9 @@ export default function App() {
             if (!pdf) throw Error('Pending PDF edits cannot be preserved yet. Keep this tab open and retry.');
             data = await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdf.original, text, pdf.overlays);
           } else if (!canReadTabText(live)) throw Error('Pending source edits cannot be preserved. Keep this tab open.');
+          if (__BME_BENCH__) {
+            try { reportVault({ op: 'write', path: from, caller: 'cross-kind' }); } catch { /* Measurement must not interrupt a write. */ }
+          }
           const kept = await writeConflictCopy(from, data, rootHandle);
           announce(`Your edits were kept as “${kept.slice(kept.lastIndexOf('/') + 1)}” before changing document kind.`);
           if (rootHandleRef.current !== rootHandle) return [];
@@ -4280,6 +4357,9 @@ export default function App() {
           void tell({ title: 'Nothing to save', confirmLabel: 'OK', body: <>This PDF has no annotations of yours to write back. Close the tab, or put <strong>{file.name}</strong> back from wherever it went.</> });
           return;
         }
+        if (__BME_BENCH__) {
+          try { reportVault({ op: 'write', path, caller: 'recreate' }); } catch { /* Measurement must not interrupt a write. */ }
+        }
         const result = await recreateFile(path, data);
         if (result.status === 'exists') {
           // Something new took the name meanwhile: that is a conflict to choose
@@ -4315,6 +4395,11 @@ export default function App() {
         const read = isPdf
           ? { text: '', version: (await readBytesVersioned(handle)).version }
           : await readFileVersioned(handle);
+        if (__BME_BENCH__) {
+          try {
+            if (keep !== null && keep !== read.text) reportVault({ op: 'write', path, caller: 'disk-reload-conflict' });
+          } catch { /* Measurement must not interrupt a write. */ }
+        }
         const copy = keep !== null && keep !== read.text ? await writeConflictCopy(path, keep) : null;
         const now = tabsRef.current.find(t => t.id === id);
         if (!now) return;
@@ -4328,6 +4413,9 @@ export default function App() {
       // AGAIN in between raises the conflict again rather than being overwritten.
       await getView(path)?.flushPending?.();
       const disk = await readBytesVersioned(handle);
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path, caller: 'disk-keep-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
+      }
       const copy = await writeConflictCopy(path, disk.bytes);
       setBaseline(id, disk.version);
       setDiskState(id, null);
@@ -4427,7 +4515,7 @@ export default function App() {
       writeFile,
       createFile,
       createFolder,
-      updateTabContent,
+      updateTabContent: __BME_BENCH__ ? updateAgentTabContent : updateTabContent,
       afterWrite: (file, before, after) => {
         // The tail of flushTab, for a file written with no tab to flush.
         recordFileWritten(file.path);
@@ -4637,6 +4725,24 @@ export default function App() {
     document.addEventListener('mouseup', onMouseUp);
   }, []);
 
+  // The welcome screen can report a refused open too; returning before the
+  // workspace's host used to hide the app notice on exactly that path.
+  const dialogHost = dialog && (
+    <ConfirmDialog
+      questionId={dialog.id ?? 0}
+      title={dialog.title}
+      confirmLabel={dialog.confirmLabel}
+      danger={dialog.danger}
+      input={dialog.input}
+      altLabel={dialog.altLabel}
+      onAlt={dialog.onAlt}
+      onConfirm={dialog.onConfirm}
+      onCancel={dialog.onCancel}
+    >
+      {dialog.body}
+    </ConfirmDialog>
+  );
+
   // Welcome screen
   if (!rootHandle && !isLoading) {
     return (
@@ -4685,6 +4791,7 @@ export default function App() {
             )}
           </div>
         </div>
+        {dialogHost}
       </div>
     );
   }
@@ -4886,21 +4993,7 @@ export default function App() {
       {/* Last, so it sits over the settings panel as well as the workspace —
           and outside the editor, because the questions it asks are the file
           tree's (which is visible in the graph view too). */}
-      {dialog && (
-        <ConfirmDialog
-          questionId={dialog.id ?? 0}
-          title={dialog.title}
-          confirmLabel={dialog.confirmLabel}
-          danger={dialog.danger}
-          input={dialog.input}
-          altLabel={dialog.altLabel}
-          onAlt={dialog.onAlt}
-          onConfirm={dialog.onConfirm}
-          onCancel={dialog.onCancel}
-        >
-          {dialog.body}
-        </ConfirmDialog>
-      )}
+      {dialogHost}
     </div>
   );
 }

@@ -1,0 +1,8 @@
+diff --git a/src/App.tsx b/src/App.tsx
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -2970,3 +2970,3 @@
+       else if (isNotebookFile(file.name)) kinds.notebook = true;
+-      else if (isDrawingFile(file.name)) kinds.drawing = true;
++      else if (isCanvasFile(file.name)) kinds.drawing = true;
+       if (kinds.epub && kinds.pdf && kinds.drawing && kinds.notebook) break;

@@ -18,6 +18,7 @@ import { search, searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
 import { createLivePreviewPlugin } from '../editor/livePreview';
+import { markEditorModeRender } from '../editor/editorPerf';
 import type { ImageDeleteRequest, ImageEmbedActions } from '../editor/imageWidget';
 import { markdownFormatExtension } from '../editor/formatKeymap';
 import { indentSettings, listIndentKeymap } from '../editor/lists';
@@ -48,6 +49,8 @@ import { externalReload, reloadSpec } from '../editor/externalReload';
 import { registerView, type LineCol, type MarkdownViewInfo, type TextChange } from '../utils/viewRegistry';
 import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
+import { ASSETS_DIR } from '../utils/assets';
+import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
@@ -665,6 +668,7 @@ function DocumentPane({
     /** Restored without its text (OpenTab.readError): this pane shows only
      *  that, and builds no view, drawing or notebook — each would take the
      *  empty buffer for the document and save it over the file. */
+    const unsupported = tab.representation.loadedKind === 'unsupported';
     const unreadable = !!tab.readError || (!isCanvas && !canReadTabText(tab));
     const preferences = useSyncExternalStore(subscribeReadingPreferences,getReadingPreferences);
     const readerIdentity = reading.identityForTab(tab);
@@ -996,6 +1000,7 @@ function DocumentPane({
 
                             // Into the .Assets folder beside THIS pane's note.
                             const parentHandle = fileRef.current.parentHandle || null;
+                            const assetFolder = joinVaultPath(parentVaultPath(fileRef.current.path), ASSETS_DIR);
                             saveAsset(filename, blob!, parentHandle).then(() => {
                                 // Insert the markdown at cursor
                                 const insertText = `![[${filename}]]\n`;
@@ -1009,7 +1014,7 @@ function DocumentPane({
                                 }
                             }).catch(err => {
                                 console.error('Failed to save pasted image:', err);
-                                alert('Failed to save image to .Assets folder.');
+                                onNotify(`Could not save the pasted image to “${assetFolder}”. Check that this is a writable folder, then try again.`);
                             });
 
                             return true; // We handled the paste
@@ -1086,6 +1091,7 @@ function DocumentPane({
                 const restoreSelection = captureReadingSelection(view);
                 if (restoreSelection) queueTableReadingSelection(view, restoreSelection);
                 const wasReadOnly = view.state.readOnly;
+                if (__BME_BENCH__) { if (!isCode && !isTex && wasReadOnly !== (mode === 'read')) markEditorModeRender(); }
                 view.dispatch({
                     effects: [
                         themeCompartment.reconfigure(themeExtensions(theme, isCode)),
@@ -1191,6 +1197,7 @@ function DocumentPane({
                 if (restoreSelection) queueTableReadingSelection(view, restoreSelection);
                 const wasReadOnly = view.state.readOnly;
                 const modeChanged = wasReadOnly !== (mode === 'read');
+                if (__BME_BENCH__) { if (modeChanged && !isCode && !isTex) markEditorModeRender(); }
                 view.dispatch({ effects: [
                     ...(modeChanged ? [readOnlyCompartment.reconfigure(modeExtensions(mode)),livePreviewCompartment.reconfigure(livePreviewFor(mode))] : []),
                     ...(!isCode && !isTex ? [readingEmphasisCompartment.reconfigure(readingEmphasisOptions({enabled: preferences.emphasis.enabled, mode, locale: ''}))] : []),
@@ -1466,16 +1473,19 @@ function DocumentPane({
                         onDrop={(e) => e.preventDefault()}
                     >
                         <span className="unread-pane-title" data-tooltip={file.name}>
-                            Couldn’t read <strong>{file.name}</strong>
+                            {unsupported ? 'Can’t open ' : 'Couldn’t read '}<strong>{file.name}</strong>
                         </span>
                         <span className="unread-pane-hint">
-                            Another program may be using it, it may not be downloaded yet, or it
-                            can’t be opened right now. Nothing was changed, and its tab is kept.
+                            {unsupported
+                                ? 'This file’s format is not supported by this build. Nothing was changed, and its tab is kept.'
+                                : 'Another program may be using it, it may not be downloaded yet, or it can’t be opened right now. Nothing was changed, and its tab is kept.'}
                         </span>
                         <span className="unread-pane-detail" data-tooltip={tab.readError}>{tab.readError}</span>
-                        <button className="pdf-pane-action" disabled={retrying} onClick={retryRead}>
-                            {retrying ? 'Trying…' : 'Try again'}
-                        </button>
+                        {!unsupported && (
+                            <button className="pdf-pane-action" disabled={retrying} onClick={retryRead}>
+                                {retrying ? 'Trying…' : 'Try again'}
+                            </button>
+                        )}
                     </div>
                 )}
                 {texReading && (

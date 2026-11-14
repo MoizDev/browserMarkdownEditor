@@ -1,6 +1,7 @@
 // Measurement hooks of contract C9: benchmark builds only. Every call site is
-// inside `if (__BME_BENCH__)`, so production and development builds drop this
-// module entirely; the production-bundle scan looks for PERF_PLANT to prove it.
+// inside `if (__BME_BENCH__)`: the production build drops this module entirely
+// (the production-bundle scan looks for PERF_PLANT to prove it); the dev server
+// still serves its text but never calls it, so it creates nothing there.
 // It measures and reports. It asserts nothing and changes no behaviour.
 
 export const PERF_PLANT = 'bme-perf-hooks-plant-7f3a';
@@ -15,16 +16,17 @@ export function perfRoot(): PerfRoot {
 }
 
 /**
- * One write or deletion the app itself started (contract C9, v4.3), so a run
- * can match every `createWritable` and `removeEntry` it observes to a
+ * One operation the app started, or the completion of its trash copy, so a run
+ * can match observed directory creation, `createWritable` and `removeEntry` to a
  * sanctioned caller (X-FUNNEL, X-NODESTROY).
  */
 export interface VaultReport {
     seq: number;
     t: number;                  // performance.now() when the operation started
-    op: 'write' | 'trash' | 'move' | 'retire' | 'restore' | 'empty-trash';
+    op: 'write' | 'trash' | 'trash-done' | 'move' | 'retire' | 'restore' | 'empty-trash';
     path: string;               // vault-root-relative (utils/paths.ts), the entry acted on
-    to?: string;                // for a move or a rename: where it went
+    to?: string;                // known destination; trash names arrive on trash-done
+    opens?: number;             // trash-done: seq of the operation's opening report
     caller: string;             // which sanctioned path started it, e.g. 'flushTab', 'rotate', 'trash'
 }
 
@@ -44,9 +46,10 @@ export function perfVault(): PerfVault {
     return root.vault as PerfVault;
 }
 
-/** Call immediately before the operation's first write or removal starts. */
-export function reportVault(report: Omit<VaultReport, 'seq' | 't'>): void {
+/** Publish an opening or trash-copy completion; return this record's seq for pairing. */
+export function reportVault(report: Omit<VaultReport, 'seq' | 't'>): number {
     const full: VaultReport = { ...report, seq: ++seq, t: performance.now() };
     log.push(full);
     perfVault().dispatchEvent(new CustomEvent(full.op, { detail: full }));
+    return full.seq;
 }

@@ -92,14 +92,14 @@ export class GpuPaneCandidate {
                         { width: 0, height: 0, complete: false, generation: preparation.generation };
                 },
                 invalidate: this.options.invalidate,
-                onError: error => {
+                onError: error => defer(() => {
                     try { this.options.onError(error); }
                     finally {
                         const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
                         this.failure(preparation.generation, code === 'allocation' || code === 'out-of-budget' ||
                             code === 'unsupported' || code === 'lost' ? code : 'invalid-resource');
                     }
-                },
+                }),
                 onDeferred: () => this.options.invalidate('gpu-deferred'),
             });
             generation.bundle = bundle;

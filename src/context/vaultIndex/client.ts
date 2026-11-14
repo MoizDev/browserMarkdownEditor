@@ -159,6 +159,11 @@ export class VaultIndexClient {
             await this.worker.request('mediaAssets', { session: this.session, entries: snapshot }, control);
         }).then(() => { void this.refreshMedia(epoch); });
     }
+    setFolderMediaAssets(folder: string, names: readonly string[]): Promise<void> {
+        const entries = new Map(this.mediaAssets ?? []);
+        entries.set(folder, [...names]);
+        return this.setMediaAssets([...entries]);
+    }
     async mediaSnapshot(folder: string): Promise<IndexMediaSnapshot> {
         const session = this.session, treeGen = this.treeGen, publicationEpoch = this.publicationEpoch, epoch = this.mediaEpoch;
         try {

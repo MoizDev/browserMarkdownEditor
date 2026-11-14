@@ -1,6 +1,6 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
 import { ApplyRefused } from '../change/apply';
-import type { NodeSetOp, Op } from '../change/ops';
+import type { CommandBuilder, NodeSetOp } from '../change/ops';
 import type { SampleBuilder } from '../ink/samples';
 import { sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
@@ -20,8 +20,8 @@ export interface AgentStageHost {
     /** Authoritative current staged world geometry, expressed in the destination page. */
     target(node: Node, page: number): Point;
     placement(node: Node, op: UpdateOp): { readonly ops: readonly NodeSetOp[]; readonly notes?: readonly string[] };
-    /** Shared deletion command; translate its expected refusals to AgentOpRefused. */
-    delete(id: NodeId): { readonly ops: readonly Op[]; readonly kept: readonly NodeId[] };
+    /** Shared deletion command stages into this same builder. */
+    delete(id: NodeId, builder: CommandBuilder): { readonly deleted: readonly NodeId[]; readonly kept: readonly NodeId[]; readonly notes: readonly string[] };
 }
 
 export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentOpContext): AgentOpResult {
@@ -48,10 +48,9 @@ export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentO
         try {
             const id = context.resolve(reference);
             editableNode(host.doc, host.sheet, id);
-            const plan = host.delete(id);
-            for (const change of plan.ops) context.builder.push(change);
-            deleted.push(id);
-            if (plan.kept.length) notes.push(`kept ${plan.kept.length} locked descendant${plan.kept.length === 1 ? '' : 's'}`);
+            const plan = host.delete(id, context.builder);
+            if (plan.deleted.includes(id)) deleted.push(id);
+            notes.push(...plan.notes);
         } catch (error) {
             if (!(error instanceof AgentOpRefused) && !(error instanceof ApplyRefused)) throw error;
             context.builder.rollbackTo(point);

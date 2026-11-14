@@ -3,6 +3,7 @@ import { boundedAttachmentBytes, inventoryAttachments } from '../../utils/pdfAtt
 import { NOTEBOOK_SOURCE_ATTACHMENT } from '../../utils/pdfFormat';
 import { attachmentMarker } from './attachments';
 import { validNotebookSourcePath } from './notebookPointer';
+import { parseJson } from '../../whiteboard/format/jsonRead';
 
 function assertUniqueTreeNames(doc: PDFDocument): void {
     const names = doc.catalog.lookup(PDFName.of('Names'));
@@ -64,22 +65,15 @@ function assertUniqueAssociations(doc: PDFDocument): void {
     }
 }
 
-/** Independent contained-reader inspection of the actual generated output. */
-export async function inspectPdfNotebook(outer: Blob, expectedPath: string, cooperate: () => Promise<void>): Promise<{ path: string; pageCount: number }> {
-    if (!(outer instanceof Blob) || typeof File !== 'undefined' && outer instanceof File || outer.size < 1 || outer.size > 0x7fffffff ||
-        !validNotebookSourcePath(expectedPath)) throw new Error('Invalid notebook PDF inspection source');
-    await cooperate();
-    const bytes = new Uint8Array(await outer.arrayBuffer());
-    await cooperate();
-    const doc = await PDFDocument.load(bytes, { parseSpeed: Infinity, updateMetadata: false });
-    await cooperate();
-    const pageCount = doc.getPageCount();
-    if (doc.isEncrypted || !Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 100_000) throw new Error('Invalid notebook PDF');
+export interface PdfNotebookPointer { path: string; exportedAt?: number }
+
+/** The same full-union, bounded pointer reader serves discovery and output verification. */
+export function readPdfNotebookPointer(doc: PDFDocument): PdfNotebookPointer {
     assertUniqueTreeNames(doc);
     assertUniqueAssociations(doc);
-    const entries = inventoryAttachments(doc);
-    if (entries.length !== 1) throw new Error('Notebook PDF attachment inventory is not exact');
-    const entry = entries[0];
+    const matches = inventoryAttachments(doc).filter(entry => entry.names.has(NOTEBOOK_SOURCE_ATTACHMENT));
+    if (matches.length !== 1) throw new Error('Notebook PDF source pointer is not unique');
+    const entry = matches[0];
     if (entry.keys.length > 1 || entry.names.size !== 1 || !entry.names.has(NOTEBOOK_SOURCE_ATTACHMENT) ||
         entry.description.split('\n', 1)[0] !== attachmentMarker('notebook-source', 'notebook-source')) {
         throw new Error('Invalid notebook PDF source marker');
@@ -90,13 +84,30 @@ export async function inspectPdfNotebook(outer: Blob, expectedPath: string, coop
     if (f && uf && f !== uf) throw new Error('Notebook PDF source has conflicting streams');
     const stream = uf ?? f;
     if (!(stream instanceof PDFRawStream)) throw new Error('Notebook PDF source is unreadable');
-    const pointer: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(boundedAttachmentBytes(stream, 4096)));
-    if (!pointer || typeof pointer !== 'object' || Array.isArray(pointer) ||
-        Object.keys(pointer).some(key => key !== 'path' && key !== 'exportedAt')) throw new Error('Invalid notebook PDF source pointer');
-    const { path, exportedAt } = pointer as { path?: unknown; exportedAt?: unknown };
-    if (!validNotebookSourcePath(path) || path !== expectedPath || typeof exportedAt !== 'number' || !Number.isFinite(exportedAt) || exportedAt < 0) {
-        throw new Error('Notebook PDF source pointer does not match');
+    const json = new TextDecoder('utf-8', { fatal: true }).decode(boundedAttachmentBytes(stream, 4096));
+    const fields = parseJson(json).fieldMap();
+    if (!fields.has('path') || [...fields.keys()].some(key => key !== 'path' && key !== 'exportedAt')) throw new Error('Invalid notebook PDF source pointer');
+    const path = fields.get('path')!.string(4096);
+    const exportedAt = fields.has('exportedAt') ? fields.get('exportedAt')!.number() : undefined;
+    if (!validNotebookSourcePath(path) || (exportedAt !== undefined && (!Number.isFinite(exportedAt) || exportedAt < 0))) {
+        throw new Error('Invalid notebook PDF source pointer');
     }
+    return { path, ...(exportedAt !== undefined ? { exportedAt } : {}) };
+}
+
+/** Independent contained-reader inspection of the actual generated output. */
+export async function inspectPdfNotebook(outer: Blob, expectedPath: string, cooperate: () => Promise<void>): Promise<{ path: string; pageCount: number }> {
+    if (!(outer instanceof Blob) || typeof File !== 'undefined' && outer instanceof File || outer.size < 1 || outer.size > 0x7fffffff ||
+        !validNotebookSourcePath(expectedPath)) throw new Error('Invalid notebook PDF inspection source');
     await cooperate();
-    return { path, pageCount };
+    const bytes = new Uint8Array(await outer.arrayBuffer());
+    await cooperate();
+    const doc = await PDFDocument.load(bytes, { parseSpeed: Infinity, updateMetadata: false });
+    await cooperate();
+    const pageCount = doc.getPageCount();
+    if (doc.isEncrypted || !Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 100_000 || inventoryAttachments(doc).length !== 1) throw new Error('Invalid notebook PDF');
+    const pointer = readPdfNotebookPointer(doc);
+    if (pointer.path !== expectedPath || pointer.exportedAt === undefined) throw new Error('Notebook PDF source pointer does not match');
+    await cooperate();
+    return { path: pointer.path, pageCount };
 }

@@ -26,6 +26,10 @@ export type PdfEditableInkSource = {
 export interface PdfReadOnlyInkSource {
     kind: 'read-only';
     reason: string;
+    /** Verified against the actual outer snapshot; never an editing capability. */
+    notebookSource?: { readonly path: string; readonly exportedAt?: number };
+    outerFingerprint?: string;
+    isCurrent?(): boolean;
     release(): Promise<void>;
 }
 

@@ -461,6 +461,7 @@ marks are drawn against the pages as they are, and turning the paper would move
 every one of them — so straighten a scan before you start annotating it. Only a
 plain PDF turns: a notebook's export, or a PDF whose embedded attachments are not
 ones this app can read, is left alone too, and its note says what to do instead.
+Encrypted PDFs are left unchanged rather than rewritten without their encryption.
 
 \`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
 **writing on it** — the same toggle every other file has. Draw on it as you would
@@ -495,7 +496,9 @@ saying it is read-only; drawing and saving change nothing in it. You can still
 read, select, copy and find in it, and open its Text. Choose **Retry** if an
 attachment could not be read; otherwise open it in a version of the app that wrote
 it, or recover the annotations first. Never delete attachments from your only copy
-just to make the note go away.
+just to make the note go away. Existing attachments are retained when you save;
+if different attachments have the same name, a notice gives the recovered names
+used to keep both. If attachment repair or its verification fails, nothing is written.
 
 Everything around a page — the toolbars, the pen panel, the space the pages sit
 on — follows the app's theme, so a notebook or a PDF is dark at night like the

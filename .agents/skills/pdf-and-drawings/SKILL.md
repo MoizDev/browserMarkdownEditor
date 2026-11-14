@@ -24,7 +24,12 @@ as live tldraw shapes.
   `tldraw-snapshot.json`) are the only EDITABLE roles; `notebookExport`, `unreadable`, `ambiguous`
   and `newer` open Annotate read-only with `pdfRoleNotice`'s text in the outer view. An
   `original.pdf` alone does NOT make a file ours. A failed or partial read never falls back to
-  `plain`; the outer pages stay readable. The first save of a `plain` PDF is what adds the
+  `plain`; the outer pages stay readable. Marked legacy pairs and marked notebook pointers are
+  recognized by exact marker, name and compatible content; unknown namespace markers refuse editing.
+  `pdfAttachmentTree` traverses both old mixed branches and associated files, forks a legal sorted
+  name tree and checks attachment hashes before returning a build. The current outer bytes remain
+  bound to the pristine source capability so an outer-only attachment is not lost on rebuild.
+  The first save of a `plain` PDF is what adds the
   attachments, and files from the old spawn-a-sibling behaviour still work. Only `plain` may be
   rotated (`canRotatePdfRole`).
 - **Save authority is the exact source, not the path.** `authorizePdfRole` admits an editable role's

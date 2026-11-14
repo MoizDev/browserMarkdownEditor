@@ -28,7 +28,7 @@ import { createClassicPdfHealth, recordClassicRenderFailure, type ClassicPdfHeal
 // Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
 // Role extraction uses the build worker's read-only inventory operation; this
 // main-thread module never imports pdf-lib or the writer implementation.
-import { authorizePdfRole } from './pdfRole';
+import { authorizePdfRole, rememberPdfOuter } from './pdfRole';
 import type { PdfRole } from './pdfRole';
 export type { PdfRole } from './pdfRole';
 
@@ -67,6 +67,7 @@ export async function readPdfRole(bytes: Uint8Array, generation = ''): Promise<P
     try {
         const { inspectPdfRoleAsync } = await import('./pdfBuildClient');
         const role = await inspectPdfRoleAsync(bytes, generation);
+        rememberPdfOuter(role, bytes);
         authorizePdfRole(role);
         return role;
     } catch (error) {

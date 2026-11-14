@@ -75,7 +75,8 @@ export function createContainedFrame(options: ContainedFrameOptions): ContainedF
                 options.signal?.throwIfAborted();
                 mounted = true;
                 options.signal?.addEventListener('abort', dispose, { once: true });
-                frame.srcdoc = options.html;
+                const frameHTML = options.html;
+                frame.srcdoc = frameHTML;
                 container.append(frame);
             } catch (error) { dispose(); throw error; }
         },

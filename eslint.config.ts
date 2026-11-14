@@ -210,14 +210,14 @@ export default defineConfig([
       ]],
       // G-INV-22. Baseline (contracts R1-18): the two note-text sinks AGENTS.md
       // names, the constant icon strings of three editor widgets, and the EPUB
-      // frame's srcdoc. Core turns the icon sinks into DOM builders; then they go.
+      // shared contained-frame srcdoc. Core turns the icon sinks into DOM builders; then they go.
       'bme/html-sinks': ['error', [
         { file: 'src/editor/tableWidget.ts', names: ['innerHTML'], rhs: 'any' },
         { file: 'src/editor/mermaidWidget.ts', names: ['innerHTML'], rhs: 'any' },
         { file: 'src/editor/headingFold.ts', names: ['innerHTML'], rhs: 'constant' },
         { file: 'src/editor/imageWidget.ts', names: ['innerHTML'], rhs: 'constant' },
         { file: 'src/editor/copyCodeWidget.ts', names: ['innerHTML'], rhs: 'constant' },
-        { file: 'src/epub/bridge.ts', names: ['srcdoc'], rhs: 'constant', identifiers: ['frameHTML'] },
+        { file: 'src/platform/containedFrame.ts', names: ['srcdoc'], rhs: 'constant', identifiers: ['frameHTML'] },
       ]],
       // G-INV-FS: all File System Access calls stay in src/context/.
       'bme/fs-access': ['error', []],

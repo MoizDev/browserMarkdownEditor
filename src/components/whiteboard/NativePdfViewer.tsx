@@ -266,6 +266,7 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
         && source.source.isCurrent() && props.host.isCurrent(props.identity) && !!outer && props.host.isCurrent(outer)
         && outer.documentId === actual.documentId && outer.session === actual.session
         && outer.vaultActivation === actual.vaultEpoch && outer.bytesGeneration === actual.bytesGeneration;
+    const sourceAuthorized = props.host.canWriteSource(props.identity);
     const cover = updating || source.status !== 'ready' || !paired;
     useLayoutEffect(() => {
         lease.setInputPermitted(!cover && props.isVisible);
@@ -274,11 +275,11 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
     }, [lease, cover, source, props.isVisible]);
     const { onError } = props;
     useEffect(() => {
-        if (!paired && source.status === 'ready') {
+        if (!paired && source.status === 'ready' && sourceAuthorized) {
             try { rebind(lease, source.source); }
             catch (error) { onError(error); }
         }
-    }, [lease, paired, source, rebind, onError]);
+    }, [lease, paired, source, sourceAuthorized, rebind, onError]);
     const path = props.file.path, { onFocusPane, registerKeyboardTarget } = props;
     const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);
     const register = useCallback((focus: () => void) => registerKeyboardTarget(path, focus), [registerKeyboardTarget, path]);

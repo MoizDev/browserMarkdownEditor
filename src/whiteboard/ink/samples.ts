@@ -1,4 +1,5 @@
-import type { SampleRef, SampleLease, SamplePressure, SampleChunk as ModelSampleChunk, SampleBlockView, SampleStoreReader } from '../model/samples';
+import type { SampleRef, SampleLease, SamplePressure, SampleChunk as ModelSampleChunk, SampleBlockView, SampleStoreReader, SampleSummary } from '../model/samples';
+import { nextUp } from '../geom/numeric';
 import { decodePoints, POINT_LIMITS } from '../format/points';
 export type { SampleRef, SampleLease, SamplePressure, SampleBlockView, SampleStoreReader } from '../model/samples';
 
@@ -138,6 +139,8 @@ class ChunkBuilder {
     y(index: number): number {
         return index === 0 ? this.originY : index === this.count - 1 ? this.lastY : this.originY + this.positions[2 * index + 1];
     }
+    packedX(index: number): number { return this.originX + this.positions[2 * index]; }
+    packedY(index: number): number { return this.originY + this.positions[2 * index + 1]; }
     pressure(index: number): number | undefined {
         return this.pressureValues ? this.pressureValues[index] / 65535 : this.constantPressure;
     }
@@ -200,6 +203,8 @@ export class SampleBuilder implements SampleSequence {
     private length = 0;
     private readonly maxErrorWorld: number;
     private exactTail = false;
+    private minX = Infinity; private minY = Infinity; private maxX = -Infinity; private maxY = -Infinity;
+    private maximumPressure: number | null = null;
     readonly options: SampleBuilderOptions;
     constructor(options: SampleBuilderOptions) {
         this.options = Object.freeze({ ...options });
@@ -217,7 +222,20 @@ export class SampleBuilder implements SampleSequence {
                 this.exactTail ? { ...this.options, precision: 'float64' } : this.options, this.maxErrorWorld);
         }
         this.active.append(x, y, pressure, incomingKind);
+        const index = this.active.count - 1, px = this.active.packedX(index), py = this.active.packedY(index);
+        // The current endpoint is exact, but may become an interior packed sample on the next append.
+        this.minX = Math.min(this.minX, x, px); this.minY = Math.min(this.minY, y, py);
+        this.maxX = Math.max(this.maxX, x, px); this.maxY = Math.max(this.maxY, y, py);
+        if (pressure !== undefined) this.maximumPressure = Math.max(this.maximumPressure ?? 0, pressure, Math.round(pressure * 65535) / 65535);
         this.length++;
+    }
+    summary(): SampleSummary | null {
+        if (!this.length) return null;
+        const w = this.maxX - this.minX, h = this.maxY - this.minY;
+        if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+        const width = w ? nextUp(w) : 0, height = h ? nextUp(h) : 0;
+        if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+        return Object.freeze({ localBounds: Object.freeze([this.minX, this.minY, width, height] as const), maxPressure: this.maximumPressure });
     }
     private locate(index: number): SampleChunk | ChunkBuilder {
         if (this.sealed) throw new Error('Sample ownership has already transferred');
@@ -249,6 +267,7 @@ export class SampleBuilder implements SampleSequence {
     checkpoint(): () => void {
         if (this.sealed) throw new Error('Sample ownership has already transferred');
         const length = this.length, frozenCount = this.frozen.length, active = this.active, exactTail = this.exactTail;
+        const minX = this.minX, minY = this.minY, maxX = this.maxX, maxY = this.maxY, maximumPressure = this.maximumPressure;
         const restoreActive = active?.checkpoint();
         let restored = false;
         return () => {
@@ -256,6 +275,7 @@ export class SampleBuilder implements SampleSequence {
             restored = true;
             restoreActive?.();
             this.length = length; this.frozen.length = frozenCount; this.active = active; this.exactTail = exactTail;
+            this.minX = minX; this.minY = minY; this.maxX = maxX; this.maxY = maxY; this.maximumPressure = maximumPressure;
         };
     }
     beginBoundedChunk(): void {
@@ -317,12 +337,12 @@ export class SampleStore implements SampleStoreReader {
     get encodedByteLength(): number { return this.encodedBytes; }
     get recordCount(): number { return this.records.size; }
     commit(builder: SampleBuilder): SampleLease {
-        const ref = sampleRef(), chunks = builder.seal();
+        const ref = sampleRef(), summary = builder.summary(), chunks = builder.seal();
         return this.add({
             ref, count: builder.count, chunks, owners: 0,
             bytes: chunks.reduce((sum, c) => sum + c.byteLength, 0),
             encoded: null, k: 0, hasPressure: builder.options.pressure, runCount: 0,
-            nativeBounds: null, maxPressure: null
+            nativeBounds: summary?.localBounds ?? null, maxPressure: summary?.maxPressure ?? null
         });
     }
     admitEncoded(pts: string, header: EncodedSampleHeader): SampleLease {
@@ -359,6 +379,10 @@ export class SampleStore implements SampleStoreReader {
         return lease;
     }
     has(ref: SampleRef): boolean { return this.records.has(ref); }
+    summary(ref: SampleRef): SampleSummary | null {
+        const record = this.record(ref);
+        return record.nativeBounds === null ? null : Object.freeze({ localBounds: record.nativeBounds, maxPressure: record.maxPressure });
+    }
     count(ref: SampleRef): number { return this.record(ref).count; }
     pressureMode(ref: SampleRef): 'real' | 'none' { return this.record(ref).hasPressure ? 'real' : 'none'; }
     byteSize(ref: SampleRef): number {

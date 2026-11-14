@@ -35,7 +35,7 @@ function* sort<T>(values: T[], compare: (a: T, b: T) => number): Generator<void>
  * an interrupted order splice is completed before starting the newer revision. */
 export interface SceneUpdateResult extends BootstrappedScene { readonly boundsChanges: ReadonlyMap<NodeId, SceneBounds | null> }
 export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: SceneDirty, provider: BoundsProvider,
-    zoom = 1): Generator<void, SceneUpdateResult> {
+    zoom = 1, invalidateGeometry?: (id: NodeId) => void): Generator<void, SceneUpdateResult> {
     const revision = doc.rev, slots = state.slots as Map<NodeId, number>, ids = state.ids as NodeId[];
     const sheets = state.sheets as Map<SheetId, number>, unbounded = state.unbounded as Set<number>;
     const { columns: col, index, order } = state;
@@ -78,7 +78,12 @@ export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: Sce
                 | (bits & Flag.Structure ? Flag.Placement | Flag.Inherited : 0) | Flag.Bounds | Flag.Paint);
             if ((++work & 255) === 0) yield;
         }
-        if (bits & BOUNDS) ancestors(id);
+        if (bits & BOUNDS) {
+            ancestors(id);
+            // A moved frame/group also moves descendant attachment surfaces.
+            // Resolve their incident paths once, before the revision publishes.
+            for (const connector of doc.attachedTo.get(id) ?? []) add(connector, Flag.Geometry | Flag.Bounds | Flag.Paint);
+        }
         if ((++work & 255) === 0) yield;
     }
     // Existing sheet numbers never change when a sheet's order changes. Spatial
@@ -145,7 +150,7 @@ export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: Sce
             col.locked[slot] = Number(node.locked || (!root && !!col.locked[parentSlot]));
             col.clip[slot] = root ? -1 : doc.nodes.get(ids[parentSlot])?.kind === 'frame' ? parentSlot : col.clip[parentSlot];
         }
-        if (fresh || bits & GEOMETRY) col.geometry[slot]++;
+        if (fresh || bits & GEOMETRY) { invalidateGeometry?.(id); col.geometry[slot]++; }
         if (fresh || bits & Flag.Paint) col.paint[slot]++;
         col.nodeRevision[slot] = revision;
         if (fresh || bits & (Flag.Order | Flag.Structure)) {

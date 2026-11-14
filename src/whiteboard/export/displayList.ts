@@ -1,7 +1,7 @@
 import type { Affine, PageDisplayItem, PageDisplayList, PathCommand } from '../../platform/types'
 import { InkOutlineJob } from '../ink/outline'
-import type { InkCoverage } from '../ink/outline'
-import type { PaintFrame, PaintImageItem, PaintItem, PaintTextItem } from '../render/paintStream'
+import { inkCoverageChunks } from '../render/paintStream'
+import type { PaintFrame, PaintImageItem, PaintInkCoverage, PaintItem, PaintTextItem } from '../render/paintStream'
 
 /** The image resolver returns a pinned, export-ready PNG/JPEG with inversion baked in.
  * Dimensions are the original image pixels; the caller owns leases until this settles. */
@@ -27,17 +27,23 @@ function transformPath(commands: readonly PathCommand[], matrix: Affine): PathCo
   })
 }
 
-export async function inkOutline(coverage: InkCoverage, scale: number, signal?: AbortSignal): Promise<PathCommand[]> {
+export async function inkOutline(coverage: PaintInkCoverage, scale: number, signal?: AbortSignal): Promise<PathCommand[]> {
   const commands: PathCommand[] = []
-  const job = new InkOutlineJob(coverage, scale, command => commands.push(command), Number.MAX_SAFE_INTEGER)
-  try {
-    while (job.step(1024) === 'pending') {
-      signal?.throwIfAborted()
-      await new Promise<void>(resolve => setTimeout(resolve, 0))
-    }
+  let count = 0
+  for (const chunk of inkCoverageChunks(coverage)) {
     signal?.throwIfAborted()
-    return commands
-  } catch (error) { job.cancel(); throw error }
+    const job = new InkOutlineJob(chunk, scale, command => commands.push(command), Number.MAX_SAFE_INTEGER)
+    try {
+      while (job.step(1024) === 'pending') {
+        signal?.throwIfAborted()
+        await new Promise<void>(resolve => setTimeout(resolve, 0))
+      }
+    } catch (error) { job.cancel(); throw error }
+    // Even empty chunks must not make a many-chunk capture monopolize the UI.
+    if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
+  }
+  signal?.throwIfAborted()
+  return commands
 }
 
 export async function paintItemDisplay(item: PaintItem, scale: number, image: ExportImage, signal?: AbortSignal, text?: ExportText): Promise<PageDisplayItem> {

@@ -33,16 +33,34 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
     let pending = emptyTouched(), pendingDirty = false;
     const mediaLeases = new Map<MediaId, MediaLease>();
     const listeners = new Set<(source: ContentSource) => void>();
+    const pendingListeners = new Set<() => void>();
+    let notifyingPending = false, lastPending = false;
+    const pendingState = () => !disposed && (recovering || contentRevision > savedRevision || scheduler.hasPendingEdits() || outstanding.size > 0);
+    const reportPendingError = (error: unknown) => { try { options.onFailure(error); } catch { /* a listener cannot break the save funnel */ } };
+    const notifyPending = () => {
+        if (notifyingPending) return;
+        notifyingPending = true;
+        try {
+            while (pendingState() !== lastPending) {
+                lastPending = pendingState();
+                for (const listener of [...pendingListeners]) {
+                    try { listener(); } catch (error) { reportPendingError(error); }
+                }
+            }
+        } finally { notifyingPending = false; }
+    };
     const checkpoints = new Map<number, SerializerCheckpoint>();
     const outstanding = new Set<Promise<unknown>>();
     let cachedSource: { revision: number; source: ReturnType<typeof boardContentSource> } | undefined;
     const track = <T>(work: Promise<T>): Promise<T> => {
-        outstanding.add(work);
-        void work.then(() => outstanding.delete(work), () => outstanding.delete(work));
+        outstanding.add(work); notifyPending();
+        const settled = () => { outstanding.delete(work); notifyPending(); };
+        void work.then(settled, settled);
         return work;
     };
     const readonlyReason = () => options.readOnlyReason() ?? (applyController.isReadOnly ? 'The board cannot be saved safely; reload to continue.' : null);
     const guardOwnership = () => {
+        if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
         if (disposed || !options.isCurrent(owner)) throw new ApplyFailed('stale-session', 'The board session has ended');
         if (readonlyReason()) throw new ApplyFailed('read-only', readonlyReason()!);
     };
@@ -89,7 +107,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             for (const id of applied.touched.media) refreshMedia(id);
             try { journal.record(applied, contentRevision); }
             catch (error) { options.onFailure(error); }
-            finally { scheduler.markDirty(); }
+            finally { scheduler.markDirty(); notifyPending(); }
         },
         change: applied => channel.record(applied),
         reportError: options.onFailure,
@@ -178,23 +196,29 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         beginGesture() {
             guard();
             const release = queue.beginGesture();
-            scheduler.setGesture(true);
+            scheduler.setGesture(true); notifyPending();
             let active = true;
-            return () => { if (active) { active = false; release(); scheduler.setGesture(queue.isGestureActive); } };
+            return () => { if (active) { active = false; try { release(); } finally { scheduler.setGesture(queue.isGestureActive); notifyPending(); } } };
         },
-        setComposition(active: boolean) { scheduler.setComposition(active); },
+        setComposition(active: boolean) {
+            if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
+            scheduler.setComposition(active); notifyPending();
+        },
         subscribe: channel.subscribe.bind(channel),
-        hasPendingEdits() { return !disposed && (contentRevision > savedRevision || scheduler.hasPendingEdits() || outstanding.size > 0); },
-        checkpoint() { guard(); scheduler.flushNow(); return capture(); },
+        hasPendingEdits: pendingState,
+        onPending(listener: () => void) { pendingListeners.add(listener); return () => { pendingListeners.delete(listener); }; },
+        checkpoint() { guard(); try { scheduler.flushNow(); return capture(); } finally { notifyPending(); } },
         acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed') {
+            if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
             if (disposed || outcome !== 'written' || revision <= savedRevision || revision > contentRevision) return;
             const checkpoint = checkpoints.get(revision);
             if (!checkpoint?.product()) return;
             savedRevision = revision;
-            journal.acknowledge(revision);
+            journal.acknowledge(revision, checkpoint.baseline());
             scheduler.setJournalPending(savedRevision < contentRevision);
-            void track(checkpoint.written()).catch(options.onFailure);
+            void track(checkpoint.written()).catch(reportPendingError);
             for (const key of checkpoints.keys()) if (key <= revision) checkpoints.delete(key);
+            notifyPending();
         },
         async drain() { while (outstanding.size) await Promise.allSettled([...outstanding]); await journal.drain(); },
         onChange(listener: (source: ContentSource) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -202,22 +226,23 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         async recover(payload: unknown) {
             guard();
             const release = queue.beginGesture();
-            recovering = true;
-            history.open('Recover unsaved changes');
+            recovering = true; notifyPending();
+            let opened = false;
             try {
+                history.open('Recover unsaved changes'); opened = true;
                 await journal.recover(payload, transaction => applyController.apply(transaction));
-                history.close();
+                history.close(); opened = false;
             } catch (error) {
-                history.cancel();
+                if (opened) history.cancel();
                 throw error;
-            } finally { recovering = false; release(); }
+            } finally { recovering = false; release(); notifyPending(); }
         },
-        flushNow() { guard(); scheduler.flushNow(); },
+        flushNow() { guard(); try { scheduler.flushNow(); } finally { notifyPending(); } },
         pageHide() { if (!disposed) scheduler.pageHide(); },
         hidden() { if (!disposed) scheduler.hidden(); },
         dispose() {
             if (disposed) return;
-            disposed = true;
+            disposed = true; notifyPending(); pendingListeners.clear();
             unsubscribeSelection(); channel.dispose(); queue.dispose(); scheduler.dispose(); history.dispose(); applyController.dispose();
             for (const lease of mediaLeases.values()) lease.release();
             mediaLeases.clear(); journal.dispose(); serializer.dispose(); media.clear(); listeners.clear();

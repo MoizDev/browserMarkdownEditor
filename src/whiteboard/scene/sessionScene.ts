@@ -44,6 +44,7 @@ function yieldToHost(): Promise<void> {
 export class SessionScene implements SceneSpatial {
     private readonly cache = new SceneGeometryCache();
     private readonly versions = new Map<NodeId, number>();
+    private readonly invalidated = new Set<NodeId>();
     private readonly listeners = new Set<() => void>();
     private readonly boundsVersions: BoundsVersions;
     private readonly pendingNodes = new Map<NodeId, number>();
@@ -112,6 +113,11 @@ export class SessionScene implements SceneSpatial {
     private notify(): void {
         for (const listener of this.listeners) { try { listener(); } catch (error) { this.options.onError(error); } }
     }
+    private invalidateGeometry = (id: NodeId): void => {
+        if (this.invalidated.has(id)) return;
+        this.invalidated.add(id);
+        this.versions.set(id, (this.versions.get(id) ?? 0) + 1); this.cache.delete(id);
+    };
     record(applied: Applied): void {
         if (this.disposed) return;
         const dirty = sceneDirty(applied, this.options.doc);
@@ -125,7 +131,7 @@ export class SessionScene implements SceneSpatial {
         for (const [id, flags] of dirty.nodes) {
             this.pendingNodes.set(id, (this.pendingNodes.get(id) ?? 0) | flags);
             if (flags & (Flag.Geometry | Flag.Text | Flag.Structure)) {
-                this.versions.set(id, (this.versions.get(id) ?? 0) + 1); this.cache.delete(id);
+                this.invalidateGeometry(id);
             }
         }
         for (const sheet of dirty.sheets) this.pendingSheets.add(sheet);
@@ -134,7 +140,7 @@ export class SessionScene implements SceneSpatial {
         this.options.invalidate();
     }
     private *update(dirty: SceneDirty): Generator<void, BootstrappedScene> {
-        const next = yield* updateScene(this.options.doc, this.state, dirty, this.provider);
+        const next = yield* updateScene(this.options.doc, this.state, dirty, this.provider, 1, this.invalidateGeometry);
         yield* this.boundsVersions.updateSteps(next.revision, next.boundsChanges);
         return next;
     }
@@ -160,7 +166,7 @@ export class SessionScene implements SceneSpatial {
                 if (!next.done) continue;
                 this.state = next.value;
                 if (active.serial !== this.serial || this.state.revision !== this.options.doc.rev) { this.active = undefined; continue; }
-                this.pendingNodes.clear(); this.pendingSheets.clear(); this.pages = false;
+                this.pendingNodes.clear(); this.pendingSheets.clear(); this.pages = false; this.invalidated.clear();
                 this.active = undefined;
                 this.live.replace(this.state);
                 this.notify();
@@ -180,16 +186,17 @@ export class SessionScene implements SceneSpatial {
     }
     async ensureExactBounds(id: NodeId, signal?: AbortSignal): Promise<SceneBounds | null> {
         if (this.disposed) throw new DOMException('Scene is disposed', 'AbortError');
+        const cooperate = this.options.cooperate ?? yieldToHost;
+        while (!this.ready) { signal?.throwIfAborted(); this.controller.signal.throwIfAborted(); this.step(16, performance.now() + 3); await cooperate(); }
         const node = this.options.doc.nodes.get(id);
         if (!node) return null;
-        const version = this.versions.get(id) ?? 0;
+        const version = this.versions.get(id) ?? 0, serial = this.serial;
         const captured = createNode(node);
         await this.cache.ensure(id, version, signal ?? this.controller.signal, jobSignal => this.options.realize(captured, jobSignal));
         signal?.throwIfAborted();
-        if (this.disposed || !this.options.doc.nodes.has(id) || (this.versions.get(id) ?? 0) !== version) throw new DOMException('Scene geometry changed', 'AbortError');
+        if (this.disposed || this.serial !== serial || !this.options.doc.nodes.has(id) || (this.versions.get(id) ?? 0) !== version) throw new DOMException('Scene geometry changed', 'AbortError');
         this.pendingNodes.set(id, (this.pendingNodes.get(id) ?? 0) | Flag.Bounds | Flag.Paint);
         this.serial++; this.options.invalidate();
-        const cooperate = this.options.cooperate ?? yieldToHost;
         while (!this.ready) { signal?.throwIfAborted(); this.controller.signal.throwIfAborted(); this.step(16, performance.now() + 3); await cooperate(); }
         return this.worldBounds(id);
     }

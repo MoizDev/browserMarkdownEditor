@@ -1,6 +1,7 @@
 import type { PathCommand } from '../../../platform/types';
 import { InkOutlineJob } from '../../ink/outline';
 import type { InkCoverage } from '../../ink/outline';
+import { inkCoverageChunks, type PaintInkCoverage } from '../paintStream';
 
 export type PathOrigin2d = readonly [x: number, y: number];
 const ZERO_ORIGIN: PathOrigin2d = Object.freeze([0, 0]);
@@ -116,6 +117,51 @@ export class InkPath2dJob {
         const outline = this.outline;
         this.outline = null;
         outline?.cancel();
+    }
+}
+
+/** Every chunk appends to one nonzero path; the stroke is filled once per band. */
+export class InkCoverageUnionPath2dJob {
+    private chunks: readonly InkCoverage[] | null;
+    private path: Path2D | null = new Path2D();
+    private outline: InkOutlineJob | null = null;
+    private index = 0;
+    private count = 0;
+    private state: WorkState = 'pending';
+    readonly origin: PathOrigin2d;
+    constructor(coverage: PaintInkCoverage, private readonly deviceScale: number, private readonly maxCommands = 1048576) {
+        if (!Number.isFinite(deviceScale) || deviceScale <= 0 || !Number.isSafeInteger(maxCommands) || maxCommands <= 0) {
+            throw new RangeError('Invalid ink union path budget');
+        }
+        this.chunks = inkCoverageChunks(coverage);
+        const first = this.chunks[0];
+        const origin = first ? [first.boundsLocal.x, first.boundsLocal.y] as const : ZERO_ORIGIN;
+        if (!origin.every(Number.isFinite)) throw new RangeError('Ink path origin must be finite');
+        this.origin = Object.freeze([origin[0], origin[1]] as const);
+    }
+    get result(): Path2D | null { return this.state === 'complete' ? this.path : null; }
+    get commandCount(): number { return this.count; }
+    step(maxWork: number): WorkState {
+        if (this.state !== 'pending') return this.state;
+        if (!Number.isSafeInteger(maxWork) || maxWork <= 0) throw new RangeError('Invalid ink union work slice');
+        try {
+            for (let work = 0; work < maxWork; work++) {
+                if (!this.outline) {
+                    if (this.index === this.chunks!.length) { this.chunks = null; this.state = 'complete'; return this.state; }
+                    this.outline = new InkOutlineJob(this.chunks![this.index++], this.deviceScale, command => {
+                        if (this.count >= this.maxCommands) throw new RangeError('Ink union exceeds its finite command budget');
+                        appendPath2d(this.path!, command, this.origin); this.count++;
+                    }, this.maxCommands);
+                }
+                const status = this.outline.step(1);
+                if (status === 'cancelled') { this.cancel(); return this.state; }
+                if (status === 'complete') this.outline = null;
+            }
+            return this.state;
+        } catch (error) { this.cancel(); throw error; }
+    }
+    cancel(): void {
+        this.state = 'cancelled'; this.outline?.cancel(); this.outline = null; this.path = null; this.chunks = null;
     }
 }
 

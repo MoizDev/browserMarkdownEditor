@@ -33,15 +33,19 @@ export class PaneLayerSet {
             ids.add(definition.id);
         }
         const old = new Map(this.bindings.map(binding => [binding.definition, binding]));
+        const previouslyOwned = new Set(this.bindings.map(binding => binding.layer));
+        const seen = new Set<Layer>();
         const created: BoundLayer[] = [];
         const next: BoundLayer[] = [];
         try {
             for (const definition of definitions) {
                 const retained = old.get(definition);
-                if (retained) { next.push(retained); continue; }
+                if (retained) { seen.add(retained.layer); next.push(retained); continue; }
                 let layer: Layer | null = null;
                 const host = this.makeHost(definition.id, () => layer);
                 layer = definition.create(host);
+                if (seen.has(layer) || previouslyOwned.has(layer)) throw new Error('A layer cannot be shared by definitions');
+                seen.add(layer);
                 const owned = layer;
                 const compositor: CompositorLayer = {
                     id: definition.id, layer: owned, group: definition.group, isolation: definition.isolation,

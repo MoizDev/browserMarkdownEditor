@@ -69,7 +69,7 @@ export interface BoardInputServices {
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   persistToolLock?(locked: boolean): void
-  clearLatches(): void
+  clearLatches?(): void
   cancelPendingGestures(): boolean
 }
 
@@ -377,7 +377,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cursor, navigation: services.keyboardNavigation ? () => services.keyboardNavigation!(cursor.active) : undefined, gestureActive: () => router.activeOwner !== null,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
+    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches?.() },
     run(id, event) {
       if (!current()) return false
       if (id === 'escape') {

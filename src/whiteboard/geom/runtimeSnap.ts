@@ -128,17 +128,15 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
                     || (candidate.rank === old.rank && (candidate.source < old.source || (candidate.source === old.source && candidate.edge < old.edge)))))));
         type Neighbour = { readonly id: NodeId; readonly edge: number; readonly distance: number; readonly rank: number };
         let left: Neighbour | undefined, right: Neighbour | undefined, above: Neighbour | undefined, below: Neighbour | undefined;
-        let unstableX = false, unstableY = false;
+        const candidateBounds: Readonly<Rect>[] = [];
         const nearer = (value: Neighbour, old: Neighbour | undefined) => !old || value.distance < old.distance
             || (value.distance === old.distance && (value.rank > old.rank || (value.rank === old.rank && value.id < old.id)));
         visited = 0;
         for (const id of candidates) {
             check(); if (++visited % 256 === 0) { await cooperate(); check(); }
-            const other = scope.logicalBounds(id), rank = scope.rank(id);
+            const other = scope.logicalBounds(id), rank = scope.rank(id); candidateBounds.push(other);
             const overlapY = Math.min(other.y + other.height, bounds.y + bounds.height) - Math.max(other.y, bounds.y);
             const overlapX = Math.min(other.x + other.width, bounds.x + bounds.width) - Math.max(other.x, bounds.x);
-            if (Math.abs(overlapY) <= threshold) unstableX = true;
-            if (Math.abs(overlapX) <= threshold) unstableY = true;
             if (overlapY >= 0) {
                 if (other.x + other.width <= bounds.x) { const value = { id, edge: other.x + other.width, distance: bounds.x - other.x - other.width, rank }; if (nearer(value, left)) left = value; }
                 if (other.x >= bounds.x + bounds.width) { const value = { id, edge: other.x, distance: other.x - bounds.x - bounds.width, rank }; if (nearer(value, right)) right = value; }
@@ -186,8 +184,26 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
         }
         if (options.allowX === false) x = undefined;
         if (options.allowY === false) y = undefined;
-        if ((options.allowX !== false && unstableX && y?.delta) || (options.allowY !== false && unstableY && x?.delta))
-            throw new Error('Snap gap overlap requires a finer simultaneous-axis query');
-        check(); return { delta: { x: x?.delta ?? 0, y: y?.delta ?? 0 }, guides: [...(x?.guides ?? []), ...(y?.guides ?? [])] };
+        const dx = x?.delta ?? 0, dy = y?.delta ?? 0;
+        const flank = (other: Readonly<Rect>, axis: 'x' | 'y', mx: number, my: number): -1 | 0 | 1 => {
+            const horizontal = axis === 'x', start = horizontal ? bounds.x + mx : bounds.y + my;
+            const extent = horizontal ? bounds.width : bounds.height, perpendicular = horizontal ? bounds.y + my : bounds.x + mx;
+            const perpendicularExtent = horizontal ? bounds.height : bounds.width, otherStart = horizontal ? other.x : other.y;
+            const otherExtent = horizontal ? other.width : other.height, otherPerpendicular = horizontal ? other.y : other.x;
+            const otherPerpendicularExtent = horizontal ? other.height : other.width;
+            if (otherPerpendicular > perpendicular + perpendicularExtent || otherPerpendicular + otherPerpendicularExtent < perpendicular) return 0;
+            if (otherStart + otherExtent <= start) return -1;
+            if (otherStart >= start + extent) return 1;
+            return 0;
+        };
+        // If the other correction changes a flanking set, the previous nearest-neighbour
+        // proof is no longer valid; never publish that provisional winner as exact.
+        for (const other of candidateBounds) {
+            if ((options.allowX !== false && flank(other, 'x', 0, 0) !== flank(other, 'x', dx, dy))
+                || (options.allowY !== false && flank(other, 'y', 0, 0) !== flank(other, 'y', dx, dy)))
+                throw new Error('Snap gap neighbours changed during simultaneous correction');
+            if (++visited % 256 === 0) { await cooperate(); check(); }
+        }
+        check(); return { delta: { x: dx, y: dy }, guides: [...(x?.guides ?? []), ...(y?.guides ?? [])] };
     } finally { scope.release(); }
 }

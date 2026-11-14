@@ -6306,13 +6306,14 @@ export default function App() {
     signal.throwIfAborted();
     const tab = tabsRef.current.find(item => item.file.path === path);
     const kind = tab?.representation.loadedKind;
-    if (!tab || tab.readError || tab.representation.status !== 'ready' || (kind !== 'drawing' && kind !== 'notebook')) {
+    if (!tab || tab.readError || tab.representation.status !== 'ready' || (kind !== 'drawing' && kind !== 'notebook' && kind !== 'pdf')) {
       throw new Error('The open canvas representation is not available for native reading.');
     }
     ensureCanvasBridge(tab);
     const identity = nativeCanvasHost.identity(tab.id);
-    if (!identity || identity.kind !== kind) throw new DOMException('Canvas session ended', 'AbortError');
-    const pinned = nativeCanvasHost.session(tab.id) ? undefined : nativeCanvasHost.pinBoardSource(identity);
+    if (!identity || identity.kind !== (kind === 'pdf' ? 'pdfInk' : kind)) throw new DOMException('Canvas session ended', 'AbortError');
+    // pinBoardSource is a drawing/notebook buffer pin; a PDF cold source never uses it (the host refuses pdfInk).
+    const pinned = kind === 'pdf' || nativeCanvasHost.session(tab.id) ? undefined : nativeCanvasHost.pinBoardSource(identity);
     let pinTransferred = false;
     try {
     const [{ ensureNativeBoard }, { createNativeAcquisitionOptions }, { prepareNativeRuntime }, { getBoardRuntime }] = await Promise.all([
@@ -6323,10 +6324,22 @@ export default function App() {
     if (!nativeCanvasHost.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
     const reason = 'This native canvas is currently available in read-only mode.';
     const onError = (error: unknown) => console.error('Native canvas session failed:', error);
+    // Cold PDF source: only the already-native ink is admitted (a plain PDF is refused, never annotated),
+    // no legacy conversion, and no notebook handoff. A dirty document is refused rather than read from disk.
+    const preparePdfAgentSource = async (prepareSignal: AbortSignal) => {
+      const buffer = documentBuffers.get(tab.id);
+      if (buffer && buffer.revision > buffer.savedRevision) throw new Error('Save the PDF before the agent reads or edits its ink.');
+      const { preparePdfInkAttempt } = await import('./components/whiteboard/preparePdfInkAttempt');
+      return preparePdfInkAttempt({ host: nativeCanvasHost, identity, deadlineMs: 30_000, zMax: 100,
+        legacyConversion: false, requireExistingNative: true, onError,
+        onNotice: announce, onHistoryLimit: () => announce('The board history limit was reached.'),
+        canHandOff: () => false, onOpenNotebookSource: () => {} }, prepareSignal);
+    };
     const options = createNativeAcquisitionOptions({ host: nativeCanvasHost, identity,
       attachCanvasSession: attachNativeCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason: reason,
       emergencyReadOnly: () => !!nativePoliciesRef.current.get(tab.id)?.emergencyReadOnly,
       onError, prepare: prepareSignal => {
+        if (kind === 'pdf') return preparePdfAgentSource(prepareSignal);
         pinTransferred = true;
         return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: kind, sourcePin: pinned,
           signal: prepareSignal, deadlineMs: 30_000, zMax: 100, onError,

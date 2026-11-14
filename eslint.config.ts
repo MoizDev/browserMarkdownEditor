@@ -201,6 +201,9 @@ export default defineConfig([
             'src/components/whiteboard/nativeBoardActions.ts', 'src/components/whiteboard/nativeBoardContextMenu.ts', 'src/components/whiteboard/nativeBoardOperations.ts', 'src/components/whiteboard/nativeCameraOperations.ts',
             'src/components/whiteboard/nativeCommandSource.ts', 'src/components/whiteboard/nativeEditingKeyboard.ts', 'src/components/whiteboard/nativeEditingLease.ts',
             'src/components/whiteboard/nativeEditingCapabilityFactory.ts', 'src/components/whiteboard/nativePdfEditingLease.ts',
+            // App's lazy canonical PDF source bridge: App awaits this factory only on a PDF source.acquire,
+            // so it is the single non-view importer of the dark PDF session (same reach as NativePdfEntry).
+            'src/components/whiteboard/preparePdfInkAttempt.ts',
             'src/components/whiteboard/nativeImportAdapter.ts', 'src/components/whiteboard/nativeLinkOperations.ts', 'src/components/whiteboard/nativeTextClipboard.ts',
             'src/components/whiteboard/useNativeBoardLanguage.ts', 'src/components/whiteboard/useNativeSheetControls.tsx'],
           // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic

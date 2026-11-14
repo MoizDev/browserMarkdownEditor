@@ -172,7 +172,9 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (!resolved) throw cancelled();
                     const node = doc.nodes.get(resolved.id);
                     if (!node) throw cancelled();
-                    // The renderer does not yet resolve stroke/polyline attachment surfaces.
+                    // Policy, not a gap: architecture/geometry.md §8.1 step 2 keeps stroke/polyline attachment
+                    // surfaces disabled until CONN defines their boundary/anchor; a bounding-rectangle guess is not
+                    // evidence. Connector/group/opaque targets are excluded by model V-8. Do not lift without that evidence.
                     if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque'
                         || node.kind === 'stroke' || node.kind === 'polyline')) return;
                     const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);

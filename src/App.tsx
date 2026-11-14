@@ -1548,9 +1548,13 @@ export default function App() {
   }, []);
   requeueAssetFolderRef.current = requeueAssetFolder;
   const requeueAssetsAffected = useCallback((path: string) => {
+    // Wakeups can arrive while a proof is still running and not blocked yet.
+    // Its revision check both invalidates that proof and preserves the wakeup.
+    assetReferenceRevisionRef.current++;
     for (const folder of assetBacklogRef.current.affected(path)) requeueAssetFolder(folder);
   }, [requeueAssetFolder]);
   const requeueAllAssets = useCallback(() => {
+    assetReferenceRevisionRef.current++;
     for (const folder of assetBacklogRef.current.all()) requeueAssetFolder(folder);
   }, [requeueAssetFolder]);
 

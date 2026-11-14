@@ -114,7 +114,7 @@ export function createPdfTextReader(session: PdfDocumentSession, _identity: PdfR
             try {
                 while (true) {
                     if (signal.aborted) throw abort();
-                    const { done, value } = await reader.read();
+                    const { done, value } = await session.health.guard(reader.read(), signal);
                     if (signal.aborted) throw abort();
                     if (done) break;
                     for (const item of value.items as PdfProjectionItem[]) {
@@ -134,12 +134,18 @@ export function createPdfTextReader(session: PdfDocumentSession, _identity: PdfR
                     // waiting for that acknowledgement strands a partial page.
                     if (limited) { void reader.cancel(new Error('PDF text safety limit reached')).catch(() => {}); break; }
                 }
-            } finally { signal.removeEventListener('abort', cancel); reader.releaseLock(); }
+            } finally {
+                signal.removeEventListener('abort', cancel);
+                // A dead worker may never acknowledge cancellation; the local
+                // stream still closes immediately and releases its pending read.
+                void reader.cancel(abort()).catch(() => {});
+                reader.releaseLock();
+            }
             if (signal.aborted) throw abort();
             const roles = new Map<string, PdfSemanticRole>();
             // Tags help exclude known code/formula. Untagged content is still only
             // a best-effort projection, never a promise to reconstruct PDF semantics.
-            const structure = await page.getStructTree().catch(() => null);
+            const structure = await session.health.guard(page.getStructTree(), signal).catch(() => null);
             if (signal.aborted) throw abort();
             function walk(node: { role?: string; id?: string; children?: unknown[] }, inherited: PdfSemanticRole = 'prose', depth = 0) {
                 if (depth > 128 || roles.size > PDF_TEXT_LIMITS.pageItems) return;

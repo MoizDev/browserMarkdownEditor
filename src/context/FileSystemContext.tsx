@@ -1,5 +1,6 @@
 import { decodeDocumentText } from '../utils/diskVersion';
 import { fingerprintSnapshot } from '../utils/snapshotFingerprint';
+import { beginForegroundRead } from './vaultIndex/foreground';
 import type { ReadOnlyFileSnapshot } from '../types/reading';
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
@@ -886,6 +887,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * here, at the one funnel all three raisers pass through, not in any of them.
      */
     const switchInFlightRef = useRef(false);
+    const beforeRootChangeRef = useRef<(() => Promise<void>) | null>(null);
+    const registerBeforeRootChange = useCallback((callback: () => Promise<void>) => {
+        beforeRootChangeRef.current = callback;
+        return () => { if (beforeRootChangeRef.current === callback) beforeRootChangeRef.current = null; };
+    }, []);
 
     /**
      * True when `handle` names the folder that is already open, whatever object
@@ -1107,7 +1113,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             const tree = await loadTree(handle);
             if (!tree) return 'error';
 
+            const previousRoot = rootHandleRef.current;
             await set(IDB_KEY, handle);
+            try { if (previousRoot) await beforeRootChangeRef.current?.(); }
+            catch (error) { if (previousRoot) await set(IDB_KEY, previousRoot); throw error; }
             setPreviousVault(null);
             commitRoot(handle);
             commitTree(tree, handle);
@@ -1220,7 +1229,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // The three setters are synchronous and in one task, so React
             // batches them into a single render: `rootHandle` and `fileTree`
             // cannot be observed describing different vaults.
+            const previousRoot = rootHandleRef.current;
             await set(IDB_KEY, handle);
+            try { if (previousRoot) await beforeRootChangeRef.current?.(); }
+            catch (error) { if (previousRoot) await set(IDB_KEY, previousRoot); throw error; }
             setPreviousVault(null);
             commitRoot(handle);
             commitTree(tree, handle);
@@ -2117,18 +2129,24 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      *  over the RAW bytes (CRLF and all) — hashing the normalized text would make
      *  a text document and a PDF disagree about what "unchanged" means. */
     const readFileVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
-        const { file, buf } = await readSnapshot(fileHandle);
-        const version = await versionOfSnapshot(file, buf);
-        return { text: decodeDocumentText(buf).replace(/\r\n?/g, '\n'), version };
+        const endRead = beginForegroundRead();
+        try {
+            const { file, buf } = await readSnapshot(fileHandle);
+            const version = await versionOfSnapshot(file, buf);
+            return { text: decodeDocumentText(buf).replace(/\r\n?/g, '\n'), version };
+        } finally { endRead(); }
     }, []);
 
     const readFileSnapshot = useCallback(async (handle: FileSystemFileHandle, signal?: AbortSignal): Promise<ReadOnlyFileSnapshot> => {
         signal?.throwIfAborted();
         let blob: File;
-        try { blob = await handle.getFile(); } catch (error) {
-            if (!(error instanceof DOMException) || error.name !== 'NotReadableError') throw error;
-            blob = await handle.getFile();
-        }
+        const endRead = beginForegroundRead();
+        try {
+            try { blob = await handle.getFile(); } catch (error) {
+                if (!(error instanceof DOMException) || error.name !== 'NotReadableError') throw error;
+                blob = await handle.getFile();
+            }
+        } finally { endRead(); }
         signal?.throwIfAborted();
         const lifetime = new AbortController();
         const abort = () => lifetime.abort();
@@ -2153,8 +2171,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const readBytesVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
-        const { file, buf } = await readSnapshot(fileHandle);
-        return { bytes: new Uint8Array(buf), version: await versionOfSnapshot(file, buf) };
+        const endRead = beginForegroundRead();
+        try {
+            const { file, buf } = await readSnapshot(fileHandle);
+            return { bytes: new Uint8Array(buf), version: await versionOfSnapshot(file, buf) };
+        } finally { endRead(); }
     }, []);
 
     /**
@@ -2497,6 +2518,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         ensureVaultId,
         rootHandle,
         getVaultActivation,
+        registerBeforeRootChange,
         resolveVaultDir,
         resolveVaultFile,
         vaultDirExists,
@@ -2552,6 +2574,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }), [
         rootHandle,
         getVaultActivation,
+        registerBeforeRootChange,
         fileTree,
         isLoading,
         previousVault,

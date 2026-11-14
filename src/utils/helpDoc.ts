@@ -56,6 +56,8 @@ The left sidebar displays your vault's folder structure. You can click on any no
 
 **Auto-reveal current file** is an on/off switch, off to begin with. While it is on (its button stays shaded), whatever you switch to in the editor is found in the tree for you: the folders it is in open, and its row scrolls into view. It acts when you change notes (and when you turn it on, or come back to Files from Search) — never on its own after that, so a folder you close yourself stays closed.
 
+Tab to the file tree and use the **Up** and **Down** arrows to move between rows. **Right** opens a folder or moves into it; **Left** closes it or moves to its parent. **Enter** or **Space** opens a file or toggles a folder.
+
 **Expand all** opens every folder in the vault, at every depth. Once any folder is open the same button becomes **Collapse all**, which closes them all again.
 
 Notes are listed under the name you gave them, without the \`.md\` — \`Recipes.md\` on disk reads **Recipes** here, and in its tab. Everything else keeps its extension, so a PDF, a whiteboard and a notebook still say what they are. Hover a row to see its full path, extension and all. Renaming a note shows you the full \`.md\` name again, with just the part before the dot selected, so the extension is there to keep or change deliberately.
@@ -116,7 +118,7 @@ The **Search** tab at the top of the sidebar looks through every note in the
 vault — file names *and* the text inside them — and replaces the file tree while
 it is open; the **Files** tab beside it brings the tree back. Picking a result
 opens that note and scrolls to the line it matched, then puts the tree back. EPUBs, notebooks, drawings and PDFs match on their names only, since what is in
-them is not text.
+them is not text. Saved note changes update search results even after the note is closed; an open note's current text is searched before its saved version.
 
 ### Drag and Drop
 Files dropped on an area that does not handle them are refused rather than opened in a browser tab. Links dropped outside editable fields are likewise refused when no area handles them. Dropping a Markdown file onto an editable note can replace its text, as described below.
@@ -517,7 +519,7 @@ Every folder gets its own \`.Assets\`, and a note only ever shows pictures from 
 Your notes are still ordinary Markdown: what is actually written in the file is \`![[filename.png]]\`, and a resized picture records its width as \`![[filename.png|320]]\`. Anything else that reads Markdown sees exactly that. The editor simply spares you from typing it.
 
 ### Removing an Image
-Deleting a picture — with the bin, with \`Backspace\`, or just by deleting the text around it — also retires the image file: a second later it moves out of \`.Assets\` and into that folder's \`.Garbage\`, so your folders don't slowly fill up with pictures nothing shows any more.
+Deleting a picture — with the bin, with \`Backspace\`, or just by deleting the text around it — also retires the image file: a second later it moves out of \`.Assets\` and into that folder's \`.Garbage\`, so your folders don't slowly fill up with pictures nothing shows any more. A picture shared with another note or a board in the folder stays until neither needs it; if a board cannot be read, the app keeps the picture rather than guessing.
 
 Nothing is lost by this:
 - An image another note **in the same folder** still shows is left exactly where it is.

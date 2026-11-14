@@ -28,22 +28,26 @@ export interface TextClipboardAdapterOptions {
 /** Semantic text clipboard endpoint for Core's one DOM/OS clipboard controller. */
 export function createTextClipboardAdapter(options: TextClipboardAdapterOptions) {
     let disposed = false, serial = 0, pending: AbortController | null = null;
+    const owners = new WeakMap<CopySnapshot, BoardJobIdentity>();
     const cancel = () => { serial++; pending?.abort(); pending = null; };
     const current = (snapshot: CopySnapshot): boolean => {
-        const expected = snapshot.textSelection, actual = options.editor.clipboardContext();
-        return !disposed && !!expected && !!actual && actual.revision === snapshot.revision && actual.node.id === expected.node
+        const owner = owners.get(snapshot), expected = snapshot.textSelection, actual = options.editor.clipboardContext();
+        return !disposed && !!owner && options.isCurrent(owner) && !!expected && !!actual && actual.revision === snapshot.revision && actual.node.id === expected.node
             && actual.selection.anchor === expected.anchor && actual.selection.focus === expected.focus;
     };
     return {
         /** Prime h2's real clipboard cache; Core then calls its copyEvent/copyMenu. */
         prepareCopy(): CopySnapshot | null {
             if (disposed) return null;
+            // A failed capture must not leave the previous range available to an OS event.
+            options.copy.setSelection(null);
             const range = options.editor.clipboardSelection();
-            if (!range) { options.copy.setSelection(null); return null; }
-            const host = options.copyHost();
-            if (host.doc.rev !== range.revision || !options.isCurrent(options.identity())) { options.copy.setSelection(null); return null; }
+            if (!range) return null;
+            const identity = { ...options.identity() }, host = options.copyHost();
+            if (host.doc.rev !== range.revision || !options.isCurrent(identity)) return null;
             const snapshot = snapshotCopiedTextRange(host, range.node, range.selection, range.fragment, range.bounds);
-            if (!current(snapshot)) { for (const lease of snapshot.leases) lease.release(); options.copy.setSelection(null); return null; }
+            owners.set(snapshot, identity);
+            if (!current(snapshot)) { for (const lease of snapshot.leases) lease.release(); return null; }
             options.copy.setSelection(snapshot);
             return snapshot;
         },
@@ -85,6 +89,8 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                     || after.revision !== owner.revision || after.selection.anchor !== owner.selection.anchor || after.selection.focus !== owner.selection.focus) return false;
                 if (content.kind === 'empty') return false;
                 if (content.kind === 'text') return options.editor.pasteText(content.fragment);
+                // The board paste takes ownership before ending this editor; closing it may dispose this adapter.
+                if (pending === controller) pending = null;
                 options.editor.manager.close();
                 await options.pasteBoard(input, intent, combined);
                 combined.throwIfAborted();
@@ -93,5 +99,30 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
         },
         cancel,
         dispose() { if (!disposed) { disposed = true; cancel(); } },
+    };
+}
+
+export interface TextClipboardDocumentOwner {
+    readonly clipboardCopy: ClipboardCopy;
+    bindTextAuthority(authority: {
+        isCurrent(snapshot: CopySnapshot): boolean;
+        prepareCut(snapshot: CopySnapshot): { commit(): void; release(): void };
+    }): () => void;
+}
+
+/** Borrow the document owner's one C2 instance and return its text authority with one lifetime. */
+export function bindTextClipboardAdapter(owner: TextClipboardDocumentOwner, options: Omit<TextClipboardAdapterOptions, 'copy'>) {
+    const adapter = createTextClipboardAdapter({ ...options, copy: owner.clipboardCopy });
+    let unbind: () => void;
+    try { unbind = owner.bindTextAuthority(adapter); }
+    catch (error) { adapter.dispose(); throw error; }
+    let disposed = false;
+    return {
+        ...adapter,
+        dispose() {
+            if (disposed) return;
+            disposed = true;
+            try { adapter.dispose(); } finally { unbind(); }
+        },
     };
 }

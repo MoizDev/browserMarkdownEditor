@@ -1,6 +1,7 @@
 import affUrl from '../../../../node_modules/dictionary-en/index.aff?url';
 import dicUrl from '../../../../node_modules/dictionary-en/index.dic?url';
 import type { Misspelling } from './menu';
+import { normalizeUserDictionary } from './dictionary';
 
 type Payload = { kind: 'init'; aff: string; dic: string; custom: readonly string[] }
     | { kind: 'check'; text: string }
@@ -20,16 +21,6 @@ function misspellings(value: unknown, text: string): readonly Misspelling[] {
     return result;
 }
 
-function clampDictionary(input: readonly string[]): readonly string[] {
-    const words: string[] = [], seen = new Set<string>();
-    for (const word of input) {
-        if (typeof word !== 'string' || !word.length || word.length > 64 || !/^[\p{L}\p{M}'’-]+$/u.test(word) || seen.has(word)) continue;
-        seen.add(word); words.push(word);
-        if (words.length === 10_000) break;
-    }
-    return words;
-}
-
 /** Loaded on first text edit; dictionaries survive worker failure without another fetch. */
 export class BoardSpellClient {
     private worker: Worker | null = null;
@@ -43,7 +34,7 @@ export class BoardSpellClient {
     private debounce: ReturnType<typeof setTimeout> | null = null;
     private generation = 0;
 
-    constructor(custom: readonly string[]) { this.custom = clampDictionary(custom); }
+    constructor(custom: readonly string[]) { this.custom = normalizeUserDictionary(custom); }
 
     private request<T>(payload: Payload, deadline = 0, terminateOnDeadline = false): Promise<T> {
         const worker = this.worker;
@@ -55,7 +46,8 @@ export class BoardSpellClient {
                 if (this.pending.delete(id)) {
                     const error = new DOMException('Spelling deadline exceeded', 'TimeoutError');
                     reject(error);
-                    if (terminateOnDeadline) this.failed(worker, error);
+                    if (terminateOnDeadline) this.failed(worker, payload.kind === 'suggest'
+                        ? new DOMException('Spelling worker restarted after a slow suggestion', 'AbortError') : error);
                 }
             }, deadline);
             this.pending.set(id, pending);
@@ -114,8 +106,10 @@ export class BoardSpellClient {
     }
 
     async suggest(word: string): Promise<readonly string[]> {
+        if (!word || word.length > 64) return [];
         await this.start();
-        const value = await this.request<unknown>({ kind: 'suggest', word }, 250);
+        // nspell suggestions are synchronous in the worker; a timed-out call otherwise blocks every later check.
+        const value = await this.request<unknown>({ kind: 'suggest', word }, 250, true);
         if (!Array.isArray(value) || value.length > 5 || value.some(item => typeof item !== 'string' || item.length > 256))
             throw new Error('Invalid spelling suggestion response');
         return value;
@@ -123,7 +117,7 @@ export class BoardSpellClient {
 
     async setDictionary(words: readonly string[]): Promise<void> {
         this.cancelCheck();
-        this.custom = clampDictionary(words);
+        this.custom = normalizeUserDictionary(words);
         const worker = this.worker;
         if (!this.ready || !worker) return;
         await this.ready;
@@ -150,7 +144,11 @@ export class BoardSpellClient {
                 return this.request<unknown>({ kind: 'check', text }, 10_000, true);
             }).then(value => {
                 if (value !== null && !this.disposed && generation === this.generation) publish(misspellings(value, text));
-            }).catch(reason => { if (!this.disposed && generation === this.generation) error(reason); });
+            }).catch(reason => {
+                if (this.disposed || generation !== this.generation) return;
+                if (reason instanceof DOMException && reason.name === 'AbortError' && !this.worker) this.check(text, publish, error, 0);
+                else error(reason);
+            });
         }, Number.isFinite(delay) ? Math.max(0, Math.min(delay, 10_000)) : 300);
     }
 

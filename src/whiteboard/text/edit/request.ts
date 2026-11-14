@@ -29,7 +29,7 @@ export const editableTextRequest: EditableTextRequest = (node, text, options) =>
         const block = text.blocks[0], run = block?.runs[0];
         const simple = text.blocks.length === 1 && !!block && !!run && block.kind === 'p' && block.level === 0 && block.dir === 'auto'
             && block.start === undefined && block.runs.length === 1 && run.text === node.name
-            && !block.tail && !run.tail && Object.keys(run.marks).length === 0;
+            && !block.tail && !block.carriers?.length && !run.tail && Object.keys(run.marks).length === 0;
         if (simple) {
             const cached = frameTitles.get(node);
             if (cached) text = cached; else frameTitles.set(node, text);

@@ -387,15 +387,6 @@ export class TextEditSession {
         };
     }
 
-    deleteSelection(): boolean {
-        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
-        if (from === to) return false;
-        this.typingHistory.close();
-        this.services.history.open('Cut text');
-        try { const deleted = this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary'); this.host.sync(); return deleted; }
-        finally { this.services.history.close(); }
-    }
-
     replaceSelection(fragment: RichFragment): boolean {
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
         const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);

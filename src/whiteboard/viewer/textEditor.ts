@@ -28,6 +28,8 @@ import { editableTextRequest } from '../text/edit/request';
 import type { FaceTable, TextLayoutRequest, TextPaint } from '../text/paint';
 import type { BoardSpellClient } from '../text/spell/client';
 import { SpellingMenuRequest, type Misspelling, type SpellMenuRows } from '../text/spell/menu';
+import { validUserWord } from '../text/spell/dictionary';
+import { spellingAtOffset, visibleSpellingPaths } from '../text/spell/visible';
 import { EMPTY_RICH_TEXT, sliceRichText, spliceRichText, type RichText } from '../text/richText';
 import { insertionFragment, linkRangeAt, plain } from '../text/richOperations';
 import type { ViewerEngine } from './types';
@@ -138,13 +140,13 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         spellingMenu?.cancel(); spellingMenu = null;
         const editor = manager.current?.editor, node = active;
         if (!editor || !node) { options.ui.menu(x, y); return; }
-        const offset = editor.offsetAtClient(x, y), range = misspellings.find(item => offset >= item.from && offset <= item.to);
+        const offset = editor.offsetAtClient(x, y), range = spellingAtOffset(misspellings, offset, true);
         if (!range) { options.ui.menu(x, y); return; }
         const revision = doc.rev;
         const request = new SpellingMenuRequest({
             revision: () => doc.rev,
             suggest: word => spell ? spell.suggest(word) : Promise.resolve([]),
-            canAdd: word => word.length <= 64 && /^[\p{L}\p{M}'’-]+$/u.test(word),
+            canAdd: validUserWord,
             add: word => { options.spelling.add(word); manager.current?.editor.focus(); },
             replace: (match, suggestion) => { replaceMisspelling({ ...match, revision, node }, suggestion); },
             open: rows => options.ui.spellingMenu(x, y, rows),
@@ -389,13 +391,13 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         svg.replaceChildren(); svg.setAttribute('viewBox', `0 0 ${frame.view.viewport.width} ${frame.view.viewport.height}`);
         const group = document.createElementNS(svgNS, 'g'), matrix = compose(cameraTransform(frame.view.camera), currentWorld);
         group.setAttribute('transform', `matrix(${matrix.join(' ')})`); svg.append(group);
-        for (const range of misspellings) for (const box of manager.current.editor.rangeRects(range.from, range.to)) {
+        const spelling: string[] = []; let spellingStroke = 0;
+        for (const item of visibleSpellingPaths(paint, misspellings, matrix, frame.view.viewport,
+            (from, to) => manager.current!.editor.rangeRects(from, to))) { spelling.push(item.d); spellingStroke = item.strokeWidth; }
+        if (spelling.length) {
             const path = document.createElementNS(svgNS, 'path');
-            const amplitude = 1 / frame.view.camera.z, step = 2 / frame.view.camera.z, y = box.y + box.height - amplitude;
-            let d = `M ${box.x} ${y}`;
-            for (let x = box.x + step, n = 0; x < box.x + box.width; x += step, n++) d += ` L ${x} ${y + (n % 2 ? -amplitude : amplitude)}`;
-            path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#e34d4d');
-            path.setAttribute('stroke-width', String(1 / frame.view.camera.z)); group.append(path);
+            path.setAttribute('d', spelling.join(' ')); path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#e34d4d');
+            path.setAttribute('stroke-width', String(spellingStroke)); group.append(path);
         }
         const selection = manager.current.editor.getSelection(), edited = active && doc.nodes.get(active);
         const fallbackSwatch = edited?.kind === 'text' ? edited.color
@@ -484,22 +486,17 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             return editor.applyLink(href, context.target ?? context.selection);
         },
         pasteText(fragment: RichText) { return manager.current?.editor.replaceSelection(fragment) ?? false; },
-        cutText(node: NodeId, revision: number, selection: EditSelection) {
-            const editor = manager.current?.editor, current = editor?.getSelection();
-            if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus) return false;
-            return editor.deleteSelection();
-        },
         prepareTextCut(node: NodeId, revision: number, selection: EditSelection) {
             const editor = manager.current?.editor, current = editor?.getSelection();
             if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus)
                 throw new Error('Text selection changed; cut again');
             return editor.prepareCut();
         },
-        spellingAt(offset: number) { return misspellings.find(range => offset >= range.from && offset < range.to) ?? null; },
+        spellingAt(offset: number) { return spellingAtOffset(misspellings, offset); },
         spellingAtClient(x: number, y: number) {
             const editor = manager.current?.editor;
             if (!editor || !active) return null;
-            const offset = editor.offsetAtClient(x, y), range = misspellings.find(item => offset >= item.from && offset < item.to);
+            const offset = editor.offsetAtClient(x, y), range = spellingAtOffset(misspellings, offset);
             return range ? { ...range, revision: doc.rev, node: active } : null;
         },
         async spellingSuggestions(word: string) { return spell ? spell.suggest(word) : []; },

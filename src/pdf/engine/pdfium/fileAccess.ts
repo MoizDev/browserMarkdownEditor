@@ -27,13 +27,17 @@ export function createPdfiumFileAccess(runtime: PdfiumRuntime, source: ByteSourc
                 const heap = runtime.HEAPU8;
                 if (disposed || position > source.size || size > source.size - position ||
                     destination > heap.byteLength || size > heap.byteLength - destination) throw new Error('Invalid PDFium source range');
-                const bytes = source.read(position, size);
-                if (!(bytes instanceof Uint8Array) || bytes.byteLength !== size) throw new Error('Short PDF source read');
-                // read() may grow the engine heap through application callbacks;
-                // never retain the old view across it.
-                const current = runtime.HEAPU8;
-                if (destination > current.byteLength || size > current.byteLength - destination) throw new Error('Invalid PDFium destination');
-                current.set(bytes, destination);
+                // PDFium may ask for more than the source cache's bounded read.
+                // Reacquire the heap after every read, which may grow memory.
+                for (let offset = 0; offset < size;) {
+                    const length = Math.min(4 * 1024 * 1024, size - offset);
+                    const bytes = source.read(position + offset, length);
+                    if (!(bytes instanceof Uint8Array) || bytes.byteLength !== length) throw new Error('Short PDF source read');
+                    const current = runtime.HEAPU8;
+                    if (destination + offset > current.byteLength || length > current.byteLength - destination - offset) throw new Error('Invalid PDFium destination');
+                    current.set(bytes, destination + offset);
+                    offset += length;
+                }
                 return 1;
             } catch {
                 failed = true;

@@ -69,7 +69,6 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         channel.selectionChanged();
     });
     const queue = createSessionGestureQueue({ owner, isCurrent: options.isCurrent, isReadOnly: () => recovering || !!readonlyReason() });
-    let history: History;
     const applyController = createApplyController(doc, samples, {
         history: (applied, transaction) => {
             try { history.record(applied, transaction); }
@@ -94,7 +93,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         change: applied => channel.record(applied),
         reportError: options.onFailure,
     }, options.geometry, media);
-    history = new History({
+    const history = new History({
         snapshot: options.historySnapshot,
         switchSheet: sheet => selection.setSheet(sheet),
         sheetExists: sheet => doc.sheets.has(sheet),

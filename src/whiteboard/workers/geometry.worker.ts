@@ -1,5 +1,5 @@
 import { serve } from '../../platform/workers';
 import { boardHandlers } from './protocol';
-import { buildPacked } from './packedHandler';
+import { buildPackedWithMemory } from './geometryHandler';
 
-serve({ protocol: 1, buildId: 'whiteboard-geometry-1', handlers: boardHandlers({ buildPacked }) });
+serve({ protocol: 1, buildId: 'whiteboard-geometry-1', handlers: boardHandlers({ buildPacked: buildPackedWithMemory }) });

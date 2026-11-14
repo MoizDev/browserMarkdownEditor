@@ -5,7 +5,7 @@ import type { NodeId } from '../model/ids';
 import type { ExtBag, RawJson } from '../model/json';
 import type { MediaEntry, MediaId } from '../model/media';
 import type { NodeRecord } from '../model/nodes';
-import { scanRawMedia, visitExtRaw, visitHostRaw, visitNodeRaw, visitPreservedRaw } from '../model/rawMedia';
+import { extRawValues, hostRawValues, nodeRawValues, preservedRawValues, scanRawMedia, scanRawMediaIncremental } from '../model/rawMedia';
 import type { UiBlock } from '../model/styles';
 import type { SavedView } from './encode';
 import { hasNativeMarker, hasNativeMarkerIncremental, JsonReadError, parseJson, parseJsonIncremental } from './jsonRead';
@@ -120,21 +120,38 @@ async function byteUnits(text: string, start: number, end: number, cooperate?: (
     }
     return bytes;
 }
-function retainedMedia(draft: Pick<ReadDraft, 'input'>): ReadonlyMap<MediaId, number> {
+async function retainedMedia(draft: Pick<ReadDraft, 'input'>, cooperate?: () => Promise<void>): Promise<ReadonlyMap<MediaId, number>> {
     const counts = new Map<MediaId, number>();
     const count = (id: MediaId) => { counts.set(id, (counts.get(id) ?? 0) + 1); };
-    const scan = (raw: RawJson) => scanRawMedia(raw, count);
+    let steps = 0;
+    async function scan(raws: Iterable<RawJson | null>, excluded?: MediaId): Promise<void> {
+        const visit = excluded ? (id: MediaId) => { if (id !== excluded) count(id); } : count;
+        for (const raw of raws) {
+            if (raw !== null) {
+                if (cooperate) await scanRawMediaIncremental(raw, visit, cooperate);
+                else scanRawMedia(raw, visit);
+            }
+            if (cooperate && (++steps & 255) === 0) await cooperate();
+        }
+    }
     const input = draft.input;
-    for (const node of input.nodes ?? []) visitNodeRaw(node, scan);
-    visitExtRaw(input.ui.ext, scan);
-    visitExtRaw(input.view.ext, scan);
-    for (const sheet of input.sheets) visitExtRaw(sheet.ext, scan);
+    for (const node of input.nodes ?? []) {
+        await scan(nodeRawValues(node));
+        if (cooperate && (++steps & 255) === 0) await cooperate();
+    }
+    await scan(extRawValues(input.ui.ext));
+    await scan(extRawValues(input.view.ext));
+    for (const sheet of input.sheets) {
+        await scan(extRawValues(sheet.ext));
+        if (cooperate && (++steps & 255) === 0) await cooperate();
+    }
     for (const entry of input.media ?? []) {
         // R-W40: its own metadata cannot keep a now-unreferenced media entry alive.
-        visitExtRaw(entry.ext, raw => scanRawMedia(raw, id => { if (id !== entry.id) count(id); }));
+        await scan(extRawValues(entry.ext), entry.id);
+        if (cooperate && (++steps & 255) === 0) await cooperate();
     }
-    visitHostRaw(input.host, scan);
-    visitPreservedRaw(input.preserved, scan);
+    await scan(hostRawValues(input.host));
+    await scan(preservedRawValues(input.preserved));
     return counts;
 }
 
@@ -231,7 +248,7 @@ class Records {
             ...(record.category === 'node' && record.bounds ? { nodeBounds: record.bounds } : {}), reencode: record.reencode || reformatted
         });
     }
-    finish(closed: boolean): ReadDraft | null {
+    async finish(closed: boolean): Promise<ReadDraft | null> {
         if (!closed) this.problem('syntax', 'Native envelope is incomplete; recovered content is read-only');
         if (!this.endSeen) this.problem('syntax', 'Native input is missing its final end record');
         if (!this.header) return null;
@@ -258,7 +275,7 @@ class Records {
             input, sources: this.sources, unmapped: this.unmapped, coldBounds: this.coldBounds,
             ...(this.savedView ? { savedView: this.savedView } : {})
         };
-        input.preservedMediaRefs = new Map(retainedMedia(draft));
+        input.preservedMediaRefs = new Map(await retainedMedia(draft, this.options.cooperate));
         return draft;
     }
 }
@@ -449,6 +466,6 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
     }
     state.fallback = null;
     if (!native) return result('other', null, ioComplete);
-    const draft = records.finish(closed && ioComplete);
+    const draft = await records.finish(closed && ioComplete);
     return result('native', draft, closed && ioComplete && records.endSeen && records.countValid);
 }

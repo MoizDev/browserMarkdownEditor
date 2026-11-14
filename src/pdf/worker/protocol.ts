@@ -37,7 +37,9 @@ export function parsePdfDocKey(value: string): PdfDocumentIdentity {
 }
 
 export interface EngineInitArgs {
-    wasm: WebAssembly.Module;
+    /** Pinned app asset. Opaque worker fetches with SRI/CORS/omit and compiles there; never a Module in C5. */
+    wasmUrl: string;
+    wasmBytes: number;
     buildId: string;
     artifactSha256: string;
     assetBase: string;

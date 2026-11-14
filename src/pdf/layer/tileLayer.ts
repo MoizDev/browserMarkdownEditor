@@ -2,6 +2,7 @@ import { pageAt, tileKeyString } from '../../platform/render';
 import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, MirrorView, Rect, TextureHandle, ViewState } from '../../platform/render';
 import type { PdfSessionMirrors } from './tileMirror';
 import { covers, intersects } from './coverage';
+import { PdfTileCache } from './tileCache';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 
@@ -58,7 +59,7 @@ function project(box: Readonly<Rect>, view: ViewState): Rect {
  * come from the shared host. Waiting for a worker alone is not frame work.
  */
 export class PdfTileLayer implements Layer {
-    private readonly entries = new Map<string, Entry>();
+    private readonly entries = new PdfTileCache<Entry>();
     private readonly failed = new Set<string>();
     private readonly retiring = new Set<Entry>();
     private desired = new Set<string>();
@@ -144,7 +145,7 @@ export class PdfTileLayer implements Layer {
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);
             if (!lease) {
-                this.evictUnneeded(input.viewport);
+                this.evictUnneeded(input.viewport, bytes);
                 lease = this.host.allocator.cpu.reserve(bytes);
             }
             if (!lease) continue;
@@ -381,11 +382,16 @@ export class PdfTileLayer implements Layer {
             width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, view) };
     }
 
-    private evictUnneeded(viewport: Readonly<Rect>): void {
-        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key) &&
-            !intersects(rect(entry.request), viewport))
-            .sort((a, b) => a[1].used - b[1].used);
-        for (const [key, entry] of candidates) this.remove(key, entry);
+    private evictUnneeded(viewport: Readonly<Rect>, neededBytes: number): void {
+        const candidates = this.entries.evictable(this.desired, viewport, entry => rect(entry.request), entry => !!entry.bitmap);
+        candidates.sort((a, b) => Number(a[1].request.level === 'low') - Number(b[1].request.level === 'low') ||
+            a[1].used - b[1].used);
+        let freed = 0;
+        for (const [key, entry] of candidates) {
+            freed += entry.lease.bytes;
+            this.remove(key, entry);
+            if (freed >= neededBytes) break;
+        }
     }
 
     private remove(key: string, entry: Entry): void {

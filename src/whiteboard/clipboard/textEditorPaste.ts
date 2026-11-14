@@ -76,14 +76,16 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
     }
     if (classification.kind === 'html') {
         const projection = await options.html.projectHTML(classification.html, context.signal);
+        let held = true;
+        const release = () => { if (held) { held = false; projection.release(); } };
         try {
             check();
-            if (projection.dataImages.length) { projection.release(); return await board(); }
+            if (projection.dataImages.length) { release(); return await board(); }
             if (projection.refusedImages.length) options.noticeRefused(projection.refusedImages);
             const nonempty = projection.rich.blocks.some(block => block.runs.some(run => run.text.length > 0)) || projection.rich.blocks.length > 1;
             if (nonempty) { check(); options.editor.replaceSelection(projection.rich); }
             return 'handled';
-        } finally { projection.release(); }
+        } finally { release(); }
     }
     if (classification.kind === 'private') {
         const decoded = await decodeBoardClipboard({ encoded: new Blob([classification.encoded], { type: 'text/plain' }),

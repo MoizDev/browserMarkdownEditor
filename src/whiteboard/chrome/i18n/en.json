@@ -131,6 +131,7 @@
     "chrome.light": "Light",
     "chrome.system": "System",
     "chrome.language": "Language",
+    "chrome.print": "Print",
     "chrome.uploadMedia": "Upload media…",
     "chrome.insertEmbed": "Insert embed…",
     "chrome.unlockAll": "Unlock all",

@@ -125,6 +125,7 @@
     "chrome.light": "ライト",
     "chrome.system": "システム",
     "chrome.language": "言語",
+    "chrome.print": "印刷",
     "chrome.uploadMedia": "メディアをアップロード…",
     "chrome.insertEmbed": "埋め込みを挿入…",
     "chrome.unlockAll": "すべてのロックを解除する",

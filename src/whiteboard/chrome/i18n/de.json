@@ -190,6 +190,7 @@
     "chrome.light": "Licht",
     "chrome.system": "System",
     "chrome.language": "Sprache",
+    "chrome.print": "Drucken",
     "chrome.uploadMedia": "Medien hochladen…",
     "chrome.insertEmbed": "Einbettung einfügen…",
     "chrome.unlockAll": "Schalte alle frei",

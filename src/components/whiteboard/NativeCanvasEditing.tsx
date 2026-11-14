@@ -21,6 +21,7 @@ import { createNativeKeyCommands, nativeActionShortcut, nativeCommandShortcut } 
 import { createNativeEditingKeyboard } from './nativeEditingKeyboard';
 import type { NativeEditingCapabilities, NativeEditingCapabilityFactory } from './nativeEditingCapabilities';
 import { createNativeLinkOperations } from './nativeLinkOperations';
+import { createNativePrint } from './nativePrint';
 import type { createNativeViewLease, NativeViewLease } from './nativeViewLease';
 import { documentClipboard, type NativeClipboardService } from './useNativeClipboard';
 import { useNativeBoardDialogs } from './useNativeBoardDialogs';
@@ -170,11 +171,20 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const link = useMemo(() => createNativeLinkOperations({ runtime, lease, current, canWrite,
         requestText: dialogs.requestText, notice: setNotice }), [runtime, lease, current, canWrite, dialogs.requestText, setNotice]);
     useLayoutEffect(() => { linksRef.current = link; return () => { if (linksRef.current === link) linksRef.current = null; }; }, [linksRef, link]);
+    // Print pins this board's revision when it is asked; the instance owns only the print in flight.
+    const printer = useMemo(() => createNativePrint({ runtime, memory: clipboard.memory, current,
+        readMedia: async (entry, signal) => {
+            const blob = await clipboard.readMedia(entry, signal);
+            if (!blob) throw new Error('A board media item is unavailable for printing.');
+            return blob;
+        }, notice: setNotice, onError: report }), [runtime, clipboard, current, setNotice, report]);
+    useEffect(() => () => printer.dispose(), [printer]);
+    const runPrint = useCallback(() => printer.run(), [printer]);
     const [owned, setOwned] = useState<{ camera: ReturnType<typeof createNativeCameraOperations>;
         commands: ReturnType<typeof createNativeBoardOperations> } | null>(null);
     useEffect(() => {
         const camera = createNativeCameraOperations({ runtime, lease, current, signal, minimapVisible, setMinimapVisible });
-        const actions = createNativeBoardActions({ lease, capabilities, camera, shortcutsAvailable, openShortcuts });
+        const actions = createNativeBoardActions({ lease, capabilities, camera, shortcutsAvailable, openShortcuts, print: runPrint });
         const labels = localizeBoardChrome((key, values) => translateBoard(language.getSnapshot().table, key, values));
         const commands = createNativeBoardOperations({ runtime, lease, current, canWrite,
             frameName: () => 'Frame', flatten: capabilities.flatten, editLink: link.editLink, actions,
@@ -183,20 +193,20 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const value = { camera, commands }; setOwned(value);
         return () => setOwned(previous => previous === value ? null : previous);
     }, [runtime, lease, current, signal, minimapVisible, setMinimapVisible, capabilities, shortcutsAvailable, openShortcuts,
-        language, canWrite, link, mac, setNotice, report]);
+        language, canWrite, link, mac, setNotice, report, runPrint]);
     useLayoutEffect(() => {
         if (!owned) return;
         const { commands, camera } = owned;
         const extra = createNativeEditingKeyboard({ runtime, lease, commands, camera, preferences: clipboard.preferences,
             openShortcuts: () => { if (!shortcutRef.current) return false; shortcutRef.current(); return true; },
-            current, canWrite, report });
+            print: runPrint, current, canWrite, report });
         const keys = createNativeKeyCommands(commands, id => extra(id)); commandRef.current = keys.run;
         const openMenu = createNativeBoardContextMenu({ runtime, commands, language, preferences: clipboard.preferences,
             embed: () => embedPort ? embedControllerRef.current : null, current, canWrite, notice: setNotice });
         contextMenuRef.current = openMenu;
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };
-    }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice]);
+    }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice, runPrint]);
     // Readiness is what was actually registered, not invented: each setter fires from the real registration.
     const registerShortcuts = useCallback((open: () => void) => {
         shortcutRef.current = open; setShortcutsReady(true);

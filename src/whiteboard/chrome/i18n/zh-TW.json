@@ -125,6 +125,7 @@
     "chrome.light": "光",
     "chrome.system": "系統",
     "chrome.language": "語言",
+    "chrome.print": "列印",
     "chrome.uploadMedia": "上傳媒體...",
     "chrome.insertEmbed": "插入嵌入...",
     "chrome.unlockAll": "全部解鎖",

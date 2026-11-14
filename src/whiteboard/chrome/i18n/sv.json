@@ -125,6 +125,7 @@
     "chrome.light": "Ljus",
     "chrome.system": "Styrelsestyrning: System",
     "chrome.language": "Språk",
+    "chrome.print": "Skriv ut",
     "chrome.uploadMedia": "Ladda upp media...",
     "chrome.insertEmbed": "Infoga inbäddning...",
     "chrome.unlockAll": "Lås upp alla",

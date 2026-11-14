@@ -125,6 +125,7 @@
     "chrome.light": "فاتح",
     "chrome.system": "النظام",
     "chrome.language": "اللغة",
+    "chrome.print": "طباعة",
     "chrome.uploadMedia": "رفع وسائط…",
     "chrome.insertEmbed": "إدراج محتوى مضمن…",
     "chrome.unlockAll": "إلغاء قفل الكل",

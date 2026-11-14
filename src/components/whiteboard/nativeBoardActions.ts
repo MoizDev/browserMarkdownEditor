@@ -12,6 +12,8 @@ export function createNativeBoardActions(options: {
     readonly camera: ReturnType<typeof createNativeCameraOperations>;
     readonly shortcutsAvailable: () => boolean;
     readonly openShortcuts: () => void;
+    /** Starts one print of the pinned board; false when the board is not current or already printing. */
+    readonly print: () => boolean;
 }): Omit<Record<MainAction, NativeCommandOperation>, 'unlockAll'> {
     const { lease, capabilities, camera } = options;
     return { ...camera,
@@ -31,6 +33,10 @@ export function createNativeBoardActions(options: {
         exportSvg: {
             state: () => lease.editing?.getBinding() ? { enabled: true } : { enabled: false, reason: 'The board input is not attached' },
             run() { const binding = lease.editing?.getBinding(); if (!binding) throw new Error('The board input is not attached'); return binding.commands.exportSvg('menu'); },
+        },
+        print: {
+            state: () => lease.isCurrent() ? { enabled: true } : { enabled: false, reason: 'The board is not open' },
+            run() { if (!options.print()) throw new Error('The board is not ready to print'); },
         },
         insertEmbed: capabilities.insertEmbed,
         convertToBookmark: capabilities.convertToBookmark,

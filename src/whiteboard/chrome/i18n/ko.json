@@ -125,6 +125,7 @@
     "chrome.light": "빛",
     "chrome.system": "시스템",
     "chrome.language": "언어",
+    "chrome.print": "인쇄",
     "chrome.uploadMedia": "미디어 업로드…",
     "chrome.insertEmbed": "삽입 삽입…",
     "chrome.unlockAll": "모두 잠금해제",

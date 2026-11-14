@@ -125,6 +125,7 @@
     "chrome.light": "Kevyt",
     "chrome.system": "Järjestelmä",
     "chrome.language": "Kieli",
+    "chrome.print": "Tulosta",
     "chrome.uploadMedia": "Lataa mediaa…",
     "chrome.insertEmbed": "Lisää upotus…",
     "chrome.unlockAll": "Avaa kaikki",

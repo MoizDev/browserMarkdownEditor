@@ -251,6 +251,7 @@
     "chrome.light": "Clair",
     "chrome.system": "Système",
     "chrome.language": "Langue",
+    "chrome.print": "Imprimer",
     "chrome.uploadMedia": "Importer un média…",
     "chrome.insertEmbed": "Insérer un contenu intégré…",
     "chrome.unlockAll": "Tout déverrouiller",

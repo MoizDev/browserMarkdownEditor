@@ -125,6 +125,7 @@
     "chrome.light": "Свет",
     "chrome.system": "Система",
     "chrome.language": "Язык",
+    "chrome.print": "Печать",
     "chrome.uploadMedia": "Загрузить медиа…",
     "chrome.insertEmbed": "Вставить…",
     "chrome.unlockAll": "Разблокировать все",

@@ -123,7 +123,6 @@ export function createBoardRenderServices(options: {
     const textIds = new Set<NodeId>();
     const changeScopes = new Set<ReadonlyMap<NodeId, Prepared>>();
     let serial = 0, disposed = false, ownerReleased = false, holders = 1;
-    let futurePaintToken: RenderToken = Object.freeze({ ...options.token });
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
     const text = createBoardTextGeometry({ fonts: options.fonts, cooperate: options.cooperate, onFontEpoch() {
         for (const id of textIds) cached.delete(id);
@@ -287,9 +286,9 @@ export function createBoardRenderServices(options: {
             return { minX: x, minY: y, maxX: x + w, maxY: y + h, maxPressure: summary.maxPressure };
         },
     };
-    const paint = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>, token?: RenderToken) => {
+    const paint = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>) => {
         const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
-        return prepareScenePaintSource(doc, token ?? futurePaintToken, request, {
+        return prepareScenePaintSource(doc, options.token, request, {
             cooperate: options.cooperate, ...(orderedIds ? { orderedIds } : {}),
             // Physical-page capture owns its final clip. A stored pg is an
             // origin, not a certificate that overflowing geometry is invisible.
@@ -305,9 +304,9 @@ export function createBoardRenderServices(options: {
             },
         }, signal);
     };
-    const paintNow = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>, token?: RenderToken) => {
+    const paintNow = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>) => {
         const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
-        return prepareScenePaintSourceNow(doc, token ?? futurePaintToken, request, {
+        return prepareScenePaintSourceNow(doc, options.token, request, {
             ...(orderedIds ? { orderedIds } : {}), intersectsPage: () => true,
             resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
@@ -458,17 +457,6 @@ export function createBoardRenderServices(options: {
     });
     return {
         text, bounds, changeGeometry,
-        stagePaintSourceToken(token: RenderToken): () => void {
-            const current = futurePaintToken;
-            if (disposed || !token || typeof token.documentId !== 'string' || !token.documentId || token.documentId !== current.documentId ||
-                !Number.isSafeInteger(token.session) || token.session < 0 || token.session !== current.session ||
-                !Number.isSafeInteger(token.vaultEpoch) || token.vaultEpoch < 0 || token.vaultEpoch !== current.vaultEpoch ||
-                !Number.isSafeInteger(token.bytesGeneration) || token.bytesGeneration < 0 || token.bytesGeneration < current.bytesGeneration) {
-                throw new Error('Invalid renderer paint source rebind');
-            }
-            const next: RenderToken = Object.freeze({ ...token });
-            return () => { if (!disposed && next.bytesGeneration >= futurePaintToken.bytesGeneration) futurePaintToken = next; };
-        },
         /** A save/export pin may finish after its App session closes. Releasing
          * the runtime owner must not invalidate that pin's geometry/fonts. */
         retainRenderer() {
@@ -557,7 +545,7 @@ export function createBoardRenderServices(options: {
         },
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
         async realize(node: Readonly<Node>, signal: AbortSignal) { return (await prepare(node, options.doc, signal)).bounds; },
-        preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, token?: RenderToken) => paint(doc, request, signal, undefined, token),
+        preparePaint: paint,
         prepareOverlay(doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId>, signal: AbortSignal) {
             return paint(doc, request, signal, ids);
         },

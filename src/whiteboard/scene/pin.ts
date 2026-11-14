@@ -37,7 +37,7 @@ export function createSceneSnapshot(options: {
     metadata: SceneMetadata;
     bounds?: ReadonlyMap<NodeId, SceneBounds>;
     renderer?: { release(): void };
-    prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, token?: RenderToken) => Promise<PaintNodeSource>;
+    prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal) => Promise<PaintNodeSource>;
     cooperate?: () => Promise<void>;
     onError?: (error: unknown) => void;
 }): SceneSnapshot {
@@ -87,7 +87,7 @@ export function createSceneSnapshot(options: {
             const work = (async () => {
                 const doc = await document();
                 check();
-                const source = await options.prepare(doc, pinnedRequest, controller.signal, token);
+                const source = await options.prepare(doc, pinnedRequest, controller.signal);
                 check();
                 if (!source || source.sceneRevision !== revision || !sameToken(source.token, token)) throw new TypeError('Paint source does not match scene snapshot');
                 return { sourceDoc: doc, token, sceneRevision: revision, sensitiveNodes: source.sensitiveNodes, nodeCount: source.nodeCount,

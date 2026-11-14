@@ -151,7 +151,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             const value = pending;
             if (!presentation || !value) return;
             if (presentation.frameId !== value.context.frameId || presentation.viewEpoch !== value.context.view.epoch
-                || !sameRender(presentation.token as RenderToken, value.token)) return;
+                || !sameRender(presentation.token, value.token)) return;
             pending = null;
             build(value, presentation);
         },

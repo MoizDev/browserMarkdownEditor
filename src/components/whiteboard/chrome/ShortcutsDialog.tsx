@@ -45,7 +45,9 @@ export function ShortcutsDialog({ label, locale, direction, closeLabel, groups, 
         window.addEventListener('keydown', onKey, true);
         return () => {
             window.removeEventListener('keydown', onKey, true);
-            if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+            if (returnFocus?.isConnected && getComputedStyle(returnFocus).visibility !== 'hidden') {
+                returnFocus.focus({ preventScroll: true });
+            }
         };
     }, [returnFocus]);
 

@@ -199,7 +199,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     }
                     [ids, scratch] = [scratch, ids];
                 }
-                const source = await render.prepareOverlay(doc, { sheetId: sheet, theme: view.theme }, ids, job.signal);
+                const source = await render.prepareOverlay(doc, { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) }, ids, job.signal);
                 check();
                 let textItem: PaintTextItem | null = null, textIndex = -1;
                 if (textOverlay) {

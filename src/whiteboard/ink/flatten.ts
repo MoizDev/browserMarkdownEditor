@@ -60,6 +60,10 @@ export class CubicFlattenJob {
         this.limit = options.maxPieces ?? INK_MAX_FLAT_PIECES;
         if (!Number.isInteger(this.limit) || this.limit <= 0 || this.limit > INK_MAX_FLAT_PIECES) throw new RangeError('Invalid ink piece ceiling');
     }
+    get byteLength(): number {
+        return this.original.byteLength + this.stack.byteLength + this.current.byteLength + this.rows.byteLength
+            + (this.output?.pieces.byteLength ?? 0);
+    }
     cancel(): void { this.cancelled = true; this.pending = 0; this.rows = new Float64Array(0); }
     get result(): CubicArcMap {
         if (!this.output) throw new Error('Ink flattening has not completed');

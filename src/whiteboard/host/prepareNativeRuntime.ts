@@ -18,6 +18,7 @@ import { createBoardJournal } from './journal';
 import { createNativeMediaRestore } from './nativeMediaRestore';
 import { createOwnedBoardRuntime, type OwnedBoardRuntime } from './ownedRuntime';
 import { primeNativeLoad } from './primeNative';
+import { restoreRecoveredMediaFromHost } from './recoverMediaFromHost';
 
 export interface PrepareNativeRuntimeOptions {
     readonly host: NativeCanvasHost;
@@ -154,7 +155,11 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                         return { id, hash: id.slice(7), extension: mediaExtension(entry.mime as MediaMime), file: store.currentFile(id) ?? entry.file, blob };
                     },
                     retainMedia: id => store.retain(id, 'journal'),
-                }, append: (capture, source) => host.appendJournal(identity, source, capture), onError: options.onError });
+                }, append: (capture, source) => host.appendJournal(identity, source, capture),
+                isCurrent: () => isLiveOwner(owner) && host.isCurrent(identity),
+                prepareMedia: (payload, recoverySignal, current) =>
+                    restoreRecoveredMediaFromHost(payload, host, identity, store, recoverySignal, current),
+                onError: options.onError });
                 try {
                     const pinMedia = createNativeMediaRestore(store, host, identity, () => owned?.board, store);
                     owned = createOwnedBoardRuntime({ runtime: { owner, doc, samples, media: store,

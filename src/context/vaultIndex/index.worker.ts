@@ -29,6 +29,7 @@ function problem(context: WorkerContext, session: IndexSession, error: unknown):
     } else throw error;
 }
 serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
+    ready() { return null; },
     open(value, context) {
         const { session } = value as SessionArgs;
         engine?.close();
@@ -43,9 +44,9 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
                 if (phase !== 'idle' && done !== 0 && now - lastStatus < 100) return;
                 lastStatus = now;
                 context.emit('status', { session, phase, done, total });
-            });
+            }, (changes, sweepComplete) => context.emit('fileTimes', { session, changes, sweepComplete }));
         const owner = engine;
-        searchText = new SearchResidency(reader, () => current(session) === owner, (path, mtime, size) => {
+        searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner, (path, mtime, size) => {
             const persistent = owner as IndexEngine & { readPersistedText?: (path: string, mtime: number, size: number) => Promise<string | undefined> };
             return persistent.readPersistedText?.(path, mtime, size) ?? Promise.resolve(undefined);
         });
@@ -106,6 +107,11 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         if (rev !== undefined) { primes.set(path, { rev, mtime, size, text }); searchText?.prime(path, mtime, size, text); }
         return rev ?? null;
     },
+    primeText(value) {
+        const { session, path, mtime, size, text } = value as SessionArgs & { path: string; mtime: number; size: number; text: string };
+        if (current(session)) searchText?.prime(path, mtime, size, text);
+        return null;
+    },
     async primeCommit(value, context) {
         const { session, path, rev } = value as SessionArgs & { path: string; rev: number };
         const active = current(session);
@@ -139,7 +145,7 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         const inScope = (path: string) => !args.scope || path === args.scope || path.startsWith(`${args.scope}/`);
         const scoped = files.filter(file => inScope(file.path));
         const eligible = scoped.filter(file => isTextFile(file.path) && !isCanvasFile(file.path));
-        await resident.ensure(eligible.filter(file => !liveOverlays.has(file.path)).map(file => file.path), () => context.slice());
+        await resident.ensure(eligible.filter(file => !liveOverlays.has(file.path)).map(file => file.path), context);
         if (context.cancelled || current(args.session) !== active || active.store.treeGen !== treeGen) throw new DOMException('Index changed', 'AbortError');
         return matchAgentSearch({ query: args.query, regex: !!args.regex, caseSensitive: !!args.caseSensitive, maxResults: args.maxResults ?? 100 }, async () => scoped.map(file => ({
             path: file.path, name: file.path.slice(file.path.lastIndexOf('/') + 1),

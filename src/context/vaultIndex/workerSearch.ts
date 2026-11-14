@@ -1,18 +1,12 @@
 import { searchVault, isTextFile } from '../../utils/vaultSearch';
 import { isCanvasFile } from '../../utils/fileTypes';
-import type { FileTreeFileNode, TextRange } from '../../types';
-import type { ContentMatch } from '../../utils/vaultSearch';
+import type { FileTreeFileNode } from '../../types';
+import type { SearchBatch, SearchRow } from '../../utils/searchController';
 import type { IndexFile, IndexSession } from '../../utils/vaultIndex/types';
 import type { WorkerContext } from '../../platform/workers/serve';
 import type { SearchResidency } from './searchResidency';
 
 export interface SearchOverlay { rev: number; text: string }
-export interface SearchRow { path: string; nameMatch: TextRange | null; matches: ContentMatch[]; clipped: boolean }
-export interface SearchBatch {
-    session: IndexSession; queryId: number; overlayRevs: Record<string, number>;
-    batch: SearchRow[]; done: boolean; clipped: boolean; matchCount: number;
-}
-
 /** Match in authoritative tree order. The consumer groups name hits first,
  * while each streamed row preserves the same caps and original offsets. */
 export async function searchSidebar(session: IndexSession, queryId: number, query: string,
@@ -27,7 +21,7 @@ export async function searchSidebar(session: IndexSession, queryId: number, quer
         if (context.cancelled || !current()) return;
         if (count >= 200) { clipped = true; break; }
         const file = files[i];
-        if (isTextFile(file.path) && !isCanvasFile(file.path) && !overlays.has(file.path)) await text.ensure([file.path]);
+        if (isTextFile(file.path) && !isCanvasFile(file.path) && !overlays.has(file.path)) await text.ensure([file.path], context);
         if (context.cancelled || !current()) return;
         const name = file.path.slice(file.path.lastIndexOf('/') + 1);
         const node = { path: file.path, name, kind: 'file' } as FileTreeFileNode;

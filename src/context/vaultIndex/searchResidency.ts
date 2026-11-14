@@ -3,7 +3,8 @@ import { isTextFile } from '../../utils/vaultSearch';
 import { isCanvasFile } from '../../utils/fileTypes';
 import { mapPool } from '../../utils/pool';
 import type { IndexFile } from '../../utils/vaultIndex/types';
-import type { IndexReader, IndexStat } from './reader';
+import type { IndexStat } from './reader';
+import type { WorkerContext } from '../../platform/workers/serve';
 
 const FILE_LIMIT = 4 * 1024 * 1024;
 const SOURCE_BYTES_LIMIT = 128 * 1024 * 1024;
@@ -26,7 +27,7 @@ export class SearchResidency {
     private fullStat = false;
     private disposed = false;
 
-    constructor(private readonly reader: IndexReader, private readonly current: () => boolean,
+    constructor(private readonly stat: (file: IndexFile, context: WorkerContext) => Promise<IndexStat>, private readonly current: () => boolean,
         private readonly persisted: (path: string, mtime: number, size: number) => Promise<string | undefined>) {}
     private rev(path: string) { return this.revisions.get(path) ?? 0; }
     private advance(path: string) { this.revisions.set(path, this.rev(path) + 1); }
@@ -50,7 +51,8 @@ export class SearchResidency {
     prime(path: string, mtime: number, size: number, text: string) {
         if (!this.started) return;
         this.advance(path);
-        this.sources.set(path, { revision: this.rev(path), stat: { mtime, size, bytes: async () => new TextEncoder().encode(text).buffer } });
+        const bytes = size <= FILE_LIMIT ? async () => new TextEncoder().encode(text).buffer : async () => new ArrayBuffer(0);
+        this.sources.set(path, { revision: this.rev(path), stat: { mtime, size, bytes } });
         this.entries.set(path, { mtime, size, text: size <= FILE_LIMIT ? text.replace(/\r\n?/g, '\n') : undefined });
         this.admit();
     }
@@ -69,15 +71,20 @@ export class SearchResidency {
         for (const path of this.entries.keys()) if (!accepted.has(path)) this.entries.delete(path);
         return accepted;
     }
-    async ensure(paths: readonly string[], onProgress?: () => Promise<void>): Promise<void> {
+    async ensure(paths: readonly string[], context: WorkerContext): Promise<void> {
+        if (!paths.length) return;
         this.started = true;
         for (const path of paths) { this.interested.add(path); this.requested.add(path); }
-        if (this.runner) { await this.runner; if (this.fullStat || paths.some(path => this.requested.has(path))) return this.ensure(paths, onProgress); return; }
-        const run = this.run(onProgress);
+        if (this.runner) {
+            try { await this.runner; } catch (error) { if (context.cancelled) throw error; }
+            if (this.fullStat || paths.some(path => this.requested.has(path))) return this.ensure(paths, context);
+            return;
+        }
+        const run = this.run(context).catch(error => { for (const path of this.interested) this.requested.add(path); throw error; });
         this.runner = run;
         try { await run; } finally { if (this.runner === run) this.runner = undefined; }
     }
-    private async run(onProgress?: () => Promise<void>) {
+    private async run(context: WorkerContext) {
         while (!this.disposed && this.current() && (this.fullStat || this.requested.size)) {
             const treeGen = this.treeGen;
             const wanted = new Set(this.requested);
@@ -89,10 +96,14 @@ export class SearchResidency {
             await mapPool(stats, async file => {
                 const rev = this.rev(file.path);
                 try {
-                    const stat = await this.reader.stat(file);
+                    const stat = await this.stat(file, context);
                     if (this.valid(file.path, rev) && treeGen === this.treeGen) this.sources.set(file.path, { stat, revision: rev });
-                } catch { /* Transient IO failures are not cached. */ }
+                } catch (error) {
+                    if (error instanceof DOMException && error.name === 'NotAllowedError') throw error;
+                    /* Transient IO failures are not cached. */
+                }
             });
+            context.signal.throwIfAborted();
             if (treeGen !== this.treeGen) { for (const path of wanted) this.requested.add(path); continue; }
             const admitted = this.admit();
             for (const file of eligible) {
@@ -101,6 +112,7 @@ export class SearchResidency {
                 if (!source || !this.valid(file.path, source.revision)) continue;
                 const old = this.entries.get(file.path);
                 if (old && old.mtime === source.stat.mtime && old.size === source.stat.size) continue;
+                this.entries.delete(file.path);
                 try {
                     let text = await this.persisted(file.path, source.stat.mtime, source.stat.size);
                     if (text === undefined) {
@@ -110,8 +122,11 @@ export class SearchResidency {
                     }
                     if (this.valid(file.path, source.revision) && treeGen === this.treeGen && this.sources.get(file.path) === source)
                         this.entries.set(file.path, { mtime: source.stat.mtime, size: source.stat.size, text });
-                } catch { /* Retry on a later request. */ }
-                await onProgress?.();
+                } catch (error) {
+                    if (error instanceof DOMException && error.name === 'NotAllowedError') throw error;
+                    /* Retry on a later request. */
+                }
+                await context.slice();
             }
         }
         if (this.disposed || !this.current()) throw new DOMException('Index disposed', 'AbortError');

@@ -29,9 +29,10 @@ export function useIndexGraph(options: {
     publish(graph: GraphData | null, activation: number, current: () => boolean): void;
     onSnapshot?(stale: boolean): void;
     onStatus?(status: IndexProgress): void;
+    onTimes?(changes: [string, number, number][], sweepComplete: boolean): void;
     onProblem(problem: unknown): void;
 }) {
-    const { root, vaultId, activation, getActivation, tree, resolve, stat, publish, onSnapshot, onStatus, onProblem } = options;
+    const { root, vaultId, activation, getActivation, tree, resolve, stat, publish, onSnapshot, onStatus, onTimes, onProblem } = options;
     const active = useRef<ActiveIndexGraph | null>(null);
     const startRef = useRef<(() => Promise<ActiveIndexGraph>) | null>(null);
     const latestTree = useRef(tree);
@@ -65,7 +66,7 @@ export function useIndexGraph(options: {
                     if (progress.phase !== 'idle' && progress.done !== 0 && now - lastStatusAt < 250) return;
                     lastStatusAt = now;
                     onStatus?.(progress);
-                });
+                }, (changes, complete) => { if (live && getActivation() === activation) onTimes?.(changes, complete); });
                 const echo = new WriteEchoFilter(async path => {
                     const handle = await resolve(path);
                     const version = handle ? await stat(handle) : null;
@@ -99,7 +100,7 @@ export function useIndexGraph(options: {
                 owner.client.dispose();
             }
         };
-    }, [root, vaultId, activation, getActivation, resolve, stat, publish, onSnapshot, onStatus, onProblem]);
+    }, [root, vaultId, activation, getActivation, resolve, stat, publish, onSnapshot, onStatus, onTimes, onProblem]);
     useLayoutEffect(() => {
         const owner = active.current;
         if (!owner || owner.root !== root || owner.activation !== activation) return;

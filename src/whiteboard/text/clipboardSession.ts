@@ -26,6 +26,7 @@ export interface TextClipboardCopy { readonly plain: string; readonly html: stri
 export class TextClipboardSession {
     private generation = 0;
     private disposed = false;
+    private active: AbortController | null = null;
     constructor(private readonly ports: TextClipboardPorts) {}
 
     copy(): TextClipboardCopy | null {
@@ -42,7 +43,7 @@ export class TextClipboardSession {
         if (this.disposed || this.ports.revision() !== copyRevision) return false;
         const now = this.ports.selection();
         if (selection.anchor !== now.anchor || selection.focus !== now.focus || now.anchor === now.focus) return false;
-        this.generation++;
+        this.cancel();
         this.ports.delete();
         return true;
     }
@@ -50,18 +51,23 @@ export class TextClipboardSession {
     async paste(input: ClipboardInput, plain: boolean, signal: AbortSignal): Promise<boolean> {
         if (this.disposed) return false;
         signal.throwIfAborted();
-        const generation = ++this.generation, revision = this.ports.revision(), selection = this.ports.selection();
-        const content = await this.ports.classify(input, plain, signal);
-        signal.throwIfAborted();
-        const now = this.ports.selection();
-        if (this.disposed || generation !== this.generation || revision !== this.ports.revision()
-            || selection.anchor !== now.anchor || selection.focus !== now.focus) return false;
-        if (content.kind === 'empty') return false;
-        if (content.kind === 'board') this.ports.pasteBoard(input, plain);
-        else this.ports.replace(content.fragment);
-        return true;
+        this.cancel();
+        const generation = this.generation, revision = this.ports.revision(), selection = this.ports.selection();
+        const controller = new AbortController(); this.active = controller;
+        const combined = AbortSignal.any([signal, controller.signal]);
+        try {
+            const content = await this.ports.classify(input, plain, combined);
+            combined.throwIfAborted();
+            const now = this.ports.selection();
+            if (this.disposed || generation !== this.generation || revision !== this.ports.revision()
+                || selection.anchor !== now.anchor || selection.focus !== now.focus) return false;
+            if (content.kind === 'empty') return false;
+            if (content.kind === 'board') this.ports.pasteBoard(input, plain);
+            else this.ports.replace(content.fragment);
+            return true;
+        } finally { if (this.active === controller) this.active = null; }
     }
 
-    cancel(): void { this.generation++; }
-    dispose(): void { this.disposed = true; this.generation++; }
+    cancel(): void { this.generation++; this.active?.abort(); this.active = null; }
+    dispose(): void { this.disposed = true; this.cancel(); }
 }

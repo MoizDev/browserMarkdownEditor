@@ -22,6 +22,7 @@ import type { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { isSheetParent } from '../../whiteboard/model/doc';
 import type { MediaEntry, MediaId } from '../../whiteboard/model/media';
+import type { MediaSource } from '../../whiteboard/media/ingest';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import type { BoardJobIdentity } from '../../whiteboard/workers/protocol';
 
@@ -43,6 +44,40 @@ export interface NativeClipboardControllerOptions {
     readonly storeMedia: (entry: MediaEntry, blob: Blob, signal: AbortSignal) => Promise<string | null>;
     readonly notice: (message: string) => void;
     readonly onError: (error: unknown) => void;
+}
+
+// Only the private web clipboard type may supply density; the media inspector still
+// sniffs and admits the entire PNG. A bad or absent pHYs means natural pixel size.
+async function privatePngDensity(blob: Blob, signal: AbortSignal): Promise<number | null> {
+    if (blob.size > 10 * 1024 * 1024) throw new RangeError('Clipboard PNG exceeds 10 MiB');
+    if (blob.size < 33) throw new TypeError('Clipboard image is not a PNG');
+    const signature = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
+    signal.throwIfAborted();
+    if (![137, 80, 78, 71, 13, 10, 26, 10].every((byte, i) => signature[i] === byte)) throw new TypeError('Clipboard image is not a PNG');
+    let offset = 8;
+    for (let count = 0; count < 4096 && offset + 12 <= blob.size; count++) {
+        const header = new Uint8Array(await blob.slice(offset, offset + 8).arrayBuffer());
+        signal.throwIfAborted();
+        const view = new DataView(header.buffer), size = view.getUint32(0), type = String.fromCharCode(...header.subarray(4));
+        if (size > blob.size - offset - 12 || (count === 0 && (type !== 'IHDR' || size !== 13))) return null;
+        if (type === 'IDAT' || type === 'IEND') return null;
+        if (type === 'pHYs') {
+            if (size !== 9) return null;
+            const bytes = new Uint8Array(await blob.slice(offset + 4, offset + 21).arrayBuffer());
+            signal.throwIfAborted();
+            let crc = 0xffffffff;
+            for (let i = 0; i < 13; i++) {
+                crc ^= bytes[i];
+                for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+            }
+            const data = new DataView(bytes.buffer), x = data.getUint32(4), y = data.getUint32(8);
+            const density = x * 0.0254 / 72;
+            return data.getUint32(13) === ((crc ^ 0xffffffff) >>> 0) && bytes[12] === 1 && x === y
+                && density >= 0.25 && density <= 8 ? density : null;
+        }
+        offset += size + 12;
+    }
+    return null;
 }
 
 /** Paste/drop own one serial session job; unsupported semantic converters remain explicit frontiers. */
@@ -77,7 +112,8 @@ export function createNativeClipboardController(options: NativeClipboardControll
         && target.session === `${identity.documentId}:${identity.session}` && target.vaultEpoch === identity.vaultActivation
         && target.generation === identity.bytesGeneration && runtime.selection.getSnapshot().sheet === target.sheet;
     const execute = (input: Promise<ClipboardInput> | null, captured: ReturnType<typeof targetNow>, intent: ClipboardIntent,
-        duplicate?: { snapshot: CopySnapshot; media: ReadonlyMap<MediaId, Blob> }) => {
+        duplicate?: { snapshot: CopySnapshot; media: ReadonlyMap<MediaId, Blob> },
+        imageRead?: Promise<ClipboardInput | null>) => {
         const controller = new AbortController();
         const stop = runtime.selection.subscribe(() => {
             if (runtime.selection.getSnapshot().sheet !== captured.target.sheet) controller.abort();
@@ -115,10 +151,14 @@ export function createNativeClipboardController(options: NativeClipboardControll
             if (!input) throw new Error('Clipboard input is unavailable');
             const capturedInput = await input; check();
             const html = createClipboardHtmlFrameHost({ memory: options.memory, identity: workerIdentity, isCurrent: workerCurrent });
-            const classified = await classifyClipboard(capturedInput, intent, { appOrigin: location.origin,
+            let classified = await classifyClipboard(capturedInput, intent, { appOrigin: location.origin,
                 markers: html.markers, jsonKind: (text, innerSignal) => classifyClipboardJson({ bytes: new Blob([text]), identity: workerIdentity,
                     memory: options.memory, isCurrent: workerCurrent, signal: innerSignal }) }, context.signal);
             check();
+            if (classified.kind === 'files' && imageRead) {
+                const read = await imageRead; check();
+                if (read?.privatePng) classified = { kind: 'private-png', blob: read.privatePng };
+            }
             if (classified.kind === 'private') {
                 const decoded = await decodeBoardClipboard({ encoded: new Blob([classified.encoded]), identity: workerIdentity,
                     memory: options.memory, isCurrent: workerCurrent, signal: context.signal });
@@ -144,11 +184,17 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 } finally { projection?.release(); }
                 return;
             }
-            if (classified.kind === 'files' || classified.kind === 'svg') {
-                const files = classified.kind === 'files' ? classified.files : [{ blob: new Blob([classified.text], { type: 'image/svg+xml' }), name: 'clipboard.svg', directory: false }];
+            if (classified.kind === 'files' || classified.kind === 'svg' || classified.kind === 'private-png') {
+                const files = classified.kind === 'files' ? classified.files : classified.kind === 'svg'
+                    ? [{ blob: new Blob([classified.text], { type: 'image/svg+xml' }), name: 'clipboard.svg', directory: false }]
+                    : [{ blob: classified.blob, name: 'clipboard.png', directory: false }];
                 const rejected = files.filter(file => file.directory);
                 if (rejected.length) options.notice('Folders cannot be pasted onto a board.');
-                const sources = files.filter(file => !file.directory).map(file => ({ blob: file.blob, name: file.name }));
+                const sources: MediaSource[] = files.filter(file => !file.directory).map(file => ({ blob: file.blob, name: file.name }));
+                if (classified.kind === 'private-png') {
+                    const density = await privatePngDensity(classified.blob, context.signal); check();
+                    if (density !== null) sources[0] = { ...sources[0], pixelsPerWorldUnit: density };
+                }
                 if (!sources.length) return;
                 const placement = planBoardClipboardPlacement({ receivingBoardId: identity.documentId, target, source: { from: null, bounds: { x: 0, y: 0, w: 0, h: 0 } },
                     containsFrame: false, doc, cameraZoom: zoom, intent });
@@ -173,7 +219,9 @@ export function createNativeClipboardController(options: NativeClipboardControll
     const report = (fn: () => void) => { try { fn(); } catch (error) { options.onError(error); } };
     const pasteEvent = (event: ClipboardEvent) => {
         if (options.editingText() || !event.clipboardData) return false;
-        return (() => { try { const captured = targetNow(), input = captureTransfer(event.clipboardData!); event.preventDefault(); void execute(Promise.resolve(input), captured, 'paste').catch(options.onError); return true; }
+        return (() => { try { const captured = targetNow(), input = captureTransfer(event.clipboardData!); event.preventDefault();
+            const imageRead = input.files.some(file => file.blob.type.startsWith('image/')) ? readClipboard().catch(() => null) : undefined;
+            void execute(Promise.resolve(input), captured, 'paste', undefined, imageRead).catch(options.onError); return true; }
             catch (error) { options.onError(error); return false; } })();
     };
     const readClipboard = async (): Promise<ClipboardInput> => {

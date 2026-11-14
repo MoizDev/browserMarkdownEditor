@@ -16,7 +16,7 @@ import type { ChatTree } from '../utils/chatTree';
 import type { EditorMode, FileTreeNode, TabLayout, Theme } from './index';
 import type { CanvasApplyResult, CanvasShapePage, CanvasShapeQuery, DrawingViewInfo, TextChange, ViewReporter } from '../utils/viewRegistry';
 import type { AgentHostDeps } from '../utils/agentHost';
-import type { ClosedNativePdfPicture } from '../utils/nativeCanvasAgentRead';
+import type { NativePdfPicture } from '../utils/nativeCanvasAgentRead';
 
 /* ───────────────────────── the vault's chat index (.VaultAgent/chats.json) ───────────────────────── */
 
@@ -146,7 +146,7 @@ export interface VaultToolHost {
     nativeCanvasView?(path: string, guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativeCanvasView | null>;
     /** A CLOSED admitted native ink PDF's whole-sheet picture. null = not a native ink board (plain, notebook or
      *  ordinary PDFs keep their closed text/view routes); a claimed board that fails admission throws. */
-    closedNativePdfPicture?(path: string, maxSide: number, guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<ClosedNativePdfPicture | null>;
+    nativePdfPicture?(path: string, maxSide: number, guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativePdfPicture | null>;
     /**
      * Apply `changes` (offsets into `expected`) to a text file. Refused as
      * 'stale' unless the current text (readText) still equals `expected`. Lands

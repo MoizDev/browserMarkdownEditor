@@ -147,7 +147,7 @@ async function readClosedPdfInkShapes(options: {
 
 /** A closed native ink PDF's whole-sheet picture: the canonical paint bounds and the physical page count. It has no
  * camera: a closed board was never viewed, so its picture is the whole sheet as the board lays its pages out. */
-export interface ClosedNativePdfPicture {
+export interface NativePdfPicture {
     readonly png: Blob;
     readonly bounds: Readonly<Rect>;
     readonly pageCount: number;
@@ -155,13 +155,13 @@ export interface ClosedNativePdfPicture {
 
 /** Only an ADMITTED native ink board is pictured here. A plain, notebook or ordinary PDF returns null and keeps its
  * closed text/view route. A claimed board (annotated, ambiguous or newer) that fails admission throws, never falls back. */
-export async function readClosedNativePdfPicture(options: {
+export async function readNativePdfPicture(options: {
     readonly deps: AgentHostDeps;
     readonly path: string;
     readonly handle: FileSystemFileHandle;
     readonly maxSide: number;
-    readonly guard: Parameters<NonNullable<VaultToolHost['closedNativePdfPicture']>>[2];
-}): Promise<ClosedNativePdfPicture | null> {
+    readonly guard: Parameters<NonNullable<VaultToolHost['nativePdfPicture']>>[2];
+}): Promise<NativePdfPicture | null> {
     const { deps, path, handle, maxSide, guard } = options;
     const signal = guard.signal ?? new AbortController().signal;
     const check = () => {
@@ -203,7 +203,7 @@ async function captureAdmittedPdfInk(options: {
     isCurrent(): boolean;
     notice(message: string): void;
     onError(error: unknown): void;
-}): Promise<ClosedNativePdfPicture> {
+}): Promise<NativePdfPicture> {
     const { admitted: pdf, lease, signal } = options;
     const check = () => {
         signal.throwIfAborted();
@@ -239,4 +239,42 @@ async function captureAdmittedPdfInk(options: {
     } finally {
         try { source?.dispose(); } finally { acquired?.dispose(); }
     }
+}
+
+/** An OPEN native ink PDF's whole-sheet picture from its LIVE session: the same canonical producer, the session's
+ * own render parts and its own PDF source lease. No view is mounted and no second session is opened. */
+export async function readOpenNativePdfPicture(options: {
+    readonly deps: AgentHostDeps;
+    readonly path: string;
+    readonly maxSide: number;
+    readonly guard: Parameters<NonNullable<VaultToolHost['nativePdfPicture']>>[2];
+}): Promise<NativePdfPicture | null> {
+    const { deps, path, maxSide, guard } = options;
+    const signal = guard.signal ?? new AbortController().signal;
+    const check = () => {
+        signal.throwIfAborted();
+        if (!guard.isCurrent()) throw new DOMException('Canvas picture source changed', 'AbortError');
+    };
+    if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
+    const source = await deps.ensureNativeAgentRuntime(path, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
+    check();
+    if (!source.isCurrent()) throw new DOMException('Canvas session changed', 'AbortError');
+    const { getPdfInkSourceState } = await import('../whiteboard/host/preparePdfInkSession');
+    const state = getPdfInkSourceState(source.identity.documentId);
+    if (!state) throw new Error('The open PDF ink source is unavailable.');
+    const lease = state.retainSource();
+    try {
+        const runtime = source.runtime;
+        const capture = await prepareNativeExport({ runtime, route: 'menu', boardName: 'Picture', theme: 'light', transparent: false,
+            maxSide, signal, current: () => guard.isCurrent() && source.isCurrent(), notice: deps.notify,
+            onError: error => console.error('Open PDF ink picture failed:', error),
+            readMedia: (entry, mediaSignal) => source.readMedia(entry, mediaSignal), retainPdfSource: () => lease });
+        try {
+            const png = await capture.png(signal);
+            check();
+            const host = runtime.session.doc.host;
+            if (host.kind !== 'pdf-ink') throw new Error('The open PDF is not an ink board');
+            return { png, bounds: { ...capture.bounds }, pageCount: host.pages.length };
+        } finally { capture.release(); }
+    } finally { lease.release(); }
 }

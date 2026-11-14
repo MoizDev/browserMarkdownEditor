@@ -2,7 +2,10 @@ import { createWorkerClient } from '../../platform/workers';
 import type { WorkerClient } from '../../platform/workers';
 import type { IndexGraph, IndexSession } from '../../utils/vaultIndex/types';
 import { observeForegroundReads } from './foreground';
+import type { SearchBatch } from './workerSearch';
+import type { MatchAnswer } from '../../utils/agentMatcher/types';
 
+export interface SearchBuffer { path: string; revision: number; text: string }
 export interface IndexTreeFile { path: string; kind: string; handle: FileSystemFileHandle }
 export interface IndexTreeDelta {
     added: IndexTreeFile[];
@@ -24,6 +27,10 @@ export class VaultIndexClient {
     private queue: Promise<void> = Promise.resolve();
     private sweeping?: Promise<void>;
     private sweepAgain = false;
+    private nextQuery = 0;
+    private nextOverlay = 0;
+    private overlays = new Map<string, { revision: number; rev: number; text: string }>();
+    private resultListeners = new Map<number, (batch: SearchBatch) => void>();
     constructor(readonly session: IndexSession, onGraph: (graph: IndexGraph) => void,
         onProblem: (problem: unknown) => void, onStatus?: (status: unknown) => void) {
         this.worker = createWorkerClient({
@@ -34,6 +41,7 @@ export class VaultIndexClient {
                 this.graphGen = 0;
                 await bootstrap.request('open', { session }, control);
                 await this.sendTree(bootstrap, this.treeGen, this.tree);
+                for (const [path, value] of this.overlays) await bootstrap.request('overlay', { session, path, rev: value.rev, text: value.text }, control);
                 queueMicrotask(() => { if (!this.disposed) void this.sweep('open').catch(() => {}); });
             },
         });
@@ -48,6 +56,10 @@ export class VaultIndexClient {
             const event = value as { session?: IndexSession };
             return !this.disposed && event.session?.sessionNo === session.sessionNo && event.session.vaultId === session.vaultId;
         };
+        this.worker.on('results', value => {
+            const batch = value as SearchBatch;
+            if (currentEvent(value)) this.resultListeners.get(batch.queryId)?.(batch);
+        });
         this.worker.on('problem', value => { if (currentEvent(value)) onProblem(value); });
         this.worker.on('status', value => { if (currentEvent(value)) onStatus?.(value); });
         this.stopForeground = observeForegroundReads(active => { void this.foregroundIO(active).catch(() => {}); });
@@ -121,6 +133,36 @@ export class VaultIndexClient {
     }
     async foregroundIO(active: number): Promise<void> {
         await this.worker.request('fgio', { session: this.session, active }, control);
+    }
+    private async syncOverlays(buffers: readonly SearchBuffer[]): Promise<void> {
+        await this.serial(async () => {
+            const incoming = new Map(buffers.map(buffer => [buffer.path, buffer]));
+            for (const path of this.overlays.keys()) if (!incoming.has(path)) {
+                this.overlays.delete(path);
+                await this.worker.request('overlay', { session: this.session, path, rev: ++this.nextOverlay, text: null }, control);
+            }
+            for (const buffer of buffers) {
+                const previous = this.overlays.get(buffer.path);
+                if (previous && previous.revision === buffer.revision && previous.text === buffer.text) continue;
+                const value = { revision: buffer.revision, rev: ++this.nextOverlay, text: buffer.text };
+                this.overlays.set(buffer.path, value);
+                await this.worker.request('overlay', { session: this.session, path: buffer.path, rev: value.rev, text: value.text }, control);
+            }
+        });
+    }
+    async searchSidebar(query: string, buffers: readonly SearchBuffer[], onBatch: (batch: SearchBatch) => void, signal: AbortSignal): Promise<void> {
+        await this.syncOverlays(buffers);
+        if (signal.aborted || this.disposed) throw new DOMException('Search cancelled', 'AbortError');
+        const queryId = ++this.nextQuery;
+        this.resultListeners.set(queryId, onBatch);
+        try {
+            await this.worker.request('search', { session: this.session, queryId, kind: 'sidebar', query }, { priority: 1, signal });
+        } finally { this.resultListeners.delete(queryId); }
+    }
+    async searchAgent(config: { query: string; regex: boolean; caseSensitive: boolean; scope: string; maxResults: number },
+        buffers: readonly SearchBuffer[], signal?: AbortSignal): Promise<MatchAnswer> {
+        await this.syncOverlays(buffers);
+        return this.worker.request<MatchAnswer>('search', { session: this.session, queryId: ++this.nextQuery, kind: 'agent', ...config }, { priority: 1, signal });
     }
     retry(): void {
         this.worker.reset();

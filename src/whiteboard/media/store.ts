@@ -12,6 +12,7 @@ export interface MediaLease { release(): void }
 export class MediaStore {
     private readonly entries = new Map<MediaId, StoredMedia>();
     private readonly pending = new Map<MediaId, Map<MediaHolder, number>>();
+    private readonly locations = new Map<MediaId, string | null>();
     private idle: ReturnType<typeof setTimeout> | null = null;
 
     put(id: MediaId, blob: Blob): void {
@@ -23,6 +24,15 @@ export class MediaStore {
     }
 
     get(id: MediaId): Blob | undefined { return this.entries.get(id)?.blob; }
+
+    currentFile(id: MediaId): string | null | undefined { return this.locations.get(id); }
+
+    setFile(id: MediaId, file: string | null): void {
+        if (file !== null && (!file || file === '.' || file === '..' || file.length > 255 || /[\\/\0]/.test(file))) {
+            throw new Error('Invalid stored media name');
+        }
+        this.locations.set(id, file);
+    }
 
     retain(id: MediaId, holder: MediaHolder): MediaLease {
         let counts = this.entries.get(id)?.holders ?? this.pending.get(id);
@@ -61,6 +71,7 @@ export class MediaStore {
         this.idle = null;
         this.entries.clear();
         this.pending.clear();
+        this.locations.clear();
     }
 
     private schedule(): void {

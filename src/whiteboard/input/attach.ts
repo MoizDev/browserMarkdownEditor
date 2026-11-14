@@ -1,5 +1,7 @@
 import type { CameraController, Point } from '../../platform/render/camera'
 import type { BoardSession } from '../session/BoardSession'
+import { TOOLS } from '../model/styles'
+import type { Op } from '../change/ops'
 import { handTool, type HandContext } from './basicTools'
 import { ToolState, type ToolStateSnapshot } from './gesture'
 import { installKeyboard } from './keyboard'
@@ -56,6 +58,7 @@ export interface BoardInputServices {
   continueInk?(sample: RealSample): ((endpoint: RealSample) => boolean) | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
+  persistToolLock?(locked: boolean): void
   clearLatches(): void
   cancelPendingGestures(): boolean
 }
@@ -265,7 +268,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (id === 'undo' && pointer.interrupt('undo')) return true
       if (id === 'undo' && editable()) { services.history.undo(); return true }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
-      if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); services.commands.run('tool.lock', event); return true }
+      if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); return true }
       if (id === 'pan.hold') {
         spaceHeld = true
         if (!(router.activeOwner instanceof LiveInk)) return true
@@ -299,6 +302,17 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       toolEpoch = snapshot.selectionEpoch
       services.cancelPendingGestures()
       pointer.interrupt('flush')
+    }
+    if (current() && editable()) {
+      const ops: Op[] = []
+      const tool = TOOLS.find(id => id === snapshot.active.id)
+      if (tool && session.doc.ui.tool !== tool) ops.push({ t: 'board', key: 'ui.tool', value: tool })
+      const lockChanged = session.doc.view.toolLock !== snapshot.locked
+      if (lockChanged) ops.push({ t: 'board', key: 'view.toolLock', value: snapshot.locked })
+      try {
+        if (ops.length) session.apply({ origin: 'host', label: 'Tool state', ops }).release()
+        if (lockChanged) services.persistToolLock?.(snapshot.locked)
+      } catch (error) { services.error(error) }
     }
     if (current()) view.a11y.toolState(snapshot)
   }

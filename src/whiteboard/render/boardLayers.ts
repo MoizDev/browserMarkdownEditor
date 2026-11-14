@@ -342,7 +342,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
                     if (!prepareToken) return;
                     const context = Object.freeze({ view: copyView(view), frameId: prepareFrameId,
-                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null });
+                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
+                        retain: () => options.frames.retain(frame) });
                     gpu!.drawGpu(pass, view, band, omit ?? undefined);
                     recordDraw(band, { frame, omit, ink, context });
                 },
@@ -353,7 +354,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const ink = adapter!.borrowPrepared()?.frame.inkNodeIds ?? frame.inkNodeIds;
                     if (!prepareToken) return;
                     const context = Object.freeze({ view: copyView(view), frameId: prepareFrameId,
-                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null });
+                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
+                        retain: () => options.frames.retain(frame) });
                     adapter!.draw2d(ctx, view, band, omit ?? undefined);
                     recordDraw(band, { frame, omit, ink, context });
                 },

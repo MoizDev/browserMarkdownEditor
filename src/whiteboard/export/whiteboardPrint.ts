@@ -7,6 +7,7 @@ import { measureBoardPaintBounds } from '../render/worldBounds';
 import { createBoardExportSnapshot } from './boardSnapshot';
 import type { DisplayPdfWriter } from './capturePdf';
 import { createExportImageResolver } from './exportImage';
+import { streamIncrementalPdf, type IncrementalPdfWriter } from './incrementalPdf';
 import type { BoardPrintSource } from './print';
 import { snapshotPaintSource } from './snapshot';
 import { streamPageDisplayList } from './streamPage';
@@ -15,7 +16,7 @@ import { streamRasterPng } from './streamRaster';
 export interface NativeWhiteboardPrintOptions {
     readonly runtime: BoardRuntime;
     readonly memory: MemoryAllocator;
-    readonly writer: DisplayPdfWriter;
+    readonly writer: DisplayPdfWriter | IncrementalPdfWriter;
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
     readonly onError: (error: unknown) => void;
 }
@@ -55,9 +56,15 @@ export function pinNativeWhiteboardPrint(options: NativeWhiteboardPrintOptions):
             const combined = active(signal), world = await bounds(), paint = await source();
             combined.throwIfAborted();
             const images = createExportImageResolver(snapshot.token, snapshot.images, snapshot.readImage, combined);
-            const page = await streamPageDisplayList(paint, 0, world, 0.75, images, combined);
-            const bytes = await writer({ schema: 1, pages: [{ width: world.width * 0.75, height: world.height * 0.75,
-                displayList: { page: 0, items: [{ kind: 'group', transform: [0.75, 0, 0, 0.75, 0, 0], items: page.items }] } }] }, { signal: combined });
+            let bytes: Uint8Array;
+            if (typeof writer !== 'function' && writer.kind === 'incremental-pdf') {
+                bytes = await streamIncrementalPdf({ revision: snapshot.revision, pageCount: 1,
+                    async page() { return { source: paint, world, outputScale: 0.75 }; } }, 0.75, images, writer, combined);
+            } else if (typeof writer === 'function') {
+                const page = await streamPageDisplayList(paint, 0, world, 0.75, images, combined);
+                bytes = await writer({ schema: 1, pages: [{ width: world.width * 0.75, height: world.height * 0.75,
+                    displayList: { page: 0, items: [{ kind: 'group', transform: [0.75, 0, 0, 0.75, 0, 0], items: page.items }] } }] }, { signal: combined });
+            } else throw new TypeError('Unsupported whiteboard print writer');
             combined.throwIfAborted();
             return new Blob([bytes.slice().buffer], { type: 'application/pdf' });
         },

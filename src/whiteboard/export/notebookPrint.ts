@@ -8,6 +8,7 @@ import { createBoardExportSnapshot } from './boardSnapshot';
 import type { DisplayPdfWriter } from './capturePdf';
 import { createExportImageResolver } from './exportImage';
 import type { PagedPrintStreamWriter } from './pagedPrintSnapshot';
+import { streamIncrementalPdf, type IncrementalPdfWriter } from './incrementalPdf';
 import type { BoardPrintSource } from './print';
 import { snapshotPaintSource } from './snapshot';
 import { streamPageDisplayList } from './streamPage';
@@ -16,7 +17,7 @@ import { streamRasterPng } from './streamRaster';
 export interface NativeNotebookPrintOptions {
     readonly runtime: BoardRuntime;
     readonly memory: MemoryAllocator;
-    readonly writer: DisplayPdfWriter | PagedPrintStreamWriter;
+    readonly writer: DisplayPdfWriter | PagedPrintStreamWriter | IncrementalPdfWriter;
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
     readonly onError: (error: unknown) => void;
 }
@@ -84,12 +85,19 @@ export function pinNativeNotebookPrint(options: NativeNotebookPrintOptions): Boa
                 return { width: world.width, height: world.height, displayList };
             };
             let bytes: Uint8Array;
-            if (typeof writer === 'function') {
+            if (typeof writer !== 'function' && 'kind' in writer && writer.kind === 'incremental-pdf') {
+                bytes = await streamIncrementalPdf({ revision: snapshot.revision, pageCount: total,
+                    async page(page, pageSignal) {
+                        const world = await worldAt(page, pageSignal), source = await sourceAt(page, world, pageSignal);
+                        return { source, world };
+                    } }, 1, image, writer, combined);
+            } else if (typeof writer === 'function') {
                 const output: { width: number; height: number; displayList: PageDisplayList }[] = [];
                 for (let page = 0; page < total; page++) output.push(await render(page));
                 bytes = await writer({ schema: 1, pages: output }, { signal: combined });
             } else {
                 const stream = await writer.open({ revision: snapshot.revision, pageCount: total }, combined);
+                if (!('append' in stream)) { await stream.cancel(); throw new TypeError('Unsupported notebook print writer'); }
                 let finished = false;
                 try {
                     for (let page = 0; page < total; page++) await stream.append(await render(page), combined);

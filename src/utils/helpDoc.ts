@@ -488,8 +488,9 @@ Everything around a page — the toolbars, the pen panel, the space the pages si
 on — follows the app's theme, so a notebook or a PDF is dark at night like the
 rest of the app. The **pages themselves stay white** in either theme, because
 that is paper: it is what the exported PDF prints on, and ink that changed colour
-with the theme would come out invisible in the file. A drawing has no pages, so
-it is dark all over.
+with the theme would come out invisible in the file. Notebook and PDF ink use a
+light ink palette and do not offer the board's Theme menu or its theme shortcut;
+a drawing has its own Theme menu and no paper.
 
 ---
 

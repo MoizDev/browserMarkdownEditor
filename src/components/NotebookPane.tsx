@@ -11,6 +11,8 @@ import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
 import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, serializeDelay } from './canvasPen';
+import { PaperMainMenu } from './paperCanvas';
+import { PAPER_USER } from './paperUser';
 import { bindImageInvertKey } from './invertibleImageShape';
 import { protectPageBackdrops } from './protectPageBackdrops';
 import { subscribePenScale } from '../utils/penStyle';
@@ -837,6 +839,7 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
                         options={CANVAS_OPTIONS}
                 assetUrls={CANVAS_ASSET_URLS}
                         colorScheme={NOTEBOOK_COLOR_SCHEME}
+                        user={PAPER_USER}
                         licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                     />
                 </NotebookToolbarContext.Provider>
@@ -877,7 +880,7 @@ function NotebookTopPanel() {
     return state ? <NotebookToolbar {...state} /> : null;
 }
 
-const NOTEBOOK_COMPONENTS = { ...CANVAS_COMPONENTS, TopPanel: NotebookTopPanel };
+const NOTEBOOK_COMPONENTS = { ...CANVAS_COMPONENTS, MainMenu: PaperMainMenu, TopPanel: NotebookTopPanel };
 
 function NotebookToolbar({ paper, onChange, onRemovePage }: {
     paper: NotebookPaper;

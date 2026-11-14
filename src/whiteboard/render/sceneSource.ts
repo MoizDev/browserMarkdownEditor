@@ -135,7 +135,7 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
         }
     }
     check();
-    return { token: pinnedToken, sceneRevision: revision, sensitiveNodes: scope.sensitiveNodes, nodeCount: nodes.length,
+    return { sourceDoc: doc, token: pinnedToken, sceneRevision: revision, sensitiveNodes: scope.sensitiveNodes, nodeCount: nodes.length,
         readNode(index) { if (!Number.isSafeInteger(index) || index < 0 || index >= nodes.length) throw new RangeError('Invalid paint node index'); return nodes[index]; },
         isCurrent: () => !signal.aborted && doc.rev === revision };
 }

@@ -15,8 +15,7 @@ import type { PdfTextReader } from '../utils/pdfReadingText';
 
 // P5's resident find index may expose canonical text without a worker trip.
 function peekText(reader: PdfTextReader | undefined, page: number): string | undefined {
-    const engine = reader?.findEngine as (PdfTextReader['findEngine'] & { peekPageText?(index: number): { text: string } | undefined }) | undefined;
-    return engine?.peekPageText?.(page)?.text;
+    return reader?.findEngine.peekPageText(page)?.text;
 }
 
 export interface PdfTiledCopyMenuOptions {

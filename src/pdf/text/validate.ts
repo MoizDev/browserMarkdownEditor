@@ -13,7 +13,7 @@ function box(values: ArrayLike<number>, at: number, width: number, height: numbe
 }
 /** Worker replies are untrusted even after worker-side validation. Validate
  * before caching, drawing, copying, or letting offsets enter the app. */
-export async function validatePdfTextReply(reply: PageTextReply, geometry: PageGeometry, detail: PdfTextDetail, signal?: AbortSignal): Promise<void> {
+export async function validatePdfTextReply(reply: PageTextReply, geometry: Readonly<PageGeometry> | undefined, detail: PdfTextDetail, signal?: AbortSignal): Promise<void> {
     let deadline = performance.now() + 4;
     const checkpoint = async () => {
         signal?.throwIfAborted();
@@ -31,6 +31,7 @@ export async function validatePdfTextReply(reply: PageTextReply, geometry: PageG
         previous = offset;
     }
     if (detail !== 'text') {
+        if (!geometry) fail();
         const model = reply.model;
         if (!model || model.schema !== 2 || model.physicalPageIndex !== reply.page || model.text !== reply.text ||
             !Array.isArray(model.intervals) || model.intervals.length > 400_000 || !Array.isArray(model.tokenBreaks) ||
@@ -53,6 +54,7 @@ export async function validatePdfTextReply(reply: PageTextReply, geometry: PageG
             !page.viewportTransform.every((value, index) => value === [1, 0, 0, 1, 0, 0][index])) fail();
     }
     if (detail !== 'select') return;
+    if (!geometry) fail();
     const s = reply.sel;
     if (!s || !(s.flags instanceof Uint8Array) || s.flags.length > 200_000 || !(s.charU16 instanceof Uint32Array) ||
         s.charU16.length !== s.flags.length + 1 || !(s.loose instanceof Float32Array) || s.loose.length !== s.flags.length * 4 ||

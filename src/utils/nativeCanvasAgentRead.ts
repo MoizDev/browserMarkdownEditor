@@ -5,6 +5,13 @@ import { createNativeAgentReader } from '../whiteboard/host/nativeAgentRead';
 import { readNativeAgentViewport } from '../whiteboard/host/nativeAgentView';
 import { readClosedAgentProjection } from '../whiteboard/host/agentProjection';
 import type { PdfInkAcquisition } from '../pdf/session/inkAcquisition.types';
+import type { Rect } from '../platform/types';
+import { MEDIA_MIMES, type MediaEntry, type MediaMime } from '../whiteboard/model/media';
+import { mediaExtension } from '../whiteboard/media/ingest';
+import { acquireNativeBoard } from '../whiteboard/host/nativeAcquisition';
+import { createClosedBoardSource, type ClosedBoardSource } from '../whiteboard/host/closedBoardScene';
+import { prepareNativeExport } from '../whiteboard/host/nativeExport';
+import type { ClosedCanvasSourceLease } from './closedCanvasSource';
 
 /** Loaded only by an actual canvas tool request; source ownership stays in App. */
 export async function readNativeCanvasShapePage(options: {
@@ -135,5 +142,66 @@ async function readClosedPdfInkShapes(options: {
         return result.kind === 'other' ? null : result.page;
     } finally {
         try { await admitted?.release(); } finally { await lease.release(); }
+    }
+}
+
+/** A closed PDF's ink board, captured through the canonical export producer over the admitted outer PDF.
+ * The lease is App's closed read lease; nothing here owns a session, camera or live store. A never-viewed
+ * closed board has no viewport, so its picture is always the whole canonical sheet. */
+export async function captureClosedPdfInk(options: {
+    readonly lease: ClosedCanvasSourceLease;
+    readonly maxSide: number;
+    readonly signal: AbortSignal;
+    isCurrent(): boolean;
+    notice(message: string): void;
+    onError(error: unknown): void;
+}): Promise<{ readonly png: Blob; readonly bounds: Readonly<Rect> }> {
+    const { lease, signal } = options;
+    const check = () => {
+        signal.throwIfAborted();
+        if (!options.isCurrent() || !lease.isCurrent()) throw new DOMException('Closed PDF capture source changed', 'AbortError');
+    };
+    let admitted: PdfInkAcquisition | undefined, acquired: Awaited<ReturnType<typeof acquireNativeBoard>> | undefined;
+    let source: ClosedBoardSource | undefined;
+    try {
+        check();
+        const [{ acquirePdfInkSource }, { createPdfInkHost }, { createEmptyNativeBytes }] = await Promise.all([
+            import('../pdf/session/inkAcquisition'), import('../pdf/session/inkHost'), import('../whiteboard/host/emptyNative'),
+        ]);
+        admitted = await acquirePdfInkSource({ outer: lease.bytes, token: lease.token, signal: lease.signal,
+            isCurrent: () => lease.isCurrent() && options.isCurrent() });
+        check();
+        if (admitted.kind === 'read-only') throw new Error(`PDF ink cannot be captured: ${admitted.reason}`);
+        const pdf = admitted;
+        const board = pdf.kind === 'plain' ? createEmptyNativeBytes('pdf-ink', { pdfHost: createPdfInkHost(pdf) }) : pdf.board;
+        // A PDF's embedded media lives inside its admitted source under its board-media name.
+        const readMedia = (entry: MediaEntry, mediaSignal: AbortSignal) => {
+            const mime = MEDIA_MIMES.find(value => value === entry.mime);
+            if (!mime) throw new Error(`Invalid embedded PDF media: ${entry.id}`);
+            return pdf.readMedia(`board-media/${entry.id.slice(7)}.${mediaExtension(mime as MediaMime)}`, mediaSignal);
+        };
+        acquired = await acquireNativeBoard({ bytes: board, kind: 'pdf-ink',
+            pdfPages: pdf.pages.map(page => [page.width, page.height] as const),
+            identity: { session: `${lease.token.documentId}:${lease.token.session}`, epoch: lease.token.vaultEpoch,
+                generation: lease.token.bytesGeneration },
+            signal, deadlineMs: 30_000 });
+        check();
+        if (acquired.status !== 'editable') throw new Error('The closed PDF ink board cannot be captured safely');
+        source = await createClosedBoardSource({ doc: acquired.load.doc, samples: acquired.samples, token: lease.token,
+            readMedia, signal, onError: options.onError });
+        check();
+        const capture = await prepareNativeExport({ runtime: source.runtime, route: 'menu', boardName: 'Capture', theme: 'light',
+            transparent: false, maxSide: options.maxSide, signal, current: () => options.isCurrent() && lease.isCurrent(),
+            notice: options.notice, onError: options.onError, readMedia,
+            retainPdfSource: () => ({ source: pdf, release() {} }) });
+        try {
+            const png = await capture.png(signal);
+            check();
+            return { png, bounds: { ...capture.bounds } };
+        } finally { capture.release(); }
+    } finally {
+        try { source?.dispose(); } finally {
+            try { acquired?.dispose(); } finally { await admitted?.release(); }
+        }
     }
 }

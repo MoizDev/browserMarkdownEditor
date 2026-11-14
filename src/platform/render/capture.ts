@@ -117,7 +117,7 @@ function frozenIsolation(snapshot: CaptureSnapshot): readonly IsolationReservati
 interface CaptureScope {
     readonly signal: AbortSignal;
     check(): void;
-    link(signal: AbortSignal, code: 'aborted' | 'disposed'): void;
+    link(signal: AbortSignal, code: 'aborted' | 'disposed'): () => void;
     dispose(): void;
 }
 
@@ -133,11 +133,13 @@ function scope(deadlineMs: number): CaptureScope {
         },
         link: (signal, code) => {
             const abort = () => controller.abort(new CaptureError(code));
+            const unlink = () => signal.removeEventListener('abort', abort);
             if (signal.aborted) abort();
             else {
                 signal.addEventListener('abort', abort, { once: true });
-                detach.push(() => signal.removeEventListener('abort', abort));
+                detach.push(unlink);
             }
+            return unlink;
         },
         dispose: () => { clearTimeout(timer); detach.forEach(remove => remove()); },
     };
@@ -232,7 +234,7 @@ export class PaneCapturer {
             active.check();
             // Retain exactly once, synchronously, before waiting for the shared global slot.
             snapshot = this.options.snapshot(request);
-            active.link(snapshot.signal, 'disposed'); active.check();
+            const unlinkSnapshot = active.link(snapshot.signal, 'disposed'); active.check();
             if (!snapshot.prepareTile) throw new CaptureError('incomplete');
             const selected = new Set(request.layers);
             if (snapshot.layers.length !== selected.size || snapshot.layers.some(layer => !selected.delete(layer.id)) || selected.size) {
@@ -244,6 +246,8 @@ export class PaneCapturer {
             const retire = this.trackRetirement();
             const release = async () => {
                 if (released) return; released = true;
+                // Owned release revokes the snapshot signal, not the already-finished pixels.
+                unlinkSnapshot();
                 try { await lease.release(); } finally { operation.dispose(); retire(); }
             };
             return this.options.queue.run(this.options.paneId, operation.signal, async () => {
@@ -274,7 +278,7 @@ export class PaneCapturer {
             operation.check();
             // No await before the session has retained ONE revision and selected render plan.
             snapshot = this.options.snapshot(request);
-            operation.link(snapshot.signal, 'disposed');
+            const unlinkSnapshot = operation.link(snapshot.signal, 'disposed');
             operation.check();
             const selected = new Set(request.layers);
             if (snapshot.layers.length !== selected.size || snapshot.layers.some(layer => !selected.delete(layer.id)) || selected.size) {
@@ -289,6 +293,8 @@ export class PaneCapturer {
             const release = async () => {
                 if (released) return;
                 released = true;
+                // Keep caller/lifetime/deadline cancellation until native cleanup really retires.
+                unlinkSnapshot();
                 try { await lease.release(); } finally { active.dispose(); retire(); }
             };
             return this.options.queue.run(this.options.paneId, active.signal, async () => {

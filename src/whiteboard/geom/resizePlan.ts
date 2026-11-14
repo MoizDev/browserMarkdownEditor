@@ -69,6 +69,7 @@ export class ResizePlan {
     }
     preview(pointer: Vec2, modifiers: ResizeModifiers, zeroSignX: -1 | 1 = 1, zeroSignY: -1 | 1 = 1): SelectionResizePreview {
         this.check();
+        if (!this.services.kinds || !this.services.place) throw new Error('This resize plan requires asynchronous geometry');
         const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.forceAspect), ops: Op[] = [];
         for (const { snapshot, centre, factors } of this.targets(frame, zeroSignX, zeroSignY)) {
             const patch = resizeKind(snapshot.node, factors, this.services.kinds);
@@ -81,6 +82,10 @@ export class ResizePlan {
         zeroSignX: -1 | 1 = 1, zeroSignY: -1 | 1 = 1): Promise<SelectionResizePreview> {
         this.check(signal);
         const frame = resizeBox(this.startBox, this.handle, this.down, pointer, modifiers, this.forceAspect), ops: Op[] = [];
+        if (this.services.planAllAsync) {
+            const all = await this.services.planAllAsync([...this.targets(frame, zeroSignX, zeroSignY)], frame, signal);
+            this.check(signal); return { frame, ops: all };
+        }
         for (const { snapshot, centre, factors } of this.targets(frame, zeroSignX, zeroSignY)) {
             const patch = this.services.resizeKindAsync
                 ? await this.services.resizeKindAsync(snapshot.node, factors, signal) : resizeKind(snapshot.node, factors, this.services.kinds);

@@ -17,7 +17,8 @@ import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import NativeMinimap, { type NativeMinimapThumbnail } from './NativeMinimap';
-import { NativeCanvasEditing } from './NativeCanvasEditing';
+import { NativeCanvasEditing, type NativeEditingViewOptions, type NativeEditingRenderContext } from './NativeCanvasEditing';
+import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter';
 import './NativeCanvasEntry.css';
 
 const VIEW_REASON = 'This native canvas is currently available in read-only mode.';
@@ -180,6 +181,26 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
             isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} onNavigate={navigateMinimap} onFocus={onFocus} />}</>} />;
 }
 
+function NativeDrawingEditing({ props, board, adapter, onError, onUnavailable }: {
+    readonly props: NativeCanvasEntryProps; readonly board: ComposedBoardSession;
+    readonly adapter: HostedBoardAdapter<BoardSessionPort>; readonly onError: (error: unknown) => void;
+    readonly onUnavailable: (error: unknown) => void;
+}) {
+    const latest = useRef(props); useLayoutEffect(() => { latest.current = props; }, [props]);
+    const { identity, nativeCanvasHost: host, zoomLimits: { min, max }, insets: { left, right, top, bottom } } = props;
+    const createLease = useCallback(async (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void) => {
+        signal.throwIfAborted(); const now = latest.current;
+        return createNativeViewLease({ host, identity, board, parameters: { mode: 'edit', visible: now.isVisible,
+            focused: now.isFocused, theme: now.theme, inverted: false }, limits: { min, max }, insets: { left, right, top, bottom },
+            editing, onError, onNotice: notice });
+    }, [host, identity, board, min, max, left, right, top, bottom, onError]);
+    const renderView = useCallback((context: NativeEditingRenderContext) => <AttachedViewer props={props} identity={identity}
+        lease={context.lease} inverted={context.inverted} setInverted={context.setInverted} notice={context.notice}
+        setNotice={context.setNotice} editingChrome={context.chrome} />, [props, identity]);
+    return <NativeCanvasEditing props={props} board={board} adapter={adapter} factory={host.createEditingCapabilities}
+        createLease={createLease} renderView={renderView} onError={onError} onUnavailable={onUnavailable} />;
+}
+
 export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
     const { identity: incoming, nativeCanvasHost, documentId, attachCanvasSession: attach,
         onNativeCanvasReady: ready, deadlineMs, zMax } = props;
@@ -248,6 +269,6 @@ export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
         return <><NativeViewer props={props} identity={identity} board={acquired.adapter.board} onError={onError} />
             {editingFailure && <div role="status">Editing unavailable: {editingFailure.reason}</div>}</>;
     }
-    return <NativeCanvasEditing props={{ ...props, identity }} board={acquired.adapter.board} adapter={acquired.adapter}
-        factory={nativeCanvasHost.createEditingCapabilities} onError={onError} onUnavailable={editingUnavailable} />;
+    return <NativeDrawingEditing props={{ ...props, identity }} board={acquired.adapter.board} adapter={acquired.adapter}
+        onError={onError} onUnavailable={editingUnavailable} />;
 }

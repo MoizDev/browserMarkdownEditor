@@ -1,25 +1,36 @@
 import type { PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import type { EmbedClippedCoverage, EmbedCoveragePath, EmbedLaterPaint, EmbedPresentationFrame, EmbedPresentationPort,
     EmbedPresentedNode } from '../../platform/render/embedPresentation.types';
+import type { ByteLease } from '../../platform/render/gfx/api';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { RenderToken } from '../../platform/render/types';
-import type { Affine, PathCommand, Rect, ViewState } from '../../platform/types';
+import type { Affine, PathCommand, Rect } from '../../platform/types';
+import type { AlphaTraceReply, AlphaTraceRequest } from '../export/alphaWorkerHandler';
 import { createStreamingExportTextPieces } from '../export/textStreamResolver';
 import { compose, transformPoint } from '../geom/affine';
 import { coverageOutline } from '../ink/outline';
 import { isSheetParent, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { EmbedNode } from '../model/nodes';
-import type { StrokeMaterial } from '../render/material';
+import type { PathMaterial, StrokeMaterial } from '../render/material';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
-import { inkCoverageChunks, type PaintClip, type PaintFrame, type PaintItem, type PaintNodeSource, type PaintTextItem } from '../render/paintStream';
+import { inkCoverageChunks, type PaintClip, type PaintFrame, type PaintImageItem, type PaintItem, type PaintNodeSource,
+    type PaintTextItem } from '../render/paintStream';
+import type { PaintImageLease, PaintImageProvider } from '../render/resources';
+import { boardWorker } from '../workers/client';
+import type { BoardJobIdentity } from '../workers/protocol';
 
 // Provenance: embed presentation facts from this repository's own paint stream,
-// canonical ink, glyph and path coverage and compositor contracts; independent composition.
+// canonical ink, glyph, raster and path coverage and compositor contracts; independent composition.
 
 export type NativeEmbedPresented = (revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation) => void;
 
 export interface NativeEmbedPresentationOptions {
     readonly port: EmbedPresentationPort;
+    /** Decodes the exact image keys of the accepted paint. Each lease is held until the port retires the packet. */
+    readonly images: PaintImageProvider;
+    /** The canonical allocator: every owned copy and worker buffer is reserved here before it is made. */
+    readonly memory: MemoryAllocator;
     readonly onError: (error: unknown) => void;
 }
 export interface NativeEmbedPresentationProducer {
@@ -43,17 +54,81 @@ interface Building {
     readonly controller: AbortController;
 }
 
+/** Budgets chosen, not measured. A trace result is at most this many rectangles per selection. */
+const MAX_COVERAGE_RECTS = 1 << 16;
+/** Bytes charged per rectangle of a trace result: four numbers, eight bytes each. */
+const RESULT_BYTES = 2 * MAX_COVERAGE_RECTS * 4 * 8;
+/** A raster fallback tile is at most 1024 px on a side (outlineRaster TILE_SIDE): RGBA plus alpha, charged in full. */
+const RASTER_TILE_BYTES = 1024 * 1024 * 5;
+
 const sameRender = (a: RenderToken, b: RenderToken) => a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId
     && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 
+/** Everything one embed presentation has borrowed or reserved. Released only after every request has retired. */
+interface Holds {
+    readonly leases: PaintImageLease[];
+    readonly reservations: ByteLease[];
+    readonly requests: Promise<unknown>[];
+}
+interface Coverage {
+    readonly frame: PaintFrame;
+    readonly pane: Affine;
+    readonly signal: AbortSignal;
+    readonly images: PaintImageProvider;
+    readonly memory: MemoryAllocator;
+    readonly owner: BoardJobIdentity;
+    readonly holds: Holds;
+    readonly live: () => boolean;
+}
+/** One later paint item's contribution: exact opaque coverage, and the world regions it may paint non-occluding alpha in,
+ * already cut by its real clips. A translucent entry is emitted only for a region that reaches an embed. */
+interface LaterCoverage {
+    readonly opaque: EmbedLaterPaint[];
+    readonly partial: Rect[];
+}
+const emptyCoverage = (): LaterCoverage => ({ opaque: [], partial: [] });
+
 function quadBounds(localToWorld: Affine, w: number, h: number): Rect {
-    const corners = [[0, 0], [w, 0], [0, h], [w, h]].map(([x, y]) => transformPoint(localToWorld, { x, y }));
+    return rectWorld(0, 0, w, h, localToWorld);
+}
+/** World bounds of a local rectangle through a local-to-world affine. */
+function rectWorld(x0: number, y0: number, x1: number, y1: number, matrix: Affine): Rect {
+    const corners = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].map(([x, y]) => transformPoint(matrix, { x, y }));
     const minX = Math.min(...corners.map(p => p.x)), maxX = Math.max(...corners.map(p => p.x));
     const minY = Math.min(...corners.map(p => p.y)), maxY = Math.max(...corners.map(p => p.y));
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 function overlaps(a: Rect, b: Rect): boolean {
     return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+function intersect(a: Rect, b: Rect): Rect | null {
+    const x0 = Math.max(a.x, b.x), y0 = Math.max(a.y, b.y);
+    const x1 = Math.min(a.x + a.width, b.x + b.width), y1 = Math.min(a.y + a.height, b.y + b.height);
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+}
+/** World envelope of a path's control points, with its local bounds padded first. Over-approximates, never under. */
+function pathWorldBounds(d: readonly Readonly<PathCommand>[], localToWorld: Affine, pad: number): Rect | null {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const take = (x: number, y: number) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
+    for (const command of d) {
+        if (command[0] === 'M' || command[0] === 'L') take(command[1], command[2]);
+        else if (command[0] === 'C') { take(command[1], command[2]); take(command[3], command[4]); take(command[5], command[6]); }
+    }
+    if (x0 > x1) return null;
+    return rectWorld(x0 - pad, y0 - pad, x1 + pad, y1 + pad, localToWorld);
+}
+/** The region cut by an item's real clips. A clip's envelope only ever removes what provably lies outside it. */
+function clipped(region: Rect, clips: readonly PaintClip[]): Rect | null {
+    let out: Rect | null = region;
+    for (const clip of clips) {
+        const bounds = pathWorldBounds(clip.d, clip.localToWorld, 0);
+        out = out && bounds ? intersect(out, bounds) : null;
+    }
+    return out;
+}
+function pushPartial(acc: LaterCoverage, region: Rect | null, clips: readonly PaintClip[]): void {
+    const cut = region && clipped(region, clips);
+    if (cut) acc.partial.push(cut);
 }
 function clipsOf(clips: readonly PaintClip[], pane: Affine): readonly EmbedCoveragePath[] {
     return clips.map(clip => ({ d: clip.d, fillRule: clip.fillRule, toPane: compose(pane, clip.localToWorld) }));
@@ -84,13 +159,116 @@ function laterItemBounds(item: PaintItem, nodeId: string): Rect {
     if (!item.allocationBounds) throw new Error(`Later paint over embed ${nodeId} has no allocation bounds`);
     return item.allocationBounds;
 }
-/** Glyph coverage: each streamed glyph path is one canonical nonzero fill, in the item's own local frame. */
-async function glyphCoverage(item: PaintTextItem, source: PaintNodeSource, signal: AbortSignal, pageScale: number,
-    pane: Affine): Promise<readonly EmbedLaterPaint[]> {
-    const resolve = createStreamingExportTextPieces(source, signal), out: EmbedLaterPaint[] = [], toPane = compose(pane, item.localToWorld);
-    let open: { fill: readonly [number, number, number, number]; blend: string; d: PathCommand[] } | null = null;
-    const clips = clipsOf(item.clips, pane);
-    for await (const piece of resolve(item, pageScale, signal)) {
+
+function strokeParams(stroke: StrokeMaterial): NonNullable<EmbedClippedCoverage['stroke']> {
+    return Object.freeze({ width: stroke.width, cap: stroke.cap, join: stroke.join, miterLimit: stroke.miterLimit,
+        ...(stroke.dash ? { dash: stroke.dash.array, dashPhase: stroke.dash.phase } : {}) });
+}
+/** Fill and stroke of one path are one coverage: Render paints the same centreline path with fill?/stroke? in the path's
+ * own local units, as the reference painter does (lineWidth and dash on the local transform). A width of 0 paints nothing,
+ * so it is no stroke at all; a path with neither paints nothing. Translucent paint claims no occlusion, so its region is
+ * the path's envelope, padded by the stroke's furthest miter reach. */
+function pathCoverage(acc: LaterCoverage, d: readonly Readonly<PathCommand>[], fillRule: 'nonzero' | 'evenodd', material: PathMaterial,
+    localToWorld: Affine, pane: Affine, clips: readonly PaintClip[]): void {
+    const { fill, stroke } = material, strokeOn = !!stroke && stroke.width > 0;
+    if (!fill && !strokeOn) return;
+    if ((fill && fill[3] < 1) || (strokeOn && stroke.color[3] < 1) || material.blend !== 'normal') {
+        const pad = strokeOn ? stroke.width * Math.max(1, stroke.miterLimit) / 2 : 0;
+        pushPartial(acc, pathWorldBounds(d, localToWorld, pad), clips);
+        return;
+    }
+    acc.opaque.push({ opacity: 'opaque', coverage: { path: { d, fillRule, toPane: compose(pane, localToWorld) }, fill: !!fill,
+        ...(strokeOn ? { stroke: strokeParams(stroke) } : {}), clips: clipsOf(clips, pane) } });
+}
+/** Coverage of an ink or path item, which needs no decode: the canonical outline the CPU paint fills. */
+function syncCoverage(item: PaintItem, embedId: string, pane: Affine, deviceScale: number): LaterCoverage {
+    const acc = emptyCoverage();
+    if (item.kind === 'ink') {
+        // The same canonical outline the CPU paint fills: one nonzero path per coverage chunk, at the presented device scale.
+        if (item.material.blend !== 'normal' || item.material.color[3] < 1) {
+            pushPartial(acc, laterItemBounds(item, embedId), item.clips);
+            return acc;
+        }
+        const toPane = compose(pane, item.localToWorld), clips = clipsOf(item.clips, pane);
+        for (const chunk of inkCoverageChunks(item.coverage)) {
+            acc.opaque.push({ opacity: 'opaque', coverage: { path: { d: coverageOutline(chunk, deviceScale), fillRule: 'nonzero', toPane }, clips } });
+        }
+        return acc;
+    }
+    if (item.kind !== 'path') throw new Error(`Later ${item.kind} paint over embed ${embedId} needs its canonical coverage producer`);
+    pathCoverage(acc, item.d, item.fillRule, item.material, item.localToWorld, pane, item.clips);
+    return acc;
+}
+
+/** The matrix of a decoded mask: its pixels span `rect` in the item's local frame, one equal step per pixel. */
+function maskMatrix(rect: Rect, width: number, height: number): Affine {
+    return [rect.width / width, 0, 0, rect.height / height, rect.x, rect.y];
+}
+function wholePixels(crop: Rect, width: number, height: number): boolean {
+    return [crop.x, crop.y, crop.width, crop.height].every(Number.isInteger) && crop.x >= 0 && crop.y >= 0
+        && crop.width >= 1 && crop.height >= 1 && crop.x + crop.width <= width && crop.y + crop.height <= height;
+}
+/** Sends one owned source to the export worker lane. The request is recorded so its lease and charge outlive it. */
+function send(cx: Coverage, payload: Omit<AlphaTraceRequest, 'maxRects'>, transfer: Transferable[]): Promise<AlphaTraceReply> {
+    const request = boardWorker('export').request<AlphaTraceReply>('alphaTrace', { ...payload, maxRects: MAX_COVERAGE_RECTS }, cx.owner,
+        { priority: 0, signal: cx.signal, cpu: 'governed', transfer }, () => cx.live());
+    cx.holds.requests.push(request);
+    return request;
+}
+/** A crop of a held decoded frame is copied, so the worker only ever owns the copy and the lease never leaves the producer. */
+async function traceImage(cx: Coverage, lease: PaintImageLease, crop: Rect, opaqueAlpha: boolean): Promise<AlphaTraceReply | null> {
+    const reservation = cx.memory.reserve(crop.width * crop.height * 5 + RESULT_BYTES);
+    if (!reservation) return null;
+    cx.holds.reservations.push(reservation);
+    const copy = await createImageBitmap(lease.source, crop.x, crop.y, crop.width, crop.height);
+    return send(cx, { bitmap: copy, opaqueAlpha }, [copy]);
+}
+async function traceRaster(cx: Coverage, png: Uint8Array): Promise<AlphaTraceReply | null> {
+    const reservation = cx.memory.reserve(RASTER_TILE_BYTES + png.byteLength + RESULT_BYTES);
+    if (!reservation) return null;
+    cx.holds.reservations.push(reservation);
+    return send(cx, { png, opaqueAlpha: true }, []);
+}
+/** Maps a traced reply into coverage. An uncertain reply (its budget refused) claims no occlusion: the whole region is partial. */
+function addTraced(acc: LaterCoverage, reply: AlphaTraceReply | null, rect: Rect, localToWorld: Affine, cx: Coverage,
+    clips: readonly PaintClip[], whole: Rect): void {
+    if (!reply || !reply.opaque || !reply.partial) { pushPartial(acc, whole, clips); return; }
+    const world = compose(localToWorld, maskMatrix(rect, reply.width, reply.height)), toPane = compose(cx.pane, world);
+    const d: PathCommand[] = [];
+    for (let i = 0; i < reply.opaque.length; i += 4) {
+        const [x0, y0, x1, y1] = [reply.opaque[i], reply.opaque[i + 1], reply.opaque[i + 2], reply.opaque[i + 3]];
+        d.push(['M', x0, y0], ['L', x1, y0], ['L', x1, y1], ['L', x0, y1], ['Z']);
+    }
+    if (d.length) acc.opaque.push({ opacity: 'opaque', coverage: { path: { d, fillRule: 'nonzero', toPane }, clips: clipsOf(clips, cx.pane) } });
+    for (let i = 0; i < reply.partial.length; i += 4) {
+        const [x0, y0, x1, y1] = [reply.partial[i], reply.partial[i + 1], reply.partial[i + 2], reply.partial[i + 3]];
+        pushPartial(acc, rectWorld(x0, y0, x1, y1, world), clips);
+    }
+}
+
+/** An image's decoded alpha is the exact coverage of its opaque pixels, traced in the worker from the frame's own imageKey.
+ * A non-normal blend, a retained dense tile, a fractional crop or a refused budget is conservatively partial over its region. */
+async function imageCoverage(item: PaintImageItem, cx: Coverage, allocation: Rect): Promise<LaterCoverage> {
+    const acc = emptyCoverage();
+    const whole = rectWorld(item.rect.x, item.rect.y, item.rect.x + item.rect.width, item.rect.y + item.rect.height, item.localToWorld);
+    if (item.retainedTile) { pushPartial(acc, allocation, item.clips); return acc; }
+    if (item.blend !== 'normal') { pushPartial(acc, whole, item.clips); return acc; }
+    const lease = await cx.images.acquire(item.imageKey, cx.frame.token, cx.signal);
+    cx.holds.leases.push(lease);
+    cx.signal.throwIfAborted();
+    const crop = item.sourceRect ?? { x: 0, y: 0, width: lease.width, height: lease.height };
+    if (!wholePixels(crop, lease.width, lease.height)) { pushPartial(acc, whole, item.clips); return acc; }
+    const reply = await traceImage(cx, lease, crop, item.opacity >= 1);
+    addTraced(acc, reply, item.rect, item.localToWorld, cx, item.clips, whole);
+    return acc;
+}
+
+/** Glyph coverage: each streamed glyph path is one canonical fill, each stroked path its exact stroke, and each raster
+ * fallback tile its traced alpha, all in the item's own local frame and in the stream's paint order. */
+async function glyphCoverage(item: PaintTextItem, source: PaintNodeSource, cx: Coverage, pageScale: number): Promise<LaterCoverage> {
+    const acc = emptyCoverage(), resolve = createStreamingExportTextPieces(source, cx.signal);
+    let open: { fill: NonNullable<PathMaterial['fill']>; blend: PathMaterial['blend']; d: PathCommand[] } | null = null;
+    for await (const piece of resolve(item, pageScale, cx.signal)) {
         if (piece.kind === 'textPathStart') {
             if (open) throw new Error('Glyph path started inside another glyph path');
             open = { fill: piece.fill, blend: piece.blend, d: [] };
@@ -100,39 +278,31 @@ async function glyphCoverage(item: PaintTextItem, source: PaintNodeSource, signa
         } else if (piece.kind === 'textPathEnd') {
             if (!open) throw new Error('Glyph path ended without a start');
             const finished = open; open = null;
-            out.push(finished.blend !== 'normal' || finished.fill[3] < 1 ? { opacity: 'translucent' }
-                : { opacity: 'opaque', coverage: { path: { d: finished.d, fillRule: 'nonzero', toPane }, clips } });
-        } else throw new Error(`Text item ${item.nodeId} fell back to raster outlines; its canonical glyph path is unavailable`);
+            pathCoverage(acc, finished.d, 'nonzero', { fill: finished.fill, blend: finished.blend }, item.localToWorld, cx.pane, item.clips);
+        } else if (open) {
+            throw new Error(`Text item ${item.nodeId} produced a ${piece.kind} piece inside a glyph path`);
+        } else if (piece.kind === 'raster') {
+            const whole = rectWorld(piece.rect.x, piece.rect.y, piece.rect.x + piece.rect.width, piece.rect.y + piece.rect.height, item.localToWorld);
+            if (piece.blend !== 'normal') { pushPartial(acc, whole, item.clips); continue; }
+            const reply = await traceRaster(cx, piece.png);
+            addTraced(acc, reply, piece.rect, item.localToWorld, cx, item.clips, whole);
+        } else if (piece.kind === 'path') {
+            const stroke = piece.stroke;
+            const material: PathMaterial = { fill: piece.fill, blend: piece.blend ?? 'normal', stroke: stroke && stroke.miterLimit !== undefined
+                ? { color: stroke.color, width: stroke.width, cap: stroke.cap, join: stroke.join, miterLimit: stroke.miterLimit,
+                    dash: stroke.dash ? { array: stroke.dash, phase: stroke.dashPhase ?? 0 } : undefined } : undefined };
+            if (stroke && stroke.miterLimit === undefined) {
+                // The text stream never states a miter limit: its envelope is padded by the widest reach the SVG default allows.
+                pushPartial(acc, pathWorldBounds(piece.d, item.localToWorld, stroke.width * 4 / 2), item.clips);
+            } else pathCoverage(acc, piece.d, piece.fillRule ?? 'nonzero', material, item.localToWorld, cx.pane, item.clips);
+        } else throw new Error(`Text item ${item.nodeId} produced an unexpected ${piece.kind} piece`);
     }
     if (open) throw new Error('Glyph stream ended inside a glyph path');
-    return Object.freeze(out);
-}
-/** The one later-paint coverage an item contributes, or refusal when its canonical producer is not available. */
-function laterCoverage(item: PaintItem, embedId: string, pane: Affine, deviceScale: number): readonly EmbedLaterPaint[] {
-    if (item.kind === 'ink') {
-        // The same canonical outline the CPU paint fills: one nonzero path per coverage chunk, at the presented device scale.
-        if (item.material.blend !== 'normal' || item.material.color[3] < 1) return [{ opacity: 'translucent' }];
-        const toPane = compose(pane, item.localToWorld), clips = clipsOf(item.clips, pane);
-        return inkCoverageChunks(item.coverage).map(chunk => ({ opacity: 'opaque' as const,
-            coverage: { path: { d: coverageOutline(chunk, deviceScale), fillRule: 'nonzero' as const, toPane }, clips } }));
-    }
-    if (item.kind !== 'path') throw new Error(`Later ${item.kind} paint over embed ${embedId} needs its canonical coverage producer`);
-    // Fill and stroke are one coverage: Render paints the same centreline path with fill?/stroke? in the path's own
-    // local units, exactly as the reference painter does (lineWidth and dash on the local transform). A width of 0
-    // paints nothing, so it is no stroke at all.
-    const { fill, stroke } = item.material, strokeOn = !!stroke && stroke.width > 0;
-    if (!fill && !strokeOn) return [];
-    if ((fill && fill[3] < 1) || (strokeOn && stroke.color[3] < 1) || item.material.blend !== 'normal') return [{ opacity: 'translucent' }];
-    return [{ opacity: 'opaque', coverage: { path: { d: item.d, fillRule: item.fillRule, toPane: compose(pane, item.localToWorld) },
-        fill: !!fill, ...(strokeOn ? { stroke: strokeParams(stroke) } : {}), clips: clipsOf(item.clips, pane) } }];
-}
-function strokeParams(stroke: StrokeMaterial): NonNullable<EmbedClippedCoverage['stroke']> {
-    return Object.freeze({ width: stroke.width, cap: stroke.cap, join: stroke.join, miterLimit: stroke.miterLimit,
-        ...(stroke.dash ? { dash: stroke.dash.array, dashPhase: stroke.dash.phase } : {}) });
+    return acc;
 }
 
-function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<string> | null, pane: Affine, deviceScale: number,
-    glyphs: ReadonlyMap<number, readonly EmbedLaterPaint[]>): readonly EmbedPresentedNode[] {
+function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<string> | null, pane: Affine,
+    later: ReadonlyMap<number, LaterCoverage>): readonly EmbedPresentedNode[] {
     const items: readonly PaintItem[] = [...frame.underlay, ...frame.content];
     const presented: EmbedPresentedNode[] = [];
     for (const card of embedCards(doc, items)) {
@@ -141,11 +311,10 @@ function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<
             const item = items[j];
             if (item.nodeId === card.nodeId) continue;
             if (!overlaps(laterItemBounds(item, card.nodeId), card.world)) continue;
-            if (item.kind === 'text') {
-                const coverage = glyphs.get(j);
-                if (!coverage) throw new Error(`Glyph coverage for ${item.nodeId} was not prepared`);
-                laterPaint.push(...coverage);
-            } else laterPaint.push(...laterCoverage(item, card.nodeId, pane, deviceScale));
+            const coverage = later.get(j);
+            if (!coverage) throw new Error(`Later coverage for ${item.nodeId} was not prepared`);
+            laterPaint.push(...coverage.opaque);
+            if (coverage.partial.some(region => overlaps(region, card.world))) laterPaint.push({ opacity: 'translucent' });
         }
         const cardItem = items[card.index];
         presented.push({ nodeId: card.nodeId, source: card.node.url, order: card.index, rect: { x: 0, y: 0, width: card.node.w, height: card.node.h },
@@ -155,20 +324,24 @@ function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<
     return Object.freeze(presented);
 }
 
-/** Glyph coverage is prepared before the synchronous node build, so every text item that overlaps an embed is resolved first. */
-async function prepareGlyphs(doc: BoardDoc, frame: PaintFrame, source: PaintNodeSource, signal: AbortSignal, pageScale: number,
-    pane: Affine): Promise<ReadonlyMap<number, readonly EmbedLaterPaint[]>> {
+/** Coverage for every later item that overlaps an embed is prepared before the synchronous node build. Glyph, raster and
+ * image items resolve asynchronously; each item is resolved once for all the embeds it overlaps. */
+async function prepareLater(doc: BoardDoc, frame: PaintFrame, source: PaintNodeSource, cx: Coverage,
+    deviceScale: number): Promise<ReadonlyMap<number, LaterCoverage>> {
     const items: readonly PaintItem[] = [...frame.underlay, ...frame.content];
-    const cards = embedCards(doc, items), glyphs = new Map<number, readonly EmbedLaterPaint[]>();
+    const cards = embedCards(doc, items), later = new Map<number, LaterCoverage>();
     for (let j = 0; j < items.length; j++) {
         const item = items[j];
-        if (item.kind !== 'text') continue;
+        if (!cards.some(card => card.nodeId !== item.nodeId && card.index < j)) continue;
         const bounds = laterItemBounds(item, item.nodeId);
         if (!cards.some(card => card.nodeId !== item.nodeId && card.index < j && overlaps(bounds, card.world))) continue;
-        glyphs.set(j, await glyphCoverage(item, source, signal, pageScale, pane));
-        signal.throwIfAborted();
+        const coverage = item.kind === 'text' ? await glyphCoverage(item, source, cx, deviceScale)
+            : item.kind === 'image' ? await imageCoverage(item, cx, bounds)
+            : syncCoverage(item, item.nodeId, cx.pane, deviceScale);
+        cx.signal.throwIfAborted();
+        later.set(j, coverage);
     }
-    return glyphs;
+    return later;
 }
 
 /** The raw frame as a pinned PaintNodeSource: the export text resolver reads only its identity and liveness guard. */
@@ -182,13 +355,23 @@ function frameSource(frame: PaintFrame, live: () => boolean): PaintNodeSource {
  * the latest drawn frame is held, retain included, and built only when the matching acceptance
  * arrives. A newer draw supersedes a held frame and releases it at once, since it never reached the
  * port; a newer draw also aborts a build in flight, whose retain is released only after its glyph
- * streams have settled. dispose releases the held frame and aborts the build.
+ * streams have settled. dispose releases the held frame and aborts the build. A presented packet
+ * holds the raw frame until the port retires it; decoded leases and budget reservations are released
+ * only after every worker request they served has physically retired.
  */
 export function createNativeEmbedPresentationProducer(options: NativeEmbedPresentationOptions): NativeEmbedPresentationProducer {
     let pending: Pending | null = null, building: Building | null = null, disposed = false;
     const releaseQuietly = (value: Pending) => { try { value.releaseRaw(); } catch (error) { options.onError(error); } };
     const run = async (value: Pending, presentation: PlatformPresentation, controller: AbortController): Promise<void> => {
         const { frame, context } = value, signal = controller.signal;
+        const holds: Holds = { leases: [], reservations: [], requests: [] };
+        const releaseHeld = () => {
+            releaseQuietly(value);
+            void Promise.allSettled(holds.requests).then(() => {
+                for (const lease of holds.leases) { try { lease.release(); } catch (error) { options.onError(error); } }
+                for (const reservation of holds.reservations) options.memory.release(reservation);
+            });
+        };
         let handed = false;
         try {
             const doc = frame.sourceDoc;
@@ -198,16 +381,19 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             if (!pane) throw new Error('Embed presentation needs the pane transform of the retained draw');
             const deviceScale = context.view.camera.z * context.view.viewport.dpr;
             const source = frameSource(frame, () => !signal.aborted && !disposed);
-            const glyphs = await prepareGlyphs(doc, frame, source, signal, deviceScale, pane);
+            const cx: Coverage = { frame, pane, signal, images: options.images, memory: options.memory, holds,
+                owner: { session: crypto.randomUUID(), epoch: frame.token.vaultEpoch, revision: frame.sceneRevision },
+                live: () => !signal.aborted && !disposed };
+            const later = await prepareLater(doc, frame, source, cx, deviceScale);
             signal.throwIfAborted();
             const packet: EmbedPresentationFrame = { presentation, sceneRevision: frame.sceneRevision,
                 viewport: Object.freeze({ width: context.view.viewport.width, height: context.view.viewport.height }),
-                nodes: presentedEmbeds(doc, frame, context.omittedNodeIds, pane, deviceScale, glyphs), release: () => releaseQuietly(value) };
+                nodes: presentedEmbeds(doc, frame, context.omittedNodeIds, pane, later), release: releaseHeld };
             handed = true;
             options.port.present(packet);
         } catch (error) {
             if (!handed) {
-                releaseQuietly(value);
+                releaseHeld();
                 if (!signal.aborted) options.onError(error);
             }
         } finally {

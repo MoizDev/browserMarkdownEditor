@@ -10,8 +10,9 @@ export type CircleClipResult =
     | { readonly status: 'uncertain'; readonly reason: string };
 export type CircleClipStep = { readonly done: false } | { readonly done: true; readonly result: CircleClipResult };
 
-// Four vertices per ancestor frame, with the model's 64-level ancestry limit.
-const MAX_VERTICES = 256;
+// An outward interval-box hull can have four corners per clipped frame vertex.
+const MAX_VERTICES = 1024;
+const validated = new WeakMap<readonly Vec2[], { readonly polygon: readonly Vec2[]; readonly winding: number }>();
 type PointInterval = { x: Interval; y: Interval };
 const point = (p: Vec2): PointInterval => ({ x: interval(p.x), y: interval(p.y) });
 const square = (a: Interval): Interval => {
@@ -30,7 +31,8 @@ function orientation(a: Vec2, b: Vec2, c: Vec2): number {
 }
 function uncertain(reason: string): CircleClipResult { return { status: 'uncertain', reason }; }
 
-function* calculate(circle: ClipCircle, polygon: readonly Vec2[], errorWorld: number): Generator<void, CircleClipResult> {
+function* calculate(circle: ClipCircle, polygon: readonly Vec2[], errorWorld: number, cachedWinding: number | undefined,
+    remember: (winding: number) => void): Generator<void, CircleClipResult> {
     const { centre: c, radius: r } = circle, n = polygon.length;
     if (!Number.isFinite(c.x) || !Number.isFinite(c.y) || !Number.isFinite(r) || r < 0
         || !Number.isFinite(errorWorld) || errorWorld <= 0 || n < 3 || n > MAX_VERTICES) throw new RangeError('Invalid circle, polygon or error budget');
@@ -41,17 +43,20 @@ function* calculate(circle: ClipCircle, polygon: readonly Vec2[], errorWorld: nu
     }
     // Every vertex must lie on the same side of every directed edge. Local turn
     // tests alone accept star polygons; this also validates winding and convexity.
-    let winding = 0;
-    for (let i = 0; i < n; i++) {
-        const a = polygon[i], b = polygon[(i + 1) % n];
-        for (let j = 0; j < n; j++) {
-            const sign = orientation(a, b, polygon[j]);
-            if (sign && winding && sign !== winding) throw new RangeError('Clip polygon must be convex and consistently wound');
-            if (sign) winding = sign;
-            yield;
+    let winding = cachedWinding ?? 0;
+    if (cachedWinding === undefined) {
+        for (let i = 0; i < n; i++) {
+            const a = polygon[i], b = polygon[(i + 1) % n];
+            for (let j = 0; j < n; j++) {
+                const sign = orientation(a, b, polygon[j]);
+                if (sign && winding && sign !== winding) throw new RangeError('Clip polygon must be convex and consistently wound');
+                if (sign) winding = sign;
+                yield;
+            }
         }
+        if (!winding) throw new RangeError('Clip polygon has zero area');
+        remember(winding);
     }
-    if (!winding) throw new RangeError('Clip polygon has zero area');
     if (r === 0) {
         for (let i = 0; i < n; i++) { if (orientation(polygon[i], polygon[(i + 1) % n], c) * winding < 0) return { status: 'empty' }; yield; }
         return { status: 'bounded', bounds: [c.x, c.y, c.x, c.y], errorWorld: 0 };
@@ -113,7 +118,11 @@ function* calculate(circle: ClipCircle, polygon: readonly Vec2[], errorWorld: nu
 export function createCircleClipBoundsJob(circle: ClipCircle, clipPolygon: readonly Vec2[], errorWorld: number): { step(maxWork: number): CircleClipStep } {
     if (clipPolygon.length > MAX_VERTICES) throw new RangeError('Clip polygon exceeds ancestry limit');
     const c = { centre: { ...circle.centre }, radius: circle.radius }, polygon = clipPolygon.map(p => ({ ...p }));
-    const work = calculate(c, polygon, errorWorld); let result: CircleClipResult | undefined;
+    const prior = validated.get(clipPolygon);
+    const same = prior?.polygon.length === polygon.length && polygon.every((p, i) => p.x === prior.polygon[i].x && p.y === prior.polygon[i].y);
+    const work = calculate(c, polygon, errorWorld, same ? prior.winding : undefined,
+        winding => { validated.set(clipPolygon, { polygon, winding }); });
+    let result: CircleClipResult | undefined;
     return { step(maxWork) {
         if (!Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid geometry work budget');
         if (result) return { done: true, result };

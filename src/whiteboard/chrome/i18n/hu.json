@@ -377,6 +377,7 @@
     "paper.deleteContents": "Ez az oldal a következőt tartalmazza: {items}.",
     "paper.deleteConfirm": "Oldal törlése",
     "paper.cancel": "Mégsem",
-    "paper.keepProtected": "A zárolt tartalom megmarad."
+    "paper.keepProtected": "A zárolt tartalom megmarad.",
+    "chrome.readOnly": "Ez a tábla csak olvasható."
   }
 }

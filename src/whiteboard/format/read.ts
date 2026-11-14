@@ -45,10 +45,13 @@ async function* chunks(source: ByteSource): AsyncIterable<Uint8Array> {
         else yield* source;
     } catch { throw new ReadFailure('io', 'Byte source failed while opening the board'); }
 }
-function decode(parts: readonly Uint8Array[]): string {
+async function decode(parts: readonly Uint8Array[], cooperate?: () => Promise<void>): Promise<string> {
     const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
     const text: string[] = [];
-    for (const part of parts) text.push(decoder.decode(part, { stream: true }));
+    for (const part of parts) {
+        text.push(decoder.decode(part, { stream: true }));
+        if (cooperate) await cooperate();
+    }
     text.push(decoder.decode());
     return text.join('');
 }
@@ -60,11 +63,11 @@ async function* lines(source: ByteSource, state: StreamState, options: ReadOptio
         // Borrowed async input buffers may be reused as soon as iteration resumes.
         else if (!oversized && part.length) parts.push(part.slice());
     }
-    function take(): Line {
+    async function take(): Promise<Line> {
         let text: string | null = null, error: string | undefined;
         if (oversized) error = 'Physical line exceeds 64 MiB';
         else {
-            try { text = decode(parts); }
+            try { text = await decode(parts, options.cooperate); }
             catch (cause) {
                 if (!(cause instanceof TypeError)) throw cause;
                 error = 'Invalid UTF-8 in native input';
@@ -98,21 +101,22 @@ async function* lines(source: ByteSource, state: StreamState, options: ReadOptio
                 if (byte !== 32 && byte !== 9 && byte !== 10 && byte !== 13) state.whitespaceOnly = false;
                 if (byte !== 10) continue;
                 add(part.subarray(start, i));
-                yield take();
+                yield await take();
                 start = i + 1;
             }
             add(part.subarray(start));
             if (options.cooperate) await options.cooperate();
         }
     }
-    if (length) yield take();
+    if (length) yield await take();
 }
-function byteUnits(text: string, start: number, end: number): number {
+async function byteUnits(text: string, start: number, end: number, cooperate?: () => Promise<void>): Promise<number> {
     let bytes = 0;
     for (let i = start; i < end; i++) {
         const code = text.charCodeAt(i);
         if (code >= 0xd800 && code <= 0xdbff) { i++; bytes += 4; }
         else bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : 3;
+        if (cooperate && (i & 4095) === 4095) await cooperate();
     }
     return bytes;
 }
@@ -135,7 +139,7 @@ function retainedMedia(draft: Pick<ReadDraft, 'input'>): ReadonlyMap<MediaId, nu
 }
 
 class Records {
-    header: ReturnType<typeof readHeader> | null = null;
+    header: Awaited<ReturnType<typeof readHeader>> | null = null;
     readonly issues: ReadIssue[] = [];
     issueCount = 0;
     readOnly = false;
@@ -165,9 +169,9 @@ class Records {
     problem(code: ReadIssue['code'], reason: string, position?: ReadPosition): void {
         this.issue({ code, reason, readOnly: true, ...(position ? { position } : {}) });
     }
-    open(root: JsonSpan): void {
+    async open(root: JsonSpan): Promise<void> {
         try {
-            this.header = readHeader(root);
+            this.header = await readHeader(root, this.options.cooperate);
             if (!this.header.fenceValid) this.problem('fence', 'The compatibility guard is missing or contains data; retain the original file read-only');
             if (this.header.version[0] !== NATIVE_VERSION[0]) this.problem('version', 'This native major version is not editable by this build');
             if (this.options.expectedKind && this.header.kind !== this.options.expectedKind) this.problem('kind', 'Native content kind disagrees with its host; it is not legacy content');
@@ -181,7 +185,7 @@ class Records {
         this.recordsSeen++;
         if (this.endSeen) this.problem('syntax', 'The end record is not last', position);
         if (!this.header) {
-            this.unmapped.push({ raw: root.raw(), position, reason: 'The header could not be admitted' });
+            this.unmapped.push({ raw: this.options.cooperate ? await root.rawIncremental(this.options.cooperate) : root.raw(), position, reason: 'The header could not be admitted' });
             return;
         }
         try {
@@ -190,7 +194,7 @@ class Records {
         } catch (error) {
             if (!(error instanceof JsonReadError)) throw error;
             this.problem(error.code, error.message, position);
-            this.unmapped.push({ raw: root.raw(), position, reason: error.message });
+            this.unmapped.push({ raw: this.options.cooperate ? await root.rawIncremental(this.options.cooperate) : root.raw(), position, reason: error.message });
         }
     }
     private keep(record: MappedRecord, position: ReadPosition, reformatted: boolean): void {
@@ -259,9 +263,10 @@ class Records {
     }
 }
 
-function recordType(root: JsonSpan): string | null {
+async function recordType(root: JsonSpan, cooperate?: () => Promise<void>): Promise<string | null> {
     if (root.kind !== 'object') return null;
-    for (const [key, value] of root.fields()) if (key === 'type') return value.kind === 'string' ? value.string(128) : null;
+    const fields = cooperate ? root.fieldsIncremental(cooperate) : root.fields();
+    for await (const [key, value] of fields) if (key === 'type') return value.kind === 'string' ? value.string(128) : null;
     return null;
 }
 async function headerLine(text: string, cooperate?: () => Promise<void>): Promise<JsonSpan | null> {
@@ -269,7 +274,8 @@ async function headerLine(text: string, cooperate?: () => Promise<void>): Promis
     try {
         const root = cooperate ? await parseJsonIncremental(text + ']}', cooperate) : parseJson(text + ']}');
         let last: readonly [string, JsonSpan] | undefined;
-        for (const field of root.fields()) last = field;
+        const fields = cooperate ? root.fieldsIncremental(cooperate) : root.fields();
+        for await (const field of fields) last = field;
         return last?.[0] === 'records' && last[1].kind === 'array' ? root : null;
     } catch (error) { if (!(error instanceof JsonReadError)) throw error; return null; }
 }
@@ -282,8 +288,24 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
         bytesRead: 0, whitespaceOnly: true, fallback: [], fallbackBytes: 0,
         probe: new Uint8Array(CHUNK_BYTES), probeBytes: 0
     };
+    let sliceStart = performance.now();
+    const cooperate = options.cooperate ? async () => {
+        if (options.signal?.aborted) throw new ReadFailure('io', 'Opening the board was cancelled');
+        if (performance.now() - sliceStart >= 3) { await options.cooperate!(); sliceStart = performance.now(); }
+    } : undefined;
+    async function trim(text: string): Promise<string> {
+        if (!cooperate) return white(text);
+        let start = 0, end = text.length;
+        while (start < end && /[ \t\r\n]/u.test(text[start])) {
+            if ((++start & 4095) === 0) await cooperate();
+        }
+        while (end > start && /[ \t\r\n]/u.test(text[end - 1])) {
+            if ((--end & 4095) === 0) await cooperate();
+        }
+        return text.slice(start, end);
+    }
     const safeOptions: ReadOptions = {
-        ...options, admitEncoded: (pts, header) => {
+        ...options, cooperate, admitEncoded: (pts, header) => {
             try {
                 const ref = options.admitEncoded(pts, header);
                 if (!Number.isSafeInteger(ref) || ref < 0) throw new Error('Invalid sample reference');
@@ -302,7 +324,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
     try {
         if (options.byteLength !== undefined && (!Number.isSafeInteger(options.byteLength) || options.byteLength < 0)) throw new ReadFailure('io', 'Invalid source byte-length fact');
         if ((options.byteLength ?? 0) > FORMAT_LIMITS.fileBytes) throw new ReadFailure('limit', 'Native file exceeds 1 GiB');
-        for await (const line of lines(source, state, options)) {
+        for await (const line of lines(source, state, safeOptions)) {
             if (options.signal?.aborted) throw new ReadFailure('io', 'Opening the board was cancelled');
             if (line.text === null) {
                 if (streaming) {
@@ -313,10 +335,10 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
                 }
                 continue;
             }
-            let text = white(line.text);
+            let text = await trim(line.text);
             if (first) {
                 first = false;
-                if (text.startsWith('\ufeff')) { text = white(text.slice(1)); reformatted = true; }
+                if (text.startsWith('\ufeff')) { text = await trim(text.slice(1)); reformatted = true; }
             }
             if (!text) continue;
             if (!streaming) {
@@ -324,10 +346,10 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
                 // mistake a compact nested object in a pretty legacy snapshot for an envelope.
                 if (rootLine) {
                     rootLine = false;
-                    native ||= options.cooperate ? await hasNativeMarkerIncremental(text, options.cooperate) : hasNativeMarker(text);
-                    const header = await headerLine(text, options.cooperate);
-                    if (header && (options.cooperate ? await hasNativeMarkerIncremental(header.source, options.cooperate) : hasNativeMarker(header.source))) {
-                        native = true; streaming = true; records.open(header);
+                    native ||= cooperate ? await hasNativeMarkerIncremental(text, cooperate) : hasNativeMarker(text);
+                    const header = await headerLine(text, cooperate);
+                    if (header && (cooperate ? await hasNativeMarkerIncremental(header.source, cooperate) : hasNativeMarker(header.source))) {
+                        native = true; streaming = true; await records.open(header);
                     }
                 }
                 continue;
@@ -342,14 +364,14 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
             if (arrayClosed) { records.problem('syntax', 'Unexpected content after records array'); continue; }
             if (records.recordsSeen >= FORMAT_LIMITS.records) throw new ReadFailure('limit', 'Native input exceeds five million records');
             const comma = text.endsWith(',');
-            const body = comma ? white(text.slice(0, -1)) : text;
+            const body = comma ? await trim(text.slice(0, -1)) : text;
             const position: ReadPosition = { ordinal: records.recordsSeen, line: line.line, byteOffset: line.byteOffset, byteLength: line.byteLength };
             if (haveRecord && !lastComma) records.problem('syntax', 'Missing comma between native records', position);
             haveRecord = true; lastComma = comma;
             let root: JsonSpan;
             try {
-                root = options.cooperate ? await parseJsonIncremental(body, options.cooperate) : parseJson(body);
-                if (recordType(root) !== null) { recordLines = true; state.fallback = null; }
+                root = cooperate ? await parseJsonIncremental(body, cooperate) : parseJson(body);
+                if (await recordType(root, cooperate) !== null) { recordLines = true; state.fallback = null; }
             } catch (error) {
                 if (!(error instanceof JsonReadError)) throw error;
                 records.recordsSeen++;
@@ -357,7 +379,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
                 continue;
             }
             await records.record(root, position, reformatted);
-            if (options.cooperate) await options.cooperate();
+            if (cooperate) await cooperate();
         }
         ioComplete = true;
         if (options.byteLength !== undefined && options.byteLength !== state.bytesRead) throw new ReadFailure('io', 'Source length changed while opening the board');
@@ -372,7 +394,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
         // A prefix may end inside a multi-byte character. This probe only recognizes the marker;
         // full line/fallback decoding is fatal and remains the authority for UTF-8 admission.
         const probe = new TextDecoder().decode(state.probe.subarray(0, state.probeBytes));
-        native = options.cooperate ? await hasNativeMarkerIncremental(probe, options.cooperate) : hasNativeMarker(probe);
+        native = cooperate ? await hasNativeMarkerIncremental(probe, cooperate) : hasNativeMarker(probe);
     }
     state.probe = new Uint8Array(0);
     if (!fatal && state.whitespaceOnly) return result('empty', null, true);
@@ -380,31 +402,36 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
         // Only the no-record-lines case can use whole-envelope parsing. Lexical spans, not
         // JSON.parse(envelope), keep block/point limits ahead of materializing their arrays.
         try {
-            let text = decode(state.fallback);
+            let text = await decode(state.fallback, cooperate);
             state.fallback = null;
             const bomBytes = text.startsWith('\ufeff') ? 3 : 0;
             if (bomBytes) { text = text.slice(1); reformatted = true; }
-            if (!white(text)) return result('empty', null, true);
-            const marked = options.cooperate ? await hasNativeMarkerIncremental(text, options.cooperate) : hasNativeMarker(text);
+            if (!await trim(text)) return result('empty', null, true);
+            const marked = cooperate ? await hasNativeMarkerIncremental(text, cooperate) : hasNativeMarker(text);
             native ||= marked;
-            const root = options.cooperate ? await parseJsonIncremental(text, options.cooperate) : parseJson(text);
+            const root = cooperate ? await parseJsonIncremental(text, cooperate) : parseJson(text);
             if (!marked) return result('other', null, true);
             native = true;
             records = new Records(safeOptions); // Failed line guesses admitted no samples.
-            records.open(root);
-            const array = root.fieldMap().get('records');
+            await records.open(root);
+            const array = (cooperate ? await root.fieldMapIncremental(cooperate) : root.fieldMap()).get('records');
             if (!array || array.kind !== 'array') throw new JsonReadError('syntax', 'Native records must be an array', root.start);
-            array.length(FORMAT_LIMITS.records);
+            if (cooperate) await array.lengthIncremental(FORMAT_LIMITS.records, cooperate);
+            else array.length(FORMAT_LIMITS.records);
             reformatted = true;
             let cursor = 0, line = 1, offset = 0;
-            for (const item of array.items()) {
+            const items = cooperate ? array.itemsIncremental(cooperate) : array.items();
+            for await (const item of items) {
                 if (options.signal?.aborted) throw new ReadFailure('io', 'Opening the board was cancelled');
-                offset += byteUnits(text, cursor, item.start);
-                for (let i = cursor; i < item.start; i++) if (text.charCodeAt(i) === 10) line++;
-                const length = byteUnits(text, item.start, item.end);
+                offset += await byteUnits(text, cursor, item.start, cooperate);
+                for (let i = cursor; i < item.start; i++) {
+                    if (text.charCodeAt(i) === 10) line++;
+                    if (cooperate && (i & 4095) === 4095) await cooperate();
+                }
+                const length = await byteUnits(text, item.start, item.end, cooperate);
                 const position = { ordinal: records.recordsSeen, line, byteOffset: offset + bomBytes, byteLength: length };
                 await records.record(item, position, true);
-                if (options.cooperate) await options.cooperate();
+                if (cooperate) await cooperate();
                 // Advance only to the start: the next span's prefix includes this record once.
                 cursor = item.start;
             }

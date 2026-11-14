@@ -377,6 +377,7 @@
     "paper.deleteContents": "Den här sidan innehåller {items}.",
     "paper.deleteConfirm": "Ta bort sida",
     "paper.cancel": "Avbryt",
-    "paper.keepProtected": "Låst innehåll kommer att behållas."
+    "paper.keepProtected": "Låst innehåll kommer att behållas.",
+    "chrome.readOnly": "Denna tavla är skrivskyddad."
   }
 }

@@ -377,6 +377,7 @@
     "paper.deleteContents": "ఈ పేజీలో {items} ఉంది.",
     "paper.deleteConfirm": "పేజీని తొలగించండి",
     "paper.cancel": "రద్దు చేయి",
-    "paper.keepProtected": "లాక్ చేయబడిన కంటెంట్ ఉంచబడుతుంది."
+    "paper.keepProtected": "లాక్ చేయబడిన కంటెంట్ ఉంచబడుతుంది.",
+    "chrome.readOnly": "ఈ బోర్డు చదవడానికి మాత్రమే."
   }
 }

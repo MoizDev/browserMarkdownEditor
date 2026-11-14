@@ -148,7 +148,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { router.resumeInk(view.token); services.clearLatches() }
+    clearLatches: () => { router.resumeInk(view.token); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
       if (id === 'escape') { services.cancelPendingGestures(); if (pointer.interrupt('escape')) return true }

@@ -9,6 +9,7 @@ import { groupRecovery } from './recoveryOffers';
 export function createRecoveryJournal(options: { refused(): void; failed(error: unknown): void }) {
     const pending = new Map<string, RecoveryEntry>();
     const acknowledged = new Map<string, number>();
+    const owned = new Set<string>();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let tail: Promise<void> = Promise.resolve();
     const key = (vaultId: string, journalId: string) => JSON.stringify([vaultId, journalId]);
@@ -43,6 +44,7 @@ export function createRecoveryJournal(options: { refused(): void; failed(error: 
         /** Capture synchronously: an adapter may mutate its own arrays after returning. */
         record(entry: RecoveryEntry): void {
             const id = key(entry.vaultId, entry.journalId);
+            owned.add(id);
             if ((acknowledged.get(id) ?? -1) >= entry.revision) return;
             const previous = pending.get(id);
             if (previous && previous.revision > entry.revision) return;
@@ -65,7 +67,7 @@ export function createRecoveryJournal(options: { refused(): void; failed(error: 
         },
         async list(vaultId: string): Promise<RecoveryEntry[]> {
             await tail;
-            const entries = await listRecovery(vaultId);
+            const entries = (await listRecovery(vaultId)).filter(entry => !owned.has(key(entry.vaultId, entry.journalId)));
             const copies = [...groupRecovery(entries).values()].flatMap(group => group.copies);
             await enqueue(() => markRecoveryCopies(vaultId, copies.map(entry => entry.journalId)));
             const copyIds = new Set(copies.map(entry => entry.journalId));

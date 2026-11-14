@@ -67,9 +67,10 @@ third-party code included (normally "none") · date.
 | `scene/bounds.ts` | lane w-e | WIP W-E3; R-W38/39 | rendering §§2,6; document-model §§6.1,10.2 | Greenfield model/ink public types and R-W38/39; own Float64 affine and conservative source-summary bounds; injected exact-layout metrics; no tldraw source | none | 2026-11-13 |
 | `scene/index.ts` | lane w-e | WIP W-E3 | rendering §6 | Kamel/Faloutsos, On Packing R-trees, CIKM1993, https://www.cs.cmu.edu/~christos/PUBLICATIONS.OLDER/cikm93.pdf (search/abstract ideas only); own Hilbert quadrant construction and standard AVL height rotations, no library implementation | none | 2026-11-13 |
 | `scene/order.ts` | lane w-e | WIP W-E3 | rendering §§2,3.1,6 | Own fixed-size chunk sequence and Fenwick rank counts; public model stable-slot/order requirements; no library or tldraw code | none | 2026-11-13 |
-| `render/colour.ts` | lane w-e | WIP W-E4 | rendering §5.2; C2.4 | Public Rgba/RgbaP contracts; encoded-sRGB premultiplication and W3C source-over/multiply algebra from design; injected theme palettes, no legacy palette implementation | none | 2026-11-13 |
-| `render/material.ts` | lane w-e | WIP W-E4; R-20 | rendering §§3.1,4,5.2 | Design's non-isolated inherited opacity and two highlighter bands0.82/0.35; public stroke metrics; own resolved material construction | none | 2026-11-13 |
-| `render/paintStream.ts` | lane w-e | WIP W-E4 | rendering §§2–5,11,12 | Shared platform/ink public types; direct v-b consumer agreement; own ordered two-band resumable command emission and clip/image transform contract, no second scene or stroker | none | 2026-11-13 |
+| `render/colour.ts` | lane w-e | W-E4 shared contract | rendering §5.2; C2.4 | Public Rgba/RgbaP contracts; encoded-sRGB premultiplication and W3C source-over/multiply algebra from design; injected theme palettes, no legacy palette implementation | none | 2026-11-13 |
+| `render/material.ts` | lane w-e | W-E4 shared contract; R-20 | rendering §§3.1,4,5.2 | Design's non-isolated inherited opacity and two highlighter bands0.82/0.35; public stroke metrics; own resolved material construction | none | 2026-11-13 |
+| `render/paintStream.ts` | lane w-e | W-E4 shared contract | rendering §§2–5,11,12 | Shared platform/ink public types; direct v-b consumer agreement; own ordered two-band resumable command emission and clip/image transform contract, no second scene or stroker | none | 2026-11-13 |
+| `render/resources.ts` | lane w-e | W-E4 shared contract | rendering §§7,10,11; C4 | Public render tokens and direct v-b preparation/asset-lease agreement; injected origin-clean async decoder ownership, immutable frame source and existing-host invalidation, no private scheduler/context | none | 2026-11-13 |
 
 ## Canvas 2D path (lane v-b)
 

@@ -11,12 +11,13 @@ export interface PaintClip {
     readonly fillRule: FillRule;
     readonly localToWorld: Affine;
 }
-interface PaintBase {
+export interface PaintBase {
     readonly key: string;
     readonly nodeId: string;
     readonly geometryKey: string;
     // Absolute Float64 affine: includes page/ancestor placement ONCE. Ink point-factor resize
     // has already happened in coverage; this transform must not rescale its circular radii.
+    // A backend's rebased path composes Translate(path.origin) AFTER this affine, exactly once.
     readonly localToWorld: Affine;
     readonly clips: readonly PaintClip[]; // Root-to-leaf intersection, each in its OWN transform.
 }

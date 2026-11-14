@@ -487,15 +487,16 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
             };
             const stageBody = (input: Op): void => {
                 const opIndex = attempted++;
-                const replay = origin === 'undo' || origin === 'redo' || origin === 'revert';
-                // Even a mixed content step cannot replay filesystem bookkeeping.
-                if (replay && input.t === 'media' && input.op === 'set-file') return;
+                const historyReplay = origin === 'undo' || origin === 'redo';
+                const replay = historyReplay || origin === 'revert';
+                // History never rewinds physical names; receipt rollback stays exact.
+                if (historyReplay && input.t === 'media' && input.op === 'set-file') return;
                 let op = input;
                 const result = validateOp(context, op, opIndex);
                 if (!result.ok) throw new ApplyRefused(result);
                 let plan: OpPlan | undefined, captured: NormalizationStep['captured'];
                 try {
-                    if (replay) op = replayMediaLocation(op, mediaLocations);
+                    if (historyReplay) op = replayMediaLocation(op, mediaLocations);
                     plan = planOp(doc, op);
                     captured = !plan || replay ? NO_CAPTURES : captureBeforeChange(doc, plan.forward, geometry);
                 } catch (error) {

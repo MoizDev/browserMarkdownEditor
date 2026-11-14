@@ -24,7 +24,7 @@ interface Player {
     callback: number | null;
     closed: boolean;
 }
-interface State { playing: boolean; muted: boolean; time: number; visible: boolean; initialized: boolean; player?: Player }
+interface State { playing: boolean; muted: boolean; time: number; visible: boolean; initialized: boolean; mediaId?: MediaId; player?: Player }
 let soundOwner: Player | null = null;
 
 /** Playback state is transient. A hidden pane owns no video element or frame reservation. */
@@ -65,7 +65,9 @@ export class BoardVideoPlayback {
     }
     seek(id: NodeId, time: number): void {
         if (!Number.isFinite(time) || time < 0) throw new RangeError('Invalid video time');
-        const state = this.state(id); state.time = time;
+        const state = this.state(id);
+        if (state.player && this.host.source(id)?.entry.id !== state.player.mediaId) this.reconcile(id, state);
+        state.time = time;
         if (state.player) {
             const duration = state.player.video.duration;
             state.player.video.currentTime = Number.isFinite(duration) ? Math.min(time, duration) : time;
@@ -103,7 +105,9 @@ export class BoardVideoPlayback {
     private reconcile(id: NodeId, state: State): void {
         if (this.disposed || !this.visible || !state.visible || !this.host.current()) { this.close(state); return; }
         const source = this.host.source(id);
-        if (state.player && (!source || source.entry.id !== state.player.mediaId)) this.close(state);
+        if (source && source.entry.id !== state.mediaId) {
+            this.close(state); state.mediaId = source.entry.id; state.time = 0; state.muted = true;
+        } else if (state.player && !source) this.close(state);
         if (!state.player) {
             if (!source || !(source.blob instanceof Blob) || !source.entry.mime.startsWith('video/') || source.blob.size !== source.entry.bytes) return;
             const pixels = source.entry.w * source.entry.h;

@@ -263,7 +263,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 return await capturer.captureExportBlob(scope.bounds, longest * pngScale,
                     { layers: [...pdfLayers, 'board-underlay', 'board-content'], theme: 'light', inverted: false, signal: captureSignal,
                         deadlineMs: 300_000, clipboard: route === 'copy', pixelsPerWorldUnit: scale });
-            } finally { capturer.dispose(); }
+            } finally { await capturer.dispose(); }
         };
         const pdfSvg = async (captureSignal: AbortSignal) => {
             if (!pages) throw new Error('PDF page geometry is unavailable');
@@ -323,9 +323,10 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 return await streamSvg(pageSource, scope.bounds, 1, createExportImageResolver(token, pdfImages,
                     (key, readSignal) => { readSignal.throwIfAborted(); const blob = pageBlobs.get(key); return blob ? Promise.resolve(blob) : readImage(key, readSignal); }, captureSignal), captureSignal);
             } finally {
-                capturer.dispose();
-                for (const lease of [...held]) free(lease);
-                cache.close();
+                try { await capturer.dispose(); } finally {
+                    for (const lease of [...held]) free(lease);
+                    cache.close();
+                }
             }
         };
         const run = <T>(requestSignal: AbortSignal, work: (combined: AbortSignal) => Promise<T>): Promise<T> => {

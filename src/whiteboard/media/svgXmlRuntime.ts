@@ -1,6 +1,5 @@
-// This entry is bundled only into the opaque, network-denied XML profile. Parsed
-// nodes never leave that realm or enter its live document.
-export function svgHeaderInIsolatedRealm(text: string): { width: number; height: number } {
+// Run the lexical cap before passing bytes to the opaque XML profile.
+export function preflightSvgText(text: string): void {
     if (new TextEncoder().encode(text).length > 5 * 1024 * 1024 || /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(text)) throw new Error('Unsafe SVG');
     let depth = 0, elements = 0;
     for (let i = 0; i < text.length;) {
@@ -41,6 +40,12 @@ export function svgHeaderInIsolatedRealm(text: string): { width: number; height:
         i = end + 1;
     }
     if (depth !== 0) throw new Error('Invalid SVG nesting');
+}
+
+// This function runs only in the opaque, network-denied XML profile. Parsed
+// nodes never leave that realm or enter its live document.
+export function svgHeaderInIsolatedRealm(text: string): { width: number; height: number } {
+    preflightSvgText(text);
     const parsed = new DOMParser().parseFromString(text, 'image/svg+xml');
     const root = parsed.documentElement;
     if (root.localName !== 'svg' || root.namespaceURI !== 'http://www.w3.org/2000/svg' || parsed.getElementsByTagName('parsererror').length) throw new Error('Invalid SVG');

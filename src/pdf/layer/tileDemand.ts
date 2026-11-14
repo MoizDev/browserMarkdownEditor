@@ -22,6 +22,8 @@ export interface PdfDemandInput {
     readonly token: RenderToken;
     readonly source: 'outer' | 'original';
     readonly variant: 'plain' | 'emphasis';
+    /** A page may remain plain while its emphasis proof is pending or unavailable. */
+    readonly pageVariant?: (page: number) => 'plain' | 'emphasis';
     readonly fontEpoch?: number;
     /** Stable full page-geometry identity, including rotations and UserUnit (contracts C1.3). */
     readonly geometryDigest: string;
@@ -81,7 +83,8 @@ export function planPdfTileDemand(input: PdfDemandInput): PdfDemandSet {
         const grid = createTileGrid(rect, levelScale);
         const content: TileContentIdentity = {
             documentToken, sourceRole: input.source, pageOrRegion: String(page),
-            contentRevision: pdfVariantRevision(input.variant, input.fontEpoch ?? 0), colourVersion: 0, tileSchema: 1,
+            contentRevision: pdfVariantRevision(input.variant === 'plain' ? 'plain' : input.pageVariant?.(page) ?? input.variant,
+                input.fontEpoch ?? 0), colourVersion: 0, tileSchema: 1,
         };
         for (const tile of intersectingTiles(grid, region)) {
             const worldTile = { x: tile.clip.left, y: tile.clip.top,

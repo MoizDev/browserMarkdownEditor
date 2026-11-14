@@ -12,13 +12,14 @@ export interface PdfEmphasisController {
     setEnabled(enabled: boolean): void;
     variant(page: number): PdfEmphasisVariant;
     capability(page: number): PdfEmphasisCapability;
+    revision(): number;
     subscribe(listener: () => void): () => void;
     dispose(): void;
 }
 
 type Verdict = { result: PageProbeResult } | { error: true };
 type Flight = { page: number; epoch: number; controller: AbortController; promise: Promise<PageProbeResult> };
-const CACHE_LIMIT = 256, VISIBLE_LIMIT = 256;
+const CACHE_LIMIT = 256, SCHEDULE_LIMIT = 256;
 const PLAIN: PdfEmphasisVariant = Object.freeze({ variant: 'plain', profileKey: 'plain' });
 const REASONS: Record<NonNullable<PageProbeResult['reason']>, string> = {
     'no-text': 'No eligible visible text was found on this page.',
@@ -35,22 +36,25 @@ export function createPdfEmphasisController(document: PdfPoolDocument): PdfEmpha
         strokeEm: EMPHASIS_STROKE_EM, locale });
     const listeners = new Set<() => void>(), verdicts = new Map<number, Verdict>();
     let epoch = getPdfFontEpoch(document.docKey), enabled = false, visible = false, disposed = false;
-    let pages: number[] = [], focused = -1, flight: Flight | undefined;
+    let pages: number[] = [], scheduled: number[] = [], focused = -1, flight: Flight | undefined, revision = 0;
     const canCopy = () => !document.info.encrypted || (document.info.permissions !== null &&
         Number.isSafeInteger(document.info.permissions) && (document.info.permissions & 16) !== 0);
     const validPage = (page: number) => Number.isSafeInteger(page) && page >= 0 && page < document.info.pageCount;
     const key = (value: number) => JSON.stringify(['pdf-emphasis-v1', EMPHASIS_ALGORITHM, EMPHASIS_REVISION,
         EMPHASIS_STROKE_EM, locale, 'page-probe-v1', 'annotations-forms', 'opaque-white', value]);
-    const notify = () => { for (const listener of [...listeners]) { try { listener(); } catch { /* Other subscribers still need the new state. */ } } };
+    const notify = () => {
+        revision++;
+        for (const listener of [...listeners]) { try { listener(); } catch { /* Other subscribers still need the new state. */ } }
+    };
     const cancel = () => { const old = flight; flight = undefined; old?.controller.abort(); };
     const remember = (page: number, verdict: Verdict) => {
         verdicts.delete(page); verdicts.set(page, verdict);
         while (verdicts.size > CACHE_LIMIT) verdicts.delete(verdicts.keys().next().value!);
     };
-    const priority = (page: number): 0 | 3 => page === focused ? 0 : 3;
+    const priority = (page: number): 0 | 3 => enabled && page === focused ? 0 : 3;
     const pump = () => {
-        if (disposed || document.closed || !enabled || !visible || !canCopy() || flight) return;
-        const ordered = pages.includes(focused) ? [focused, ...pages.filter(page => page !== focused)] : pages;
+        if (disposed || document.closed || !visible || !canCopy() || flight) return;
+        const ordered = scheduled.includes(focused) ? [focused, ...scheduled.filter(page => page !== focused)] : scheduled;
         const page = ordered.find(item => !verdicts.has(item));
         if (page === undefined) return;
         const controller = new AbortController(), currentEpoch = epoch;
@@ -82,25 +86,31 @@ export function createPdfEmphasisController(document: PdfPoolDocument): PdfEmpha
     return {
         setVisiblePages(next, focusedPage, isVisible) {
             if (disposed) return;
-            if (!Array.isArray(next) || next.length > VISIBLE_LIMIT || next.some(page => !validPage(page)) ||
+            if (!Array.isArray(next) || next.length > document.info.pageCount || next.some(page => !validPage(page)) ||
                 !Number.isSafeInteger(focusedPage) || focusedPage < -1 || focusedPage >= document.info.pageCount || typeof isVisible !== 'boolean') {
                 throw new RangeError('Invalid PDF emphasis visibility');
             }
+            const unique = [...new Set(next)];
+            if (focused === focusedPage && visible === isVisible && pages.length === unique.length &&
+                pages.every((page, index) => page === unique[index])) return;
             const wasVisible = visible;
-            pages = [...new Set(next)]; focused = focusedPage; visible = isVisible;
+            pages = unique; focused = focusedPage; visible = isVisible;
+            // A huge viewport has an explicit bounded working set, not an eviction loop
+            // that repeatedly reprobes the same pages and never settles.
+            scheduled = pages.length <= SCHEDULE_LIMIT ? pages : [...pages]
+                .sort((a, b) => Math.abs(a - focused) - Math.abs(b - focused) || a - b).slice(0, SCHEDULE_LIMIT);
             if (!visible && wasVisible) {
                 cancel();
                 for (const [page, verdict] of verdicts) if ('error' in verdict) verdicts.delete(page);
-            } else if (flight && (!pages.includes(flight.page) ||
-                (pages.includes(focused) && focused !== flight.page && !verdicts.has(focused)))) cancel();
+            } else if (flight && (!scheduled.includes(flight.page) ||
+                (scheduled.includes(focused) && focused !== flight.page && !verdicts.has(focused)))) cancel();
             if (flight) document.reprioritise(flight.promise, priority(flight.page));
             notify(); pump();
         },
         setEnabled(next) {
             if (disposed || enabled === next) return;
             enabled = next;
-            if (!enabled) cancel();
-            else for (const [page, verdict] of verdicts) if ('error' in verdict) verdicts.delete(page);
+            if (flight) document.reprioritise(flight.promise, priority(flight.page));
             notify(); pump();
         },
         variant(page) {
@@ -114,12 +124,15 @@ export function createPdfEmphasisController(document: PdfPoolDocument): PdfEmpha
             if (!validPage(page)) return { kind: 'unavailable', reason: 'PDF page is unavailable.' };
             if (!canCopy()) return { kind: 'unavailable', reason: 'This PDF does not permit text extraction.' };
             const verdict = verdicts.get(page);
-            if (!verdict) return { kind: 'unknown', reason: flight?.page === page ? 'Checking word emphasis…' : 'Word emphasis has not been checked on this page.' };
+            if (!verdict) return { kind: 'unknown', reason: flight?.page === page ? 'Checking word emphasis…'
+                : visible && pages.includes(page) && !scheduled.includes(page) ? 'This page is outside the bounded emphasis work window.'
+                    : 'Word emphasis has not been checked on this page.' };
             if ('error' in verdict) return { kind: 'unavailable', reason: 'Word emphasis could not be verified. Retry when the page is available.' };
             if (verdict.result.capability === 'supported' && verdict.result.changedPixels > 0) return { kind: 'active' };
             return { kind: 'inactive', reason: verdict.result.reason ? REASONS[verdict.result.reason] : 'Word emphasis is unavailable on this page.' };
         },
+        revision: () => revision,
         subscribe(listener) { if (disposed) return () => {}; listeners.add(listener); return () => { listeners.delete(listener); }; },
-        dispose() { if (disposed) return; disposed = true; cancel(); unsubscribeFont(); verdicts.clear(); pages = []; listeners.clear(); },
+        dispose() { if (disposed) return; disposed = true; cancel(); unsubscribeFont(); verdicts.clear(); pages = []; scheduled = []; notify(); listeners.clear(); },
     };
 }

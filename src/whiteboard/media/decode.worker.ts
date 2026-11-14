@@ -10,7 +10,7 @@ import { boardHandlers } from '../workers/protocol';
 interface DecoderTrack { readonly frameCount: number }
 interface DecoderInstance {
     readonly tracks: { readonly ready: Promise<void>; readonly selectedTrack: DecoderTrack | null };
-    decode(options: { frameIndex: number }): Promise<{ image: { close(): void } }>;
+    decode(options: { frameIndex: number }): Promise<{ image: ImageBitmapSource & { readonly duration?: number | null; close(): void } }>;
     close(): void;
 }
 type DecoderConstructor = new (options: { data: ReadableStream<Uint8Array>; type: string }) => DecoderInstance;
@@ -55,6 +55,45 @@ serve({
                 } finally { decoder.close(); }
             }
             return true;
+        },
+        async raster(args, context) {
+            if (!args || typeof args !== 'object') throw new Error('Invalid raster request');
+            const value = args as { blob?: unknown; mime?: unknown; frame?: unknown; sourceWidth?: unknown; sourceHeight?: unknown;
+                x?: unknown; y?: unknown; width?: unknown; height?: unknown; outputWidth?: unknown; outputHeight?: unknown; animated?: unknown };
+            if (!(value.blob instanceof Blob) || typeof value.mime !== 'string' || typeof value.animated !== 'boolean') throw new Error('Invalid raster request');
+            const numbers = [value.frame, value.sourceWidth, value.sourceHeight, value.x, value.y, value.width, value.height, value.outputWidth, value.outputHeight];
+            if (!numbers.every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)) throw new Error('Invalid raster dimensions');
+            const { frame, sourceWidth, sourceHeight, x, y, width, height, outputWidth, outputHeight } = value as {
+                frame: number; sourceWidth: number; sourceHeight: number; x: number; y: number; width: number; height: number; outputWidth: number; outputHeight: number };
+            if (!width || !height || !outputWidth || !outputHeight || sourceWidth > (2 ** 26) / sourceHeight
+                || x > sourceWidth - width || y > sourceHeight - height || outputWidth > 4096 || outputHeight > 4096) throw new Error('Invalid raster dimensions');
+            const options: ImageBitmapOptions = { imageOrientation: 'from-image', colorSpaceConversion: 'default', premultiplyAlpha: 'premultiply',
+                resizeWidth: outputWidth, resizeHeight: outputHeight, resizeQuality: 'high' };
+            let bitmap: ImageBitmap, durationMs = 0, frameCount = 1;
+            if (value.animated) {
+                const Decoder = (globalThis as unknown as { ImageDecoder?: DecoderConstructor }).ImageDecoder;
+                if (!Decoder) throw new Error('Animated picture decoding is unavailable');
+                const decoder = new Decoder({ data: value.blob.stream(), type: value.mime });
+                try {
+                    await decoder.tracks.ready;
+                    const track = decoder.tracks.selectedTrack;
+                    if (!track || frame >= track.frameCount) throw new Error('Invalid animation frame');
+                    frameCount = track.frameCount;
+                    const decoded = await decoder.decode({ frameIndex: frame });
+                    durationMs = Math.max(10, (decoded.image.duration ?? 100000) / 1000);
+                    try { bitmap = await createImageBitmap(decoded.image, x, y, width, height, options); }
+                    finally { decoded.image.close(); }
+                } finally { decoder.close(); }
+            } else {
+                if (frame !== 0) throw new Error('Invalid still picture frame');
+                bitmap = await createImageBitmap(value.blob, x, y, width, height, options);
+            }
+            try {
+                await context.slice();
+                if (bitmap.width !== outputWidth || bitmap.height !== outputHeight) throw new Error('Unexpected raster size');
+                context.transfer(bitmap);
+                return { bitmap, durationMs, frameCount };
+            } catch (error) { bitmap.close(); throw error; }
         },
         async inspect(args, context) {
             if (!args || typeof args !== 'object' || !(args as { blob?: unknown }).blob || !((args as { blob: unknown }).blob instanceof Blob)) {

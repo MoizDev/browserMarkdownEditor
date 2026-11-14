@@ -14,8 +14,8 @@ export function createContourBoxFillJob(path: readonly PathOp[], transform: Affi
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): ContourBoxFillResult; cancel(): void } {
     const maxWork = options.maxWork ?? 2000000;
     if (!Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid contour box fill budget');
-    const point = { x: box.x.lo / 2 + box.x.hi / 2, y: box.y.lo / 2 + box.y.hi / 2 };
-    if (![point.x, point.y].every(Number.isFinite) || point.x < box.x.lo || point.x > box.x.hi || point.y < box.y.lo || point.y > box.y.hi)
+    const point = { x: box[0] / 2 + box[2] / 2, y: box[1] / 2 + box[3] / 2 };
+    if (![point.x, point.y].every(Number.isFinite) || point.x < box[0] || point.x > box[2] || point.y < box[1] || point.y > box[3])
         throw new RangeError('Contour box witness is not representable');
     let clear: ReturnType<typeof createContourBoxClearJob> | undefined = createContourBoxClearJob(path, transform, box, options);
     let fill: ReturnType<typeof createFillPointJob> | undefined, spent = 0, cancelled = false, finished: ContourBoxFillResult | undefined;

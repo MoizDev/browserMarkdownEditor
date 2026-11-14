@@ -121,9 +121,10 @@ export function* certifiedConnectorArcCrossings(arc: ArcGeometry, length: number
         if (!(lo < t && t < hi)) throw new RangeError('Connector arc gap has no representable sample');
         const angle = add(interval(arc.start), multiply(interval(arc.sweep), interval(t))), trig = certifiedSinCos(angle);
         if (!trig) throw new RangeError('Connector arc sample angle cannot be enclosed');
-        const box = { x: add(interval(arc.centre.x), multiply(interval(arc.radius), trig.cos)),
-            y: add(interval(arc.centre.y), multiply(interval(arc.radius), trig.sin)) };
-        if (![box.x.lo, box.x.hi, box.y.lo, box.y.hi].every(Number.isFinite)) throw new RangeError('Connector arc sample overflows');
+        const x = add(interval(arc.centre.x), multiply(interval(arc.radius), trig.cos));
+        const y = add(interval(arc.centre.y), multiply(interval(arc.radius), trig.sin));
+        const box = [x.lo, y.lo, x.hi, y.hi] as const;
+        if (!box.every(Number.isFinite)) throw new RangeError('Connector arc sample overflows');
         let inside = true;
         for (const contour of contours) {
             const fill = createContourBoxFillJob(contour.outline, contour.localToWorld, box, { maxCommands: maxPieces });

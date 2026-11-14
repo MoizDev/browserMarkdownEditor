@@ -8,7 +8,7 @@ import { createExactInverseDistance } from './exactInverseDistance';
 import { createAnisotropicSweepJob } from './anisotropicSweepJob';
 import { strokeSeparatedFromHull } from './strokeSupport';
 import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
-import { classifyCertifiedClipBox, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
+import { classifyClippedVisibility, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
     type CertifiedClipBox, type PointClipContour } from './clippedPointPathJob';
 import { lowerCurvePairDistance, upperIntervalPairDistance } from './sweptPathJob';
 import type { PathOp } from './path';
@@ -35,7 +35,6 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
         || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1 || options.frames.length > 64 || options.exclusions.length > 64) throw new RangeError('Invalid clipped sweep');
     let finished: ClippedSweepResult | undefined, cancelled = false, spent = 0, nodes = 0, commands = 0, uncertain = false;
-    if (options.exclusions.length > 1) finished = { status: 'uncertain', reason: 'Multiple even-odd exclusions require a partition' };
     const stroke = strokeRadiusBounds(query.localToSurface, options.strokeRadiusLocal);
     if (!stroke) finished = { status: 'uncertain', reason: 'Clipped stroke scale overflows' };
     const radius = stroke ?? interval(0), threshold = add(radius, interval(query.radiusCss));
@@ -43,10 +42,8 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
     const inverseDistance = anisotropic && query.radiusCss === 0 ? createExactInverseDistance(query.localToSurface) : null;
     if (![radius.lo, radius.hi, threshold.lo, threshold.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Clipped sweep radius overflows' };
     const frames = options.frames.map(preparePointClip), exclusions = options.exclusions.map(preparePointClip);
-    const allowed = (box: CertifiedClipBox) => frames.every(region => classifyCertifiedClipBox(box, region) === 'inside')
-        && exclusions.every(region => classifyCertifiedClipBox(box, region) === 'outside');
-    const invisible = (box: CertifiedClipBox) => frames.some(region => classifyCertifiedClipBox(box, region) === 'outside')
-        || exclusions.some(region => classifyCertifiedClipBox(box, region) === 'inside');
+    const allowed = (box: CertifiedClipBox) => classifyClippedVisibility(box, frames, exclusions) === 'inside';
+    const invisible = (box: CertifiedClipBox) => classifyClippedVisibility(box, frames, exclusions) === 'outside';
     const point = (p: { readonly x: number; readonly y: number }): BoundsPoint => {
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) throw new RangeError('Invalid clipped sweep point');
         return { x: interval(p.x), y: interval(p.y) };

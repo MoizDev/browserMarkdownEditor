@@ -5,6 +5,7 @@ import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { interval } from './numeric';
 import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
+import { classifyClippedVisibility } from './clippedPointPathJob';
 import { createExactInverseDistance } from './exactInverseDistance';
 import { splitCertifiedCurve, upperPointIntervalDistance, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { classifyCertifiedClipBox, clipBoxStrictlyInside, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
@@ -36,7 +37,6 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
         throw new RangeError('Invalid clipped polygon path');
     let finished: ClippedPolygonResult | undefined, cancelled = false, spent = 0, nodes = 0, commands = 0, pathIndex = 0, commandIndex = 0;
     let uncertain = false, visible = false;
-    if (options.exclusions.length > 1) finished = { status: 'uncertain', reason: 'Multiple even-odd exclusions require a partition' };
     const stroke = strokeRadiusBounds(query.localToSurface, options.strokeRadiusLocal);
     if (!stroke) finished = { status: 'uncertain', reason: 'Clipped polygon stroke scale overflows' };
     const radius = stroke ?? interval(0);
@@ -48,10 +48,8 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
     try { polygon = preparePointClip({ outline: polygonPath, localToSurface: IDENTITY }); }
     catch { finished = { status: 'uncertain', reason: 'Polygon is not a certified convex region' }; }
     const frames = options.frames.map(preparePointClip), exclusions = options.exclusions.map(preparePointClip);
-    const allowed = (box: CertifiedClipBox) => frames.every(region => classifyCertifiedClipBox(box, region) === 'inside')
-        && exclusions.every(region => classifyCertifiedClipBox(box, region) === 'outside');
-    const invisible = (box: CertifiedClipBox) => frames.some(region => classifyCertifiedClipBox(box, region) === 'outside')
-        || exclusions.some(region => classifyCertifiedClipBox(box, region) === 'inside');
+    const allowed = (box: CertifiedClipBox) => classifyClippedVisibility(box, frames, exclusions) === 'inside';
+    const invisible = (box: CertifiedClipBox) => classifyClippedVisibility(box, frames, exclusions) === 'outside';
     const vertices = query.points.map(point => {
         if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new RangeError('Invalid polygon point');
         return { point, allowed: allowed([point.x, point.y, point.x, point.y]) };

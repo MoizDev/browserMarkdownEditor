@@ -59,6 +59,24 @@ export function classifyCertifiedClipBox(box: CertifiedClipBox, region: Certifie
     return inside ? 'inside' : 'overlap';
 }
 export function certifiedIntervalPointBox(point: BoundsPoint): CertifiedClipBox { return [point.x.lo, point.y.lo, point.x.hi, point.y.hi]; }
+/** Frames intersect; exclusion contours use the renderer's even-odd parity. */
+export function classifyClippedVisibility(box: CertifiedClipBox, frames: readonly CertifiedClipRegion[],
+    exclusions: readonly CertifiedClipRegion[]): 'inside' | 'outside' | 'overlap' {
+    let frameOverlap = false, exclusionOverlap = false, parity = 0;
+    for (const frame of frames) {
+        const relation = classifyCertifiedClipBox(box, frame);
+        if (relation === 'outside') return 'outside';
+        if (relation === 'overlap') frameOverlap = true;
+    }
+    for (const exclusion of exclusions) {
+        const relation = classifyCertifiedClipBox(box, exclusion);
+        if (relation === 'inside' && clipBoxStrictlyInside(box, exclusion)) parity ^= 1;
+        else if (relation !== 'outside') exclusionOverlap = true;
+    }
+    if (exclusionOverlap) return 'overlap';
+    if (parity) return 'outside';
+    return frameOverlap ? 'overlap' : 'inside';
+}
 export function clipBoxStrictlyInside(box: CertifiedClipBox, region: CertifiedClipRegion): boolean {
     if (!box.every(Number.isFinite)) throw new RangeError('Point clipping box overflows');
     const corners = [{ x: box[0], y: box[1] }, { x: box[2], y: box[1] }, { x: box[2], y: box[3] }, { x: box[0], y: box[3] }].map(exactPoint);
@@ -84,7 +102,6 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
         || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1 || options.frames.length > 64 || options.exclusions.length > 64) throw new RangeError('Invalid clipped point job');
     let finished: ClippedPointResult | undefined, cancelled = false, spent = 0, nodes = 0, commands = 0, pathIndex = 0, commandIndex = 0, uncertain = false;
-    if (options.exclusions.length > 1) finished = { status: 'uncertain', reason: 'Multiple even-odd exclusions require a partition' };
     const stroke = strokeRadiusBounds(query.localToSurface, options.strokeRadiusLocal);
     if (!stroke) finished = { status: 'uncertain', reason: 'Clipped stroke scale overflows' };
     const radius = stroke ?? interval(0), threshold = add(radius, interval(margin));
@@ -92,8 +109,8 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
     let anisotropicJob: ReturnType<typeof createAnisotropicPointJob> | undefined;
     if (![radius.lo, radius.hi, threshold.lo, threshold.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Clipped stroke radius overflows' };
     const frames = options.frames.map(preparePointClip), exclusions = options.exclusions.map(preparePointClip);
-    const allowed = (box: CertifiedClipBox) => frames.every(region => classifyCertifiedClipBox(box, region) === 'inside') && exclusions.every(region => classifyCertifiedClipBox(box, region) === 'outside');
-    const invisible = (box: CertifiedClipBox) => frames.some(region => classifyCertifiedClipBox(box, region) === 'outside') || exclusions.some(region => classifyCertifiedClipBox(box, region) === 'inside');
+    const allowed = (box: CertifiedClipBox) => classifyClippedVisibility(box, frames, exclusions) === 'inside';
+    const invisible = (box: CertifiedClipBox) => classifyClippedVisibility(box, frames, exclusions) === 'outside';
     const queryBox: CertifiedClipBox = [query.point.x, query.point.y, query.point.x, query.point.y];
     const queryAllowed = allowed(queryBox);
     type Work = { readonly curve: CertifiedCurve; readonly exact: ExactCurve };

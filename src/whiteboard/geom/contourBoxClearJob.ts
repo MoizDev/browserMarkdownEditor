@@ -14,7 +14,7 @@ export function createContourBoxClearJob(path: readonly PathOp[], transform: Aff
     readonly maxCommands?: number; readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): ContourBoxClearResult; cancel(): void } {
     const maxCommands = options.maxCommands ?? 8192, maxDepth = options.maxDepth ?? 64, maxNodes = options.maxNodes ?? 262144, maxWork = options.maxWork ?? 2000000;
-    if (![...transform, box.x.lo, box.x.hi, box.y.lo, box.y.hi].every(Number.isFinite) || box.x.lo > box.x.hi || box.y.lo > box.y.hi
+    if (![...transform, ...box].every(Number.isFinite) || box[0] > box[2] || box[1] > box[3]
         || !Number.isSafeInteger(maxCommands) || maxCommands < 1 || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128
         || !Number.isSafeInteger(maxNodes) || maxNodes < 1 || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid contour box query');
     const mapped = (point: { readonly x: number; readonly y: number }): BoundsPoint => exactPointIntervals(exactAffinePoint(transform, point));
@@ -35,7 +35,7 @@ export function createContourBoxClearJob(path: readonly PathOp[], transform: Aff
                     const curve = stack.pop();
                     if (curve) {
                         const bounds = certifiedCurveBox(curve.points);
-                        if (bounds.x.hi < box.x.lo || bounds.x.lo > box.x.hi || bounds.y.hi < box.y.lo || bounds.y.lo > box.y.hi) continue;
+                        if (bounds[2] < box[0] || bounds[0] > box[2] || bounds[3] < box[1] || bounds[1] > box[3]) continue;
                         if (curve.depth >= maxDepth) return finish({ status: 'uncertain', reason: 'Contour may touch the sample box' });
                         if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Contour box node limit exhausted' });
                         const [left, right] = splitCertifiedCurve(curve); nodes += 2; stack.push(right, left); continue;

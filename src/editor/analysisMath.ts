@@ -86,6 +86,26 @@ export function filterInlineMath(raw: readonly LineMatch[], code: readonly CharR
     });
 }
 
+/** Re-filter only matches reached by changed code or accepted block math. */
+export function updateInlineMath(raw: readonly LineMatch[], previous: readonly InlineMath[], changes: ChangeDesc,
+    code: readonly CharRange[], blocks: readonly BlockPair[], dirty: readonly CharRange[]): InlineMath[] {
+    const old = new Map<string, InlineMath>();
+    for (const item of previous) {
+        const from = changes.mapPos(item.from, 1), to = changes.mapPos(item.to, -1);
+        old.set(`${from}:${to}:${item.latex}`, item);
+    }
+    const acceptedBlocks = blocks.filter(pair => pair.accepted);
+    return raw.map(match => {
+        const latex = match.groups[0], key = `${match.from}:${match.to}:${latex}`;
+        const existing = old.get(key);
+        const accepted = existing && !overlapsRange(dirty, match.from, match.to)
+            ? existing.accepted
+            : !latex.endsWith('\\') && !overlapsRange(code, match.from, match.to)
+                && !overlapsRange(acceptedBlocks, match.from, match.to);
+        return { from: match.from, to: match.to, latex, accepted };
+    });
+}
+
 export function acceptedMath(blocks: readonly BlockPair[], inline: readonly InlineMath[]): MathRegion[] {
     const result: MathRegion[] = [];
     let b = 0, i = 0;

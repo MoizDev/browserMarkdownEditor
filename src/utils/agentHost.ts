@@ -65,6 +65,8 @@ export interface AgentHostDeps {
     createFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle>;
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
     nameTaken: import('../types').FileSystemContextValue['nameTaken'];
+    /** Offscreen, session-owned native-board projection; never reads through a mounted view. */
+    canvasShapePage?: VaultToolHost['canvasShapePage'];
     /** The App-lifetime, path-explicit readable buffer accessor. */
     contentOf(path: string): string | undefined;
     snapshotOf(path: string): import('./documentBuffers').BufferSnapshot | undefined;
@@ -215,6 +217,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const toolHost: VaultToolHost = {
         vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchToken : null; },
         searchAgent: (config, signal) => getDeps().searchAgent(config, signal),
+        get canvasShapePage() { return getDeps().canvasShapePage; },
 
         getFileTree: () => getDeps().fileTree,
 

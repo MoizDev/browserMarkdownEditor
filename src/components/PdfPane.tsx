@@ -24,7 +24,7 @@ import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, PdfRebuildNotice } from '../types';
-import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity } from '../types/reading';
+import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
 import type { DiskVersion } from '../utils/diskVersion';
 import { registerReadingSurface } from '../utils/documentReading';
 import { flushPdfTextViewState } from '../utils/readerViewState';
@@ -36,6 +36,7 @@ import { requestVaultSearch } from '../utils/searchRequest';
 import type { PdfTiledTextSurfaceProps } from './PdfTiledTextSurface.types';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import type { EmphasisAvailability } from '../types/reading';
+import './PdfPane.css';
 
 // tldraw + pdf.js rasterization are heavy and only needed once someone actually
 // annotates, so the canvas is a separate chunk. Viewing a PDF never loads it.
@@ -90,6 +91,7 @@ export interface PdfPaneProps {
     /** Writes to disk immediately; used as the canvas hands over to the viewer. */
     onFlushNow: (path: string, content: string) => Promise<void>;
     onPreparePrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
+    onUnsignedPdfCopy?: (identity: ReaderIdentity, version: DiskVersion) => Promise<void>;
     /** This PDF is a notebook's export — open that notebook instead. Takes the
      *  PDF's own path too, so App can put its tab back into reading mode. */
     onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void;
@@ -135,7 +137,7 @@ interface PdfSource {
  */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     const appSession = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(documentId), () => undefined);
@@ -264,14 +266,20 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         choosePdfSessionRoute(appSession, 'classic');
     }, [appSession, documentId, reading?.identity]);
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
+    const displayedVersionOwner = useRef<ReaderToken | undefined>(undefined);
     const [tiledVersion, setTiledVersion] = useState<DiskVersion>();
     const tiledNotify = useCallback((message: string) => binding.current?.onNotify(message), []);
+    const [unsignedPending, setUnsignedPending] = useState(false);
+    const unsignedInFlight = useRef(false), unsignedMounted = useRef(true);
+    useEffect(() => { unsignedMounted.current = true; return () => { unsignedMounted.current = false; }; }, []);
     const tiledReading = useMemo<PdfReadingBinding | undefined>(() => reading ? {
         ...reading,
         onReaderVersion(token, version) {
             const current = binding.current;
             if (current && token.vaultEpoch === current.identity.vaultEpoch && token.documentId === current.identity.documentId &&
-                token.byteGeneration === current.identity.byteGeneration) { displayedVersion.current = version; setTiledVersion(version); }
+                token.vaultId === current.identity.vaultId && token.byteGeneration === current.identity.byteGeneration) {
+                displayedVersion.current = version; displayedVersionOwner.current = token; setTiledVersion(version);
+            }
             current?.onReaderVersion(token, version);
         },
     } : undefined, [reading]);
@@ -914,6 +922,10 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         }
     }
 
+    const versionOwner = displayedVersionOwner.current, identityForVersion = reading?.identity;
+    const versionMatchesReader = !!versionOwner && !!identityForVersion && versionOwner.vaultId === identityForVersion.vaultId &&
+        versionOwner.vaultEpoch === identityForVersion.vaultEpoch && versionOwner.documentId === identityForVersion.documentId &&
+        versionOwner.byteGeneration === identityForVersion.byteGeneration;
     // One stable root for every state, so EditorPane can hide an off-screen pane
     // with CSS instead of unmounting it (which would forget the document).
     return (
@@ -941,6 +953,27 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                 {printError && <> {printError}</>}
             </ConfirmDialog>}
             {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} path={file.path} onAction={onDiskAction} />}
+            {tiled && mode === 'read' && currentTiledSource?.session.isCurrent() &&
+                tiledPdfCapabilities(currentTiledSource.document.poolDocument.info).signed === true &&
+                <div className="pdf-signed-notice" role="status">
+                    <span>This signed PDF remains read-only. Creating an unsigned copy leaves the original unchanged.</span>
+                    <button type="button" className="pdf-pane-action" disabled={unsignedPending || isDirty || flushing || !!disk || !tiledVersion ||
+                        displayedVersion.current !== tiledVersion || !versionMatchesReader || !file.parentHandle || !reading || !onUnsignedPdfCopy}
+                        onClick={() => {
+                            const identity = reading?.identity, version = tiledVersion, source = currentTiledSource;
+                            const current = binding.current?.identity;
+                            if (unsignedInFlight.current || !identity || !version || !onUnsignedPdfCopy || !source.session.isCurrent() ||
+                                isDirty || flushing || disk || !file.parentHandle || displayedVersion.current !== version || !versionMatchesReader || !current ||
+                                current.documentId !== identity.documentId || current.vaultId !== identity.vaultId || current.vaultEpoch !== identity.vaultEpoch ||
+                                current.byteGeneration !== identity.byteGeneration || current.path !== identity.path || current.diskRev !== identity.diskRev) return;
+                            unsignedInFlight.current = true; setUnsignedPending(true);
+                            void (async () => {
+                                try { await onUnsignedPdfCopy(identity, version); }
+                                catch (error) { tiledNotify(error instanceof Error ? error.message : 'Could not create an unsigned copy.'); }
+                                finally { unsignedInFlight.current = false; if (unsignedMounted.current) setUnsignedPending(false); }
+                            })();
+                        }}>Create unsigned copy</button>
+                </div>}
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the viewer and lose the reading position. */}
             <div className="pdf-pane-body" inert={showRotationPreview}>

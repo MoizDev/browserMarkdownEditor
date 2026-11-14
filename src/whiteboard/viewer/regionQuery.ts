@@ -422,16 +422,34 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 const ref = queueIndex < queue.length ? queue[queueIndex++] : undefined; if (ref) await narrow(ref);
                 if (!done || queueIndex < queue.length) { await cooperate(); check(); }
             }
-            if (query.kind === 'polygon' && query.containment) {
-                for (const [group, initialRank] of groups) {
-                    check(); const record = scene.worldBounds(group), bounds = record && (record.quality === BoundsQuality.Exact || record.quality === BoundsQuality.Conservative)
-                        ? record.selectable : null;
-                    if (!bounds || !bounds.every(Number.isFinite)) throw new BoardRegionUncertain('Group containment has no certified aggregate bounds');
-                    const members = scene.spatialCursor({ sheetId: sheet, purpose: 'selectable', request: { kind: 'box', box: bounds, order: 'forward' } });
-                    let complete = false, all = true, any = false, rank = initialRank, pendingIndex = 0;
-                    const pending: SpatialRef[] = [];
+            if (query.kind === 'polygon' && query.containment && groups.size) {
+                const states = new Map<NodeId, { all: boolean; any: boolean; rank: number }>();
+                let slice = 0;
+                for (const [group, rank] of groups) {
+                    states.set(group, { all: true, any: false, rank });
+                    if (++slice >= 256) { slice = 0; await cooperate(); check(); }
+                }
+                for (const result of evaluated.values()) {
+                    const state = states.get(result.selected);
+                    if (state && !result.empty) { state.any = true; state.all &&= result.hit; state.rank = Math.max(state.rank, result.rank); }
+                    if (++slice >= 256) { slice = 0; await cooperate(); check(); }
+                }
+                let aggregate: [number, number, number, number] | undefined;
+                for (const [group, state] of states) {
+                    if (state.all) {
+                        check(); const record = scene.worldBounds(group), bounds = record && (record.quality === BoundsQuality.Exact || record.quality === BoundsQuality.Conservative)
+                            ? record.selectable : null;
+                        if (!bounds || !bounds.every(Number.isFinite)) throw new BoardRegionUncertain('Group containment has no certified aggregate bounds');
+                        aggregate = aggregate ? [Math.min(aggregate[0], bounds[0]), Math.min(aggregate[1], bounds[1]),
+                            Math.max(aggregate[2], bounds[2]), Math.max(aggregate[3], bounds[3])] : [bounds[0], bounds[1], bounds[2], bounds[3]];
+                    }
+                    if (++slice >= 256) { slice = 0; await cooperate(); check(); }
+                }
+                if (aggregate) {
+                    const members = scene.spatialCursor({ sheetId: sheet, purpose: 'selectable', request: { kind: 'box', box: aggregate, order: 'forward' } });
+                    let complete = false, pendingIndex = 0; const pending: SpatialRef[] = [];
                     try {
-                        while ((!complete || pendingIndex < pending.length) && all) {
+                        while (!complete || pendingIndex < pending.length) {
                             check();
                             if (pendingIndex === pending.length && !complete) {
                                 pending.length = 0; pendingIndex = 0;
@@ -442,15 +460,19 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                             const ref = pendingIndex < pending.length ? pending[pendingIndex++] : undefined;
                             if (ref) {
                                 const member = scene.resolveSpatial(ref); if (!member) throw stale();
-                                if (selectableAtFocus(doc, member.id, focus, sheet) === group) {
+                                const selected = selectableAtFocus(doc, member.id, focus, sheet), state = selected ? states.get(selected) : undefined;
+                                if (state?.all) {
                                     const result = await narrow(ref);
-                                    if (result && !result.empty) { any = true; all &&= result.hit; rank = Math.max(rank, result.rank); }
+                                    if (result && !result.empty) { state.any = true; state.all &&= result.hit; state.rank = Math.max(state.rank, result.rank); }
                                 }
                             }
-                            if ((!complete || pendingIndex < pending.length) && all) { await cooperate(); check(); }
+                            if (!complete || pendingIndex < pending.length) { await cooperate(); check(); }
                         }
                     } finally { members.cancel(); }
-                    if (any && all) hits.set(group, rank);
+                }
+                for (const [group, state] of states) {
+                    if (state.any && state.all) hits.set(group, state.rank);
+                    if (++slice >= 256) { slice = 0; await cooperate(); check(); }
                 }
             }
             check();

@@ -16,7 +16,7 @@ export { GraphemeNavigator } from './graphemes';
 export { RichSelectionOperations } from './selectionOps';
 export type { LogicalMotion } from './selectionOps';
 export { normalizeRichText, normalizeRichTextCooperative, sliceRichText, sliceRichTextCooperative, spliceRichText } from './richText';
-export { convertLegacyRichText, convertLegacyRichSpan } from './importRich';
+export { convertLegacyRichText, convertLegacyRichTextCooperative, convertLegacyRichSpan, convertLegacyRichSpanCooperative } from './importRich';
 export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeTextSelection, mapTextSelectionTo,
     mapRichTextChange, mapRichTextChangeCooperative } from './rangeMap';
 export type { TextAffinity, TextSpliceMap, MappedRichTextChange } from './rangeMap';

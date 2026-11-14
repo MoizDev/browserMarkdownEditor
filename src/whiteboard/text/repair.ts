@@ -10,7 +10,7 @@ export interface RepairedText {
     readonly contentLength: number;
 }
 
-function* repairSteps(value: string, limit: number): Generator<void, RepairedText> {
+export function* repairLegacyCharacterSteps(value: string, limit: number): Generator<void, RepairedText> {
     if (!Number.isSafeInteger(limit) || limit < 0 || limit > MAX_TEXT_LENGTH) throw new RangeError('Invalid rich text repair limit');
     // Even complete CRLF contraction cannot fit a longer input.
     if (value.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
@@ -50,7 +50,7 @@ function* repairSteps(value: string, limit: number): Generator<void, RepairedTex
 
 /** Repair malformed legacy text; unknown carriers are not inspected or rewritten. */
 export function repairLegacyCharacters(value: string, contentLimit = MAX_TEXT_LENGTH): RepairedText {
-    const steps = repairSteps(value, contentLimit);
+    const steps = repairLegacyCharacterSteps(value, contentLimit);
     for (;;) { const step = steps.next(); if (step.done) return step.value; }
 }
 
@@ -58,7 +58,7 @@ export async function repairLegacyCharactersCooperative(value: string, options: 
     contentLimit = MAX_TEXT_LENGTH): Promise<RepairedText> {
     const budget = options.sliceMilliseconds ?? 3;
     if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid text repair time slice');
-    const steps = repairSteps(value, contentLimit);
+    const steps = repairLegacyCharacterSteps(value, contentLimit);
     let started = performance.now();
     for (;;) {
         options.signal?.throwIfAborted();

@@ -1,9 +1,10 @@
 import { parseJson, type JsonSpan } from '../format/jsonRead';
 import type { RawJson } from '../model/json';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
-import { normalizeRichText, type Block, type Marks, type RichText, type Run } from './richText';
+import { normalizeRichTextSteps, type Block, type Marks, type RichText, type Run } from './richText';
 import type { RichImportResult } from './rich';
-import { repairLegacyCharacters } from './repair';
+import { repairLegacyCharacterSteps } from './repair';
+import type { PlainTextOptions } from './plainText';
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue | null {
@@ -31,15 +32,15 @@ function validLink(value: unknown): value is string {
     } catch { return false; }
 }
 /** Data-only ProseMirror mapping; unrepresentable input must keep its legacy source read-only. */
-export function convertLegacyRichText(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): RichImportResult {
+function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): Generator<void, RichImportResult> {
     const repairs: string[] = [], unrepresentable: string[] = [], blocks: Block[] = [];
-    let visited = 0, total = 0, replaced = 0, controls = 0, preservedFields = 0, preservedBytes = 0;
+    let visited = 0, work = 0, total = 0, replaced = 0, controls = 0, preservedFields = 0, preservedBytes = 0;
     const fail = (message: string): never => { throw new Error(message); };
     const account = (depth: number) => {
         if (++visited > 200_000 || depth > 64) fail('Rich text structure exceeds safe limits');
     };
-    const clean = (text: string): string => {
-        const fixed = repairLegacyCharacters(text, MAX_TEXT_LENGTH - total);
+    const clean = function* (text: string): Generator<void, string> {
+        const fixed = yield* repairLegacyCharacterSteps(text, MAX_TEXT_LENGTH - total);
         replaced += fixed.surrogates; controls += fixed.controls;
         // Each emitted block contributes its separator in push(), not here as well.
         total += fixed.contentLength;
@@ -57,7 +58,7 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
     };
     // A known legacy node can also carry fields from a newer schema. Keep those
     // fields as an opaque zero-width mark, without copying its whole subtree.
-    const unknownFields = (object: RecordValue, keep: (key: string, value: unknown) => boolean): string | null => {
+    const unknownFields = function* (object: RecordValue, keep: (key: string, value: unknown) => boolean): Generator<void, string | null> {
         const original = originals?.get(object);
         const fields: string[] = [];
         let size = 2;
@@ -69,25 +70,31 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
         if (original && typeof original !== 'string' && original.kind === 'object') {
             let previous = original.start + 1;
             for (const [key, span] of original.fields()) {
+                if ((++work & 255) === 0) yield;
+                if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
                 let start = previous;
                 while (start < span.start && /[\s,]/.test(original.source[start])) start++;
                 if (keep(key, object[key])) add(original.source.slice(start, span.start) + span.raw());
                 previous = span.end;
             }
         } else {
-            for (const key of Object.keys(object)) if (keep(key, object[key]))
-                add(`${JSON.stringify(key)}:${raw(object[key], originals)}`);
+            for (const key in object) {
+                if ((++work & 255) === 0) yield;
+                if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
+                if (!Object.hasOwn(object, key)) fail('Inherited rich node fields cannot be preserved');
+                if (keep(key, object[key])) add(`${JSON.stringify(key)}:${raw(object[key], originals)}`);
+            }
         }
         return fields.length ? `{${fields.join(',')}}` : null;
     };
-    const extras = (node: RecordValue, fields: readonly string[], attributes: (key: string, value: unknown) => boolean): RawJson | undefined => {
-        const unknown = unknownFields(node, (key, value) => {
+    const extras = function* (node: RecordValue, fields: readonly string[], attributes: (key: string, value: unknown) => boolean): Generator<void, RawJson | undefined> {
+        const unknown = yield* unknownFields(node, (key, value) => {
             if (key === 'attrs') return value !== undefined && value !== null && !record(value);
             if (key === 'content' && fields.includes(key)) return !Array.isArray(value);
             return !fields.includes(key) && key !== 'attrs';
         });
         const attrs = record(node.attrs);
-        const unknownAttrs = attrs && unknownFields(attrs, (key, value) => !attributes(key, value));
+        const unknownAttrs = attrs ? (yield* unknownFields(attrs, (key, value) => !attributes(key, value))) : null;
         if (!unknown && !unknownAttrs) return undefined;
         const data = `[{"type":"legacy-node-fields","nodeType":${JSON.stringify(node.type ?? null)}${unknown ? `,"fields":${unknown}` : ''}${unknownAttrs ? `,"attrs":${unknownAttrs}` : ''}}]`;
         if (data.length > MAX_TEXT_LENGTH * 4 - preservedBytes) fail('Unsupported rich node fields exceed preservation limit');
@@ -101,12 +108,14 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
     };
     const directionAttribute = (key: string, value: unknown) => key === 'dir' && (value === 'auto' || value === 'ltr' || value === 'rtl');
     const noAttributes = () => false;
-    const marks = (value: unknown): Marks => {
+    const marks = function* (value: unknown): Generator<void, Marks> {
         const result: { b?: true; i?: true; u?: true; s?: true; code?: true; hl?: true; link?: string; x?: RawJson } = {};
         const extra: unknown[] = [];
         if (value === undefined) return result;
         if (!Array.isArray(value)) { extra.push(value); }
         else for (const item of value) {
+            if ((++work & 255) === 0) yield;
+            if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
             const mark = record(item), attrs = mark && record(mark.attrs);
             let known = true, preserve = false;
             switch (mark?.type) {
@@ -123,9 +132,17 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
                 default: known = false;
             }
             if (known && mark) {
-                if (Object.keys(mark).some(key => key !== 'type' && key !== 'attrs')) preserve = true;
+                for (const key in mark) {
+                    if ((++work & 255) === 0) yield;
+                    if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
+                    if (!Object.hasOwn(mark, key) || (key !== 'type' && key !== 'attrs')) preserve = true;
+                }
                 if (mark.attrs !== undefined && mark.attrs !== null && !attrs) preserve = true;
-                if (attrs && Object.keys(attrs).some(key => mark.type !== 'link' || key !== 'href')) preserve = true;
+                if (attrs) for (const key in attrs) {
+                    if ((++work & 255) === 0) yield;
+                    if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
+                    if (!Object.hasOwn(attrs, key) || mark.type !== 'link' || key !== 'href') preserve = true;
+                }
             }
             if (!known || preserve) extra.push(item);
         }
@@ -133,6 +150,8 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
             const values: RawJson[] = [];
             let size = 2;
             for (const item of extra) {
+                if ((++work & 255) === 0) yield;
+                if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
                 const encoded = raw(item, originals);
                 size += encoded.length + (values.length ? 1 : 0);
                 if (size > MAX_TEXT_LENGTH * 4 - preservedBytes) fail('Unsupported rich marks exceed preservation limit');
@@ -143,42 +162,55 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
         }
         return result;
     };
-    const collect = (node: unknown, depth: number): string => {
+    const collect = function* (node: unknown, depth: number): Generator<void, string> {
         account(depth);
+        if ((visited & 255) === 0) yield;
         const data = record(node);
         if (!data) return typeof node === 'string' ? node : '';
         if (data.type === 'text') return typeof data.text === 'string' ? data.text : '';
         if (data.type === 'hardBreak') return '\u2028';
-        return children(data).map(child => collect(child, depth + 1)).join('');
+        const parts: string[] = [];
+        let length = 0;
+        for (const child of children(data)) {
+            const part = yield* collect(child, depth + 1);
+            length += part.length;
+            if (length > MAX_TEXT_LENGTH * 2) fail('Rich text exceeds safe limits');
+            parts.push(part);
+        }
+        return parts.join('');
     };
-    const inline = (source: readonly unknown[], kind: Block['kind'], level: number, dir: Block['dir'], start: number | undefined, depth: number) => {
+    const inline = function* (source: readonly unknown[], kind: Block['kind'], level: number, dir: Block['dir'], start: number | undefined, depth: number): Generator<void, void> {
         let runs: Run[] = [];
         let first = true;
         const flush = () => {
             push({ kind, level, dir, ...(first && start !== undefined ? { start } : {}), runs: runs.length ? runs : [{ text: '', marks: {} }] });
             runs = []; first = false;
         };
-        const append = (value: string, styling: Marks) => {
-            const parts = clean(value).split('\n');
+        const append = function* (value: string, styling: Marks): Generator<void, void> {
+            const parts = (yield* clean(value)).split('\n');
             if (parts.length > 1 && styling.x !== undefined) fail('Cannot split an unsupported rich run safely');
             for (let i = 0; i < parts.length; i++) {
+                if ((i & 255) === 255) yield;
                 if (parts[i] || parts.length === 1) runs.push({ text: parts[i], marks: styling });
                 if (i < parts.length - 1) flush();
             }
         };
         for (const item of source) {
             account(depth);
+            if ((visited & 255) === 0) yield;
             const node = record(item);
             if (node?.type === 'text' && typeof node.text === 'string') {
-                const data = extras(node, ['type', 'text', 'marks'], noAttributes);
+                const data = yield* extras(node, ['type', 'text', 'marks'], noAttributes);
                 if (data !== undefined) runs.push({ text: '', marks: { x: data } });
-                append(node.text, marks(node.marks));
+                const styling = yield* marks(node.marks);
+                yield* append(node.text, styling);
             } else if (node?.type === 'hardBreak') {
-                const data = extras(node, ['type'], noAttributes);
+                const data = yield* extras(node, ['type'], noAttributes);
                 if (data !== undefined) runs.push({ text: '', marks: { x: data } });
-                append('\u2028', {});
+                yield* append('\u2028', {});
             } else {
-                append(collect(item, depth + 1), { x: accountOpaque(raw(item, originals)) });
+                const value = yield* collect(item, depth + 1);
+                yield* append(value, { x: accountOpaque(raw(item, originals)) });
                 repairs.push('Preserved an unsupported inline node');
             }
         }
@@ -188,29 +220,32 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
         const dir = record(node.attrs)?.dir;
         return dir === 'ltr' || dir === 'rtl' ? dir : 'auto';
     };
-    const withFields = (node: RecordValue, fields: readonly string[], attributes: (key: string, value: unknown) => boolean, emit: () => void) => {
-        const data = extras(node, fields, attributes), first = blocks.length;
-        emit();
-        if (data !== undefined && first === blocks.length) inline([], 'p', 0, 'auto', undefined, 0);
+    const withFields = function* (node: RecordValue, fields: readonly string[], attributes: (key: string, value: unknown) => boolean,
+        emit: () => Generator<void, void>): Generator<void, void> {
+        const data = yield* extras(node, fields, attributes);
+        const first = blocks.length;
+        yield* emit();
+        if (data !== undefined && first === blocks.length) yield* inline([], 'p', 0, 'auto', undefined, 0);
         attach(first, data);
     };
-    const visit = (value: unknown, depth: number, list: 'ul' | 'ol' | null = null, level = 0, start?: number): void => {
+    const visit = function* (value: unknown, depth: number, list: 'ul' | 'ol' | null = null, level = 0, start?: number): Generator<void, void> {
         account(depth);
+        if ((visited & 255) === 0) yield;
         const node = record(value);
-        if (!node) { if (typeof value === 'string') inline([{ type: 'text', text: value }], 'p', 0, 'auto', undefined, depth + 1); else fail('Invalid rich text node'); return; }
+        if (!node) { if (typeof value === 'string') yield* inline([{ type: 'text', text: value }], 'p', 0, 'auto', undefined, depth + 1); else fail('Invalid rich text node'); return; }
         switch (node.type) {
             case 'doc':
-                withFields(node, ['type', 'content'], noAttributes, () => { for (const child of children(node)) visit(child, depth + 1); });
+                yield* withFields(node, ['type', 'content'], noAttributes, function* () { for (const child of children(node)) yield* visit(child, depth + 1); });
                 return;
             case 'paragraph':
-                withFields(node, ['type', 'content'], directionAttribute, () => inline(children(node), list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1));
+                yield* withFields(node, ['type', 'content'], directionAttribute, () => inline(children(node), list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1));
                 return;
             case 'heading': {
                 const n = record(node.attrs)?.level;
                 const valid = typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 6;
-                withFields(node, ['type', 'content'], (key, value) => directionAttribute(key, value) || (key === 'level' && valid), () => {
-                    if (!valid) { repairs.push('Invalid heading level became a paragraph'); inline(children(node), 'p', 0, direction(node), undefined, depth + 1); }
-                    else inline(children(node), `h${n}` as Block['kind'], 0, direction(node), undefined, depth + 1);
+                yield* withFields(node, ['type', 'content'], (key, value) => directionAttribute(key, value) || (key === 'level' && valid), function* () {
+                    if (!valid) { repairs.push('Invalid heading level became a paragraph'); yield* inline(children(node), 'p', 0, direction(node), undefined, depth + 1); }
+                    else yield* inline(children(node), `h${n}` as Block['kind'], 0, direction(node), undefined, depth + 1);
                 });
                 return;
             }
@@ -223,41 +258,43 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
                 const firstItem = firstNode?.type === 'listItem' ? record(children(firstNode)[0]) : firstNode;
                 const hasMappedStart = !!firstNode && (firstNode.type === 'listItem' && !children(firstNode).length
                     || firstItem?.type === 'paragraph' || firstItem?.type === 'text' || firstItem?.type === 'hardBreak');
-                withFields(node, ['type', 'content'], (key, value) => kind === 'ol' && key === 'start' && typeof value === 'number' && Number.isFinite(value) && hasMappedStart, () => {
+                yield* withFields(node, ['type', 'content'], (key, value) => kind === 'ol' && key === 'start' && typeof value === 'number' && Number.isFinite(value) && hasMappedStart, function* () {
                     let first = true;
                     for (const child of children(node)) {
                         const initialStart = kind === 'ol' && first && typeof initial === 'number' && Number.isFinite(initial) ? initial : undefined;
-                        visit(child, depth + 1, kind, nextLevel, initialStart); first = false;
+                        yield* visit(child, depth + 1, kind, nextLevel, initialStart); first = false;
                     }
                 });
                 return;
             }
             case 'listItem': {
-                withFields(node, ['type', 'content'], (key, value) => !children(node).length && directionAttribute(key, value), () => {
+                yield* withFields(node, ['type', 'content'], (key, value) => !children(node).length && directionAttribute(key, value), function* () {
                     let first = true;
-                    for (const child of children(node)) { visit(child, depth + 1, list, level, first ? start : undefined); first = false; }
-                    if (first) inline([], list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1);
+                    for (const child of children(node)) { yield* visit(child, depth + 1, list, level, first ? start : undefined); first = false; }
+                    if (first) yield* inline([], list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1);
                 });
                 return;
             }
-            case 'text': case 'hardBreak': inline([node], list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1); return;
+            case 'text': case 'hardBreak': yield* inline([node], list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1); return;
             default: {
                 const mark = { type: 'unsupported', node };
                 if (originals) originals.set(mark, parseJson(`{"type":"unsupported","node":${raw(node, originals)}}`).raw());
-                inline([{ type: 'text', text: collect(node, depth + 1), marks: [mark] }], 'p', 0, direction(node), undefined, depth + 1);
+                const content = yield* collect(node, depth + 1);
+                yield* inline([{ type: 'text', text: content, marks: [mark] }], 'p', 0, direction(node), undefined, depth + 1);
                 repairs.push('Preserved an unsupported block node');
             }
         }
     };
     try {
-        if (typeof input === 'string') inline([{ type: 'text', text: input }], 'p', 0, 'auto', undefined, 0);
-        else if (input === null || input === undefined) inline([], 'p', 0, 'auto', undefined, 0);
-        else visit(input, 0);
-        if (!blocks.length) inline([], 'p', 0, 'auto', undefined, 0);
+        if (typeof input === 'string') yield* inline([{ type: 'text', text: input }], 'p', 0, 'auto', undefined, 0);
+        else if (input === null || input === undefined) yield* inline([], 'p', 0, 'auto', undefined, 0);
+        else yield* visit(input, 0);
+        if (!blocks.length) yield* inline([], 'p', 0, 'auto', undefined, 0);
         if (replaced) repairs.push(`Replaced ${replaced} lone surrogate${replaced === 1 ? '' : 's'}`);
         if (controls) repairs.push(`Replaced ${controls} unsupported control character${controls === 1 ? '' : 's'}`);
         if (preservedFields) repairs.push(`Preserved fields on ${preservedFields} legacy rich node${preservedFields === 1 ? '' : 's'}`);
-        return { text: normalizeRichText({ blocks }), repairs, unrepresentable };
+        const text = yield* normalizeRichTextSteps({ blocks });
+        return { text, repairs, unrepresentable };
     } catch (error) {
         unrepresentable.push(error instanceof Error ? error.message : 'Rich text could not be represented');
         const text: RichText = { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] };
@@ -265,24 +302,71 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
     }
 }
 
-/** Pass lexical spans when the legacy reader still has them; unknown carriers keep their original tokens. */
-export function convertLegacyRichSpan(root: JsonSpan): RichImportResult {
+function finish(steps: Generator<void, RichImportResult>): RichImportResult {
+    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+}
+async function finishCooperative(steps: Generator<void, RichImportResult>, options: PlainTextOptions): Promise<RichImportResult> {
+    const budget = options.sliceMilliseconds ?? 3;
+    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich import time slice');
+    let started = performance.now();
+    for (;;) {
+        options.signal?.throwIfAborted();
+        const step = steps.next();
+        if (step.done) return step.value;
+        if (performance.now() - started >= budget) {
+            await options.cooperate();
+            options.signal?.throwIfAborted();
+            started = performance.now();
+        }
+    }
+}
+
+/** Data-only ProseMirror mapping; unrepresentable input keeps its legacy source read-only. */
+export function convertLegacyRichText(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): RichImportResult {
+    return finish(convertSteps(input, originals));
+}
+export function convertLegacyRichTextCooperative(input: unknown, options: PlainTextOptions,
+    originals?: WeakMap<object, RawJson | JsonSpan>): Promise<RichImportResult> {
+    return finishCooperative(convertSteps(input, originals), options);
+}
+
+function* spanSteps(root: JsonSpan): Generator<void, RichImportResult> {
     try {
         const originals = new WeakMap<object, RawJson | JsonSpan>(), pending: JsonSpan[] = [root];
-        let count = 0;
+        let scheduled = 1, work = 0;
         while (pending.length) {
             const span = pending.pop()!;
-            if (++count > 200_000) throw new RangeError('Rich text structure exceeds safe limits');
+            if ((++work & 255) === 0) yield;
             if (span.kind !== 'object' && span.kind !== 'array') continue;
             const value = span.value();
             if (typeof value !== 'object' || value === null) continue;
             originals.set(value, span);
-            if (span.kind === 'array') for (const child of span.items()) pending.push(child);
-            else for (const child of span.fieldMap().values()) pending.push(child);
+            if (span.kind === 'array') {
+                for (const child of span.items()) {
+                    if (++scheduled > 200_000) throw new RangeError('Rich text structure exceeds safe limits');
+                    pending.push(child);
+                    if ((++work & 255) === 0) yield;
+                }
+            } else {
+                const keys = new Set<string>();
+                for (const [key, child] of span.fields()) {
+                    if (keys.has(key)) throw new RangeError('Duplicate rich JSON property cannot be preserved');
+                    keys.add(key);
+                    if (++scheduled > 200_000) throw new RangeError('Rich text structure exceeds safe limits');
+                    pending.push(child);
+                    if ((++work & 255) === 0) yield;
+                }
+            }
         }
-        return convertLegacyRichText(root.value(), originals);
+        return yield* convertSteps(root.value(), originals);
     } catch (error) {
         return { text: { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] },
             repairs: [], unrepresentable: [error instanceof Error ? error.message : 'Rich text could not be represented'] };
     }
+}
+
+/** Lexical spans preserve unknown tokens; no partial conversion is returned after cancellation. */
+export function convertLegacyRichSpan(root: JsonSpan): RichImportResult { return finish(spanSteps(root)); }
+export function convertLegacyRichSpanCooperative(root: JsonSpan, options: PlainTextOptions): Promise<RichImportResult> {
+    return finishCooperative(spanSteps(root), options);
 }

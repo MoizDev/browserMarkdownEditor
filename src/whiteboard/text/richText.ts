@@ -90,7 +90,7 @@ function* normalizedRunsSteps(runs: readonly Run[]): Generator<void, readonly Ru
 }
 
 const normalizedBlocks = new WeakMap<Block, Block>();
-function* normalizeSteps(text: RichText): Generator<void, RichText> {
+export function* normalizeRichTextSteps(text: RichText): Generator<void, RichText> {
     if (!text.blocks.length) return EMPTY_RICH_TEXT;
     let blocks: Block[] | undefined;
     for (let i = 0; i < text.blocks.length; i++) {
@@ -110,7 +110,7 @@ function* normalizeSteps(text: RichText): Generator<void, RichText> {
 }
 
 export function normalizeRichText(text: RichText): RichText {
-    const steps = normalizeSteps(text);
+    const steps = normalizeRichTextSteps(text);
     for (;;) { const step = steps.next(); if (step.done) return step.value; }
 }
 
@@ -118,7 +118,7 @@ export function normalizeRichText(text: RichText): RichText {
 export async function normalizeRichTextCooperative(text: RichText, options: PlainTextOptions): Promise<RichText> {
     const budget = options.sliceMilliseconds ?? 3;
     if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich normalization time slice');
-    const steps = normalizeSteps(text);
+    const steps = normalizeRichTextSteps(text);
     let started = performance.now();
     for (;;) {
         options.signal?.throwIfAborted();

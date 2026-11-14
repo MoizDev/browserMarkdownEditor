@@ -16,6 +16,7 @@ import { sessionInkTool, type SessionInkServices } from './sessionInk'
 import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
 import type { GestureOwner, InputToken, Modifiers, RealSample, Tool } from './tool'
 import type { KeyboardNavigationPriority } from './scrollKeysTypes'
+import type { TextInputBridge } from '../text/edit/managerTypes'
 
 export type BoardInputMode = 'edit' | 'view'
 export type Detach = () => void
@@ -46,6 +47,7 @@ export interface BoardInputServices {
   readonly shortcutsEnabled: () => boolean
   readonly modalOpen: () => boolean
   readonly editing: () => boolean
+  readonly textInput?: TextInputBridge
   readonly isDirectPen: (event: PointerEvent) => boolean
   readonly commands: { run(id: string, event: KeyboardEvent): boolean }
   ink(tool: 'pen' | 'highlighter', sample: RealSample): Omit<SessionInkServices, 'session' | 'tool' | 'clearRedoAtDown'>

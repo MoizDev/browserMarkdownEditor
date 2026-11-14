@@ -13,6 +13,13 @@ export interface TextEditingManagerPorts {
     binding(node: NodeId, key: 'text' | 'label' | 'name', selection: EditSelection, creationToken?: number): TextEditBindingOptions;
     error(error: unknown): void;
 }
+/** Pane input bridge; hit testing and selected-node lookup stay in the viewer. */
+export interface TextInputBridge {
+    type(text: string): boolean;
+    enter(): boolean;
+    doubleClick(clientX: number, clientY: number): boolean;
+    flush(): void;
+}
 export interface TextEditingManager {
     readonly current: TextEditBinding | null;
     /** Double click/Enter on a selected text, sticky, figure, connector, or frame title. */

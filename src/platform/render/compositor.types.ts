@@ -157,6 +157,8 @@ export interface PaneCompositor {
     readonly surface: HTMLCanvasElement;
     readonly resources: CompositorResources;
     readonly surfaceGeneration: number;
+    /** A detached CPU resize bridge is working scratch until the old GPU display is zeroed. */
+    promoteSurface?(): boolean;
     readonly target: SurfaceCommitTarget;
     attach(host: PaneSurfaceHost): void;
     detach(): void;

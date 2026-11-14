@@ -183,6 +183,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
 
     get surfaceGeneration(): number { return this.generation; }
 
+    promoteSurface(): boolean { return this.backing?.promote() ?? true; }
+
     attach(host: PaneSurfaceHost): void {
         this.check();
         if (this.host && this.host !== host) this.detach();
@@ -602,6 +604,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.busy++;
         try {
             if (!this.init()) return result(false);
+            if (!this.host && !this.surface.width && !this.surface.height && !this.displayReserved) this.backing!.stage();
             const bytes = width * height * POLICY.surfaceReserveBytesPerPixel;
             if (bytes > this.displayReserved) {
                 if (!this.backing!.reserve(bytes - this.displayReserved)) return result(false);

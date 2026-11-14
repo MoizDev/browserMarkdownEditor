@@ -137,7 +137,19 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     try { created = cpuFactory<T>({
         paneId: options.paneId, governor: runtime.governor, currentToken: token,
         invalidate: reason => lifecycle?.invalidate(reason), recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms),
-        select2D: cpu => { if (!disposed) surfaceHost.select(cpu); },
+        select2D: cpu => {
+            if (disposed) return;
+            if (gpu && surfaceHost.current === gpu.bundle.compositor &&
+                (gpu.grant.canvas.width || gpu.grant.canvas.height || gpu.backing.reservedBytes)) {
+                // CPU has already submitted its complete detached bridge. Return the old
+                // display credit before promoting it; both were never charged as two displays.
+                const zeroed = gpu.backing.resize(0, 0, gpu.grant.resizeSurface);
+                if (!zeroed?.complete) throw new Error('Could not relinquish the GPU display backing');
+                gpu.backing.stage();
+            }
+            if (cpu.promoteSurface?.() === false) throw new Error('CPU backing promotion was refused');
+            surfaceHost.select(cpu);
+        },
         selectGpu: grant => {
             if (!gpu || gpu.grant.generation !== grant.generation) throw new Error('GPU grant is no longer current');
             created.presenter.releaseSurface();
@@ -390,6 +402,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         };
                     },
                     writeOverlays: options.writeOverlays,
+                    ...(__BME_BENCH__ ? { benchmarkMemory: () => {
+                        const memory = runtime.governor.readout();
+                        const grant = runtime.governor.grant(options.paneId);
+                        return {
+                            memory: { gpuChargedBytes: memory.gpu.chargedBytes, cpuChargedBytes: memory.cpu.chargedBytes,
+                                gpuRetiringBytes: memory.gpu.retiringBytes, cpuRetiringBytes: memory.cpu.retiringBytes },
+                            grants: { pixelGrant: grant?.pixelGrant ?? 0, gpuCacheBytes: grant?.gpuCacheBytes ?? 0,
+                                cpuBytes: grant?.cpuBytes ?? 0 },
+                        };
+                    } } : {}),
                     suspend: (reason: Parameters<PaneLifecycle<T>['suspend']>[0]) => { options.onPresentation(null); lifecycle?.suspend(reason); },
                 };
                 frameLease = runtime.scheduler.register(pane);

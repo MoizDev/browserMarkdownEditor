@@ -6,6 +6,7 @@ import { DamageAccumulator } from './damage';
 import type { DamageRecord } from './damage';
 import type { SurfaceCommit, SurfaceMetricsCommitter } from './surfaceMetrics';
 import type { FrameBudget, FrameToken, Layer } from './types';
+import { recordRenderFrame } from './renderPerf';
 
 /** Accumulated CSS camera-pan positions, not raw finger positions (design §7.3:706–713). */
 export interface TouchPanSample extends Point { readonly time: number }
@@ -72,6 +73,8 @@ export interface ScheduledPane {
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
     encode(frame: ScheduledFrame): ScheduledEncoding | null;
     writeOverlays(frame: ScheduledFrame): void;
+    /** Read-only benchmark snapshot; never queried in production or development. */
+    benchmarkMemory?(): { memory: Readonly<Record<string, number>>; grants: Readonly<Record<string, number>> };
     /** Stop input/speculative work and synchronously checkpoint through the session, never await a frame. */
     suspend(reason: 'unregistered' | 'window-hidden' | 'frozen' | 'geometry-dormant' | 'stopped'): void;
 }
@@ -231,6 +234,7 @@ interface UploadMeter {
     reportedCalls: number;
     callMs: number;
     progressUsed: boolean;
+    byPane?: Map<string, { bytes: number; calls: number; ms: number }>;
 }
 
 function sameToken(a: FrameToken, b: FrameToken | null): boolean {
@@ -273,6 +277,7 @@ export class FrameScheduler {
     private presentationMs = 0;
     private maintenanceMs = 0;
     private meter: UploadMeter | null = null;
+    private declare measuredPane: string | null;
 
     constructor(private readonly options: FrameSchedulerOptions) { this.reducedMotion = options.reducedMotion; }
 
@@ -367,7 +372,14 @@ export class FrameScheduler {
         if (!Number.isSafeInteger(bytes) || bytes < 0 || !Number.isFinite(elapsedMs) || elapsedMs < 0) {
             throw new RangeError('Upload measurements must be finite and nonnegative');
         }
-        if (this.meter) { this.meter.reportedBytes += bytes; this.meter.reportedCalls++; this.meter.callMs += elapsedMs; }
+        if (this.meter) {
+            this.meter.reportedBytes += bytes; this.meter.reportedCalls++; this.meter.callMs += elapsedMs;
+            if (__BME_BENCH__ && this.measuredPane && this.meter.byPane) {
+                const measured = this.meter.byPane.get(this.measuredPane) ?? { bytes: 0, calls: 0, ms: 0 };
+                measured.bytes += bytes; measured.calls++; measured.ms += elapsedMs;
+                this.meter.byPane.set(this.measuredPane, measured);
+            }
+        }
     }
 
     /** Frame-ring data is mandatory presentation work, packed after optional preparation (C4.3).
@@ -429,12 +441,14 @@ export class FrameScheduler {
 
     private call<T>(entry: PaneEntry, callback: () => T): T | undefined {
         if (!this.live(entry)) return undefined;
+        const previous = __BME_BENCH__ ? this.measuredPane : null;
+        if (__BME_BENCH__) this.measuredPane = entry.pane.paneId;
         try { return callback(); }
         catch (error) {
             try { this.unregister(entry); }
             finally { this.options.onError(entry.pane.paneId, error); }
             return undefined;
-        }
+        } finally { if (__BME_BENCH__) this.measuredPane = previous; }
     }
 
     private token(entry: PaneEntry): FrameToken | null {
@@ -508,6 +522,7 @@ export class FrameScheduler {
             const meter: UploadMeter = {
                 allowance, sliceMs: Math.min(1, 0.12 * this.intervalMs), deadline: Infinity,
                 admittedBytes: 0, reportedBytes: 0, reportedCalls: 0, callMs: 0, progressUsed: false,
+                ...(__BME_BENCH__ ? { byPane: new Map<string, { bytes: number; calls: number; ms: number }>() } : {}),
             };
             this.meter = meter;
             // 1–2: consume reported geometry/lifecycle first, then input and time-integrated cameras.
@@ -655,6 +670,15 @@ export class FrameScheduler {
                     if (drawn.length) this.acknowledgements.push({ entry: item.work.entry, frameId, token: item.work.frame.token,
                         submission: completed ? { drawn, completed } : { drawn } });
                     item.work.entry.pane.writeOverlays(item.work.frame);
+                    if (__BME_BENCH__) {
+                        const frame = item.work.frame;
+                        const accounting = item.work.entry.pane.benchmarkMemory?.();
+                        const uploads = meter.byPane?.get(item.work.entry.pane.paneId);
+                        recordRenderFrame({ frameId, token: frame.token, camera: frame.view.camera,
+                            sceneRevision: frame.damage.contentRevision, deviceGeneration: frame.token.deviceGeneration,
+                            memory: accounting?.memory ?? {}, grants: accounting?.grants ?? {},
+                            uploadedBytes: uploads?.bytes ?? 0, uploadCalls: uploads?.calls ?? 0, uploadMs: uploads?.ms ?? 0 });
+                    }
                 });
                 if (!item.done) { this.discard(item.work.entry, item.encoding); item.done = true; }
             }

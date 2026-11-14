@@ -75,6 +75,8 @@ try {
         await incomplete().waitFor();
         await page.getByRole('button', { name: 'Page thumbnails', exact: true }).click();
         await page.getByText('Thumbnail unavailable', { exact: true }).waitFor();
+        const retryBox = await incomplete().getByRole('button', { name: 'Try again', exact: true }).boundingBox();
+        if (!retryBox || retryBox.x < 0 || retryBox.x + retryBox.width > 1100) throw new Error('Retry is clipped outside the visible reader');
         await page.screenshot({ path: resolve(out, `${theme}-corrupt.png`) });
         const before = await page.evaluate(() => ({ opens: window.__pdfSanity.opens, workers: window.__pdfSanity.workers }));
         await action('retry-corrupt');
@@ -107,7 +109,7 @@ try {
             return Promise.all(['scan.pdf', 'corrupt.pdf', 'waiting.pdf'].map(async name => [...new Uint8Array(await (await (await vault.getFileHandle(name)).getFile()).arrayBuffer())]));
         });
         if (!Buffer.from(saved[0]).equals(positive) || !Buffer.from(saved[1]).equals(damaged) || !Buffer.from(saved[2]).equals(positive)) throw new Error('A PDF changed during display/Retry');
-        report.cases.push({ theme, scanInk, restartedInk, healthyRetry: true, watchdog: true, explicitRestart: true, unchangedFiles: true, state, errors });
+        report.cases.push({ theme, scanInk, restartedInk, retryRightEdge: retryBox.x + retryBox.width, healthyRetry: true, watchdog: true, explicitRestart: true, unchangedFiles: true, state, errors });
         await context.close();
     }
 } catch (error) { report.failure = String(error); throw error; }

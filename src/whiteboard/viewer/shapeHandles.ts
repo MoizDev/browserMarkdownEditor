@@ -30,6 +30,7 @@ export interface ShapeHandleOptions {
     readonly view: () => ViewState;
     readonly current: () => boolean;
     readonly visible: () => boolean;
+    readonly sampleToSurface: (sample: RealSample) => Vec2;
     readonly invalidate: () => void;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
@@ -124,7 +125,8 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 show: options.show, clear: options.clear, error: options.error, cooperate: options.cooperate };
             if (hit.kind === 'polyline-vertex' || hit.kind === 'polyline-midpoint') return polylineHandleGesture(sample, modifiers,
                 { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint' });
-            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, resolveAttachment: options.resolveAttachment });
+            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal,
+                sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
             return connectorControlGesture(sample, modifiers, { ...common, control: hit.control });
         },
         write(frame: ScheduledFrame) {

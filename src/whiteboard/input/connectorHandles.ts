@@ -14,6 +14,7 @@ export interface ConnectorEndHandleOptions {
     readonly id: NodeId;
     readonly terminal: 'start' | 'end';
     readonly current: () => boolean;
+    readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     readonly resolveAttachment: (point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
     readonly show: (ops: readonly NodeSetOp[]) => void;
     readonly clear: () => void;
@@ -29,6 +30,7 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
     const selection = runtime.selection.getSnapshot(), node = doc.nodes.get(options.id), controller = new AbortController();
     if (!node || node.kind !== 'connector' || isLocked(doc, node) || session.isReadOnly) throw new Error('Connector endpoint is not editable');
     let sample = first, keys = modifiers, generation = 0, ended = false, cleaned = false, lastMovedAt = first.time;
+    let lastSurface = options.sampleToSurface(first);
     let request: AbortController | undefined, scope: BoardGeometryScope | undefined, unregister: (() => void) | undefined;
     let font: number | undefined;
     const release = options.hold();
@@ -86,8 +88,9 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
         update(samples, next) {
             if (ended || !current()) { if (!ended) cancel(); return; }
             keys = next; for (const value of samples) if (value.pointerId === first.pointerId) {
-                if (value.x !== sample.x || value.y !== sample.y) lastMovedAt = value.time;
-                sample = value;
+                const surface = options.sampleToSurface(value);
+                if (surface.x !== lastSurface.x || surface.y !== lastSurface.y) lastMovedAt = value.time;
+                lastSurface = surface; sample = value;
             }
             void render(false);
         },

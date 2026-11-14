@@ -85,7 +85,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
     const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
-        invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
+        sampleToSurface: options.sampleToSurface, invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
         show: ops => options.preview.showOps(ops), clear: () => options.preview.clear(),
         resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
     const stickyHandles = createStickyHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,

@@ -35,6 +35,7 @@ export class PreviewBitmapLayer implements Layer {
     readonly bitmaps: PreviewBitmapStore;
     private readonly uploaded = new Map<PreviewTile, UploadedTile>();
     private pendingFrame = false;
+    private cpuPrepare: (() => void) | null = null;
     private disposed = false;
     private expected = new Map<number, PreviewExpectedPage>();
 
@@ -43,6 +44,14 @@ export class PreviewBitmapLayer implements Layer {
             this.retireRemoved();
             host.invalidate('pdf-preview-bitmap');
         });
+    }
+
+    /** Prospective demand is installed by the actor's ResizeObserver before this shared-frame phase.
+     * Starting copies in the viewer's sync callback races the first observation and its zero grant.
+     */
+    queueCpuPrepare(prepare: (() => void) | null): void {
+        this.cpuPrepare = prepare;
+        if (prepare) this.host.invalidate('pdf-preview-copy-ready');
     }
 
     setExpected(pages: ReadonlyMap<number, PreviewExpectedPage>): void {
@@ -81,6 +90,7 @@ export class PreviewBitmapLayer implements Layer {
     }
 
     hasGpuWork(view: ViewState): boolean {
+        if (!this.disposed && this.cpuPrepare) return true;
         const device = this.host.device();
         if (!device || this.disposed) return false;
         for (const [index, page] of this.bitmaps.entries) {
@@ -92,6 +102,13 @@ export class PreviewBitmapLayer implements Layer {
 
     prepare(view: ViewState, budget: FrameBudget): void {
         this.pendingFrame = false;
+        if (this.disposed) return;
+        if (this.cpuPrepare) {
+            if (budget.shouldYield()) { this.pendingFrame = true; return; }
+            const prepare = this.cpuPrepare;
+            this.cpuPrepare = null;
+            prepare();
+        }
         const device = this.host.device();
         if (!device || this.disposed) return;
         for (const [index, page] of this.bitmaps.entries) {
@@ -162,11 +179,12 @@ export class PreviewBitmapLayer implements Layer {
         return { gpuBytes, cpuBytes: this.bitmaps.cpuBytes };
     }
 
-    needsFrame(): boolean { return this.pendingFrame; }
+    needsFrame(): boolean { return this.pendingFrame || this.cpuPrepare !== null; }
 
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
+        this.cpuPrepare = null;
         this.releaseGpu('pressure');
         this.bitmaps.dispose();
     }

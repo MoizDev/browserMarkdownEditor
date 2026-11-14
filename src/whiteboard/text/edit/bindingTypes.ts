@@ -40,6 +40,14 @@ export interface TextEditBindingOptions {
     /** Add geometry/growY follow-ons to the same user transaction, before apply. */
     prepareTransaction(transaction: Transaction): Transaction;
 }
+export interface EditableTextRequestOptions {
+    readonly revision: string;
+    readonly fontEpoch: number;
+    readonly zoom: number;
+    /** Required for connector labels; supplied by the connector path geometry. */
+    readonly connectorLength?: number;
+}
+export type EditableTextRequest = (node: Readonly<Node>, text: RichText, options: EditableTextRequestOptions) => TextLayoutRequest;
 /** Derives auto-size/growY in the same transaction that changes text or its geometry. */
 export type TextEditTransactionPreparer = (transaction: Transaction) => Transaction;
 export interface TextEditBinding {

@@ -121,7 +121,7 @@ function regexLines(doc: Text): (pos: number) => RegexLine {
 }
 
 function isBarrier(line: string): boolean {
-    return !line.startsWith('|') && !/^[\s:|\-]*$/.test(line);
+    return !line.startsWith('|') && !/^[\s:|-]*$/.test(line);
 }
 
 function tableRegion(doc: Text, lineAt: (pos: number) => RegexLine, pos: number): CharRange {

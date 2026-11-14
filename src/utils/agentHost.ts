@@ -65,6 +65,8 @@ export interface AgentHostDeps {
     createFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle>;
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
     nameTaken: import('../types').FileSystemContextValue['nameTaken'];
+    /** Offscreen, session-owned native-board projection; never reads through a mounted view. */
+    canvasShapePage?: VaultToolHost['canvasShapePage'];
     /** The App-lifetime, path-explicit readable buffer accessor. */
     contentOf(path: string): string | undefined;
     /** The save funnel (App.updateTabContent). */

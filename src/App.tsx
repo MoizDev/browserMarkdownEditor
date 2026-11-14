@@ -4102,12 +4102,14 @@ export default function App() {
    *  is not enough: an edit's save timer is armed before its render commits,
    *  a write may be in flight, and a canvas keeps strokes in its own debounce
    *  App cannot see (the reporter's hasPendingEdits). */
-  const hasUnsaved = useCallback((tab: OpenTab): boolean => (
-    tab.dirty
-    || saveTimersRef.current.has(tab.file.path)
-    || flushingRef.current.has(tab.id)
-    || !!getView(tab.file.path)?.hasPendingEdits?.()
-  ), []);
+  const hasUnsaved = useCallback((tab: OpenTab): boolean => {
+    const revision = pendingRevisionsRef.current.get(tab.id);
+    return tab.dirty
+      || !!(revision && revision.revision > revision.saved)
+      || saveTimersRef.current.has(tab.file.path)
+      || flushingRef.current.has(tab.id)
+      || !!getView(tab.file.path)?.hasPendingEdits?.();
+  }, []);
 
   /**
    * Put the file's new contents into an open document that had nothing unsaved.

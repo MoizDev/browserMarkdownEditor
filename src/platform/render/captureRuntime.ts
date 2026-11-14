@@ -1,7 +1,8 @@
 import type { Rect, ViewState } from '../types';
 import type { FrameEncoder, GpuPass } from './gfx/api';
 import type { Webgl2Owner } from './gfx/webgl2';
-import type { MemoryAllocator, MemoryGovernor, MemorySessionOwner } from './memoryGovernor';
+import type { MemoryAllocator, MemorySessionOwner } from './memoryGovernor';
+import { getPlatformRuntime } from './platformRuntime';
 import { PaneCapturer } from './capture';
 import type { CaptureGpuOwner, CaptureOptions, CaptureRequest, CaptureSnapshot } from './capture';
 import { CaptureQueue } from './captureQueue';
@@ -36,7 +37,6 @@ export function captureGpuOwner(owner: Webgl2Owner, compositor: CaptureGpuScope)
 
 export interface PlatformCapturerOptions {
     readonly paneId: string;
-    readonly governor: MemoryGovernor;
     readonly owner: MemorySessionOwner;
     /** Synchronously retain one immutable revision and its resources. */
     snapshot(request: CaptureRequest): CaptureSnapshot;
@@ -51,7 +51,7 @@ export function createPlatformCapturer(options: PlatformCapturerOptions): {
 } {
     const now = performance.now();
     let live = 0;
-    const cache = options.governor.register({ id: `capture:${options.paneId}:${++cacheSerial}`,
+    const cache = getPlatformRuntime().governor.register({ id: `capture:${options.paneId}:${++cacheSerial}`,
         owner: options.owner, pool: 'cpu', kind: 'capture', class: 'critical', hiddenAt: null,
         lastVisibleAt: now, lastUsedAt: now, memory: () => ({ live, retiring: 0 }), evict: () => {} });
     const memory: MemoryAllocator = {

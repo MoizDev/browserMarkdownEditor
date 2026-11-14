@@ -2066,9 +2066,8 @@ export default function App() {
     }
   }, []);
 
-  // Write one tab's buffered content to its OWN handle. The tab is captured
-  // synchronously (before the await), so this is safe to fire right before the
-  // tab is removed from state (e.g. on close). Skips Help / handle-less tabs.
+  // Drain a tab's serializer, then write the latest funnel buffer to its OWN handle.
+  // Closing callers keep the tab and its canvas alive until this settles.
   //
   // Every write is VERSIONED: it lands only if the file is still what this
   // document last read or wrote (FileSystemContext.writeFileVersioned). A file
@@ -2120,16 +2119,12 @@ export default function App() {
     // An annotated PDF tab's buffer is a tldraw snapshot; the file on disk is a
     // real PDF, rebuilt from the pristine original + the overlays the canvas
     // parked for us. No render data yet means the canvas has not reported a
-    // change — which is also every PDF only ever read. Read synchronously: a
-    // close drops it right after calling this.
+    // change — which is also every PDF only ever read.
     const pdfData = isPdf ? getPdfRenderData(path) : undefined;
     if (isPdf && (!pdfData || !canRebuildAnnotatedPdf(pdfData.original))) return 'skipped';
-    // Captured now too: a vault switch clears every baseline right after its
-    // flushes, and this write still has to be checked against this one.
+    // Capture the baseline and PDF seed with the drained revision.
     const baselineAtCall = getBaseline(id);
-    // And a PDF's fingerprint — started here if this is the first thing to
-    // need one, since a close drops it right after this call and the write must
-    // still wait for it.
+    // A PDF's fingerprint starts here if this is the first write to need one.
     const seedAtCall = pdfSeedForRef.current(id);
     const rootAtCall = vaultRoot ?? rootHandleRef.current;
     const activationAtCall = rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1;
@@ -2150,12 +2145,8 @@ export default function App() {
       } catch { return 'failed'; }
     }
 
-    // Read AND handed over in one synchronous step, which is what makes the
-    // asset diff exact. Two things would otherwise race it: removeTab drops
-    // this entry the moment after it calls flushTab (so a closing tab's last
-    // save must capture first), and a second save landing while the first is
-    // still reconciling would read a baseline the first had yet to replace,
-    // and could retire a picture that save had just put back.
+    // Read and advance the asset baseline together after the drain: a later
+    // save must not reconcile against a baseline the first save has replaced.
     const boardBaseline = !isPdf && isCanvasFile(file.name) ? boardBaselinesRef.current.capture(path) : undefined;
     const embedsBefore = !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
     const embedsAfter = embedsBefore && assetEmbeds(snapshot);
@@ -2892,7 +2883,10 @@ export default function App() {
         return !!revision && revision.revision > revision.saved;
       });
       if (!pending && !anyPending()) return;
-      if (results.some(result => result === 'skipped') && pending) {
+      if (results.some((result, i) => {
+        const revision = pendingRevisionsRef.current.get(docs[i].id);
+        return result === 'skipped' && !!revision && revision.revision > revision.saved;
+      })) {
         throw new Error('A document cannot be saved; the vault was not switched.');
       }
     }

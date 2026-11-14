@@ -8,7 +8,7 @@ import { transformedPathBounds } from '../geom/providers';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
-import type { Node } from '../model/nodes';
+import type { Attachment, Node, PolylineNode } from '../model/nodes';
 import { compareOrder } from '../model/orderKey';
 
 type Prepared = Awaited<ReturnType<BoardRuntime['render']['prepareForPick']>>;
@@ -80,7 +80,7 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
     check();
     const unique = new Set<NodeId>();
     for (const id of ids) { if (!unique.has(id)) { unique.add(id); roots.push(id); } if (due()) await tick(); }
-    const closure = [...roots], visited = new Set<NodeId>();
+    const closure = [...roots], visited = new Set<NodeId>(), dependencies = new Set(roots);
     for (let i = 0; i < closure.length; i++) {
         const id = closure[i]; if (visited.has(id)) continue; visited.add(id);
         const node = doc.nodes.get(id); if (!node) throw new Error(`Geometry node not found: ${id}`); capture(node);
@@ -97,10 +97,16 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
             for (const child of doc.children.get(id) ?? []) { closure.push(child.id); if (due()) await tick(); }
         }
         if (node.kind === 'connector') for (const end of [node.start, node.end]) if (end.attach) closure.push(end.attach.target);
+        if (node.kind === 'polyline') {
+            const line = node as Readonly<PolylineNode> & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
+            for (const attachment of [line.startAttach, line.endAttach]) if (attachment) {
+                closure.push(attachment.target); dependencies.add(attachment.target);
+            }
+        }
         if (due()) await tick();
     }
     const rendererCurrent = fenced ? () => (!options.current || options.current()) && runtime.session.owner === owner && (!live || runtime.session.doc === doc) : undefined;
-    const lease = await runtime.render.pinChangeGeometry(roots, signal, doc, rendererCurrent);
+    const lease = await runtime.render.pinChangeGeometry(dependencies, signal, doc, rendererCurrent);
     try {
         check();
         const font = runtime.render.text.fonts.epoch;

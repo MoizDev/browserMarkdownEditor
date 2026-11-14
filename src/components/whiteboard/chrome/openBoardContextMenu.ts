@@ -6,8 +6,9 @@ export function openBoardContextMenu(
     label: string,
     point: { readonly x: number; readonly y: number },
     opener: HTMLElement,
+    language?: { readonly locale: string; readonly direction: 'ltr' | 'rtl' },
 ): void {
-    openContextMenu({ ...point, label, opener, entries: contextEntries(source) });
+    openContextMenu({ ...point, label, opener, lang: language?.locale, dir: language?.direction, entries: contextEntries(source) });
 }
 
 export function handleBoardContextMenu(
@@ -15,7 +16,8 @@ export function handleBoardContextMenu(
     source: BoardContextMenuSource,
     label: string,
     opener: HTMLElement,
+    language?: { readonly locale: string; readonly direction: 'ltr' | 'rtl' },
 ): void {
     event.preventDefault();
-    openBoardContextMenu(source, label, { x: event.clientX, y: event.clientY }, opener);
+    openBoardContextMenu(source, label, { x: event.clientX, y: event.clientY }, opener, language);
 }

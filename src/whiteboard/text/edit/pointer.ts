@@ -7,6 +7,7 @@ export interface TextPointer {
     readonly y: number;
     readonly clicks: number;
     readonly shift: boolean;
+    readonly accel: boolean;
 }
 export interface PointerSelectionServices {
     selection(): EditSelection;
@@ -15,8 +16,10 @@ export interface PointerSelectionServices {
     word(offset: number): EditSelection;
     block(offset: number): EditSelection;
     autoScroll(x: number, y: number): void;
+    stopAutoScroll(): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
+    followLink(x: number, y: number): boolean;
 }
 
 // The canvas retains pointer capture while the hidden edit host retains focus.
@@ -36,6 +39,7 @@ export class TextPointerSelection {
         this.startY = pointer.y;
         this.handle = handle;
         const hit = this.services.hit(pointer.x, pointer.y);
+        if (!handle && pointer.accel && this.services.followLink(pointer.x, pointer.y)) { this.cancel(); return; }
         if (handle) {
             const selection = this.services.selection();
             this.anchor = handle === 'anchor' ? selection.focus : selection.anchor;
@@ -79,7 +83,7 @@ export class TextPointerSelection {
     }
 
     up(id: number): void { if (id === this.active) this.cancel(); }
-    cancel(): void { this.clearHold(); this.active = null; this.handle = null; }
+    cancel(): void { this.clearHold(); this.active = null; this.handle = null; this.services.stopAutoScroll(); }
     dispose(): void { this.cancel(); }
     private clearHold(): void { if (this.hold !== null) clearTimeout(this.hold); this.hold = null; }
 }

@@ -45,7 +45,7 @@ function rectPath(rect: { x: number; y: number; width: number; height: number })
 }
 const interior = (path: readonly PathOp[], query: PointQuery) => pointPath([], query,
     { interiorPaths: [path], strokeRadiusLocal: 0, marginCss: 0, errorCss: 0.01, maxSegments: 8192 }).hit;
-function exactStraightBoundary(path: readonly PathOp[], query: PointQuery): boolean {
+function exactAttachmentBoundary(path: readonly PathOp[], query: PointQuery): boolean {
     const mapped = (p: Vec2): ExactPoint => exactAffinePoint(query.localToSurface, p);
     const point = exactPoint(query.point);
     const compare = (a: ExactPoint, b: ExactPoint, axis: 'x' | 'y') => {
@@ -65,7 +65,7 @@ function exactStraightBoundary(path: readonly PathOp[], query: PointQuery): bool
         const next = op.op === 'Z' ? start : op.p;
         if (op.op !== 'C') {
             if (onSegment(mapped(previous), mapped(next))) return true;
-        }
+        } else if (sameExactPoint(mapped(previous), point) || sameExactPoint(mapped(next), point)) return true;
         previous = next;
     }
     return false;
@@ -220,7 +220,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                                 if (state.status === 'inside') result = { hit: true, distanceCss: 0, part: 'body' };
                                 else if (state.status === 'uncertain') {
                                     result = { hit: true, distanceCss: 0, part: 'body' };
-                                    ambiguous = !exactStraightBoundary(attachment.outline, query);
+                                    ambiguous = !exactAttachmentBoundary(attachment.outline, query);
                                 }
                                 break;
                             }

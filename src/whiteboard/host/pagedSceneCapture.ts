@@ -5,16 +5,34 @@ import type { MediaLease } from '../media/store';
 import type { SheetId } from '../model/ids';
 import type { MediaId } from '../model/media';
 import type { BoardRuntime } from './runtime';
+import { inspectPdfVisualDoc, type PdfVisualPreflight } from './pdfVisualPreflight';
 
 /** Pin the actual paged scene and embedded/media-store bytes, not live view geometry. */
 export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, current: () => boolean, onError: (error: unknown) => void) {
     const doc = runtime.session.doc;
     if (!current() || doc.rev !== revision || !runtime.scene) throw new Error('Paged board scene is not ready for this revision');
-    const scene = runtime.scene.pin(), held: MediaLease[] = [];
+    const scene = runtime.scene.pin(), held: MediaLease[] = [], lifetime = new AbortController();
     let images: ReturnType<typeof createBoardHostImages> | undefined, released = false;
+    let assessment: Promise<PdfVisualPreflight> | undefined;
+    const visualCheck = async (signal: AbortSignal) => {
+        signal.throwIfAborted();
+        if (!assessment) {
+            assessment = scene.readDocument(lifetime.signal).then(doc => inspectPdfVisualDoc(doc, { signal: lifetime.signal }))
+                .catch(error => { assessment = undefined; throw error; });
+        }
+        const result = await new Promise<PdfVisualPreflight>((resolve, reject) => {
+            const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason); };
+            signal.addEventListener('abort', abort, { once: true });
+            assessment!.then(value => { signal.removeEventListener('abort', abort); resolve(value); },
+                error => { signal.removeEventListener('abort', abort); reject(error); });
+            if (signal.aborted) abort();
+        });
+        if (result.status !== 'known') throw new Error('Board content cannot be safely represented in a PDF');
+    };
     const release = () => {
         if (released) return;
         released = true;
+        lifetime.abort();
         try { images?.dispose(); } finally {
             try { scene.release(); } finally { for (const lease of held) lease.release(); }
         }
@@ -57,6 +75,9 @@ export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, curr
                 signal.throwIfAborted();
                 const box = rects[page];
                 if (released || !current() || !box || !sheets.includes(sheet)) throw new Error('Captured board page is unavailable');
+                await visualCheck(signal);
+                signal.throwIfAborted();
+                if (released || !current()) throw new DOMException('Board capture ended', 'AbortError');
                 const source = await scene.paintSource({ sheetId: sheet, page, world: box, theme: 'light' }, signal);
                 signal.throwIfAborted();
                 if (released || !current()) throw new DOMException('Board capture ended', 'AbortError');

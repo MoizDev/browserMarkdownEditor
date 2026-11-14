@@ -3,8 +3,9 @@ import type { BoardDoc, BoardKind } from '../model/doc';
 import { childrenOf, sheetOf } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
 import type { MediaEntry, MediaId } from '../model/media';
+import type { RawJson } from '../model/json';
 import type { Node } from '../model/nodes';
-import { scanRawMedia, visitNodeRaw } from '../model/rawMedia';
+import { nodeRawValues, scanRawMedia, scanRawMediaIncremental } from '../model/rawMedia';
 import type { RichFragment, RichText } from '../text/richText';
 import type { ClipboardTextItem } from './rendition';
 
@@ -61,13 +62,14 @@ function textOf(node: Node): RichText | null {
     if (node.kind === 'frame' && node.name) return { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: node.name, marks: {} }] }] };
     return null;
 }
-function mediaOf(node: Node, ids: Set<MediaId>): void {
+type SnapshotStep = { readonly raw: RawJson; readonly ids: Set<MediaId> } | undefined;
+function* mediaOf(node: Node, ids: Set<MediaId>): Generator<SnapshotStep, void> {
     if ((node.kind === 'picture' || node.kind === 'clip') && node.media) ids.add(node.media);
     if (node.kind === 'linkcard' && node.preview) {
         if (node.preview.image) ids.add(node.preview.image);
         if (node.preview.favicon) ids.add(node.preview.favicon);
     }
-    visitNodeRaw(node, raw => scanRawMedia(raw, id => ids.add(id)));
+    for (const raw of nodeRawValues(node)) if (raw !== null) yield { raw, ids };
 }
 
 export function snapshotTextSelection(host: CopySnapshotHost, fragment: RichFragment, node: Node, bounds: ClipboardBounds,
@@ -84,9 +86,10 @@ export function snapshotTextSelection(host: CopySnapshotHost, fragment: RichFrag
             bounds, records: [encoded.value.text], media: Object.create(null) as Record<string, string> } };
 }
 
-export function snapshotSelection(host: CopySnapshotHost, selection: readonly NodeId[]): CopySnapshot {
+function* selectionSteps(host: CopySnapshotHost, selection: readonly NodeId[]): Generator<SnapshotStep, CopySnapshot> {
     if (!host.doc.sheets.has(host.sheet) || !host.board || host.board.length > 128) throw new Error('Invalid clipboard source');
-    const chosen = new Set(selection);
+    const chosen = new Set<NodeId>(), selected: NodeId[] = [];
+    for (const id of selection) { if (!chosen.has(id)) { chosen.add(id); selected.push(id); } yield; }
     const roots: NodeId[] = [];
     for (const id of chosen) {
         const node = host.doc.nodes.get(id);
@@ -99,6 +102,7 @@ export function snapshotSelection(host: CopySnapshotHost, selection: readonly No
             parent = ancestor.parent;
         }
         if (!nested) roots.push(id);
+        yield;
     }
     if (!roots.length) throw new Error('Nothing selected');
     const nodes: Node[] = [], leases: ClipboardLease[] = [], ids = new Set<MediaId>();
@@ -106,7 +110,8 @@ export function snapshotSelection(host: CopySnapshotHost, selection: readonly No
     const texts: ClipboardTextItem[] = [];
     let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
     try {
-        const stack = roots.slice().reverse().map(id => ({ id, root: true }));
+        const stack: { id: NodeId; root: boolean }[] = [];
+        for (let i = roots.length - 1; i >= 0; i--) { stack.push({ id: roots[i], root: true }); yield; }
         while (stack.length) {
             const { id, root } = stack.pop()!;
             const node = host.doc.nodes.get(id);
@@ -124,11 +129,12 @@ export function snapshotSelection(host: CopySnapshotHost, selection: readonly No
             if (copy.id !== node.id || copy.kind !== node.kind || (root && copy.parent !== host.sheet)) throw new Error('Invalid clipboard root conversion');
             nodes.push(copy);
             if (node.kind === 'stroke') leases.push(host.retainSample(node));
-            mediaOf(node, ids);
+            yield* mediaOf(node, ids);
             const text = textOf(node);
             if (text) texts.push({ text, bounds });
             const children = childrenOf(host.doc, id);
-            for (let i = children.length - 1; i >= 0; i--) stack.push({ id: children[i].id, root: false });
+            for (let i = children.length - 1; i >= 0; i--) { stack.push({ id: children[i].id, root: false }); yield; }
+            yield;
         }
         if (!nodes.length) throw new Error(`This version can't copy opaque content: ${skippedOpaque.join(', ')}`);
         const records: string[] = [];
@@ -136,6 +142,7 @@ export function snapshotSelection(host: CopySnapshotHost, selection: readonly No
             const result = encodeNode(node, host.doc, host.encoder);
             if (!result.ok) throw new Error(result.error.reason);
             records.push(result.value.text);
+            yield;
         }
         const media: MediaEntry[] = [];
         for (const id of ids) {
@@ -146,12 +153,49 @@ export function snapshotSelection(host: CopySnapshotHost, selection: readonly No
             if (!result.ok) throw new Error(result.error.reason);
             records.push(result.value.text);
             media.push(entry);
+            yield;
         }
-        return { revision: host.doc.rev, roots: copiedRoots, selected: [...chosen], skippedOpaque, nodes, textItems: texts, media, leases,
+        return { revision: host.doc.rev, roots: copiedRoots, selected, skippedOpaque, nodes, textItems: texts, media, leases,
             payload: { v: 1, nonce: randomNonce(), from: { board: host.board, sheet: host.sheet, kind: host.doc.kind },
                 bounds: { x: left, y: top, w: right - left, h: bottom - top }, records, media: Object.create(null) as Record<string, string> } };
     } catch (error) {
         for (const lease of leases) lease.release();
+        throw error;
+    }
+}
+
+export function snapshotSelection(host: CopySnapshotHost, selection: readonly NodeId[]): CopySnapshot {
+    const steps = selectionSteps(host, selection);
+    try {
+        for (;;) {
+            const step = steps.next();
+            if (step.done) return step.value;
+            if (step.value) scanRawMedia(step.value.raw, id => step.value!.ids.add(id));
+        }
+    } catch (error) {
+        try { steps.throw(error); } catch { /* original error wins */ }
+        throw error;
+    }
+}
+
+/** The asynchronous and synchronous entry points consume the same snapshot algorithm. */
+export async function snapshotSelectionAsync(host: CopySnapshotHost, selection: readonly NodeId[], options: {
+    readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>;
+}): Promise<CopySnapshot> {
+    const steps = selectionSteps(host, selection);
+    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    let count = 0, started = performance.now();
+    const tick = async () => { options.signal.throwIfAborted(); await cooperate(); options.signal.throwIfAborted(); count = 0; started = performance.now(); };
+    try {
+        for (;;) {
+            options.signal.throwIfAborted();
+            const step = steps.next();
+            if (step.done) return step.value;
+            if (step.value) { const { raw, ids } = step.value; await scanRawMediaIncremental(raw, id => ids.add(id), tick); }
+            if (++count >= 256 || performance.now() - started >= 3) await tick();
+        }
+    } catch (error) {
+        try { steps.throw(error); } catch { /* original error wins */ }
         throw error;
     }
 }

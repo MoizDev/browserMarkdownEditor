@@ -31,6 +31,9 @@ export async function validateWriterSource(source: WriterSource, cooperate: () =
     if (!source.token || source.token.vaultEpoch !== key.vaultEpoch || source.token.documentId !== key.documentId ||
         source.token.bytesGeneration !== key.bytesGeneration || !Number.isSafeInteger(source.token.session) || source.token.session < 0 ||
         key.source !== 'original') throw new PdfEngineError('InvalidPdf', 'Writer source identity does not match');
+    const proof = source.attachmentProof;
+    if (proof && (proof.canonical !== true || proof.unknownCount !== 0 || proof.pristineFingerprint !== source.pristineFingerprint ||
+        proof.outerFingerprint !== source.outerFingerprint)) throw new PdfEngineError('InvalidPdf', 'Attachment preservation proof is stale');
     const engine = source.geometryEngine;
     if (!engine || !engine.id || !engine.build || !Number.isSafeInteger(engine.generation) || engine.generation < 0) throw new PdfEngineError('InvalidPdf', 'Invalid geometry engine identity');
     if (await hashBlob(source.pristine, cooperate) !== source.pristineFingerprint ||

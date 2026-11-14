@@ -1,7 +1,7 @@
 import { textBoundaries } from './boundaries';
 import { projectionLength as indexedLength, projectionPosition, projectionText } from './projection';
 import { normalizePlainInsertion, normalizePlainInsertionCooperative, type PlainTextOptions } from './plainText';
-import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
+import { normalizeRichText, normalizeRichTextCooperative, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
 import { carrierForTail, trackBlock, trackRun } from './carriers';
 import { firstRunAt, runContaining, runIndex } from './runIndex';
@@ -165,6 +165,7 @@ function checkedSplice(value: RichText, from: number, to: number, insert: RichFr
     validateRichFragment(insert);
     return spliceRichText(value, from, to, insert, wholeBlocks);
 }
-export const richTextOperations: RichTextOperations = { plain, fromPlain, fromPlainCooperative, normalize: normalizeRichText, splice: checkedSplice,
+export const richTextOperations: RichTextOperations = { plain, fromPlain, fromPlainCooperative, normalize: normalizeRichText,
+    normalizeCooperative: normalizeRichTextCooperative, splice: checkedSplice,
     transaction: applyRichTransaction, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks };
 export function projectionLength(text: RichText): number { return indexedLength(text); }

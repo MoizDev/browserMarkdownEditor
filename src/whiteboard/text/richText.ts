@@ -4,6 +4,7 @@ import { inheritProjection, projectionLength, projectionPosition } from './proje
 import { inheritWordBoundaries, textBoundaries } from './boundaries';
 import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOrigin, sliceCarriers, trackBlock, trackRun } from './carriers';
 import { firstRunAt, runContaining, runIndex } from './runIndex';
+import type { PlainTextOptions } from './plainText';
 
 // text.md §4.1: immutable values; UTF-16 offsets refer to the plain-text projection.
 export interface RichText { readonly blocks: readonly Block[] }
@@ -60,9 +61,10 @@ function sameMarks(a: Marks, b: Marks): boolean {
 }
 function opaqueRun(run: Run): boolean { return run.tail !== undefined || run.marks.x !== undefined; }
 
-function normalizedRuns(runs: readonly Run[]): readonly Run[] {
-    let previous: Run | undefined, changed = false;
+function* normalizedRunsSteps(runs: readonly Run[]): Generator<void, readonly Run[]> {
+    let previous: Run | undefined, changed = false, visited = 0;
     for (const run of runs) {
+        if ((++visited & 255) === 0) yield;
         if (!run.text.length && runs.length > 1 && !opaqueRun(run)) { changed = true; continue; }
         if (previous && !opaqueRun(previous) && !opaqueRun(run) && sameMarks(previous.marks, run.marks)) changed = true;
         previous = run;
@@ -76,6 +78,7 @@ function normalizedRuns(runs: readonly Run[]): readonly Run[] {
         pending = undefined; parts = [];
     };
     for (const run of runs) {
+        if ((++visited & 255) === 0) yield;
         if (!run.text.length && runs.length > 1 && !opaqueRun(run)) continue;
         // Unknown tuple/mark meaning can depend on the original run boundary.
         if (opaqueRun(run)) { flush(); output.push(run); }
@@ -87,25 +90,46 @@ function normalizedRuns(runs: readonly Run[]): readonly Run[] {
 }
 
 const normalizedBlocks = new WeakMap<Block, Block>();
-function normalizedBlock(block: Block): Block {
-    const cached = normalizedBlocks.get(block);
-    if (cached) return cached;
-    const runs = block.runs.length ? normalizedRuns(block.runs) : [{ text: '', marks: {} }];
-    const result = runs === block.runs ? block : trackBlock({ ...block, runs }, block);
-    normalizedBlocks.set(block, result);
-    normalizedBlocks.set(result, result);
-    return result;
-}
-
-export function normalizeRichText(text: RichText): RichText {
+function* normalizeSteps(text: RichText): Generator<void, RichText> {
     if (!text.blocks.length) return EMPTY_RICH_TEXT;
     let blocks: Block[] | undefined;
     for (let i = 0; i < text.blocks.length; i++) {
-        const block = text.blocks[i], normalized = normalizedBlock(block);
+        if ((i & 255) === 255) yield;
+        const block = text.blocks[i];
+        let normalized = normalizedBlocks.get(block);
+        if (!normalized) {
+            const runs = block.runs.length ? (yield* normalizedRunsSteps(block.runs)) : [{ text: '', marks: {} }];
+            normalized = runs === block.runs ? block : trackBlock({ ...block, runs }, block);
+            normalizedBlocks.set(block, normalized);
+            normalizedBlocks.set(normalized, normalized);
+        }
         if (normalized !== block && !blocks) blocks = text.blocks.slice(0, i);
         if (blocks) blocks.push(normalized);
     }
     return blocks ? { blocks } : text;
+}
+
+export function normalizeRichText(text: RichText): RichText {
+    const steps = normalizeSteps(text);
+    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+}
+
+/** Large imported fragments can normalize without retaining partially published output. */
+export async function normalizeRichTextCooperative(text: RichText, options: PlainTextOptions): Promise<RichText> {
+    const budget = options.sliceMilliseconds ?? 3;
+    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich normalization time slice');
+    const steps = normalizeSteps(text);
+    let started = performance.now();
+    for (;;) {
+        options.signal?.throwIfAborted();
+        const step = steps.next();
+        if (step.done) return step.value;
+        if (performance.now() - started >= budget) {
+            await options.cooperate();
+            options.signal?.throwIfAborted();
+            started = performance.now();
+        }
+    }
 }
 
 interface TextPoint { readonly block: number; readonly offset: number; readonly start: number }

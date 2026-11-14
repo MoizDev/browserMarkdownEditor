@@ -15,7 +15,7 @@ export type { RepairedText } from './repair';
 export { GraphemeNavigator } from './graphemes';
 export { RichSelectionOperations } from './selectionOps';
 export type { LogicalMotion } from './selectionOps';
-export { normalizeRichText, sliceRichText, spliceRichText } from './richText';
+export { normalizeRichText, normalizeRichTextCooperative, sliceRichText, spliceRichText } from './richText';
 export { convertLegacyRichText, convertLegacyRichSpan } from './importRich';
 export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeTextSelection, mapTextSelectionTo,
     mapRichTextChange, mapRichTextChangeCooperative } from './rangeMap';
@@ -33,6 +33,7 @@ export interface RichTextOperations {
     fromPlain(value: string): RichText;
     fromPlainCooperative(value: string, options: PlainTextOptions): Promise<RichText>;
     normalize(value: RichText): RichText;
+    normalizeCooperative(value: RichText, options: PlainTextOptions): Promise<RichText>;
     splice(value: RichText, from: number, to: number, insert: RichFragment, wholeBlocks?: boolean): RichSpliceResult;
     transaction(value: RichText, operations: readonly RichSpliceOperation[], selection: RichSelection, affinity?: TextAffinity): RichTransactionResult;
     marksAt(value: RichText, offset: number): Marks;

@@ -9,6 +9,9 @@ export interface LanguageTable {
 export interface BoardLocale { readonly code: string; readonly name: string; readonly dir: 'ltr' | 'rtl' }
 export const boardLocales: readonly BoardLocale[] = locales as readonly BoardLocale[];
 const files = import.meta.glob<{ default: LanguageTable }>('./i18n/*.json');
+export function availableBoardLocales(): readonly BoardLocale[] {
+    return boardLocales.filter(locale => !!files[`./i18n/${locale.code}.json`]);
+}
 const cache = new Map<string, Promise<LanguageTable>>();
 
 function parameters(text: string): string[] {
@@ -79,12 +82,12 @@ export class BoardLanguageState {
         this.listeners.add(listener);
         return () => { this.listeners.delete(listener); };
     };
-    async select(locale: string): Promise<void> {
+    async select(locale: string, persist = true): Promise<void> {
         const generation = ++this.generation;
         const table = await loadBoardLanguage(locale);
         if (generation !== this.generation) return;
         this.snapshot = { locale, table };
-        this.persist(locale);
+        if (persist) this.persist(locale);
         for (const listener of this.listeners) listener();
     }
 }

@@ -29,8 +29,13 @@ export interface VideoFrameRegistry {
     present(node: string, bitmap: ImageBitmap): boolean;
     /** Stops a node: its latest frame retires, and nothing new can be leased for it. */
     retire(node: string): void;
-    /** Only a live (not retired) frame can be leased; a superseded frame's paint re-prepares with the new key. */
+    /**
+     * A key names the image it was made for for as long as anyone holds it: a superseded frame stays resolvable
+     * as that old image while retained, and is gone once its last holder lets go. Nothing here switches a key to the current frame.
+     */
     lease(key: string, signal: AbortSignal): Promise<PaintImageLease>;
+    /** Synchronous hold on a key that is still present. Release pairs with the holder's own release. */
+    retainKey(key: string): () => void;
     /** Node → key of its latest live frame. Identity changes exactly when `version` does. */
     readonly keys: ReadonlyMap<string, string>;
     readonly version: number;
@@ -80,7 +85,7 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
         async lease(key, signal) {
             signal.throwIfAborted();
             const frame = frames.get(key);
-            if (disposed || !frame || frame.retired || frame.closed) throw aborted();
+            if (disposed || !frame || frame.closed) throw aborted();
             frame.refs++;
             let held = true;
             return {
@@ -90,6 +95,17 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
                     held = false; frame.refs--;
                     if (frame.refs === 0 && frame.retired) drop(frame);
                 },
+            };
+        },
+        retainKey(key) {
+            const frame = frames.get(key);
+            if (disposed || !frame || frame.closed) throw new Error('Cannot retain a video frame that is no longer held');
+            frame.refs++;
+            let held = true;
+            return () => {
+                if (!held) return;
+                held = false; frame.refs--;
+                if (frame.refs === 0 && frame.retired) drop(frame);
             };
         },
         get keys() { return keys; },
@@ -124,8 +140,10 @@ export function videoFrameOverlay(registry: VideoFrameRegistry): VideoFrameOverl
  * version of it is still held and it is no longer the newest one.
  */
 export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameRegistry): PaintFrameAssembler {
-    const originals = new WeakMap<PaintFrame, PaintFrame>();
+    const originals = new WeakMap<PaintFrame, PaintFrame>(), decoratedKeys = new WeakMap<PaintFrame, readonly string[]>();
     const versions = new Map<PaintFrame, Set<PaintFrame>>(), deferred = new Set<PaintFrame>();
+    const videoKeys = (items: readonly PaintItem[]): string[] => items.flatMap(item =>
+        item.kind === 'image' && item.imageKey.startsWith(VIDEO_FRAME_PREFIX) ? [item.imageKey] : []);
     let newest: PaintFrame | null = null, lastOriginal: PaintFrame | null = null, lastVersion = -1, lastDecorated: PaintFrame | null = null;
     const original = (frame: PaintFrame) => originals.get(frame) ?? frame;
     const withKeys = (items: readonly PaintItem[], keys: ReadonlyMap<string, string>): readonly PaintItem[] => items.map(item => {
@@ -140,6 +158,7 @@ export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameR
         const decorated: PaintFrame = Object.freeze({ ...frame,
             underlay: Object.freeze(withKeys(frame.underlay, keys)), content: Object.freeze(withKeys(frame.content, keys)) });
         originals.set(decorated, frame);
+        decoratedKeys.set(decorated, videoKeys([...decorated.underlay, ...decorated.content]));
         let held = versions.get(frame);
         if (!held) versions.set(frame, held = new Set());
         held.add(decorated);
@@ -156,7 +175,19 @@ export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameR
         readFrame() { const frame = base.readFrame(); newest = frame; return frame ? decorate(frame) : null; },
         isCurrent: frame => base.isCurrent(original(frame)),
         presented: frame => base.presented(original(frame)),
-        retain: frame => base.retain(original(frame)),
+        retain(frame) {
+            // Synchronous, like the assembler's own pin: the frame's video images are held with the source it was drawn from,
+            // so an asynchronous fact or capture still reads the image this frame named, not the newest frame.
+            const releases: Array<() => void> = [];
+            try {
+                for (const key of decoratedKeys.get(frame) ?? []) releases.push(registry.retainKey(key));
+                const release = base.retain(original(frame));
+                return () => { try { release(); } finally { for (const done of releases) done(); } };
+            } catch (error) {
+                for (const done of releases) done();
+                throw error;
+            }
+        },
         retire(frame) {
             const source = original(frame), held = versions.get(source);
             if (frame === source) {

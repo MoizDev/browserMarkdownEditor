@@ -74,8 +74,8 @@ function parse(paths: readonly (readonly PathOp[])[], maxSegments: number): read
             }
             if (!current || !start) throw new RangeError('Clipping path must start with M');
             if (op.op === 'Z') { if (current.x !== start.x || current.y !== start.y) add(line(current, start), true); current = start; continue; }
-            if (op.op === 'L') add(line(current, op.p), true);
-            else add({ p0: current, p1: op.c1, p2: op.c2, p3: op.p }, false);
+            if (op.op === 'C') add({ p0: current, p1: op.c1, p2: op.c2, p3: op.p }, false);
+            else add(line(current, op.p), true);
             current = op.p;
         }
         if (start && current && (start.x !== current.x || start.y !== current.y)) throw new RangeError('Clipping path must be closed');

@@ -48,6 +48,7 @@ import type { SearchController } from './utils/searchController';
 import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
 import type { RecoveryEntry } from './utils/recoveryJournal';
 import type { NativeCanvasHost, NativeCanvasIdentity } from './types/nativeCanvas';
+import { pdfEngineAvailableInBuild } from './utils/pdfEngineAvailability';
 import { materializeRecoveryCopy, recoveryCopyMedia } from './utils/recoveryCopy';
 import { bindRecoveryAdapter, recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
@@ -461,6 +462,7 @@ export default function App() {
     statFile,
     writeFileVersioned,
     writeConflictCopy,
+    writeDistinctCopy,
     recreateFile,
     resolveFileHandle,
     subscribeVaultChanges,
@@ -2543,6 +2545,56 @@ export default function App() {
       generation: role.generation, reason: role.writeMark.kind === 'foreign' ? role.writeMark.reason : undefined,
       approved: entry.approved, copyName: entry.copyName });
   }, [currentPdfOwner, setDiskState, setPdfRebuildNotice]);
+
+  const unsignedCopyInFlight = useRef(false);
+  const handleUnsignedPdfCopy = useCallback(async (identity: ReaderIdentity, displayed: DiskVersion) => {
+    if (unsignedCopyInFlight.current) return;
+    const source = currentPdfOwner(identity), root = rootHandleRef.current;
+    const session = source && getSessionIdentity(source.id), activation = getVaultActivation();
+    if (!source?.file.handle || !source.file.parentHandle || !root || !session) throw new Error('The signed PDF is no longer open.');
+    const { handle, parentHandle, name, path } = source.file;
+    const current = () => {
+      const tab = currentPdfOwner(identity);
+      return rootHandleRef.current === root && getVaultActivation() === activation && getSessionIdentity(source.id) === session &&
+        tab?.file.handle === handle && tab.file.parentHandle === parentHandle && !diskStateRef.current.has(source.id) &&
+        !documentBuffers.isDirty(source.id) && !documentSessions.hasPendingEdits(source.id);
+    };
+    const check = () => { if (!current()) throw new DOMException('The signed PDF changed. Open it again before creating a copy.', 'AbortError'); };
+    const signal = new AbortController().signal;
+    let snapshot: import('./types/reading').ReadOnlyFileSnapshot | undefined;
+    unsignedCopyInFlight.current = true;
+    try {
+      check();
+      if (!pdfEngineAvailableInBuild()) throw new Error('The native PDF engine is unavailable in this build.');
+      const confirmed = await ask({ title: 'Create an unsigned PDF copy?', confirmLabel: 'Create unsigned copy',
+        body: 'The new copy will have no valid digital signatures. The signed original stays unchanged and is also kept as an attachment in the copy. Use the original, not the copy, to verify signatures.' });
+      if (!confirmed) return;
+      check();
+      snapshot = await readFileSnapshot(handle as FileSystemFileHandle, signal);
+      const version = await snapshot.fingerprint(signal);
+      check();
+      if (version.hash !== displayed.hash) { setDiskState(source.id, 'conflict'); throw new Error('The PDF changed on disk. Resolve that change before creating an unsigned copy.'); }
+      const [{ prepareUnsignedPdfCopy }, { getSharedPdfPool }] = await Promise.all([
+        import('./pdf/writing/unsignedCopyClient'), import('./pdf/session/startup'),
+      ]);
+      check();
+      const prepared = await prepareUnsignedPdfCopy({ pool: getSharedPdfPool(), source: snapshot.blob.slice(0, snapshot.blob.size, 'application/pdf'),
+        originalSha: version.hash, isCurrent: current, signal });
+      check();
+      if (prepared.kind !== 'unsigned-copy-only' || prepared.originalSha !== version.hash) throw new Error('The writer did not return a verified unsigned copy.');
+      const fresh = await readFileSnapshot(handle as FileSystemFileHandle, signal);
+      try {
+        if ((await fresh.fingerprint(signal)).hash !== version.hash) {
+          setDiskState(source.id, 'conflict'); throw new Error('The signed original changed while the copy was prepared. Nothing has been written.');
+        }
+      } finally { fresh.dispose(); }
+      check();
+      const copy = await writeDistinctCopy(parentHandle, parentVaultPath(path), name.replace(/\.pdf$/i, '') + ' (unsigned).pdf',
+        new Blob([prepared.bytes], { type: 'application/pdf' }), current);
+      if (current()) void tell({ title: 'Unsigned PDF copy created', confirmLabel: 'OK',
+        body: `"${copy.name}" is in the same folder. The signed original is unchanged; its exact bytes are attached to the copy as "${prepared.attachmentName}".` });
+    } finally { snapshot?.dispose(); unsignedCopyInFlight.current = false; }
+  }, [ask, currentPdfOwner, documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, setDiskState, tell, writeDistinctCopy]);
 
   // The outer bytes, not the embedded original, are what another program edited.
   // Check both sides of the awaited close; a successful copy never grants a
@@ -6572,6 +6624,7 @@ export default function App() {
             onRetryRead={retryUnreadTab}
             onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}
+            onUnsignedPdfCopy={handleUnsignedPdfCopy}
             onOpenNote={openNoteByName}
             markdownSessions={markdownSessions}
             getWikiLinkTargets={getWikiLinkTargets}

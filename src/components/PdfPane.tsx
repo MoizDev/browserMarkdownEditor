@@ -955,7 +955,7 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
             {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} path={file.path} onAction={onDiskAction} />}
             {tiled && mode === 'read' && currentTiledSource?.session.isCurrent() &&
                 tiledPdfCapabilities(currentTiledSource.document.poolDocument.info).signed === true &&
-                <div className="pdf-signed-notice" role="status">
+                <div className="pdf-signed-notice" role="status" onContextMenu={event => event.preventDefault()}>
                     <span>This signed PDF remains read-only. Creating an unsigned copy leaves the original unchanged.</span>
                     <button type="button" className="pdf-pane-action" disabled={unsignedPending || isDirty || flushing || !!disk || !tiledVersion ||
                         displayedVersion.current !== tiledVersion || !versionMatchesReader || !file.parentHandle || !reading || !onUnsignedPdfCopy}

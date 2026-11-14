@@ -7,6 +7,9 @@ import type { IsolationReservation } from './compositor.types';
 import { CaptureError, captureAbort } from './captureError';
 import { CaptureQueue } from './captureQueue';
 import { captureIsolation2d } from './captureIsolation2d';
+import { renderCaptureExport } from './captureExport';
+import type { CaptureExportOptions, CapturePngEncoder } from './captureExport';
+export type { CaptureExportOptions, CaptureExportTile, CaptureExportRenderer, CapturePngEncoder } from './captureExport';
 
 export { CaptureError } from './captureError';
 export type { CaptureErrorCode } from './captureError';
@@ -69,8 +72,11 @@ export interface CaptureSnapshot {
      * A missing exact tile is incomplete, never a successful white image.
      */
     prepare(request: CaptureRequest, route: '2d' | 'gpu', signal: AbortSignal): Promise<'exact' | 'standin' | 'incomplete'>;
-    /** Idempotent, nonthrowing; closes temporary bitmaps and releases retained resources. */
-    release(): void;
+    /** Optional sequential tile preparation against this SAME immutable source lease. Coordinates
+     * include the export apron; never acquire a fresh live document/session or another queue slot. */
+    prepareTile?(request: CaptureRequest, signal: AbortSignal): Promise<'exact' | 'standin' | 'incomplete'>;
+    /** Idempotent, nonthrowing; async producers resolve only after actual native work retires. */
+    release(): void | Promise<void>;
 }
 
 export type CaptureGpuOwner = Pick<Webgl2Owner, 'resources' | 'acquireTarget' | 'releaseTarget' | 'discardFrame'> & {
@@ -94,6 +100,8 @@ export interface PaneCapturerOptions {
      * and capture will not delay input. Null/default selects 2D; never create a context.
      */
     tryGpu?(snapshot: CaptureSnapshot): CaptureGpuOwner | null;
+    /** Existing engine-owned streaming encoder; no dependency from platform back into an engine. */
+    readonly encodePngTiles?: CapturePngEncoder;
 }
 
 type CaptureOutput = ImageBitmap | Blob;
@@ -135,7 +143,8 @@ function scope(deadlineMs: number): CaptureScope {
     };
 }
 
-function requestFor(rect: Rect, maxSidePx: number, options: CaptureOptions): CaptureRequest {
+function requestFor(rect: Rect, maxSidePx: number, options: CaptureOptions,
+    limits = { axis: maxAxisPixels, pixels: maxPixels }): CaptureRequest {
     if (!rect || ![rect.x, rect.y, rect.width, rect.height, maxSidePx].every(Number.isFinite) ||
         rect.width <= 0 || rect.height <= 0 || maxSidePx <= 0 ||
         !Number.isFinite(rect.x + rect.width) || !Number.isFinite(rect.y + rect.height) ||
@@ -152,7 +161,7 @@ function requestFor(rect: Rect, maxSidePx: number, options: CaptureOptions): Cap
     if (!Number.isFinite(scale) || scale <= 0 || !Number.isFinite(rect.x * scale) || !Number.isFinite(rect.y * scale)) {
         throw new CaptureError('invalid-input');
     }
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width > maxAxisPixels || height > maxAxisPixels || width * height > maxPixels) {
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width > limits.axis || height > limits.axis || width * height > limits.pixels) {
         throw new CaptureError('too-large');
     }
     const view = Object.freeze({
@@ -197,6 +206,51 @@ export class PaneCapturer {
         return this.capture(worldRect, maxSidePx, options, 'png');
     }
 
+    /** Full PNG writer/copy route: bounded tiles and streamed rows, never an 8k/16k canvas. */
+    captureExportBlob(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob> {
+        let active: CaptureScope | null = null, snapshot: CaptureSnapshot | null = null;
+        try {
+            const encoder = this.options.encodePngTiles;
+            if (!encoder) throw new CaptureError('incomplete');
+            if ((options.clipboard !== undefined && typeof options.clipboard !== 'boolean')
+                || (options.pixelsPerWorldUnit !== undefined && (!Number.isFinite(options.pixelsPerWorldUnit) || options.pixelsPerWorldUnit <= 0))) {
+                throw new CaptureError('invalid-input');
+            }
+            const request = requestFor(worldRect, maxSidePx, options, { axis: options.clipboard ? 8192 : 16384, pixels: 2 ** 28 });
+            const deadline = options.deadlineMs ?? 60_000;
+            if (!Number.isFinite(deadline) || deadline <= 0 || deadline > 2147483647) throw new CaptureError('invalid-input');
+            active = scope(deadline); active.link(this.lifetime.signal, 'disposed');
+            if (options.signal) active.link(options.signal, 'aborted');
+            active.check();
+            // Retain exactly once, synchronously, before waiting for the shared global slot.
+            snapshot = this.options.snapshot(request);
+            active.link(snapshot.signal, 'disposed'); active.check();
+            if (!snapshot.prepareTile) throw new CaptureError('incomplete');
+            const selected = new Set(request.layers);
+            if (snapshot.layers.length !== selected.size || snapshot.layers.some(layer => !selected.delete(layer.id)) || selected.size) {
+                throw new CaptureError('incomplete');
+            }
+            const lease = snapshot, operation = active;
+            const layers = Object.freeze(lease.layers.map(layer => Object.freeze({ id: layer.id, draw2d: layer.draw2d.bind(layer) })));
+            let started = false, released = false;
+            const release = async () => {
+                if (released) return; released = true;
+                try { await lease.release(); } finally { operation.dispose(); }
+            };
+            return this.options.queue.run(this.options.paneId, operation.signal, async () => {
+                started = true;
+                try {
+                    return await renderCaptureExport(request, lease, layers, this.options.memory, encoder,
+                        operation.signal, operation.check, options);
+                } catch (error) { operation.check(); throw renderError(error); }
+                finally { await release(); }
+            }).finally(() => { if (!started) void release().catch(() => {}); });
+        } catch (error) {
+            try { void Promise.resolve(snapshot?.release()).catch(() => {}); } finally { active?.dispose(); }
+            return Promise.reject(renderError(error));
+        }
+    }
+
     private capture(worldRect: Rect, maxSidePx: number, options: CaptureOptions, output: 'bitmap'): Promise<ImageBitmap>;
     private capture(worldRect: Rect, maxSidePx: number, options: CaptureOptions, output: 'png'): Promise<Blob>;
     private capture(worldRect: Rect, maxSidePx: number, options: CaptureOptions, output: CaptureOutputKind): Promise<CaptureOutput> {
@@ -222,22 +276,22 @@ export class PaneCapturer {
                 id: layer.id, draw2d: layer.draw2d.bind(layer), drawGpu: layer.drawGpu?.bind(layer),
             })));
             let started = false, released = false;
-            const release = () => {
+            const release = async () => {
                 if (released) return;
                 released = true;
-                try { lease.release(); } finally { active.dispose(); }
+                try { await lease.release(); } finally { active.dispose(); }
             };
             return this.options.queue.run(this.options.paneId, active.signal, async () => {
                 started = true;
                 try { return await this.render(request, lease, layers, active, output); }
-                finally { release(); }
+                finally { await release(); }
             }, options.thumbnailKey).finally(() => {
                 // An active abort may reject before prepare/readback has unwound. The
                 // active work, not this caller's promise, owns its resources until then.
-                if (!started) release();
+                if (!started) void release().catch(() => {});
             });
         } catch (error) {
-            try { snapshot?.release(); } finally { operation?.dispose(); }
+            try { void Promise.resolve(snapshot?.release()).catch(() => {}); } finally { operation?.dispose(); }
             return Promise.reject(renderError(error));
         }
     }

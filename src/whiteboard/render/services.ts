@@ -20,7 +20,6 @@ import type { ScenePaintRequest } from '../scene/types';
 import { paintConnector } from './connectorPaint';
 import { conservativeConnectorBounds } from './conservativeConnector';
 import { buildStrokeCoverage, buildStrokeCoverageNow } from './inkGeometry';
-import { prepareInkCoverageInWorker } from '../workers/inkCoverageClient';
 import { paintStrokeNode, paintVectorNode, paintVectorNodeNow } from './nodePaint';
 import { DEFAULT_BOARD_PALETTES } from './palette';
 import type { PaintPalette } from './colour';
@@ -96,6 +95,8 @@ export function createBoardRenderServices(options: {
     readonly token: RenderToken;
     readonly palettes?: Readonly<{ light: PaintPalette; dark: PaintPalette }>;
     readonly deviceScale?: number;
+    /** Main-window transport only; worker-hosted admission reuses its own cooperative canonical job. */
+    readonly coverageWorker?: boolean;
     readonly fonts?: BoardFonts;
     cooperate?(): Promise<void>;
 }) {
@@ -103,6 +104,7 @@ export function createBoardRenderServices(options: {
     // An opaque service incarnation binds the full owner token without putting an arbitrarily
     // long document id into the worker protocol's 128-character session field.
     const workerSession = `render/${options.token.session}/${options.token.bytesGeneration}/${crypto.randomUUID()}`;
+    const coverageWorker = typeof window !== 'undefined' && options.coverageWorker !== false;
     const textIds = new Set<NodeId>();
     const changeScopes = new Set<ReadonlyMap<NodeId, Prepared>>();
     let serial = 0, disposed = false, ownerReleased = false, holders = 1;
@@ -154,12 +156,14 @@ export function createBoardRenderServices(options: {
             const identity = { session: workerSession, epoch: options.token.vaultEpoch, revision };
             const ink = await buildStrokeCoverage(node, options.samples, {
                 deviceScale: precision!.scale, cooperate: options.cooperate, signal,
-                worker: (points, parameters, style, range, coverage) => prepareInkCoverageInWorker(
-                    points, parameters, style, range, coverage, identity, signal, () => {
+                worker: coverageWorker ? async (points, parameters, style, range, coverage) => {
+                    const { prepareInkCoverageInWorker } = await import('../workers/inkCoverageClient');
+                    return prepareInkCoverageInWorker(points, parameters, style, range, coverage, identity, signal, () => {
                         const current = doc.nodes.get(node.id);
                         return !disposed && !signal.aborted && doc.rev === revision && current?.kind === 'stroke'
                             && current.samples === sampleRef && sameGeometrySignature(signature(current, doc), before);
-                    }, precision!.lod ? { chunkCount: Math.max(1, Math.ceil((options.samples.count(sampleRef) - 1) / CURVE_CHUNK_SPANS)) } : undefined),
+                    }, precision!.lod ? { chunkCount: Math.max(1, Math.ceil((options.samples.count(sampleRef) - 1) / CURVE_CHUNK_SPANS)) } : undefined);
+                } : undefined,
             });
             result = strokePrepared(key, ink);
         } else if (node.kind === 'connector') {

@@ -1,7 +1,7 @@
 import type { WorkerContext } from '../../platform/workers';
 import { inkCoverage } from './inkCoverageHandler';
 import { reportGeometryMemory } from './geometryHandler';
-import { certifyLod } from './inkLodCertificate';
+import { nestedInkLod } from './inkLodNested';
 import type { InkCoverageReply, InkCoverageRequest } from './geometryProtocol';
 
 export async function inkLod(payload: unknown, context: WorkerContext): Promise<unknown> {
@@ -9,7 +9,7 @@ export async function inkLod(payload: unknown, context: WorkerContext): Promise<
     const { request, chunkCount } = payload as { request: InkCoverageRequest; chunkCount: number };
     if (!request || !Number.isSafeInteger(chunkCount) || chunkCount < 1) throw new TypeError('Invalid ink LOD descriptor');
     const owner = {};
-    let buffers: Transferable[] = [];
+    const buffers: Transferable[] = [];
     const scoped: WorkerContext = {
         get cancelled() { return context.cancelled; }, signal: context.signal,
         slice: () => context.slice(), heartbeat: () => context.heartbeat(),
@@ -18,35 +18,27 @@ export async function inkLod(payload: unknown, context: WorkerContext): Promise<
     };
     try {
         const fine = await inkCoverage(request, scoped) as InkCoverageReply;
-        const fineBuffers = buffers; buffers = [];
         let bytes = 0;
-        for (const item of fineBuffers) if (item instanceof ArrayBuffer) bytes += item.byteLength;
+        for (const item of buffers) if (item instanceof ArrayBuffer) bytes += item.byteLength;
+        const input = new Set([request.samples.xy.buffer, request.samples.kinds.buffer,
+            ...(request.samples.pressure ? [request.samples.pressure.buffer] : [])]);
+        for (const buffer of input) bytes += buffer.byteLength;
         reportGeometryMemory(context, owner, bytes);
         context.signal.throwIfAborted();
-        let chosen = fine, chosenBuffers = fineBuffers;
-        let certificate: Awaited<ReturnType<typeof certifyLod>> = null;
-        // The next chunk's dash prefix depends on the chosen level. Until a whole-stroke
-        // certificate carries that phase, patterned strokes retain their fine result.
-        if (!request.options.dash && !request.options.pointMotifs) {
-            try {
-                const coarse = await inkCoverage({ ...request, options: { ...request.options,
-                    deviceScale: request.options.deviceScale / Math.SQRT2 } }, scoped) as InkCoverageReply;
-                context.signal.throwIfAborted();
-                let coarseBytes = 0;
-                for (const item of buffers) if (item instanceof ArrayBuffer) coarseBytes += item.byteLength;
-                const sampleBuffers = new Set([request.samples.xy.buffer, request.samples.kinds.buffer,
-                    ...(request.samples.pressure ? [request.samples.pressure.buffer] : [])]);
-                let inputBytes = 0;
-                for (const buffer of sampleBuffers) inputBytes += buffer.byteLength;
-                reportGeometryMemory(context, owner, bytes + coarseBytes + inputBytes);
-                certificate = await certifyLod(fine, coarse, request.options.deviceScale, chunkCount, context);
-                if (certificate) { chosen = coarse; chosenBuffers = buffers; }
-            } catch (error) {
-                context.signal.throwIfAborted();
-                if (error instanceof DOMException && error.name === 'AbortError') throw error;
-            }
+        let result: Awaited<ReturnType<typeof nestedInkLod>> = null;
+        try {
+            result = await nestedInkLod(fine, request, chunkCount, context,
+                scratch => reportGeometryMemory(context, owner, bytes + scratch));
+        } catch (error) {
+            context.signal.throwIfAborted();
+            if (error instanceof DOMException && error.name === 'AbortError') throw error;
         }
-        context.transfer(...chosenBuffers);
-        return { coverage: chosen, level: certificate ? 'coarse' : 'fine', certificate };
+        context.signal.throwIfAborted();
+        if (!result) {
+            context.transfer(...buffers);
+            return { coverage: fine, level: 'fine', certificate: null };
+        }
+        context.transfer(...buffers.filter(buffer => buffer !== fine.segments.buffer), result.coverage.segments.buffer as ArrayBuffer);
+        return { coverage: result.coverage, level: 'coarse', certificate: result.certificate };
     } finally { reportGeometryMemory(context, owner, null); }
 }

@@ -26,12 +26,16 @@ export async function encodeTiledPngInWorker(
     if (!isCurrent(candidate) || !payload || typeof payload !== 'object' || (payload as { streamId?: unknown }).streamId !== streamId) return
     if (pulling) { failure = new Error('Duplicate PNG row request'); abort.abort(failure); return }
     pulling = true
-    void rows.next().then(next => {
+    void rows.next().then(async next => {
       if (abort.signal.aborted) return
-      const row = next.done ? undefined : Uint8Array.from(next.value)
-      pulling = false
-      return client.request<null>('pngRow', row ? { streamId, row } : { streamId, end: true }, identity,
-        { priority: 0, cpu: 'light', signal: abort.signal, transfer: row ? [row.buffer] : [] }, isCurrent)
+      const lease = !next.done ? options.memory?.reserve(next.value.byteLength) : undefined
+      if (!next.done && options.memory && !lease) throw new Error('Insufficient shared memory for PNG export row')
+      try {
+        const row = next.done ? undefined : Uint8Array.from(next.value)
+        pulling = false
+        await client.request<null>('pngRow', row ? { streamId, row } : { streamId, end: true }, identity,
+          { priority: 0, cpu: 'light', signal: abort.signal, transfer: row ? [row.buffer] : [] }, isCurrent)
+      } finally { if (lease) options.memory!.release(lease) }
     }).catch(error => { failure = error; abort.abort(error) })
   })
   try {

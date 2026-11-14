@@ -47,7 +47,7 @@ export async function encodePng(
   width: number,
   height: number,
   rows: AsyncIterable<Uint8Array>,
-  options: { pixelsPerWorldUnit?: number; clipboard?: boolean; signal?: AbortSignal } = {},
+  options: { pixelsPerWorldUnit?: number; clipboard?: boolean; signal?: AbortSignal; ownedBytes?: (bytes: number) => void } = {},
 ): Promise<Blob> {
   checkPngSize(width, height, options.clipboard)
   const density = options.pixelsPerWorldUnit
@@ -55,6 +55,9 @@ export async function encodePng(
     throw new RangeError('Invalid PNG density')
   }
   options.signal?.throwIfAborted()
+  let partBytes = 0, filterBytes = 0, compressedBytes = 0, reporting = true
+  const report = () => { if (reporting) options.ownedBytes?.(partBytes + filterBytes + compressedBytes) }
+  try {
   const header = new Uint8Array(13)
   const headerView = new DataView(header.buffer)
   headerView.setUint32(0, width)
@@ -72,11 +75,14 @@ export async function encodePng(
     parts.push(chunk('pHYs', phys))
   }
 
+  partBytes = header.byteLength + parts.reduce<number>((sum, part) => sum + (part instanceof Uint8Array ? part.buffer.byteLength : 0), 0)
+  report()
   const iterator = rows[Symbol.asyncIterator]()
   let count = 0
   const input = new ReadableStream<Uint8Array<ArrayBuffer>>({
     async pull(controller) {
       try {
+        filterBytes = 0; report()
         options.signal?.throwIfAborted()
         const next = await iterator.next()
         if (next.done) {
@@ -95,6 +101,7 @@ export async function encodePng(
           subScore += Math.min(sub, 256 - sub)
         }
         const row = new Uint8Array(1 + width * 4)
+        filterBytes = row.byteLength; report()
         if (subScore < rawScore) {
           row[0] = 1
           for (let i = 0; i < pixels.length; i++) row[i + 1] = pixels[i] - (i >= 4 ? pixels[i - 4] : 0)
@@ -115,7 +122,10 @@ export async function encodePng(
       options.signal?.throwIfAborted()
       const next = await reader.read()
       if (next.done) break
-      parts.push(chunk('IDAT', next.value))
+      compressedBytes = next.value.buffer.byteLength; report()
+      const encoded = chunk('IDAT', next.value)
+      partBytes += encoded.byteLength; parts.push(encoded); report()
+      compressedBytes = 0; report()
     }
   } catch (error) {
     await reader.cancel(error).catch(() => {})
@@ -125,6 +135,8 @@ export async function encodePng(
     reader.releaseLock()
   }
   options.signal?.throwIfAborted()
-  parts.push(chunk('IEND', new Uint8Array(0)))
+  const end = chunk('IEND', new Uint8Array(0))
+  parts.push(end); partBytes += end.byteLength; report()
   return new Blob(parts, { type: 'image/png' })
+  } finally { reporting = false; options.ownedBytes?.(0) }
 }

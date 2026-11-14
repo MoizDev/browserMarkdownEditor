@@ -5,6 +5,7 @@ interface CoverageFrame {
     readonly frameId: number;
     readonly token: FrameToken;
     readonly cameraEpoch: number;
+    readonly sceneRevision: string;
 }
 
 function frameTag(value: unknown): CoverageFrame {
@@ -17,7 +18,8 @@ function frameTag(value: unknown): CoverageFrame {
         return number as number;
     };
     if (typeof token.documentId !== 'string') throw new TypeError('Invalid coverage document');
-    return { frameId: nonnegative(frame.frameId), cameraEpoch: nonnegative(frame.cameraEpoch), token: {
+    if (typeof frame.sceneRevision !== 'string') throw new TypeError('Invalid coverage scene revision');
+    return { frameId: nonnegative(frame.frameId), cameraEpoch: nonnegative(frame.cameraEpoch), sceneRevision: frame.sceneRevision, token: {
         vaultEpoch: nonnegative(token.vaultEpoch), documentId: token.documentId,
         bytesGeneration: nonnegative(token.bytesGeneration), session: nonnegative(token.session),
         viewLease: nonnegative(token.viewLease), deviceGeneration: nonnegative(token.deviceGeneration),
@@ -37,6 +39,8 @@ if (__BME_BENCH__) serve({
             let canvas: OffscreenCanvas | null = null;
             try {
                 const frame = frameTag(request.frame);
+                const encoding = request.encoding ?? 'r8';
+                if (encoding !== 'r8' && encoding !== 'rgb') throw new TypeError('Invalid coverage encoding');
                 const width = bitmap.width, height = bitmap.height, pixels = width * height;
                 if (!width || !height || !Number.isSafeInteger(pixels * 16)) throw new RangeError('Invalid coverage bitmap size');
                 canvas = new OffscreenCanvas(width, height);
@@ -49,7 +53,8 @@ if (__BME_BENCH__) serve({
                 if (ctx.isContextLost()) throw new Error('Coverage canvas lost');
                 let outside = 0, hole = 0, standin = 0, current = 0, invalid = 0;
                 for (let i = 0; i < data.length; i += 4) {
-                    switch (data[i]) {
+                    const value = encoding === 'rgb' ? (data[i] ? 3 : data[i + 1] ? 2 : data[i + 2] ? 1 : 0) : data[i];
+                    switch (value) {
                         case 0: outside++; break;
                         case 1: hole++; break;
                         case 2: standin++; break;

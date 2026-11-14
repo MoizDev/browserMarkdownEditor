@@ -27,6 +27,8 @@ export interface BoardSelectServicesOptions {
     readonly runtime: BoardRuntime;
     readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'changeGeometry'>;
     readonly camera: () => ViewState;
+    /** Convert a physical sample using the mapping that actually presented it. */
+    readonly sampleToSurface: (sample: RealSample) => Vec2;
     readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget'>;
     readonly region: Pick<ReturnType<typeof createBoardRegionQuery>, 'region'>;
     readonly preview: { showOps(ops: readonly Op[]): void; clear(): void };
@@ -205,7 +207,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
         if (!mutable()) return null;
-        const surface = toSurface(sample), coarse = sample.source === 'touch';
+        const surface = options.sampleToSurface(sample), coarse = sample.source === 'touch';
         const shapeHit = shapeHandles.hit(surface, coarse);
         if (shapeHit) return shapeHandles.begin(shapeHit, sample, modifiers);
         const direction = stickyHandles.hit(surface, coarse);
@@ -226,7 +228,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         try { unregister = registerPending(cancel); } catch (error) { release(); throw error; }
         return { kind: 'node-edit', pointerIds,
             update(samples) { for (const next of samples) if (pointerIds.has(next.pointerId)) {
-                const point = toSurface(next); if (Math.hypot(point.x - down.x, point.y - down.y) >= 4) cancel();
+                const point = options.sampleToSurface(next); if (Math.hypot(point.x - down.x, point.y - down.y) >= 4) cancel();
             } },
             finish(reason) {
                 if (ended || cancelled) return; ended = true;

@@ -1,4 +1,6 @@
 import type { SessionAdapter } from '../utils/documentSessions';
+import type { ContentSource } from '../utils/documentBuffers';
+import type { JournalCapture } from '../utils/recoveryFunnel';
 
 export interface NativeCanvasIdentity {
     readonly documentId: string;
@@ -20,6 +22,7 @@ export interface NativeCanvasHost {
     session(documentId: string): SessionAdapter | undefined;
     isCurrent(identity: NativeCanvasIdentity): boolean;
     acquireBytes(identity: NativeCanvasIdentity, signal: AbortSignal): Promise<Blob>;
+    appendJournal(identity: NativeCanvasIdentity, source: ContentSource, capture: JournalCapture): Promise<void>;
     readMedia(identity: NativeCanvasIdentity, media: NativeCanvasMedia, signal: AbortSignal): Promise<{ name: string; blob: Blob } | null>;
     putMedia(identity: NativeCanvasIdentity, media: NativeCanvasMedia & { extension: string }, blob: Blob, signal: AbortSignal): Promise<string>;
 }

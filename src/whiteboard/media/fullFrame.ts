@@ -13,7 +13,7 @@ export interface FullFrameDecoderOptions {
     reserveCpu(bytes: number): { release(): void } | null;
     /** Network-denied SVG image profile; must support full intrinsic dimensions,
      * settle on abort only after its frame is disposed, and never use a main-origin parser. */
-    svg(blob: Blob, info: InspectedMedia, identity: BoardJobIdentity, signal: AbortSignal): Promise<ImageBitmap>;
+    svg?(blob: Blob, info: InspectedMedia, identity: BoardJobIdentity, signal: AbortSignal): Promise<ImageBitmap>;
     /** Explicit host-owned video poster decoder; cancellation releases intermediates. */
     video(blob: Blob, info: InspectedMedia, identity: BoardJobIdentity, signal: AbortSignal): Promise<ImageBitmap>;
 }
@@ -38,6 +38,10 @@ export function createBoardFullFrameDecoder(options: FullFrameDecoderOptions): B
         const scratchBytes = info.mime === 'image/avif' || info.mime === 'image/svg+xml' ? 4 * (2 ** 26) : bytes;
         const scratch = options.reserveCpu(scratchBytes);
         if (!scratch) { output.release(); throw new Error('Insufficient memory for full-frame decoding'); }
+        // The isolated SVG profile may hold an image bitmap and an OffscreenCanvas
+        // backing at once in addition to the transferred output and decoded input.
+        const canvas = info.mime === 'image/svg+xml' ? options.reserveCpu(bytes) : null;
+        if (info.mime === 'image/svg+xml' && !canvas) { scratch.release(); output.release(); throw new Error('Insufficient memory for SVG canvas'); }
         const controller = new AbortController(); aborters.add(controller);
         const combined = AbortSignal.any([signal, controller.signal]);
         let worker: WorkerClient | undefined, bitmap: ImageBitmap | undefined, outputOwned = true;
@@ -46,7 +50,10 @@ export function createBoardFullFrameDecoder(options: FullFrameDecoderOptions): B
             if (disposed || !options.isCurrent(owner)) throw new DOMException('Stale full-frame request', 'AbortError');
         };
         try {
-            if (info.mime === 'image/svg+xml') bitmap = await options.svg(blob, info, owner, combined);
+            if (info.mime === 'image/svg+xml') {
+                const svg = options.svg ?? (await import('./svgProfile')).createIsolatedFullFrameSvgDecoder(options.isCurrent);
+                check(); bitmap = await svg(blob, info, owner, combined);
+            }
             else if (info.mime.startsWith('video/')) bitmap = await options.video(blob, info, owner, combined);
             else {
                 worker = createWorkerClient({ name: `whiteboard-full-frame-${++serial}`, protocol: 1, permits: cpuGovernor,
@@ -76,7 +83,7 @@ export function createBoardFullFrameDecoder(options: FullFrameDecoderOptions): B
         } catch (error) { bitmap?.close(); throw error; }
         finally {
             worker?.dispose(); if (worker) workers.delete(worker);
-            aborters.delete(controller); scratch.release(); if (outputOwned) output.release();
+            aborters.delete(controller); canvas?.release(); scratch.release(); if (outputOwned) output.release();
         }
     };
     return Object.assign(run, { dispose() {

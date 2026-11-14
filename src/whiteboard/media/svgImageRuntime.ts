@@ -2,7 +2,7 @@
 // network, fonts, frames and connections denied. The image never enters the DOM.
 export async function probeSvgInIsolatedRealm(blob: Blob, size: unknown): Promise<boolean | ImageBitmap> {
     if (!size || typeof size !== 'object') throw new Error('Missing SVG dimensions');
-    const { width, height, raster } = size as { width?: unknown; height?: unknown; raster?: unknown };
+    const { width, height, raster, fullFrame } = size as { width?: unknown; height?: unknown; raster?: unknown; fullFrame?: unknown };
     if (typeof width !== 'number' || typeof height !== 'number' || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
         || width < 1 || height < 1 || width > (2 ** 26) / height) throw new Error('Invalid SVG dimensions');
     const url = URL.createObjectURL(blob.slice(0, blob.size, 'image/svg+xml'));
@@ -11,6 +11,18 @@ export async function probeSvgInIsolatedRealm(blob: Blob, size: unknown): Promis
         image.src = url;
         await image.decode();
         if (image.naturalWidth !== width || image.naturalHeight !== height) throw new Error('SVG dimensions do not match its header');
+        if (fullFrame !== undefined && fullFrame !== true) throw new Error('Invalid SVG full-frame flag');
+        if (fullFrame === true) {
+            if (raster !== undefined) throw new Error('Full-frame SVG cannot specify a crop');
+            const canvas = new OffscreenCanvas(width, height);
+            try {
+                const context = canvas.getContext('2d', { willReadFrequently: true });
+                if (!context) throw new Error('SVG rasterization is unavailable');
+                context.drawImage(image, 0, 0, width, height);
+                context.getImageData(0, 0, 1, 1);
+                return canvas.transferToImageBitmap();
+            } finally { canvas.width = 1; canvas.height = 1; }
+        }
         if (raster === undefined) {
             const canvas = new OffscreenCanvas(1, 1);
             const context = canvas.getContext('2d', { willReadFrequently: true });

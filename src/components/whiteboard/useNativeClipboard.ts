@@ -147,7 +147,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             const keydown = (event: KeyboardEvent) => {
                 if (editingText()) return;
                 focus();
-                if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'a') {
+                if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'a') {
                     const state = runtime.selection.getSnapshot();
                     runtime.selection.replace(selectAllAtFocus(runtime.session.doc, state.sheet, state.focus));
                     event.preventDefault(); event.stopPropagation(); return;
@@ -156,7 +156,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     event.preventDefault(); event.stopPropagation(); void commands.copyAsPng(); return;
                 }
                 if (!runtime.session.isReadOnly) {
-                    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'd') {
+                    if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'd') {
                         event.preventDefault(); event.stopPropagation(); void commands.duplicate(); return;
                     }
                     controller.keydown(event);
@@ -179,9 +179,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 ] });
             };
             surface.addEventListener('focus', focus); surface.addEventListener('pointermove', move);
-            surface.addEventListener('copy', copy); surface.addEventListener('cut', cut);
+            surface.addEventListener('copy', copy); surface.addEventListener('cut', cut); surface.addEventListener('keydown', keydown);
             if (!inputHandled) {
-                surface.addEventListener('paste', paste); surface.addEventListener('keydown', keydown);
+                surface.addEventListener('paste', paste);
                 surface.addEventListener('dragover', dragover); surface.addEventListener('drop', drop); surface.addEventListener('contextmenu', menu);
             }
             let detached = false;
@@ -190,9 +190,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 bindings.delete(binding); if (active === binding) active = bindings.values().next().value;
                 controller.retire(() => controllers.delete(controller));
                 surface.removeEventListener('focus', focus); surface.removeEventListener('pointermove', move);
-                surface.removeEventListener('copy', copy); surface.removeEventListener('cut', cut);
+                surface.removeEventListener('copy', copy); surface.removeEventListener('cut', cut); surface.removeEventListener('keydown', keydown);
                 if (!inputHandled) {
-                    surface.removeEventListener('paste', paste); surface.removeEventListener('keydown', keydown);
+                    surface.removeEventListener('paste', paste);
                     surface.removeEventListener('dragover', dragover); surface.removeEventListener('drop', drop); surface.removeEventListener('contextmenu', menu);
                 }
             } };

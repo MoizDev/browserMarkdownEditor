@@ -40,12 +40,11 @@ function segments(paths: readonly (readonly PathOp[])[], tolerance: number, maxS
             if (op.op === 'M') { current = start = op.p; continue; }
             if (!current || !start) throw new RangeError('Path must begin with M');
             if (op.op === 'Z') { add(current, start); current = start; continue; }
-            if (op.op === 'L') add(current, op.p);
-            else {
+            if (op.op === 'C') {
                 const curve: Cubic = { p0: current, p1: op.c1, p2: op.c2, p3: op.p };
                 const points = collapsed ? [current, op.p] : flattenCubic(curve, tolerance);
                 for (let i = 1; i < points.length; i++) add(points[i - 1], points[i], collapsed);
-            }
+            } else add(current, op.p);
             current = op.p;
         }
     }

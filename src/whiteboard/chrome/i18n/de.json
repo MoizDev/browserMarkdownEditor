@@ -360,6 +360,15 @@
     "shortcuts.select.neighbour.ArrowLeft": "Wählen Sie links aus",
     "shortcuts.nudge.ArrowRight": "Nach rechts schieben",
     "shortcuts.nudge.coarse.ArrowRight": "Stupse weiter nach rechts",
-    "shortcuts.select.neighbour.ArrowRight": "Rechts auswählen"
+    "shortcuts.select.neighbour.ArrowRight": "Rechts auswählen",
+    "chrome.debugOverlay": "Debug-Overlay",
+    "chrome.debugTool": "Werkzeug",
+    "chrome.debugSelection": "Auswahl",
+    "chrome.debugSheet": "Blatt",
+    "chrome.debugZoom": "Zoomen",
+    "chrome.debugFrameTime": "Rahmenzeit",
+    "chrome.debugNodes": "Knoten",
+    "chrome.debugVisibleNodes": "Sichtbare Knoten",
+    "chrome.debugBackend": "Rendering-Backend"
   }
 }

@@ -253,6 +253,34 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 } else if (prepared.connector && node.kind === 'connector') {
                     const connector = prepared.connector, worldQuery = { ...localQuery, localToSurface: worldToCss } as RegionQuery;
                     const pathOptions = { strokeRadiusLocal: node.width / 2, marginCss: 0, errorCss: 0.01, maxSegments: 8192 };
+                    if (decomposedContainment && !partialFrame && !connector.bodyExclusions.length && query.kind === 'polygon') {
+                        const components: { path: readonly PathOp[]; transform: Affine; fill: boolean; radius: number; part: 'head' | 'label' | 'body' }[] = [];
+                        for (const path of connector.heads) components.push({ path, transform: worldToCss, fill: path.at(-1)?.op === 'Z', radius: node.width / 2, part: 'head' });
+                        if (connector.label) {
+                            const box = connector.label.paint.box;
+                            components.push({ path: rectPath(0, 0, box.w, box.h), transform: compose(worldToCss, connector.label.localToWorld), fill: true, radius: 0, part: 'label' });
+                        }
+                        if (node.dash !== 'none' && connector.body.length)
+                            components.push({ path: connector.body, transform: worldToCss, fill: false, radius: node.width / 2, part: 'body' });
+                        let certified = components.length > 0, all = true;
+                        for (const component of components) {
+                            const options = { ...pathOptions, strokeRadiusLocal: component.radius,
+                                ...(component.fill ? { interiorPaths: [component.path] } : {}) };
+                            const descriptor = { parts: [{ part: component.part, paths: [component.path], options }] };
+                            const job = createNonconvexContainmentJob(descriptor, { ...query, points, localToSurface: component.transform });
+                            try {
+                                for (;;) {
+                                    check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                    if (value.status === 'pending') { await cooperate(); continue; }
+                                    if (value.status === 'uncertain') certified = false;
+                                    else if (value.status === 'miss') all = false;
+                                    break;
+                                }
+                            } finally { job.cancel(); }
+                            if (!certified || !all) break;
+                        }
+                        if (certified) return { selected, hit: all, rank: resolved.rank, whole: true };
+                    }
                     const pathHit = async (paths: readonly (readonly PathOp[])[], region: RegionQuery, pathOptions: PathPickOptions) => {
                         const job = region.kind === 'swept' ? createSweptPathJob(paths, region, pathOptions)
                             : createPolygonPathJob(paths, region, pathOptions);

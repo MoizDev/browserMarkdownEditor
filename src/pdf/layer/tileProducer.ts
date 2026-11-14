@@ -1,13 +1,14 @@
 import { renderTokenKey, tileKeyString } from '../../platform/render';
 import type { Priority } from '../../platform/workers/envelope';
 import type { PageTileArgs, PageTileResult } from '../worker/protocol';
+import type { WithoutDocKey } from '../pool/types';
 import type { PdfTileRequest } from './tileDemand';
 import type { CreatePdfTileProducer, PdfTileProducerOptions } from './tileProducer.types';
 
 interface Flight {
     readonly controller: AbortController;
     readonly promise: Promise<PageTileResult>;
-    readonly args: Omit<PageTileArgs, 'docKey'>;
+    readonly args: WithoutDocKey<PageTileArgs>;
     waiters: number;
     priority: Priority;
     settled: boolean;
@@ -43,7 +44,7 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
             if (!flight) {
                 if (!Number.isSafeInteger(++nextRequest)) return Promise.reject(new RangeError('PDF tile request ids exhausted'));
                 const interior = request.tile.interior;
-                const args: Omit<PageTileArgs, 'docKey'> = { page: request.page, reqId: nextRequest, scale: request.scale.scale,
+                const args: WithoutDocKey<PageTileArgs> = { page: request.page, reqId: nextRequest, scale: request.scale.scale,
                     rect: { x: interior.x, y: interior.y, w: interior.width, h: interior.height },
                     ...variant, annotations: options.annotations, forms: options.forms };
                 const controller = new AbortController();

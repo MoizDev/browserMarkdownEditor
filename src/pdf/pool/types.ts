@@ -39,6 +39,8 @@ export interface PdfPoolDocument {
     request<K extends PdfDocumentOp>(op: K, args: WithoutDocKey<PdfArgs<K>>, options: PdfRequestOptions): Promise<PdfResult<K>>;
     text(page: number, detail: PdfTextDetail, options: PdfRequestOptions): Promise<PageTextReply>;
     tile(args: WithoutDocKey<PageTileArgs>, options: PdfRequestOptions): Promise<PageTileResult>;
+    /** Release raw reply credit after every consumer has finished bitmap conversion. Idempotent. */
+    releaseTile(result: PageTileResult): void;
     /** Independent of viewport demand; composes exact-scale tiles, caller owns bitmap. */
     renderPage(page: number, scale: number, options: PdfPageBitmapOptions): Promise<ImageBitmap>;
     /** Plain/emphasis follows explicit options, but dispatch is always priority 3. */

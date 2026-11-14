@@ -9,8 +9,11 @@ import type { PdfHighlightRects } from './textHighlight';
 export interface PdfFindStart { page: number; y: number }
 export interface PdfTiledFindHost {
     pageRect(page: number): Readonly<Rect> | undefined;
-    /** Move the camera to a page-space glyph box. */
+    /** Fallback for a host without the animated, revision-guarded path. */
     reveal(page: number, box: Readonly<Rect>): void;
+    approximate?(hit: PdfFindHit, signal: AbortSignal): Promise<Rect | null>;
+    beginReveal?(page: number, box: Readonly<Rect>): number | null;
+    correctReveal?(page: number, box: Readonly<Rect>, revision: number): void;
     publish(rects: PdfHighlightRects): void;
     error(error: unknown): void;
 }
@@ -53,10 +56,18 @@ export class PdfTiledFindHighlights {
         return !rect || rect.y + rect.height >= start.y;
     }
     async reveal(hit: PdfFindHit, signal: AbortSignal): Promise<void> {
-        const rect = await this.firstRect(hit, signal);
+        // Start exact geometry concurrently: a cold page can already be queued
+        // by find, and the pool promotes this select request to priority 0.
+        const exact = this.firstRect(hit, signal).then(rect => ({ rect }), error => ({ error }));
+        const approx = await this.host.approximate?.(hit, signal).catch(() => null);
         if (signal.aborted || this.disposed || !this.visible) throw abort();
-        if (rect) this.host.reveal(hit.page, rect);
-        else this.host.reveal(hit.page, { x: 0, y: 0, width: 0, height: 0 });
+        const revision = approx ? this.host.beginReveal?.(hit.page, approx) ?? null : null;
+        const result = await exact;
+        if (signal.aborted || this.disposed || !this.visible) throw abort();
+        if ('error' in result) throw result.error;
+        const rect = result.rect ?? { x: 0, y: 0, width: 0, height: 0 };
+        if (revision !== null && this.host.correctReveal) this.host.correctReveal(hit.page, rect, revision);
+        else this.host.reveal(hit.page, rect);
     }
     dispose(): void { this.disposed = true; this.geometry.setFindPage(null); this.cancel?.abort(); this.cancel = null; }
 

@@ -1,8 +1,11 @@
 import { pageAt, pagePresentation, tileKeyString } from '../../platform/render';
 import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, MirrorView, Rect, TextureHandle, ViewState } from '../../platform/render';
-import type { PdfSessionMirrors } from './tileMirror';
+import type { PdfMirrorPixels, PdfSessionMirrors } from './tileMirror';
+import type { PdfVersionBridge } from './versionBridge';
+import type { BorrowedMirror } from '../../platform/render';
 import { covers, intersects } from './coverage';
 import { PdfTileCache } from './tileCache';
+import { PdfTexturePool, type PooledTexture } from './texturePool';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 
@@ -32,8 +35,7 @@ interface Entry {
     readonly lease: ByteLease;
     readonly controller: AbortController;
     bitmap?: ImageBitmap;
-    texture?: TextureHandle;
-    device?: GfxDevice;
+    texture?: PooledTexture;
     used: number;
 }
 
@@ -63,6 +65,9 @@ export class PdfTileLayer implements Layer {
     private readonly entries = new PdfTileCache<Entry>();
     private readonly failed = new Set<string>();
     private readonly retiring = new Set<Entry>();
+    private readonly texturePool: PdfTexturePool;
+    private readonly bridgeTextures = new Map<string, PooledTexture>();
+    private bridgeReady = new Set<string>();
     private desired = new Set<string>();
     private sequence = 0;
     private contentRevision = 0;
@@ -71,6 +76,7 @@ export class PdfTileLayer implements Layer {
     private disposed = false;
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
+    private motionScaleAt = 0;
     private mirrorJob: MirrorJob | null = null;
     private mirrorKey = '';
 
@@ -78,7 +84,9 @@ export class PdfTileLayer implements Layer {
         private readonly demand: (view: ViewState) => Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
         private readonly isCurrent: () => boolean,
         private readonly onError: (error: unknown, request: PdfTileRequest) => void,
-        private readonly mirror?: PdfLayerMirror) {}
+        private readonly mirror?: PdfLayerMirror, private readonly bridge?: PdfVersionBridge | null) {
+        this.texturePool = new PdfTexturePool(host.allocator.gpu);
+    }
 
     prepare(view: ViewState, budget: FrameBudget): void {
         this.pendingFrame = false;
@@ -107,9 +115,15 @@ export class PdfTileLayer implements Layer {
             this.failed.clear();
             this.contentIdentity = identity;
             this.lastMotionScale = undefined;
+            this.motionScaleAt = 0;
         }
+        this.prepareBridge(view, budget, device);
+        const now = performance.now();
+        const holdMotionScale = input.moving && this.lastMotionScale && now - this.motionScaleAt < 50;
         const planned = planPdfTileDemand({ ...input, previousMotionScale: this.lastMotionScale,
+            motionScaleOverride: holdMotionScale ? this.lastMotionScale : undefined,
             covered: (page, area) => this.covered(page, area, device) });
+        if (input.moving && !holdMotionScale) this.motionScaleAt = now;
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
         for (const [key, entry] of this.entries) {
@@ -123,21 +137,20 @@ export class PdfTileLayer implements Layer {
             const existing = this.entries.get(key);
             if (existing) {
                 existing.used = ++this.sequence;
-                if (device && existing.bitmap && existing.device !== device) {
+                if (device && existing.bitmap && existing.texture?.device !== device) {
                     if (budget.shouldYield()) { this.pendingFrame = true; break; }
                     const bytes = existing.bitmap.width * existing.bitmap.height * 4;
                     if (!budget.claimUpload(bytes)) { this.pendingFrame = true; break; }
-                    const lease = this.host.allocator.gpu.reserve(bytes);
-                    if (!lease) continue;
-                    let texture: TextureHandle;
-                    try { texture = device.createTexture(existing.bitmap.width, existing.bitmap.height, 'rgba8', ['sample', 'copy-dst'], lease); }
-                    catch (error) { this.host.allocator.gpu.release(lease); this.onError(error, request); continue; }
+                    let texture: PooledTexture | null;
+                    try { texture = this.texturePool.acquire(device, existing.bitmap.width, existing.bitmap.height); }
+                    catch (error) { this.onError(error, request); continue; }
+                    if (!texture) continue;
                     try {
-                        device.writeTexture(texture, { x: 0, y: 0, width: existing.bitmap.width, height: existing.bitmap.height },
+                        device.writeTexture(texture.handle, { x: 0, y: 0, width: existing.bitmap.width, height: existing.bitmap.height },
                             { source: existing.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-                        if (existing.texture && existing.device) existing.device.destroy(existing.texture);
-                        existing.texture = texture; existing.device = device;
-                    } catch (error) { device.destroy(texture); this.onError(error, request); }
+                        if (existing.texture) this.texturePool.release(existing.texture);
+                        existing.texture = texture;
+                    } catch (error) { device.destroy(texture.handle); this.onError(error, request); }
                 }
                 continue;
             }
@@ -185,22 +198,29 @@ export class PdfTileLayer implements Layer {
         }
         const device = gpu ? this.host.device() : null;
         if (gpu && !device) return { complete: false, sharp: false };
+        const bridge = this.currentBridge(view).filter(item => device ?
+            this.bridgeTextures.get(item.entry.id)?.device === device : this.bridgeReady.has(item.entry.id));
+        let usedBridge = false;
         for (let page = Math.max(0, pageAt(input.stack, input.viewport.y)); page < input.stack.rects.length; page++) {
             const box = input.stack.rects[page];
             if (box.y >= input.viewport.y + input.viewport.height) break;
             const x = Math.max(box.x, input.viewport.x), y = Math.max(box.y, input.viewport.y);
             const right = Math.min(box.x + box.width, input.viewport.x + input.viewport.width);
             const bottom = Math.min(box.y + box.height, input.viewport.y + input.viewport.height);
-            if (right > x && bottom > y && !this.covered(page, { x, y, width: right - x, height: bottom - y }, device)) {
-                return { complete: false, sharp: false };
+            if (right <= x || bottom <= y) continue;
+            const area = { x, y, width: right - x, height: bottom - y };
+            if (!this.covered(page, area, device)) {
+                const fallback = bridge.filter(item => item.entry.key.pageOrRegion === String(page)).map(item => item.pixels.world);
+                if (!this.covered(page, area, device, fallback)) return { complete: false, sharp: false };
+                usedBridge = true;
             }
         }
-        if (input.moving) return { complete: true, sharp: false };
+        if (input.moving || usedBridge) return { complete: true, sharp: false };
         const desired = planPdfTileDemand({ ...input, covered: () => false });
         for (const request of desired.requests) {
             if (request.level !== 'exact' || !intersects(rect(request), input.viewport)) continue;
             const entry = this.entries.get(tileKeyString(request.key));
-            if (!entry?.bitmap || (device && entry.device !== device)) return { complete: true, sharp: false };
+            if (!entry?.bitmap || (device && entry.texture?.device !== device)) return { complete: true, sharp: false };
         }
         return { complete: true, sharp: true };
     }
@@ -216,11 +236,18 @@ export class PdfTileLayer implements Layer {
             this.host.drawTexturedQuad(pass, texture.handle, { x: 1, y: 0, width: 1, height: 1 },
                 destination, { opacity: 1, sampling: 'nearest' });
         }
+        for (const item of this.currentBridge(view)) {
+            const texture = this.bridgeTextures.get(item.entry.id);
+            const snapshot = this.mirror?.view(view);
+            if (!texture || texture.device !== this.host.device() || !snapshot) continue;
+            const quad = this.mirror!.store.mirrorQuad(item, snapshot);
+            this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear' });
+        }
         const stack = this.demand(view).stack;
         for (const entry of this.drawable(view)) {
-            if (!entry.texture || entry.device !== this.host.device()) continue;
+            if (!entry.texture || entry.texture.device !== this.host.device()) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
-            this.host.drawTexturedQuad(pass, entry.texture, source, destination, { opacity: 1, sampling: 'linear' });
+            this.host.drawTexturedQuad(pass, entry.texture.handle, source, destination, { opacity: 1, sampling: 'linear' });
         }
     }
 
@@ -230,6 +257,12 @@ export class PdfTileLayer implements Layer {
             const box = project(page, page, view);
             ctx.fillStyle = '#bebebe'; ctx.fillRect(box.x - 1, box.y - 1, box.width + 2, box.height + 2);
             ctx.fillStyle = '#fff'; ctx.fillRect(box.x, box.y, box.width, box.height);
+        }
+        for (const item of this.currentBridge(view)) {
+            const snapshot = this.mirror?.view(view);
+            if (!snapshot || !this.bridgeReady.has(item.entry.id)) continue;
+            const quad = this.mirror!.store.mirrorQuad(item, snapshot);
+            this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear' });
         }
         const stack = this.demand(view).stack;
         for (const entry of this.drawable(view)) {
@@ -243,11 +276,25 @@ export class PdfTileLayer implements Layer {
         if (this.frameTexture && reason !== 'context-lost') this.frameTexture.device.destroy(this.frameTexture.handle);
         this.frameTexture = null;
         for (const entry of this.entries.values()) {
-            if (entry.texture && entry.device && reason !== 'context-lost') entry.device.destroy(entry.texture);
-            entry.texture = undefined; entry.device = undefined;
+            if (entry.texture && reason !== 'context-lost') entry.texture.device.destroy(entry.texture.handle);
+            entry.texture = undefined;
         }
+        for (const texture of this.bridgeTextures.values()) {
+            if (reason !== 'context-lost') texture.device.destroy(texture.handle);
+        }
+        this.bridgeTextures.clear();
+        this.bridgeReady.clear();
+        this.texturePool.clear(reason === 'context-lost');
         this.pendingFrame = false;
         if (reason === 'hidden') this.hide();
+    }
+
+    /** Expiry drops old GPU pixels immediately, even if a hidden window suspends frames (C1.3). */
+    expireBridge(): void {
+        for (const texture of this.bridgeTextures.values()) texture.device.destroy(texture.handle);
+        this.bridgeTextures.clear();
+        this.bridgeReady.clear();
+        this.host.invalidate('pdf-bridge-expired');
     }
 
     /** Explicit retry is the only way a failed tile is requested again. */
@@ -261,10 +308,11 @@ export class PdfTileLayer implements Layer {
     }
 
     memory(): { gpuBytes: number; cpuBytes: number } {
-        let gpuBytes = this.frameTexture ? 8 : 0, cpuBytes = 0;
+        let gpuBytes = (this.frameTexture ? 8 : 0) + this.texturePool.memory(), cpuBytes = 0;
+        for (const texture of this.bridgeTextures.values()) gpuBytes += texture.bytes;
         for (const entry of this.entries.values()) {
             cpuBytes += entry.lease.bytes;
-            if (entry.texture) gpuBytes += entry.lease.bytes;
+            if (entry.texture) gpuBytes += entry.texture.bytes;
         }
         for (const entry of this.retiring) cpuBytes += entry.lease.bytes;
         return { gpuBytes, cpuBytes };
@@ -272,6 +320,38 @@ export class PdfTileLayer implements Layer {
     revision(): number { return this.contentRevision; }
     needsFrame(): boolean { return this.pendingFrame; }
     dispose(): void { if (!this.disposed) { this.disposed = true; this.mirrorJob = null; this.hide(); this.failed.clear(); } }
+
+    private currentBridge(view: ViewState): readonly BorrowedMirror<PdfMirrorPixels>[] {
+        const snapshot = this.mirror?.view(view);
+        return snapshot ? this.bridge?.pixels.read(snapshot)?.entries ?? [] : [];
+    }
+
+    private prepareBridge(view: ViewState, budget: FrameBudget, device: GfxDevice | null): void {
+        const entries = this.currentBridge(view);
+        const valid = new Set(entries.map(item => item.entry.id));
+        this.bridgeReady = new Set();
+        for (const [id, texture] of this.bridgeTextures) {
+            if (!valid.has(id) || texture.device !== device) {
+                this.bridgeTextures.delete(id);
+                texture.device.destroy(texture.handle);
+            }
+        }
+        for (const item of entries) {
+            if (budget.shouldYield()) { this.pendingFrame = true; break; }
+            const bitmap = item.pixels.bitmap;
+            const existing = this.bridgeTextures.get(item.entry.id);
+            if (device && existing?.device === device) continue;
+            if (!budget.claimUpload(bitmap.width * bitmap.height * 4)) { this.pendingFrame = true; break; }
+            if (!device) { this.bridgeReady.add(item.entry.id); continue; }
+            const texture = this.texturePool.acquire(device, bitmap.width, bitmap.height);
+            if (!texture) break;
+            try {
+                device.writeTexture(texture.handle, { x: 0, y: 0, width: bitmap.width, height: bitmap.height },
+                    { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+                this.bridgeTextures.set(item.entry.id, texture);
+            } catch (error) { device.destroy(texture.handle); throw error; }
+        }
+    }
 
     private prepareMirror(view: ViewState, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
         requests: readonly PdfTileRequest[], budget: FrameBudget): void {
@@ -301,6 +381,7 @@ export class PdfTileLayer implements Layer {
             borrow.release();
             if (sharp) {
                 mirrors.retainViewport(new Set(job.ids));
+                mirror.store.remember(job.view);
                 this.mirrorKey = job.key;
             }
             this.mirrorJob = null;
@@ -353,10 +434,11 @@ export class PdfTileLayer implements Layer {
         });
     }
 
-    private covered(page: number, area: Readonly<Rect>, device: GfxDevice | null): boolean {
-        const boxes: Rect[] = [];
+    private covered(page: number, area: Readonly<Rect>, device: GfxDevice | null,
+        additional: readonly Readonly<Rect>[] = []): boolean {
+        const boxes: Readonly<Rect>[] = [...additional];
         for (const entry of this.entries.values()) {
-            if (entry.request.page !== page || !entry.bitmap || (device && entry.device !== device)) continue;
+            if (entry.request.page !== page || !entry.bitmap || (device && entry.texture?.device !== device)) continue;
             boxes.push(rect(entry.request));
         }
         return covers(area, boxes);
@@ -402,7 +484,7 @@ export class PdfTileLayer implements Layer {
         if (this.entries.get(key) !== entry) return;
         this.entries.delete(key);
         entry.controller.abort();
-        if (entry.texture && entry.device) entry.device.destroy(entry.texture);
+        if (entry.texture) this.texturePool.release(entry.texture);
         if (entry.bitmap) {
             this.contentRevision++;
             entry.bitmap.close();

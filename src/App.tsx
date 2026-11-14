@@ -1385,8 +1385,11 @@ export default function App() {
       ];
       const notes = [async () => ownText, ...neighbours.map(note => async () => {
         const open = proofTabs.find(t => t.file.path === note.path);
-        return open ? (canReadTabText(open) ? proofContents.get(note.path) ?? open.content : null)
-          : await readFile(note.handle).catch(() => null);
+        if (open) return canReadTabText(open) ? proofContents.get(note.path) ?? open.content : null;
+        if (isCanvasFile(note.name)) {
+          try { return (await handleIO.file(note.handle)).stream(); } catch { return null; }
+        }
+        return await readFile(note.handle).catch(() => null);
       })];
       const closedVersions: Array<{ handle: FileSystemFileHandle; modified: number; size: number }> = [];
       const hashedVersions = new Map<string, { handle: FileSystemFileHandle; modified: number; size: number }>();

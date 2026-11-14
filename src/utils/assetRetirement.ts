@@ -87,7 +87,7 @@ export interface RetirementCandidates {
 
 export interface RetirementProof {
     candidates: RetirementCandidates;
-    notes: Iterable<() => Promise<string | null>>;
+    notes: Iterable<() => Promise<string | ReadableStream<Uint8Array> | null>>;
     boards: Iterable<() => Promise<MediaRefs>>;
     current(): boolean;
     /** null means the candidate could not be read or hashed. */
@@ -98,6 +98,51 @@ export interface RetirementDecision {
     retire: Set<string>;
     /** Unknown proofs are retried; a positively referenced asset is not an orphan. */
     blocked: RetirementCandidates;
+}
+
+/** Board JSON can be enormous and is also subject to the legacy wiki-link keep rule. */
+async function linkedNames(source: string | ReadableStream<Uint8Array>, candidates: ReadonlySet<string>): Promise<Set<string> | null> {
+    const found = new Set<string>();
+    if (typeof source === 'string') {
+        for (const name of candidates) if (referencesAsset(source, name)) found.add(name);
+        return found;
+    }
+    const reader = source.getReader(), decoder = new TextDecoder('utf-8', { fatal: true });
+    let buffer = '', complete = false;
+    const consume = (text: string): boolean => {
+        buffer += text;
+        for (;;) {
+            const start = buffer.indexOf('[[');
+            if (start < 0) { buffer = buffer.endsWith('[') ? '[' : ''; return true; }
+            const end = buffer.indexOf(']', start + 2), newline = buffer.indexOf('\n', start + 2);
+            if (newline >= 0 && (end < 0 || newline < end)) { buffer = buffer.slice(newline + 1); continue; }
+            if (end < 0 || end + 1 === buffer.length) {
+                buffer = buffer.slice(start);
+                return buffer.length <= 65536;
+            }
+            if (buffer[end + 1] === ']') {
+                const token = buffer.slice(start, end + 2);
+                for (const name of candidates) if (referencesAsset(token, name)) found.add(name);
+                buffer = buffer.slice(end + 2);
+            } else buffer = buffer.slice(end + 1);
+        }
+    };
+    const feed = (text: string): boolean => {
+        for (let at = 0; at < text.length; at += 8192) if (!consume(text.slice(at, at + 8192))) return false;
+        return true;
+    };
+    try {
+        for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) { complete = true; break; }
+            if (!feed(decoder.decode(chunk.value, { stream: true }))) return null;
+        }
+        return feed(decoder.decode()) ? found : null;
+    } catch { return null; }
+    finally {
+        if (!complete) { try { await reader.cancel(); } catch { /* The source already failed. */ } }
+        reader.releaseLock();
+    }
 }
 
 /** A failed or invalidated proof never guesses that an asset is unreferenced. */
@@ -111,7 +156,9 @@ export async function decideAssetRetirement(proof: RetirementProof): Promise<Ret
             if (!proof.current()) return blocked();
             const text = await read();
             if (!proof.current() || text === null) return blocked();
-            for (const name of candidates) if (referencesAsset(text, name)) keep(name);
+            const linked = await linkedNames(text, candidates);
+            if (!proof.current() || linked === null) return blocked();
+            for (const name of linked) keep(name);
             if (!candidates.size) return { retire: candidates, blocked: { note, board } };
         }
         for (const read of proof.boards) {

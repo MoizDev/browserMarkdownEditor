@@ -15,11 +15,7 @@ function raw(value: unknown): RawJson {
     return parseJson(encoded).raw();
 }
 function validLink(value: unknown): value is string {
-    if (typeof value !== 'string' || value.length > 2048) return false;
-    for (let i = 0; i < value.length; i++) {
-        const code = value.charCodeAt(i);
-        if (code < 32 || (code >= 127 && code <= 159)) return false;
-    }
+    if (typeof value !== 'string' || value.length > 2048 || /\p{Cc}/u.test(value)) return false;
     try {
         const url = new URL(value);
         return !url.username && !url.password && (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:');

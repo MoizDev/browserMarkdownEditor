@@ -1,25 +1,26 @@
 import type { WorkerContext } from '../../platform/workers';
 import { readNative } from '../format/read';
-import type { ReadIssue } from '../format/readTypes';
+import type { NativeReadResult, ReadSourceRecord, UnmappedRecord } from '../format/readTypes';
+import type { SavedView } from '../format/encode';
+import type { Bounds } from '../format/schema';
 import { SampleStore } from '../ink/samples';
 import type { LoadRepairResult, LoadSampleWire } from '../model/loadTypes';
 import { repairLoad } from '../model/loadRepair';
 import type { SampleLease, SampleRef } from '../model/samples';
-import type { ParseNativeRequest } from './nativeParseTypes';
+import { validateNativeRequest } from './nativeRequest';
 
-export interface NativeLoadReply {
-    readonly format: 'native' | 'empty' | 'other';
-    readonly readOnly: boolean;
+export interface NativeLoadReply extends Omit<NativeReadResult, 'draft'> {
     readonly repaired: LoadRepairResult | null;
-    readonly issues: readonly ReadIssue[];
-    readonly complete: boolean;
+    readonly sources: readonly ReadSourceRecord[];
+    readonly unmapped: readonly UnmappedRecord[];
+    readonly coldBounds: readonly (readonly [string, Bounds])[];
+    readonly savedView?: SavedView;
 }
 
 /** Parse and graph repair share the worker-local sample store. Only immutable
  * encoded sample records cross the worker boundary; leases stay in that store. */
 export async function nativeLoad(payload: unknown, context: WorkerContext): Promise<NativeLoadReply> {
-    if (!payload || typeof payload !== 'object' || !((payload as ParseNativeRequest).bytes instanceof Blob)) throw new TypeError('Native load requires a Blob');
-    const request = payload as ParseNativeRequest, samples = new SampleStore();
+    const request = validateNativeRequest(payload), samples = new SampleStore();
     const leases: SampleLease[] = [], wires = new Map<SampleRef, LoadSampleWire>();
     try {
         async function* bytes(): AsyncIterable<Uint8Array> {
@@ -43,8 +44,15 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
                 return lease.ref;
             },
         });
-        if (!parsed.draft || parsed.readOnly || !parsed.complete) return { format: parsed.format, readOnly: true, repaired: null, issues: parsed.issues, complete: parsed.complete };
-        const draft = parsed.draft;
+        const { draft, ...report } = parsed;
+        const coldBounds: (readonly [string, Bounds])[] = [];
+        if (draft) for (const [id, bounds] of draft.coldBounds) {
+            if ((coldBounds.length & 255) === 0) { context.signal.throwIfAborted(); await context.slice(); }
+            coldBounds.push([id, bounds]);
+        }
+        const diagnostics = { sources: draft?.sources ?? [], unmapped: draft?.unmapped ?? [], coldBounds,
+            ...(draft?.savedView === undefined ? {} : { savedView: draft.savedView }) };
+        if (!draft || parsed.readOnly || !parsed.complete) return { ...report, ...diagnostics, readOnly: true, repaired: null };
         let serial = 0;
         let repaired: LoadRepairResult;
         try {
@@ -65,9 +73,9 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
             });
         } catch (error) {
             context.signal.throwIfAborted();
-            return { format: parsed.format, readOnly: true, repaired: null, complete: parsed.complete,
+            return { ...report, ...diagnostics, readOnly: true, repaired: null, issueCount: report.issueCount + 1,
                 issues: [...parsed.issues, { code: 'repair', reason: error instanceof Error ? error.message : 'Board repair failed', readOnly: true }] };
         }
-        return { format: parsed.format, readOnly: repaired.status !== 'editable', repaired, issues: parsed.issues, complete: parsed.complete };
+        return { ...report, ...diagnostics, readOnly: repaired.status !== 'editable', repaired };
     } finally { for (const lease of leases) lease.release(); }
 }

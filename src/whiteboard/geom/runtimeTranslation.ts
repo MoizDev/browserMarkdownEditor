@@ -55,8 +55,16 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
     }
     const source = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { signal, current, cooperate: options.cooperate });
     try { check(); font = runtime.render.text.fonts.epoch; } catch (error) { source.release(); throw error; }
+    const geometry: ChangeGeometry = {
+        resolvedTip: (candidate, connector, terminal) => source.geometry.resolvedTip(candidate, connector, terminal),
+        worldBoundsCenter: (candidate, node) => {
+            if (candidate !== doc) throw new Error('Translation geometry document mismatch');
+            const bounds = source.logicalBounds(node.id);
+            return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+        },
+    };
     let plan: TranslationPlan;
-    try { plan = new TranslationPlan(doc, roots.map(node => node.id), runtime.render.changeGeometry); } catch (error) { source.release(); throw error; }
+    try { plan = new TranslationPlan(doc, roots.map(node => node.id), geometry); } catch (error) { source.release(); throw error; }
     let latest: { value: BoardTranslationPreview; scope: BoardGeometryScope; signal: AbortSignal; serial: number } | undefined;
     const clear = () => { const value = latest; latest = undefined; value?.scope.release(); };
     const close = () => { if (closed) return; closed = true; serial++; plan.cancel(); try { clear(); } finally { source.release(); } };
@@ -96,14 +104,13 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                         current: active, signal: request, cooperate: options.cooperate });
                     assert();
                     const snapX = useX ? result.delta.x : 0, snapY = useY ? result.delta.y : 0;
-                    guides = result.guides.filter(guide => (guide.featureAxis ?? guide.axis) === 'x' ? useX : useY).map(guide =>
-                        guide.kind === 'equal-gap' ? { ...guide, value: guide.value + (guide.featureAxis === 'x' ? snapY : snapX) } : guide);
+                    guides = result.guides.filter(guide => (guide.featureAxis ?? guide.axis) === 'x' ? useX : useY);
                     if (snapX || snapY) { delta = { x: delta.x + snapX, y: delta.y + snapY }; staged.scope.release(); staged = await stage(delta); }
                 }
                 assert(); const ops: NodeSetOp[] = [...staged.compensation];
                 for (const root of roots) {
                     const actual = staged.scope.logicalBounds(root.id), before = worldPose(doc, root.id);
-                    const geometry: ChangeGeometry = { resolvedTip: (d, connector, terminal) => runtime.render.changeGeometry.resolvedTip(d, connector, terminal),
+                    const geometry: ChangeGeometry = { resolvedTip: (d, connector, terminal) => source.geometry.resolvedTip(d, connector, terminal),
                         worldBoundsCenter: () => ({ x: actual.x + actual.width / 2, y: actual.y + actual.height / 2 }) };
                     const placement = poseInParent(doc, root, root.parent, { x: before.x + delta.x, y: before.y + delta.y, rotation: before.rotation }, geometry);
                     if (placement.page !== root.page) ops.push({ t: 'set', id: root.id, key: 'page', value: placement.page });

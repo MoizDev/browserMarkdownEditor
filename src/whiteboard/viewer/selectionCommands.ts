@@ -2,6 +2,7 @@ import { selectableAtFocus } from '../selection';
 import { planDelete } from '../commands/delete';
 import { createBoardSelectionCommands, type SelectionOrder } from '../commands/selection';
 import { createBoardArrangementCommands } from '../commands/arrangement';
+import { arrangeNotebook } from '../input/notebookArrange';
 import type { Align, Axis } from '../geom/arrange';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
@@ -103,10 +104,14 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
             return allFrames ? selection.removeFrames(ids, signal).then(() => {}) : selection.frameSelection(ids, '', signal).then(() => {});
         });
         if (Object.hasOwn(orders, id)) return schedule((ids, signal) => selection.reorderSelection(ids, orders[id], signal));
-        if (Object.hasOwn(alignments, id)) return count < 2 ? false : schedule((ids, signal) => arrangement.align(ids, alignments[id], signal));
+        if (Object.hasOwn(alignments, id)) return count < 2 ? false : schedule((ids, signal, active) => doc.kind === 'notebook'
+            ? arrangeNotebook({ runtime, ids, action: { kind: 'align', mode: alignments[id] }, signal, current: active, cooperate })
+            : arrangement.align(ids, alignments[id], signal));
         if (id === 'distribute.horizontal' || id === 'distribute.vertical') {
             const axis: Axis = id.endsWith('horizontal') ? 'horizontal' : 'vertical';
-            return count < 3 ? false : schedule((ids, signal) => arrangement.distribute(ids, axis, signal));
+            return count < 3 ? false : schedule((ids, signal, active) => doc.kind === 'notebook'
+                ? arrangeNotebook({ runtime, ids, action: { kind: 'distribute', axis }, signal, current: active, cooperate })
+                : arrangement.distribute(ids, axis, signal));
         }
         return false;
     };

@@ -8,25 +8,26 @@ export interface FragmentSnapshotOptions extends PlainTextOptions {
     readonly current?: () => boolean;
 }
 
+const MAX_COMPONENTS = 1_000_000;
 function check(options: FragmentSnapshotOptions): void {
     options.signal?.throwIfAborted();
     if (options.current && !options.current()) throw new DOMException('Rich fragment source changed', 'AbortError');
 }
-function object(value: unknown): value is Record<string, unknown> {
-    return !!value && typeof value === 'object' && !Array.isArray(value);
+function record(value: unknown): value is Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
 }
+
 /**
- * Snapshot a rich fragment for an async paste/import before crossing a yield.
- * Every retained object is a fresh frozen object; opaque JSON strings are not
- * parsed, concatenated, or shared through positional carrier identities.
+ * Snapshot a rich fragment before crossing an asynchronous clipboard/import seam.
+ * No source getter is invoked; every published container is newly frozen and
+ * opaque JSON strings remain independent values, not concatenated carriers.
  */
 export async function snapshotRichFragmentCooperative(fragment: RichFragment, options: FragmentSnapshotOptions): Promise<RichFragment> {
     const budget = options.sliceMilliseconds ?? 3;
     if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich fragment snapshot time slice');
     check(options);
-    if (!object(fragment) || !Array.isArray(fragment.blocks) || !fragment.blocks.length || fragment.blocks.length > MAX_TEXT_BLOCKS)
-        throw new RangeError('Invalid rich fragment blocks');
-    const blocks: Block[] = [];
     let visited = 0, started = performance.now();
     const cooperate = async () => {
         check(options);
@@ -34,41 +35,67 @@ export async function snapshotRichFragmentCooperative(fragment: RichFragment, op
         check(options);
         started = performance.now();
     };
-    const due = () => (++visited & 255) === 0 && performance.now() - started >= budget;
-    const checkArray = async (value: readonly unknown[]) => {
-        // Copying a JSON array must not silently discard extra enumerable properties.
-        for (const key in value) {
-            const index = Number(key);
-            if (!Object.hasOwn(value, key) || !Number.isSafeInteger(index) || index < 0 || String(index) !== key || index >= value.length)
-                throw new RangeError('Invalid rich fragment array');
-            if (due()) await cooperate();
-        }
+    const due = () => {
+        if (++visited > MAX_COMPONENTS) throw new RangeError('Rich fragment exceeds structural limits');
+        return (visited & 255) === 0 && performance.now() - started >= budget;
     };
-    await checkArray(fragment.blocks);
-    for (const source of fragment.blocks) {
-        if (!object(source) || !Array.isArray(source.runs) || !source.runs.length
-            || (source.carriers !== undefined && !Array.isArray(source.carriers))) throw new RangeError('Invalid rich fragment block');
-        await checkArray(source.runs);
-        if (source.carriers !== undefined) await checkArray(source.carriers);
+    const copyRecord = async (source: unknown): Promise<Record<string, unknown>> => {
+        if (!record(source) || Object.getOwnPropertySymbols(source).length) throw new TypeError('Rich fragment must contain data-only objects');
+        const result: Record<string, unknown> = Object.create(null);
+        for (const key in source) {
+            if (!Object.hasOwn(source, key)) throw new TypeError('Rich fragment has inherited fields');
+            const descriptor = Object.getOwnPropertyDescriptor(source, key)!;
+            if (!('value' in descriptor)) throw new TypeError('Rich fragment contains an accessor');
+            result[key] = descriptor.value;
+            if (due()) await cooperate();
+        }
+        return result;
+    };
+    const checkArray = async (source: unknown): Promise<readonly unknown[]> => {
+        if (!Array.isArray(source) || Object.getOwnPropertySymbols(source).length) throw new TypeError('Invalid rich fragment array');
+        for (const key in source) {
+            if (!Object.hasOwn(source, key)) throw new TypeError('Rich fragment array has inherited fields');
+            const index = Number(key), descriptor = Object.getOwnPropertyDescriptor(source, key)!;
+            if (!Number.isSafeInteger(index) || index < 0 || String(index) !== key || index >= source.length || !('value' in descriptor))
+                throw new TypeError('Rich fragment array has extra fields or accessors');
+            if (due()) await cooperate();
+        }
+        return source;
+    };
+    const arrayItem = (source: readonly unknown[], index: number): unknown => {
+        const descriptor = Object.getOwnPropertyDescriptor(source, String(index));
+        if (!descriptor || !('value' in descriptor)) throw new TypeError('Rich fragment array has a hole or accessor');
+        return descriptor.value;
+    };
+
+    const root = await copyRecord(fragment), sourceBlocks = await checkArray(root.blocks);
+    if (!sourceBlocks.length || sourceBlocks.length > MAX_TEXT_BLOCKS) throw new RangeError('Invalid rich fragment blocks');
+    const blocks: Block[] = [];
+    for (let b = 0; b < sourceBlocks.length; b++) {
+        const source = await copyRecord(arrayItem(sourceBlocks, b));
+        const sourceRuns = await checkArray(source.runs);
+        if (!sourceRuns.length) throw new RangeError('Invalid rich fragment runs');
         const runs: Run[] = [];
-        for (const sourceRun of source.runs) {
-            if (!object(sourceRun) || !object(sourceRun.marks)) throw new RangeError('Invalid rich fragment run');
-            const marks = Object.freeze({ ...sourceRun.marks });
-            runs.push(Object.freeze({ ...sourceRun, marks }) as unknown as Run);
+        for (let r = 0; r < sourceRuns.length; r++) {
+            const run = await copyRecord(arrayItem(sourceRuns, r));
+            const marks = Object.freeze(await copyRecord(run.marks));
+            runs.push(Object.freeze({ ...run, marks }) as unknown as Run);
             if (due()) await cooperate();
         }
-        const carriers: BlockCarrier[] = [];
-        if (source.carriers !== undefined) for (const carrier of source.carriers) {
-            if (!object(carrier)) throw new RangeError('Invalid rich block carrier');
-            carriers.push(Object.freeze({ ...carrier }) as unknown as BlockCarrier);
-            if (due()) await cooperate();
+        let carriers: readonly BlockCarrier[] | undefined;
+        if (source.carriers !== undefined) {
+            const input = await checkArray(source.carriers), output: BlockCarrier[] = [];
+            for (let c = 0; c < input.length; c++) {
+                output.push(Object.freeze(await copyRecord(arrayItem(input, c))) as unknown as BlockCarrier);
+                if (due()) await cooperate();
+            }
+            carriers = Object.freeze(output);
         }
-        const copy = { ...source, runs: Object.freeze(runs),
-            ...(source.carriers !== undefined ? { carriers: Object.freeze(carriers) } : {}) };
+        const copy = { ...source, runs: Object.freeze(runs), ...(carriers ? { carriers } : {}) };
         blocks.push(Object.freeze(copy) as unknown as Block);
         if (due()) await cooperate();
     }
-    const result: RichFragment = Object.freeze({ ...fragment, blocks: Object.freeze(blocks) });
+    const result: RichFragment = Object.freeze({ ...root, blocks: Object.freeze(blocks) });
     await validateRichFragmentCooperative(result, { ...options, cooperate });
     check(options);
     return result;

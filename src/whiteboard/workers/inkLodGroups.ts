@@ -109,9 +109,11 @@ export async function nestedInkLodGroups(fine: InkCoverageReply, request: InkCov
     const lower = nextDownSafe(3 * maxRadius * maxRadius);
     const allowed = nextDownSafe(nextDownSafe(lower / chunkCount) * nextDownSafe(0.02));
     if (!(lower > 0) || !(allowed > 0)) return null;
-    scratch(s.byteLength);
-    const out: number[] = [];
-    let total = 0, work = 0, started = performance.now(), accepted = 0;
+    // Prospective: the output is a typed array sized for the worst case (every row kept), and the
+    // exact-length copy taken at the end exists beside it, so both are charged before either is made.
+    scratch(2 * s.byteLength);
+    const out = new Float64Array(s.length);
+    let written = 0, total = 0, work = 0, started = performance.now(), accepted = 0;
     const cooperate = async () => {
         context.signal.throwIfAborted();
         if (work >= 4096 || performance.now() - started >= 3) {
@@ -131,15 +133,16 @@ export async function nestedInkLodGroups(fine: InkCoverageReply, request: InkCov
         }
         if (outcome.accepted && total + outcome.area <= allowed) {
             total += outcome.area; accepted++;
-            out.push(s[row * 6], s[row * 6 + 1], s[row * 6 + 2], s[(end - 1) * 6 + 3], s[(end - 1) * 6 + 4], s[(end - 1) * 6 + 5]);
+            out[written++] = s[row * 6]; out[written++] = s[row * 6 + 1]; out[written++] = s[row * 6 + 2];
+            out[written++] = s[(end - 1) * 6 + 3]; out[written++] = s[(end - 1) * 6 + 4]; out[written++] = s[(end - 1) * 6 + 5];
         } else {
-            for (let k = row; k < end; k++) for (let j = 0; j < 6; j++) out.push(s[k * 6 + j]);
+            for (let k = row * 6; k < end * 6; k++) out[written++] = s[k];
         }
         row = end;
         await cooperate();
     }
     if (!accepted) return null;
-    const segments = Float64Array.from(out);
+    const segments = out.slice(0, written);
     const coverage = { ...fine, segments, centreErrorWorld: fine.centreErrorWorld + budget };
     return { coverage, certificate: Object.freeze({ areaBoundWorld: total, referenceLowerWorld: lower }) };
 }

@@ -648,7 +648,9 @@ that lengthens that debounce owes a matching flush: unmount, `flushPending` **an
 
 Drawing/notebook `store.listen` is scoped `{source:'user', scope:'document'}`; PDF annotation uses
 synchronous user-only shape/asset/binding side effects, because a deferred listener missed immediate
-flushes. PDF exports serialize and snapshot before awaiting overlays; App awaits pending export before
+flushes. All three require the owning `OpenTab.id` for the pending-work coordinator; never derive it
+from a path or an optional reader binding. A PDF drain repeats if ink arrived during overlay export.
+PDF exports serialize and snapshot before awaiting overlays; App awaits pending export before
 leaving annotation. FontManager cleanup waits for in-flight document fonts, avoiding late updates to
 its disposed map. Programmatic loads and camera moves don't dirty the file; a separate session-scope listener only reschedules a save when the UI-state
 slice actually changed. Unmounting mid-debounce flushes synchronously. `getEfficientZoomLevel` is

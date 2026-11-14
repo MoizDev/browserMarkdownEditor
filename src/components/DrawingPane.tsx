@@ -18,7 +18,7 @@ import { captureRegion, createCanvasAgentOps, selectedAgentShapeIds, summarizeSh
 interface DrawingPaneProps {
     isVisible: boolean;
     /** OpenTab.id from the host; a rename must not change pending-work identity. */
-    documentId?: string;
+    documentId: string;
     /** The drawing's vault path. Every change is reported against it explicitly
      *  (never "the active tab") so a save landing after a tab switch cannot
      *  write drawing JSON into another file's buffer. */
@@ -159,7 +159,7 @@ function LegacyDrawingPane({ documentId, filePath, content, onContentChange, the
             flush();
         };
         const reportPending = () => {
-            if (documentId && !unregisterPending) {
+            if (!unregisterPending) {
                 unregisterPending = registerPending({ documentId, hasPendingEdits, flushPending });
             }
         };

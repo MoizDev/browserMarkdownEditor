@@ -8,6 +8,7 @@ import type { Node, StrokeNode } from '../model/nodes';
 import type { UiBlock } from '../model/styles';
 import type { RichText } from '../text/richText';
 import { COMPATIBILITY_FENCE, fenceDocument } from './fence';
+import { NATIVE_FORMAT_ID } from './identity';
 import { decodePoints, encodePoints, pointExponent, POINT_LIMITS } from './points';
 import type { PointHeader, PointSamples } from './points';
 import { FORMAT_LIMITS, NATIVE_VERSION, NODE_PROPERTY_ORDER } from './schema';
@@ -226,7 +227,7 @@ export function encodeHeader(kind: BoardKind, preserved: PreservedBlock): WriteR
         if (kind !== 'whiteboard' && kind !== 'notebook' && kind !== 'pdf-ink') refuseWrite('invalid', 'Unsupported board kind');
         const [major, minor] = preserved.version;
         if (major !== NATIVE_VERSION[0] || !Number.isSafeInteger(minor) || minor < 0) refuseWrite('invalid', 'Cannot write an unsupported source format version');
-        const fields: Field[] = [['format', 'board'], ['version', [major, Math.max(NATIVE_VERSION[1], minor)]], ['kind', kind]];
+        const fields: Field[] = [['format', NATIVE_FORMAT_ID], ['version', [major, Math.max(NATIVE_VERSION[1], minor)]], ['kind', kind]];
         if (kind !== 'pdf-ink') fields.push(['fence', COMPATIBILITY_FENCE], ['document', fenceDocument()]);
         // Keep reserved header names out of the unknown-field channel, even on PDF ink.
         for (const key of ['format', 'version', 'kind', 'fence', 'document', 'records']) {

@@ -1,9 +1,9 @@
 import { isLocked } from '../change/commands';
-import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordinates';
+import { normalizedRotation, pageOrigin, poseInParent, worldPose, type ChangeGeometry, type WorldPose } from '../change/coordinates';
 import type { NodeSetOp } from '../change/ops';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
-import { childrenOf, hasOpaqueDescendant, type BoardDoc } from '../model/doc';
+import { childrenOf, hasOpaqueDescendant, isSheetParent, type BoardDoc } from '../model/doc';
 import type { FigureNode, FrameNode, Node } from '../model/nodes';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import type { PreparedBoardText } from '../render/textGeometry';
@@ -17,6 +17,8 @@ export interface BoardLeafResizeOptions {
     readonly factors: KindResizeFactors;
     /** The resize planner's mapped logical centre in world coordinates. */
     readonly centreWorld: Vec2;
+    /** Reflections may change world orientation even when kind-local dimensions are unchanged. */
+    readonly rotationWorld?: number;
     /** Fences the source candidate, session and gesture through result release. */
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
@@ -33,6 +35,18 @@ export interface BoardLeafResizeResult {
 }
 
 type Leaf = FigureNode | FrameNode | IntrinsicResizeNode | Extract<Node, { kind: 'clip' | 'linkcard' | 'embed' }>;
+function provisional(doc: BoardDoc, node: Readonly<Leaf>, world: WorldPose): NodeSetOp[] {
+    let x: number, y: number, rotation: number;
+    if (isSheetParent(doc, node.parent)) {
+        const origin = pageOrigin(doc, node.page); x = world.x - origin.x; y = world.y - origin.y; rotation = world.rotation;
+    } else {
+        const parent = worldPose(doc, node.parent), dx = world.x - parent.x, dy = world.y - parent.y;
+        const c = Math.cos(parent.rotation), s = Math.sin(parent.rotation);
+        x = c * dx + s * dy; y = -s * dx + c * dy; rotation = world.rotation - parent.rotation;
+    }
+    return [{ t: 'set', id: node.id, key: 'x', value: x }, { t: 'set', id: node.id, key: 'y', value: y },
+        { t: 'set', id: node.id, key: 'rotation', value: normalizedRotation(rotation) }];
+}
 function asSets(ops: ReturnType<typeof resizeFigureKind>): NodeSetOp[] {
     return ops.map(op => { if (op.t !== 'set') throw new TypeError('Resize kind produced a non-set operation'); return op; });
 }
@@ -125,7 +139,8 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
     let finalScope: BoardGeometryScope | undefined, success = false;
     try {
         check();
-        const local = staged.localBounds(node.id), before = worldPose(candidate, node.id), angle = before.rotation;
+        const local = staged.localBounds(node.id), before = worldPose(candidate, node.id), angle = options.rotationWorld ?? before.rotation;
+        if (!Number.isFinite(angle)) throw new RangeError('Invalid resized world rotation');
         const localX = (local[0] + local[2]) / 2, localY = (local[1] + local[3]) / 2;
         // Default, calibration cut by owner: an exact-zero release puts the model minimum on the crossed side.
         const crossedX = factors.x === 0 && factors.handleX ? factors.handleX * factors.zeroSignX * (local[2] - local[0]) / 2 : 0;
@@ -134,28 +149,33 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
             x: options.centreWorld.x + c * crossedX - s * crossedY - c * localX + s * localY,
             y: options.centreWorld.y + s * crossedX + c * crossedY - s * localX - c * localY, rotation: angle,
         };
-        const bounds = staged.logicalBounds(node.id), center = {
-            x: bounds.x + bounds.width / 2 + world.x - before.x,
-            y: bounds.y + bounds.height / 2 + world.y - before.y,
-        };
-        const geometry: ChangeGeometry = { resolvedTip: (d, connector, terminal) => runtime.render.changeGeometry.resolvedTip(d, connector, terminal),
-            worldBoundsCenter: () => center };
-        const pose = poseInParent(doc, node as Node, node.parent, world, geometry), placementOps: NodeSetOp[] = [];
-        if (pose.page !== node.page) placementOps.push({ t: 'set', id: node.id, key: 'page', value: pose.page });
-        if (pose.x !== node.x) placementOps.push({ t: 'set', id: node.id, key: 'x', value: pose.x });
-        if (pose.y !== node.y) placementOps.push({ t: 'set', id: node.id, key: 'y', value: pose.y });
+        const placementOps: NodeSetOp[] = provisional(doc, node, world);
         if (node.kind === 'frame') {
-            const original = worldPose(doc, node.id), dx = world.x - original.x, dy = world.y - original.y;
-            if (dx !== 0 || dy !== 0) {
+            const original = worldPose(doc, node.id);
+            if (world.x !== original.x || world.y !== original.y || angle !== original.rotation) {
                 if (hasOpaqueDescendant(doc, node.id)) throw new Error('Cannot compensate opaque frame descendants');
-                const shiftX = c * dx + s * dy, shiftY = -s * dx + c * dy;
                 for (const child of childrenOf(doc, node.id)) {
-                    if (shiftX !== 0) placementOps.push({ t: 'set', id: child.id, key: 'x', value: child.x - shiftX });
-                    if (shiftY !== 0) placementOps.push({ t: 'set', id: child.id, key: 'y', value: child.y - shiftY });
+                    const pose = worldPose(doc, child.id), dx = pose.x - world.x, dy = pose.y - world.y;
+                    const x = c * dx + s * dy, y = -s * dx + c * dy, rotation = normalizedRotation(pose.rotation - angle);
+                    if (x !== child.x) placementOps.push({ t: 'set', id: child.id, key: 'x', value: x });
+                    if (y !== child.y) placementOps.push({ t: 'set', id: child.id, key: 'y', value: y });
+                    if (rotation !== child.rotation) placementOps.push({ t: 'set', id: child.id, key: 'rotation', value: rotation });
                 }
             }
         }
-        const finalDoc = await project([...kindOps, ...placementOps]); check();
+        const positioned = await project([...kindOps, ...placementOps]); check();
+        const positionedScope = await scope(positioned);
+        let finalDoc: BoardDoc;
+        try {
+            check(); const bounds = positionedScope.logicalBounds(node.id);
+            const geometry: ChangeGeometry = { resolvedTip: (d, connector, terminal) => runtime.render.changeGeometry.resolvedTip(d, connector, terminal),
+                worldBoundsCenter: () => ({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }) };
+            const pose = poseInParent(doc, node as Node, node.parent, world, geometry);
+            if (pose.page !== node.page) placementOps.push({ t: 'set', id: node.id, key: 'page', value: pose.page });
+            placementOps.push({ t: 'set', id: node.id, key: 'x', value: pose.x }, { t: 'set', id: node.id, key: 'y', value: pose.y },
+                { t: 'set', id: node.id, key: 'rotation', value: pose.rotation });
+            finalDoc = await project([...kindOps, ...placementOps]); check();
+        } finally { positionedScope.release(); }
         finalScope = await scope(finalDoc); check();
         const held = finalScope;
         const result: BoardLeafResizeResult = { kindOps: Object.freeze(kindOps.map(op => Object.freeze(op))),

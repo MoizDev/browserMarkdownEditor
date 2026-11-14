@@ -11,6 +11,7 @@ import type { Attachment } from '../model/nodes';
 import type { BoardDoc } from '../model/doc';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { JobContext } from '../security/admission';
+import type { UrlEnvironment } from '../security/urlPolicy';
 import { classifyClipboard, type ClipboardClassifierHost } from './classify';
 import type { ClipboardCopy } from './copy';
 import { convertExcalidrawShapes, finalizeExcalidrawDraft, type ExcalidrawBindingRequest, type FinalExcalidrawDraft } from './excalidraw';
@@ -44,6 +45,7 @@ export interface BoardClipboardPasteHost {
     readonly cache?: ClipboardCopy;
     readonly receivingBoardId: string;
     readonly cameraZoom: number;
+    readonly embedEnvironment?: UrlEnvironment;
     current(target: Readonly<ClipboardTarget>): boolean;
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
@@ -78,7 +80,7 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
         check();
         const classification = await classifyClipboard(copied, intent, host.classifier, context.signal); check();
         const base = { runtime, target: captured, intent, current: host.current, receivingBoardId: host.receivingBoardId,
-            cameraZoom: host.cameraZoom, cooperate: host.cooperate };
+            cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment, cooperate: host.cooperate };
         if (classification.kind === 'private') return pastePrivateClipboardInJob({ ...base, memory: host.memory, encoded: classification.encoded,
             plain: copied.text ?? '', cache: host.cache, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
         if (classification.kind === 'text' || classification.kind === 'url') {

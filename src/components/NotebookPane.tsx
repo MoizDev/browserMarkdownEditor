@@ -14,6 +14,7 @@ import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTIL
 import { PaperMainMenu } from './paperCanvas';
 import { PAPER_USER } from './paperUser';
 import { bindImageInvertKey } from './invertibleImageShape';
+import { protectPageBackdrops } from './protectPageBackdrops';
 import { subscribePenScale } from '../utils/penStyle';
 import { getPdfInverted, readThumbnailsOpen, subscribePdfInverted, writeThumbnailsOpen } from '../utils/pdfViewState';
 import PdfInvertToggle from './PdfInvertToggle';
@@ -131,6 +132,7 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
     useEffect(() => { onConfirmRef.current = onConfirm; }, [onConfirm]);
 
     const editorRef = useRef<Editor | null>(null);
+    const backdropGuardRef = useRef<ReturnType<typeof protectPageBackdrops> | null>(null);
     const uiRef = useRef<NotebookUiState | undefined>(parsed.ui);
     const serializeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     /** Shape ids of the page backdrops — never exported, never counted as ink. */
@@ -355,6 +357,8 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
         // Everything below runs BEFORE the listeners attach, so none of it marks
         // a just-opened file dirty.
         layOutPages(editor, paperRef.current);
+        const backdropGuard = protectPageBackdrops(editor, shape => shape.meta?.notebookPage !== undefined);
+        backdropGuardRef.current = backdropGuard;
 
         // A new notebook opens ready to write on, not ready to select.
         if (!uiRef.current?.toolId) editor.setCurrentTool('draw');
@@ -615,6 +619,8 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
             if (viewTimer) { clearTimeout(viewTimer); flushCanvasViewPositions(); }
             disposePen();
             disposeInvert();
+            backdropGuard.dispose();
+            backdropGuardRef.current = null;
             unlistenDoc();
             unlistenSession();
             unlistenPen();
@@ -737,9 +743,9 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
         // The backdrop and ink must share a history step, separate from the
         // preceding stroke; otherwise Undo loses that stroke (WB-D2).
         editor.markHistoryStoppingPoint('delete notebook page');
-        editor.run(() => {
+        backdropGuardRef.current?.allow(() => editor.run(() => {
             editor.deleteShapes([...doomed.map(s => s.id), pageShapeId(current.pageCount - 1)]);
-        }, { ignoreShapeLock: true });
+        }, { ignoreShapeLock: true }));
 
         const next = { ...current, pageCount: current.pageCount - 1 };
         paperRef.current = next;

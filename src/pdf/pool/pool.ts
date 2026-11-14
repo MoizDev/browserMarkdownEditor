@@ -34,6 +34,8 @@ import { reportWorkerMemory, releaseWorkerMemory } from '../../platform/render/w
 const validators = createPdfReplyValidators();
 const workerOwners = new WeakMap<WorkerClient, BootstrapPort>();
 const workerExtraBytes = new WeakMap<WorkerClient, number>();
+const metadataPermits = new WeakMap<WorkerClient, number>();
+const metadataOps = new Set<PdfEngineOp>(['doc.inspectInk', 'doc.inspectLegacyInk', 'doc.inspectNotebook', 'doc.inkMedia']);
 function reportMemory(client: WorkerClient, bytes: number): void {
     const owner = workerOwners.get(client);
     if (owner) reportWorkerMemory(owner, bytes + (workerExtraBytes.get(client) ?? 0));
@@ -68,6 +70,8 @@ type BootstrapPort = ContainedPort & { readonly engine: EngineInitArgs; compiled
 /** The broker supplies a direct worker port and trusted init metadata, never a same-origin fallback (C5.4). */
 function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writer', id: number, onHeap?: (bytes: number) => void): WorkerClient {
     let port: BootstrapPort | null = null;
+    let bootstrap: WorkerClient | undefined;
+    let provision: { generation: number; promise: Promise<void> } | undefined;
     const client = createWorkerClient({ name, protocol: PDF_ENGINE_PROTOCOL,
         spawn: async () => {
             const spawned = await options.broker.spawn(role, id);
@@ -84,20 +88,43 @@ function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writ
             workerOwners.set(client, owner); workerExtraBytes.delete(client);
             return port;
         },
-        onStart: async client => {
-            const current = port;
-            if (!current) throw new PdfEngineError('EngineBroken', 'The contained PDF engine could not initialise');
-            const value = await client.request<unknown>('engine.init', current.engine,
-                { priority: 0, cpu: 'light', deadlineMs: 10_000, terminateOnDeadline: true });
-            const info = validatePdfEngineInit(value, current.engine);
-            reportMemory(client, info.heapBytes);
-            await current.compiled();
+        onStart: async initializing => {
+            bootstrap = initializing;
+            try {
+                const current = port;
+                if (!current) throw new PdfEngineError('EngineBroken', 'The contained PDF engine could not initialise');
+                const value = await initializing.request<unknown>('engine.init', current.engine,
+                    { priority: 0, cpu: 'light', deadlineMs: 10_000, terminateOnDeadline: true });
+                const info = validatePdfEngineInit(value, current.engine);
+                reportMemory(client, info.heapBytes);
+                await current.compiled();
+            } finally { if (bootstrap === initializing) bootstrap = undefined; }
         },
         absoluteMs: role === 'writer' ? 120_000 : 60_000,
         silenceMs: { 0: 20_000, 1: 20_000, 2: 60_000, 3: 60_000 },
         restartPolicy: role === 'writer' ? { delaysMs: [0], maxFailures: 1, windowMs: 60_000 } :
             { delaysMs: [0, 250, 1000, 5000], maxFailures: 4, windowMs: 60_000 },
-        events: role === 'render' ? ['font.needed', 'font.profile', 'page.geometry', 'dying', 'worker.memory'] : ['worker.memory'],
+        events: role === 'render' ? ['font.needed', 'font.profile', 'page.geometry', 'dying', 'worker.memory', 'code.needed'] : ['worker.memory', 'code.needed'],
+    });
+    client.on('code.needed', value => {
+        try {
+            const request = record(value, ['id']);
+            if (request.id !== 'metadata' || role === 'render' && metadataPermits.get(client) !== client.generation) invalidPdfReply();
+            const generation = client.generation;
+            if (provision?.generation === generation) return;
+            const promise = (async () => {
+                const asset = await import('virtual:pdf-engine-metadata');
+                if (client.generation !== generation || client.state === 'disposed') return;
+                if (typeof asset.source !== 'string' || !asset.source.length || asset.source.length > 8 * 1024 * 1024 ||
+                    typeof asset.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(asset.sha256)) invalidPdfReply();
+                const endpoint = bootstrap ?? client;
+                const result = await endpoint.request('code.provide', { id: 'metadata', source: asset.source, sha256: asset.sha256 },
+                    { priority: 0, cpu: 'light', deadlineMs: 60_000 });
+                record(result, []);
+            })();
+            provision = { generation, promise };
+            void promise.catch(() => { if (client.generation === generation && client.state !== 'disposed') void client.recycle('PDF metadata delivery failed').catch(() => {}); });
+        } catch { void client.recycle('Invalid PDF metadata request').catch(() => {}); }
     });
     client.on('worker.memory', value => {
         try {
@@ -495,6 +522,7 @@ class Pool implements PdfPool {
                         job.posted = geometryRequest;
                         rememberGeometry(job.doc, await geometryRequest, page as number);
                     }
+                    if (metadataOps.has(job.op)) metadataPermits.set(slot.client, slot.client.generation);
                     const posted = slot.client.request<unknown>(job.op, payload, { priority: job.priority, signal, deadlineMs: remaining,
                         terminateOnDeadline: true, cpu: 'governed', key: Number.isSafeInteger(page) ? pageKey(job.doc.key, page as number) : job.doc.key });
                     job.posted = posted;

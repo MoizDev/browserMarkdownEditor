@@ -46,6 +46,8 @@ At the bottom, a row of five icons: **Neural Brain** (the graph view of how your
 
 In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; changes apply when you next open a pane. Only engines included in this build are offered. Turning developer settings off restores the normal engine choices without deleting your saved selections.
 
+When a newer app version is available, a notice offers **Reload**. Save your edits and resolve any disk conflicts first; the app will not reload from the notice while a document still has unsaved changes.
+
 In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
 
 ### File Tree
@@ -345,8 +347,9 @@ the pages are ordinary PDF pages that anything can open.
 The notebook stays the original you keep writing in. Exporting again uses the
 same PDF name rather than leaving a pile of copies. An existing PDF is kept in
 the folder's Trash before replacement. The app asks first unless it is this
-notebook's unchanged last export; if the target changes during export, export
-again to review it.
+notebook's unchanged last export; if the target changes during export, it asks
+again. Close the target PDF tab before replacing it, so an open document cannot
+lose unsaved annotations. A folder with the PDF's name cannot be replaced.
 
 The exported PDF remembers which notebook it came from, so pressing the pen on
 it **opens that notebook** instead of annotating the PDF as if it were someone
@@ -504,7 +507,7 @@ double no matter how many times you edit.
 
 Annotated saves also carry a write mark. If another program changes the file after a marked save, Annotate stays read-only and explains that rebuilding from your last editable version would drop those changes. **Keep the file as it is** (the default, or Escape while the notice is focused) leaves it unchanged. **Annotate from my last version** first keeps the exact current PDF in that folder’s **Trash**, then enables editing. If the mark is malformed or belongs to an unsupported version, the notice says it cannot be verified and offers the same safe choice. A changed or deleted file must be resolved before this choice can continue; a failed copy enables nothing and offers Retry.
 
-Older annotated PDFs without a mark can still be edited. Before their first save here, a copy of the current file is kept in **Trash**; the saved PDF gains the mark. The notice names the retained copy. Editable annotations are limited to **32 MiB of UTF-8 JSON**: exceeding that limit refuses the save without changing the PDF. Keep those unsaved annotations open, or reduce them before saving. A refused revision is not reported as Saved and cannot be silently dropped by closing its tab or switching vaults.
+Older annotated PDFs without a mark can still be edited. Before their first save here, a copy of the current file is kept in **Trash**; the saved PDF gains the mark. The notice names the retained copy. Editable annotations are limited to **32 MiB of UTF-8 JSON**: exceeding that limit refuses the save without changing the PDF. Keep those unsaved annotations open, or reduce them before saving. A refused revision is not reported as Saved and cannot be silently dropped by closing its tab or switching vaults. After a stroke, annotations are pending until the versioned write completes; closing or switching vaults waits for the pending checkpoint. If an export fails, keep the tab open and retry. A browser or operating-system termination cannot wait for an unfinished save.
 
 **A PDF that cannot be written on safely stays read-only.** Before the pen opens,
 the app checks what the file actually carries, not its name. A PDF holding an

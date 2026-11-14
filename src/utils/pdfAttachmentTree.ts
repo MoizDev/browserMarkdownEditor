@@ -1,6 +1,7 @@
 // Worker-only typed PDF object traversal and legal EmbeddedFiles name-tree writer.
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFObjectCopier, PDFRawStream, PDFString, decodePDFRawStream, FileEmbedder } from 'pdf-lib';
 import type { PDFObject } from 'pdf-lib';
+import { artifactHash, immutableArtifact } from './pdfWriteArtifacts';
 
 const key = PDFName.of;
 type PdfKey = PDFString | PDFHexString;
@@ -94,10 +95,7 @@ function alias(name: string, n: number): string {
     const dot = name.lastIndexOf('.');
     return dot > 0 ? `${name.slice(0, dot)} (recovered ${n})${name.slice(dot)}` : `${name} (recovered ${n})`;
 }
-async function digest(bytes: Uint8Array): Promise<string> {
-    const hash = await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>);
-    return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
-}
+const digest = artifactHash;
 // pdf-lib's getBytes(n) allocates n up front; asking for a 2 GiB cap on a
 // tiny source allocates 2 GiB. Read incrementally and stop at the bound.
 export function boundedAttachmentBytes(stream: PDFRawStream, limit: number): Uint8Array {
@@ -164,10 +162,25 @@ export async function rebuildAttachmentTree(doc: PDFDocument, outer: PDFDocument
         ['original.pdf', original, 'application/pdf', 'local-vault-pdf/v1;role=pristine;format=tldraw-legacy\nUnannotated source. Every save rebuilds from this, so strokes never compound.'],
         ['tldraw-snapshot.json', snapshot, 'application/json', 'local-vault-pdf/v1;role=editable;format=tldraw-legacy\nEditable annotations stamped on the pages.'],
     ] as const) {
-        const ref = await FileEmbedder.for(bytes, name, { mimeType: mime, description }).embedIntoContext(doc.context);
-        named.push({ name: PDFHexString.fromText(name), raw: ref, hash: await digest(bytes) });
+        const hash = await digest(bytes);
+        let ref;
+        if (name === 'original.pdf') {
+            // Cache only immutable Flate bytes. Each build registers new context-local
+            // stream and Filespec objects; a cached PDFRef would point into another PDF.
+            const compressed = await immutableArtifact(`source-flate-v1:${hash}`, () => doc.context.flateStream(bytes).contents);
+            const stream = doc.context.register(doc.context.stream(compressed, {
+                Type: 'EmbeddedFile', Subtype: mime, Filter: 'FlateDecode', Params: { Size: bytes.length },
+            }));
+            ref = doc.context.register(doc.context.obj({
+                Type: 'Filespec', F: PDFString.of(name), UF: PDFHexString.fromText(name),
+                EF: { F: stream }, Desc: PDFHexString.fromText(description),
+            }));
+        } else {
+            ref = await FileEmbedder.for(bytes, name, { mimeType: mime, description }).embedIntoContext(doc.context);
+        }
+        named.push({ name: PDFHexString.fromText(name), raw: ref, hash });
         af.push(ref);
-        associated.push(await digest(bytes));
+        associated.push(hash);
     }
     named.sort((a, b) => compareBytes(a.name.asBytes(), b.name.asBytes()));
     for (let i = 1; i < named.length; i++) if (compareBytes(named[i - 1].name.asBytes(), named[i].name.asBytes()) >= 0) throw new Error('Duplicate attachment tree key');

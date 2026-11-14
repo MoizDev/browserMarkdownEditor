@@ -1,35 +1,45 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { ViewportInsets, ZoomLimits } from '../../platform/render/camera';
 import type { ActiveFile, Theme } from '../../types';
-import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
-import { getPdfInkSourceState, type PdfInkSourceState } from '../../whiteboard/host/preparePdfInkSession';
-import { mediaExtension } from '../../whiteboard/media/ingest';
-import { MEDIA_MIMES, type MediaId } from '../../whiteboard/model/media';
-import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
-import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
+import { createNativeViewLease, type NativePdfBackdrop, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
 import './NativeCanvasEntry.css';
 
 const VIEW_REASON = 'PDF annotation tools are unavailable in this view.';
+type ViewOptions = Parameters<typeof createNativeViewLease>[0];
+type PdfMediaReader = NonNullable<ViewOptions['readPdfMedia']>;
+
+export interface NativePdfViewerSource {
+    getSnapshot(): {
+        readonly source: { createBackdrop(options: {
+            readOnly: boolean; isVisible(): boolean; isFocused(): boolean; emphasisEnabled(): boolean;
+            onError(error: unknown): void; onUpdating?(updating: boolean): void; signal?: AbortSignal;
+        }): Promise<NativePdfBackdrop> };
+        readonly status: 'ready' | 'rebinding' | 'read-only' | 'failed';
+        readonly reason?: string;
+    };
+    subscribe(listener: () => void): () => void;
+    readMedia: PdfMediaReader;
+}
 
 export interface NativePdfViewerProps {
-    readonly board: ComposedBoardSession;
-    readonly identity: NativeCanvasIdentity;
-    readonly host: NativeCanvasHost;
+    readonly board: ViewOptions['board'];
+    readonly identity: ViewOptions['identity'];
+    readonly host: ViewOptions['host'];
+    readonly sourceState: NativePdfViewerSource;
     readonly file: ActiveFile;
     readonly isVisible: boolean;
     readonly isFocused: boolean;
     readonly theme: Theme;
     readonly emphasisEnabled: boolean;
-    readonly zoomLimits: ZoomLimits;
-    readonly insets: ViewportInsets;
+    readonly zoomLimits: ViewOptions['limits'];
+    readonly insets: ViewOptions['insets'];
     readonly registerKeyboardTarget: (path: string, focus: () => void) => () => void;
     readonly onFocusPane: (path: string) => void;
     readonly onNotice: (message: string) => void;
     readonly onError: (error: unknown) => void;
 }
 
-function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceState: PdfInkSourceState }) {
+function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceState: NativePdfViewerSource }) {
     const sourceSnapshot = useSyncExternalStore(sourceState.subscribe, sourceState.getSnapshot, sourceState.getSnapshot);
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
@@ -43,12 +53,7 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
         setError(cause instanceof Error ? cause.message : String(cause));
         latest.current.onError(cause);
     }, []);
-    const readPdfMedia = useCallback(async (id: MediaId, signal: AbortSignal) => {
-        const entry = board.doc.media.get(id);
-        const mime = MEDIA_MIMES.find(value => value === entry?.mime);
-        if (!entry || entry.file !== null || !mime || !/^sha256:[0-9a-f]{64}$/.test(id)) throw new Error(`Invalid embedded PDF media: ${id}`);
-        return sourceState.getSnapshot().source.readMedia(`board-media/${id.slice(7)}.${mediaExtension(mime)}`, signal);
-    }, [board, sourceState]);
+    const readPdfMedia = useCallback<PdfMediaReader>((id, signal) => sourceState.readMedia(id, signal), [sourceState]);
     useEffect(() => {
         let alive = true, view: NativeViewLease | undefined;
         const abort = new AbortController();
@@ -137,7 +142,6 @@ function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, c
 }
 
 export default function NativePdfViewer(props: NativePdfViewerProps) {
-    const sourceState = getPdfInkSourceState(props.identity.documentId);
-    if (!sourceState || props.identity.kind !== 'pdfInk') return <div role="alert">The PDF ink source is unavailable.</div>;
-    return <PdfView props={props} sourceState={sourceState} />;
+    if (props.identity.kind !== 'pdfInk') return <div role="alert">The PDF ink source is unavailable.</div>;
+    return <PdfView props={props} sourceState={props.sourceState} />;
 }

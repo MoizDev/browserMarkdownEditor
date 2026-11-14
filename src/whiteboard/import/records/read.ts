@@ -25,8 +25,8 @@ export interface LegacyRecordOptions {
     readonly rich: RichTextReader;
     readonly admitMedia: AdmitLegacyMedia;
     readonly signal?: AbortSignal;
-    // Uses the node's world bounds, including parent transforms, and the saved legacy page layout.
-    readonly preparePages: (shapes: readonly LegacyShape[]) => (shape: LegacyShape) => {
+    // Uses the mapped nodes' world bounds, including descendants, and the saved legacy page layout.
+    readonly preparePages: (shapes: readonly LegacyShape[], nodes: readonly Node[]) => (node: Node) => {
         readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd?: boolean;
     };
 }
@@ -93,7 +93,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         else ends.set(binding.terminal, binding);
     }
     const nodes: Node[] = [];
-    const pageForRoot = options.kind === 'whiteboard' ? null : options.preparePages(shapes);
     const roots = new Map<NodeId, { readonly page: number; readonly x: number; readonly y: number; readonly scale: number }>();
     for (const shape of shapes) {
         options.signal?.throwIfAborted();
@@ -104,9 +103,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             const extras = unknownShapeProperties(shape);
             if (extras.length) report.refuse(shape.id, `Unsupported properties: ${extras.join(', ')}`);
             const root = sheetIds.has(shape.parentId as SheetId);
-            const position = pageForRoot && root ? pageForRoot(shape) : null;
-            if (position?.pastEnd) report.repair(shape.id, 'Content past the last page retained on the last page');
-            let base = shapeBase(shape, position?.page ?? -1);
+            let base = shapeBase(shape, options.kind !== 'whiteboard' && root ? 0 : -1);
             if (shape.type === 'note' && shape.props.textLastEditedBy != null) {
                 const fields = new Map(base.ext?.fields ?? []);
                 fields.set('legacyTextLastEditedBy', parseJson(JSON.stringify(shape.props.textLastEditedBy)).raw());
@@ -119,7 +116,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                 fields.set('legacyMissingAsset', parseJson(JSON.stringify(shape.props.assetId)).raw());
                 base = { ...base, ext: { fields, raw: base.ext?.raw ?? new Map() } };
             }
-            if (position) roots.set(base.id, position);
             let node: Node | null = null;
             if (shape.type === 'draw' || shape.type === 'highlight') {
                 const stroke = readStroke(shape, base, options.samples);
@@ -142,6 +138,17 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             if (!node) report.refuse(shape.id, `Unsupported shape ${shape.type}`);
             else { nodes.push(node); report.count(node.kind); }
         } catch (error) { report.refuse(shape.id, error instanceof Error ? error.message : 'Invalid shape'); }
+    }
+    if (options.kind !== 'whiteboard') {
+        const pageForRoot = options.preparePages(shapes, nodes);
+        for (const node of nodes) {
+            if (!sheetIds.has(node.parent as SheetId)) continue;
+            try {
+                const position = pageForRoot(node);
+                if (position.pastEnd) report.repair(node.id, 'Content past the last page retained on the last page');
+                if (!roots.has(node.id)) roots.set(node.id, position);
+            } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Cannot map page'); }
+        }
     }
     const byId = new Map<NodeId, Node>();
     for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);

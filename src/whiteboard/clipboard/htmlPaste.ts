@@ -6,6 +6,7 @@ import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import type { BoardRuntime } from '../host/runtime';
 import { inspectMedia } from '../media/inspect';
+import { initialPicturePlaying } from '../media/animation';
 import type { MediaLease } from '../media/store';
 import { isSheetParent } from '../model/doc';
 import { newNodeId, type NodeId } from '../model/ids';
@@ -126,6 +127,7 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
         const parent = placement.parent, siblings = doc.children.get(parent) ?? [];
         const orders = keysBetween(siblings.at(-1)?.order ?? null, null, images.length + (textNode ? 1 : 0));
         const worldNodes: Node[] = []; let left = 0, order = 0;
+        const playing = initialPicturePlaying(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
         if (textNode && textBounds) {
             worldNodes.push({ ...textNode, order: orders[order++], page: -1, x: -textBounds.x, y: (height - textBounds.height) / 2 - textBounds.y });
             left += textBounds.width;
@@ -133,7 +135,7 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
         for (const image of images) {
             worldNodes.push(createPicture({ id: allocate(), parent: target.sheet, order: orders[order++], page: -1, x: left, y: (height - image.height) / 2,
                 ext: null, w: image.width, h: image.height, media: image.id, crop: null, flipX: false, flipY: false, alt: image.alt,
-                inverted: false, playing: true, url: null }));
+                inverted: false, playing, url: null }));
             left += image.width;
         }
         const pose = isSheetParent(doc, parent) ? null : worldPose(doc, parent);

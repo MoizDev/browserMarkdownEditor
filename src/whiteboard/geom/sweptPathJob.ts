@@ -6,7 +6,8 @@ import type { ExactCurvePoint } from './cubicRootCertificate';
 import { createFillPointJob } from './fillPoint';
 import { add, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
 import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
-import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
+import { createExactInverseDistance } from './exactInverseDistance';
 import type { PathOp } from './path';
 import type { PathPickOptions } from './pick';
 import type { RegionQuery } from './types';
@@ -50,6 +51,7 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
     const stroke = strokeRadiusBounds(matrix, options.strokeRadiusLocal);
     if (!stroke) finished = { status: 'uncertain', reason: 'Swept path transform scale overflows' };
     const strokeRadius = add(stroke ?? interval(0), interval(query.radiusCss)), fillRadius = interval(query.radiusCss);
+    const inverseDistance = query.radiusCss === 0 && !isUniformDistanceMatrix(matrix) ? createExactInverseDistance(matrix) : null;
     if (![strokeRadius.lo, strokeRadius.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Swept path radius overflows' };
     const point = (p: { readonly x: number; readonly y: number }): BoundsPoint => {
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) throw new RangeError('Invalid sweep point');
@@ -58,11 +60,11 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
     let fill: ReturnType<typeof createFillPointJob> | undefined, fillUncertain = false, curveUncertain = false;
     const allPaths = [...paths, ...(options.interiorPaths ?? [])];
     let pathIndex = 0, commandIndex = 0, sweepIndex = 0;
-    let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, segment: CertifiedCurve | undefined, segmentRadius = strokeRadius;
+    let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, segment: CertifiedCurve | undefined, segmentRadius = strokeRadius, segmentLocalRadius = options.strokeRadiusLocal;
     let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined, segmentExact: readonly [ExactPoint, ExactPoint] | undefined;
     let segmentCubic: readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
     let capsuleCertificate: ReturnType<typeof createCurveCapsuleCertificate> | undefined, deferred: Pair | undefined;
-    let capsulePhase: 'inner' | 'outer' = 'inner', exactCurve: readonly [ExactCurvePoint, ExactCurvePoint] | readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
+    let capsulePhase: 'inner' | 'outer' | 'exact' = 'inner', exactCurve: readonly [ExactCurvePoint, ExactCurvePoint] | readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
     let exactSweep: readonly [ExactCurvePoint, ExactCurvePoint] | undefined;
     const stack: Pair[] = [];
     const finish = (result: SweptPathResult): SweptPathResult => { finished = Object.freeze(result); return finished; };
@@ -86,7 +88,9 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                     const result = capsuleCertificate.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
                     capsuleCertificate.cancel(); capsuleCertificate = undefined;
-                    if (capsulePhase === 'inner' && result.status === 'hit') return finish({ status: 'hit' });
+                    if ((capsulePhase === 'inner' || capsulePhase === 'exact') && result.status === 'hit') return finish({ status: 'hit' });
+                    if (capsulePhase === 'exact' && result.status === 'miss') { deferred = undefined; exactCurve = undefined; exactSweep = undefined; continue; }
+                    if (capsulePhase === 'exact') { stack.push(deferred!); deferred = undefined; exactCurve = undefined; exactSweep = undefined; continue; }
                     const low = Math.max(0, deferred!.radius.lo), high = Math.max(0, deferred!.radius.hi);
                     if (capsulePhase === 'inner' && result.status === 'miss' && low === high) { deferred = undefined; exactCurve = undefined; exactSweep = undefined; continue; }
                     if (capsulePhase === 'inner' && result.status === 'miss') {
@@ -121,8 +125,14 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                         if (segmentExact && exactSegmentsIntersect(segmentExact[0], segmentExact[1], exactPoint(first), exactPoint(last))) return finish({ status: 'hit' });
                         sweepIndex++; if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Swept path node limit exhausted' });
                         const pair: Pair = { path: segment, sweep: { points: [a, b], depth }, radius: segmentRadius };
-                        exactCurve = segmentCubic ?? segmentExact; exactSweep = [exactPoint(first), exactPoint(last)]; deferred = pair; capsulePhase = 'inner';
-                        capsuleCertificate = createCurveCapsuleCertificate(exactCurve!, exactSweep[0], exactSweep[1], Math.max(0, segmentRadius.lo));
+                        exactCurve = segmentCubic ?? segmentExact; exactSweep = [exactPoint(first), exactPoint(last)]; deferred = pair;
+                        if (inverseDistance) {
+                            capsulePhase = 'exact';
+                            const curve = exactCurve!.map(inverseDistance.map) as unknown as typeof exactCurve;
+                            capsuleCertificate = createCurveCapsuleCertificate(curve!, inverseDistance.map(exactSweep[0]), inverseDistance.map(exactSweep[1]), inverseDistance.radius(segmentLocalRadius));
+                        } else {
+                            capsulePhase = 'inner'; capsuleCertificate = createCurveCapsuleCertificate(exactCurve!, exactSweep[0], exactSweep[1], Math.max(0, segmentRadius.lo));
+                        }
                         continue;
                     }
                     segment = undefined; segmentExact = undefined; segmentCubic = undefined; sweepIndex = 0; continue;
@@ -132,7 +142,7 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                 const path = allPaths[pathIndex];
                 if (commandIndex >= path.length) {
                     if (pathIndex >= paths.length && start && previous && previous !== start) {
-                        segmentRadius = fillRadius; segment = { points: [previous, start], depth: 0 }; segmentExact = [previousExact!, startExact!]; previous = start; previousExact = startExact; continue;
+                        segmentRadius = fillRadius; segmentLocalRadius = 0; segment = { points: [previous, start], depth: 0 }; segmentExact = [previousExact!, startExact!]; previous = start; previousExact = startExact; continue;
                     }
                     pathIndex++; commandIndex = 0; start = previous = undefined; startExact = previousExact = undefined; continue;
                 }
@@ -140,13 +150,14 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                 const op = path[commandIndex++];
                 if (op.op === 'M') {
                     if (pathIndex >= paths.length && start && previous && previous !== start) {
-                        commandIndex--; segmentRadius = fillRadius; segment = { points: [previous, start], depth: 0 }; segmentExact = [previousExact!, startExact!]; previous = start; previousExact = startExact; continue;
+                        commandIndex--; segmentRadius = fillRadius; segmentLocalRadius = 0; segment = { points: [previous, start], depth: 0 }; segmentExact = [previousExact!, startExact!]; previous = start; previousExact = startExact; continue;
                     }
                     startExact = previousExact = exactAffinePoint(matrix, op.p); start = previous = exactPointIntervals(startExact); continue;
                 }
                 if (!start || !previous) throw new RangeError('Swept path must begin with M');
                 const endExact = op.op === 'Z' ? startExact! : exactAffinePoint(matrix, op.p), end = exactPointIntervals(endExact);
                 segmentRadius = pathIndex < paths.length ? strokeRadius : fillRadius;
+                segmentLocalRadius = pathIndex < paths.length ? options.strokeRadiusLocal : 0;
                 if (op.op === 'C') {
                     const c1 = exactAffinePoint(matrix, op.c1), c2 = exactAffinePoint(matrix, op.c2);
                     segmentCubic = [previousExact!, c1, c2, endExact]; segmentExact = undefined;

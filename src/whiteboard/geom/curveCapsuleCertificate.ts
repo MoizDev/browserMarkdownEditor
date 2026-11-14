@@ -18,14 +18,15 @@ function split(value: Work): readonly [Work, Work] {
 
 /** Exact curve/closed-capsule intersection: end disks plus a certified finite
  * projection of the strip polynomial. Every polynomial step remains resumable. */
-export function createCurveCapsuleCertificate(points: Curve, start: ExactCurvePoint, end: ExactCurvePoint, radius: number, options: {
+export function createCurveCapsuleCertificate(points: Curve, start: ExactCurvePoint, end: ExactCurvePoint, radius: number | Dyadic, options: {
     readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly maxBits?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): CurveCapsuleResult; cancel(): void } {
     const maxDepth = options.maxDepth ?? 64, maxNodes = options.maxNodes ?? 131072, maxWork = options.maxWork ?? 1000000;
-    if (!Number.isFinite(radius) || radius < 0 || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128
+    if ((typeof radius === 'number' ? !Number.isFinite(radius) || radius < 0 : radius.n < 0n || !Number.isSafeInteger(radius.e))
+        || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128
         || !Number.isSafeInteger(maxNodes) || maxNodes < 1 || !Number.isSafeInteger(maxWork) || maxWork < 1)
         throw new RangeError('Invalid curve capsule certificate');
-    const arithmetic = createPolynomialArithmetic(options.maxBits ?? 16384), r = dyadic(radius);
+    const arithmetic = createPolynomialArithmetic(options.maxBits ?? 16384), r = typeof radius === 'number' ? dyadic(radius) : radius;
     const dx = dyadicSubtract(end.x, start.x), dy = dyadicSubtract(end.y, start.y);
     const lengthSquared = add(dyadicMultiply(dx, dx), dyadicMultiply(dy, dy));
     const degenerate = lengthSquared.n === 0n, limit = dyadicMultiply(dyadicMultiply(r, r), lengthSquared);

@@ -4,7 +4,8 @@ import { createCurveDiskCertificate } from './curveDiskCertificate';
 import type { ExactCurvePoint } from './cubicRootCertificate';
 import { createFillPointJob } from './fillPoint';
 import { add, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
-import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
+import { createExactInverseDistance } from './exactInverseDistance';
 export { isUniformDistanceMatrix } from './strokeRadiusBounds';
 import type { PathOp, Vec2 } from './path';
 import type { PathPickOptions } from './pick';
@@ -69,13 +70,14 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
     const stroke = strokeRadiusBounds(matrix, options.strokeRadiusLocal);
     if (!stroke) finished = { status: 'uncertain', reason: 'Point path transform scale overflows' };
     const radius = add(stroke ?? interval(0), interval(margin));
+    const inverseDistance = margin === 0 && !isUniformDistanceMatrix(matrix) ? createExactInverseDistance(matrix) : null;
     if (![radius.lo, radius.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Point path radius overflows' };
     const fill = options.interiorPaths?.length
         ? createFillPointJob(options.interiorPaths, query.point, 'nonzero', { localToWorld: matrix, maxCommands: options.maxSegments }) : undefined;
     let fillPending = !!fill, fillUncertain = false, curveUncertain = false, pathIndex = 0, commandIndex = 0;
     let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, bestUpper = Infinity;
     let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined;
-    let certificate: ReturnType<typeof createCurveDiskCertificate> | undefined, certificatePhase: 'inner' | 'outer' = 'inner';
+    let certificate: ReturnType<typeof createCurveDiskCertificate> | undefined, certificatePhase: 'inner' | 'outer' | 'exact' = 'inner';
     let exactCurve: readonly [ExactCurvePoint, ExactCurvePoint] | readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
     let deferred: Curve['points'] | undefined;
     const centre = exactPoint(query.point), innerRadius = Math.max(0, radius.lo), outerRadius = Math.max(0, radius.hi);
@@ -104,6 +106,12 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
                     const result = certificate.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
                     certificate.cancel(); certificate = undefined;
+                    if (certificatePhase === 'exact' && result.status === 'hit') return finish({ status: 'hit', distanceCss: 0 });
+                    if (certificatePhase === 'exact' && result.status === 'miss') { deferred = undefined; exactCurve = undefined; continue; }
+                    if (certificatePhase === 'exact') {
+                        if (!push(deferred!)) return finish({ status: 'uncertain', reason: 'Point path node limit exhausted' });
+                        deferred = undefined; exactCurve = undefined; continue;
+                    }
                     if (certificatePhase === 'inner' && result.status === 'hit') return finish({ status: 'hit', distanceCss: margin });
                     if (certificatePhase === 'inner' && result.status === 'miss' && innerRadius === outerRadius) { deferred = undefined; exactCurve = undefined; continue; }
                     if (certificatePhase === 'inner' && result.status === 'miss') {
@@ -139,8 +147,14 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
                     const c1 = exactAffinePoint(matrix, op.c1), c2 = exactAffinePoint(matrix, op.c2);
                     exactCurve = [previousExact, c1, c2, endExact]; deferred = [previous, exactPointIntervals(c1), exactPointIntervals(c2), end];
                 } else { exactCurve = [previousExact, endExact]; deferred = [previous, end]; }
-                previous = end; previousExact = endExact; certificatePhase = 'inner';
-                certificate = createCurveDiskCertificate(exactCurve, centre, innerRadius);
+                previous = end; previousExact = endExact;
+                if (inverseDistance) {
+                    certificatePhase = 'exact';
+                    const curve = exactCurve.map(inverseDistance.map) as unknown as typeof exactCurve;
+                    certificate = createCurveDiskCertificate(curve!, inverseDistance.map(centre), inverseDistance.radius(options.strokeRadiusLocal));
+                } else {
+                    certificatePhase = 'inner'; certificate = createCurveDiskCertificate(exactCurve, centre, innerRadius);
+                }
             }
             return PENDING;
         },

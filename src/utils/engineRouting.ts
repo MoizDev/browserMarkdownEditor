@@ -8,7 +8,7 @@ export type PdfViewer = 'classic' | 'tiled';
 // The same availability list drives the controls and the synchronous router.
 export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['tldraw'];
 export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = ['classic'];
-export const PLATFORM_LAYER_AVAILABLE = false;
+export const PLATFORM_LAYER_AVAILABLE = true;
 export const CANVAS_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook', 'pdfInk'];
 export const engineKey = (kind: CanvasEngineKind) => `bme.whiteboard.engine.${kind}`;
 export const emergencyKey = (kind: CanvasEngineKind) => `bme.whiteboard.emergencyReadOnly.${kind}`;

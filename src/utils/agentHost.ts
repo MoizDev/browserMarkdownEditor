@@ -255,7 +255,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         },
         async canvasApplyNative(path, ops, guard) {
             const deps = getDeps();
-            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path))) return null;
+            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path) && !isPdfFile(path))) return null;
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');

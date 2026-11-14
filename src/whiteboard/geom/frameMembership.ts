@@ -7,8 +7,7 @@ import { isSheetParent, sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId, ParentId } from '../model/ids';
 import type { FrameNode, Node } from '../model/nodes';
 import { keysBetween, needsRekey, type OrderKey } from '../model/orderKey';
-import { exactAffinePoint } from './exactAffine';
-import { exactLineBetween, exactPoint, exactSide } from './homogeneous';
+import { pointInTransformedFrame } from './frameContainment';
 import type { Vec2 } from './path';
 import { projectGeometryReparents, type GeometryReparent } from './reparentProjection';
 
@@ -27,11 +26,7 @@ export interface FrameMembershipProjection { readonly doc: BoardDoc; readonly op
 /** Exact half-plane classification of the semantic frame body and inherited clips. */
 function containsFrame(doc: BoardDoc, frame: Readonly<FrameNode>, point: Vec2): boolean {
     const pose = worldPose(doc, frame.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
-    const matrix = [c, s, -s, c, pose.x, pose.y] as const, query = exactPoint(point);
-    const vertices = [{ x: 0, y: 0 }, { x: frame.w, y: 0 }, { x: frame.w, y: frame.h }, { x: 0, y: frame.h }]
-        .map(p => exactAffinePoint(matrix, p));
-    for (let i = 0; i < vertices.length; i++) if (exactSide(exactLineBetween(vertices[i], vertices[(i + 1) % vertices.length]), query) < 0) return false;
-    return true;
+    return pointInTransformedFrame(point, { x: 0, y: 0, width: frame.w, height: frame.h }, [c, s, -s, c, pose.x, pose.y]);
 }
 function visibleAt(doc: BoardDoc, frame: Readonly<FrameNode>, point: Vec2): boolean {
     let node: Readonly<Node> | undefined = frame;

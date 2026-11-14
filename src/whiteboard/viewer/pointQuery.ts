@@ -6,6 +6,7 @@ import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
 import { pointPath } from '../geom/pick';
 import { createFillPointJob } from '../geom/fillPoint';
+import { pointInTransformedFrame } from '../geom/frameContainment';
 import { exactAffinePoint } from '../geom/exactAffine';
 import { exactLineBetween, exactPoint, exactSide, sameExactPoint, type ExactPoint } from '../geom/homogeneous';
 import { dyadicMultiply, dyadicSubtract } from '../geom/numeric';
@@ -167,10 +168,8 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     for (let depth = 0; parent && depth < 64; depth++) {
                         if (parent.kind === 'frame') {
                             const pose = worldPose(doc, parent.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
-                            const frame: Affine = [c, s, -s, c, pose.x, pose.y], worldPoint = exactPoint(point);
-                            const corners = [{ x: 0, y: 0 }, { x: parent.w, y: 0 }, { x: parent.w, y: parent.h }, { x: 0, y: parent.h }]
-                                .map(p => exactAffinePoint(frame, p));
-                            if (corners.some((corner, i) => exactSide(exactLineBetween(corner, corners[(i + 1) % 4]), worldPoint) < 0)) { clipped = true; break; }
+                            const frame: Affine = [c, s, -s, c, pose.x, pose.y];
+                            if (!pointInTransformedFrame(point, { x: 0, y: 0, width: parent.w, height: parent.h }, frame)) { clipped = true; break; }
                             const local = worldToLocal(doc, parent, point);
                             // A halo witness near the clip edge can belong entirely to hidden geometry.
                             const halo = (input === 'touch' ? 8 : 4) + (node.kind === 'stroke' ? 4 : 0);

@@ -49,6 +49,12 @@ export class SearchResidency {
             if (this.interested.has(path)) this.requested.add(path);
         }
     }
+    revalidate() {
+        for (const file of this.files) this.advance(file.path);
+        this.sources.clear();
+        this.fullStat = true;
+        for (const path of this.interested) this.requested.add(path);
+    }
     prime(path: string, mtime: number, size: number, text: string) {
         if (!this.started) return;
         this.advance(path);

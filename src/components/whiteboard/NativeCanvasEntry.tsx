@@ -9,6 +9,7 @@ import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime
 import { registerNativeNotebookExporter } from '../../whiteboard/host/registerNativeNotebookExporter';
 import { pinNativeSheetThumbnailBounds } from '../../whiteboard/host/sheetThumbnailBounds';
 import { boardPageStack } from '../../whiteboard/model/pages';
+import { useNativeClipboard } from './useNativeClipboard';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
 import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
@@ -73,12 +74,12 @@ function NativeViewer({ props, identity, board, onError }: {
         return () => { setLease(previous => previous === view ? null : previous); view.dispose(); };
     }, [board, identity, nativeCanvasHost, min, max, left, right, top, bottom, onError]);
     if (!lease) return <div role="status">Preparing canvas view…</div>;
-    return <AttachedViewer props={props} identity={identity} lease={lease} inverted={inverted} setInverted={setInverted} notice={notice} />;
+    return <AttachedViewer props={props} identity={identity} lease={lease} inverted={inverted} setInverted={setInverted} notice={notice} setNotice={setNotice} />;
 }
 
-function AttachedViewer({ props, identity, lease, inverted, setInverted, notice }: {
+function AttachedViewer({ props, identity, lease, inverted, setInverted, notice, setNotice }: {
     props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; lease: NativeViewLease; inverted: boolean;
-    setInverted(value: boolean): void; notice: string | null;
+    setInverted(value: boolean): void; notice: string | null; setNotice(message: string): void;
 }) {
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
@@ -137,9 +138,13 @@ function AttachedViewer({ props, identity, lease, inverted, setInverted, notice 
     const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);
     const register = useCallback((focus: () => void) => registerKeyboardTarget(path, focus), [registerKeyboardTarget, path]);
     const sheets = board.doc.sheetOrder;
+    const currentTheme = useRef(props.theme);
+    useLayoutEffect(() => { currentTheme.current = props.theme; }, [props.theme]);
+    const readTheme = useCallback(() => currentTheme.current, []);
+    const viewer = useNativeClipboard(lease, props.nativeCanvasHost, identity, readTheme, setNotice);
     return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
-        view={lease.view} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
+        view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
         readOnly readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
         chrome={<><div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
             {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {

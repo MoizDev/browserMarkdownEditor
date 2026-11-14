@@ -1,5 +1,3 @@
-import { isGraphemeBoundary } from '../graphemes';
-
 // TX-5: EditContext and the fallback sink use UTF-16 offsets into the same
 // projection. A long selection must fit in its entirety: truncating it would
 // make the next IME replacement delete a different range than the user chose.
@@ -13,14 +11,17 @@ const WINDOW_THRESHOLD = 20_000;
 const WINDOW_RADIUS = 8_000;
 const RECENTER_MARGIN = 4_000;
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
 function safeStart(text: string, offset: number): number {
-    while (offset > 0 && !isGraphemeBoundary(text, offset)) offset--;
-    return offset;
+    if (offset <= 0 || offset >= text.length) return offset;
+    return graphemes.segment(text).containing(offset)?.index ?? offset;
 }
 
 function safeEnd(text: string, offset: number): number {
-    while (offset < text.length && !isGraphemeBoundary(text, offset)) offset++;
-    return offset;
+    if (offset <= 0 || offset >= text.length) return offset;
+    const segment = graphemes.segment(text).containing(offset);
+    return !segment || segment.index === offset ? offset : segment.index + segment.segment.length;
 }
 
 export function textWindow(text: string, anchor: number, focus: number, previous?: TextWindow): TextWindow {

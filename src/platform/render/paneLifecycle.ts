@@ -114,7 +114,7 @@ export class PaneLifecycle<T extends object> {
     readonly surface: SurfaceLease;
     readonly paneId: string;
     private readonly options: PaneLifecycleOptions<T>;
-    private readonly layers: readonly Layer[];
+    private layers: readonly Layer[];
     private binding: PaneFrameBinding | null = null;
     private borrow: MirrorBorrow<T> | null = null;
     private pending: Pending2D<T> | null = null;
@@ -125,7 +125,10 @@ export class PaneLifecycle<T extends object> {
     private sealing = false;
     private usingGpu = false;
     private first2DPresented = false;
-    private activeGeneration: number | null = null;
+    private releaseSerial = 0;
+    private releaseScope: { serial: number; reason: GpuReleaseReason; } | null = null;
+    private readonly releasedLayers = new WeakMap<Layer, number>();
+    private readonly disposedLayers = new WeakSet<Layer>();
     private readyGrant: GpuGrant | null = null;
     private uploadGeneration: number | null = null;
     private uploaded = new WeakSet<T>();
@@ -136,6 +139,7 @@ export class PaneLifecycle<T extends object> {
 
     constructor(options: PaneLifecycleOptions<T>) {
         this.options = options;
+        if (new Set(options.layers).size !== options.layers.length) throw new Error('A layer can appear only once');
         this.layers = Object.freeze([...options.layers]);
         this.paneId = options.registration.paneId;
         this.view = { ...options.registration.view, visible: false };
@@ -145,10 +149,9 @@ export class PaneLifecycle<T extends object> {
             this.surface = surfaceBroker.register({
                 ...options.registration, view: this.view, callbacks: {
                     ...callbacks,
-                    beforeHide: () => { this.seal('unregistered', true); },
-                    prepareGpu: async preparation => this.wrapOwner(await callbacks.prepareGpu(preparation), preparation.generation),
+                    beforeHide: () => { all([() => this.seal('unregistered', true), () => this.releaseSelection(this.layers, 'hidden')]); },
+                    prepareGpu: async preparation => this.wrapOwner(await callbacks.prepareGpu(preparation)),
                     onGpuReady: grant => {
-                        this.activeGeneration = grant.generation;
                         this.readyGrant = grant;
                         if (this.visible && !this.suspended && !this.disposed) { this.readyGrant = null; callbacks.onGpuReady(grant); }
                     },
@@ -171,7 +174,7 @@ export class PaneLifecycle<T extends object> {
         this.view = { ...view, visible: true };
         this.options.session.mirrors.setVisible(true, this.options.now());
         if (!wasDrawable && drawable) this.begin2D();
-        this.surface.updateView(this.view);
+        this.withGpuRelease('hidden', () => this.surface.updateView(this.view));
         if (!drawable) {
             try { all([() => this.discard2D(), () => this.options.presenter.releaseSurface(), () => this.returnBorrow()]); }
             finally { this.usingGpu = false; this.uploaded = new WeakSet<T>(); this.uploadGeneration = null; }
@@ -183,12 +186,28 @@ export class PaneLifecycle<T extends object> {
         this.binding.invalidate(wasDrawable ? 'geometry' : 'show-mirror');
     }
 
+    setFocused(focused: boolean): void {
+        if (this.disposed || this.view.focused === focused) return;
+        this.view = { ...this.view, focused };
+        this.surface.updateView(this.view);
+        this.binding?.setFocused(focused);
+    }
+
+    invalidate(reason: string): void {
+        if (!this.canDraw()) return;
+        if (reason === 'input') {
+            this.view = { ...this.view, lastInputAt: this.options.now() };
+            this.surface.updateView(this.view);
+        }
+        this.binding?.invalidate(reason);
+    }
+
     hidePane(): void {
         if (this.disposed || !this.visible) return;
         this.visible = false;
         this.view = { ...this.view, visible: false };
         // Broker.beforeHide seals first, then the wrapped owner releases layers/arena and zeros GL.
-        try { this.surface.updateView(this.view); }
+        try { this.withGpuRelease('hidden', () => this.surface.updateView(this.view)); }
         finally {
             try {
                 all([() => this.discard2D(), () => this.options.presenter.releaseSurface(), () => this.returnBorrow(),
@@ -199,13 +218,50 @@ export class PaneLifecycle<T extends object> {
 
     unmountPane(): void {
         if (this.disposed) return;
-        try { this.hidePane(); }
-        finally {
-            this.disposed = true;
-            all([() => this.detachHost(), () => this.seal('unregistered', true), () => this.surface.dispose(), () => this.discard2D(),
-            () => this.options.presenter.releaseSurface(), () => this.returnBorrow(),
-            ...this.layers.map(layer => () => layer.dispose())]);
-        }
+        this.withGpuRelease('hidden', () => {
+            try { this.hidePane(); }
+            finally {
+                this.disposed = true;
+                all([() => this.detachHost(), () => this.seal('unregistered', true),
+                () => this.releaseSelection(this.layers, 'hidden'), () => this.surface.dispose(), () => this.discard2D(),
+                () => this.options.presenter.releaseSurface(), () => this.returnBorrow(), () => this.disposeSelection(this.layers)]);
+            }
+        });
+    }
+
+    /** Compositors borrow this list; only this view owns removal/disposal, never a backend switch. */
+    setLayers(layers: readonly Layer[]): void {
+        if (this.disposed) throw new Error('Cannot replace layers on a disposed pane');
+        const next = new Set(layers);
+        if (next.size !== layers.length || layers.some(layer => this.disposedLayers.has(layer))) throw new Error('Invalid layer ownership');
+        if (layers.length === this.layers.length && layers.every((layer, index) => layer === this.layers[index])) return;
+        const removed = this.layers.filter(layer => !next.has(layer));
+        this.seal('unregistered', true);
+        this.layers = Object.freeze([...layers]);
+        this.withGpuRelease('hidden', () => all([
+            () => this.releaseSelection(removed, 'hidden'), () => this.disposeSelection(removed),
+            () => {
+                if (!this.canDraw()) return;
+                this.binding = this.options.registerFrames();
+                this.binding.setFocused(this.view.focused);
+                this.options.setInputEnabled(true);
+                this.binding.invalidate('layers');
+            },
+        ]));
+    }
+
+    /** A host event shares one serial across broker and CPU-only paths, including reentrant cleanup. */
+    beginGpuRelease(reason: GpuReleaseReason): () => void {
+        const previous = this.releaseScope;
+        if (previous?.reason === reason) return () => { };
+        const scope = { serial: ++this.releaseSerial, reason };
+        this.releaseScope = scope;
+        let active = true;
+        return () => { if (active) { active = false; if (this.releaseScope === scope) this.releaseScope = previous; } };
+    }
+
+    releaseGpu(reason: GpuReleaseReason): void {
+        this.withGpuRelease(reason, () => this.releaseSelection(this.layers, reason));
     }
 
     /** Scheduler suspension is not pane hide: no GPU release and no hidden-mirror demotion. */
@@ -236,7 +292,7 @@ export class PaneLifecycle<T extends object> {
         this.usingGpu = false;
         this.first2DPresented = false;
         try {
-            all([() => this.discard2D(), () => this.returnBorrow(), () => this.options.presenter.releaseSurface()]);
+            all([() => this.releaseGpu('pressure'), () => this.discard2D(), () => this.returnBorrow(), () => this.options.presenter.releaseSurface()]);
         } finally { this.uploaded = new WeakSet<T>(); this.uploadGeneration = null; }
         if (this.visible && !this.suspended) this.begin2D();
     }
@@ -397,20 +453,36 @@ export class PaneLifecycle<T extends object> {
         } finally { this.sealing = false; }
     }
 
-    private wrapOwner(owner: BrokerGpuOwner, generation: number): BrokerGpuOwner {
+    private withGpuRelease(reason: GpuReleaseReason, action: () => void): void {
+        const finish = this.beginGpuRelease(reason);
+        try { action(); } finally { finish(); }
+    }
+
+    private releaseSelection(layers: readonly Layer[], reason: GpuReleaseReason): void {
+        const serial = this.releaseScope?.reason === reason ? this.releaseScope.serial : ++this.releaseSerial;
+        all(layers.map(layer => () => {
+            if (this.releasedLayers.get(layer) === serial) return;
+            this.releasedLayers.set(layer, serial);
+            layer.releaseGpu(reason);
+        }));
+    }
+
+    private disposeSelection(layers: readonly Layer[]): void {
+        all(layers.map(layer => () => {
+            if (this.disposedLayers.has(layer)) return;
+            this.disposedLayers.add(layer);
+            layer.dispose();
+        }));
+    }
+
+    private wrapOwner(owner: BrokerGpuOwner): BrokerGpuOwner {
         return {
             limits: owner.limits, resizeSurface: (width, height) => owner.resizeSurface(width, height),
-            releaseGpu: reason => {
-                const layerRelease = () => {
-                    if (this.activeGeneration !== generation) return;
-                    this.activeGeneration = null;
-                    all(this.layers.map(layer => () => layer.releaseGpu(reason)));
-                };
+            releaseGpu: reason => this.withGpuRelease(reason, () => {
+                const release = () => this.releaseSelection(this.layers, reason);
                 // A lost device must be abandoned before layers release old handles (§9.2:771).
-                const actions = reason === 'context-lost' ? [() => owner.releaseGpu(reason), layerRelease] :
-                    [layerRelease, () => owner.releaseGpu(reason)];
-                all(actions);
-            },
+                all(reason === 'context-lost' ? [() => owner.releaseGpu(reason), release] : [release, () => owner.releaseGpu(reason)]);
+            }),
             dispose: reason => owner.dispose(reason),
         };
     }
@@ -438,6 +510,7 @@ interface HostedPane {
     setWindowVisible(visible: boolean): void;
     releaseRetained(reason: RetainedReleaseReason): void;
     applyBudget(grant: PaneMemoryGrant | null): void;
+    beginGpuRelease(reason: GpuReleaseReason): () => void;
     unmountPane(): void;
 }
 
@@ -460,8 +533,10 @@ export class PaneLifecycleHost {
     }
 
     releaseRetained(reason: RetainedReleaseReason): void {
-        all([() => surfaceBroker.releaseContextsForPressure(),
-        ...[...this.panes.values()].map(pane => () => pane.releaseRetained(reason))]);
+        const panes = [...this.panes.values()];
+        const finish = panes.map(pane => pane.beginGpuRelease('pressure'));
+        try { all([() => surfaceBroker.releaseContextsForPressure(), ...panes.map(pane => () => pane.releaseRetained(reason))]); }
+        finally { all(finish); }
     }
 
     dispose(): void {

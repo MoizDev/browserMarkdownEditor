@@ -7,8 +7,11 @@ import { compareOrder } from './orderKey';
 
 // DM-2: only change/apply may import this module. These helpers assume validated
 // ops and maintain indexes; they do not validate, normalize, record or notify.
+// R-W23: CH-1 uses fileFields.ts to drop superseded native-token ext.raw entries
+// inside its transaction, capturing the old ext for inverse/rollback. These value-only helpers
+// must not silently discard preservation metadata outside that atomic capture.
 type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
-    'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage'> & {
+    'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage' | 'mediaRefs'> & {
     nodes: Map<NodeId, Node>;
     sheets: Map<SheetId, Sheet>;
     media: Map<MediaId, MediaEntry>;
@@ -17,6 +20,7 @@ type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
     attachedTo: Map<NodeId, Set<NodeId>>;
     bySheet: Map<SheetId, Set<NodeId>>;
     byPage: Map<number, Set<NodeId>>;
+    mediaRefs: Map<MediaId, Set<NodeId>>;
 };
 
 function forApply(doc: BoardDoc): MutableDoc {
@@ -71,6 +75,22 @@ function removeAttachments(doc: MutableDoc, node: ConnectorNode): void {
     if (node.end.attach) removeMember(doc.attachedTo, node.end.attach.target, node.id);
 }
 
+function addMediaRefs(doc: MutableDoc, node: Node): void {
+    if ((node.kind === 'picture' || node.kind === 'clip') && node.media) addMember(doc.mediaRefs, node.media, node.id);
+    if (node.kind === 'linkcard' && node.preview) {
+        if (node.preview.image) addMember(doc.mediaRefs, node.preview.image, node.id);
+        if (node.preview.favicon) addMember(doc.mediaRefs, node.preview.favicon, node.id);
+    }
+}
+
+function removeMediaRefs(doc: MutableDoc, node: Node): void {
+    if ((node.kind === 'picture' || node.kind === 'clip') && node.media) removeMember(doc.mediaRefs, node.media, node.id);
+    if (node.kind === 'linkcard' && node.preview) {
+        if (node.preview.image) removeMember(doc.mediaRefs, node.preview.image, node.id);
+        if (node.preview.favicon) removeMember(doc.mediaRefs, node.preview.favicon, node.id);
+    }
+}
+
 function moveSubtreeSheet(doc: MutableDoc, id: NodeId, before: SheetId | undefined, after: SheetId | undefined): void {
     if (before !== undefined) removeMember(doc.bySheet, before, id);
     if (after !== undefined) addMember(doc.bySheet, after, id);
@@ -87,6 +107,7 @@ export function insertNodeForApply(board: BoardDoc, record: NodeRecord): Node {
     if (sheet !== undefined) addMember(doc.bySheet, sheet, node.id);
     if (doc.kind !== 'whiteboard' && isSheetParent(doc, node.parent)) addMember(doc.byPage, node.page, node.id);
     if (node.kind === 'connector') addAttachments(doc, node);
+    addMediaRefs(doc, node);
     return node;
 }
 
@@ -99,6 +120,7 @@ export function removeNodeForApply(board: BoardDoc, id: NodeId): NodeRecord {
     if (sheet !== undefined) removeMember(doc.bySheet, sheet, id);
     if (doc.kind !== 'whiteboard' && isSheetParent(doc, node.parent)) removeMember(doc.byPage, node.page, id);
     if (node.kind === 'connector') removeAttachments(doc, node);
+    removeMediaRefs(doc, node);
     // Inbound attachments stay indexed until normalization detaches their ends.
     // Deleting this entry now would hide the connectors the apply path must visit.
     doc.nodes.delete(id);
@@ -140,6 +162,12 @@ export function setNodeFieldForApply(board: BoardDoc, op: NodeSetOp): PropValue 
             Reflect.set(node, op.key, op.value);
             if (node.kind === 'connector') addAttachments(doc, node);
             break;
+        case 'media':
+        case 'preview':
+            removeMediaRefs(doc, node);
+            Reflect.set(node, op.key, op.value);
+            addMediaRefs(doc, node);
+            break;
         default:
             Reflect.set(node, op.key, op.value);
     }
@@ -148,7 +176,7 @@ export function setNodeFieldForApply(board: BoardDoc, op: NodeSetOp): PropValue 
 
 export function insertSheetForApply(board: BoardDoc, record: Sheet): Sheet {
     const doc = forApply(board);
-    const sheet = { id: record.id, name: record.name, order: record.order };
+    const sheet = { id: record.id, name: record.name, order: record.order, ext: record.ext };
     doc.sheets.set(sheet.id, sheet);
     doc.sheetOrder.splice(lowerBound(doc.sheetOrder, sheet), 0, sheet);
     return sheet;
@@ -191,13 +219,13 @@ export function setBoardFieldForApply(board: BoardDoc, op: BoardOp): BoardValue 
         case 'host.paper': {
             if (doc.host.kind !== 'notebook') throw new Error('Apply expected notebook paper');
             const previous = doc.host.paper;
-            doc.host = { kind: 'notebook', paper: op.value };
+            doc.host = { kind: 'notebook', paper: op.value, ext: doc.host.ext };
             return previous;
         }
         case 'host.pdf': {
             if (doc.host.kind !== 'pdf-ink') throw new Error('Apply expected PDF bookkeeping');
             const previous = doc.host.pdf;
-            doc.host = { kind: 'pdf-ink', pdf: op.value, pages: doc.host.pages };
+            doc.host = { kind: 'pdf-ink', pdf: op.value, pages: doc.host.pages, ext: doc.host.ext };
             return previous;
         }
         case 'ui.tool': {

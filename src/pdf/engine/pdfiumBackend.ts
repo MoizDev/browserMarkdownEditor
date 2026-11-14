@@ -15,15 +15,75 @@ import { pdfiumLinks } from './pdfium/links';
 import { pdfiumJbig2Regions } from './pdfium/imageRegions';
 import { loadPdfiumModule } from './pdfium/loader';
 import type { PdfiumLoadOptions, PdfiumRuntime } from './pdfium/loader';
-import { heapView, withPdfiumMemory, withPdfiumPassword } from './pdfium/memory';
+import { heapView, readPdfiumUtf16, withPdfiumMemory, withPdfiumPassword } from './pdfium/memory';
 import { pdfiumOutline } from './pdfium/outline';
 import { createPdfiumRenderJob } from './pdfium/render';
 import { pdfiumStructure } from './pdfium/structure';
 import { extractPdfiumText } from './pdfium/text';
 
-interface LoadedPage { handle: number; geometry: PageGeometry & { userUnit: 1 }; checked: boolean; footprint: number; pins: number; emphasisKey?: string }
+interface LoadedPage { handle: number; geometry: PageGeometry & { userUnit: 1 }; checked: boolean; languageChecked: boolean; footprint: number; pins: number; emphasisKey?: string }
 const PAGE_WINDOW = 12, HEAVY_PAGE_BYTES = 64 * 1024 * 1024;
-type OpenClone = (source: ByteSource, password: string | undefined) => PdfiumDocument;
+type OpenClone = (source: ByteSource, password: string | undefined, clone: boolean, language?: string) => PdfiumDocument;
+class LanguageRestart extends Error { constructor(readonly language?: string) { super('Restart PDF with page language'); } }
+const languageHints = new WeakMap<ByteSource, Map<number, string | null>>();
+function hintsFor(source: ByteSource): Map<number, string | null> {
+    let hints = languageHints.get(source);
+    if (!hints) { hints = new Map(); languageHints.set(source, hints); }
+    return hints;
+}
+
+/** MapFont has no per-glyph oracle; the owner accepts a uniform-page hint for untagged text. */
+function uniformPageLanguage(runtime: PdfiumRuntime, page: number, hasForms: boolean): string | undefined {
+    if (hasForms || runtime.call('FPDFPage_GetAnnotCount', page) !== 0) return undefined;
+    const count = runtime.call('FPDFPage_CountObjects', page), limit = 20_000;
+    if (!Number.isSafeInteger(count) || count < 0 || count > limit) return undefined;
+    for (let i = 0; i < count; i++) {
+        const object = runtime.call('FPDFPage_GetObject', page, i) >>> 0;
+        if (!object) return undefined;
+        const type = runtime.call('FPDFPageObj_GetType', object);
+        if (type <= 0 || type === 5) return undefined;
+    }
+    const tree = runtime.call('FPDF_StructTree_GetForPage', page) >>> 0;
+    if (!tree) return undefined;
+    try {
+        const roots = runtime.call('FPDF_StructTree_CountChildren', tree);
+        if (!Number.isSafeInteger(roots) || roots < 1 || roots > limit) return undefined;
+        const stack: Array<{ element: number; parent?: string; depth: number }> = [], seen = new Set<number>();
+        for (let i = 0; i < roots; i++) {
+            const element = runtime.call('FPDF_StructTree_GetChildAtIndex', tree, i) >>> 0;
+            if (!element) return undefined;
+            stack.push({ element, depth: 0 });
+        }
+        let uniform: string | undefined, work = roots;
+        while (stack.length) {
+            const { element, parent, depth } = stack.pop()!;
+            if (depth > 64 || seen.has(element) || seen.size >= limit) return undefined;
+            seen.add(element);
+            const size = runtime.call('FPDF_StructElement_GetLang', element, 0, 0) >>> 0;
+            let own: string | undefined;
+            if (size) {
+                if (size % 2 || size > 130) return undefined;
+                own = withPdfiumMemory(runtime, size, pointer => {
+                    if ((runtime.call('FPDF_StructElement_GetLang', element, pointer, size) >>> 0) !== size) return undefined;
+                    return readPdfiumUtf16(runtime, pointer, size);
+                });
+                if (!own || !/^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$/i.test(own)) return undefined;
+            }
+            const language = (own ?? parent)?.toLowerCase();
+            if (!language || uniform && uniform !== language) return undefined;
+            uniform = language;
+            const children = runtime.call('FPDF_StructElement_CountChildren', element);
+            if (!Number.isSafeInteger(children) || children < 0 || children > limit - work) return undefined;
+            work += children;
+            for (let i = 0; i < children; i++) {
+                const child = runtime.call('FPDF_StructElement_GetChildAtIndex', element, i) >>> 0;
+                if (child) stack.push({ element: child, parent: language, depth: depth + 1 });
+                else if (runtime.call('FPDF_StructElement_GetChildMarkedContentID', element, i) < 0) return undefined;
+            }
+        }
+        return uniform;
+    } finally { if (!runtime.aborted) runtime.call('FPDF_StructTree_Close', tree); }
+}
 
 function openFailure(runtime: PdfiumRuntime, access: PdfiumFileAccess): PdfEngineError {
     if (access.failed) return new PdfEngineError('FileError', 'PDF source read failed');
@@ -47,7 +107,7 @@ class PdfiumDocument implements BackendDoc {
     constructor(private readonly runtime: PdfiumRuntime, private readonly document: number,
         private readonly access: PdfiumFileAccess, private readonly limits: Readonly<EngineLimits>,
         private readonly source: ByteSource, private readonly secret: Uint8Array | undefined,
-        private readonly clone: boolean, private readonly openClone: OpenClone) {
+        private readonly clone: boolean, private readonly openClone: OpenClone, readonly language?: string) {
         const count = runtime.call('FPDF_GetPageCount', document);
         if (!Number.isSafeInteger(count) || count < 0 || count > limits.maxPages) throw new PdfEngineError('ResourceLimit', 'PDF page count exceeds its limit');
         this.sizes = Array.from({ length: count }, (_, index) => pdfiumPageSize(runtime, document, index, limits.maxPagePoints));
@@ -102,22 +162,39 @@ class PdfiumDocument implements BackendDoc {
     private destinationGeometry(index: number): PageGeometry & { userUnit: 1 } {
         return this.geometries.get(index) ?? this.load(index).geometry;
     }
-    private load(index: number): LoadedPage {
+    restartInfo(): { source: ByteSource; password?: string; clone: boolean } {
+        return { source: this.source, password: this.secret ? new TextDecoder().decode(this.secret) : undefined, clone: this.clone };
+    }
+    private admitLanguage(index: number, page: LoadedPage): void {
+        const hints = hintsFor(this.source);
+        if (!hints.has(index)) {
+            const language = uniformPageLanguage(this.runtime, page.handle, this.documentInfo.hasForms);
+            this.checkAccess(); hints.set(index, language ?? null);
+            while (hints.size > 256) hints.delete(hints.keys().next().value!);
+        }
+        const expected = hints.get(index) ?? undefined;
+        if (expected !== this.language) throw new LanguageRestart(expected);
+        page.languageChecked = true;
+    }
+    private load(index: number, checkLanguage = false): LoadedPage {
         this.ensure();
         if (!Number.isSafeInteger(index) || index < 0 || index >= this.sizes.length) throw new PdfEngineError('RangeError', 'Invalid PDF page index');
         const cached = this.pages.get(index);
-        if (cached) { this.current = index; this.trim(index); return cached; }
+        if (cached) { if (checkLanguage && !cached.languageChecked) this.admitLanguage(index, cached); this.current = index; this.trim(index); return cached; }
+        const hints = hintsFor(this.source);
+        if (checkLanguage && hints.has(index) && (hints.get(index) ?? undefined) !== this.language) throw new LanguageRestart(hints.get(index) ?? undefined);
         const before = this.runtime.HEAPU8.byteLength;
         const handle = this.runtime.call('FPDF_LoadPage', this.document, index) >>> 0;
         if (!handle) { this.checkAccess(); throw new PdfEngineError('PageError', 'PDF page could not be loaded'); }
         let attached = false;
         try {
             const geometry = pdfiumPageGeometry(this.runtime, handle, index, this.sizes[index]);
-            const result: LoadedPage = { handle, geometry, checked: false, footprint: 0, pins: 0 };
+            const result: LoadedPage = { handle, geometry, checked: false, languageChecked: false, footprint: 0, pins: 0 };
             this.pages.set(index, result); this.current = index;
             attached = true;
             this.runtime.call('FORM_OnAfterLoadPage', handle, this.forms.handle);
             this.checkAccess();
+            if (checkLanguage) this.admitLanguage(index, result);
             this.account(result, before);
             this.geometries.set(index, geometry);
             this.trim(index);
@@ -145,13 +222,13 @@ class PdfiumDocument implements BackendDoc {
     pageCount(): number { this.ensure(); return this.sizes.length; }
     page(index: number): PageGeometry & { userUnit: 1 } { this.stopJobs(); return this.load(index).geometry; }
     complexity(index: number) {
-        this.stopJobs(); const page = this.load(index), before = this.runtime.HEAPU8.byteLength;
+        this.stopJobs(); const page = this.load(index, true), before = this.runtime.HEAPU8.byteLength;
         try { const value = pdfiumComplexity(this.runtime, page.handle, this.limits); page.checked = true; this.checkAccess(); return value; }
         finally { this.account(page, before); }
     }
     render(request: RenderRequest): RenderJob {
         this.stopJobs();
-        const page = this.load(request.page);
+        const page = this.load(request.page, true);
         if (!page.checked) {
             const before = this.runtime.HEAPU8.byteLength;
             try { pdfiumComplexity(this.runtime, page.handle, this.limits); page.checked = true; }
@@ -189,7 +266,7 @@ class PdfiumDocument implements BackendDoc {
     }
     text(index: number) {
         this.stopJobs();
-        const page = this.load(index), text = this.runtime.call('FPDFText_LoadPage', page.handle) >>> 0;
+        const page = this.load(index, true), text = this.runtime.call('FPDFText_LoadPage', page.handle) >>> 0;
         if (!text) { this.checkAccess(); throw new PdfEngineError('PageError', 'PDF text page is unavailable'); }
         try {
             const result = extractPdfiumText(this.runtime, page.handle, text, page.geometry, this.limits).raw;
@@ -204,7 +281,7 @@ class PdfiumDocument implements BackendDoc {
         this.ensure();
         if (this.clone) throw new PdfEngineError('NotSupported', 'Cannot clone an emphasis document');
         const password = this.secret ? new TextDecoder().decode(this.secret) : undefined;
-        return this.openClone(this.source, password);
+        return this.openClone(this.source, password, true, this.language);
     }
     emphasisStroked(request: RenderRequest, objectIndexes: Int32Array, strokeEm: number): RenderJob {
         if (!this.clone) throw new PdfEngineError('NotSupported', 'Only a disposable PDF clone may be changed');
@@ -212,13 +289,13 @@ class PdfiumDocument implements BackendDoc {
             throw new PdfEngineError('RangeError', 'Invalid PDF emphasis request');
         }
         this.stopJobs();
-        let page = this.load(request.page);
+        let page = this.load(request.page, true);
         const ids = [...objectIndexes];
         if (new Set(ids).size !== ids.length || ids.some(id => id < 0)) throw new PdfEngineError('RangeError', 'Invalid PDF emphasis object list');
         const key = `${strokeEm}:${ids.join(',')}`;
         if (page.emphasisKey !== undefined && page.emphasisKey !== key) {
             this.releasePage(request.page);
-            page = this.load(request.page);
+            page = this.load(request.page, true);
         }
         if (page.emphasisKey === undefined) {
             const text = this.runtime.call('FPDFText_LoadPage', page.handle) >>> 0;
@@ -253,7 +330,7 @@ class PdfiumDocument implements BackendDoc {
     }
     imageRegions(index: number) {
         this.stopJobs();
-        const page = this.load(index);
+        const page = this.load(index, true);
         const result = pdfiumJbig2Regions(this.runtime, page.handle, page.geometry, this.limits);
         this.checkAccess();
         return result;
@@ -302,9 +379,9 @@ export async function loadPdfiumBackend(options: PdfiumLoadOptions): Promise<Pdf
     const documents = new Set<BackendDoc>();
     // A font callback can occur in any synchronous native call, including a
     // progressive-render step. Never publish its provisional result.
-    const scoped = <T,>(run: () => T, discard?: (result: T | undefined) => void): T => {
+    const scoped = <T,>(run: () => T, discard?: (result: T | undefined) => void, language?: string): T => {
         if (closed || !bridge) throw new PdfEngineError('EngineBroken', 'PDF backend is closed');
-        bridge.begin();
+        bridge.begin(language);
         let result: T | undefined, error: unknown, failed = false;
         try { result = run(); } catch (cause) { failed = true; error = cause; }
         const status = bridge.end();
@@ -316,27 +393,42 @@ export async function loadPdfiumBackend(options: PdfiumLoadOptions): Promise<Pdf
         if (failed) throw error;
         return result as T;
     };
-    const wrap = (doc: BackendDoc): BackendDoc => {
+    const wrap = (initial: PdfiumDocument): BackendDoc => {
+        let doc = initial;
         documents.add(doc);
         const discard = () => { documents.delete(doc); doc.close(); };
-        return new Proxy(doc, {
-            get(target, property) {
-                const value: unknown = Reflect.get(target, property, target);
-                if (typeof value !== 'function') return value;
+        return new Proxy(initial, {
+            get(_target, property) {
                 if (property === 'close') return discard;
+                const value: unknown = Reflect.get(doc, property, doc);
+                if (typeof value !== 'function') return value;
                 return (...args: unknown[]) => {
-                    const result = scoped(() => Reflect.apply(value, target, args) as unknown, provisional => {
-                        if (property === 'openEmphasisClone' && provisional) {
-                            try { (provisional as BackendDoc).close(); } catch { /* discard both native documents */ }
+                    let result: unknown;
+                    for (let attempt = 0; ; attempt++) {
+                        try {
+                            const current = doc, method: unknown = Reflect.get(current, property, current);
+                            if (typeof method !== 'function') throw new PdfEngineError('EngineBroken', 'PDF operation is unavailable');
+                            result = scoped(() => Reflect.apply(method, current, args) as unknown, provisional => {
+                                if (property === 'openEmphasisClone' && provisional) {
+                                    try { (provisional as BackendDoc).close(); } catch { /* discard both native documents */ }
+                                }
+                                discard();
+                            }, current.language);
+                            break;
+                        } catch (error) {
+                            if (!(error instanceof LanguageRestart) || attempt >= 2) throw error;
+                            const info = doc.restartInfo();
+                            discard();
+                            doc = scoped(() => openDocument(info.source, info.password, info.clone, error.language), value => value?.close(), error.language);
+                            documents.add(doc);
                         }
-                        discard();
-                    });
-                    if (property === 'openEmphasisClone') return wrap(result as BackendDoc);
+                    }
+                    if (property === 'openEmphasisClone') return wrap(result as PdfiumDocument);
                     if (property !== 'render' && property !== 'emphasisStroked') return result;
-                    const job = result as RenderJob;
+                    const job = result as RenderJob, language = doc.language;
                     return {
-                        step: (budget: number) => scoped(() => job.step(budget), discard),
-                        result: () => scoped(() => job.result(), discard),
+                        step: (budget: number) => scoped(() => job.step(budget), discard, language),
+                        result: () => scoped(() => job.result(), discard, language),
                         abort: () => job.abort(),
                     } satisfies RenderJob;
                 };
@@ -346,7 +438,7 @@ export async function loadPdfiumBackend(options: PdfiumLoadOptions): Promise<Pdf
     const info: BackendInfo = { engine: 'pdfium', version: '6688c576fd851f4159c6fae39396da50939de110',
         artifactSha256: runtime.artifactSha256, buildId: runtime.buildId,
         features: ['forms', 'emphasis', 'structTree', 'outline', 'attachments'] };
-    const openDocument = (source: ByteSource, password: string | undefined, clone: boolean): PdfiumDocument => {
+    const openDocument = (source: ByteSource, password: string | undefined, clone: boolean, language?: string): PdfiumDocument => {
         if (!environment) throw new PdfEngineError('EngineBroken', 'PDFium backend is not initialized');
         const access = createPdfiumFileAccess(runtime, source);
         let document = 0, secret: Uint8Array | undefined;
@@ -356,8 +448,7 @@ export async function loadPdfiumBackend(options: PdfiumLoadOptions): Promise<Pdf
             if (!document) throw openFailure(runtime, access);
             if (access.failed) throw new PdfEngineError('FileError', 'PDF source read failed');
             secret = password === undefined ? undefined : new TextEncoder().encode(password);
-            return new PdfiumDocument(runtime, document, access, environment.limits, source, secret, clone,
-                (cloneSource, clonePassword) => openDocument(cloneSource, clonePassword, true));
+            return new PdfiumDocument(runtime, document, access, environment.limits, source, secret, clone, openDocument, language);
         } catch (error) {
             secret?.fill(0);
             if (document && !runtime.aborted) { try { runtime.call('FPDF_CloseDocument', document); } catch { /* worker unusable */ } }

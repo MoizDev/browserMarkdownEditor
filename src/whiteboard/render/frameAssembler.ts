@@ -104,6 +104,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                     if (status === 'pending') continue;
                     if (status !== 'complete') { dropStaging(); return; }
                     const frame: PaintFrame = Object.freeze({ token: work.pin.source.token, sceneRevision: work.pin.source.sceneRevision,
+                        sensitiveNodes: work.pin.source.sensitiveNodes,
                         underlay: Object.freeze(work.underlay), content: Object.freeze(work.content), inkNodeIds: work.inkNodeIds });
                     const published: Published = { pin: work.pin, frame, blocks: work.blocks };
                     retained.set(frame, published); latest = published; staging = null; invalidate(); return;

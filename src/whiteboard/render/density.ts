@@ -15,6 +15,12 @@ export class DensityController {
     private changedAt = -Infinity;
     private entering = 0;
     private leaving = 0;
+    current(): DensityMode { return this.mode; }
+    pending(): boolean { return this.entering > 0 || this.leaving > 0; }
+    reset(): void {
+        this.mode = 'direct'; this.frame = null; this.time = -Infinity; this.changedAt = -Infinity;
+        this.entering = 0; this.leaving = 0;
+    }
     observe(value: DensityObservation): DensityMode {
         const { frameId, now, candidateSegments, coveredDevicePixels, estimatedGpuMs } = value;
         if (!Number.isSafeInteger(frameId) || frameId < 0 || !Number.isFinite(now)

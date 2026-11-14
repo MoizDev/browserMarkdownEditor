@@ -1,27 +1,34 @@
 import type { Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
-import type { GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
+import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, GpuReleaseReason } from '../../platform/render/types';
 import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
 import { paintContributions } from './paintContributions';
-import { analyticInkPaint, createAnalyticInk, type AnalyticInkPaint } from './analyticInk';
+import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
+import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
 import type { PaintFrame, PaintItem } from './paintStream';
 import type { CanvasPaintAdapter } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, GUTTER = 2, SIZE = EDGE + GUTTER * 2;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
-interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string }
-type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; analytic?: never }
+interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string; bytes: number }
+type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never }
     | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never }; 
+interface AnalyticGroup {
+    band: PaintBand; first: number; end: number; paints: AnalyticInkPaint[]; batch: PreparedAnalyticInkBatch | null;
+}
 interface Plan {
-    frame: PaintFrame; token: FrameToken; device: GfxDevice; projection: string; scale: number;
+    frame: PaintFrame; sourceFrame: PaintFrame; token: FrameToken; device: GfxDevice; projection: string; scale: number;
     x0: number; y0: number; x1: number; y1: number;
     band: PaintBand; item: number; x: number; y: number; tiles: Record<PaintBand, Tile[]>;
     boundsJob: PaintBoundsJob | null; tileBounds: { x0: number; y0: number; x1: number; y1: number } | null; itemKey: string;
     analyticReady: boolean;
     parts: Generator<PaintItem> | null; part: PaintItem | null; partIndex: number; hasMultiply: boolean;
+    cpuLeases: ByteLease[]; cpuUsed: number;
+    groups: AnalyticGroup[]; groupAt: Record<PaintBand, Map<number, AnalyticGroup>>;
+    scanBand: PaintBand; scanIndex: number; scanned: boolean; groupIndex: number; waitingBatch: boolean;
 }
 function sameToken(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
@@ -66,16 +73,26 @@ function contentKey(item: PaintItem): string {
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void) {
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
     let currentToken: FrameToken | null = null, lastFrame = -1, scratch = 0;
-    let movingScale = 0;
+    let movingScale = 0, tileBytes = 0;
     const cache = new Map<string, CachedTile>();
-    const analytic = createAnalyticInk(host, () => { /* optional pipeline failure keeps canonical coverage tiles */ });
+    const analytic = createAnalyticInkBatch(host, () => { /* optional pipeline failure keeps canonical coverage tiles */ });
     const drop = (plan: Plan | null) => {
         if (!plan) return;
-        for (const band of ['underlay', 'content'] as const) for (const tile of plan.tiles[band]) {
-            if (tile.analytic) continue;
-            const entry = tile.cached;
-            if (--entry.refs === 0) { cache.delete(entry.key); entry.device.destroy(entry.texture); }
+        plan.parts?.return(undefined); plan.parts = null; plan.part = null;
+        for (const group of plan.groups) {
+            if (group.batch) analytic.retire(group.batch); else analytic.cancel(group.paints);
         }
+        plan.groups.length = 0;
+        for (const band of ['underlay', 'content'] as const) {
+            for (const tile of plan.tiles[band]) {
+                if (tile.analytic) continue;
+                const entry = tile.cached;
+                if (--entry.refs === 0) { cache.delete(entry.key); tileBytes -= entry.bytes; entry.device.destroy(entry.texture); }
+            }
+            plan.tiles[band].length = 0; plan.groupAt[band].clear();
+        }
+        for (const lease of plan.cpuLeases) host.allocator.cpu.release(lease);
+        plan.cpuLeases.length = 0;
     };
     const validDevice = (plan: Plan) => !!currentToken && sameToken(plan.token, currentToken) &&
         host.device() === plan.device && host.generation === plan.token.deviceGeneration;
@@ -86,15 +103,22 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         movingScale = Math.pow(Math.SQRT2, Math.ceil(Math.log(demand) / Math.log(Math.SQRT2)));
         return movingScale;
     };
+    const ensurePlanCapacity = (plan: Plan): boolean => {
+        if (plan.cpuUsed + 512 <= plan.cpuLeases.length * 65_536) return true;
+        const lease = host.allocator.cpu.reserve(65_536);
+        if (!lease) { denied = true; return false; }
+        plan.cpuLeases.push(lease); return true;
+    };
     const reset = () => { drop(staged); drop(ready); staged = ready = null; };
     return {
         prepare(view: ViewState, budget: FrameBudget): void {
             if (disposed || lastFrame === budget.frameId) return;
             lastFrame = budget.frameId; currentToken = { ...budget.token };
-            analytic.prepare();
+            analytic.warm();
             const prepared = reference.borrowPrepared(), device = host.device(), demand = view.camera.z * view.viewport.dpr;
-            if (!prepared || !device || !documentMatches(prepared.frame, budget.token) || device.generation !== budget.token.deviceGeneration ||
+            if (!prepared || !device || !documentMatches(prepared.frame, budget.token) || !documentMatches(prepared.sourceFrame ?? prepared.frame, budget.token) || device.generation !== budget.token.deviceGeneration ||
                 host.generation !== budget.token.deviceGeneration || !Number.isFinite(demand) || demand <= 0) { reset(); return; }
+            const sourceFrame = prepared.sourceFrame ?? prepared.frame;
             const scale = rasterScale(view, demand);
             // One bounded source group and its independently leased real backdrop are reused
             // sequentially; the node/group itself never becomes an isolated-opacity operation.
@@ -104,16 +128,17 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
             denied = false;
             if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
-            if (staged && (!valid(staged, view, scale) || staged.frame !== prepared.frame)) { drop(staged); staged = null; denied = false; }
-            if ((ready?.frame === prepared.frame && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
+            if (staged && (!valid(staged, view, scale) || (staged.frame !== prepared.frame || staged.sourceFrame !== sourceFrame) || staged.analyticReady !== analytic.ready())) { drop(staged); staged = null; denied = false; }
+            if ((ready?.frame === prepared.frame && ready.sourceFrame === sourceFrame && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
             if (!staged) {
                 const x0 = Math.floor(view.camera.x * scale / EDGE), y0 = Math.floor(view.camera.y * scale / EDGE);
                 const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) * scale / EDGE);
                 const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) * scale / EDGE);
                 if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
-                staged = { frame: prepared.frame, token: { ...budget.token }, device, projection: projection(view), scale,
+                staged = { frame: prepared.frame, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale,
                     x0, y0, x1, y1, band: 'underlay', item: 0, x: x0, y: y0, tiles: { underlay: [], content: [] }, boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
-                    parts: null, part: null, partIndex: 0, hasMultiply: false };
+                    parts: null, part: null, partIndex: 0, hasMultiply: false, cpuLeases: [], cpuUsed: 0,
+                    groups: [], groupAt: { underlay: new Map(), content: new Map() }, scanBand: 'underlay', scanIndex: 0, scanned: false, groupIndex: 0, waitingBatch: false };
             }
             const p = staged;
             try {
@@ -121,6 +146,30 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     const items = p.frame[p.band];
                     if (p.item >= items.length) {
                         if (p.band === 'underlay') { p.band = 'content'; p.item = 0; continue; }
+                        while (!p.scanned && !budget.shouldYield()) {
+                            const commands = p.tiles[p.scanBand];
+                            if (p.scanIndex === commands.length) {
+                                if (p.scanBand === 'underlay') { p.scanBand = 'content'; p.scanIndex = 0; continue; }
+                                p.scanned = true; break;
+                            }
+                            const index = p.scanIndex++, command = commands[index];
+                            if (!command.analytic) continue;
+                            let group = p.groups[p.groups.length - 1];
+                            if (!group || group.band !== p.scanBand || group.end !== index) {
+                                group = { band: p.scanBand, first: index, end: index, paints: [], batch: null };
+                                p.groups.push(group); p.groupAt[p.scanBand].set(index, group);
+                            }
+                            group.paints.push(command.analytic); group.end++;
+                        }
+                        if (!p.scanned) return;
+                        while (p.groupIndex < p.groups.length && !budget.shouldYield()) {
+                            const group = p.groups[p.groupIndex];
+                            group.batch = analytic.prepare(group.paints, view, budget);
+                            p.waitingBatch = !group.batch;
+                            if (!group.batch) return;
+                            p.groupIndex++;
+                        }
+                        if (p.groupIndex !== p.groups.length) return;
                         drop(ready); ready = p; staged = null; return;
                     }
                     const original = items[p.item];
@@ -133,9 +182,44 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     const item = p.part;
                     const multiply = (original.kind === 'image' ? original.blend : original.material.blend) === 'multiply';
                     p.hasMultiply ||= multiply;
+                    if (item.kind === 'image' && item.retainedTile && !multiply && item.blend === 'normal' && item.opacity === 1 &&
+                        !item.inverted && !item.clips.length && item.localToWorld.every((v, i) => v === [1, 0, 0, 1, 0, 0][i]) &&
+                        item.sourceRect?.x === GUTTER && item.sourceRect.y === GUTTER && item.sourceRect.width === EDGE && item.sourceRect.height === EDGE &&
+                        [item.rect.x, item.rect.y, item.rect.width, item.rect.height].every(Number.isFinite) &&
+                        item.rect.width > 0 && item.rect.width === item.rect.height) {
+                        const image = prepared.resources.image(item.imageKey);
+                        if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap && image.width === SIZE && image.height === SIZE) {
+                            if (!ensurePlanCapacity(p)) return;
+                            const key = JSON.stringify(['retained', identity(p.sourceFrame), p.token.vaultEpoch, p.token.documentId,
+                                p.token.bytesGeneration, p.token.session, p.token.viewLease, p.token.deviceGeneration,
+                                EDGE / item.rect.width, identity(image), p.partIndex, contentKey(item)]);
+                            let cached = cache.get(key);
+                            if (cached) cached.refs++;
+                            else {
+                                const bytes = image.width * image.height * 4;
+                                const lease = host.allocator.gpu.reserve(bytes);
+                                if (!lease) { denied = true; return; }
+                                if (!budget.claimUpload(bytes)) { host.allocator.gpu.release(lease); return; }
+                                let texture: TextureHandle | null = null, attached = false;
+                                try {
+                                    texture = device.createTexture(image.width, image.height, 'rgba8', ['sample', 'copy-dst'], lease); attached = true;
+                                    device.writeTexture(texture, { x: 0, y: 0, width: image.width, height: image.height },
+                                        { source: image, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+                                    cached = { texture, device, refs: 1, key, bytes };
+                                    cache.set(key, cached); tileBytes += bytes; texture = null;
+                                } finally {
+                                    if (texture) device.destroy(texture);
+                                    if (!attached) host.allocator.gpu.release(lease);
+                                }
+                            }
+                            p.tiles[p.band].push({ item: original, x: 0, y: 0, cached, multiply: false, worldRect: item.rect });
+                            p.cpuUsed += 512; p.part = null; return;
+                        }
+                    }
                     if (p.analyticReady && !p.tileBounds && item.kind === 'ink' && !multiply) {
+                        if (!ensurePlanCapacity(p)) return;
                         const paint = analyticInkPaint(item, view);
-                        if (paint) { p.tiles[p.band].push({ item: original, x: 0, y: 0, analytic: paint }); p.part = null; continue; }
+                        if (paint) { p.tiles[p.band].push({ item: original, x: 0, y: 0, analytic: paint }); p.cpuUsed += 512; p.part = null; continue; }
                     }
                     if (!p.tileBounds) {
                         p.boundsJob ??= new PaintBoundsJob(item);
@@ -152,8 +236,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     const tileKey = JSON.stringify([p.token.vaultEpoch, p.token.documentId, p.token.bytesGeneration, p.token.session,
                         p.token.viewLease, p.token.deviceGeneration, p.scale, p.x, p.y, p.itemKey]);
                     const existing = cache.get(tileKey);
+                    if (!ensurePlanCapacity(p)) return;
                     if (existing) {
-                        existing.refs++; p.tiles[p.band].push({ item: original, x: p.x, y: p.y, cached: existing, multiply });
+                        existing.refs++; p.tiles[p.band].push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
                         const bounds = p.tileBounds;
                         if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
                         return;
@@ -176,8 +261,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], gpu); attached = true;
                         device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
                             { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-                        const cached: CachedTile = { texture, device, refs: 1, key: tileKey };
-                        cache.set(tileKey, cached); p.tiles[p.band].push({ item: original, x: p.x, y: p.y, cached, multiply }); texture = null;
+                        const cached: CachedTile = { texture, device, refs: 1, key: tileKey, bytes: GPU_BYTES };
+                        cache.set(tileKey, cached); tileBytes += cached.bytes; p.tiles[p.band].push({ item: original, x: p.x, y: p.y, cached, multiply }); p.cpuUsed += 512; texture = null;
                     } finally {
                         bitmap?.close(); if (canvas) { canvas.width = 0; canvas.height = 0; }
                         if (texture) device.destroy(texture);
@@ -190,23 +275,41 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 }
             } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; report(error); throw error; }
         },
-        readyFrame(): PaintFrame | null { return disposed ? null : ready?.frame ?? null; },
+        readyFrame(): PaintFrame | null { return disposed ? null : ready?.sourceFrame ?? null; },
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!ready || !validDevice(ready)) return { complete: false, sharp: false };
             const complete = ready.projection === projection(view);
             return { complete, sharp: complete && ready.scale >= view.camera.z * view.viewport.dpr,
-                ...(ready.frame !== reference.readyFrame() ? { staleVersion: true } : {}) };
+                ...(ready.sourceFrame !== reference.readyFrame() ? { staleVersion: true } : {}) };
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void {
             if (!ready || !validDevice(ready)) return;
             const factor = view.camera.z * view.viewport.dpr / ready.scale;
-            for (const tile of ready.tiles[band]) {
+            for (let index = 0; index < ready.tiles[band].length; index++) {
+                const group = ready.groupAt[band].get(index);
+                if (group) {
+                    if (!group.batch) throw new Error('Analytic ink batch is not prepared');
+                    analytic.draw(pass, group.batch, view, omitNodes); index = group.end - 1; continue;
+                }
+                const tile = ready.tiles[band][index];
                 if (omitNodes?.has(tile.item.nodeId)) continue;
-                if (tile.analytic) {
-                    // A camera change requires a fresh Float64-to-device packing, not stretched old uniforms.
-                    const paint = analyticInkPaint(tile.analytic.item, view);
-                    if (!paint) throw new Error('Analytic ink projection became unavailable');
-                    analytic.draw(pass, paint); continue;
+                if (tile.analytic) throw new Error('Unbatched analytic ink command');
+                if (tile.worldRect) {
+                    const rect = tile.worldRect, scale = view.camera.z * view.viewport.dpr;
+                    const x = (rect.x - view.camera.x) * scale, y = (rect.y - view.camera.y) * scale;
+                    const width = rect.width * scale, height = rect.height * scale;
+                    const left = Math.max(0, Math.ceil(x - 0.5)), top = Math.max(0, Math.ceil(y - 0.5));
+                    const right = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(x + width - 0.5));
+                    const bottom = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(y + height - 0.5));
+                    if (right <= left || bottom <= top) continue;
+                    const clip = pass.pushClip({ x: left, y: top, width: right - left, height: bottom - top });
+                    try {
+                        const apron = GUTTER * width / EDGE;
+                        host.drawTexturedQuad(pass, tile.cached.texture, { x: 0, y: 0, width: SIZE, height: SIZE },
+                            { x: x - apron, y: y - apron, width: width + 2 * apron, height: height + 2 * apron },
+                            { opacity: 1, sampling: 'linear', coverage: 'none' });
+                    } finally { pass.popClip(clip); }
+                    continue;
                 }
                 const source: Rect = { x: GUTTER, y: GUTTER, width: EDGE, height: EDGE };
                 const dest: Rect = { x: (tile.x * EDGE - view.camera.x * ready.scale) * factor, y: (tile.y * EDGE - view.camera.y * ready.scale) * factor, width: EDGE * factor, height: EDGE * factor };
@@ -214,18 +317,29 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 const right = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(dest.x + dest.width));
                 const bottom = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(dest.y + dest.height));
                 if (right <= left || bottom <= top) continue;
-                const group = tile.multiply ? pass.beginGroup({ x: left, y: top, width: right - left, height: bottom - top },
+                const isolated = tile.multiply ? pass.beginGroup({ x: left, y: top, width: right - left, height: bottom - top },
                     { opacity: 1, blend: 'multiply', colourEffect: 'none' }) : null;
                 host.drawTexturedQuad(pass, tile.cached.texture, source, dest, { opacity: 1, sampling: 'linear', coverage: 'none' });
-                if (group) pass.endGroup(group);
+                if (isolated) pass.endGroup(isolated);
             }
         },
         release(_reason: GpuReleaseReason): void { reset(); analytic.release(); denied = false; currentToken = null; lastFrame = -1; },
-        needsFrame(): boolean { return !disposed && !denied && (!!staged || !ready || ready.frame !== reference.readyFrame()); },
-        memory(): { gpuBytes: number; cpuBytes: number } {
-            return { gpuBytes: cache.size * GPU_BYTES, cpuBytes: scratch };
+        needsFrame(): boolean {
+            if (disposed || denied) return false;
+            if (staged?.waitingBatch) return analytic.needsFrame();
+            return !!staged || !ready || ready.sourceFrame !== reference.readyFrame();
         },
-        cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } { return { mandatoryBytes: CPU_BYTES, prefetchBytes: 0 }; },
+        memory(): { gpuBytes: number; cpuBytes: number } {
+            const batches = analytic.memory();
+            return { gpuBytes: tileBytes + batches.gpuBytes,
+                cpuBytes: scratch + batches.cpuBytes + ((staged?.cpuLeases.length ?? 0) + (ready?.cpuLeases.length ?? 0)) * 65_536 };
+        },
+        cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } {
+            const held = ((staged?.cpuLeases.length ?? 0) + (ready?.cpuLeases.length ?? 0)) * 65_536;
+            const nextBatch = staged?.groups[staged.groupIndex]?.paints.length ?? 0;
+            return { mandatoryBytes: held + CPU_BYTES + analytic.cpuWorkingSet(nextBatch).mandatoryBytes
+                + (staged && staged.cpuUsed + 512 > staged.cpuLeases.length * 65_536 ? 65_536 : 0), prefetchBytes: 0 };
+        },
         dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); } },
     };
 }

@@ -48,7 +48,7 @@ export interface Pane2DPresenter<T extends object> {
     generation(): number;
     prepare(frame: MirrorFrame<T>): PreparedMirrorPresentation;
     select2D(): void;
-    selectGpu(grant: GpuGrant): void;
+    selectGpu(grant: GpuGrant): boolean;
     /** Same-task 0×0/backing-lease release; never closes session pixels. */
     releaseSurface(): void;
 }
@@ -428,7 +428,7 @@ export class PaneLifecycle<T extends object> {
             renderTokenKey(token) !== renderTokenKey(this.surface.stamp.documentToken) ||
             !sameFrame(token, current) || viewKey(view) !== viewKey(currentView) || revision !== this.options.currentRevision() ||
             !this.surface.markPresented(this.surface.stamp, grant.generation)) return false;
-        this.options.presenter.selectGpu(grant);
+        if (!this.options.presenter.selectGpu(grant)) return false;
         this.usingGpu = true;
         this.returnBorrow();
         return true;

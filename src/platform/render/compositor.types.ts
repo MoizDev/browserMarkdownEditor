@@ -52,6 +52,8 @@ export interface LayerAllocators {
 export interface TexturedQuadOptions {
     readonly opacity: number;
     readonly sampling: 'nearest' | 'linear';
+    /** Classification of the pixels actually drawn; omitted means no coverage. */
+    readonly coverage?: 'current' | 'standin' | 'none';
 }
 
 /** Peak simultaneous inventory, declared during Layer.prepare. Masks share the target pool;
@@ -157,6 +159,8 @@ export interface PaneCompositor {
     readonly surface: HTMLCanvasElement;
     readonly resources: CompositorResources;
     readonly surfaceGeneration: number;
+    /** A detached CPU resize bridge is working scratch until the old GPU display is zeroed. */
+    promoteSurface?(): boolean;
     readonly target: SurfaceCommitTarget;
     attach(host: PaneSurfaceHost): void;
     detach(): void;
@@ -198,7 +202,7 @@ export interface Compositor2DOptions<T extends object> {
     recordUpload(bytes: number, actualCallMs: number): void;
     /** Presenter selection delegates to the actor's existing backend selector; no second state machine. */
     select2D(compositor: PaneCompositor): void;
-    selectGpu(grant: GpuGrant): void;
+    selectGpu(grant: GpuGrant): boolean;
     mirrorQuad(entry: BorrowedMirror<T>, view: MirrorView): CompositorMirrorQuad | null;
     mirrorCoverage(view: MirrorView, drawn: readonly BorrowedMirror<T>[]): LayerCoverage;
     readonly browserBuild?: string;

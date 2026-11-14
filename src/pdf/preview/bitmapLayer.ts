@@ -6,6 +6,7 @@ import type { PreviewRect } from '../../utils/pdfPreviewTypes';
 export interface PreviewExpectedPage {
     readonly rect: PreviewRect;
     readonly key: string;
+    readonly current: () => boolean;
 }
 
 interface UploadedTile {
@@ -36,6 +37,7 @@ export class PreviewBitmapLayer implements Layer {
     private readonly uploaded = new Map<PreviewTile, UploadedTile>();
     private pendingFrame = false;
     private cpuPrepare: ((view: ViewState) => void) | null = null;
+    private cpuBlocked = false;
     private disposed = false;
     private expected = new Map<number, PreviewExpectedPage>();
 
@@ -51,7 +53,15 @@ export class PreviewBitmapLayer implements Layer {
      */
     queueCpuPrepare(prepare: ((view: ViewState) => void) | null): void {
         this.cpuPrepare = prepare;
+        this.cpuBlocked = false;
         if (prepare) this.host.invalidate('pdf-preview-copy-ready');
+    }
+
+    /** A denied reservation is retried on the next real pane wake, not in a frame loop. */
+    deferCpuPrepare(prepare: (view: ViewState) => void): void {
+        if (this.disposed || this.cpuPrepare) return;
+        this.cpuPrepare = prepare;
+        this.cpuBlocked = true;
     }
 
     setExpected(pages: ReadonlyMap<number, PreviewExpectedPage>): void {
@@ -72,6 +82,7 @@ export class PreviewBitmapLayer implements Layer {
             const right = Math.min(bounds.x + bounds.width, pageRect.x + pageRect.width);
             const bottom = Math.min(bounds.y + bounds.height, pageRect.y + pageRect.height);
             if (right <= left || bottom <= top) continue;
+            if (!expected.current()) return { complete: false, sharp: false };
             const page = this.bitmaps.entries.get(index);
             if (!page || page.key !== expected.key || !page.tiles.length) return { complete: false, sharp: false };
             const tiles = page.tiles;
@@ -105,9 +116,9 @@ export class PreviewBitmapLayer implements Layer {
         this.pendingFrame = false;
         if (this.disposed) return;
         if (this.cpuPrepare) {
-            if (budget.shouldYield()) { this.pendingFrame = true; return; }
+            if (budget.shouldYield()) { this.cpuBlocked = false; this.pendingFrame = true; return; }
             const prepare = this.cpuPrepare;
-            this.cpuPrepare = null;
+            this.cpuPrepare = null; this.cpuBlocked = false;
             prepare(view);
         }
         const device = this.host.device();
@@ -124,6 +135,8 @@ export class PreviewBitmapLayer implements Layer {
                     return;
                 }
                 const lease = this.host.allocator.gpu.reserve(tile.bytes);
+                // The tile stays missing (hasGpuWork) until the lifecycle's budget-change wake;
+                // needsFrame must not poll a grant that has not changed.
                 if (!lease) return;
                 let texture: TextureHandle;
                 try {
@@ -147,23 +160,25 @@ export class PreviewBitmapLayer implements Layer {
 
     drawGpu(pass: GpuPass, view: ViewState): void {
         for (const [index, page] of this.bitmaps.entries) {
-            if (this.expected.get(index)?.key !== page.key) continue;
+            const expected = this.expected.get(index);
+            if (expected?.key !== page.key) continue;
             for (const tile of page.tiles) {
                 const uploaded = this.uploaded.get(tile);
                 if (!uploaded || uploaded.device !== this.host.device() || !onScreen(tile.destination, view)) continue;
                 this.host.drawTexturedQuad(pass, uploaded.texture, tile.source,
-                    project(tile.destination, view), { opacity: 1, sampling: 'linear' });
+                    project(tile.destination, view), { opacity: 1, sampling: 'linear', coverage: expected.current() ? 'current' : 'standin' });
             }
         }
     }
 
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         for (const [index, page] of this.bitmaps.entries) {
-            if (this.expected.get(index)?.key !== page.key) continue;
+            const expected = this.expected.get(index);
+            if (expected?.key !== page.key) continue;
             for (const tile of page.tiles) {
                 if (!onScreen(tile.destination, view)) continue;
                 this.host.drawTexturedQuad(ctx, tile.bitmap, tile.source,
-                    project(tile.destination, view), { opacity: 1, sampling: 'linear' });
+                    project(tile.destination, view), { opacity: 1, sampling: 'linear', coverage: expected.current() ? 'current' : 'standin' });
             }
         }
     }
@@ -180,7 +195,7 @@ export class PreviewBitmapLayer implements Layer {
         return { gpuBytes, cpuBytes: this.bitmaps.cpuBytes };
     }
 
-    needsFrame(): boolean { return this.pendingFrame || this.cpuPrepare !== null; }
+    needsFrame(): boolean { return this.pendingFrame || this.cpuPrepare !== null && !this.cpuBlocked; }
 
     dispose(): void {
         if (this.disposed) return;

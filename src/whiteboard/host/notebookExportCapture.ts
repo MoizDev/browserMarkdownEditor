@@ -71,7 +71,16 @@ export function pinNotebookExportWithMedia(options: {
                 blobs.set(id, pending);
                 void pending.catch(() => { if (blobs.get(id) === pending) blobs.delete(id); });
             }
-            return pending.then(value => { signal.throwIfAborted(); lifetime.signal.throwIfAborted(); return value; });
+            const shared = pending;
+            return new Promise<Blob>((resolve, reject) => {
+                const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason ?? new DOMException('Notebook export cancelled', 'AbortError')); };
+                signal.addEventListener('abort', abort, { once: true });
+                shared.then(value => {
+                    signal.removeEventListener('abort', abort);
+                    if (lifetime.signal.aborted) reject(lifetime.signal.reason); else resolve(value);
+                }, error => { signal.removeEventListener('abort', abort); reject(error); });
+                if (signal.aborted) abort();
+            });
         };
         const token = scene.token;
         images = createBoardHostImages({ token, media: runtime.media, entry: id => entries.get(id), readBlob: read,

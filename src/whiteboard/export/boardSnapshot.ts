@@ -41,6 +41,7 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
         const leases: { release(): void }[] = [];
         let images: ReturnType<typeof createBoardHostImages> | undefined;
         let released = false;
+        const lifetime = new AbortController();
         try {
             if (pin.revision !== doc.rev || pin.token.documentId !== runtime.session.owner.documentId
                 || pin.token.session !== runtime.session.owner.session) throw new Error('Board export identity changed');
@@ -72,15 +73,24 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
                 if (!pending) {
                     pending = (async () => {
                         const stored = runtime.media.get(id);
-                        const source = stored ?? await options.readMedia(entry, signal);
-                        signal.throwIfAborted();
+                        const source = stored ?? await options.readMedia(entry, lifetime.signal);
+                        lifetime.signal.throwIfAborted();
                         if (!(source instanceof Blob) || source.size !== entry.bytes) throw new Error('Export media bytes are unavailable');
                         return source.slice(0, source.size, source.type);
                     })();
                     blobs.set(id, pending);
                     void pending.catch(() => { if (blobs.get(id) === pending) blobs.delete(id); });
                 }
-                return pending.then(blob => { signal.throwIfAborted(); if (released) throw new DOMException('Export released', 'AbortError'); return blob; });
+                const shared = pending;
+                return new Promise<Blob>((resolve, reject) => {
+                    const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason ?? new DOMException('Export cancelled', 'AbortError')); };
+                    signal.addEventListener('abort', abort, { once: true });
+                    shared.then(blob => {
+                        signal.removeEventListener('abort', abort);
+                        if (released) reject(new DOMException('Export released', 'AbortError')); else resolve(blob);
+                    }, error => { signal.removeEventListener('abort', abort); reject(error); });
+                    if (signal.aborted) abort();
+                });
             };
             const token = Object.freeze({ ...pin.token });
             images = createBoardHostImages({ token, media: runtime.media,
@@ -156,13 +166,14 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
                 },
                 release() {
                     if (released) return;
-                    released = true;
+                    released = true; lifetime.abort();
                     try { provider.dispose(); } finally {
                         try { for (const lease of leases) lease.release(); } finally { pin.release(); }
                     }
                 },
             };
         } catch (error) {
+            lifetime.abort();
             try { images?.dispose(); } finally {
                 try { for (const lease of leases) lease.release(); } finally { pin.release(); }
             }

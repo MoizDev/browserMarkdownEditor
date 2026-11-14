@@ -23,7 +23,7 @@ function misspellings(value: unknown, text: string): readonly Misspelling[] {
 function clampDictionary(input: readonly string[]): readonly string[] {
     const words: string[] = [], seen = new Set<string>();
     for (const word of input) {
-        if (typeof word !== 'string' || !word.length || word.length > 64 || !/^[\p{L}\p{M}'’\-]+$/u.test(word) || seen.has(word)) continue;
+        if (typeof word !== 'string' || !word.length || word.length > 64 || !/^[\p{L}\p{M}'’-]+$/u.test(word) || seen.has(word)) continue;
         seen.add(word); words.push(word);
         if (words.length === 10_000) break;
     }

@@ -44,7 +44,6 @@ interface Pending {
     readonly promise: Promise<Cached>;
     resolve(value: Cached): void;
     reject(error: unknown): void;
-    releaseMemory?: () => void;
     workerRequest?: Promise<unknown>;
 }
 
@@ -120,7 +119,7 @@ export class MediaResidency implements PaintImageProvider {
             for (const job of this.pending.values()) job.controller.abort();
             // Termination is synchronous even when the replacement worker starts later.
             if (this.active) void this.worker.recycle('pane hidden').catch(() => undefined);
-            for (const job of this.pending.values()) job.releaseMemory?.();
+            // A cancelled frame may still own decoder scratch until its promise actually settles.
             for (const [key, entry] of this.cache) this.drop(key, entry);
         }
     }
@@ -223,7 +222,6 @@ export class MediaResidency implements PaintImageProvider {
             if (outputHeld) { outputHeld = false; this.host.memory.release(memory); }
             if (scratchHeld && scratch) { scratchHeld = false; this.host.memory.release(scratch); }
         };
-        job.releaseMemory = releaseMemory;
         let bitmap: ImageBitmap | undefined, durationMs = 0, frameCount = 1;
         try {
             const blob = source.blob.slice(0, source.blob.size, source.mime);
@@ -253,13 +251,12 @@ export class MediaResidency implements PaintImageProvider {
                 || !Number.isFinite(durationMs) || durationMs < 0 || !Number.isSafeInteger(frameCount) || frameCount < 1) throw new Error('Invalid media raster');
             const existing = this.cache.get(job.key);
             if (existing && !existing.closed && matchingIdentity(existing.identity, job.identity) && sameToken(existing.token, job.token)) {
-                bitmap.close(); releaseMemory(); job.releaseMemory = undefined; return existing;
+                bitmap.close(); releaseMemory(); return existing;
             }
             if (existing) this.drop(job.key, existing);
             const entry: Cached = { bitmap, memory, token: job.token, identity: job.identity, durationMs, frameCount, refs: 0, retired: false, closed: false };
             this.cache.set(job.key, entry);
             outputHeld = false;
-            job.releaseMemory = undefined;
             bitmap = undefined;
             return entry;
         } catch (error) {
@@ -267,7 +264,6 @@ export class MediaResidency implements PaintImageProvider {
             throw error;
         } finally {
             releaseMemory();
-            job.releaseMemory = undefined;
         }
     }
 }

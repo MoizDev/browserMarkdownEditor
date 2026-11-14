@@ -4320,13 +4320,14 @@ export default function App() {
    */
   useEffect(() => {
     if (!fileTree.length) return;
-    const kinds = { epub: false, pdf: false, drawing: false, notebook: false };
+    const kinds = { epub: false, pdf: false, drawing: false, nativeDrawing: false, notebook: false };
     for (const file of collectFiles(fileTree)) {
       if (isEpubFile(file.name)) kinds.epub = true;
       else if (isPdfFile(file.name)) kinds.pdf = true;
       else if (isNotebookFile(file.name)) kinds.notebook = true;
       else if (isDrawingFile(file.name)) kinds.drawing = true;
-      if (kinds.epub && kinds.pdf && kinds.drawing && kinds.notebook) break;
+      else if (isNativeDrawingFile(file.name)) kinds.nativeDrawing = true;
+      if (kinds.epub && kinds.pdf && kinds.drawing && kinds.nativeDrawing && kinds.notebook) break;
     }
     prefetchPanes(kinds);
   }, [fileTree]);

@@ -35,20 +35,25 @@ function nonnegative(value: number): number {
     return value;
 }
 
+function finiteResult(value: number): number {
+    if (!Number.isFinite(value)) throw new RangeError('Geometry metric overflows');
+    return value;
+}
+
 export const styleGeometryMetrics: StyleGeometryMetrics = Object.freeze({
     version: 1 as const,
     actualWidth(kind: OutlineKind, size: Size, legacyScale: number): number {
-        return BASE[kind][size] * nonnegative(legacyScale);
+        return finiteResult(BASE[kind][size] * nonnegative(legacyScale));
     },
     fromPen(kind: OutlineKind, penWidth: number): number {
-        return BASE[kind].s * nonnegative(penWidth) / 3;
+        return finiteResult(BASE[kind].s / 3 * nonnegative(penWidth));
     },
     legacyEquivalent(kind: OutlineKind, size: Size, actualWidth: number): number {
         return nonnegative(actualWidth) / BASE[kind][size];
     },
     openArrow(actualWidth: number): Readonly<{ length: number; halfSpan: number }> {
         const width = nonnegative(actualWidth);
-        return { length: 3 * Math.sqrt(3) * width / 2, halfSpan: 3 * width / 2 };
+        return { length: finiteResult(3 * Math.sqrt(3) / 2 * width), halfSpan: finiteResult(1.5 * width) };
     },
     bendThreshold(size: Size, actualWidth: number): CalibratedLength {
         nonnegative(actualWidth);

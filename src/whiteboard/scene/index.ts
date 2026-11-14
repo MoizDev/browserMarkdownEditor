@@ -1,94 +1,35 @@
 import { intersects, validBox, writeBox } from './bounds';
-
-export const INDEX_FANOUT = 16;
+import { PackedBuildJob } from './packedBuild';
+import type { PackedSnapshot, PackedTreeData } from './packedBuild';
+export { INDEX_FANOUT, PackedBuildJob } from './packedBuild';
+export type { PackedSnapshot, PackedTreeData } from './packedBuild';
 const ACTIVE = 0x80000000;
 const GENERATION = 0x7fffffff;
 const NONE = -1;
 
-// Kamel/Faloutsos, "On Packing R-trees", CIKM 1993: order rectangle centres by Hilbert
-// position and bulk-pack bottom-up. Own bitwise quadrant construction, no library implementation.
-function hilbert(x: number, y: number): number {
-    let position = 0;
-    for (let bit = 32768; bit; bit >>= 1) {
-        const right = x & bit ? 1 : 0, top = y & bit ? 1 : 0;
-        position += bit * bit * ((3 * right) ^ top);
-        if (!top) {
-            if (right) { x = 65535 - x; y = 65535 - y; }
-            const swap = x; x = y; y = swap;
-        }
-    }
-    return position >>> 0;
-}
-export interface PackedSnapshot {
-    readonly slots: Uint32Array;
-    readonly generations: Uint32Array;
-    readonly versions: Uint32Array;
-    readonly bounds: Float64Array;
-    readonly revision: number; // HybridIndex.epoch at capture, NOT the document revision.
-}
 export class PackedTree {
-    readonly revision: number;
-    readonly membership: Uint32Array;
-    readonly count: number;
-    readonly root: number;
-    readonly bounds: Float64Array;
-    readonly slots: Uint32Array;
-    readonly generations: Uint32Array;
-    readonly versions: Uint32Array;
-    readonly starts: Uint32Array;
-    readonly counts: Uint8Array;
+    readonly revision!: number;
+    readonly membership!: Uint32Array;
+    readonly count!: number;
+    readonly root!: number;
+    readonly bounds!: Float64Array;
+    readonly slots!: Uint32Array;
+    readonly generations!: Uint32Array;
+    readonly versions!: Uint32Array;
+    readonly starts!: Uint32Array;
+    readonly counts!: Uint8Array;
     constructor(snapshot: PackedSnapshot) {
-        const n = snapshot.slots.length;
-        if (snapshot.generations.length !== n || snapshot.versions.length !== n || snapshot.bounds.length !== 4 * n) throw new RangeError('Invalid packed scene snapshot');
-        if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) throw new RangeError('Invalid packed index epoch');
-        this.count = n; this.revision = snapshot.revision;
-        let highest = -1;
-        for (const slot of snapshot.slots) highest = Math.max(highest, slot);
-        this.membership = new Uint32Array(Math.ceil((highest + 1) / 32));
-        for (const slot of snapshot.slots) this.membership[slot >>> 5] |= 1 << (slot & 31);
-        let internal = 0, level = n;
-        while (level > 1) { level = Math.ceil(level / INDEX_FANOUT); internal += level; }
-        this.bounds = new Float64Array(4 * (n + internal)); this.slots = new Uint32Array(n);
-        this.generations = new Uint32Array(n); this.versions = new Uint32Array(n);
-        this.starts = new Uint32Array(internal); this.counts = new Uint8Array(internal);
-        if (!n) { this.root = NONE; return; }
-        const keys = new Uint32Array(n), order = new Uint32Array(n);
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (let i = 0; i < n; i++) {
-            if (!validBox(snapshot.bounds, 4 * i)) throw new RangeError('Invalid packed scene bounds');
-            const x = snapshot.bounds[4 * i] / 2 + snapshot.bounds[4 * i + 2] / 2;
-            const y = snapshot.bounds[4 * i + 1] / 2 + snapshot.bounds[4 * i + 3] / 2;
-            minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-        }
-        for (let i = 0; i < n; i++) {
-            const x = snapshot.bounds[4 * i] / 2 + snapshot.bounds[4 * i + 2] / 2;
-            const y = snapshot.bounds[4 * i + 1] / 2 + snapshot.bounds[4 * i + 3] / 2;
-            const qx = maxX === minX ? 0 : Math.max(0, Math.min(65535, Math.floor((x - minX) / (maxX - minX) * 65535)));
-            const qy = maxY === minY ? 0 : Math.max(0, Math.min(65535, Math.floor((y - minY) / (maxY - minY) * 65535)));
-            keys[i] = hilbert(qx, qy); order[i] = i;
-        }
-        order.sort((a, b) => keys[a] - keys[b] || snapshot.slots[a] - snapshot.slots[b]);
-        for (let i = 0; i < n; i++) {
-            const source = order[i];
-            this.slots[i] = snapshot.slots[source]; this.generations[i] = snapshot.generations[source]; this.versions[i] = snapshot.versions[source];
-            for (let k = 0; k < 4; k++) this.bounds[4 * i + k] = snapshot.bounds[4 * source + k];
-        }
-        let begin = 0, length = n, target = n;
-        while (length > 1) {
-            const parents = Math.ceil(length / INDEX_FANOUT), next = target;
-            for (let i = 0; i < parents; i++, target++) {
-                const first = begin + i * INDEX_FANOUT, count = Math.min(INDEX_FANOUT, length - i * INDEX_FANOUT);
-                this.starts[target - n] = first; this.counts[target - n] = count;
-                let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-                for (let child = first; child < first + count; child++) {
-                    x0 = Math.min(x0, this.bounds[4 * child]); y0 = Math.min(y0, this.bounds[4 * child + 1]);
-                    x1 = Math.max(x1, this.bounds[4 * child + 2]); y1 = Math.max(y1, this.bounds[4 * child + 3]);
-                }
-                writeBox(this.bounds, 4 * target, x0, y0, x1, y1);
-            }
-            begin = next; length = parents;
-        }
-        this.root = begin;
+        const job = new PackedBuildJob(snapshot);
+        while (job.step(4096) === 'pending') { /* Synchronous bounded-data convenience only. */ }
+        Object.assign(this, job.result);
+    }
+    /** Worker results transfer these arrays; adoption is O(1), never another N-item build. */
+    static fromData(data: PackedTreeData): PackedTree {
+        const n = data.count, total = data.bounds.length / 4;
+        if (!Number.isSafeInteger(n) || n < 0 || data.slots.length !== n || data.generations.length !== n || data.versions.length !== n
+            || total < n || !Number.isInteger(total) || data.starts.length !== total - n || data.counts.length !== total - n
+            || data.root !== (n ? total - 1 : -1) || !Number.isSafeInteger(data.revision) || data.revision < 0) throw new RangeError('Invalid packed tree transport');
+        return Object.assign(Object.create(PackedTree.prototype) as PackedTree, data);
     }
     hasSlot(slot: number): boolean { return !!(this.membership[slot >>> 5] & (1 << (slot & 31))); }
     get byteLength(): number {

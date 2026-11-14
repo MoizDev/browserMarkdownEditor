@@ -1,5 +1,5 @@
 import { paperPageSize } from '../../utils/paper';
-import { exportNotebookPdf, type NotebookExportSnapshot } from './notebookExport';
+import { exportNotebookPdf, streamNotebookPdf, type NotebookExportSnapshot, type NotebookPdfStreamWriter } from './notebookExport';
 import type { DisplayPdfWriter } from '../export/capturePdf';
 import type { BuildJob } from '../session/BoardSession';
 import { pinPagedBoardScene } from './pagedSceneCapture';
@@ -98,6 +98,25 @@ export function pinNotebookExportWithMedia(options: {
 }
 
 /** The BuildJob acquires its revision before it is returned, not when run starts. */
+export function createNotebookStreamExportJob(options: {
+    readonly runtime: BoardRuntime;
+    readonly sourcePath: string;
+    readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
+    readonly writer: NotebookPdfStreamWriter;
+    readonly onError: (error: unknown) => void;
+}): BuildJob & { release(): void } {
+    const pinned = pinNotebookExportWithMedia(options);
+    let released = false, started = false;
+    const release = () => { if (!released) { released = true; pinned.release(); } };
+    return { kind: 'build', revision: pinned.revision, release,
+        async run(signal) {
+            if (released || started) throw new Error('Notebook export job is no longer available');
+            started = true;
+            try { return await streamNotebookPdf(pinned.snapshot, options.sourcePath, options.writer, signal); }
+            finally { release(); }
+        } };
+}
+
 export function createNotebookExportJob(options: {
     readonly runtime: BoardRuntime;
     readonly sourcePath: string;

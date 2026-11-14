@@ -122,8 +122,9 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
         if (!editor || !text || active !== range.node || doc.rev !== range.revision || plain(text).slice(range.from, range.to) !== range.word) return false;
         const fragment = insertionFragment(text, range.from, suggestion, null);
-        editor.restoreSelection({ anchor: range.from, focus: range.to }); editor.replaceSelection(fragment); editor.focus();
-        return true;
+        editor.restoreSelection({ anchor: range.from, focus: range.to });
+        const applied = editor.replaceSelection(fragment); editor.focus();
+        return applied;
     };
     const openTextMenu = (x: number, y: number) => {
         spellingMenu?.cancel(); spellingMenu = null;
@@ -421,11 +422,11 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             return { revision: doc.rev, node, selection: { ...selection }, fragment: editor.copySelection(),
                 bounds: { x: world[0], y: world[1], w: world[2] - world[0], h: world[3] - world[1] } };
         },
-        pasteText(fragment: RichText) { if (!manager.current) return false; manager.current.editor.replaceSelection(fragment); return true; },
+        pasteText(fragment: RichText) { return manager.current?.editor.replaceSelection(fragment) ?? false; },
         cutText(node: NodeId, revision: number, selection: EditSelection) {
             const editor = manager.current?.editor, current = editor?.getSelection();
             if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus) return false;
-            editor.deleteSelection(); return true;
+            return editor.deleteSelection();
         },
         spellingAt(offset: number) { return misspellings.find(range => offset >= range.from && offset < range.to) ?? null; },
         spellingAtClient(x: number, y: number) {

@@ -534,7 +534,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                     >
                         {entry.kind === 'submenu' ? (
                             <div className="context-menu" role="menu" aria-label={entry.label} style={{ position: 'static' }}>
-                                <SubmenuRows entries={entry.entries} activate={activate} />
+                                <SubmenuRows key={entry.id} entries={entry.entries} activate={activate} />
                             </div>
                         ) : entry.kind === 'grid' ? (
                             <TableSizeGrid

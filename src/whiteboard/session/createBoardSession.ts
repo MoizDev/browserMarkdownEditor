@@ -55,16 +55,21 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
     const lifetime = new AbortController();
     let cachedSource: { revision: number; handle: ReturnType<typeof boardContentSource>; context: unknown } | undefined;
     const retireSource = () => { const previous = cachedSource; cachedSource = undefined; previous?.handle.release(); };
-    // Each step waits for the work that may still read the one it releases. A journal drain may start a
-    // build, so the loop runs until nothing is outstanding. Nothing is claimed released before it is.
-    const retireSettled = async () => {
-        try {
-            do {
-                while (outstanding.size) await Promise.allSettled([...outstanding]);
-                await journal.drain();
-            } while (outstanding.size);
-            retireSource(); journal.dispose(); serializer.dispose(); media.clear();
-        } catch (error) { reportPendingError(error); }
+    // Runs after dispose has revoked new work. Each release waits for the work that may still read the thing
+    // it releases: a journal drain may start a build, so the loop runs until nothing is outstanding, and a
+    // failed drain still lets the outstanding builds settle before anything is claimed released.
+    let retired: Promise<void> | undefined;
+    const retire = async (): Promise<void> => {
+        const failures: unknown[] = [];
+        const run = (action: () => void) => { try { action(); } catch (error) { failures.push(error); } };
+        do {
+            while (outstanding.size) await Promise.allSettled([...outstanding]);
+            try { await journal.drain(); } catch (error) { failures.push(error); }
+        } while (outstanding.size);
+        run(retireSource); run(() => journal.dispose()); run(() => serializer.dispose()); run(() => media.clear());
+        run(() => { for (const lease of mediaLeases.values()) lease.release(); mediaLeases.clear(); });
+        run(() => checkpoints.clear());
+        if (failures.length) throw new AggregateError(failures, 'Board session retirement failed');
     };
     const track = <T>(work: Promise<T>): Promise<T> => {
         outstanding.add(work); notifyPending();
@@ -152,7 +157,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         pending = emptyTouched(); pendingDirty = false;
     }
     function capture(): ReturnType<typeof boardContentSource>['source'] {
-        // A closed session must never pin a new build: retireSettled has already passed over the checkpoint map.
+        // A closed session must never pin a new build: dispose revokes capture before retire clears the checkpoint map.
         if (disposed) throw new DOMException('Board session ended', 'AbortError');
         encodePending();
         if (cachedSource?.revision === contentRevision) return cachedSource.handle.source;
@@ -282,16 +287,20 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         flushNow() { guard(); try { scheduler.flushNow(); } finally { notifyPending(); } },
         pageHide() { if (!disposed) scheduler.pageHide(); },
         hidden() { if (!disposed) scheduler.hidden(); },
-        dispose() {
-            if (disposed) return;
+        /** Revokes synchronously; the returned promise settles only once every tracked build has settled and
+         * the sources, media leases and pinned checkpoints it could read have been released. */
+        dispose(): Promise<void> {
+            if (retired) return retired;
             // Revoke first: new builds refuse, running builds abort. Physical sources are released only after
             // every tracked build has actually settled, so no reader can outlive the bytes or media it holds.
-            disposed = true; lifetime.abort(new DOMException('Board session ended', 'AbortError'));
-            notifyPending(); pendingListeners.clear();
-            unsubscribeSelection(); channel.dispose(); queue.dispose(); scheduler.dispose(); history.dispose(); applyController.dispose();
-            for (const lease of mediaLeases.values()) lease.release();
-            mediaLeases.clear(); checkpoints.clear(); listeners.clear();
-            void retireSettled();
+            disposed = true;
+            try {
+                lifetime.abort(new DOMException('Board session ended', 'AbortError'));
+                notifyPending(); pendingListeners.clear();
+                unsubscribeSelection(); channel.dispose(); queue.dispose(); scheduler.dispose(); history.dispose(); applyController.dispose();
+                listeners.clear();
+            } finally { retired = retire(); }
+            return retired;
         },
     };
     return session as ComposedBoardSession;

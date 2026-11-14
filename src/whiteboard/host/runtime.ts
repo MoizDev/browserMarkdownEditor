@@ -62,7 +62,8 @@ export interface BoardRuntime {
     /** Document-owned services, never tied to a pane's mount/visibility lifetime. Returns unregister. */
     registerOwned(dispose: () => void): () => void;
     flushFrame(frameId: number): void;
-    dispose(): void;
+    /** Revokes at once; resolves after the session has retired, since its builds may still read the render services. */
+    dispose(): Promise<void>;
 }
 type Registration = { sink: BoardRuntimeViewSink; report: (error: unknown) => void };
 const views = new Set<Registration>();
@@ -88,6 +89,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     const attached = new Set<Registration>(), controller = new AbortController();
     const owned = new Set<{ dispose(): void }>();
     let scene: SessionScene | null = null, disposed = false, pendingReveal: Set<NodeId> | undefined;
+    let retiring: Promise<void> | undefined;
     let paintBinding = options.render.capturePaintBinding(options.scene.token);
     let paintToken: RenderToken = Object.freeze({ vaultEpoch: options.scene.token.vaultEpoch, documentId: options.scene.token.documentId,
         bytesGeneration: options.scene.token.bytesGeneration, session: options.scene.token.session }), adopting = false;
@@ -220,7 +222,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         },
         flushFrame(frameId) { if (!disposed) { notices.visibilityChanged(); flushReveal(); notices.flushFrame(frameId); } },
         dispose() {
-            if (disposed) return;
+            if (disposed) return retiring ?? Promise.resolve();
             disposed = true;
             // Cache/services stop accepting new work at document close. Already
             // captured read-only jobs retain their own Scene/media/renderer leases.
@@ -232,7 +234,11 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             for (const entry of attached) views.delete(entry);
             attached.clear(); notices.visibilityChanged(); pendingReveal = undefined;
             runtimes.delete(session);
-            try { scene?.dispose(); } finally { scene = null; try { session.dispose(); } finally { options.render.dispose(); } }
+            // The session's revocation is synchronous; render services outlive its builds, so they go last.
+            retiring = (async () => {
+                try { scene?.dispose(); } finally { scene = null; try { await session.dispose(); } finally { options.render.dispose(); } }
+            })();
+            return retiring;
         },
     };
     runtimes.set(session, runtime);

@@ -1154,6 +1154,7 @@ export default function App() {
   // nothing to compare against.
   const assetRefsRef = useRef<Map<string, Set<string>>>(new Map());
   const boardBaselinesRef = useRef(new BoardSaveBaselines());
+  const unsavedBoardContentRef = useRef(new Map<string, string>());
   const fileTreeRef = useRef<FileTreeNode[]>(fileTree);
   useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
 
@@ -1225,6 +1226,8 @@ export default function App() {
    *  has something to diff against. */
   const moveAssetRefs = useCallback((from: string, to: string) => {
     boardBaselinesRef.current.move(from, to);
+    const unsavedBoard = unsavedBoardContentRef.current.get(from);
+    if (unsavedBoard !== undefined) { unsavedBoardContentRef.current.delete(from); unsavedBoardContentRef.current.set(to, unsavedBoard); }
     const refs = assetRefsRef.current.get(from);
     if (!refs) return;
     assetRefsRef.current.delete(from);
@@ -1252,6 +1255,7 @@ export default function App() {
   const assetActivationsRef = useRef(new WeakMap<FileSystemDirectoryHandle, number>());
   const assetProofTreeRef = useRef(fileTree);
   const assetReferenceRevisionRef = useRef(0);
+  const requeueAssetFolderRef = useRef<(folder: string) => void>(() => {});
   const assetBacklogRef = useRef(new RetirementBacklog<ReconcileJob>());
   const assetOwnerRootRef = useRef(rootHandle);
   const assetOwnerActivationRef = useRef(getVaultActivation());
@@ -1291,11 +1295,26 @@ export default function App() {
     if (!attached()) return 'skipped-detached';
     if (!dir) return 'kept';
     const folder = parentVaultPath(path);
-    const block = () => { if (attached()) assetBacklogRef.current.block(folder, job); };
+    const startRevision = assetReferenceRevisionRef.current;
+    const block = () => {
+      if (!attached()) return;
+      assetBacklogRef.current.block(folder, job);
+      // An observer event can beat the failing read; don't lose that wakeup.
+      if (assetReferenceRevisionRef.current !== startRevision) queueMicrotask(() => requeueAssetFolderRef.current(folder));
+    };
 
     try {
       const treeAtStart = assetProofTreeRef.current;
-      const boards = collectFiles(treeAtStart).filter(f => isCanvasFile(f.name) && parentVaultPath(f.path) === folder);
+      const boards: Array<{ path: string; handle?: FileSystemFileHandle }> = [];
+      for await (const [name, handle] of handleIO.entries(dir)) {
+        if (handle.kind === 'file' && isCanvasFile(name)) boards.push({ path: joinVaultPath(folder, name), handle: handle as FileSystemFileHandle });
+      }
+      for (const tab of tabsRef.current) {
+        if (isCanvasFile(tab.file.name) && parentVaultPath(tab.file.path) === folder && !boards.some(board => board.path === tab.file.path)) boards.push({ path: tab.file.path });
+      }
+      for (const boardPath of unsavedBoardContentRef.current.keys()) {
+        if (parentVaultPath(boardPath) === folder && !boards.some(board => board.path === boardPath)) boards.push({ path: boardPath });
+      }
       const assetNames = boards.length || job.board ? await assetNamesIn(dir) : new Set<string>();
       if (!attached()) return 'skipped-detached';
       if (assetProofTreeRef.current !== treeAtStart) { block(); return 'kept'; }
@@ -1337,9 +1356,11 @@ export default function App() {
       const revision = assetReferenceRevisionRef.current;
       const proofTabs = tabsRef.current;
       const proofContents = new Map(proofTabs.map(tab => [tab.file.path, latestContentRef.current.get(tab.file.path) ?? tab.content]));
+      const unsavedBoards = new Map(boards.map(board => [board.path, unsavedBoardContentRef.current.get(board.path)]));
       // Dirty-only save acknowledgements do not change a reference proof.
       // Opening/closing a tab or changing its readable buffer does.
       const proofCurrent = () => attached() && assetReferenceRevisionRef.current === revision
+        && boards.every(board => unsavedBoardContentRef.current.get(board.path) === unsavedBoards.get(board.path))
         && tabsRef.current.length === proofTabs.length && tabsRef.current.every((tab, i) => {
           const old = proofTabs[i];
           return tab.id === old.id && tab.file.path === old.file.path && tab.content === old.content
@@ -1376,6 +1397,9 @@ export default function App() {
           if (!canReadTabText(open)) return { ok: false as const, reason: 'unreadable' as const };
           return resolveBoardMedia({ source: new TextEncoder().encode(proofContents.get(board.path) ?? open.content) }, assetNames, boardMediaRefs);
         }
+        const unsaved = unsavedBoards.get(board.path);
+        if (unsaved !== undefined) return resolveBoardMedia({ source: new TextEncoder().encode(unsaved) }, assetNames, boardMediaRefs);
+        if (!board.handle) return { ok: false as const, reason: 'unreadable' as const };
         try {
           const file = await handleIO.file(board.handle);
           const refs = await resolveBoardMedia({ source: file.stream() }, assetNames, boardMediaRefs);
@@ -1463,6 +1487,7 @@ export default function App() {
       for (const job of backlog.take(folder)) await reconcileAssetsRef.current(job);
     });
   }, []);
+  requeueAssetFolderRef.current = requeueAssetFolder;
   const requeueAssetsAffected = useCallback((path: string) => {
     for (const folder of assetBacklogRef.current.affected(path)) requeueAssetFolder(folder);
   }, [requeueAssetFolder]);
@@ -2071,6 +2096,7 @@ export default function App() {
     // does: setTabs is async, so a caller that just produced new content would
     // otherwise race with React and write the previous buffer.
     const snapshot = contentOverride ?? contentOf(path) ?? tab.content;
+    if (isCanvasFile(tab.file.name)) unsavedBoardContentRef.current.set(path, snapshot);
     const revision = pendingRevision?.revision ?? 0;
     const existingWrite = pendingWritesRef.current.get(tab.id);
     if (pending && existingWrite?.revision === revision) return existingWrite.promise;
@@ -2155,6 +2181,7 @@ export default function App() {
           else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return result.status;
         }
+        if (isCanvasFile(file.name) && unsavedBoardContentRef.current.get(path) === snapshot) unsavedBoardContentRef.current.delete(path);
         // Only while the document is still open: a close drops its entry, and
         // this must not put one back (getBaseline is set from open to close).
         if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
@@ -2470,6 +2497,7 @@ export default function App() {
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
+    if (!flush) unsavedBoardContentRef.current.delete(path);
   }, [clearSaveTimer, flushTab, syncExitGuard]);
 
   /**
@@ -2826,6 +2854,7 @@ export default function App() {
     // paths themselves index the vault being left.
     assetRefsRef.current.clear();
     boardBaselinesRef.current.clear();
+    unsavedBoardContentRef.current.clear();
     setTabs([]);
     setLayout(EMPTY_LAYOUT);
     setSaveStatus('');

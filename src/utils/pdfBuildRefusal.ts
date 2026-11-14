@@ -2,15 +2,17 @@
 // IO exception. App keeps the revision dirty and reports the reason as skipped.
 import { PDF_EDITABLE_JSON_LIMIT } from './pdfRole';
 
-export interface PdfBuildRefusal {
-    reason: 'editable-json-limit';
-    limit: number;
-}
+export type PdfBuildRefusal = { reason: 'editable-json-limit'; limit: number } |
+    { reason: 'unsafe-pdf'; safety: 'signed' | 'encrypted' | 'unknown' };
 
 export class PdfBuildRefused extends Error {
     readonly refusal: PdfBuildRefusal;
     constructor(refusal: PdfBuildRefusal) {
-        super('The editable annotations exceed the 32 MiB limit. The PDF has not been changed; keep your unsaved annotations open or reduce their size before saving.');
+        super(refusal.reason === 'editable-json-limit'
+            ? 'The editable annotations exceed the 32 MiB limit. The PDF has not been changed; keep your unsaved annotations open or reduce their size before saving.'
+            : refusal.safety === 'signed' ? 'This PDF contains signatures or certification. It has not been changed.'
+                : refusal.safety === 'encrypted' ? 'This PDF is encrypted. It has not been changed.'
+                    : 'This PDF’s write safety could not be established. It has not been changed.');
         this.name = 'PdfBuildRefused';
         this.refusal = refusal;
     }

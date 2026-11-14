@@ -4,14 +4,15 @@ import { PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream } from 'pdf-lib'
 import { boundedAttachmentBytes, inventoryAttachments, type AttachmentEntry } from './pdfAttachmentTree';
 import { BOARD_ATTACHMENT, NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, PDF_APP_MARKER_NAMESPACE, SNAPSHOT_ATTACHMENT } from './pdfFormat';
 import { compatibleLegacySnapshot, PDF_EDITABLE_JSON_LIMIT, PDF_PRISTINE_LIMIT } from './pdfRole';
-import type { PdfRole, PdfRoleFailure } from './pdfRole';
+import type { PdfRole, PdfRoleFailure, PdfWriteSafety, RawPdfRole } from './pdfRole';
 import { checkPdfWriteMark } from './pdfWriteMark';
+import { inspectPdfBytesWriteSafety } from './pdfWriteSafety';
 
 type Entry = AttachmentEntry;
 const key = PDFName.of;
 
-export async function inspectPdfRole(bytes: Uint8Array, generation: string): Promise<PdfRole> {
-    const unreadable = (attachment: string, reason: PdfRoleFailure, detail?: string, attachmentId?: string): PdfRole => ({ kind: 'unreadable', alreadyAnnotated: true, generation, attachment, attachmentId, reason, detail });
+async function inspectPdfRoleRaw(bytes: Uint8Array, generation: string): Promise<RawPdfRole> {
+    const unreadable = (attachment: string, reason: PdfRoleFailure, detail?: string, attachmentId?: string): RawPdfRole => ({ kind: 'unreadable', alreadyAnnotated: true, generation, attachment, attachmentId, reason, detail });
     try {
         const doc = await PDFDocument.load(bytes, { parseSpeed: Infinity, updateMetadata: false });
         if (doc.isEncrypted) return unreadable('PDF', 'encrypted');
@@ -37,7 +38,7 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
         if (originals.length > 1 || snapshots.length > 1 || notebooks.length > 1 || new Set(authority).size !== authority.length || authority.some(entry => entry.keys.length > 1) || notebooks.length && (originals.length || snapshots.length)) {
             return { kind: 'ambiguous', alreadyAnnotated: true, generation, candidates: authority.map(entry => entry.id) };
         }
-        function content(entry: Entry, limit: number): Uint8Array | PdfRole {
+        function content(entry: Entry, limit: number): Uint8Array | RawPdfRole {
             const failure = (reason: PdfRoleFailure, detail?: string) => unreadable([...entry.names].join(', '), reason, detail, entry.id);
             try {
                 const ef = entry.spec.lookup(key('EF'));
@@ -102,4 +103,12 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
     } catch (error) {
         return unreadable('attachment inventory', error instanceof Error && error.message.toLowerCase().includes('encrypted') ? 'encrypted' : 'corrupt');
     }
+}
+
+/** Both the visible outer and embedded pristine bytes must independently pass. */
+export async function inspectPdfRole(bytes: Uint8Array, generation: string): Promise<PdfRole & { writeSafety: PdfWriteSafety }> {
+    const outer = await inspectPdfBytesWriteSafety(bytes), role = await inspectPdfRoleRaw(bytes, generation);
+    const pristine = role.kind === 'annotated' ? await inspectPdfBytesWriteSafety(role.original) : outer;
+    const writeSafety = outer.kind !== 'safe' ? outer : pristine;
+    return { ...role, writeSafety };
 }

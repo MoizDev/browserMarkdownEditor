@@ -53,6 +53,8 @@ export interface PlatformPaneOptions<T extends object> {
     mirrorCoverage?(view: MirrorView, drawn: readonly BorrowedMirror<T>[]): LayerCoverage;
 }
 
+export type AttachPlatformPane = <T extends object>(host: HTMLElement, options: PlatformPaneOptions<T>) => PlatformPane;
+
 export interface PlatformPane {
     setVisible(visible: boolean): void;
     setFocused(focused: boolean): void;

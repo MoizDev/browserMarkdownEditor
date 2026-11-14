@@ -220,6 +220,7 @@ third-party code included (normally "none") · date.
 | `geom/figures.ts` | lane w-h | F-FIG-001/002/003/004 | geometry §3 | Independent shape recipes and local semantic bounds; FIG creation ratios and seed-centred gestures; kernel-certified arc conversion and analytic cloud with fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe, shared cubic length/splitting kernel, and continuous dash/dot phase; no tldraw source | none | 2026-11-13 |
 | `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; node-local hatch clipping and reflected phase; no tldraw source | none | 2026-11-13 |
+| `geom/providers.ts` | lane w-h | F-FIG-001, WB-D20, E-GEO-8 | geometry §§1, 3, 5 | Shared figure contour/variant geometry and text-paint types; injected shared path picker and scene local bounds; no tldraw source | none | 2026-11-13 |
 
 ## Media and clipboard (lane w-q)
 

@@ -1,5 +1,5 @@
 import { normalizePaper, PAPER_SIZES, type NotebookPaper } from '../../utils/paper';
-import type { Op, TouchedSet } from '../change/ops';
+import type { Op, TouchedSet, TransactionOrigin } from '../change/ops';
 import type { RichText } from '../text/richText';
 import { childrenOf, isSheetParent, sheetOf, type BoardDoc } from './doc';
 import { isValidId, type NodeId, type ParentId, type SheetId } from './ids';
@@ -10,7 +10,9 @@ import type { SampleStoreReader } from './samples';
 import {
     ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATCHES, TOOLS, V_ALIGNS,
 } from './styles';
-import { isSurrogateBoundary, scanText } from './textOffsets';
+import { isBlockRange, isSurrogateBoundary, scanText, spliceBlockCount } from './textOffsets';
+import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from './textLimits';
+export { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from './textLimits';
 
 export type ValidationCode = 'schema' | 'opaque' | 'V-1' | 'V-2' | 'V-3' | 'V-4' | 'V-5'
     | 'V-6' | 'V-7' | 'V-8' | 'V-9' | 'V-10' | 'V-11' | 'V-12';
@@ -21,9 +23,11 @@ export type ValidationResult = { readonly ok: true } | {
     readonly nodeId: string | null;
     readonly reason: string;
 };
+export type ValidationRefusal = Extract<ValidationResult, { readonly ok: false }>;
 export interface ValidationContext {
     readonly doc: BoardDoc;
     readonly samples: SampleStoreReader;
+    readonly origin?: TransactionOrigin;
 }
 
 const OK: ValidationResult = Object.freeze({ ok: true });
@@ -56,9 +60,10 @@ const KEYS = {
     paper: ['size', 'orientation', 'ruling', 'spacing', 'margin', 'pageCount'],
     media: ['id', 'mime', 'bytes', 'w', 'h', 'duration', 'animated', 'name', 'file', 'ext'],
     create: ['t', 'node'], delete: ['t', 'id'], set: ['t', 'id', 'key', 'value'],
-    splice: ['t', 'id', 'key', 'from', 'to', 'insert'], sheetCreate: ['t', 'op', 'sheet'],
+    splice: ['t', 'id', 'key', 'from', 'to', 'insert', 'wholeBlocks'], sheetCreate: ['t', 'op', 'sheet'],
     sheet: ['id', 'name', 'order', 'ext'], recordDelete: ['t', 'op', 'id'],
     sheetSet: ['t', 'op', 'id', 'key', 'value'], board: ['t', 'key', 'value'], mediaAdd: ['t', 'op', 'entry'],
+    ext: ['t', 'target', 'id', 'value'], mediaDrop: ['t', 'op', 'id', 'restoreMissing'],
 } as const;
 const VALUES = {
     dir: ['auto', 'ltr', 'rtl'], snap: ['none', 'center', 'edge-point', 'edge'],
@@ -66,8 +71,6 @@ const VALUES = {
 } as const;
 const BAD_RAW_ENTRY = Symbol('invalid raw entry');
 export const MAX_COORDINATE = 10_000_000; // R-W21: same world bound for every coordinate.
-export const MAX_TEXT_LENGTH = 1_000_000;
-export const MAX_TEXT_BLOCKS = 100_000; // R-W30 bounds the number of empty/short blocks too.
 
 function refuse(code: ValidationCode, opIndex: number, nodeId: string | null, reason: string): ValidationResult {
     return { ok: false, code, opIndex, nodeId, reason };
@@ -373,7 +376,9 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 const length = scanText(text);
                 if (!integer(op.from, 0, length) || !integer(op.to, op.from, length)
                     || !isSurrogateBoundary(text, op.from) || !isSurrogateBoundary(text, op.to)) return refuse('V-11', opIndex, node.id, 'Splice offsets must be ordered UTF-16 boundaries within the text');
-                if (!validRichText(op.insert) || length - (op.to - op.from) + scanText(op.insert) > MAX_TEXT_LENGTH) return refuse('V-11', opIndex, node.id, 'Splice fragment is malformed or the result exceeds 1000000 UTF-16 units');
+                if (op.wholeBlocks !== undefined && (op.wholeBlocks !== true || (context.origin !== 'undo' && context.origin !== 'redo') || !isBlockRange(text, op.from, op.to))) return refuse('V-11', opIndex, node.id, 'Whole-block inverse must be block-aligned');
+                if (!validRichText(op.insert) || length - (op.to - op.from) + scanText(op.insert) > MAX_TEXT_LENGTH
+                    || spliceBlockCount(text, op.from, op.to, op.insert.blocks.length) > MAX_TEXT_BLOCKS) return refuse('V-11', opIndex, node.id, 'Splice fragment or resulting text/block count is invalid');
                 return OK;
             }
             case 'sheet': {
@@ -397,6 +402,23 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 if (op.key === 'order') return typeof op.value === 'string' && isValidKey(op.value) ? OK : refuse('V-3', opIndex, null, 'Invalid sheet order key');
                 return refuse('schema', opIndex, null, 'Unknown sheet property');
             }
+            case 'ext': {
+                if ((context.origin !== 'undo' && context.origin !== 'redo') || !closed(op, KEYS.ext) || !extension(op.value)) return refuse('schema', opIndex, nodeId, 'Invalid internal extension restore');
+                switch (op.target) {
+                    case 'node': {
+                        if (!id(op.id)) return refuse('V-1', opIndex, nodeId, 'Extension node id is invalid');
+                        const node = doc.nodes.get(op.id);
+                        if (!node) return refuse('V-1', opIndex, op.id, 'Extension node does not exist');
+                        return node.kind === 'opaque' ? refuse('opaque', opIndex, node.id, `Opaque node ${node.id} cannot be edited`) : OK;
+                    }
+                    case 'sheet': return id(op.id) && doc.sheets.has(op.id as unknown as SheetId) ? OK : refuse('V-1', opIndex, null, 'Extension sheet does not exist');
+                    case 'media': return typeof op.id === 'string' && MEDIA_HASH.test(op.id) && doc.media.has(op.id as MediaId) ? OK : refuse('V-9', opIndex, null, 'Extension media does not exist');
+                    case 'pen': case 'view': return op.id === undefined ? OK : refuse('schema', opIndex, null, 'Board extension target has no id');
+                    case 'paper': return op.id === undefined && doc.host.kind === 'notebook' ? OK : refuse('schema', opIndex, null, 'Paper extension does not exist');
+                    case 'host': return op.id === undefined && doc.host.kind === 'pdf-ink' ? OK : refuse('schema', opIndex, null, 'PDF host extension does not exist');
+                    default: return refuse('schema', opIndex, nodeId, 'Unknown extension target');
+                }
+            }
             case 'board':
                 if (!closed(op, KEYS.board) || typeof op.key !== 'string') return refuse('schema', opIndex, null, 'Invalid board op');
                 switch (op.key) {
@@ -415,11 +437,13 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                     if (doc.media.has((op.entry as { id: MediaId }).id)) return refuse('V-9', opIndex, null, 'Media id is already used');
                     return OK;
                 }
-                if (op.op === 'drop' && closed(op, KEYS.recordDelete) && typeof op.id === 'string' && MEDIA_HASH.test(op.id)) {
+                if (op.op === 'drop' && closed(op, KEYS.mediaDrop) && typeof op.id === 'string' && MEDIA_HASH.test(op.id)) {
                     const media = op.id as MediaId;
                     if (!doc.media.has(media)) return refuse('V-9', opIndex, null, 'Media does not exist');
-                    return !doc.mediaRefs.get(media)?.size && !(doc.preservedMediaRefs.get(media) ?? 0)
-                        ? OK : refuse('V-9', opIndex, null, 'Media is still referenced by content or preserved data');
+                    if (op.restoreMissing !== undefined && (op.restoreMissing !== true || (context.origin !== 'undo' && context.origin !== 'redo'))) return refuse('schema', opIndex, null, 'Only an inverse can restore a missing media entry');
+                    if (doc.mediaRefs.get(media)?.size) return refuse('V-9', opIndex, null, 'Media is still referenced by live nodes');
+                    return op.restoreMissing === true || !(doc.preservedMediaRefs.get(media) ?? 0)
+                        ? OK : refuse('V-9', opIndex, null, 'Media is still referenced by preserved data');
                 }
                 return refuse('schema', opIndex, null, 'Unknown media operation');
             default: return refuse('schema', opIndex, nodeId, 'Unknown op type');
@@ -449,6 +473,13 @@ function finalNode(context: ValidationContext, node: Node, index: number): Valid
     } else if (!integer(node.page, 0)) return refuse('V-7', index, node.id, 'Paged root node requires a non-negative page index');
     // V-6's preserved-opaque exception follows document-model §9.3/RV-22.
     if (node.kind === 'group' && childrenOf(doc, node.id).length < 2 && !containsOpaque(doc, node.id)) return refuse('V-6', index, node.id, 'Normalization must dissolve a group with fewer than two children');
+    // V-10 waits for paired samples/pressure writes, just as V-7 waits for
+    // parent/page. A staged mismatch is allowed; an unencodable stroke is not.
+    if (node.kind === 'stroke') {
+        if (!context.samples.has(node.samples) || context.samples.count(node.samples) < 1) return refuse('V-10', index, node.id, 'Stroke requires sealed nonempty samples');
+        const mode = context.samples.pressureMode(node.samples);
+        if (node.pressure !== mode || (node.widthModel.id === 'pressure-linear-v1' && mode !== 'real')) return refuse('V-10', index, node.id, 'Stroke pressure and width model must agree with sealed sample pressure');
+    }
     if (node.kind === 'connector') {
         const sheet = sheetOf(doc, node.id);
         for (let i = 0; i < 2; i++) {

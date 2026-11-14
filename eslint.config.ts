@@ -115,6 +115,13 @@ export default defineConfig([
     },
   },
   {
+    // P-02a: one value caller of pdf.js's getDocument (eslint.rules.ts says why).
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/utils/pdfClassicOpen.ts'],
+    plugins: { bme: bmePlugin },
+    rules: { 'bme/classic-pdf-open': 'error' },
+  },
+  {
     // The VaultAgent helper is a Bun program, not browser code; `shared/` is
     // imported by both sides, so it may assume neither's globals beyond these.
     files: ['helper/**/*.ts', 'shared/**/*.ts'],

@@ -1,5 +1,9 @@
 # Reproducible browser inputs
 
+**Implementation-phase bar:** charter §0 supersedes review/proof requirements below: clean static
+checks and one real-app sanity run (light/dark screenshots looked at). Existing mutant controls
+are kept for the post-K7 review phase; do not run new reviewer proofs now.
+
 These are data generators, not tests. They never import `src/` or call app code. Behaviour is checked
 only by opening the generated files in the real app through a headless-browser run. Do not add a
 unit-test runner, `.test`/`.spec` files, or in-source assertions.
@@ -122,6 +126,14 @@ containers of `{path, encoding, content}` files, not physical copies committed t
 The bundle hash covers all contained paths and bytes. Browser runs materialize those entries in a
 named OPFS folder through `createWritable`, then use **Open Vault** and the actual file tree.
 
+V-08's separately registered save-path variant replaces line 4 of the mixed note with the sole
+`![[save-only.png]]` reference, staying at exactly 10,000 lines; `.Assets/save-only.png` has a
+unique name and the sidecar gives the exact before/after hashes. Deleting that one line leaves
+9,999 lines and no reference to that asset. Existing mixed-note bytes/hashes are untouched.
+V-08's mixed start-up composition is explicit: vault-1000 + GEN-01 + the original 10k mixed note,
+restoring `Welcome.md` or `geometry.pdf`. Its bundle records each source hash and the cold/warm,
+first-pixels/readable, bytes/requests, long-task and worker-start metrics it serves.
+
 GEN-01's oracle names PDF-default-space points and page-local top-left coordinates, including
 UserUnit, crop origin and clockwise page rotation. Matrices use `[a,b,c,d,e,f]` with
 `x' = a*x + c*y + e`, `y' = b*x + d*y + f`. It is the canonical platform corpus; the PDF manifest
@@ -138,7 +150,8 @@ Artifacts go into a fresh directory outside the repo. The ordinary gate is:
 
 ```sh
 bme-lock run -w 2 -- node verify/fixtures/run-v05.mjs \
-  --out /absolute/scratch/v05-run --url http://localhost:6180 --block-external
+  --out /absolute/scratch/v05-run --url http://localhost:6180 \
+  --dist /absolute/scratch/dist --block-external
 ```
 
 `--browser-mutant` must reach Reading mode in the real app and exit 1 with **BROWSER witness**
@@ -153,11 +166,14 @@ scratch-generator anchor; stale anchors fail loudly. Mutants cannot be combined 
 
 Off-origin blocking is **opt-in** (`--block-external`), with the mode and every blocked URL recorded;
 without that flag the run does not install a network blocker. The driver version is read from the
-installed Playwright package and checked against the pin, not merely copied from it.
+installed Playwright package and checked against the pin, not merely copied from it. The common
+picker/seeder and buildIdentity/bindServedBodies replace the old skill sketch. Functional binding
+records its uncached raw-route mode and actual served code hashes; this is not a timing run.
 
-`--record-manifests` is the explicit corpus-maintenance arm: it writes identities only after the
-same real-app witnesses pass; the normal run refuses any changed committed identity (VER-06).
-Review its fixture diffs, never use it as an automatic rebaseline. `report.json` and PNG captures
+`--record-manifests` is the explicit corpus-extension arm: it adds identities only after the
+same real-app witnesses pass and refuses to replace or remove an existing file's hash/size.
+A reviewed corpus change needs a new fixture identity, not a rewritten old hash. The normal run
+refuses any changed committed identity (VER-06). Never use this as an automatic rebaseline. `report.json` and PNG captures
 stay in the run directory; `losses` states the unexercised second machine and real-disk path.
 
 For externals, `node verify/fixtures/fetch-external.mjs --cache /absolute/scratch/fixtures-cache OLD-R4`

@@ -26,6 +26,7 @@ import type { NodeId } from '../model/ids';
 import type { Attachment, Node, ConnectorNode } from '../model/nodes';
 import type { SpatialRef } from '../pick';
 import type { BoardVectorGeometry } from '../render/vectorGeometry';
+import { prepareBoardAttachmentSurface, type BoardAttachmentSurface } from '../render/attachmentSurfaces';
 import { selectableAtFocus } from '../selection';
 
 export interface BoardPointQueryOptions {
@@ -65,6 +66,39 @@ function exactAttachmentBoundary(path: readonly PathOp[], query: PointQuery): bo
     }
     return false;
 }
+async function attachmentSurfacePoint(surface: BoardAttachmentSurface, query: PointQuery, tick: () => Promise<void>): Promise<'hit' | 'miss' | 'uncertain'> {
+    if (!Number.isFinite(surface.boundaryErrorWorld) || surface.boundaryErrorWorld < 0) throw new RangeError('Invalid attachment contour error');
+    if (surface.boundaryErrorWorld > 0) {
+        const boundary = createPointPathJob([surface.outline], { ...query, input: 'mouse' }, {
+            strokeRadiusLocal: surface.boundaryErrorWorld, marginCss: 0, errorCss: 0.01, maxSegments: 65_536 });
+        try {
+            for (;;) {
+                const result = boundary.step({ deadline: performance.now() + 3, maxWork: 128 });
+                if (result.status === 'pending') { await tick(); continue; }
+                if (result.status !== 'miss') return 'uncertain';
+                break;
+            }
+        } finally { boundary.cancel(); }
+    }
+    const fill = createFillPointJob([surface.outline], query.point, 'nonzero', { localToWorld: query.localToSurface, maxCommands: 65_536 });
+    for (;;) {
+        const result = fill.step({ deadline: performance.now() + 3, maxWork: 128 });
+        if (result.status === 'pending') { await tick(); continue; }
+        if (result.status === 'inside') return 'hit';
+        if (result.status === 'outside') return 'miss';
+        break;
+    }
+    if (surface.boundaryErrorWorld > 0) return 'uncertain';
+    const boundary = createCubicBoundaryJob([surface.outline], query.point, query.localToSurface, { maxCommands: 65_536 });
+    try {
+        for (;;) {
+            const result = boundary.step({ deadline: performance.now() + 3, maxWork: 128 });
+            if (result.status === 'pending') { await tick(); continue; }
+            return result.status === 'hit' ? 'hit' : 'uncertain';
+        }
+    } finally { boundary.cancel(); }
+}
+
 async function connectorPoint(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, worldToSurface: Affine,
     point: Vec2, input: InputKind, frames: readonly PointClipContour[], tick: () => Promise<void>): Promise<{ result: NarrowResult; uncertain: boolean }> {
     const run = async (paths: readonly (readonly PathOp[])[], query: PointQuery, options: PathPickOptions): Promise<PointPathJobResult> => {
@@ -187,9 +221,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (!resolved) throw cancelled();
                     const node = doc.nodes.get(resolved.id);
                     if (!node) throw cancelled();
-                    // Strokes and polylines have no defined attachment surface, even when selectable.
-                    if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque'
-                        || node.kind === 'stroke' || node.kind === 'polyline')) continue;
+                    if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque')) continue;
                     const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
                     if (!selected || node.kind === 'group') continue;
                     let parent = doc.nodes.get(node.parent as NodeId), clipped = false, clipUncertain = false;
@@ -199,7 +231,10 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                             const pose = worldPose(doc, parent.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
                             const frame: Affine = [c, s, -s, c, pose.x, pose.y];
                             frameClips.push({ outline: rectPath({ x: 0, y: 0, width: parent.w, height: parent.h }), localToSurface: compose(matrix, frame) });
-                            if (!pointInTransformedFrame(point, { x: 0, y: 0, width: parent.w, height: parent.h }, frame)) { clipped = true; break; }
+                            if (!pointInTransformedFrame(point, { x: 0, y: 0, width: parent.w, height: parent.h }, frame)) {
+                                if (targetMode) { clipped = true; break; }
+                                clipUncertain = true;
+                            }
                             const local = worldToLocal(doc, parent, point);
                             // A halo witness near the clip edge can belong entirely to hidden geometry.
                             const halo = (input === 'touch' ? 8 : 4) + (node.kind === 'stroke' ? 4 : 0);
@@ -213,7 +248,27 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (!scene.ready || scene.resolveSpatial(ref)?.id !== resolved.id || scene.resolveSpatial(ref)?.rank !== resolved.rank) throw cancelled();
                     let result = miss, ambiguous = false, target: BoardTargetHit | undefined;
                     const localToSurface = compose(matrix, ref.localToWorld);
-                    if (node.kind === 'stroke') {
+                    if (targetMode && (node.kind === 'stroke' || node.kind === 'polyline')) {
+                        let vector = prepared.vector;
+                        const line = node.kind === 'polyline' ? node as typeof node & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null } : null;
+                        if (line && (line.startAttach || line.endAttach)) {
+                            if (!vector) throw new Error('Polyline picking geometry is unavailable');
+                            const resolvedLine = await resolvePolylineAttachments(line, { runtime, doc, signal: combined, cooperate,
+                                current: () => { try { check(); return true; } catch { return false; } } });
+                            try {
+                                check(); vector = preparePolylineGeometry({ ...line, points: [...resolvedLine.points] }, { key: vector.key,
+                                    kernelVersion: 1, lengthError: 0.01, maxPieces: 8192, hitMarginCss: 4, hitErrorCss: 0.01 });
+                            } finally { resolvedLine.release(); }
+                        }
+                        const attachment = await prepareBoardAttachmentSurface(node, { vector, ink: prepared.ink, signal: combined, cooperate }); check();
+                        if (attachment) {
+                            const state = await attachmentSurfacePoint(attachment, { point: surface, input: 'mouse', localToSurface }, tick); check();
+                            if (state !== 'miss') {
+                                result = { hit: true, distanceCss: 0, part: 'body' }; ambiguous = state === 'uncertain';
+                                if (!ambiguous) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
+                            }
+                        }
+                    } else if (node.kind === 'stroke') {
                         if (!prepared.ink) throw new Error('Stroke picking geometry is unavailable');
                         let maybe = false;
                         for (const coverage of prepared.ink) {
@@ -293,7 +348,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     check();
                     if (result.hit) {
                         // A zero-distance vector witness is the pointer itself and survives every containing clip.
-                        ambiguous ||= clipUncertain && (node.kind === 'stroke' || result.distanceCss !== 0);
+                        ambiguous ||= !targetMode && clipUncertain && (node.kind === 'stroke' || result.distanceCss !== 0);
                         const candidate = { id: selected, rank: resolved.rank, result, ...(target ? { target } : {}) };
                         if (ambiguous) uncertain.push(candidate);
                         else if (!winner || (targetMode ? candidate.rank > winner.rank : better(candidate, winner))) winner = candidate;

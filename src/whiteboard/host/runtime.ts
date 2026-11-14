@@ -196,7 +196,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             return admission;
         },
         adoptPaintSource(witness, expected, isCurrent) {
-            if (disposed || !scene || !scene.ready) throw new Error('Board paint source is not ready');
+            if (disposed || !scene) throw new Error('Board paint source is not available');
             const target = scene;
             const admission = runtime.rebindPaintSource(witness, expected, token => {
                 const binding = options.render.capturePaintBinding(token);

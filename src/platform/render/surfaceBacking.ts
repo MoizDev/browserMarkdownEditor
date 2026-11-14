@@ -65,7 +65,15 @@ export class SurfaceBacking implements MemoryAllocator {
         if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 0 || height < 0) throw new RangeError('Invalid backing size');
         const requested = width * height * POLICY.surfaceReserveBytesPerPixel;
         if (!Number.isSafeInteger(requested)) throw new RangeError('Backing size exceeds safe accounting');
-        const held = [...this.leases].reduce((sum, lease) => sum + lease.bytes, 0);
+        let held = this.reservedBytes;
+        if (!this.displayed && requested > 0 && held > requested) {
+            // A staged canvas can release an indivisible oversized lease without touching the display.
+            const zeroed = resizeSurface(0, 0);
+            if (!zeroed.complete || zeroed.width !== 0 || zeroed.height !== 0 ||
+                this.options.canvas.width !== 0 || this.options.canvas.height !== 0) return zeroed;
+            this.releaseZeroed();
+            held = 0;
+        }
         if (requested > held && !this.reserve(requested - held)) return null;
         const result = resizeSurface(width, height);
         if (result.complete && result.width === width && result.height === height) {
@@ -81,6 +89,16 @@ export class SurfaceBacking implements MemoryAllocator {
     releaseZeroed(): void {
         if (this.options.canvas.width || this.options.canvas.height) throw new Error('Canvas backing is still live');
         for (const lease of this.leases) this.release(lease);
+    }
+
+    /** A zeroed kept canvas may rebuild behind a different displayed backend. Its new
+     * allocation is working scratch until that old display has actually been relinquished.
+     */
+    stage(): void {
+        if (this.closed || this.options.canvas.width || this.options.canvas.height || this.leases.size) {
+            throw new Error('Only a released zero-size backing can be staged');
+        }
+        this.displayed = false;
     }
 
     /** Called only after the selected old canvas has released its actual backing. */

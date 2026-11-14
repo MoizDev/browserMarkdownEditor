@@ -1,6 +1,8 @@
 import { now } from './clock';
 import type { CpuAdmission, CpuPermit, CpuPermits, Priority } from './envelope';
 
+const benchmarkPerf = __BME_BENCH__ ? await import('./perf') : null;
+
 const starvationMs = 2000;
 type Entry = {
     admission: CpuAdmission;
@@ -10,6 +12,7 @@ type Entry = {
     waiting: number;
     aged: boolean;
     phase: 'queued' | 'running' | 'paused' | 'released';
+    perfAsked?: number;
 };
 
 class Governor implements CpuPermits {
@@ -32,6 +35,7 @@ class Governor implements CpuPermits {
             waiting: now(), aged: false, phase: 'queued',
         };
         this.entries.add(entry);
+        if (__BME_BENCH__) { entry.perfAsked = entry.waiting; this.record(entry, 'queued'); }
         try {
             this.schedule(entry.priority === 0 ? entry : undefined);
         } catch (error) {
@@ -43,6 +47,7 @@ class Governor implements CpuPermits {
             reprioritise: priority => {
                 if (entry.phase === 'released' || priority === entry.priority) return;
                 entry.priority = priority;
+                if (__BME_BENCH__) this.record(entry, 'reprioritised');
                 entry.aged = false;
                 if (priority === 3) entry.waiting = now();
                 this.schedule(priority === 0 && entry.phase !== 'running' ? entry : undefined);
@@ -55,6 +60,7 @@ class Governor implements CpuPermits {
         if (entry.phase === 'released') return;
         entry.phase = 'released';
         this.entries.delete(entry);
+        if (__BME_BENCH__) this.record(entry, 'released');
         this.schedule();
     }
 
@@ -63,6 +69,7 @@ class Governor implements CpuPermits {
         entry.aged = entry.priority === 3 && time - entry.waiting >= starvationMs;
         entry.phase = 'running';
         entry.started = ++this.starts;
+        if (__BME_BENCH__) this.record(entry, resume ? 'resumed' : 'started');
         if (resume) entry.admission.resume();
         else entry.admission.start();
     }
@@ -118,6 +125,7 @@ class Governor implements CpuPermits {
                     entry.phase = 'paused';
                     entry.waiting = time;
                     entry.aged = false;
+                    if (__BME_BENCH__) this.record(entry, 'paused');
                     entry.admission.pause();
                     if (this.changed) break;
                 }
@@ -134,6 +142,27 @@ class Governor implements CpuPermits {
             this.scheduling = false;
             this.armFairness();
         }
+    }
+
+    perfCounts(): { held: number; queued: number } {
+        if (!__BME_BENCH__) return { held: 0, queued: 0 };
+        let held = 0, queued = 0;
+        for (const entry of this.entries) {
+            if (entry.phase === 'running') held++;
+            else if (entry.phase === 'queued' || entry.phase === 'paused') queued++;
+        }
+        return { held, queued };
+    }
+
+    private record(entry: Entry, transition: string): void {
+        if (!benchmarkPerf) return;
+        const counts = this.perfCounts();
+        // The permit seam has no client-generation or original-call timestamp. Preserve its
+        // admission timestamp and mark that generation unavailable rather than inventing one.
+        const sample = { worker: entry.admission.name, generation: 0, requestId: entry.admission.id,
+            priority: entry.priority, phase: 'permit' as const, time: now(), requestTime: entry.perfAsked!,
+            postTime: null, inFlight: this.entries.size, permitsHeld: counts.held, permitsQueued: counts.queued, transition };
+        benchmarkPerf.recordWorkerPerf(sample);
     }
 
     private armFairness(): void {
@@ -153,4 +182,9 @@ class Governor implements CpuPermits {
 }
 
 // All clients in this main-thread realm share one cap, including clients loaded lazily later.
-export const cpuGovernor: CpuPermits = new Governor();
+const governor = new Governor();
+export const cpuGovernor: CpuPermits = governor;
+export function workerPermitCounts(): { held: number; queued: number } {
+    if (!__BME_BENCH__) return { held: 0, queued: 0 };
+    return governor.perfCounts();
+}

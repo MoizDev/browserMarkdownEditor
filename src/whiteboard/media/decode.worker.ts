@@ -98,6 +98,48 @@ serve({
                 return { bitmap, durationMs, frameCount };
             } catch (error) { bitmap.close(); throw error; }
         },
+        async fullFrame(args, context) {
+            if (!args || typeof args !== 'object') throw new TypeError('Invalid full-frame request');
+            const value = args as { blob?: unknown; id?: unknown; mime?: unknown; width?: unknown; height?: unknown; animated?: unknown };
+            if (!(value.blob instanceof Blob) || (typeof File !== 'undefined' && value.blob instanceof File)
+                || value.blob.size > 10 * 1024 * 1024 || typeof value.id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value.id)
+                || typeof value.mime !== 'string' || typeof value.animated !== 'boolean'
+                || !Number.isSafeInteger(value.width) || !Number.isSafeInteger(value.height)
+                || (value.width as number) < 1 || (value.height as number) < 1
+                || (value.width as number) > (2 ** 26) / (value.height as number)) throw new TypeError('Invalid full-frame request');
+            const blob = value.blob, bytes = new Uint8Array(await blob.arrayBuffer());
+            await context.slice();
+            const mime = sniffMedia(bytes);
+            if (!mime || mime !== value.mime || !mime.startsWith('image/') || mime === 'image/svg+xml') throw new Error('Full-frame raster MIME mismatch');
+            const header = mime === 'image/png' ? pngHeader(bytes) : mime === 'image/jpeg' ? jpegHeader(bytes)
+                : mime === 'image/gif' ? gifHeader(bytes) : mime === 'image/webp' ? webpHeader(bytes) : isoHeader(bytes, 'avif');
+            const pixels = header.decodePixels ?? header.width * header.height;
+            if (header.width !== value.width || header.height !== value.height || header.animated !== value.animated
+                || !Number.isSafeInteger(pixels) || pixels < header.width * header.height || pixels > 2 ** 26) throw new Error('Full-frame header mismatch');
+            await context.slice();
+            if (await hashMedia(blob, context.signal, () => context.slice()) !== value.id) throw new Error('Full-frame hash mismatch');
+            await context.slice();
+            let bitmap: ImageBitmap | undefined;
+            try {
+                if (header.animated) {
+                    const Decoder = (globalThis as unknown as { ImageDecoder?: DecoderConstructor }).ImageDecoder;
+                    if (!Decoder) throw new Error('Animated picture decoding is unavailable');
+                    const decoder = new Decoder({ data: blob.stream(), type: mime });
+                    try {
+                        await decoder.tracks.ready; await decoder.completed;
+                        context.signal.throwIfAborted();
+                        if (!decoder.tracks.selectedTrack || decoder.tracks.selectedTrack.frameCount < 1) throw new Error('Invalid animated picture');
+                        const frame = await decoder.decode({ frameIndex: 0 });
+                        try { bitmap = await createImageBitmap(frame.image, { imageOrientation: 'from-image', colorSpaceConversion: 'default', premultiplyAlpha: 'premultiply' }); }
+                        finally { frame.image.close(); }
+                    } finally { decoder.close(); }
+                } else bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image', colorSpaceConversion: 'default', premultiplyAlpha: 'premultiply' });
+                await context.slice();
+                if (bitmap.width !== header.width || bitmap.height !== header.height) throw new Error('Full-frame decoded dimensions mismatch');
+                context.transfer(bitmap);
+                return { bitmap };
+            } catch (error) { bitmap?.close(); throw error; }
+        },
         async inspect(args, context) {
             if (!args || typeof args !== 'object' || !(args as { blob?: unknown }).blob || !((args as { blob: unknown }).blob instanceof Blob)) {
                 throw new Error('Invalid media request');

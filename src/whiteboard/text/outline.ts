@@ -6,7 +6,9 @@ import type { OutlineWorkerRequest } from './outlineTypes';
 import { handleOutlineStream, isOutlineStreamRequest } from './outlineStream';
 import type { OutlineStreamReply } from './outlineStream';
 import { rasterTextFragment } from './outlineRaster';
-import { clearOutlineGlyphCaches, shapeTextFragment } from './outlineShape';
+import { clearOutlineGlyphCaches, prepareTextOutline, shapeTextFragment } from './outlineShape';
+import { isOutlinePathPiece } from './outlinePieces';
+import type { OutlinePiece } from './outlinePieces';
 import { validOutlineRequest } from './outlineValidation';
 
 const fonts = new BoardFonts((globalThis as unknown as { fonts: FontFaceSet }).fonts);
@@ -17,7 +19,7 @@ function box(rect: PaintRect, color: Rgba, blend: 'normal' | 'multiply'): PageDi
 }
 
 /** The pinned layout owns line breaks and faces; HarfBuzz supplies export glyph outlines only. */
-export async function* streamTextOutline(payload: unknown, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
+async function* produceTextOutline(payload: unknown, context: WorkerContext, chunkPaths: boolean): AsyncGenerator<OutlinePiece> {
     if (!await validOutlineRequest(payload, context)) throw new RangeError('Invalid text export request or face generation');
     context.signal.throwIfAborted();
     if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
@@ -38,9 +40,18 @@ export async function* streamTextOutline(payload: unknown, context: WorkerContex
                 if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
                 const face = faces.faces[fragment.face], color = material.glyphs[colorIndex++];
                 if (!fragment.text) { if ((colorIndex & 1023) === 0) await context.slice(); continue; }
-                const commands = await shapeTextFragment(fragment, face, line.baseline, context);
-                if (commands !== null) yield { kind: 'path', d: commands, fill: color, blend: material.blend };
-                else yield* rasterTextFragment(fragment, face, line.baseline, line.top, line.bottom, localToWorld, color, pageScale, material.blend, fonts, context);
+                if (chunkPaths) {
+                    const prepared = await prepareTextOutline(fragment, face, line.baseline, context);
+                    if (prepared) {
+                        yield { kind: 'textPathStart', fill: color, blend: material.blend };
+                        for await (const commands of prepared.commands()) yield { kind: 'textPathChunk', commands };
+                        yield { kind: 'textPathEnd' };
+                    } else yield* rasterTextFragment(fragment, face, line.baseline, line.top, line.bottom, localToWorld, color, pageScale, material.blend, fonts, context);
+                } else {
+                    const commands = await shapeTextFragment(fragment, face, line.baseline, context);
+                    if (commands !== null) yield { kind: 'path', d: commands, fill: color, blend: material.blend };
+                    else yield* rasterTextFragment(fragment, face, line.baseline, line.top, line.bottom, localToWorld, color, pageScale, material.blend, fonts, context);
+                }
                 await context.slice();
             }
         }
@@ -57,9 +68,20 @@ export async function* streamTextOutline(payload: unknown, context: WorkerContex
     }
 }
 
+export async function* streamTextOutline(payload: unknown, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
+    for await (const piece of produceTextOutline(payload, context, false)) {
+        if (isOutlinePathPiece(piece)) throw new Error('Unexpected chunked text outline');
+        yield piece;
+    }
+}
+
+export function createTextOutlineStream(payload: unknown, context: WorkerContext, chunkPaths: boolean): AsyncGenerator<OutlinePiece> {
+    return produceTextOutline(payload, context, chunkPaths);
+}
+
 /** The existing worker protocol collects one text node; streaming consumers can retain only one item. */
 export async function textOutline(payload: unknown, context: WorkerContext): Promise<PageDisplayItem[] | OutlineStreamReply> {
-    if (isOutlineStreamRequest(payload)) return handleOutlineStream(payload, context, streamTextOutline);
+    if (isOutlineStreamRequest(payload)) return handleOutlineStream(payload, context, createTextOutlineStream);
     const items: PageDisplayItem[] = [];
     for await (const item of streamTextOutline(payload, context)) items.push(item);
     return items;

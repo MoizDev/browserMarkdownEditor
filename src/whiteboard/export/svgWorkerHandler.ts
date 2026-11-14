@@ -1,7 +1,8 @@
 import type { PageDisplayItem, Rect } from '../../platform/types'
 import type { WorkerContext } from '../../platform/workers/serve'
-import { streamTextOutline } from '../text/outline'
+import { createTextOutlineStream } from '../text/outline'
 import { handleOutlineStream, holdOutlineStream } from '../text/outlineStream'
+import type { OutlinePiece } from '../text/outlinePieces'
 import type { BoardJobIdentity } from '../workers/protocol'
 import type { TextDisplayFrame } from './displayList'
 import { createSvgWriter } from './svg'
@@ -45,11 +46,11 @@ export async function svgChunk(args: unknown, context: WorkerContext): Promise<n
     if (text) {
       const release = holdOutlineStream(text.id, text.owner)
       try {
-        const outlines = async function* (): AsyncGenerator<PageDisplayItem> {
+        const outlines = async function* (): AsyncGenerator<OutlinePiece> {
           for (;;) {
             context.signal.throwIfAborted()
             const batch = await handleOutlineStream({ outlineStream: 1, mode: 'nextBatch', id: text.id, owner: text.owner },
-              context, streamTextOutline, false)
+              context, createTextOutlineStream, false)
             if (batch.kind !== 'batch') throw new TypeError('Invalid SVG text outline batch')
             yield* batch.items
             if (batch.done) return

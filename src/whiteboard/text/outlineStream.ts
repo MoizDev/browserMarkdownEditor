@@ -1,21 +1,22 @@
-import type { PageDisplayItem } from '../../platform/types';
 import type { WorkerContext } from '../../platform/workers';
 import type { BoardJobIdentity } from '../workers/protocol';
+import type { OutlinePiece } from './outlinePieces';
 
 export type OutlineStreamReply =
     | { readonly kind: 'reserved' | 'busy' | 'started' | 'closed' | 'done' }
-    | { readonly kind: 'item'; readonly item: PageDisplayItem }
-    | { readonly kind: 'batch'; readonly items: readonly PageDisplayItem[]; readonly done: boolean };
+    | { readonly kind: 'item'; readonly item: OutlinePiece }
+    | { readonly kind: 'batch'; readonly items: readonly OutlinePiece[]; readonly done: boolean };
 
-type OutlineGenerator = AsyncGenerator<PageDisplayItem, void, unknown>;
-type GeneratorFactory = (payload: unknown, context: WorkerContext) => OutlineGenerator;
+type OutlineGenerator = AsyncGenerator<OutlinePiece, void, unknown>;
+type GeneratorFactory = (payload: unknown, context: WorkerContext, chunkPaths: boolean) => OutlineGenerator;
 interface StreamSlot {
     readonly id: string;
     readonly owner: BoardJobIdentity;
+    readonly chunkPaths: boolean;
     readonly proxy: WorkerContext;
     active?: WorkerContext;
     iterator?: OutlineGenerator;
-    pending?: PageDisplayItem;
+    pending?: OutlinePiece;
     timer?: ReturnType<typeof setTimeout>;
     busy: boolean;
     closing: boolean;
@@ -30,12 +31,14 @@ const MAX_BATCH_ITEMS = 64;
 const MAX_BATCH_BYTES = 4 * 1024 * 1024;
 const IDLE_MS = 10 * 60_000;
 
-function itemBytes(item: PageDisplayItem): number {
+function itemBytes(item: OutlinePiece): number {
     if (item.kind === 'path') return item.d.length * 64;
     if (item.kind === 'raster') return item.png.byteLength;
+    if (item.kind === 'textPathChunk') return item.commands.length * 64;
+    if (item.kind === 'textPathStart' || item.kind === 'textPathEnd') return 128;
     throw new TypeError('Unexpected text outline stream item');
 }
-function transferItem(item: PageDisplayItem, context: WorkerContext): void {
+function transferItem(item: OutlinePiece, context: WorkerContext): void {
     if (item.kind === 'raster' && item.png.buffer instanceof ArrayBuffer
         && item.png.byteOffset === 0 && item.png.byteLength === item.png.buffer.byteLength) context.transfer(item.png.buffer);
 }
@@ -111,7 +114,8 @@ export async function handleOutlineStream(value: unknown, context: WorkerContext
     if (value.mode === 'reserve') {
         if (slot) throw new Error('Text outline stream already exists');
         if (streams.size >= MAX_STREAMS) return { kind: 'busy' };
-        const created = { id: value.id, owner, busy: false, closing: false, holds: 0 } as StreamSlot;
+        if (value.chunkPaths !== undefined && typeof value.chunkPaths !== 'boolean') throw new TypeError('Invalid text outline stream mode');
+        const created = { id: value.id, owner, chunkPaths: value.chunkPaths === true, busy: false, closing: false, holds: 0 } as StreamSlot;
         (created as { proxy: WorkerContext }).proxy = proxyFor(created);
         streams.set(created.id, created);
         arm(created);
@@ -130,7 +134,7 @@ export async function handleOutlineStream(value: unknown, context: WorkerContext
     if (slot.busy || slot.closing) throw new Error('Text outline stream is already advancing');
     if (value.mode === 'start') {
         if (slot.iterator || !('request' in value)) throw new Error('Invalid text outline stream start');
-        slot.iterator = create(value.request, slot.proxy);
+        slot.iterator = create(value.request, slot.proxy, slot.chunkPaths);
         arm(slot);
         return { kind: 'started' };
     }
@@ -140,7 +144,7 @@ export async function handleOutlineStream(value: unknown, context: WorkerContext
     slot.busy = true;
     slot.active = context;
     try {
-        const items: PageDisplayItem[] = [];
+        const items: OutlinePiece[] = [];
         let bytes = 0, done = false;
         const maximum = value.mode === 'next' ? 1 : MAX_BATCH_ITEMS;
         while (items.length < maximum) {

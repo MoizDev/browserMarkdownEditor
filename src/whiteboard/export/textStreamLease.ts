@@ -15,7 +15,7 @@ export interface ExportTextStreamLease {
 
 /** Reserve before cloning the captured paint; release also covers a lost reservation reply. */
 export async function openExportTextStream(source: PaintNodeSource, item: PaintTextItem, pageScale: number,
-  signal: AbortSignal): Promise<ExportTextStreamLease> {
+  signal: AbortSignal, chunkPaths = false): Promise<ExportTextStreamLease> {
   const owner: BoardJobIdentity = { session: crypto.randomUUID(), epoch: source.token.vaultEpoch, revision: source.sceneRevision }
   const id = crypto.randomUUID(), client = boardWorker('export')
   const current = (candidate: BoardJobIdentity) => !signal.aborted && source.isCurrent()
@@ -34,7 +34,7 @@ export async function openExportTextStream(source: PaintNodeSource, item: PaintT
     for (;;) {
       signal.throwIfAborted()
       attempted = true
-      const reply = await client.request<OutlineStreamReply>('textOutline', { ...base, mode: 'reserve' }, owner,
+      const reply = await client.request<OutlineStreamReply>('textOutline', { ...base, mode: 'reserve', chunkPaths }, owner,
         { ...options, cpu: 'light' }, current)
       if (reply.kind === 'reserved') break
       if (reply.kind !== 'busy') throw new TypeError('Invalid text outline stream reservation')

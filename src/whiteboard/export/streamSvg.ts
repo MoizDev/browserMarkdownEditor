@@ -79,7 +79,7 @@ export async function streamSvg(
           await send(items)
           items.length = 0
           const frame = captureTextDisplay(item)
-          const lease = await openExportTextStream(source, item, scale, signal)
+          const lease = await openExportTextStream(source, item, scale, signal, true)
           try {
             await client.request('svgChunk', { streamId, text: { id: lease.id, owner: lease.owner, frame } }, identity, opts, current)
             lease.complete()

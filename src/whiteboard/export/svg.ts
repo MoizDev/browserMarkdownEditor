@@ -1,6 +1,7 @@
 import type { Affine, PageDisplayItem, PageDisplayList, PathCommand, Rect, Rgba } from '../../platform/types'
 import type { WorkerContext } from '../../platform/workers'
 import type { TextDisplayFrame } from './displayList'
+import type { OutlinePiece } from '../text/outlinePieces'
 import { ExportTooLarge } from './png'
 
 const SVG_LIMIT = 512 * 1024 * 1024
@@ -58,7 +59,7 @@ function pathAttributes(item: Extract<PageDisplayItem, { kind: 'path' }>): strin
 export function createSvgWriter(bounds: Readonly<Rect>): {
   append(item: PageDisplayItem): void
   appendCooperative(item: PageDisplayItem, context: WorkerContext, isCurrent: () => boolean): Promise<void>
-  appendTextCooperative(frame: TextDisplayFrame, items: AsyncIterable<PageDisplayItem>, context: WorkerContext, isCurrent: () => boolean): Promise<void>
+  appendTextCooperative(frame: TextDisplayFrame, items: AsyncIterable<OutlinePiece>, context: WorkerContext, isCurrent: () => boolean): Promise<void>
   finish(): Blob
 } {
   if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0) throw new RangeError('Invalid SVG extent')
@@ -137,7 +138,7 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
       case 'raster': return `<image ${rect(item.rect)} preserveAspectRatio="none" href="data:image/png;base64,${bytes64(item.png)}"${effects(item.opacity, item.blend)}/>`
     }
   }
-  async function writeCooperative(item: PageDisplayItem | null, frame: TextDisplayFrame | null, items: AsyncIterable<PageDisplayItem> | null,
+  async function writeCooperative(item: PageDisplayItem | null, frame: TextDisplayFrame | null, items: AsyncIterable<OutlinePiece> | null,
     context: WorkerContext, isCurrent: () => boolean): Promise<void> {
       if (finished || poisoned || busy) throw new Error('SVG writer is unavailable')
       busy = true
@@ -152,10 +153,10 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
         target.push(value)
         compact(target, target === body ? bodyBlobs : definitionBlobs, value.length)
       }
-      const path = async (target: string[], commands: readonly PathCommand[]) => {
+      const path = async (target: string[], commands: readonly PathCommand[], leading = false) => {
         for (let i = 0; i < commands.length; i += 512) {
           check()
-          put(target, `${i ? ' ' : ''}${pathData(commands.slice(i, i + 512))}`)
+          put(target, `${i || leading ? ' ' : ''}${pathData(commands.slice(i, i + 512))}`)
           await context.slice()
         }
       }
@@ -219,7 +220,27 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
           for (const clip of frame.clips) { check(); await openGroup({ kind: 'group', clip, items: [] }) }
           check()
           await openGroup({ kind: 'group', transform: frame.transform, items: [] })
-          for await (const child of items) await visit(child, frame.clips.length + 1)
+          let openPath: Extract<PageDisplayItem, { kind: 'path' }> | null = null, hasCommands = false
+          for await (const child of items) {
+            check()
+            if (child.kind === 'textPathStart') {
+              if (openPath) throw new TypeError('Nested SVG text path')
+              openPath = { kind: 'path', d: [], fill: child.fill, blend: child.blend }
+              hasCommands = false
+              put(body, '<path d="')
+            } else if (child.kind === 'textPathChunk') {
+              if (!openPath) throw new TypeError('SVG text path chunk without start')
+              if (child.commands.length) { await path(body, child.commands, hasCommands); hasCommands = true }
+            } else if (child.kind === 'textPathEnd') {
+              if (!openPath) throw new TypeError('SVG text path end without start')
+              put(body, `"${pathAttributes(openPath)}/>`)
+              openPath = null
+            } else {
+              if (openPath) throw new TypeError('SVG item inside an unfinished text path')
+              await visit(child, frame.clips.length + 1)
+            }
+          }
+          if (openPath) throw new TypeError('Unfinished SVG text path')
           for (let i = 0; i <= frame.clips.length; i++) put(body, '</g>')
         } else if (item) await visit(item, 0)
         else throw new TypeError('Invalid SVG writer input')

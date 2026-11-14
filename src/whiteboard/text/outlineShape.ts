@@ -10,6 +10,11 @@ interface FontEntry { readonly font: HarfBuzzFont; readonly paths: Map<number, {
 interface FontSlot { promise: Promise<FontEntry>; readonly controller: AbortController; waiters: number; settled: boolean }
 const loaded = new Map<string, FontSlot>();
 const GLYPH_CACHE_BYTES = 512 * 1024;
+const COMMAND_CHUNK = 1024;
+
+export interface PreparedTextOutline {
+    commands(): AsyncGenerator<readonly PathCommand[]>;
+}
 
 export function clearOutlineGlyphCaches(): void {
     for (const slot of loaded.values()) void slot.promise.then(entry => { entry.paths.clear(); entry.bytes = 0; }).catch(() => undefined);
@@ -57,58 +62,95 @@ function glyphPath(entry: FontEntry, id: number): GlyphPath {
     }
     return path;
 }
-
-/** The captured layout decides lines and faces; shaping may fall back but never reflows the fragment. */
-export async function shapeTextFragment(fragment: PaintFragment, face: Face, baseline: number, context: WorkerContext): Promise<PathCommand[] | null> {
+function current(context: WorkerContext): void {
+    context.signal.throwIfAborted();
     if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
+}
+function validGlyphPath(path: GlyphPath): boolean {
+    for (const part of path) {
+        const count = part.type === 'M' || part.type === 'L' ? 2 : part.type === 'Q' ? 4 : part.type === 'C' ? 6 : part.type === 'Z' ? 0 : -1;
+        if (count < 0 || part.values.length !== count || !part.values.every(Number.isFinite)) return false;
+    }
+    return true;
+}
+
+/** Validate the whole fragment before exposing a path, so fallback never follows partial vector output. */
+export async function prepareTextOutline(fragment: PaintFragment, face: Face, baseline: number,
+    context: WorkerContext): Promise<PreparedTextOutline | null> {
+    current(context);
     if (fragment.systemFallback || !face.loaded) return null;
     try {
         const [hb, entry] = await Promise.all([import('harfbuzzjs'), outlineFont(face, context.signal)]);
-        context.signal.throwIfAborted();
+        current(context);
         const buffer = new hb.Buffer();
         buffer.addText(fragment.text); buffer.guessSegmentProperties();
         buffer.setDirection(fragment.rtl ? hb.Direction.RTL : hb.Direction.LTR);
         hb.shape(entry.font, buffer);
         const infos = buffer.getGlyphInfos(), positions = buffer.getGlyphPositions(), upem = entry.font.face.upem;
         if (!Number.isFinite(upem) || upem <= 0 || infos.length !== positions.length || infos.length > fragment.text.length * 8 + 1024) return null;
-        let advance = 0;
+        let advance = 0, glyphCommands = 0;
         for (let i = 0; i < infos.length; i++) {
             const info = infos[i], position = positions[i];
             if (!Number.isSafeInteger(info.codepoint) || info.codepoint <= 0 || !Number.isFinite(position.xAdvance)
                 || !Number.isFinite(position.yAdvance) || !Number.isFinite(position.xOffset) || !Number.isFinite(position.yOffset)) return null;
             advance += position.xAdvance;
+            if ((i & 1023) === 1023) { current(context); await context.slice(); }
         }
         if (!Number.isFinite(advance) || Math.abs(advance * 64 / upem - fragment.width * 64 / face.size) > 0.05) return null;
-        const commands: PathCommand[] = [], factor = face.size / upem;
-        let x = fragment.x, y = baseline, work = 0;
         for (let i = 0; i < infos.length; i++) {
-            context.signal.throwIfAborted();
-            const position = positions[i], originX = x + position.xOffset * factor, originY = y - position.yOffset * factor;
-            let px = 0, py = 0, startX = 0, startY = 0;
-            for (const part of glyphPath(entry, infos[i].codepoint)) {
-                const v = part.values, type = part.type;
-                const count = type === 'M' || type === 'L' ? 2 : type === 'Q' ? 4 : type === 'C' ? 6 : type === 'Z' ? 0 : -1;
-                if (count < 0 || v.length !== count || !v.every(Number.isFinite)) return null;
-                const tx = (value: number) => originX + value * factor, ty = (value: number) => originY - value * factor;
-                if (type === 'M') { px = tx(v[0]); py = ty(v[1]); startX = px; startY = py; commands.push(['M', px, py]); }
-                else if (type === 'L') { px = tx(v[0]); py = ty(v[1]); commands.push(['L', px, py]); }
-                else if (type === 'Q') {
-                    const qx = tx(v[0]), qy = ty(v[1]), ex = tx(v[2]), ey = ty(v[3]);
-                    commands.push(['C', px + 2 * (qx - px) / 3, py + 2 * (qy - py) / 3,
-                        ex + 2 * (qx - ex) / 3, ey + 2 * (qy - ey) / 3, ex, ey]); px = ex; py = ey;
-                } else if (type === 'C') {
-                    px = tx(v[4]); py = ty(v[5]); commands.push(['C', tx(v[0]), ty(v[1]), tx(v[2]), ty(v[3]), px, py]);
-                } else { commands.push(['Z']); px = startX; py = startY; }
-                if (++work % 1024 === 0) { context.signal.throwIfAborted(); await context.slice(); }
-            }
-            x += position.xAdvance * factor; y -= position.yAdvance * factor;
+            current(context);
+            const path = glyphPath(entry, infos[i].codepoint);
+            if (!validGlyphPath(path)) return null;
+            glyphCommands += path.length;
             if ((i & 127) === 127) await context.slice();
         }
-        context.signal.throwIfAborted();
-        return commands.length || !/\S/u.test(fragment.text) ? commands : null;
+        if (!glyphCommands && /\S/u.test(fragment.text)) return null;
+        current(context);
+        const factor = face.size / upem;
+        return {
+            async *commands(): AsyncGenerator<readonly PathCommand[]> {
+                let commands: PathCommand[] = [], x = fragment.x, y = baseline;
+                for (let i = 0; i < infos.length; i++) {
+                    current(context);
+                    const position = positions[i], originX = x + position.xOffset * factor, originY = y - position.yOffset * factor;
+                    let px = 0, py = 0, startX = 0, startY = 0;
+                    for (const part of glyphPath(entry, infos[i].codepoint)) {
+                        const v = part.values, type = part.type;
+                        const tx = (value: number) => originX + value * factor, ty = (value: number) => originY - value * factor;
+                        if (type === 'M') { px = tx(v[0]); py = ty(v[1]); startX = px; startY = py; commands.push(['M', px, py]); }
+                        else if (type === 'L') { px = tx(v[0]); py = ty(v[1]); commands.push(['L', px, py]); }
+                        else if (type === 'Q') {
+                            const qx = tx(v[0]), qy = ty(v[1]), ex = tx(v[2]), ey = ty(v[3]);
+                            commands.push(['C', px + 2 * (qx - px) / 3, py + 2 * (qy - py) / 3,
+                                ex + 2 * (qx - ex) / 3, ey + 2 * (qy - ey) / 3, ex, ey]); px = ex; py = ey;
+                        } else if (type === 'C') {
+                            px = tx(v[4]); py = ty(v[5]); commands.push(['C', tx(v[0]), ty(v[1]), tx(v[2]), ty(v[3]), px, py]);
+                        } else { commands.push(['Z']); px = startX; py = startY; }
+                        if (commands.length >= COMMAND_CHUNK) {
+                            yield commands;
+                            commands = [];
+                            current(context);
+                            await context.slice();
+                        }
+                    }
+                    x += position.xAdvance * factor; y -= position.yAdvance * factor;
+                    if ((i & 127) === 127) await context.slice();
+                }
+                current(context);
+                if (commands.length) yield commands;
+            },
+        };
     } catch {
-        context.signal.throwIfAborted();
-        if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
+        current(context);
         return null;
     }
+}
+
+/** Legacy consumers receive one path; streaming sinks can consume the same path in bounded chunks. */
+export async function shapeTextFragment(fragment: PaintFragment, face: Face, baseline: number, context: WorkerContext): Promise<PathCommand[] | null> {
+    const prepared = await prepareTextOutline(fragment, face, baseline, context);
+    if (!prepared) return null;
+    const commands: PathCommand[] = [];
+    for await (const chunk of prepared.commands()) commands.push(...chunk);
+    return commands;
 }

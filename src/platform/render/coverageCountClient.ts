@@ -3,6 +3,7 @@ import type { WorkerClient } from '../workers/envelope';
 import type { ByteLease } from './gfx/api';
 import type { MemoryAllocator } from './memoryGovernor';
 import type { FrameToken } from './types';
+import { coverageScratchBytes } from './coverageCountSizing';
 
 export interface CoverageFrameTag {
     readonly frameId: number;
@@ -36,6 +37,7 @@ interface Pending {
     readonly bitmap: ImageBitmap;
     readonly frame: CoverageFrameTag;
     readonly pixels: number;
+    readonly scratchBytes: number;
     readonly encoding: 'r8' | 'rgb';
     readonly lease: ByteLease;
     readonly deadline: number;
@@ -63,8 +65,8 @@ function sameFrame(a: CoverageFrameTag, b: CoverageFrameTag): boolean {
         a.token.bytesGeneration === b.token.bytesGeneration && a.token.session === b.token.session &&
         a.token.viewLease === b.token.viewLease && a.token.deviceGeneration === b.token.deviceGeneration;
 }
-function validCount(result: CoverageCount, pixels: number): boolean {
-    if (!result || typeof result !== 'object' || result.pixels !== pixels || result.ownedScratchBytes !== pixels * 16 ||
+function validCount(result: CoverageCount, pixels: number, scratchBytes: number): boolean {
+    if (!result || typeof result !== 'object' || result.pixels !== pixels || result.ownedScratchBytes !== scratchBytes ||
         !Number.isFinite(result.countMs) || result.countMs < 0) return false;
     const counts = [result.outside, result.hole, result.standin, result.current, result.invalid];
     return counts.every(value => Number.isSafeInteger(value) && value >= 0) && counts.reduce((sum, value) => sum + value, 0) === pixels;
@@ -107,7 +109,7 @@ export function createCoverageCounter(options: CoverageCounterOptions): Coverage
                 if (disposed || item.closed) return;
                 close(item); if (active === item) active = null;
                 if (!sameFrame(result?.frame, item.frame)) notifyDrop(item.frame, 'stale');
-                else if (!validCount(result, item.pixels)) notifyDrop(item.frame, 'invalid');
+                else if (!validCount(result, item.pixels, item.scratchBytes)) notifyDrop(item.frame, 'invalid');
                 else {
                     try { options.onCount(result); } catch (error) { console.error('Coverage count callback failed:', error); }
                 }
@@ -130,7 +132,8 @@ export function createCoverageCounter(options: CoverageCounterOptions): Coverage
                 return false;
             }
             const frame = copyFrame(frameTag);
-            const pixels = bitmap.width * bitmap.height, bytes = pixels * 20;
+            const pixels = bitmap.width * bitmap.height;
+            const scratchBytes = coverageScratchBytes(bitmap.width, bitmap.height), bytes = pixels * 4 + scratchBytes;
             if (!bitmap.width || !bitmap.height || !Number.isSafeInteger(bytes)) {
                 bitmap.close(); notifyDrop(frame, 'invalid'); return false;
             }
@@ -141,7 +144,7 @@ export function createCoverageCounter(options: CoverageCounterOptions): Coverage
             try { lease = options.memory.reserve(bytes); }
             catch { bitmap.close(); notifyDrop(frame, 'memory'); return false; }
             if (!lease) { bitmap.close(); notifyDrop(frame, 'memory'); return false; }
-            const item: Pending = { bitmap, frame, pixels, encoding, lease, deadline: performance.now() + deadlineMs, timer: null, closed: false };
+            const item: Pending = { bitmap, frame, pixels, scratchBytes, encoding, lease, deadline: performance.now() + deadlineMs, timer: null, closed: false };
             item.timer = setTimeout(() => {
                 const index = queue.indexOf(item);
                 if (index < 0) return;

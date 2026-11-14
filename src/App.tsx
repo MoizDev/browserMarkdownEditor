@@ -1763,8 +1763,10 @@ export default function App() {
           if (!replace || !isCurrent() || !targetClosed()) return false;
         }
         const result = await writeNotebookExport(file.parentHandle, parentPath, targetName, bytes, observed, () => isCurrent() && targetClosed());
-        if (result.status === 'cancelled') return false;
-        if (result.status === 'changed') continue;
+        if (result.status !== 'written') {
+          if (result.status === 'changed') continue;
+          return false;
+        }
         exportedNotebooksRef.current.set(key, result.version);
         return true;
       }

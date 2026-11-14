@@ -1,5 +1,5 @@
 import { serve } from '../../platform/workers/serve';
-import { assembleDisplayPdf } from './assemble';
+import { assembleDisplayPdf, finishGeneratedNotebook, type GeneratedNotebookRequest } from './assemble';
 import type { DisplayPdfInput, InkPageInput, InkPackage } from './types';
 import { emitDocument } from './emit';
 
@@ -9,6 +9,11 @@ serve({
     handlers: {
         async build(args, context) {
             const bytes = await assembleDisplayPdf(args as DisplayPdfInput, context);
+            context.transfer(bytes.buffer as ArrayBuffer);
+            return bytes;
+        },
+        async finishNotebook(args, context) {
+            const bytes = await finishGeneratedNotebook(args as GeneratedNotebookRequest, context);
             context.transfer(bytes.buffer as ArrayBuffer);
             return bytes;
         },

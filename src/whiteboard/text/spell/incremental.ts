@@ -145,11 +145,9 @@ export class IncrementalSpelling {
         let result: Uint32Array;
         if (cached) {
             const changed = await changedRange(cached.text, text, context);
-            if (!changed) result = cached.ranges.slice();
-            else {
-                const replacement = await scan(text, changed.from, changed.newTo, checkWord, context);
-                result = await splice(cached.ranges, changed, replacement, context);
-            }
+            if (!changed) { current(context); return cached.ranges.slice(); }
+            const replacement = await scan(text, changed.from, changed.newTo, checkWord, context);
+            result = await splice(cached.ranges, changed, replacement, context);
         } else result = Uint32Array.from(await scan(text, 0, text.length, checkWord, context));
         current(context);
         if (epoch === this.epoch) {

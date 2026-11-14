@@ -5,15 +5,18 @@ import type { WorkerClient } from '../../../platform/workers';
 import type { Misspelling } from './menu';
 import { normalizeUserDictionary } from './dictionary';
 
-function misspellings(value: unknown, text: string): readonly Misspelling[] {
+async function misspellings(value: unknown, text: string, signal: AbortSignal): Promise<readonly Misspelling[]> {
     if (!(value instanceof Uint32Array) || value.length % 2 || value.length > text.length * 2) throw new Error('Invalid spelling worker response');
     const result: Misspelling[] = [];
     let previous = 0;
     for (let i = 0; i < value.length; i += 2) {
+        signal.throwIfAborted();
         const from = value[i], to = value[i + 1];
         if (from < previous || to <= from || to > text.length) throw new Error('Invalid spelling worker range');
         result.push({ from, to, word: text.slice(from, to) }); previous = to;
+        if ((i & 8191) === 8190) await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
+    signal.throwIfAborted();
     return result;
 }
 
@@ -158,8 +161,10 @@ export class BoardSpellClient {
                 if (!host) throw new DOMException('Spelling client closed', 'AbortError');
                 return host.request<unknown>('check', { text },
                     { priority: 2, signal: controller.signal, deadlineMs: 10_000, terminateOnDeadline: true });
-            }).then(value => {
-                if (value !== null && !this.disposed && generation === this.generation) publish(misspellings(value, text));
+            }).then(async value => {
+                if (value === null || this.disposed || generation !== this.generation) return;
+                const ranges = await misspellings(value, text, controller.signal);
+                if (!this.disposed && generation === this.generation && !controller.signal.aborted) publish(ranges);
             }).catch(reason => {
                 if (this.disposed || generation !== this.generation || controller.signal.aborted) return;
                 if (reason instanceof Error && (reason.name === 'Cancelled' || reason.name === 'WorkerCrashed'))

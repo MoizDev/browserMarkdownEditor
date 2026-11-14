@@ -64,12 +64,31 @@ third-party code included (normally "none") · date.
 | `ink/flatten.ts` | lane w-e | D-13; F-INK-005; E-INK-4/9/10/11 | `architecture/ink.md` §5–6 | M. Breuß, Numerical Algorithms for Visual Computing I (Saarland, 2008) §5.3 Theorem 7, https://www.mia.uni-saarland.de/Teaching/NAVC08/NAVC2008.pdf (convexity/subdivision mathematics); J. Gravesen, The Length of Bézier Curves, Graphics Gems IV IV.7 (bibliographic/search excerpt only); own finite-segment hull tube, length enclosures and typed work-stack derivation; no library code | none | 2026-11-13 |
 | `ink/outline.ts` | lane w-e | D-13; R-20; F-INK-005/006; E-INK-7/8/12/13; R-W24 | `architecture/ink.md` §4–6 | Own swept endpoint-disc convex hull/external tangents and positive nonzero-union paths; CGAL Minkowski Sum manual https://doc.cgal.org/latest/Minkowski_sum_2/index.html (offset mathematics only, no package code); own cubic-circle radial error identity; lead R-W24 half-open/right-continuous dash rule and separate explicit point motifs; resumable per-command/refinement outline emission shares cap math with the synchronous wrapper for cooperative Layer.prepare; no tldraw source read | none | 2026-11-13 |
 | `ink/pick.ts` | lane w-e | R-13; WB-D24; R-20; E-INK-7/8 | `architecture/ink.md` §6.2; `geometry.md` §5.1 | Gilbert, Johnson, Keerthi (1988), IEEE JRA 4(2):193–203, §III support-set mathematics, https://graphics.stanford.edu/courses/cs164-09-spring/Handouts/paper_GJKoriginal.pdf; own 2D simplex reduction, affine ellipse/capsule support and certified distance intervals; no package implementation or tldraw source read | none | 2026-11-13 |
+| `scene/bounds.ts` | lane w-e | WIP W-E3; R-W38/39 | rendering §§2,6; document-model §§6.1,10.2 | Greenfield model/ink public types and R-W38/39; own Float64 affine and conservative source-summary bounds; injected exact-layout metrics; no tldraw source | none | 2026-11-13 |
+| `scene/index.ts` | lane w-e | WIP W-E3 | rendering §6 | Kamel/Faloutsos, On Packing R-trees, CIKM1993, https://www.cs.cmu.edu/~christos/PUBLICATIONS.OLDER/cikm93.pdf (search/abstract ideas only); own Hilbert quadrant construction and standard AVL height rotations, no library implementation | none | 2026-11-13 |
+| `scene/order.ts` | lane w-e | WIP W-E3 | rendering §§2,3.1,6 | Own fixed-size chunk sequence and Fenwick rank counts; public model stable-slot/order requirements; no library or tldraw code | none | 2026-11-13 |
+| `render/colour.ts` | lane w-e | W-E4 shared contract | rendering §5.2; C2.4 | Public Rgba/RgbaP contracts; encoded-sRGB premultiplication and W3C source-over/multiply algebra from design; injected theme palettes, no legacy palette implementation | none | 2026-11-13 |
+| `render/material.ts` | lane w-e | W-E4 shared contract; R-20 | rendering §§3.1,4,5.2 | Design's non-isolated inherited opacity and two highlighter bands0.82/0.35; public stroke metrics; own resolved material construction | none | 2026-11-13 |
+| `render/paintStream.ts` | lane w-e | W-E4 shared contract | rendering §§2–5,11,12 | Shared platform/ink public types; direct v-b consumer agreement; own ordered two-band resumable command emission and clip/image transform contract, no second scene or stroker | none | 2026-11-13 |
+| `render/resources.ts` | lane w-e | W-E4 shared contract | rendering §§7,10,11; C4 | Public render tokens and direct v-b preparation/asset-lease agreement; injected origin-clean async decoder ownership, immutable frame source and existing-host invalidation, no private scheduler/context | none | 2026-11-13 |
 
 ## Canvas 2D path (lane v-b)
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `render/reference/coverage2d.ts` | lane v-b | C2.4, C4.3; F-INK-005/006/007; E-INK-7/8 | rendering §§2–5,10–13; ink §6.1 | Those greenfield plans; platform PathCommand and w-e's canonical InkCoverage/InkOutlineJob public interfaces; bounded work, unpublished-path lifetime and double-precision origin rebasing from the design; native Path2D command methods; no tldraw source | none | 2026-11-13 |
+
+## Text (lane w-n)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `text/graphemes.ts` | lane w-n | T-1, T-5 | text §§2, 4, 9 | Design; Intl.Segmenter browser API; no tldraw source | none | 2026-11-13 |
+| `text/unicode.ts` | lane w-n | T-1 | text §2 | Unicode 17.0.0 property and paired-bracket tables; no tldraw source | none | 2026-11-13 |
+| `text/lineBreak.ts` | lane w-n | T-1 | text §2 | UAX #14 revision 55, Unicode 17.0.0 tables, Intl.Segmenter for SA words; independently implemented | none | 2026-11-13 |
+| `text/bidi.ts` | lane w-n | T-1 | text §2 | UAX #9 revision 51 and Unicode 17.0.0 tables; independently implemented | none | 2026-11-13 |
+| `text/unicodeTables.ts` | lane w-n | T-1 | text §§2, 9, 13 | Generated from Unicode 17.0.0 UCD, Unicode License v3; hashes and full notice under tools/whiteboard-unicode/data/17.0.0 | Unicode data | 2026-11-13 |
+| `tools/whiteboard-unicode/generate.mjs` | lane w-n | T-1 | text §§2, 9, 13 | UCD data format; no tldraw source | none | 2026-11-13 |
+| `tools/whiteboard-unicode/data/17.0.0/*` | lane w-n | T-1 | text §§2, 9, 13 | unicode.org/Public/17.0.0/ucd; exact file hashes and Unicode License v3 notice alongside | Unicode data | 2026-11-13 |
 
 ## Editing lanes (w-f to w-j), export and hosts (w-k, w-l)
 

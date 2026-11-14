@@ -2,7 +2,8 @@ import type { PageGeometry } from '../../platform/types';
 import type { MainMessage, WorkerMessage } from '../../platform/workers/envelope';
 import type { BackendInfo, DocInfo, EngineLimits, FontSpec, PageComplexity, RawOutlineNode, RawPdfLink, DeviceRect, PdfEngineRole } from '../engine/types';
 import type { FigureTag, Schema2PageText, LineTable } from '../text/types';
-import type { EMPHASIS_ALGORITHM, EMPHASIS_REVISION, EMPHASIS_STROKE_EM } from '../emphasis/profile';
+import type { TileEmphasisArgs, PageProbeArgs, PageProbeResult } from '../emphasis/types';
+export type { EmphasisSpec, PageProbeArgs, PageProbeResult } from '../emphasis/types';
 
 export const PDF_ENGINE_PROTOCOL = 1;
 export const PDF_ENGINE_ROLE_VERSION = 1;
@@ -50,13 +51,7 @@ export interface EngineInitArgs {
 }
 export interface DocOpenArgs { docKey: PdfDocKey; source: Blob; size: number; password?: string }
 export interface PageArgs { docKey: PdfDocKey; page: number }
-export interface EmphasisSpec {
-    algorithm: typeof EMPHASIS_ALGORITHM;
-    revision: typeof EMPHASIS_REVISION;
-    strokeEm: typeof EMPHASIS_STROKE_EM;
-    locale?: string;
-}
-export type TileVariant = { variant: 'plain'; emphasis?: never } | { variant: 'emphasis'; emphasis: EmphasisSpec };
+export type TileVariant = TileEmphasisArgs;
 export type PageTileArgs = PageArgs & TileVariant & {
     reqId: number;
     scale: number;
@@ -96,16 +91,6 @@ export interface PageTextReply {
     model?: Schema2PageText;
     digest?: string;
     sel?: PageSelectionModel;
-}
-export interface PageProbeArgs extends PageArgs, EmphasisSpec { profileKey: string; maxPixels: number }
-export interface PageProbeResult {
-    complete: true;
-    candidates: number;
-    eligibleGlyphs: number;
-    changedPixels: number;
-    capability: 'supported' | 'unavailable';
-    reason?: 'no-text' | 'no-eligible-prefixes' | 'ambiguous-glyphs' | 'no-visible-change';
-    probe: { profile: 'page-probe-v1'; scale: number; w: number; h: number; rendered: boolean };
 }
 export interface PdfWorkerStats { heapBytes: number; docs: number; pagesLoaded: number; blockCacheBytes: number }
 

@@ -7,8 +7,10 @@ import { mediaExtension } from '../media/ingest';
 import { MEDIA_MIMES, type MediaId } from '../model/media';
 import { createPdfInkRebind, type PdfInkRebindSnapshot } from './pdfInkRebind';
 import { prepareNativePdfRuntime } from './prepareNativePdfRuntime';
+import type { PdfInkSourceLease } from './pdfInkSourceOwner';
 
 export interface PdfInkSourceState {
+    retainSource(): PdfInkSourceLease;
     getSnapshot(): PdfInkRebindSnapshot;
     subscribe(listener: () => void): () => void;
     readMedia(id: MediaId, signal: AbortSignal): Promise<Blob>;
@@ -93,6 +95,10 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
             transferred = true;
             let closed = false, closing: Promise<void> | undefined;
             const facade: PdfInkSourceState = {
+                retainSource() {
+                    if (closed || !current() || !isLiveOwner(owner)) throw stale();
+                    return prepared.sources.retain();
+                },
                 getSnapshot: rebind.getSnapshot, subscribe: rebind.subscribe,
                 async readMedia(id, mediaSignal) {
                     mediaSignal.throwIfAborted();

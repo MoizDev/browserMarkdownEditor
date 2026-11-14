@@ -102,7 +102,10 @@ export class EditHost {
                     { anchor: this.window.start + textarea.selectionStart, focus: this.window.start + textarea.selectionEnd });
                 this.endComposition();
             });
-            this.listen(textarea, 'select', () => callbacks.selection({ anchor: this.window.start + textarea.selectionStart, focus: this.window.start + textarea.selectionEnd }));
+            this.listen(textarea, 'select', () => {
+                const backward = textarea.selectionDirection === 'backward';
+                callbacks.selection({ anchor: this.window.start + (backward ? textarea.selectionEnd : textarea.selectionStart), focus: this.window.start + (backward ? textarea.selectionStart : textarea.selectionEnd) });
+            });
         }
         this.element.className = 'wb-edit-host';
         this.element.tabIndex = -1;

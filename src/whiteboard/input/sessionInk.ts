@@ -24,6 +24,7 @@ export interface SessionInkServices {
   readonly invalidate: () => void
   readonly error: (error: unknown) => void
   readonly mapPoint: (sample: RealSample) => { readonly x: number; readonly y: number }
+  readonly localToWorld: (origin: { readonly x: number; readonly y: number }) => readonly [number, number, number, number, number, number]
 }
 
 // All node content is committed once through the session, while the caller lease
@@ -35,6 +36,7 @@ export function sessionInkContext(first: RealSample, services: SessionInkService
   const fairTol = 0.25 / (services.declaredMaxScale * 3)
   return {
     identity: { nodeId: id, gestureSequence: services.nextSequence() },
+    presentation: { tool, color, width, fairTol, localToWorld: services.localToWorld(origin) },
     builderOptions: { pressure, declaredMaxScale: services.declaredMaxScale },
     captureDeviceScale: services.captureDeviceScale,
     toLocal: sample => { const point = services.mapPoint(sample); return { x: point.x - origin.x, y: point.y - origin.y } },
@@ -47,7 +49,7 @@ export function sessionInkContext(first: RealSample, services: SessionInkService
       const lease = services.admit(builder)
       try {
         const node: StrokeNode = createStroke({ id, parent: sheet, order: keyBetween(siblings.at(-1)?.order ?? null, null), page,
-          x: origin.x, y: origin.y, tool, samples: lease.ref, pressure: pressure ? 'real' : 'none',
+          x: origin.x, y: origin.y, ext: null, tool, samples: lease.ref, pressure: pressure ? 'real' : 'none',
           widthModel: { id: 'uniform' },
           geomVersion: 1, fairTol, closed: false, width, color })
         const applied = session.apply({ origin: 'tool', label: tool === 'pen' ? 'Draw' : 'Highlight', ops: [{ t: 'create', node }] })
